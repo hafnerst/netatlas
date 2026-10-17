@@ -3,7 +3,7 @@
 // cables, and an Auto-arrange that depends only on the model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example, exampleNames, state, scene } from './helpers.mjs';
+import { load, model, example, exampleNames, state, scene, derive } from './helpers.mjs';
 import { geometry, problems, overlap, inside } from './scene-geometry.mjs';
 
 const T = load('layout/text.js');
@@ -12,6 +12,8 @@ const { layoutInput, layoutSignature } = load('layout/input.js');
 const { autoPositions } = load('layout/positions.js');
 const { ModelDoc } = load('editor/document.js');
 const legend = load('diagram/legend.js');
+const { addressAttrLines } = load('model/addresses.js');
+const { withVirtualNetworks } = load('model/virtual.js');
 
 const render = (m, view, opts = {}) => {
   const s = new state.Session(m);
@@ -89,15 +91,20 @@ test('no diagram text is shortened: every example, both views, draws its labels 
         assert.equal(flat(label.lines.join('')), flat(dev.label), `${f} ${view}: label of ${dev.id}`);
       }
       for (const n of g.networks) {
-        const nw = m.index.networks.get(n.ref.slice(8));
+        // (the logical view also draws container networks: withVirtualNetworks)
+        const nw = withVirtualNetworks(m).index.networks.get(n.ref.slice(8));
         assert.equal(flat(n.texts[0].lines.join('')), flat(nw.label));
         assert.ok(n.texts[1].lines.join(' ').includes(nw.cidr), `${f}: prefix ${nw.cidr} of ${nw.id} is shown`);
       }
       if (view === 'physical') {
-        for (const gr of g.groups) assert.equal(flat(gr.title.lines.join('')), flat(m.index.groups.get(gr.ref.slice(6)).label));
+        // the title, then the group's address-like attrs, each line whole
+        for (const gr of g.groups) {
+          const grp = m.index.groups.get(gr.ref.slice(6));
+          assert.equal(flat(gr.title.lines.join('')), flat(grp.label + addressAttrLines(grp.attrs).join('')));
+        }
         // every cable that has something to say is labelled (it used to be dropped when the cable was short)
         const labelled = new Set(g.linkLabels.map((l) => l.ref));
-        for (const l of m.links) if (l.speed || l.label || l.a.networks.length) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
+        for (const l of m.links) if (l.speed || l.label || derive.tagMismatch(m, l)) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
       } else {
         const pills = new Set(g.pills.map((p) => p.ref));
         for (const r of m.relations) {
@@ -119,11 +126,13 @@ test('multi-line and long labels: lines preserved, boxes grown, everything insid
     assert.ok(dev('fw').texts[0].lines.length >= 3, 'a long label wraps');
     assert.ok(dev('storage').texts[0].lines.length >= 2, 'a long word is broken');
     assert.equal(dev('storage').texts[0].lines.join(''), m.index.devices.get('storage').label);
-    // differing node sizes
-    const hs = ['srv', 'core-a', 'fw'].map((id) => dev(id).box.h);
-    assert.ok(hs[0] < hs[1] && hs[1] < hs[2], 'box heights follow the text: ' + hs);
+    // differing node sizes: the label part of a box grows with its lines (the entries with the
+    // interfaces' addresses come on top of that), and every box holds its whole label
+    const hs = ['srv', 'core-a', 'fw'].map((id) => dev(id).texts[0].rect.h);
+    assert.ok(hs[0] < hs[1] && hs[1] < hs[2], 'label heights follow the text: ' + hs);
+    for (const id of ['srv', 'core-a', 'fw']) assert.ok(dev(id).box.h >= dev(id).texts[0].rect.h + 16, id + ': the box is grown around its label');
     assert.ok(dev('srv').box.w < dev('fw').box.w);
-    assert.ok(dev('fw').box.w <= 1200 && dev('fw').box.h <= 200, 'growth is bounded');
+    assert.ok(dev('fw').box.w <= 1200 && dev('fw').texts[0].rect.h <= 200, 'growth of the label is bounded');
     assert.deepEqual(problems(render(m, view).root), [], view);
   }
   const g = geometry(render(m, 'physical').root);
@@ -159,7 +168,7 @@ test('several point-to-point cables between the same devices: parallel, straight
   // a long cable label wraps instead of being cut
   const uplink = g.linkLabels.find((l) => l.ref === 'link:srv-a');
   assert.ok(uplink.lines.length >= 2);
-  assert.match(uplink.lines.join(' '), /25G · Server network \(production\), Server network \(production, IPv6\), Server network \(production, legacy IPv6 prefix\) · hypervisor uplink, all tenant VLANs/);
+  assert.match(uplink.lines.join(' '), /25G · hypervisor uplink carrying the production server networks of every tenant \(VLAN 10, IPv4 and both IPv6 prefixes\)/);
   // most cables of this example need no bend at all
   assert.ok(g.cables.filter((c) => c.straight).length >= 5, String(g.cables.filter((c) => c.straight).length));
   // port labels have room: none overlaps another one or a cable label
@@ -172,7 +181,7 @@ test('several point-to-point cables between the same devices: parallel, straight
 
 test('a cable that would cross a device bends around it; one that needs no bend has none', () => {
   // three devices in one row: the outer two are cabled, the middle one is in the way
-  const m = model('netatlas: 1\ndevices:\n  - {id: a, type: switch, interfaces: [e0, e1]}\n  - {id: b, type: switch, interfaces: [e0, e1]}\n  - {id: c, type: switch, interfaces: [e0]}\nlinks:\n  - {id: ab, a: "a:e0", b: "b:e0"}\n  - {id: ac, a: "a:e1", b: "c:e0"}\n');
+  const m = model('netatlas: 1\ndevices:\n  - {id: a, type: switch, interfaces: [{id: e0, vlans: 1}, {id: e1, vlans: 1}]}\n  - {id: b, type: switch, interfaces: [{id: e0, vlans: 1}, {id: e1, vlans: 1}]}\n  - {id: c, type: switch, interfaces: [{id: e0, vlans: 1}]}\nlinks:\n  - {id: ab, a: "a:e0", b: "b:e0"}\n  - {id: ac, a: "a:e1", b: "c:e0"}\n');
   const s = new state.Session(m);
   // put b exactly between a and c
   s.model.layout.physical = new Map([['a', { x: 0, y: 0 }], ['b', { x: 400, y: 0 }], ['c', { x: 800, y: 0 }]]);
@@ -189,21 +198,24 @@ test('multiple labelled relations between the same devices: one distinct, readab
   const g = geometry(render(m, 'logical').root);
   const mine = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'].map((id) => g.pills.find((p) => p.ref === 'relation:' + id));
   assert.deepEqual(mine.map((p) => p.lines.join(' ')), [
-    'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10',
+    'IPsec · IKEv2 site-to-site with certificate authentication',
     'eBGP · AS 65010 ↔ AS 65020',
     'BFD · 300 ms × 3',
     'Syslog · audit log',
   ]);
   assert.ok(mine[0].lines.length >= 2, 'the long one wraps inside its pill');
-  // nested relations keep their own labels: they are named in their carrier's label
-  assert.match(mine[0].lines.join(' '), /GRE · primary › OSPF · area 0\.0\.0\.10/);
+  // GRE and OSPF are bound to the tunnel interfaces (IPsec to the devices): their own strand, OSPF named in GRE's label,
+  // and the label says what GRE is carried over
+  const gre = g.pills.find((p) => p.ref === 'relation:gre-br');
+  assert.equal(gre.lines.join(' '), 'GRE · primary › OSPF · area 0.0.0.10 (over IPsec)');
+  mine.push(gre);
   for (let i = 0; i < mine.length; i++) for (let j = i + 1; j < mine.length; j++) assert.ok(!overlap(mine[i].box, mine[j].box), `${i}/${j}`);
   // no duplicates: nested relations are named in their carrier's label, not drawn a second time
   assert.equal(g.pills.filter((p) => /GRE/.test(p.lines.join(' '))).length, 1);
   assert.equal(new Set(g.pills.map((p) => p.ref)).size, g.pills.length);
   // their lanes are distinct lines
-  const lanes = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'].map((id) => JSON.stringify(g.rels.find((r) => r.ref === 'relation:' + id).pts));
-  assert.equal(new Set(lanes).size, 4);
+  const lanes = ['ipsec-br', 'gre-br', 'bgp-br', 'bfd-br', 'syslog-br'].map((id) => JSON.stringify(g.rels.find((r) => r.ref === 'relation:' + id).pts));
+  assert.equal(new Set(lanes).size, 5);
   // the two devices are far enough apart for the labels
   const a = g.devices.find((d) => d.ref === 'device:fw').box;
   const b = g.devices.find((d) => d.ref === 'device:br-rtr').box;
@@ -262,7 +274,9 @@ test('sizes are part of the layout input: text that changes a box changes the la
   assert.notEqual(sig(base.replace('type: firewall', 'type: load_balancer')), sig(base), 'the subtitle (the type) is drawn, so it counts');
   assert.notEqual(sig(base.replace('label: peer link 1', 'label: a much longer label for this cable')), sig(base), 'cable labels need room');
   assert.notEqual(sig(base.replace('label: area 0.0.0.10', 'label: area 0.0.0.10 (totally stubby)')), sig(base), 'relation labels need room');
-  assert.equal(sig(base.replace('cable: CID-2024-000173', 'cable: something-else')), sig(base), 'text that is not drawn does not count');
+  // the cable id is an identifier: it is written under the cable's label, so it needs room too
+  assert.notEqual(sig(base.replace('cable: CID-2024-000173', 'cable: CID-2024-000173-and-a-patch-panel-port')), sig(base), 'the cable id is drawn, so it counts');
+  assert.equal(sig(base.replace('title: Long labels and mixed node sizes', 'title: something else')), sig(base), 'text that is not drawn does not count');
   assert.equal(sig(base.replace('medium: dac, speed: 100G, label: keepalive', 'medium: fiber, speed: 100G, label: keepalive')), sig(base));
   // a bigger box moves its neighbors, deterministically
   const a = autoPositions('physical', layoutInput(model(base)));

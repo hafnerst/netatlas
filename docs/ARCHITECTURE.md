@@ -9,15 +9,16 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses and each network's one prefix, the networks a cable carries at each end and whether the ends differ); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts` |
+| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; the **network services** (`netservices.ts`: the server types that run DHCP and DNS, the default lease, address ranges, the records a zone derives from the model's DNS names); the **simulation profiles** of the protocols (`sim-profiles.ts`: messages, transport, timers with their defaults and sources, states, failure and restore, the ARP / NDP / MAC table defaults); the **routing services registry** (`services.ts`: each protocol a device can enable, its parameters with type, scope, validation and suggestions, its use of the router ID, and the readers of a device's enabled protocols); IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses and each network's one prefix, the VLANs and networks a cable carries at each end from the tagging of its ends and how the ends differ, which interfaces own an address); the **device types' routing roles** and a switch's layer (`deviceRoutingRole`: a Layer 2 switch is a host, a Layer 3 switch a router); pure queries (references, related objects, search); the **rules for connecting two endpoints** in a diagram (which endpoints and pairs are compatible, when a relation repeats an existing one); **which addresses and identifiers the diagrams write out, for which object and in which view** (the entries of an interface, a device's route tables, address-like attrs, the inventory the tests compare with the drawing). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `sim-profiles.ts`, `services.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts`, `connect.ts`, `addresses.ts` |
+| `analysis/` | **All network logic**, pure and DOM-free, on the typed `Model`: address arithmetic for IPv4 and IPv6 (`ipmath.ts`: integers, canonical text, prefix ranges, sizes, free ranges); routing (`routing.ts`: connected networks, per-VRF tables, longest-prefix match, distance, metric, equal-cost multipath, recursive next hops, the routes learned over routing adjacencies, the hook for what is down); the **path tracer** (`trace.ts`: hop-by-hop forwarding with next-hop owners and VRRP, layer-2 ways through switches by VLAN, tunnels with their encapsulation stack and underlay, equal-cost branches, stop reasons, the return path, the text form); the **routing identity** (`identity.ts`: the virtual gateway addresses of the redundancy groups, protocol domains, the protocols a device should enable); the checks of the routing services (`checks-services.ts`); **failure impact** (`failure.ts`: propagation of failed devices, ports, cables and relations through interfaces, LAGs, `over` chains, redundancy groups, networks and static routes; the routing context the tracer reads; device pairs that lose reachability; single points of failure); **simulated traffic** (`traffic.ts`, for the protocol simulation: the flows a state implies, control traffic per protocol and demands traced with equal-cost splitting, each with its drawn lines in both views and the cables' direction; the changes between two states); the **consistency checks** (`checks.ts`: a registry of checks with stable ids, severities and the fields they read, the checks of routes and VLAN tagging, and the run that returns findings with a model's `checks:` settings applied; `checks-more.ts`: the checks of MTU, speed and duplex, aggregates, addressing, router IDs and MACs, OSPF, BGP, tunnels and VRFs). Focus mode's **neighbourhood** (`focus.ts`): the devices within N hops along cables or relations. The **addressing overview** (`addressing.ts`): networks per VRF as a supernet tree with members, gateways, use, free ranges and the next free address; duplicates, overlaps and addresses in no network. The **protocol simulation** (`sim/`): the simulated network built from the model (`net.ts`: bridges and routers, bridge ports with their VLANs from the link ends' tagging, layer-3 interfaces with their MACs, the spanning tree per VLAN), MAC addresses (`mac.ts`: canonical text, generated MACs from a fixed seed, multicast and virtual MACs, the seeded random), the parameters (`params.ts`: the registry of the Layer 1–4 parameters and the simulation attributes, each with its level (device, interface, VLAN, relation, service), defaults, ranges and sources, and the one resolver of the order of precedence, configured → object → device → simulation → default; `attrs.ts`: which attributes a device and each of its interfaces, VLANs and relations has), the discrete-event engine (`engine.ts`: frames over cables with latency, serialization and loss, carrier detection and link-up delay (a fresh start brings every cable up after it), wireless association, the waits for preconditions (a tunnel up, a route there: held, logged with their reason, released together when the condition holds), the seeded jitter of starts and timers, network events (failures, flapping, shut, power), MAC learning and flooding, the spanning tree and broadcast storms where it is off, storm control, broadcast domains, ARP and neighbour discovery with their tables and timers, forwarding with MAC rewrite and TTL, MTU, fragmentation and reassembly, ICMP errors, broadcasts, tunnels, failures, the event log, the dots in flight and each frame's headers for the packet inspector), the sessions and their behaviours (`protocols.ts`, `proto-routing.ts`, `proto-other.ts`; each starts when its interface is up, scheduled by its dependencies only, never by protocol or device order), Layer 4 (`transport.ts`: ICMP echo and the errors a sender receives, path MTU, TCP and UDP, listening ports, tests and test traffic, load balancers, proxies, monitoring probes, firewall policy and sessions), multicast (`multicast.ts`: IGMP / MLD queriers and membership, snooping, PIM sparse, SSM and dense mode with the RPF check, streams, joins and their events, the multicast tables), DHCP and DNS (`netsvc.ts`: the clients' DORA through relays, leases with renew, rebind and expiry applied to the routing context, retries and the link-local fallback; the resolver with its cache, the servers' zones and forwarders; the lease, zone and cache tables), every message's sender and origin (the engine: a reply, an error or a forwarded copy carries the origin of what it answers), the senders that generate the optional test traffic, the pacing of what is shown (`pacing.ts`: each hop's display time, Readable or Proportional, the speed, skipping idle time, Follow message and Step, a Send test drawn first and alone setting the pace while it runs; the simulated clock never passes a message on screen, and nothing it does changes what happens; the browser's loop starts the clock with the first frame drawn and caps a frame at 100 ms), and the facade the UI uses (`simulation.ts`). The multicast consistency checks are in `checks-multicast.ts`, those of DHCP clients and relays in `checks-netservices.ts`. Deterministic: results are sorted by values, never by the order of the file; the simulation's timeline depends only on the model and the actions. A firewall's policy as the path tracer reads it (the relations through it and its allow list, the same as the simulation's) is in `fw-policy.ts`. | `ipmath.ts`, `routing.ts`, `identity.ts`, `trace.ts`, `fw-policy.ts`, `failure.ts`, `traffic.ts`, `checks-services.ts`, `checks.ts`, `checks-more.ts`, `checks-multicast.ts`, `checks-netservices.ts`, `addressing.ts`, `focus.ts`, `sim/*.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
-| `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
-| `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text), `bundles.ts` (lanes and labels of a device pair), `geometry.ts`, `order.ts` |
-| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement), `scene.ts`, `style.ts`, `icons.ts` |
+| `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, static routes and link-end tagging, the presentation-only `layout` section, the simulation blocks of devices, interfaces, VLANs, relations, scopes and zones at their levels (`simulation.ts`), a server's DHCP and DNS services, relays and DNS servers (`netservices.ts`). Then it runs the consistency checks of `analysis/` on the model and attaches each finding to the entry and field it is about. Callable without any UI. | `validate.ts` (the format's rules), `simulation.ts`, `netservices.ts`, `reader.ts` (issue collector, typed reader, suggestions) |
+| `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view, and the strategies built on it (Default, Compact, Spacious); placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `strategies.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text, including the rows and end labels of ports), `bundles.ts` (the strands of a device pair, grouped by the interfaces they are bound to, with their lanes and labels; the room each port needs), `geometry.ts`, `order.ts` |
+| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). Uses `analysis/` for what it shows of the network's behaviour (where a route's next hop is). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `logical-ports.ts` (the ports of the logical view: rows, sides, stacking, stubs and routes), `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement with leader lines), `palette.ts` (the colours of the model drawn per theme, WCAG contrast), `scene.ts`, `style.ts`, `icons.ts` |
 | `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, switch DHCP on or off for an interface, add or remove a DNS name, rename an id with all references, add a physical or logical interface, arrange one view, move a node, …). Also the layout section and the layout status, and where an object's entry is in a YAML text (`yaml-block.ts`, found through the parsed structure). | `document.ts`, `tree.ts`, `layout-section.ts`, `yaml-block.ts` |
-| `ui/` | The browser: application shell, canvas interaction, inspector forms and outline, side panels, dialogs, local file reading and download, and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `files.ts`, `dom.ts` |
-| `app/` | Entry point, the in-browser self-test (`#selftest`) and the viewport check (`#viewportcheck`). | `main.ts`, `selftest.ts`, `viewport-check.ts` |
-| `generated/` | Built from `examples/*.yaml` by `scripts/gen-examples.mjs`; do not edit. | `examples.ts` |
+| `ui/` | The browser: application shell, canvas interaction (selection, dragging, connecting endpoints), inspector forms and outline, side panels, dialogs, the **tool windows** of Analyze (`toolwindow.ts`: one non-modal window at a time, moved, resized, folded, docked at the bottom in narrow windows, its geometry in local storage; F6 moves between it and the page's regions), the Addressing overview's table and CSV (`addressing.ts`), the Trace path window's form and hop tables (`trace.ts`), the Focus window (`focus-window.ts`), the Single points of failure table with sorting, filtering, CSV and text (`spof.ts`), the simulation mode's interface (`simulation-mode.ts`: banner text, marker, the failed state), the **protocol simulation** on screen (`sim-controller.ts`: the display clock, the simulation layout's three panels (setup, actions, the docked simulation panel), the in-diagram menus and the same events in the Actions panel; `sim-protocols-ui.ts`: the grouped protocol checkboxes of the Start dialog and the setup; `sim-senders-ui.ts`: the Senders section (summary, filter, quick actions, the checklist by type or group / site); `sim-params-ui.ts`: the parameter sections of the start dialog and the setup; `sim-anim.ts`: the labelled dots as the pacing places them, the arrival pulse, the trail, the sender and receiver marks, and the still picture for exports and reduced motion; `sim-labels.ts`: where labels go, pure; `sim-tables.ts`: the device tables in the simulation panel and the packet inspector), the side panel's splitter (`splitter.ts`), the **command registry** that drives the menus, the keyboard shortcuts and the command palette (`commands.ts`, `palette.ts`), the Help menu's manual and license (`help.ts`), the examples it can load (`examples.ts`: the public catalog, and the internal examples only the test build registers), local files (reading, writing through a file handle the user chose, download), and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `help.ts`, `files.ts`, `dom.ts`, `theme.ts` (Light / Dark, Dark by default), `export-style.ts` (resolved colours for exports) |
+| `app/` | The two entry points: `main.ts` for the released application (`dist/netatlas.html`: the public examples; `#selftest` runs its own self-test, `public-selftest.ts`) and `main-test.ts` for the test build (`build/netatlas-test.html`: it also registers the internal examples and runs the full in-browser self-test, `#selftest`, and the viewport check, `#viewportcheck`). Both start the application through `boot.ts`. Checks shared by the self-tests: what is wrong with a drawn diagram (`drawn-check.ts`) and whether the Objects list's headings stand still (`outline-check.ts`). | `main.ts`, `main-test.ts`, `boot.ts`, `public-selftest.ts`, `selftest.ts`, `viewport-check.ts`, `drawn-check.ts`, `outline-check.ts` |
+| `generated/` | Built from `examples/*.yaml` (the public catalog) and from `test/examples/*.yaml` and `test/fixtures/*.yaml` (the internal test examples and fixtures, imported by the test build only) by `scripts/gen-examples.mjs`, and from `LICENSE` and `docs/img/manual/*.webp` by `scripts/gen-help.mjs` (the license text and the manual's screenshots as `data:` URLs); do not edit. | `examples.ts`, `test-examples.ts`, `help-assets.ts` |
 
 ## Allowed dependencies
 
@@ -34,6 +35,8 @@ Each layer has one responsibility and may only import the layers below it.
              │                 │    │              │            │
              └───────────► yaml ◄───┘              │            │
                                                    ▼            ▼
+             analysis  (imported by validation, diagram, editor, ui, app)
+                                                   │
                               model  (imported by every layer except yaml)
 ```
 
@@ -41,11 +44,12 @@ Each layer has one responsibility and may only import the layers below it.
 |---|---|
 | `model` | — |
 | `yaml` | — |
-| `validation` | `model`, `yaml` |
+| `analysis` | `model` |
+| `validation` | `model`, `yaml`, `analysis` |
 | `layout` | `model` |
-| `diagram` | `model`, `layout` |
-| `editor` | `model`, `yaml`, `validation`, `layout` |
-| `ui` | `model`, `validation`, `layout`, `diagram`, `editor`, `generated` |
+| `diagram` | `model`, `layout`, `analysis` |
+| `editor` | `model`, `yaml`, `validation`, `layout`, `analysis` |
+| `ui` | `model`, `validation`, `layout`, `diagram`, `editor`, `analysis`, `generated` |
 | `app` | everything |
 
 `diagram/`, `layout/` and `ui/` never import `yaml/`. There are no
@@ -64,11 +68,10 @@ anything else.
   operations and only reads the tree through the `DocNode` alias.
 * **One format schema.** `yaml/schema.ts` lists the keys of every mapping
   kind in canonical order. Validation (unknown keys), the editor (where new
-  keys go) and the inspector ("other properties") all use it. It also lists
-  keys that are not part of the format but are easily expected in a place
-  (a `speed` on a port, a `loopbacks` list), with the instruction shown when
-  one is found; they are rejected like any unknown key, never read or
-  converted.
+  keys go) and the inspector ("other properties") all use it. Any other key
+  is an "unknown key" error with the closest known key as a suggestion; it is
+  never read or converted, and the file keeps it. There is no compatibility
+  layer for earlier development versions of the format.
 * **Configured versus derived.** A fact is stored in one place in the YAML
   tree. Whatever follows from it is computed by `model/derive.ts` from the
   typed `Model` (cached per model object, and a new model is built after
@@ -77,9 +80,11 @@ anything else.
   editing operation writes a derived value, so it can't go stale or
   contradict its source. The typed `Network` has no member list and the
   typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
-  Membership (IP containment, derived), link-end `networks` (physical
-  carriage, configured per end) and a relation's `over` (its underlay,
-  configured) are three separate facts; none is derived from another.
+  Membership (IP containment, derived), port VLANs (layer-2 carriage,
+  configured per port or aggregate, by VLAN ID; the networks a cable
+  carries and a VLAN interface's bridge ports are derived from them) and a
+  relation's `over` (its underlay, configured) are separate facts; none is
+  derived from another.
   *Trade-off:* membership is recomputed for the whole model after each edit
   (addresses × networks); that is well inside the time validation already
   takes.
@@ -93,10 +98,48 @@ anything else.
   `interfaceNetworkPorts`, `associatedInterfaces`): the ports of a VLAN
   interface come from the link ends and are never stored. The editor
   addresses an interface by its document path (`interfaceEntries()`).
+* **Virtualization is derived, never stored twice.** A guest names its
+  `host`; everything else follows from that and the host's services:
+  `model/virtual.ts` answers what runs where (guests, port groups, a vnic's
+  virtual switch, a veth's network, the derived bridge interfaces) and is
+  read by validation (`validation/virtual.ts`), the checks
+  (`analysis/checks-virtual.ts`), the related objects and Find. The
+  physical view nests a host's interior (`layout/virtual.ts` for its
+  geometry, `diagram/virtual.ts` to draw it) inside the host's box, so the
+  layout positions hosts only; the logical view adds each bridge or overlay
+  network as a network scoped to its host (`withVirtualNetworks`, a view
+  of the model, never the model itself). The path tracer resolves where an
+  interface meets the cables (`analysis/trace-virtual.ts`); the protocol
+  simulation expands the virtual switches and container networks into
+  bridges and virtual links (`analysis/sim/net.ts expandVirtual`), so the
+  engine forwards, fails over and restarts with the machinery it has.
 * **Display order is not file order.** `model/order.ts` sorts names for
   display (editor cards, details, loopback chips, the networks box). The
   lists in the model and in the YAML tree keep the file's order, so viewing
   can't rewrite a file.
+* **Themes are tokens; exports carry values.** Every colour of the
+  application is a CSS custom property, defined once per theme (`:root`
+  and `:root[data-theme="dark"]` hold the dark ones, the default;
+  `:root[data-theme="light"]` the light ones). `ui/theme.ts` sets
+  `data-theme` on `<html>`, so a switch repaints without re-laying out
+  anything; the bundle runs in `<head>` and sets it before the body is
+  parsed, so a stored Light theme is in effect at the first paint. Colours that come from the model (media,
+  protocols) are attributes of the scene; `ui/dom.ts` passes them through
+  `diagram/palette.ts` for the theme in effect when it creates the elements.
+  An export clones the scene into the page, reads the styles the browser
+  computed for it and writes them as plain attributes, then drops the
+  stylesheet: the file shows the theme on screen in any viewer.
+  *Trade-off:* the export needs the DOM (it can't be produced in Node), and
+  its file carries every resolved value instead of shared rules.
+* **One layer scale.** Every `z-index` of the stylesheet is a token of
+  one scale in `:root` (diagram < overlays < panels < toolbar < menus /
+  popovers < tooltips < dialogs < announcements); only small local orders
+  inside a component are numbers. The page's regions (the top bar, the
+  canvas, the simulation panel) are container-query containers, and
+  `container-type` makes each a stacking context, so a z-index counts only
+  inside its region: each region is therefore given its layer on the scale
+  itself. `test/zorder.test.mjs` checks the scale and, with
+  `elementFromPoint`, that every menu is on top during a simulation.
 * **Exports describe the rendered scene.** The legend and the networks box
   of an SVG export are computed from the model *and* the scene that was
   rendered (`sceneRefs`), so they list what the picture shows, including the
@@ -111,18 +154,59 @@ anything else.
   so the YAML file can only ever hold the complete diagrams' layout.
   *Trade-off:* the sub-model is rebuilt after every edit while a filter is
   active (cheap: it is a selection plus a new index).
+* **One place for network logic.** Everything that reasons about the
+  network (route resolution, address arithmetic, the consistency checks)
+  lives in `analysis/`, works on the typed `Model` and returns plain data.
+  Validation, the diagram, the editor and the UI call it; none of them
+  re-implements a part of it. Its results are sorted by values (prefix,
+  distance, interface id, address), so they never depend on the order of
+  the YAML file.
+* **Checks are findings, not format errors.** The format's rules make a file
+  valid or not; the consistency checks describe the network and never block
+  anything. Validation runs them on a valid model and attaches each finding to
+  the YAML entry and field it is about (`Issue.check`, `Issue.refs`), so the
+  Problems tab, the Edit tab and "jump to" treat them like any other issue,
+  in their own list (`LoadResult.findings`).
 * **Positions are separate from semantics.** Positions live in the optional
   `layout:` section, are only warnings when broken, and never change the
   model. Auto-arrange is a pure function of a canonical input
   (`layout/input.ts`), so YAML order, comments and manual moves can't affect
   it. The layout status is derived by comparing stored positions with that
-  result (see `docs/FORMAT.md`).
+  result (see `docs/FORMAT.md`). The strategies (`layout/strategies.ts`) are
+  functions of the Default result, so they inherit its determinism; which
+  one a view "is arranged with" is found by comparing positions, never
+  stored.
+* **Modified is a comparison, not a flag.** `ModelDoc` keeps the text it was
+  opened or last saved with; the model is modified when its export differs.
+  Undo back to the saved state is therefore unmodified, and a save records
+  the text that was actually written. Whether the model is linked to a file
+  (a writable handle), its displayed name and its modified state are three
+  separate pieces of state in `ui/app.ts`.
+* **A connection is a draft until it is created.** Choosing two endpoints in
+  the diagram only opens a form (`Editor.draft`); the model is changed once,
+  by `ModelDoc.addConnection`, when the user creates it. The rules for which
+  endpoints may be connected live in `model/connect.ts`, next to the
+  validation they mirror, so the UI and the tests share them.
 * **One definition of every size.** `layout/sizes.ts` turns text into
   wrapped lines and element sizes. Auto-arrange reserves exactly those sizes
   and the renderers draw exactly those lines, so text fits its box without
   either side measuring fonts. Widths are estimates from character classes;
   that is what keeps the layout identical across browsers.
   *Trade-off:* a little spare room in every box, and no pixel-exact fit.
+* **A binding is drawn as a port.** An endpoint that names an interface
+  binds its relation or link to it, and the renderers attach the line there
+  and nowhere else: `diagram/logical-ports.ts` finds the row of the
+  interface by its id (`deviceRows`), puts a port beside it, and routes the
+  strand from port to port; the physical view puts the cable end on the port
+  of that interface (`layout/physical.ts`). Nothing is matched by position
+  or index. Relations are grouped into strands by their bindings
+  (`layout/bundles.ts`), so a relation is nested in a tunnel's tube only when
+  both run between the same ports. The room ports need (row heights for
+  their lanes and end labels, the reach of stubs and labels beside a box) is
+  part of the layout input, so Auto-arrange leaves it and stays a function
+  of the model. *Trade-off:* rows with ports are taller and the logical
+  diagrams larger; routes are computed at render time (sides, stubs, corners
+  around boxes), like labels, so they follow dragged nodes.
 * **Labels are placed at render time, deterministically.** Floating labels
   (cable labels, relation labels, addresses) go through a `LabelPlacer` in id
   order: first free candidate, else least overlap. Routes and label places
@@ -143,12 +227,28 @@ anything else.
 
 ## Extending
 
+* **Capabilities, not type names.** What a device does — bridge, route,
+  filter, pass between paired ports, receive copies, end a VPN, separate
+  two domains, run guests — comes from one resolver,
+  `model/capabilities.ts`, which reads the type, the mode, Supports Layer
+  3, a System's purpose and a Security gateway's implementation.
+  Validation, the editor, Connect, the tracer, single points of failure,
+  the simulation, Auto-arrange and the helpers ask it; only the registry
+  (`model/device-types.ts`), the resolver and the icon lookup name types.
+  `test/architecture.test.mjs` fails on a comparison with a type name
+  anywhere else. Policy that more than one module applies is written once:
+  a Security gateway's decisions in `analysis/separation.ts` (the tracer,
+  the simulation's `analysis/sim/separation.ts`).
+
 * **New protocol:** nothing to change in the code. Add it under
   `protocols:` in a YAML file, or extend the built-in table in
   `model/protocols.ts`.
-* **New device type:** add it to `model/device-types.ts` (identifier and
-  display name), give it a glyph in `diagram/icons.ts` and a default row in
-  `layout/input.ts`, and list it in `docs/FORMAT.md`.
+* **New device type:** add it to `model/device-types.ts` (identifier,
+  display name, kinds, modes and the behaviour it shares), give the
+  behaviour its capabilities in `model/capabilities.ts`, give it a glyph in
+  `diagram/icons.ts`, list it in `docs/FORMAT.md` and regenerate the
+  capability matrix (`node scripts/capability-matrix.mjs --write`). Nothing
+  else names it: every module decides by capabilities.
 * **New field on an entity:** add the key to `yaml/schema.ts`, read and
   check it in `validation/validate.ts` (and the model type), then show and
   edit it in `ui/inspector.ts` using an existing `ModelDoc` operation.
@@ -163,13 +263,13 @@ anything else.
 
 ```sh
 npm install            # TypeScript only (dev dependency)
-npm run build          # -> dist/netatlas.html
+npm run build          # -> dist/netatlas.html (and the test build, build/netatlas-test.html)
 npm test               # build + all tests (Node + headless browser)
 npm run check:dist     # is the checked-in dist/netatlas.html generated from this source?
 ```
 
 `npm run check:dist` regenerates the embedded examples and the bundle in
-memory and compares them byte-for-byte with `src/generated/examples.ts` and
-`dist/netatlas.html`. It writes neither file. It exits with status 1 and
+memory and compares them byte-for-byte with `src/generated/examples.ts`,
+`src/generated/test-examples.ts` and `dist/netatlas.html`. It writes neither file. It exits with status 1 and
 says so if either is stale. To confirm a checkout or a pull request, run it
 on a clean working tree after `npm ci`.

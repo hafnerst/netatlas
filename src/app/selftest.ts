@@ -7,15 +7,28 @@
  * checks what was drawn and what gets exported. It also verifies label
  * safety, error reporting and that the page made no network requests.
  */
-import { Device, Interface } from '../model/types';
+import { Device, Interface, Model } from '../model/types';
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
 import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
-import { contextState, relatedRefs, selectionContext } from '../model/queries';
+import { contextState, relatedRefs, search, selectionContext } from '../model/queries';
+import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
-import { EXAMPLES, FIXTURES } from '../generated/examples';
-import { PNG_MAX_PIXELS, PNG_MAX_SIDE, pngScale, svgToPng } from '../ui/files';
+import { CHECKS } from '../analysis/checks';
+import { addressingOverview } from '../analysis/addressing';
+import { traceText } from '../analysis/trace';
+import { addressingCsv } from '../ui/addressing';
+import { spofCsv, spofRows } from '../ui/spof';
+import { singlePointsOfFailure } from '../analysis/failure';
+import { EXAMPLES } from '../generated/examples';
+import { FIXTURES, INTERNAL_EXAMPLES } from '../generated/test-examples';
+import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
+import { contrast } from '../diagram/palette';
+import { drawnProblems as drawnProblemsOf } from './drawn-check';
+import { outlineStability } from './outline-check';
+import { legendOf } from '../diagram/legend';
+import { protocolEntriesOf } from '../analysis/sim/simulation';
 
 interface Check {
   name: string;
@@ -24,6 +37,19 @@ interface Check {
 }
 
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Every example the test build has: the public catalog, then the internal test examples. */
+const ALL_EXAMPLES = EXAMPLES.concat(INTERNAL_EXAMPLES);
+
+/** An example (public or internal) by its file name. */
+function exampleNamed(name: string): { name: string; text: string } | undefined {
+  return ALL_EXAMPLES.find((e) => e.name === name);
+}
+
+/** The refs Find lists for a query (all of them). */
+function searchHits(model: Model, query: string): string[] {
+  return search(model, query, 200).map((x) => x.ref);
+}
 
 export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
   const checks: Check[] = [];
@@ -55,65 +81,63 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick(10);
     return !!b;
   };
-  /** layout status of a view, as tracked on the Auto-arrange button: "auto" | "manual" | "edited" */
-  const status = (v: 'physical' | 'logical'): string => (q('#btn-arrange') || { getAttribute: () => '' }).getAttribute('data-status-' + v) || '';
-  /** what the Auto-arrange button shows for the view on screen: status, icon, hover text, accessible description */
-  const shown = (): { view: string; st: string; icon: string; title: string; desc: string } => {
-    const b = q('#btn-arrange') as HTMLButtonElement;
-    const d = doc.getElementById(b.getAttribute('aria-describedby') || '');
-    return { view: b.getAttribute('data-view') || '', st: b.getAttribute('data-status') || '', icon: (b.querySelector('.arrange-icon') as HTMLElement).textContent || '', title: b.title, desc: d ? d.textContent || '' : '' };
+  /** layout status of a view, as tracked on the Auto-arrange group: "auto" | "manual" | "edited" */
+  const status = (v: 'physical' | 'logical'): string => (q('#arrange-group') || { getAttribute: () => '' }).getAttribute('data-status-' + v) || '';
+  const arrangeBtn = (s: string): HTMLButtonElement => q('#btn-arrange-' + s) as HTMLButtonElement;
+  const STRATS = ['default', 'compact', 'spacious'];
+  /** what the Auto-arrange group shows for the view on screen: status, the option pressed (the strategy that matches), hover text, accessible description */
+  const shown = (): { view: string; st: string; current: string; title: string; desc: string } => {
+    const g = q('#arrange-group') as HTMLElement;
+    const d = doc.getElementById(g.getAttribute('aria-describedby') || '');
+    const cur = STRATS.map(arrangeBtn).find((b) => b.getAttribute('aria-pressed') === 'true');
+    return { view: g.getAttribute('data-view') || '', st: g.getAttribute('data-status') || '', current: cur ? cur.getAttribute('data-strategy') || '' : '', title: g.title, desc: d ? d.textContent || '' : '' };
   };
-  const AUTO_MSG = 'This view matches the auto-arranged layout.';
-  const MANUAL_MSG = 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.';
-  /** the button shows `st` for `view`: icon, hover text and description agree */
+  /** the message for a view arranged with Default (complete or filtered) */
+  const AUTO_RE = /^The (filtered )?(physical|logical) view is arranged with Default/;
+  const MANUAL_MSG = 'This view has manually adjusted positions. Each Auto-arrange option replaces them after a confirmation.';
+  /**
+   * The Auto-arrange options' look: 'done' = one option pressed (the matching one) and disabled, the others
+   * available unless they give the same positions; 'todo' = nothing pressed, all three available.
+   */
+  const arrangeLook = (): string => {
+    const bs = STRATS.map(arrangeBtn);
+    const pressed = bs.filter((b) => b.getAttribute('aria-pressed') === 'true');
+    if (pressed.length === 1 && pressed[0].disabled && pressed[0].classList.contains('current') && bs.every((b) => b === pressed[0] || b.disabled === b.classList.contains('same'))) return 'done';
+    if (!pressed.length && bs.every((b) => !b.disabled && !b.classList.contains('current'))) return 'todo';
+    return 'other: ' + bs.map((b) => `${b.getAttribute('data-strategy')} pressed=${b.getAttribute('aria-pressed')} disabled=${b.disabled}`).join(', ');
+  };
+  /** the group shows `st` for `view`: pressed option, hover text, description and enabled states agree */
   const shows = (view: string, st: 'auto' | 'manual'): boolean => {
     const x = shown();
-    const msg = st === 'auto' ? AUTO_MSG : MANUAL_MSG;
-    return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view as 'physical' | 'logical');
+    const ok = st === 'auto' ? AUTO_RE.test(x.desc) && x.current === 'default' : x.desc === MANUAL_MSG && x.current === '';
+    return x.view === view && x.st === st && ok && x.title === x.desc && x.st === status(view as 'physical' | 'logical') && arrangeLook() === (st === 'auto' ? 'done' : 'todo');
   };
   /**
    * What a reader would see as wrong in the drawn diagram, measured with the
    * browser's real font metrics (getBBox): text outside its box, overlapping
    * boxes, labels on top of each other or of a node, a shortened label.
    */
-  const drawnProblems = (rootSel = '#viewport'): string[] => {
-    const root = q(rootSel) as unknown as SVGGElement;
-    const out: string[] = [];
-    type R = { x: number; y: number; w: number; h: number };
-    const bb = (e: Element): R => {
-      const b = (e as SVGGraphicsElement).getBBox();
-      return { x: b.x, y: b.y, w: b.width, h: b.height };
-    };
-    const inside = (a: R, b: R): boolean => a.x >= b.x - 1 && a.y >= b.y - 1 && a.x + a.w <= b.x + b.w + 1 && a.y + a.h <= b.y + b.h + 1;
-    const hit = (a: R, b: R): boolean => a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h;
-    const each = (sel: string, fn: (e: Element) => void): void => Array.prototype.forEach.call(root.querySelectorAll(sel), fn);
-    const boxed = (group: string, box: string, text: string): void =>
-      each(group, (g) => {
-        const frame = g.querySelector(box);
-        if (!frame) return;
-        Array.prototype.forEach.call(g.querySelectorAll(text), (t: Element) => {
-          if (!inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)}; text x ${Math.round(bb(t).x)}, box x ${Math.round(bb(frame).x)})`);
-        });
-      });
-    boxed('g.device', '.dev-box', 'text');
-    boxed('g.network', '.net-box', 'text');
-    boxed('g.group', '.group-box', '.group-title');
-    boxed('g.pill', '.pill-box', 'text');
-    boxed('g.loop-chip', 'rect', 'text');
-    boxed('g.dns-chip', 'rect', 'text');
-    each('text', (t) => {
-      if (/…$|\.\.\.$/.test(t.textContent || '')) out.push(`shortened text "${t.textContent}"`);
+  const drawnProblems = (rootSel = '#viewport'): string[] => drawnProblemsOf(doc, rootSel);
+
+  /**
+   * The addresses and identifiers of the model that the diagram on screen
+   * does not show as text (model/addresses.ts says which belong in which
+   * view). A DNS name may continue on further lines; everything else is one
+   * whole line.
+   */
+  const missingAddresses = (m: Model, view: 'physical' | 'logical'): string[] => {
+    const lines: string[] = [];
+    Array.prototype.forEach.call(doc.querySelectorAll('#viewport text'), (t: Element) => {
+      const spans = t.querySelectorAll('tspan');
+      if (spans.length) Array.prototype.forEach.call(spans, (x: Element) => lines.push(x.textContent || ''));
+      else lines.push(t.textContent || '');
     });
-    const nodes: Array<[string, R]> = [];
-    each('g.device .dev-box, g.network .net-box', (e) => nodes.push([(e.parentElement as Element).getAttribute('data-ref') || '', bb(e)]));
-    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (hit(nodes[i][1], nodes[j][1])) out.push(`${nodes[i][0]} overlaps ${nodes[j][0]}`);
-    const labels: Array<[string, R]> = [];
-    each('g.pill .pill-box, text.link-label, text.member-label', (e) => labels.push([(e.textContent || (e.parentElement as Element).textContent || '').slice(0, 40), bb(e)]));
-    for (let i = 0; i < labels.length; i++) {
-      for (let j = i + 1; j < labels.length; j++) if (hit(labels[i][1], labels[j][1])) out.push(`labels overlap: "${labels[i][0]}" / "${labels[j][0]}"`);
-      for (const n of nodes) if (hit(labels[i][1], n[1])) out.push(`label "${labels[i][0]}" covers ${n[0]}`);
-    }
-    return out;
+    const all = '\n' + lines.join('\n') + '\n';
+    const flat = lines.join('');
+    return addressInventory(m)
+      .filter((a) => a.views.indexOf(view) >= 0)
+      .filter((a) => (a.field === 'dns_names' ? flat.indexOf(a.text) < 0 : all.indexOf(a.text) < 0))
+      .map((a) => `${a.owner} ${a.field} "${a.text}"`);
   };
 
   let violations = 0;
@@ -142,19 +166,25 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     return downloads[downloads.length - 1];
   };
 
+  // Most of the run is a browser without a save picker (like Firefox or Safari): Save model as… downloads a
+  // copy, which the run captures. The picker path (a file the page may write) is checked with a stand-in below.
+  app.fileAccess = { saveFile: null, openFile: null };
+
   try {
     const csp = doc.querySelector('meta[http-equiv="Content-Security-Policy"]');
     const policy = csp ? csp.getAttribute('content') || '' : '';
     check('CSP meta present and blocks network', /default-src 'none'/.test(policy) && /connect-src 'none'/.test(policy), policy);
     {
-      const btn = q('#btn-arrange') as HTMLButtonElement | null;
-      const r = btn ? btn.getBoundingClientRect() : null;
+      const group = q('#arrange-group');
+      const bs = STRATS.map(arrangeBtn);
+      const rs = bs.map((b) => (b ? b.getBoundingClientRect() : null));
       check(
-        'Auto-arrange button is in the top toolbar, visible and labelled (disabled, without a status, until a model is open); no separate status element',
-        !!btn && !!btn.closest('header.topbar') && !!r && r.width > 40 && r.height > 10 && r.top < 60 && /^Auto-arrange/.test((btn.querySelector('.arrange-label')!.textContent || '').trim()) && btn.disabled &&
-          shown().st === '' && shown().icon === '' && shown().desc === '' && !q('#layout-status') && !q('[data-view-status]') && !q('.lstat') &&
+        'Auto-arrange: three options in the top toolbar (Default, Compact, Spacious), visible and labelled as one group, disabled without a status until a model is open; no check mark or edit icon',
+        !!group && !!group.closest('header.topbar') && /^Auto-arrange$/.test((q('#arrange-title') as HTMLElement).textContent || '') &&
+          bs.every((b, i) => !!b && b.disabled && b.getAttribute('aria-pressed') === 'false' && !!rs[i] && rs[i]!.width > 30 && rs[i]!.height > 10 && rs[i]!.top < 60 && b.getAttribute('aria-label') === 'Auto-arrange: ' + b.textContent) &&
+          bs.map((b) => b.textContent).join() === 'Default,Compact,Spacious' && !q('.arrange-icon') && shown().st === '' && shown().desc === '' && !q('#layout-status') && !q('#btn-arrange') &&
           doc.querySelectorAll('header.topbar [data-view-btn]').length === 2,
-        btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing',
+        bs.map((b) => (b ? b.textContent + (b.disabled ? ' (disabled)' : '') : 'missing')).join(', '),
       );
     }
 
@@ -168,26 +198,30 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#menu-btn', '#export-btn', '#view-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-spacious', '#menu-btn', '#export-btn', '#find-btn', '#help-btn'];
       check(
-        'toolbar: logo and version, the File, Export and View menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
+        'toolbar: logo and version, the File, Export, Find and Help menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
           direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
           !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
       );
       check(
-        'New, Open, Download and the examples are grouped in the File menu and nowhere else in the toolbar',
-        !!menu && menu.hidden && menuBtn!.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-download', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#examples') && !q(bar + ' select') &&
+        'New, Open, Save, Save as, Close and the examples are grouped in the File menu and nowhere else in the toolbar',
+        !!menu && menu.hidden && menuBtn!.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-save', '#btn-save-as', '#btn-close', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#btn-download') && !q('#examples') && !q(bar + ' select') &&
           doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length === 2,
         String(doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length),
       );
       click('#menu-btn');
       const entries = textsOf('#main-menu button');
       const mr = menu!.getBoundingClientRect();
+      const labels = textsOf('#main-menu > button .mi-label');
       check(
-        'the File menu opens under its button with consistently named entries: New model, Open model…, Download model…, Close model, then the examples',
-        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open model…$/.test(entries[1]) && /^Download model…/.test(entries[2]) && /Ctrl\+S$/.test(entries[2]) && entries[0] === 'New model' &&
-          entries.length === 4 + EXAMPLES.length && entries[3] === 'Close model' && (q('#btn-close') as HTMLButtonElement).disabled && q('#btn-download')!.nextElementSibling === q('#btn-close') && entries.slice(4).join() === EXAMPLES.map((e) => e.name).join() && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || '') && (q('#btn-download') as HTMLButtonElement).disabled,
+        'the File menu opens under its button with consistently named entries: New model, Open model…, Save model, Save model as…, Close model, then the examples; without a model only New and Open are available',
+        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 &&
+          labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
+          entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
+          q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 9 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -267,10 +301,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
         const options = Array.prototype.map.call(pick.options, (o: HTMLOptionElement) => o.textContent) as string[];
         check(
-          'start screen: three ways to begin — New model, Open YAML file (also the drop target), Load example from a picker',
-          /^New model/.test((newBtn.textContent || '').trim()) && /^Open YAML file…/.test((openBtn.textContent || '').trim()) && /drop one here/.test(openBtn.textContent || '') && openBtn.classList.contains('start-drop') &&
+          'start screen: three ways to begin — New model, Open model… (also the drop target), Load example from a picker',
+          /^New model/.test((newBtn.textContent || '').trim()) && /^Open model…/.test((openBtn.textContent || '').trim()) && /Choose a YAML file, or drop one here/.test(openBtn.textContent || '') && /drop one here/.test(openBtn.textContent || '') && openBtn.classList.contains('start-drop') &&
             doc.defaultView!.getComputedStyle(openBtn).borderTopStyle === 'dashed' && (q('#empty label[for="start-example"]') as HTMLElement).textContent === 'Load example' && options[0] === 'Choose an example…' && options.length === 1 + EXAMPLES.length &&
-            options.indexOf('Minimal example') === 3 && loadBtn.disabled && doc.querySelectorAll('#empty .start-card').length === 3 && [newBtn, openBtn, pick].every(shownNow),
+            options.indexOf('Private house — three floors, Wi-Fi on VLANs') === 5 && loadBtn.disabled && doc.querySelectorAll('#empty .start-card').length === 3 && [newBtn, openBtn, pick].every(shownNow),
           options.join(' | '),
         );
         check(
@@ -301,7 +335,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
         toStart();
 
-        // Open YAML file: the file picker of the existing loader
+        // Open model…: the file picker of the existing loader (this browser has no open picker of its own)
         const inputClick = HTMLInputElement.prototype.click;
         let pickerOpened = 0;
         HTMLInputElement.prototype.click = function (this: HTMLInputElement): void {
@@ -310,7 +344,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         openBtn.click();
         await tick(10);
         HTMLInputElement.prototype.click = inputClick;
-        check('start screen → Open YAML file opens the file picker (for .yaml / .yml files)', pickerOpened === 1 && /\.yaml/.test((q('#file') as HTMLInputElement).accept) && doc.body.getAttribute('data-state') === 'empty');
+        check('start screen → Open model… opens the file picker (for .yaml / .yml files)', pickerOpened === 1 && /\.yaml/.test((q('#file') as HTMLInputElement).accept) && doc.body.getAttribute('data-state') === 'empty');
 
         // drag and drop: the page takes over every drag, so the browser never navigates to a dropped file
         const dragEvent = (type: string, files: File[], text?: string): DragEvent => {
@@ -328,14 +362,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         (q('#side') as HTMLElement).dispatchEvent(over);
         const marked = doc.body.classList.contains('dropping') && doc.defaultView!.getComputedStyle(openBtn).backgroundColor !== idleBg && doc.defaultView!.getComputedStyle(q('#drop-hint') as Element).display === 'none';
         doc.dispatchEvent(new DragEvent('dragleave', { bubbles: true }));
-        check('dragging a file over the page marks the "Open YAML file" card as the drop target; the drag is taken over by the page', over.defaultPrevented && marked && !doc.body.classList.contains('dropping'), `${over.defaultPrevented} ${marked}`);
+        check('dragging a file over the page marks the "Open model…" card as the drop target; the drag is taken over by the page', over.defaultPrevented && marked && !doc.body.classList.contains('dropping'), `${over.defaultPrevented} ${marked}`);
 
-        const good = dragEvent('drop', [new File([EXAMPLES[2].text], 'dropped.yaml', { type: 'application/yaml' })]);
+        const good = dragEvent('drop', [new File([exampleNamed('minimal.yaml')!.text], 'dropped.yaml', { type: 'application/yaml' })]);
         (q('header.topbar') as HTMLElement).dispatchEvent(good);
         await until(() => !!app.mdoc);
         check(
-          'dropping a YAML file anywhere on the page opens it (the same loader as the file picker); the browser does not navigate',
-          good.defaultPrevented && !!app.mdoc && app.mdoc.fileName === 'dropped.yaml' && app.mdoc.origin === 'file' && app.mdoc.valid && doc.body.getAttribute('data-state') === 'loaded',
+          'dropping a YAML file anywhere on the page opens it (the same loader as the file picker); the browser does not navigate; without a writable file handle Save model stays unavailable',
+          good.defaultPrevented && !!app.mdoc && app.mdoc.fileName === 'dropped.yaml' && app.mdoc.origin === 'file' && app.mdoc.valid && doc.body.getAttribute('data-state') === 'loaded' && !app.linked && (q('#btn-save') as HTMLButtonElement).disabled && !(q('#btn-save-as') as HTMLButtonElement).disabled && app.fileState().kind === 'unlinked',
           `${good.defaultPrevented} ${app.mdoc ? app.mdoc.fileName + ' ' + app.mdoc.origin : 'no model'} ${doc.body.getAttribute('data-state')} files=${good.dataTransfer ? good.dataTransfer.files.length : -1}`,
         );
         toStart();
@@ -347,7 +381,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check(
           'an invalid file gives clear feedback: what could not be opened, where and why, and how to go on',
           bad.defaultPrevented && doc.body.getAttribute('data-state') === 'error' && !app.mdoc && shownNow(q('#errors')) && /Could not open broken\.yaml/.test(errText) && /line 3/i.test(errText) && /anchor/.test(errText) &&
-            textsOf('#errors .error-actions button').join('|') === 'Open another YAML file…|New model|Back to the start screen',
+            textsOf('#errors .error-actions button').join('|') === 'Open another model…|New model|Back to the start screen',
           errText.slice(0, 300),
         );
         const notYaml = dragEvent('drop', [new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01])], 'picture.png', { type: 'image/png' })]);
@@ -459,17 +493,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
             for (let n = 0; n < 300 && downloads.length === had; n++) await tick(10);
             const got = downloads.length > had ? downloads[downloads.length - 1] : undefined;
             names.push(got ? got.name : '?');
-            const said = new RegExp(`Exported “minimal-${view}\\.${fmt}”`).test(q('#toast')!.textContent || '');
+            const said = new RegExp(`Exported “datacenter-evpn-${view}\\.${fmt}”`).test(q('#toast')!.textContent || '');
             if (fmt === 'svg') same.push(enabled && closedAtOnce && said && !!got && got.text === expected && new RegExp(`Legend — ${view} view`).test(got.text) && new RegExp(`Networks — ${view} view`).test(got.text) && /class="svg-legend"/.test(got.text) && /class="svg-networks"/.test(got.text));
             else same.push(enabled && closedAtOnce && said && !!got && pictures.has(got.name) && pictures.get(got.name)!.size > 1000);
           }
         }
         check(
           'Export view as… → SVG / PNG exports whichever view is selected, named after the model and the view; the SVG has the same content as before (legend and Networks box); the menu closes and a message names the file',
-          names.join() === 'minimal-logical.svg,minimal-logical.png,minimal-physical.svg,minimal-physical.png' && same.every((x) => x) && exMenu.hidden && downloads.length === downloads.filter((d) => d.name).length,
+          names.join() === 'datacenter-evpn-logical.svg,datacenter-evpn-logical.png,datacenter-evpn-physical.svg,datacenter-evpn-physical.png' && same.every((x) => x) && exMenu.hidden && downloads.length === downloads.filter((d) => d.name).length,
           names.join() + ' ' + same.join(),
         );
-        check('the zoom bar has only zoom controls left', textsOf('.zoombar button').join('|') === '+|−|Fit' && !q('.zoombar #save-svg'));
+        check('the zoom bar has only zoom controls left, and Focus on the selection', textsOf('.zoombar button').join('|') === '+|−|Fit|◎ Focus' && !q('.zoombar #save-svg'), textsOf('.zoombar button').join('|'));
         toStart();
       }
 
@@ -492,7 +526,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const enabled = !closeBtn.disabled;
         await choose();
         clean.push(`new:${!q('#modal[open]') && onStart()}`);
-        await app.loadFile(new File([EXAMPLES[2].text], 'mine.yaml'));
+        await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'mine.yaml'));
         await choose();
         clean.push(`file:${!q('#modal[open]') && onStart()}`);
         app.loadExample(0);
@@ -501,7 +535,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check('Close model is available once a model is open, and a model without unsaved changes closes at once and shows the start screen (new model, opened file, example)', enabled && closeBtn.disabled && clean.join() === 'new:true,file:true,example:true' && (q('#main-menu') as HTMLElement).hidden, clean.join());
 
         // unsaved changes: three choices. Cancel leaves the model and the editor untouched.
-        await app.loadFile(new File([EXAMPLES[2].text], 'mine.yaml'));
+        await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'mine.yaml'));
         app.select('device:r1');
         await setField('#side-body [data-p=\'["devices",0,"label"]\']', 'Router one');
         click('[data-view-btn="logical"]');
@@ -512,8 +546,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const asked = dialogText();
         const offered = buttons();
         check(
-          'closing a model with unsaved changes asks: Cancel, Discard changes, or Download and close; it says the download is a new file and the opened file is not overwritten',
-          /Close the model with unsaved changes\?/.test(asked) && offered === 'Cancel|Discard changes|Download and close' && /“mine\.yaml” has changes that have not been downloaded/.test(asked) && /saves the current state as a new file, “mine-edited\.yaml”, in your browser’s downloads location; the file you opened is not overwritten/.test(asked) &&
+          'closing a model with unsaved changes asks: Cancel, Discard changes, or Save as and close… (the model is not linked to a file); in a browser without a save picker it says that a copy is downloaded first',
+          /Close the model with unsaved changes\?/.test(asked) && offered === 'Cancel|Discard changes|Save as and close…' && /“mine\.yaml” has changes that have not been saved/.test(asked) && /“Save as and close…” downloads a copy of the model first \(this browser can’t save to a file you choose\)/.test(asked) &&
             !/save (it )?(back )?to the original|overwrite the original/i.test(asked),
           offered + ' // ' + asked,
         );
@@ -527,15 +561,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick(30);
         check('… and so does Escape', app.mdoc === kept && kept!.dirty && !q('#modal[open]'));
 
-        // Download and close: the YAML is exported first, then the start screen
+        // Save as and close: here a copy is downloaded first (the dialog says so, and that the opened file is not changed), then the start screen
         const yaml = app.exportText();
         await choose();
+        await answerDialog('save');
+        const copyText = dialogText();
         await answerDialog('download');
         for (let n = 0; n < 40 && downloads.length === had; n++) await tick(10);
         const got = downloads[downloads.length - 1];
         check(
-          'Download and close exports the current YAML (as a new file, not the original name) and then shows the start screen',
-          downloads.length === had + 1 && !!got && got.name === 'mine-edited.yaml' && got.text === yaml && /label: Router one/.test(got.text) && onStart() && /Downloaded “mine-edited\.yaml”/.test(q('#toast')!.textContent || ''),
+          'Save as and close… downloads the current YAML as a copy (a new file, not the original name; the opened file is not changed) and then shows the start screen',
+          downloads.length === had + 1 && !!got && got.name === 'mine-edited.yaml' && got.text === yaml && /label: Router one/.test(got.text) && onStart() && /Downloaded a copy, “mine-edited\.yaml”/.test(q('#toast')!.textContent || '') &&
+            /can’t save to a file you choose/.test(copyText) && /“mine\.yaml” on your disk is not changed/.test(copyText) && /not linked to this model/.test(copyText),
           got ? got.name : 'no download',
         );
 
@@ -547,7 +584,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const exampleText = dialogText();
         await answerDialog('discard');
         await tick(30);
-        check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“minimal\.yaml” has changes/.test(exampleText) && /saves it as “minimal\.yaml”/.test(exampleText) && !/file you opened/.test(exampleText), exampleText);
+        check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“datacenter-evpn\.yaml” has changes/.test(exampleText) && /downloads a copy of the model first/.test(exampleText) && !/file you opened|on your disk/.test(exampleText), exampleText);
         // a new model that was edited is asked about too, and keeps its errors in view
         click('#btn-new');
         await tick(10);
@@ -565,7 +602,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         click('[data-view-btn="logical"]');
         app.select('device:hq-rtr1');
         click('#outline [data-act="fold-all"]');
-        click('#view-btn');
+        click('#find-btn');
         click('#btn-outline-filter');
         const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
         filter.value = 'hq';
@@ -577,7 +614,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         click('[data-tab="yaml"]');
         await choose();
         const gone = onStart() && doc.querySelectorAll('#viewport *').length === 0 && (q('#search') as HTMLInputElement).value === '' && (q('#search-results') as HTMLElement).hidden && doc.body.getAttribute('data-view') === 'none';
-        app.loadExample(2);
+        app.loadExampleNamed('minimal.yaml');
         const foldedNow = (Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e: Element) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')) as string[]).join();
         check(
           'closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown',
@@ -818,9 +855,35 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('#menu-btn');
       click('#menu-examples [data-example="2"]');
       await tick(10);
-      check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-download') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
+      check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-save-as') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
+      {
+        // the loaded example is marked in the File menu, and so is whether its model was modified (also after undo / redo)
+        const ex = (i: number): HTMLElement => q(`#menu-examples [data-example="${i}"]`) as HTMLElement;
+        const exState = (i: number): string => `${ex(i).classList.contains('active-example')}/${ex(i).getAttribute('aria-current') || '-'}/${(ex(i).querySelector('.ex-state') as HTMLElement).textContent}/${ex(i).getAttribute('data-modified')}`;
+        const others = (): boolean => EXAMPLES.every((_, i) => i === 2 || exState(i) === 'false/-//false');
+        const loaded = exState(2);
+        const saveOff = (q('#btn-save') as HTMLButtonElement).disabled && /not linked/.test(q('#btn-save')!.title) && app.fileState().kind === 'example' && /built-in example/.test(q('#status .file-state')!.textContent || '');
+        app.mdoc!.setText(['title'], 'Minimal, edited');
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        const edited = exState(2);
+        const dot = q('#status .fname .mod-dot') !== null && q('#status .fname')!.getAttribute('data-modified') === 'true';
+        app.undo();
+        const undone = exState(2);
+        const noDot = !q('#status .fname .mod-dot') && !app.mdoc!.dirty;
+        app.redo();
+        const redone = exState(2);
+        app.undo();
+        check(
+          'File menu: the loaded example is marked (open), and separately whether its model is modified; undo back to the loaded state clears "modified", redo sets it again; Save model stays unavailable for an example',
+          loaded === 'true/true/open/false' && edited === 'true/true/open · modified/true' && dot && undone === 'true/true/open/false' && noDot && redone === 'true/true/open · modified/true' && others() && saveOff && !app.mdoc!.dirty,
+          [loaded, edited, undone, redone, String(saveOff)].join(' | '),
+        );
+      }
 
       // the model and its settings without a "Current model" button: the model panel stays, the settings open from the Edit tab
+      // (minimal.yaml: two routers)
+      app.loadExampleNamed('minimal.yaml');
+      await tick();
       app.select('device:r1');
       await tick();
       const panel = (q('#outline') as HTMLElement).getBoundingClientRect();
@@ -848,7 +911,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app.mdoc as ModelDoc).markSaved();
 
       // ---------------------------------------------- collapsible outline sections
-      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      app.loadExampleNamed('enterprise-wan.yaml');
       await tick();
       const m0 = app.session!.model;
       const sec = (k: string): HTMLElement => q(`#outline [data-section="${k}"]`) as HTMLElement;
@@ -873,8 +936,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
       check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
       app.select(null);
-      // the filter (View → Filter outline…) looks into folded sections
-      click('#view-btn');
+      // the filter (Find → Filter object list…) looks into folded sections
+      click('#find-btn');
       click('#btn-outline-filter');
       const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
       filter.value = 'isp1';
@@ -899,9 +962,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('"Expand all" opens every section again', doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 0 && /Collapse all/.test(q('#outline [data-act="fold-all"]')!.textContent || ''));
     }
 
-    // ------------------------------------------------ viewer: every example
-    for (let i = 0; i < EXAMPLES.length; i++) {
-      const ex = EXAMPLES[i];
+    // ------------------------------------------------ viewer: every example (public and internal)
+    for (let i = 0; i < ALL_EXAMPLES.length; i++) {
+      const ex = ALL_EXAMPLES[i];
       const file = new File([ex.text], ex.name, { type: 'application/yaml' });
       const res = await app.loadFile(file);
       check(`${ex.name}: loads via File API without errors`, res.ok && !res.errors.length, res.errors.map((e) => `line ${e.line}: ${e.message}`).join('; '));
@@ -916,7 +979,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${ex.name}: loopbacks are not drawn as ports in the physical view`, count('.loop-chip') === 0);
       // stored layouts (the "…-arranged"/edited examples are arranged too) and auto layouts alike
       const physProblems = drawnProblems();
-      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !physProblems.length, physProblems.slice(0, 5).join('; '));
+      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes, labels or text`, !physProblems.length, physProblems.slice(0, 5).join('; '));
+      const physMissing = missingAddresses(m, 'physical');
+      check(`${ex.name}: physical view shows every physical identifier and every address of a physical interface as text`, !physMissing.length, physMissing.slice(0, 5).join('; '));
 
       click('[data-view-btn="logical"]');
       const drawable = m.relations.filter((r) => new Set(r.endpoints.map((e) => e.device)).size >= 2).length;
@@ -926,7 +991,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const loops = m.devices.reduce((s, d) => s + Math.min(3, d.logical.filter((x) => x.type === 'loopback').length), 0);
       check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
       const logProblems = drawnProblems();
-      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
+      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes, labels or text`, !logProblems.length, logProblems.slice(0, 5).join('; '));
+      const logMissing = missingAddresses(m, 'logical');
+      check(`${ex.name}: logical view shows every address, prefix, VLAN, VRF and tunnel endpoint as text`, !logMissing.length, logMissing.slice(0, 5).join('; '));
 
       const firstRel = m.relations[0];
       if (firstRel) {
@@ -943,8 +1010,1740 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
     }
 
+    // ------------------------------------------------ static routes in the diagram and the Edit tab
+    {
+      app.loadExampleNamed('branch-routing.yaml');
+      click('[data-view-btn="logical"]');
+      await tick();
+      const m = app.session!.model;
+      const routeCount = m.devices.reduce((s, d) => s + d.routes.length, 0);
+      const routeLines = (): number => doc.querySelectorAll('#viewport .route-table [data-ref^="route:"]').length;
+      const txt = (sel: string): string => (q(sel) || { textContent: '' }).textContent || '';
+      const boxOf = (id: string): string => {
+        const r = (q(`#viewport g.device[data-ref="device:${id}"] .dev-box`) as unknown as SVGGraphicsElement).getBBox();
+        return [r.x, r.y, r.width, r.height].map((v) => Math.round(v)).join(',');
+      };
+      const nhLines = count('.next-hop');
+      check(
+        'logical view: every static route is a line of its device’s route table (one table per VRF), with dotted next-hop lines to the interfaces of other devices',
+        routeLines() === routeCount && count('.route-table') === 8 && nhLines === 13 && /Routes · VRF GUEST/.test(txt('#viewport')),
+        `${routeLines()} / ${routeCount} lines, ${nhLines} next-hop lines`,
+      );
+      const before = boxOf('br-rtr');
+      const routes = q('#opt-routes') as HTMLInputElement;
+      check('the Routes switch is a logical-view filter, on by default', routes.checked && !routes.disabled && (routes.parentElement as HTMLElement).classList.contains('logical-only'));
+      routes.click();
+      await tick();
+      check('Routes off: no route table and no next-hop line; the device boxes keep their size (nothing moves)', routeLines() === 0 && count('.next-hop') === 0 && boxOf('br-rtr') === before && !app.session!.state.showRoutes);
+      const expOff = app.exportSvg();
+      routes.click();
+      await tick();
+      check('Routes on again: tables and lines are back', routeLines() === routeCount && count('.next-hop') === nhLines);
+      const exp = app.exportSvg();
+      check(
+        'an export shows what is on screen: the route tables, next-hop lines and their legend entries with Routes on, none of them with Routes off',
+        /0\.0\.0\.0\/0 via 203\.0\.113\.5 AD 250/.test(exp) && /class="[^"]*next-hop/.test(exp) && /Static routes \(route table in the device, per VRF\)/.test(exp) && !/0\.0\.0\.0\/0 via 203\.0\.113\.5 AD 250/.test(expOff) && !/Static routes \(route table/.test(expOff),
+      );
+      // selecting a route: its line, its device, the interface of its next hop; the Edit tab opens its card
+      app.select('route:br-rtr:1');
+      click('[data-tab="edit"]');
+      await tick();
+      const card = q('#side-body details.route-card[open][data-route="1"]');
+      const viaIn = card ? (card.querySelector('input[data-p$=\'"via"]\']') as HTMLInputElement | null) : null;
+      check(
+        'selecting a route marks it and its next hop, and opens its card in the Edit tab, marked as selected',
+        !!card && card.classList.contains('sel-mark') && !!viaIn && /203\.0\.113\.5/.test(viaIn.value) &&
+          !!q('#viewport [data-ref="route:br-rtr:1"].selected') && !!q('#viewport [data-ref="iface:isp-b-pe:ge-0/0/1"].hl'),
+        card ? card.className + ' / ' + (card.textContent || '').slice(0, 200) : 'no card: ' + txt('#side-body').slice(0, 200),
+      );
+      // duplicate it (the copy is selected), change the copy's distance, undo
+      const dupBtn = q('#side-body details.route-card[data-route="1"] [data-act="dup-route"]') as HTMLElement;
+      dupBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 5 }));
+      await tick();
+      const copies = (app.mdoc as ModelDoc).routeEntries(0).filter((e) => e.via === '203.0.113.5' && e.prefix === '0.0.0.0/0').length;
+      await setField('#side-body details.route-card[open][data-route="2"] input[data-p=\'["devices",0,"routes",2,"distance"]\']', '240');
+      check('Duplicate adds a copy right after the route and selects it; its fields edit the copy', copies === 2 && /distance: 240/.test(app.exportText()) && app.session!.state.selected === 'route:br-rtr:2');
+      app.undo();
+      app.undo();
+      await tick();
+      check('… and undo removes the edit and the copy again', (app.mdoc as ModelDoc).routeEntries(0).length === 6 && !/distance: 240/.test(app.exportText()));
+      // "+ Route" on a host: a new, empty route to fill in; the check finds a next hop that is not connected
+      app.select('device:pc1');
+      click('[data-tab="edit"]');
+      await tick();
+      const add = q('#side-body [data-act="add-route"]') as HTMLElement;
+      add.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 6 }));
+      await tick();
+      const pcIndex = (app.mdoc as ModelDoc).findEntity('device', 'pc1')!.index;
+      const base = `["devices",${pcIndex},"routes",1`;
+      await setField(`#side-body input[data-p='${base},"prefix"]']`, '10.30.0.0/16');
+      await setField(`#side-body input[data-p='${base},"via"]']`, '10.99.0.1');
+      const f = (app.mdoc as ModelDoc).findings.filter((x) => x.check === 'route-nexthop-unresolved');
+      const msg = txt('#side-body details.route-card[open]');
+      check(
+        '"+ Route" adds an empty route to the device; the fields write it; a next hop that is not connected is reported at the field (a consistency check) and listed in Problems',
+        /routes:\n {6}- \{prefix: 0\.0\.0\.0\/0, via: 10\.20\.10\.1, name: default gateway\}\n {6}- \{prefix: 10\.30\.0\.0\/16, via: 10\.99\.0\.1\}/.test(app.exportText()) && f.length === 1 && /not in a network directly connected to pc1/.test(msg) && /Problems \(1\)/.test(q('[data-tab="problems"]')!.textContent || ''),
+        msg,
+      );
+      click('[data-tab="problems"]');
+      await tick();
+      const item = q('#side-body .issue.error.clickable');
+      check('the finding is in the Problems tab with its check id, and clicking it opens the route', !!item && /route-nexthop-unresolved/.test(item.textContent || ''));
+      if (item) item.click();
+      await tick();
+      check('… the Edit tab shows that route’s card', !!q(`#side-body details.route-card[open][data-route="1"]`));
+      app.undo();
+      app.undo();
+      app.undo();
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ consistency checks: Problems tab, settings, fields
+    {
+      app.loadExampleNamed('consistency-checks.yaml');
+      click('[data-view-btn="physical"]');
+      click('[data-tab="problems"]');
+      await tick();
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const items = (): HTMLElement[] => Array.from(doc.querySelectorAll('#side-body [data-problems="checks"] .issue')) as HTMLElement[];
+      const all = md().findings.length;
+      const ids = new Set(items().map((i) => i.getAttribute('data-check')));
+      check(
+        'Problems: the file’s own problems and the consistency checks are listed apart; the demo shows a finding of every check, each with its id, title, message and the objects it concerns',
+        md().valid && !!q('#side-body [data-problems="format"]') && items().length === all && CHECKS.every((c) => ids.has(c.id)) &&
+          items().every((i) => !!i.querySelector('.check-id') && !!i.querySelector('.check-title') && !!i.querySelector('.msg')) && !!q('#side-body [data-problems="checks"] .issue-objects [data-goto]'),
+        `${items().length} of ${all}; missing: ${CHECKS.filter((c) => !ids.has(c.id)).map((c) => c.id).join(',')}`,
+      );
+      check('the severity of a finding is written, not only coloured', items().every((i) => /^(error|warning|info)$/.test((i.querySelector('.sev') || { textContent: '' }).textContent || '')));
+      const warnings = md().findings.filter((f) => f.severity === 'warning').length;
+      const wBtn = q('#side-body [data-problems-filter="warning"]') as HTMLElement;
+      wBtn.click();
+      await tick();
+      const again = q('#side-body [data-problems-filter="warning"]') as HTMLElement;
+      check(
+        'the severity filter hides the warnings (a toggle button with aria-pressed, focus kept) and shows them again',
+        items().length === all - warnings && again.getAttribute('aria-pressed') === 'false' && doc.activeElement === again && items().every((i) => !i.classList.contains('warning')),
+        `${items().length} / ${all - warnings}`,
+      );
+      again.click();
+      await tick();
+      check('… all findings again', items().length === all && q('#side-body [data-problems-filter="warning"]')!.getAttribute('aria-pressed') === 'true');
+      const ov = q('#side-body .pr-overrides');
+      check('the checks the model changes are named: duplicate-mac as info', !!ov && ov.getAttribute('data-overrides') === 'duplicate-mac=info' && /duplicate-mac as info/.test(ov.textContent || ''));
+      // an object a finding concerns: a click selects it
+      const goto = q('#side-body [data-check="duplicate-router-id"] [data-goto="device:r2"]') as HTMLElement | null;
+      if (goto) goto.click();
+      await tick();
+      check('an object named in a finding is a link that selects it', !!goto && app.session!.state.selected === 'device:r2');
+      // the finding itself goes to its field
+      click('[data-tab="problems"]');
+      await tick();
+      const mtuItem = q('#side-body .issue[data-check="link-mtu-mismatch"]') as HTMLElement;
+      mtuItem.click();
+      await tick();
+      const mtuIn = q(`#side-body input[data-p$='"mtu"]']`) as HTMLInputElement | null;
+      const mtuField = mtuIn ? (mtuIn.closest('.field') as HTMLElement) : null;
+      check(
+        'clicking a finding opens its object in the Edit tab; the field it concerns shows the message',
+        app.session!.state.selected === 'iface:r1:e0' && !!mtuIn && mtuIn.value === '9000' && !!mtuField && /MTU 9000 at r1:e0, 1500 at r2:e0/.test(mtuField.textContent || ''),
+        mtuField ? mtuField.textContent || '' : 'no MTU field',
+      );
+      // fix it in the field: the finding goes
+      await setField(`#side-body input[data-p$='"mtu"]']`, '1500');
+      check('editing the MTU to match removes the finding (one undo step)', !md().findings.some((f) => f.check === 'link-mtu-mismatch') && md().findings.length === all - 1);
+      app.undo();
+      await tick();
+      // the model's check settings
+      click('[data-tab="problems"]');
+      await tick();
+      click('#side-body [data-problems-settings]');
+      await tick();
+      const sel = (id: string): HTMLSelectElement | null => q(`#side-body [data-group="checks"] select[data-t="check-setting"][data-k="${id}"]`) as HTMLSelectElement | null;
+      check(
+        'the model settings list every check with its default and what this model makes of it',
+        !!q('#side-body [data-group="checks"]') && doc.querySelectorAll('#side-body [data-group="checks"] select[data-t="check-setting"]').length === CHECKS.length && sel('duplicate-mac')!.value === 'info' && sel('lag-min-links')!.value === '' && !!sel('lag-min-links')!.getAttribute('aria-label'),
+      );
+      await setField('#side-body [data-group="checks"] select[data-k="lag-min-links"]', 'off');
+      check('a check switched off writes the checks section and its findings go', /\nchecks:\n {2}duplicate-mac: info\n {2}lag-min-links: off\n/.test(app.exportText()) && !md().findings.some((f) => f.check === 'lag-min-links'), app.exportText().slice(-120));
+      await setField('#side-body [data-group="checks"] select[data-k="lag-min-links"]', 'error');
+      check('… another severity changes the findings’ severity', md().findings.filter((f) => f.check === 'lag-min-links').every((f) => f.severity === 'error') && /lag-min-links: error/.test(app.exportText()));
+      app.undo();
+      app.undo();
+      await tick();
+      check('… and undo restores the defaults', !/lag-min-links:/.test(app.exportText()) && md().findings.length === all);
+      // a port's speed and duplex at a link end
+      app.select('link:t4');
+      click('[data-tab="edit"]');
+      await tick();
+      const lIndex = md().findEntity('link', 't4')!.index;
+      const dpx = q(`#side-body select[data-t="end-duplex"][data-p='["links",${lIndex},"b"]']`) as HTMLSelectElement | null;
+      const spd = q(`#side-body input[data-t="end-text"][data-p='["links",${lIndex},"b","speed"]']`) as HTMLInputElement | null;
+      check('a link end has its port’s speed and duplex in the Edit tab', !!dpx && dpx.value === 'half' && !!spd && spd.value === '100M');
+      await setField(`#side-body select[data-t="end-duplex"][data-p='["links",${lIndex},"b"]']`, 'full');
+      await setField(`#side-body input[data-t="end-text"][data-p='["links",${lIndex},"b","speed"]']`, '1G');
+      check(
+        'setting them to match the other end clears the duplex and speed findings',
+        !md().findings.some((f) => f.check === 'link-duplex-mismatch' || f.check === 'link-speed-mismatch') && /b: \{device: sw2, interface: p4, speed: 1G, duplex: full\}/.test(app.exportText()),
+        app.exportText().match(/- id: t4[\s\S]{0,160}/)?.[0],
+      );
+      app.undo();
+      app.undo();
+      md().markSaved();
+    }
+
+    // ------------------------------------------------ Analyze → Addressing overview
+    {
+      app.loadExampleNamed('addressing.yaml');
+      click('[data-view-btn="logical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const undoBefore = (q('#btn-undo') as HTMLButtonElement).disabled;
+      const entry = q('#btn-addressing') as HTMLButtonElement;
+      check('Analyze → Addressing overview… is in the menu with its key, enabled with a model', !!entry && !entry.disabled && /Addressing overview…/.test(entry.textContent || '') && /\bI\b/.test(entry.textContent || '') && entry.closest('#analyze-menu') !== null);
+      click('#analyze-btn');
+      entry.click();
+      await tick();
+      const dlgOpen = (): boolean => app.addressingOpen;
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#toolwin .addr-row')) as HTMLElement[];
+      const m = app.session!.model;
+      const ov = addressingOverview(m);
+      const listings = ov.vrfs.reduce((s, g) => s + g.networks.length, 0);
+      check(
+        'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, use, utilization, next free and free ranges; the filter has the focus',
+        dlgOpen() && rows().length === listings && doc.querySelectorAll('#toolwin .addr-vrf').length === ov.vrfs.length && /Default table/.test(q('#toolwin .addr-vrf h3')!.textContent || '') &&
+          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Used / size', 'Utilization', 'Next free', 'Free ranges'].every((h) => (q('#toolwin .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
+          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#toolwin .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /0\.8 %/.test(q('#toolwin .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#toolwin .addr-row[data-addr-net="corp6"]')!.textContent || ''),
+        `${rows().length} rows / ${listings}`,
+      );
+      // utilization is text, not only a bar
+      check('utilization is written as text (the bar is only decoration)', rows().every((r) => /%|\/64|\/\d+/.test((r.querySelector('.addr-util') as HTMLElement).textContent || '')) && Array.from(doc.querySelectorAll('#toolwin .addr-bar')).every((b) => b.getAttribute('aria-hidden') === 'true'));
+      // filter
+      const filter = q('#addr-filter') as HTMLInputElement;
+      filter.value = 'srv';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const shownIds = rows().map((r) => r.getAttribute('data-addr-net'));
+      check('the filter narrows the rows (by member device here) and the status line says how many are shown; the focus stays in the filter', shownIds.join() === 'mgmt' && /^1 of \d+ network listings shown/.test(q('#addr-status')!.textContent || '') && doc.activeElement === filter, shownIds.join());
+      filter.value = '';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      // sort
+      (q('#toolwin [data-addr-sort="util"]') as HTMLElement).click();
+      await tick();
+      const th = (q('#toolwin [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      const firstAsc = rows()[0].getAttribute('data-addr-net');
+      (q('#toolwin [data-addr-sort="util"]') as HTMLElement).click();
+      await tick();
+      const th2 = (q('#toolwin [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      check(
+        'a column header sorts (aria-sort ascending, then descending on a second press), and keeps the focus',
+        th.getAttribute('aria-sort') === 'ascending' && th2.getAttribute('aria-sort') === 'descending' && rows()[0].getAttribute('data-addr-net') !== firstAsc && doc.activeElement === q('#toolwin [data-addr-sort="util"]'),
+      );
+      (q('#toolwin [data-addr-sort="prefix"]') as HTMLElement).click();
+      await tick();
+      // members
+      const tog = q('#toolwin .addr-row[data-addr-net="corp"] [data-addr-toggle]') as HTMLElement;
+      const mrow = doc.getElementById(tog.getAttribute('aria-controls') as string) as HTMLElement;
+      const hiddenBefore = mrow.hidden;
+      tog.click();
+      await tick();
+      check(
+        'a network’s members open below it (aria-expanded): device, interface, address, DNS name, DHCP',
+        hiddenBefore && !mrow.hidden && tog.getAttribute('aria-expanded') === 'true' && /dist/.test(mrow.textContent || '') && /10\.10\.10\.3\/24/.test(mrow.textContent || '') && /DHCP/.test(mrow.textContent || ''),
+      );
+      tog.click();
+      await tick();
+      check('duplicates, overlaps and addresses in no network are listed', !!q('#toolwin [data-addr-list="duplicates"]') && !!q('#toolwin [data-addr-list="overlaps"]') && doc.querySelectorAll('#toolwin [data-addr-list="orphans"] li').length === ov.orphans.length && ov.orphans.length > 0);
+      // the page does not scroll sideways (the tables do, inside their region)
+      check('the window fits the browser window: no sideways scrolling of the page', doc.documentElement.scrollWidth <= doc.documentElement.clientWidth + 1 && !!q('#toolwin .addr-scroll[role="region"][aria-label]'));
+      // CSV
+      const csv = addressingCsv(ov);
+      check('the table as CSV: a header and a line per listing', csv.split('\r\n').length === listings + 2 && /^vrf,prefix,vlan,name,network_id/.test(csv));
+      // a click on a network selects it in the diagram beside the window, which stays open
+      (q('#toolwin .addr-row[data-addr-net="corp"] [data-addr-goto="network:corp"]') as HTMLElement).click();
+      await tick();
+      check('clicking a network selects it in the diagram; the overview stays open beside it (a tool window, not a modal dialog)', dlgOpen() && app.session!.state.selected === 'network:corp' && !(q('#modal') as HTMLDialogElement).open && q('#toolwin')!.getAttribute('role') === 'dialog' && !q('#toolwin')!.hasAttribute('aria-modal'));
+      app.closeToolWindow();
+      await tick();
+      // the key I opens it again, with its state; Esc closes it and the focus returns
+      app.select(null);
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true }));
+      await tick();
+      check('the key I opens the overview', dlgOpen());
+      (q('#addr-filter') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc closes it; the model is unchanged and no undo step was added', !dlgOpen() && app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled === undoBefore);
+      // both themes: the overview is drawn with the theme's colours
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        void app.openAddressing();
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(q('#toolwin') as HTMLElement);
+        const link = doc.defaultView!.getComputedStyle(q('#toolwin .addr-row .ref') as HTMLElement).color;
+        check(`${theme} theme: the overview uses the theme’s background and link colours`, cs.backgroundColor !== '' && link !== cs.backgroundColor && dlgOpen());
+        app.closeToolWindow();
+        await tick();
+      }
+      // the Inspector offers the next free address
+      app.select('iface:srv:eth0');
+      click('[data-tab="edit"]');
+      await tick();
+      const nf = q('#side-body [data-next-free-field] select') as HTMLSelectElement | null;
+      check('Edit tab: an interface offers the next free address of a network of its VRF', !!nf && Array.from(nf.options).some((o) => o.value === 'mgmt' && /→ 10\.20\.0\.1\/24/.test(o.textContent || '')), nf ? Array.from(nf.options).map((o) => o.textContent).join(' | ') : 'none');
+      if (nf) {
+        nf.value = 'mgmt';
+        (q('#side-body [data-act="add-next-free"]') as HTMLElement).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 11 }));
+        await tick();
+      }
+      check('“+ Add” appends that address to the interface (one undo step)', /- \{id: eth0, ip: \[10\.20\.0\.10\/24, 10\.20\.0\.1\/24\]/.test(app.exportText()) || /10\.20\.0\.1\/24/.test(app.exportText().slice(app.exportText().indexOf('id: srv'))), app.exportText().slice(app.exportText().indexOf('id: srv'), app.exportText().indexOf('id: srv') + 200));
+      app.undo();
+      await tick();
+      check('… undo removes it', app.exportText() === yamlBefore);
+      app.theme.set('dark');
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ the command palette
+    {
+      app.loadExampleNamed('enterprise-wan.yaml');
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const ctrlK = (): void => {
+        doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true }));
+      };
+      const pin = (): HTMLInputElement => q('#palette-input') as HTMLInputElement;
+      const type = async (v: string): Promise<void> => {
+        pin().value = v;
+        pin().dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+      };
+      const keyIn = async (k: string): Promise<void> => {
+        pin().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+        await tick();
+      };
+      const activeOpt = (): HTMLElement | null => (pin() ? doc.getElementById(pin().getAttribute('aria-activedescendant') || '') : null);
+      (q('#btn-outline-filter') as HTMLElement).focus();
+      ctrlK();
+      await tick();
+      const list = q('#palette-list');
+      check(
+        'Ctrl+K opens the command palette: a combobox with the focus, a listbox of results (the commands, by group, with their shortcuts), and a live count',
+        app.paletteOpen && doc.activeElement === pin() && pin().getAttribute('role') === 'combobox' && pin().getAttribute('aria-controls') === 'palette-list' && !!list && list.getAttribute('role') === 'listbox' &&
+          doc.querySelectorAll('#palette-list [role="option"]').length >= 20 && /results?\./.test(q('#palette-status')!.textContent || '') && /Ctrl\+S/.test(list.textContent || '') && !!activeOpt() && activeOpt()!.getAttribute('aria-selected') === 'true',
+        `${doc.querySelectorAll('#palette-list [role="option"]').length} options; ${q('#palette-status') ? q('#palette-status')!.textContent : ''}`,
+      );
+      await type('adrs ovr');
+      check('fuzzy matching: “adrs ovr” finds the Addressing overview, highlighted first', /Addressing overview/.test(activeOpt() ? activeOpt()!.textContent || '' : ''), activeOpt() ? activeOpt()!.textContent || '' : 'none');
+      await type('exit focus');
+      const disabled = q('#palette-list [role="option"][aria-disabled="true"]');
+      check('an unavailable command is listed, disabled, with the reason', !!disabled && /Exit focus/.test(disabled.textContent || '') && /Unavailable: Focus mode is off/.test(disabled.textContent || ''));
+      // a disabled command can't run: Enter on it says why and the palette stays
+      const dIndex = Number(disabled!.getAttribute('data-index'));
+      while (activeOpt() && Number(activeOpt()!.getAttribute('data-index')) !== dIndex) await keyIn('ArrowDown');
+      await keyIn('Enter');
+      check('… Enter on it runs nothing, the palette stays open and the reason is announced', app.paletteOpen && /unavailable: Focus mode is off/.test(q('#palette-status')!.textContent || ''));
+      // an object: Enter selects it in the diagram and closes the palette
+      await type('hq-rtr1');
+      const first = activeOpt();
+      check('objects are found by id (and label, address …): hq-rtr1 first, as a device', !!first && /hq-rtr1/.test(first.textContent || '') && /device/.test(first.textContent || ''), first ? first.textContent || '' : 'none');
+      await keyIn('Enter');
+      check('Enter selects the object in the diagram and closes the palette; the model is unchanged', !app.paletteOpen && app.session!.state.selected === 'device:hq-rtr1' && app.exportText() === yamlBefore);
+      // a command: through the palette, the Logical view
+      ctrlK();
+      await tick();
+      const recentHead = q('#palette-list .pal-head');
+      check('reopened: the recent entries come first', !!recentHead && recentHead.textContent === 'Recent' && /hq-rtr1/.test((q('#palette-list [role="option"]') as HTMLElement).textContent || ''));
+      await type('logical view');
+      await keyIn('Enter');
+      check('Enter runs a command: the Logical view is shown', !app.paletteOpen && app.session!.state.view === 'logical');
+      // Esc closes it; the focus goes back
+      (q('#btn-undo') as HTMLElement).focus();
+      const opener = doc.activeElement;
+      ctrlK();
+      await tick();
+      (q('#modal') as HTMLDialogElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check('Esc closes the palette and returns the focus', !app.paletteOpen && doc.activeElement === opener);
+      // from the Find menu too
+      click('#find-btn');
+      (q('#btn-palette') as HTMLElement).click();
+      await tick();
+      check('Find → Command palette… opens it', app.paletteOpen);
+      (q('#modal') as HTMLDialogElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check('the palette changed nothing in the model and added no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+    }
+
+    // ------------------------------------------------ focus mode
+    {
+      app.loadExampleNamed('enterprise-wan.yaml');
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const all = (): number => doc.querySelectorAll('#viewport g.device').length;
+      const total = all();
+      const posBefore = JSON.stringify(Array.from(app.session!.positionsFor('physical')));
+      const zf = q('#zoom-focus') as HTMLButtonElement;
+      check('Focus is unavailable without a selection, and says why', zf.disabled && /Select an object first/.test(zf.title), zf.title);
+      app.select('device:hq-fw');
+      await tick();
+      check('with a selection, the Focus button under the diagram is available', !zf.disabled && /hq-fw/.test(zf.title), zf.title);
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', shiftKey: true, bubbles: true, cancelable: true }));
+      await tick();
+      const banner = q('#mode-banner') as HTMLElement;
+      const shown = all();
+      check(
+        'Shift+F focuses on the selection: only it and what is one cable away are drawn; a banner names it, the hops, how many devices are shown and that positions are temporary',
+        !banner.hidden && shown === 5 && shown < total && /Focus: hq-fw/.test(q('#mode-text')!.textContent || '') && /1 hop \(cables\)/.test(q('#mode-text')!.textContent || '') && /5 of 15 devices/.test(q('#mode-text')!.textContent || '') && /temporary and are not saved/.test(q('#mode-text')!.textContent || '') &&
+          (q('#filter-hint') as HTMLElement).hidden && /5 of 15/.test(q('#devices-count')!.textContent || ''),
+        `${shown}/${total} ${q('#mode-text')!.textContent}`,
+      );
+      check('the banner’s controls: one hop fewer is unavailable at 1, one more and Exit are available; Focus itself is unavailable (already focused)', (q('#focus-fewer') as HTMLButtonElement).disabled && !(q('#focus-more') as HTMLButtonElement).disabled && !(q('#focus-exit') as HTMLButtonElement).disabled && zf.disabled);
+      (q('#focus-more') as HTMLElement).click();
+      await tick();
+      check('+ shows 2 hops: more devices', /2 hops/.test(q('#focus-hops')!.textContent || '') && all() > shown, `${all()}`);
+      // the other view: hops along relations
+      click('[data-view-btn="logical"]');
+      await tick();
+      check('in the logical view the hops follow relations', !banner.hidden && /\(relations\)/.test(q('#mode-text')!.textContent || '') && all() < total);
+      // an export shows exactly what is drawn, and says it is a focus
+      const svg = app.exportSvg();
+      const drawn = all();
+      const exported = new (doc.defaultView as Window & typeof globalThis).DOMParser().parseFromString(svg, 'image/svg+xml').querySelectorAll('g.device').length;
+      check('an export shows exactly the focused part, with a “Focus” note in the picture', /class="export-note"[^>]*>Focus: hq-fw/.test(svg) && exported === drawn, `${exported} / ${drawn}`);
+      // both themes: the banner is drawn in the theme's colours
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(banner);
+        check(`${theme} theme: the focus banner is drawn and readable`, cs.display !== 'none' && cs.color !== cs.backgroundColor && banner.getBoundingClientRect().height > 20);
+      }
+      check('focus mode changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // Esc ends it: the complete diagram, positions unchanged
+      click('[data-view-btn="physical"]');
+      await tick();
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'Esc exits focus: every device is back, at the positions it had; the banner is gone; the selection stays',
+        banner.hidden && all() === total && JSON.stringify(Array.from(app.session!.positionsFor('physical'))) === posBefore && app.session!.state.selected === 'device:hq-fw' && !app.session!.state.focus,
+      );
+      // through the palette as well
+      app.runCommand('focus.enter');
+      await tick();
+      const viaCommand = !banner.hidden;
+      app.runCommand('focus.exit');
+      await tick();
+      check('Focus… and Exit focus are commands (menu, palette)', viaCommand && banner.hidden && !!q('#btn-focus[data-command="focus.window"]') && !!q('#btn-focus-exit[data-command="focus.exit"]'));
+      // the Focus window: the selection, 1–3 hops, Focus and Exit focus
+      app.select('device:hq-fw');
+      click('#analyze-btn');
+      (q('#btn-focus') as HTMLElement).click();
+      await tick();
+      check(
+        'Analyze → Focus… opens the Focus window: the selected object, the hops as a radio group (the hops in effect checked), Focus and Exit focus; with a selection it focuses at once',
+        app.toolWindow() === 'focus' && /hq-fw/.test(q('#toolwin .focus-sel')!.textContent || '') && doc.querySelectorAll('#toolwin [role="radio"][data-focus-hops]').length === 3 && doc.querySelectorAll('#toolwin [role="radio"][aria-checked="true"]').length === 1 && new RegExp('^' + q('#toolwin [role="radio"][aria-checked="true"]')!.getAttribute('data-focus-hops') + ' hops?$').test(q('#focus-hops')!.textContent || '') && !banner.hidden && !(q('#focus-exit-w') as HTMLButtonElement).disabled,
+      );
+      (q('#toolwin [data-focus-hops="1"]') as HTMLElement).focus();
+      (q('#toolwin [data-focus-hops="1"]') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      await tick();
+      check('→ in the hops: 2 hops, at once in the diagram and the banner (the focus stays on the radio group)', /2 hops/.test(q('#focus-hops')!.textContent || '') && q('#toolwin [data-focus-hops="2"]')!.getAttribute('aria-checked') === 'true' && doc.activeElement === q('#toolwin [data-focus-hops="2"]'));
+      (q('#focus-exit-w') as HTMLElement).click();
+      await tick();
+      check('Exit focus in the window: the complete diagram; the window stays and says focus mode is off', banner.hidden && app.toolWindow() === 'focus' && /Focus mode is off/.test(q('#toolwin .focus-now')!.textContent || ''));
+      app.closeToolWindow();
+      app.select(null);
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ the path tracer
+    {
+      app.loadExampleNamed('enterprise-wan.yaml');
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const traced = (cls: string): string[] =>
+        Array.from(doc.querySelectorAll('#viewport .' + cls))
+          .map((e) => e.getAttribute('data-ref') || '')
+          .filter((r, i, a) => a.indexOf(r) === i);
+      // T opens the Analysis tab with the form; the selected device fills From
+      app.select('device:muc-rtr');
+      await tick();
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true }));
+      await tick();
+      const from = q('#trace-from') as HTMLInputElement;
+      check(
+        'T opens the Trace path window with its form: the selection fills From, the keyboard is in To',
+        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && app.toolWindow() === 'trace' && /^Trace path$/.test(q('#tw-title')!.textContent || '') && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]') && !!q('label[for="trace-back"]'),
+      );
+      // an end that is not in the model: the form says why, nothing is traced
+      const to = q('#trace-to') as HTMLInputElement;
+      to.value = 'nowhere';
+      to.dispatchEvent(new Event('input', { bubbles: true }));
+      (q('#trace-go') as HTMLElement).click();
+      await tick();
+      check('an unknown destination is refused with the reason, at the field', /Destination: “nowhere” is no device/.test(q('#trace-error') ? q('#trace-error')!.textContent || '' : '') && (q('#trace-to') as HTMLElement).getAttribute('aria-invalid') === 'true' && (q('#mode-banner') as HTMLElement).hidden);
+      // a real trace, with the return path
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: true });
+      (q('#trace-go') as HTMLElement).click();
+      await tick();
+      const text = q('#trace-text') ? q('#trace-text')!.textContent || '' : '';
+      check(
+        'Trace: the banner names the path, that it is reached, the equal-cost alternatives and the return path',
+        !(q('#mode-banner') as HTMLElement).hidden && !(q('#mb-trace') as HTMLElement).hidden && /Path trace: muc-rtr:lan0 → hq-log · Reached hq-log:eno1 in 4 hops · 2 equal-cost paths/.test(text) && /return path: Reached muc-rtr:lan0/.test(text),
+        text,
+      );
+      const mainSec = q('#toolwin [data-trace-path="trace-main"]') as HTMLElement;
+      const hops = Array.from(mainSec.querySelectorAll('tr.hop-row:not(.hop-under)')) as HTMLElement[];
+      const cells = (r: HTMLElement): string[] => Array.from(r.children).map((c) => (c.textContent || '').trim());
+      const heads = Array.from(mainSec.querySelectorAll('thead th')).map((h) => h.textContent);
+      check(
+        'the result is a table, one row per hop: device, ingress and egress interface, addresses and next hop, the route or relation used, the encapsulation; under it the switches passed and the cables (here the tunnel’s declared underlay)',
+        heads.join('|') === '#|Device|In|Out|Addresses|Route or relation|Encapsulation' && hops.length === 5 &&
+          cells(hops[0])[1] === 'muc-rtr' && cells(hops[0])[3] === 'Tunnel10' && /out 172\.16\.10\.2 · next hop 172\.16\.10\.1/.test(cells(hops[0])[4]) && /OSPF route 10\.10\.20\.0\/24 over ospf-muc/.test(cells(hops[0])[5]) && /GRE over IPsec/.test(cells(hops[0])[6]) &&
+          /cables l-hq-isp1, l-isp1-inet, l-muc-inet/.test((mainSec.querySelector('tr.hop-more') as HTMLElement).textContent || '') && cells(hops[3])[2] === 'Ethernet49' && /in 10\.0\.1\.2/.test(cells(hops[3])[4]) && !!mainSec.querySelector('caption.sr-only') && hops[0].firstElementChild!.getAttribute('scope') === 'row',
+        `${hops.length} ${hops[0] ? cells(hops[0]).join(' | ') : ''}`,
+      );
+      check('the main path, the equal-cost alternative and the return path are sections of their own, each labelled, each with its end', /Reached: reached hq-log:eno1/.test(mainSec.querySelector('.trace-end')!.textContent || '') && /^Main path$/.test(q('#trace-main-h')!.textContent || '') && /^Equal-cost alternative 1$/.test(q('#trace-alt-1-h')!.textContent || '') && /^Return path$/.test(q('#trace-back-h')!.textContent || '') && (q('#trace-back-h') as HTMLElement).closest('section')!.querySelectorAll('tr.hop-row:not(.hop-under)').length === 5);
+      // the diagram: the path, its alternative, the rest dimmed
+      const main = traced('trace-main');
+      const alt = traced('trace-alt');
+      check(
+        'physical view: the path’s devices and cables (down to the internet underneath the tunnel) are marked; the equal-cost alternative is marked apart; the rest is dimmed',
+        (q('#canvas') as unknown as Element).classList.contains('has-trace') &&
+          ['device:muc-rtr', 'device:hq-rtr1', 'device:hq-fw', 'device:hq-core1', 'device:hq-log', 'link:l-hq-isp1', 'link:l-muc-inet', 'link:l-fw-core1', 'link:l-acc-log'].every((r) => main.indexOf(r) >= 0) &&
+          alt.indexOf('device:hq-core2') >= 0 && alt.indexOf('link:l-fw-core2') >= 0 && main.indexOf('device:hq-core2') < 0 &&
+          doc.querySelectorAll('#viewport .trace-off[data-ref="device:ham-rtr"]').length > 0,
+        `main ${main.join(' ')} | alt ${alt.join(' ')}`,
+      );
+      // not colour alone: the alternative's box is dashed, the path's is solid
+      const cssOf = (ref: string): CSSStyleDeclaration => doc.defaultView!.getComputedStyle(q(`#viewport [data-ref="${ref}"] .dev-box`) as Element);
+      check('the path is marked by line style and width, not by colour alone: solid and thick; the alternative dashed', cssOf('device:hq-core1').strokeDasharray === 'none' && parseFloat(cssOf('device:hq-core1').strokeWidth) >= 3.5 && cssOf('device:hq-core2').strokeDasharray !== 'none', `${cssOf('device:hq-core2').strokeDasharray}`);
+      // the alternative in its own section
+      check('the alternative’s hops are in their section (through hq-core2)', /hq-core2/.test(q('#toolwin [data-trace-path="trace-alt-1"]')!.textContent || '') && !/hq-core2/.test(Array.from(mainSec.querySelectorAll('tr.hop-row')).map((r) => r.textContent).join(' ')));
+      // the logical view: the relations used
+      click('[data-view-btn="logical"]');
+      await tick();
+      const lmain = traced('trace-main');
+      check('logical view: the routing adjacencies and the tunnel stack used are marked', ['relation:ospf-muc', 'relation:gre-muc', 'relation:ipsec-muc', 'relation:ospf-hq-area0', 'device:hq-log'].every((r) => lmain.indexOf(r) >= 0), lmain.join(' '));
+      // exports carry the path and say so
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const svg = app.exportSvg();
+        const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+        const note = parsed.querySelector('text.export-note');
+        const marked = parsed.querySelectorAll('.trace-main').length;
+        const cs = doc.defaultView!.getComputedStyle(q('#mode-banner') as Element);
+        check(`${theme} theme: the export shows the traced path and a “Path trace” note; the banner is readable`, !!note && /^Path trace: muc-rtr:lan0 → hq-log/.test(note.textContent || '') && marked > 5 && cs.color !== cs.backgroundColor, `${marked}`);
+      }
+      // Copy as text gives the hop list (falls back to a file where the clipboard is refused)
+      check('the trace as text: the hops, the equal-cost alternative, the return path, the approximation note', /Main path \(1 of 2 equal-cost paths\)[\s\S]*Equal-cost alternative 1[\s\S]*Return path[\s\S]*not a simulation/.test(traceText(app.currentTrace()!.trace, app.currentTrace()!.back)));
+      check('tracing changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // an edit traces again: the server's default gateway removed → the return path stops at it
+      const md = app.mdoc as ModelDoc;
+      md.remove(['devices', md.findEntity('device', 'hq-log')!.index, 'routes'], 'Remove routes');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('after an edit the trace is computed again: without its default route the server has no way back', /return path: Stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      app.undo();
+      await tick();
+      // Esc ends it; the form keeps what was typed
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc in the diagram ends the trace: nothing is marked, the banner is gone; the window keeps the form and its values', (q('#mode-banner') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && app.toolWindow() === 'trace' && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
+      // the path stays marked only while the window is open
+      (q('#trace-go') as HTMLElement).click();
+      await tick();
+      const markedOpen = traced('trace-main').length > 0;
+      (q('#toolwin .tw-close') as HTMLElement).click();
+      await tick();
+      check('closing the window removes the path from the diagram', markedOpen && traced('trace-main').length === 0 && !app.currentTrace() && !app.toolWindowOpen());
+      check('Trace path… and Exit path trace are commands of the Analyze menu', !!q('#btn-trace[data-command="trace.open"]') && !!q('#btn-trace-exit[data-command="trace.exit"]') && (q('#btn-trace-exit') as HTMLButtonElement).disabled);
+      app.select(null);
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ routing services (protocols) in the Edit tab
+    {
+      app.loadExampleNamed('consistency-checks.yaml');
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      app.select('device:r3');
+      click('[data-tab="edit"]');
+      await tick();
+      const sec = (): HTMLElement | null => q('#side-body [data-group="protocols"]');
+      const chips = Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] .svc-suggest button.chip')) as HTMLButtonElement[];
+      check(
+        'a device’s Protocols section: what its relations use but it does not enable is offered with one click (OSPF for ospf-13; its static route needs no protocol), with an accessible name',
+        !!sec() && chips.length === 1 && chips[0].getAttribute('aria-label') === 'Enable OSPF on r3 (used by ospf-13)' && chips.every((c) => c.tagName === 'BUTTON' && c.tabIndex >= 0),
+        chips.map((c) => c.getAttribute('aria-label')).join(' | '),
+      );
+      // the same in the Problems tab
+      check('… and the Problems tab reports it (protocol-not-enabled); static routes need no protocol, so nothing asks to enable static routing', md.findings.some((f) => f.check === 'protocol-not-enabled' && /r3 is an endpoint of OSPF ospf-13/.test(f.message)) && !md.findings.some((f) => /static routing/i.test(f.message)));
+      check(
+        'Enable a protocol… offers no static routing (routes are configured in the Routes section)',
+        Array.from(doc.querySelectorAll('#side-body select[data-t="enable-service"] option')).every((o) => (o as HTMLOptionElement).value !== 'static' && !/static/i.test(o.textContent || '')),
+      );
+      chips[0].focus();
+      chips[0].click();
+      await tick();
+      const err = (): string => Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] .field-err, #side-body .issue-list li.error')).map((e) => e.textContent || '').join(' | ');
+      check(
+        'Enable OSPF: one undo step; OSPF’s mandatory router ID is an error in the Edit tab and the Problems tab until it is filled in; the router ID field appears',
+        /\n {6}ospf: \{\}\n/.test(app.exportText()) && md.canUndo() === 'Enable OSPF' && /OSPF needs a router ID/.test(err()) && md.errors.some((e) => /OSPF needs a router ID/.test(e.message)) && !!q(`#side-body [data-p='["devices",2,"router_id"]']`),
+        err(),
+      );
+      await setField(`#side-body [data-p='["devices",2,"router_id"]']`, '10.255.0.3');
+      check('the router ID filled in: the error is gone', !md.errors.length && /router_id: 10\.255\.0\.3/.test(app.exportText()) && !/OSPF needs a router ID/.test(err()), err());
+      // enabling from the keyboard: the "Enable a protocol" choice
+      const pick = q('#side-body select[data-t="enable-service"]') as HTMLSelectElement;
+      check('“Enable a protocol” is a labelled choice of the protocols not enabled yet', !!pick && pick.getAttribute('aria-label') === 'Enable a protocol on r3' && Array.from(pick.options).some((o) => o.value === 'isis') && !Array.from(pick.options).some((o) => o.value === 'ospf' || o.value === 'bgp'));
+      pick.focus();
+      pick.value = 'isis';
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('IS-IS enabled: its NET is required (an error at its field); its level offers level-2', md.errors.some((e) => /IS-IS needs net \(system ID\) \(net\)|IS-IS needs/.test(e.message)) && !!q(`#side-body [data-svc="isis"] [data-p='["devices",2,"protocols","isis","net"]']`) && !!q(`#side-body [data-svc="isis"] select[data-p='["devices",2,"protocols","isis","level"]']`));
+      md.undo();
+      md.undo();
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('three undo steps: the file is as it was', app.exportText() === yamlBefore);
+      // disabling a protocol that has values asks first and lists them; one undo step
+      app.select('device:r1');
+      click('[data-tab="edit"]');
+      await tick();
+      const dis = q('#side-body [data-act="disable-service"][data-svc="vrrp"]') as HTMLElement;
+      check('each enabled protocol has a Disable button with an accessible name', !!dis && dis.getAttribute('aria-label') === 'Disable VRRP on r1');
+      dis.click();
+      await tick(10);
+      const dlg = q('#modal[open]');
+      const listed = dlg ? Array.from(dlg.querySelectorAll('.removal-list li')).map((l) => l.textContent || '') : [];
+      check('disabling VRRP asks first and lists what goes with it (its group on e0)', !!dlg && /Disable VRRP on r1\?/.test(dlg.textContent || '') && listed.join() === 'e0: {group: 12, virtual_ip: 10.9.9.9, priority: 200}', listed.join(' | '));
+      await answerDialog('disable');
+      check('… confirmed: removed in one undo step, nothing kept hidden', !/group: 12/.test(app.exportText()) && md.canUndo() === 'Disable VRRP');
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('… and undo brings it back', app.exportText() === yamlBefore);
+      // both themes: the suggestion chips and the cards are drawn in the theme's colours
+      app.select('device:r3');
+      click('[data-tab="edit"]');
+      await tick();
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const c = q('#side-body button.chip') as HTMLElement;
+        // the colours as #rrggbb; the background as seen: the element's and its ancestors' layered
+        const rgba = (s: string): number[] | null => {
+          const m = /rgba?\(([^)]+)\)/.exec(s);
+          if (!m) return null;
+          const v = m[1].split(',').map((x) => parseFloat(x));
+          return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+        };
+        const toHex = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+        const layers: number[][] = [];
+        for (let e: HTMLElement | null = c; e; e = e.parentElement) {
+          const b = rgba(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          if (b && b[3] > 0) layers.push(b);
+          if (b && b[3] >= 1) break;
+        }
+        let seen = [255, 255, 255];
+        for (const l of layers.reverse()) seen = seen.map((v, i) => l[i] * l[3] + v * (1 - l[3]));
+        const fg = toHex(rgba(doc.defaultView!.getComputedStyle(c).color) || [0, 0, 0]);
+        const bg = toHex(seen);
+        check(`${theme} theme: the suggestion chips are readable (AA)`, contrast(fg, bg) >= 4.5, `${fg} on ${bg}: ${contrast(fg, bg).toFixed(2)}`);
+      }
+      // the palette offers it too
+      app.select('device:r3');
+      check('the command palette has “Enable a protocol on the selected device…”', !!app.command('protocol.enable') && app.command('protocol.enable')!.state(app).enabled);
+      app.runCommand('protocol.enable');
+      await tick();
+      check('… which opens the Edit tab at the protocol choice', doc.activeElement === q('#side-body select[data-t="enable-service"]'));
+      app.select(null);
+      md.markSaved();
+    }
+
+    // ------------------------------------------------ VLANs on ports (the VLAN example)
+    {
+      app.loadExampleNamed('vlan-ports.yaml');
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      const afterEdit = async (): Promise<void> => {
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        await tick();
+      };
+      check(
+        'the VLAN example: valid, and its deliberate mistakes are the findings (acc3’s native VLAN, and VLAN 30 that acc1 does not allow)',
+        md.valid && !md.warnings.length && md.findings.map((f) => f.check).sort().join() === 'vlan-native-mismatch,vlan-trunk-mismatch',
+        md.findings.map((f) => f.message).join(' | '),
+      );
+      click('[data-view-btn="physical"]');
+      app.select('iface:acc1:Gi1/0/48');
+      click('[data-tab="edit"]');
+      await tick();
+      const combo = (port: string): HTMLInputElement | null => q(`#side-body input[data-t="vlan-combo"][aria-label="Add VLANs to ${port}"]`) as HTMLInputElement | null;
+      const chipsOf = (port: string): string[] => Array.from(doc.querySelectorAll(`#side-body [aria-label="VLANs of ${port}"] [role="listitem"]`)).map((c) => c.getAttribute('data-vlan') || '');
+      const badgeOf = (port: string): string => {
+        const c = combo(port);
+        const f = c ? (c.closest('.field') as HTMLElement) : null;
+        const b = f ? f.querySelector('.mode-badge') : null;
+        return b ? b.textContent || '' : '';
+      };
+      const natOf = (port: string): HTMLSelectElement | null => q(`#side-body select[data-t="vlan-native"][aria-label="Native VLAN of ${port}"]`) as HTMLSelectElement | null;
+      check(
+        'a trunk’s card: its VLANs as chips (each removable, named), the mode badge in words (Trunk · 10, 20, 99 (native 99)), and a Native VLAN picker',
+        chipsOf('Gi1/0/48').join() === '10,20,99' && badgeOf('Gi1/0/48') === 'Trunk · 10, 20, 99 (native 99)' &&
+          !!q('#side-body button[data-act="vlan-remove"][aria-label="Remove VLAN 20 from Gi1/0/48"]') && !!natOf('Gi1/0/48') && natOf('Gi1/0/48')!.value === '99',
+        chipsOf('Gi1/0/48').join() + ' / ' + badgeOf('Gi1/0/48'),
+      );
+      // an access port: the combobox from the keyboard
+      app.select('iface:acc1:Gi1/0/1');
+      await tick();
+      const c1 = combo('Gi1/0/1') as HTMLInputElement;
+      const listOf = (c: HTMLInputElement): HTMLElement | null => doc.getElementById(c.getAttribute('aria-controls') || '');
+      check(
+        'an access port: “Access · VLAN 10”; the VLAN field is an ARIA combobox (role, aria-autocomplete, aria-expanded, a listbox), closed at first, its help linked',
+        badgeOf('Gi1/0/1') === 'Access · VLAN 10' && !!c1 && c1.getAttribute('role') === 'combobox' && c1.getAttribute('aria-autocomplete') === 'list' && c1.getAttribute('aria-expanded') === 'false' &&
+          !!listOf(c1) && listOf(c1)!.getAttribute('role') === 'listbox' && listOf(c1)!.hidden && !!doc.getElementById(c1.getAttribute('aria-describedby') || ''),
+        badgeOf('Gi1/0/1'),
+      );
+      c1.focus();
+      c1.value = '2';
+      c1.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const opts = Array.from(listOf(c1)!.querySelectorAll('[role="option"]')).map((o) => (o.textContent || '').replace(/\s+/g, ' ').trim());
+      check('typing opens the model’s VLANs with their names (not the ones it has)', c1.getAttribute('aria-expanded') === 'true' && opts.length === 1 && opts[0] === 'VLAN 20 staff', opts.join(' | '));
+      c1.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const act = doc.getElementById(c1.getAttribute('aria-activedescendant') || '');
+      check('↓ moves to an option (aria-activedescendant, aria-selected)', !!act && act.getAttribute('aria-selected') === 'true' && act.getAttribute('data-value') === '20');
+      c1.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'Enter adds it: the port is a trunk of 10, 20 (one undo step), the badge says so, and a Native VLAN picker appears',
+        /\{id: Gi1\/0\/1, vlans: \[10, 20\]\}/.test(app.exportText()) && md.canUndo() === 'Set VLANs' && badgeOf('Gi1/0/1') === 'Trunk · 10, 20' && !!natOf('Gi1/0/1'),
+        badgeOf('Gi1/0/1'),
+      );
+      // a range typed, then a comma: added; Backspace in the empty field removes the last one
+      const c2 = combo('Gi1/0/1') as HTMLInputElement;
+      c2.focus();
+      c2.value = '30-31,';
+      c2.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      check('a range typed with a comma is added as a range', /\{id: Gi1\/0\/1, vlans: \[10, 20, 30-31\]\}/.test(app.exportText()) && chipsOf('Gi1/0/1').join() === '10,20,30-31', chipsOf('Gi1/0/1').join());
+      const c3 = combo('Gi1/0/1') as HTMLInputElement;
+      c3.focus();
+      c3.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+      await tick();
+      check('Backspace in the empty field removes the last VLAN', chipsOf('Gi1/0/1').join() === '10,20', chipsOf('Gi1/0/1').join());
+      // the native VLAN
+      const nat = natOf('Gi1/0/1') as HTMLSelectElement;
+      nat.value = '10';
+      nat.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('the Native VLAN picker writes it (one undo step); the badge names it', /\{id: Gi1\/0\/1, vlans: \[10, 20\], native: 10\}/.test(app.exportText()) && md.canUndo() === 'Set native VLAN' && badgeOf('Gi1/0/1') === 'Trunk · 10, 20 (native 10)', badgeOf('Gi1/0/1'));
+      md.undo();
+      md.undo();
+      md.undo();
+      md.undo();
+      await afterEdit();
+      check('… undone step by step: the file as it was', app.exportText() === yamlBefore);
+      // the mandatory VLANs: removing the last one is an error at the field and in Problems, which leads back to it
+      app.select('iface:acc1:Gi1/0/1');
+      await tick();
+      click('#side-body button[data-act="vlan-remove"][aria-label="Remove VLAN 10 from Gi1/0/1"]');
+      await tick();
+      const fieldOf = (port: string): HTMLElement | null => {
+        const c = combo(port);
+        return c ? (c.closest('.field') as HTMLElement) : null;
+      };
+      const fieldErr = (): string => {
+        const f = fieldOf('Gi1/0/1');
+        return f ? Array.from(f.querySelectorAll('.field-err')).map((e) => e.textContent || '').join(' ') : '';
+      };
+      check(
+        'a switch port without VLANs: an error at its field (marked “*”, the badge says “No VLANs”, not in colour alone) and in the Problems tab',
+        /"Gi1\/0\/1" of switch "acc1" needs its VLANs/.test(fieldErr()) && md.errors.some((e) => e.path === 'devices.acc1.interfaces[0].vlans') && !!fieldOf('Gi1/0/1') && /VLANs \*/.test(fieldOf('Gi1/0/1')!.textContent || '') && badgeOf('Gi1/0/1') === 'No VLANs',
+        fieldErr() + ' / ' + badgeOf('Gi1/0/1'),
+      );
+      app.select(null);
+      click('[data-tab="problems"]');
+      await tick();
+      const item = Array.from(doc.querySelectorAll('#side-body [data-problems="format"] .issue')).find((x) => /needs its VLANs/.test(x.textContent || '')) as HTMLElement | undefined;
+      if (item) item.click();
+      await tick();
+      check('clicking the problem opens the port in the Edit tab with the focus in its VLAN field', !!item && app.session!.state.selected === 'iface:acc1:Gi1/0/1' && doc.activeElement === combo('Gi1/0/1'), doc.activeElement ? `${doc.activeElement.tagName} ${doc.activeElement.getAttribute('data-t') || ''} ${doc.activeElement.getAttribute('aria-label') || ''}` : 'nothing focused');
+      // suggestions: "Same as Gi1/0/…" and "VLANs of the connected port"
+      const sugg = (): HTMLButtonElement[] => Array.from(doc.querySelectorAll('#side-body [aria-label="Suggestions for the VLANs of Gi1/0/1"] button[data-act="vlan-copy"]')) as HTMLButtonElement[];
+      check('suggestions: the same VLANs as a neighbouring port, in a labelled group of buttons', sugg().map((b) => b.textContent).indexOf('Same as Gi1/0/2') >= 0, sugg().map((b) => b.textContent).join(' | '));
+      const same = sugg().find((b) => b.textContent === 'Same as Gi1/0/2');
+      if (same) same.click();
+      await tick();
+      check('… one click fills it in: the error is gone', /\{id: Gi1\/0\/1, vlans: 10\}/.test(app.exportText()) && md.valid && !fieldErr(), fieldErr());
+      md.undo();
+      md.undo();
+      await afterEdit();
+      check('… undone: the file as it was', app.exportText() === yamlBefore);
+      // the connected port's VLANs
+      app.select('iface:acc3:Gi0/1');
+      click('[data-tab="edit"]');
+      await tick();
+      const conn = (Array.from(doc.querySelectorAll('#side-body button[data-act="vlan-copy"]')) as HTMLButtonElement[]).find((b) => b.textContent === 'VLANs of the connected port');
+      check('“VLANs of the connected port” offers the far end’s VLANs (acc1:Gi1/0/47), with what they are', !!conn && /acc1:Gi1\/0\/47: Trunk · 10, 20 \(native 10\)/.test(conn.title), conn ? conn.title : '');
+      if (conn) conn.click();
+      await tick();
+      check('… a click makes the two ends agree: the mismatch findings go', /\{id: Gi0\/1, vlans: \[10, 20\], native: 10, description: uplink to acc1\}/.test(app.exportText()) && !md.findings.some((f) => /^vlan-/.test(f.check || '')), md.findings.map((f) => f.check).join());
+      md.undo();
+      await afterEdit();
+      // a Layer 3 switch's routed port
+      app.select('iface:core1:Te1/3');
+      await tick();
+      const routed = q(`#side-body input[data-act="port-routed"][data-p='["devices",0,"interfaces",3]']`) as HTMLInputElement | null;
+      check('a routed port of a Layer 3 switch: “Routed”, a labelled checkbox, and no VLANs to enter', !!routed && routed.checked && !!combo('Te1/3') && combo('Te1/3')!.disabled && badgeOf('Te1/3') === 'Routed' && !!routed.closest('label'), badgeOf('Te1/3'));
+      // Assign VLANs to ports…: a range, one undo step
+      app.select('device:acc1');
+      await tick();
+      click('#side-body button[data-act="assign-vlans"]');
+      await tick(10);
+      const dlg = q('#modal[open]');
+      const typeIn = (id: string, v: string): void => {
+        const i = q('#' + id) as HTMLInputElement | null;
+        if (!i) return;
+        i.value = v;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      typeIn('assign-from', 'Gi1/0/5');
+      typeIn('assign-to', 'Gi1/0/14');
+      typeIn('assign-vlans', '30');
+      await tick();
+      const prev = (q('#assign-preview') || { textContent: '' }).textContent || '';
+      check('Assign VLANs to ports…: a dialog taking a port range; the preview says what changes', !!dlg && /Assign VLANs to ports of acc1/.test(dlg.textContent || '') && /10 ports become access ports in VLAN 30:\s*Gi1\/0\/5–14/.test(prev), prev);
+      typeIn('assign-to', 'Gi1/0/99');
+      await tick();
+      const bad = (q('#assign-preview') || { textContent: '' }).textContent || '';
+      const assignBtn = q('#modal[open] [data-value="assign"]') as HTMLButtonElement | null;
+      check('… a port the device doesn’t have: the dialog says so and Assign is unavailable', /Not a port of this device: Gi1\/0\/21/.test(bad) && !!assignBtn && assignBtn.disabled, bad);
+      typeIn('assign-to', 'Gi1/0/14');
+      await tick();
+      await answerDialog('assign');
+      const ex = app.exportText();
+      check(
+        '… applied in one undo step: Gi1/0/5–14 are in VLAN 30',
+        ['5', '6', '9', '10', '11', '14'].every((n) => new RegExp(`\\{id: Gi1/0/${n}, vlans: 30\\}`).test(ex)) && /\{id: Gi1\/0\/4, vlans: 10\}/.test(ex) && /\{id: Gi1\/0\/15, vlans: 20\}/.test(ex) && md.canUndo() === 'Assign VLANs to 10 ports',
+        md.canUndo() || '',
+      );
+      md.undo();
+      await afterEdit();
+      check('… one undo: the file as it was', app.exportText() === yamlBefore);
+      // a VLAN interface: its bridge ports, read-only, grouped by mode, each a link
+      app.select('iface:core1:Vlan10');
+      await tick();
+      const bp = q('#side-body [data-derived="bridge-ports"]');
+      const bpText = bp ? (bp.textContent || '').replace(/\s+/g, ' ') : '';
+      check(
+        'a VLAN interface shows its bridge ports, read-only and grouped by mode: Trunk: Gi1/0/1, Po1 (no member list to edit)',
+        !!bp && /Bridge ports \(VLAN 10\)/.test(bpText) && /Trunk: Gi1\/0\/1, Po1/.test(bpText) && !bp.querySelector('input, select') && !!bp.closest('details') && !bp.closest('details')!.querySelector('[data-t="member-append"]'),
+        bpText,
+      );
+      const link = bp ? (bp.querySelector('button[data-goto="iface:core1:Po1"]') as HTMLElement | null) : null;
+      // highlighting both ways: the VLAN interface lights its bridge ports and their cables (Po1's members too)
+      const hl = (ref: string): boolean => Array.from(doc.querySelectorAll(`#viewport [data-ref="${ref}"]`)).some((e) => e.classList.contains('hl'));
+      check('selecting the VLAN interface highlights its bridge ports and their cables, an aggregate’s members too', hl('iface:core1:Gi1/0/1') && hl('iface:core1:Te1/1') && hl('link:up-acc1') && hl('link:lag-2') && !hl('link:routed-up'));
+      if (link) link.click();
+      await tick();
+      const rel = relatedRefs(app.session!.model, 'iface:core1:Po1');
+      check('… a bridge port is a link to it; the port highlights its VLAN interfaces', app.session!.state.selected === 'iface:core1:Po1' && rel.has('iface:core1:Vlan10') && rel.has('iface:core1:Vlan99'));
+      // the device's port list and the Objects list carry the modes
+      app.select('device:acc1');
+      click('[data-tab="details"]');
+      await tick();
+      const row = (port: string): string => {
+        const r = q(`#side-body tr[data-iface="${port}"] .mode-badge`);
+        return r ? r.textContent || '' : '';
+      };
+      check('the port list of a device shows each port’s mode in words', row('Gi1/0/1') === 'Access · VLAN 10' && row('Gi1/0/48') === 'Trunk · 10, 20, 99 (native 99)', row('Gi1/0/1') + ' / ' + row('Gi1/0/48'));
+      const olVlan = (id: string): HTMLElement | null => q(`#outline-body .ol-item[data-ref="link:${id}"] .ol-vlan`);
+      const olText = (id: string): string => (olVlan(id) || { textContent: '' }).textContent || '';
+      check(
+        'the Objects list shows what each cable’s ports carry, once when they agree, both and ⚠ when they don’t (spelled out for screen readers)',
+        olText('up-acc1').indexOf('T 10,20,99 · N 99') === 0 && /⚠/.test(olText('wrong-native')) && !!olVlan('wrong-native') && olVlan('wrong-native')!.classList.contains('mismatch') &&
+          /they disagree/.test((olVlan('wrong-native')!.querySelector('.sr-only') || { textContent: '' }).textContent || '') && !olVlan('routed-up'),
+        olText('up-acc1') + ' | ' + olText('wrong-native'),
+      );
+      // the diagram: the ports' tags, a trunk's look, the legend
+      const tags = Array.from(doc.querySelectorAll('#viewport .port-tag')).map((t) => (t.textContent || '').trim());
+      check('the diagram labels each port with its VLANs (A 10, T 10,20,99 · N 99) and draws trunks with a heavier frame', tags.indexOf('A 10') >= 0 && tags.indexOf('T 10,20,99 · N 99') >= 0 && count('.port.trunk') > 0 && count('.cable.net-mismatch') === 1, tags.slice(0, 8).join(' | '));
+      const legendItems = legendOf(app.session!.model, 'physical').sections.reduce((all: string[], x) => all.concat(x.items.concat(x.more || []).map((i) => i.label)), []);
+      check('the legend explains the port tags and the trunk look', legendItems.some((l) => /^Port VLANs: A 10 access port/.test(l)) && legendItems.some((l) => /trunk port \(several VLANs, thick frame\)/.test(l)), legendItems.filter((l) => /VLAN|trunk/i.test(l)).join(' | '));
+      // the logical view: one row per VLAN interface
+      click('[data-view-btn="logical"]');
+      await tick();
+      const rows = Array.from(doc.querySelectorAll('#viewport g.if-entry')).map((e) => e.getAttribute('data-ref') || '');
+      check('the logical view has one row per VLAN interface', ['iface:core1:Vlan10', 'iface:core1:Vlan20', 'iface:core1:Vlan99', 'iface:acc1:Vlan99', 'iface:rtr1:bvi30'].every((r) => rows.filter((x) => x === r).length === 1), rows.filter((r) => /Vlan|bvi/.test(r)).join(' | '));
+      click('[data-view-btn="physical"]');
+      await tick();
+      // both themes: the badges and the Objects list tags are readable; the example draws cleanly
+      app.select('iface:acc1:Gi1/0/48');
+      click('[data-tab="edit"]');
+      await tick();
+      const rgbaOf = (x: string): number[] | null => {
+        const m = /rgba?\(([^)]+)\)/.exec(x);
+        if (!m) return null;
+        const v = m[1].split(',').map((y) => parseFloat(y));
+        return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+      };
+      const hexOf = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      const shownBg = (el: HTMLElement): string => {
+        const layers: number[][] = [];
+        for (let e: HTMLElement | null = el; e; e = e.parentElement) {
+          const b = rgbaOf(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          if (b && b[3] > 0) layers.push(b);
+          if (b && b[3] >= 1) break;
+        }
+        let seen = [255, 255, 255];
+        for (const l of layers.reverse()) seen = seen.map((v, i) => l[i] * l[3] + v * (1 - l[3]));
+        return hexOf(seen);
+      };
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const els = [q('#side-body .mode-badge'), q('#outline-body .ol-vlan:not(.mismatch)'), q('#outline-body .ol-vlan.mismatch')].filter((x): x is HTMLElement => !!x);
+        const ratios = els.map((el) => contrast(hexOf(rgbaOf(doc.defaultView!.getComputedStyle(el).color) || [0, 0, 0]), shownBg(el)));
+        check(`${theme} theme: the mode badge and the Objects list’s VLAN tags are readable (AA)`, els.length === 3 && ratios.every((r) => r >= 4.5), ratios.map((r) => r.toFixed(2)).join(', '));
+        check(`${theme} theme: the VLAN example draws without overlaps or clipped text`, drawnProblems().length === 0, drawnProblems().slice(0, 3).join(' | '));
+      }
+      // Find: by VLAN
+      const hits = searchHits(app.session!.model, 'vlan 30');
+      check('Find by VLAN: “vlan 30” finds the ports and cables of VLAN 30', hits.indexOf('iface:acc3:Gi0/3') >= 0 && hits.indexOf('iface:rtr1:ge-0/0/1') >= 0 && hits.indexOf('link:l-lab1') >= 0, hits.join(' | '));
+      app.select(null);
+      md.markSaved();
+    }
+
+    // ------------------------------------------------ virtualization (the virtualization example)
+    {
+      app.loadExampleNamed('virtualization.yaml');
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      const afterEdit = async (): Promise<void> => {
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        await tick();
+      };
+      check(
+        'the virtualization example: valid; its one finding is the VM that HA can’t restart (passthrough)',
+        md.valid && !md.warnings.length && md.findings.map((f) => f.check).join() === 'ha-restart-portgroup',
+        md.findings.map((f) => f.message).join(' | '),
+      );
+      click('[data-view-btn="physical"]');
+      await tick();
+      const boxOf = (ref: string): DOMRect | null => {
+        const r = q(`#viewport [data-ref="${ref}"] .dev-box`);
+        return r ? r.getBoundingClientRect() : null;
+      };
+      const within = (a: DOMRect | null, b: DOMRect | null): boolean => !!a && !!b && a.left >= b.left - 0.5 && a.right <= b.right + 0.5 && a.top >= b.top - 0.5 && a.bottom <= b.bottom + 0.5;
+      check(
+        'the physical view draws each guest inside its host (a container in a VM inside the VM), with the virtual switches as bars and their port groups',
+        within(boxOf('device:web1'), boxOf('device:hv1')) && within(boxOf('device:app1'), boxOf('device:hv2')) && within(boxOf('device:metrics'), boxOf('device:k8s1')) && within(boxOf('device:web'), boxOf('device:ctr1')) &&
+          !!q('#viewport g.vbar[data-ref="vswitch:hv1:vSwitch0"]') && !!q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"]') && !!q('#viewport g.vbar[data-ref="cnet:ctr1:lan"]'),
+      );
+      check(
+        '… with the wires: a vNIC to its port group, an uplink from the host’s port, the passthrough port to its VM',
+        !!q('#viewport path.vwire[data-ref="iface:web1:eth0"][data-to="portgroup:hv1:Servers"]') && !!q('#viewport path.vwire-uplink[data-ref="iface:hv1:vmnic0"]') && !!q('#viewport path.vwire-passthrough[data-ref="iface:hv1:vmnic2"][data-to="iface:db1:eth0"]'),
+      );
+      // the Services card of a hypervisor: the checkbox on, its configuration, its guests with + VM
+      app.select('device:hv1');
+      click('[data-tab="edit"]');
+      await tick();
+      const svcBox = (id: string): HTMLInputElement | null => q(`#side-body input[data-act="netsvc"][data-svc="${id}"]`) as HTMLInputElement | null;
+      check(
+        'a server’s Services card: Hypervisor ticked with its collapsible configuration, Container engine offered; its guests listed with + VM',
+        !!svcBox('hypervisor') && svcBox('hypervisor')!.checked && !!svcBox('container_engine') && !svcBox('container_engine')!.checked && !!q('#side-body details[data-svc-card="hypervisor"]') &&
+          !!q('#side-body button[data-act="add-guest"][data-type="vm"][aria-label="Add a VM that runs on hv1"]') && /web1/.test((q('#side-body [data-derived="guests-vm"]') || { textContent: '' }).textContent || ''),
+      );
+      // + VM: a new VM on hv1, one undo step
+      click('#side-body button[data-act="add-guest"][data-type="vm"]');
+      await tick();
+      const added = app.session!.state.selected || '';
+      const newId = added.slice(7);
+      check(
+        '+ VM adds a VM that runs on hv1 (selected, in one undo step)',
+        /^device:/.test(added) && !!md.result.model && (md.result.model.index.devices.get(newId) || { host: '' }).host === 'hv1' && md.canUndo() === 'Add VM',
+        `${added} / ${md.canUndo()}`,
+      );
+      // a guest's Host is its first field: a picker offering only the hosts that can run it
+      const hostSel = q('#side-body select[data-p$=\',"host"]\']') as HTMLSelectElement | null;
+      const offered = hostSel ? Array.from(hostSel.options).map((o) => o.value).filter((v) => v) : [];
+      const firstField = q('#side-body .field select, #side-body .field input');
+      check(
+        'a VM’s first field is Host: a labelled picker offering the servers with the Hypervisor service only',
+        !!hostSel && hostSel.getAttribute('aria-label') === `Host of ${newId}` && offered.join() === 'hv1,hv2' && firstField === hostSel,
+        offered.join(),
+      );
+      md.undo();
+      await afterEdit();
+      check('… undone: the file as it was', app.exportText() === yamlBefore);
+      // disabling the Hypervisor asks first and names the guests
+      app.select('device:hv2');
+      await tick();
+      const hvBox = svcBox('hypervisor') as HTMLInputElement;
+      hvBox.click();
+      await tick(10);
+      const dlg = q('#modal[open]');
+      const dtext = dlg ? (dlg.textContent || '').replace(/\s+/g, ' ') : '';
+      check('unticking Hypervisor on a host with guests asks first and lists them', !!dlg && /Disable the Hypervisor of “hv2”\?/.test(dtext) && /app1 \(VM\)/.test(dtext) && /vr1 \(VM\)/.test(dtext) && /lab1 \(VM\)/.test(dtext), dtext.slice(0, 200));
+      await answerDialog('cancel');
+      await tick();
+      check('… Cancel keeps it', app.exportText() === yamlBefore && !!svcBox('hypervisor') && svcBox('hypervisor')!.checked);
+      // the logical view: a guest names its host; the NAT bridge is a network behind its host
+      click('[data-view-btn="logical"]');
+      await tick();
+      const subOf = (id: string): string => Array.from(doc.querySelectorAll(`#viewport .node[data-ref="device:${id}"] .dev-sub`)).map((t) => t.textContent || '').join(' ');
+      check('the logical view: a guest’s box names its host (runs on esx-01); the Docker bridge is a network of its own, marked NAT', /runs on esx-01/.test(subOf('web1')) && !!q('#viewport .node.network.cnet-net[data-ref="network:ctr1/bridge"]') && /NAT/.test((q('#viewport .node[data-ref="network:ctr1/bridge"]') || { textContent: '' }).textContent || ''), subOf('web1'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      // the Device types filter: servers by their service
+      const subs = app.typeEntries().find((e) => e.type === 'server');
+      check('the Device types filter lists VMs and containers, and the servers by service (Hypervisor, Container host)', !!subs && subs.subs.map((x) => x.label).join() === 'Hypervisor,Container host' && app.typeEntries().some((e) => e.type === 'vm') && app.typeEntries().some((e) => e.type === 'container'), subs ? subs.subs.map((x) => x.label).join() : '');
+      app.setTypeVisible(['server:hypervisor'], false);
+      await tick();
+      const hint = (q('#filter-hint-text') || { textContent: '' }).textContent || '';
+      check('… hypervisors off: their guests leave the physical view too, and the hint says why', !q('#viewport [data-ref="device:web1"] .dev-box') && /guests are not shown: their hosts are hidden/.test(hint), hint);
+      app.setTypeVisible(['server:hypervisor'], true);
+      await tick();
+      // the legend
+      const legendItems = legendOf(app.session!.model, 'physical').sections.filter((x) => x.title === 'Virtualization').reduce((all: string[], x) => all.concat(x.items.map((i) => i.label)), []);
+      check('the legend explains virtual switches, container networks, guests and wires', legendItems.length >= 5, legendItems.join(' | '));
+      // both themes: the bars’ and port groups’ text readable, the example drawn cleanly
+      const rgbaOfV = (x: string): number[] | null => {
+        const m = /rgba?\(([^)]+)\)/.exec(x);
+        if (!m) return null;
+        const v = m[1].split(',').map((y) => parseFloat(y));
+        return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+      };
+      const hexOfV = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      const paint = (el: Element, prop: 'fill' | 'stroke'): number[] => {
+        const cs = doc.defaultView!.getComputedStyle(el);
+        const c = rgbaOfV(prop === 'fill' ? cs.fill : cs.stroke) || [0, 0, 0, 0];
+        const op = parseFloat(prop === 'fill' ? cs.fillOpacity : cs.strokeOpacity);
+        return [c[0], c[1], c[2], c[3] * (isNaN(op) ? 1 : op)];
+      };
+      const canvasBg = (): number[] => {
+        for (let e: HTMLElement | null = q('#viewport') as HTMLElement | null; e; e = e.parentElement) {
+          const b = rgbaOfV(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          if (b && b[3] >= 1) return b;
+        }
+        return [255, 255, 255, 1];
+      };
+      const over = (layers: number[][]): number[] => layers.reduce((acc, l) => acc.map((v, i) => l[i] * l[3] + v * (1 - l[3])), canvasBg().slice(0, 3));
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const host = q('#viewport [data-ref="device:hv1"] .dev-box') as Element;
+        const bar = q('#viewport g.vbar[data-ref="vswitch:hv1:vSwitch0"] .vbar-box') as Element;
+        const pill = q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"] .pg-box') as Element;
+        const barBg = hexOfV(over([paint(host, 'fill'), paint(bar, 'fill')]));
+        const pillBg = hexOfV(over([paint(host, 'fill'), paint(bar, 'fill'), paint(pill, 'fill')]));
+        const ratios = [
+          contrast(hexOfV(paint(q('#viewport g.vbar[data-ref="vswitch:hv1:vSwitch0"] .vbar-title') as Element, 'fill')), barBg),
+          contrast(hexOfV(paint(q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"] .pg-name') as Element, 'fill')), pillBg),
+          contrast(hexOfV(paint(q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"] .pg-sub') as Element, 'fill')), pillBg),
+        ];
+        // the wires and the bars' outlines: graphics, 3:1 (WCAG 1.4.11)
+        const lines = [contrast(hexOfV(paint(q('#viewport path.vwire') as Element, 'stroke')), hexOfV(over([paint(host, 'fill')]))), contrast(hexOfV(paint(bar, 'stroke')), hexOfV(over([paint(host, 'fill')])))];
+        check(`${theme} theme: the virtual switches’ and port groups’ text is readable (AA), the wires and bars stand out (3:1)`, ratios.every((r) => r >= 4.5) && lines.every((r) => r >= 3), ratios.concat(lines).map((r) => r.toFixed(2)).join(', '));
+        check(`${theme} theme: the virtualization example draws without overlaps or clipped text (physical view)`, drawnProblems().length === 0, drawnProblems().slice(0, 3).join(' | '));
+        click('[data-view-btn="logical"]');
+        await tick();
+        check(`${theme} theme: … and the logical view`, drawnProblems().length === 0, drawnProblems().slice(0, 3).join(' | '));
+        click('[data-view-btn="physical"]');
+        await tick();
+      }
+      // Find: guests by their host and port group
+      const hits = searchHits(app.session!.model, 'on hv1');
+      check('Find: “on hv1” finds the guests that run on it', ['device:web1', 'device:db1', 'device:k8s1'].every((r) => hits.indexOf(r) >= 0), hits.join(' | '));
+      app.select(null);
+      md.markSaved();
+    }
+
+    // ------------------------------------------------ input helpers in the Edit tab
+    {
+      app.loadExampleNamed('addressing.yaml');
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      app.select('iface:core:ge-0/0/9');
+      click('[data-tab="edit"]');
+      await tick();
+      const card = (): HTMLElement | null => q('#side-body details[open][data-card*="ge-0/0/9"]') || q('#side-body details[open]');
+      const chip = (label: string): HTMLButtonElement | null => (Array.from(doc.querySelectorAll('#side-body .helpers button')) as HTMLButtonElement[]).find((b) => b.getAttribute('aria-label') === label) || null;
+      const mtu = chip('Set the MTU of core ge-0/0/9 to 1500');
+      check(
+        'MTU helpers sit right under the field: 1500 and 9000 (jumbo), each a button with an accessible name, in a labelled group',
+        !!card() && !!mtu && !!chip('Set the MTU of core ge-0/0/9 to 9000 (jumbo)') && (mtu.closest('.helpers') as HTMLElement).getAttribute('aria-label') === 'Suggestions for the MTU of core ge-0/0/9' && (mtu.closest('.field') as HTMLElement).querySelector('input[data-p*="mtu"]') !== null,
+        Array.from(doc.querySelectorAll('#side-body .helpers button')).map((b) => b.getAttribute('aria-label')).join(' | '),
+      );
+      mtu!.focus();
+      mtu!.click();
+      await tick();
+      check('a chip writes its value: one undo step, validated like typing', /\{id: ge-0\/0\/9, mac: 00:1c:73:aa:00:09, mtu: 1500, description: Spare\}|mtu: 1500/.test(app.exportText()) && md.canUndo() === 'Edit mtu' && md.valid);
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      // MAC: Generate on an interface without one
+      app.select('iface:core:ge-0/0/4');
+      await tick();
+      const gen = q('#side-body [data-act="gen-mac"][aria-label="Generate MAC address for core ge-0/0/4"]') as HTMLButtonElement | null;
+      check('a MAC field has Generate, named for its interface', !!gen && gen.textContent === 'Generate');
+      gen!.click();
+      await tick();
+      const mac = (/ge-0\/0\/4[^\n]*mac: ([0-9a-f:]+)/.exec(app.exportText()) || ['', ''])[1];
+      const b0 = parseInt(mac.slice(0, 2), 16);
+      check('Generate writes a locally administered unicast MAC in the model’s style, unique, in one undo step', /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac) && (b0 & 3) === 2 && md.canUndo() === 'Edit mac' && !md.findings.some((f) => f.check === 'duplicate-mac'), mac);
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('… undone: the file as it was', app.exportText() === yamlBefore);
+      // VRF: a combobox of the VRFs in use, from the keyboard
+      app.select('iface:core:ge-0/0/3');
+      await tick();
+      const vrf = q('#side-body input[role="combobox"][aria-label="VRF of core ge-0/0/3"]') as HTMLInputElement | null;
+      const list = (): HTMLElement | null => (vrf ? doc.getElementById(vrf.getAttribute('aria-controls') || '') : null);
+      check('the VRF field is an ARIA combobox (role, aria-autocomplete, aria-expanded, aria-controls a listbox), closed at first', !!vrf && vrf.getAttribute('aria-autocomplete') === 'list' && vrf.getAttribute('aria-expanded') === 'false' && !!list() && list()!.getAttribute('role') === 'listbox' && list()!.hidden);
+      vrf!.focus();
+      vrf!.value = 'c';
+      vrf!.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const opts = Array.from(list()!.querySelectorAll('[role="option"]')).map((o) => o.textContent || '');
+      check('typing opens the list: the VRFs whose name contains it, each with how often it is used', vrf!.getAttribute('aria-expanded') === 'true' && !list()!.hidden && opts.length === 1 && /^CORP\s*2 uses$/.test(opts[0]), opts.join(' | '));
+      vrf!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const act = doc.getElementById(vrf!.getAttribute('aria-activedescendant') || '');
+      check('↓ moves to an option (aria-activedescendant, aria-selected)', !!act && act.getAttribute('aria-selected') === 'true' && act.getAttribute('data-value') === 'CORP');
+      vrf!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      check('Enter picks it: the VRF is written (one undo step)', /\{id: ge-0\/0\/3, ip: \[10\.20\.0\.1\/24, 10\.20\.1\.1\/24\], vrf: CORP/.test(app.exportText()) && md.canUndo() === 'Edit vrf');
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      // a name that differs only in case: flagged
+      const vrf2 = q('#side-body input[role="combobox"][aria-label="VRF of core ge-0/0/3"]') as HTMLInputElement;
+      vrf2.focus();
+      vrf2.value = 'corp';
+      vrf2.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const note = (vrf2.closest('.field') as HTMLElement).querySelector('.combo-note') as HTMLElement;
+      check('a VRF name differing only in case from one in use is flagged as a probable typo (live)', !note.hidden && /“corp” differs from “CORP” only in case: probably a typo/.test(note.textContent || '') && note.getAttribute('aria-live') === 'polite');
+      vrf2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      const list2 = doc.getElementById(vrf2.getAttribute('aria-controls') || '') as HTMLElement | null;
+      check('Esc closes the list and keeps the selection', !!list2 && list2.hidden && vrf2.getAttribute('aria-expanded') === 'false' && app.session!.state.selected === 'iface:core:ge-0/0/3');
+      vrf2.value = 'MGMT';
+      vrf2.blur();
+      // a new interface gets a placeholder id; a chip renames it after the device's pattern
+      app.select('device:dist');
+      await tick();
+      click('#side-body [data-act="add-iface"]');
+      await tick();
+      const named = chip('Set the name of dist eth0 to xe-4');
+      check('a new port can be named after the device’s other ports with one click (xe-4 after xe-3)', !!named, Array.from(doc.querySelectorAll('#side-body .helpers button')).map((b) => b.getAttribute('aria-label')).join(' | '));
+      if (named) named.click();
+      await tick();
+      check('… a rename: one undo step', /id: xe-4|- xe-4/.test(app.exportText()) && md.canUndo() === 'Rename interface');
+      md.undo();
+      if (named) md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      // both themes: the chips are readable
+      app.select('iface:core:ge-0/0/9');
+      await tick();
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const c = q('#side-body .helpers button') as HTMLElement;
+        const cs = doc.defaultView!.getComputedStyle(c);
+        const rgb = (s: string): number[] => ((/rgba?\(([^)]+)\)/.exec(s) || ['', '0,0,0'])[1].split(',').map((x) => parseFloat(x)));
+        let bgEl: HTMLElement | null = c;
+        let bg = rgb(cs.backgroundColor);
+        while (bgEl && (rgb(doc.defaultView!.getComputedStyle(bgEl).backgroundColor)[3] === 0 || doc.defaultView!.getComputedStyle(bgEl).backgroundColor === 'transparent')) {
+          bgEl = bgEl.parentElement;
+          if (bgEl) bg = rgb(doc.defaultView!.getComputedStyle(bgEl).backgroundColor);
+        }
+        const hex = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+        const ratio = contrast(hex(rgb(cs.color)), hex(bg));
+        check(`${theme} theme: the helper chips are readable (AA) and focusable buttons`, ratio >= 4.5 && c.tagName === 'BUTTON', ratio.toFixed(2));
+      }
+      check('the palette has the main helpers: Generate a MAC address (unavailable here: it has one, and says so), MTU 1500 for the selected interface', !!app.command('helper.mac') && /It has a MAC address already/.test(app.command('helper.mac')!.state(app).reason || '') && !!app.command('helper.mtu') && app.command('helper.mtu')!.state(app).enabled);
+      app.runCommand('helper.mtu');
+      await tick();
+      check('… run from the palette: one undo step', md.canUndo() === 'Edit mtu' && /mtu: 1500/.test(app.exportText()));
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      app.select(null);
+      md.markSaved();
+    }
+
+    // ------------------------------------------------ tool windows: Analyze and Simulate, no side tabs, no scenarios
+    {
+      app.loadExampleNamed('enterprise-wan.yaml');
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
+      check(
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…; Simulate holds Start simulation… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof' && menuIds('simulate-menu').join(' ') === 'sim.start sim.exit',
+        menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
+      );
+      check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
+      // scenarios, X and the step keys are gone
+      app.select('link:l-hq-isp1');
+      (q('#canvas') as unknown as HTMLElement).focus();
+      for (const key of ['x', '[', ']']) doc.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      await tick();
+      check('X, [ and ] do nothing: there is no way to fail objects outside a simulation, and no scenarios', !app.simulationOn() && (q('#mode-banner') as HTMLElement).hidden && !app.commands.some((c) => /^sim\.(add|prev|next|save|templates|traffic)/.test(c.id)) && app.exportText() === yamlBefore);
+      // the Single points of failure window
+      click('#analyze-btn');
+      (q('#btn-spof') as HTMLElement).click();
+      await tick();
+      const win = q('#toolwin') as HTMLElement;
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#toolwin .spof-table tbody tr')) as HTMLElement[];
+      check(
+        'Analyze → Single points of failure… opens a tool window: role dialog without aria-modal, labelled by its title, with a close button; the filter has the focus; the diagram stays usable',
+        app.toolWindow() === 'spof' && win.getAttribute('role') === 'dialog' && !win.hasAttribute('aria-modal') && win.getAttribute('aria-labelledby') === 'tw-title' && q('#tw-title')!.textContent === 'Single points of failure' && !!q('#toolwin .tw-close[aria-label]') && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open,
+      );
+      const heads = Array.from(doc.querySelectorAll('#toolwin .spof-table thead th')).map((h) => (h.textContent || '').replace(/[▲▼]/g, '').trim());
+      check(
+        'what counts as a single point of failure is explained; the table: element, type, cuts off, relations down, impact (most impact first), Show in diagram',
+        /cuts devices off from the rest of the physical network/.test(win.textContent || '') && heads.slice(0, 5).join('|') === 'Element|Type|Cuts off|Relations down|Impact' && rows().length > 5 && q('#toolwin [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')),
+        heads.join('|'),
+      );
+      const impacts = rows().map((r) => parseInt((r.querySelector('td.num') as HTMLElement).textContent || '0', 10));
+      check('most impact first', impacts.every((v, i) => i === 0 || impacts[i - 1] >= v), impacts.join(','));
+      (q('#toolwin [data-spof-sort="element"]') as HTMLElement).click();
+      await tick();
+      const names = rows().map((r) => (r.firstElementChild as HTMLElement).textContent || '');
+      check('a header sorts (aria-sort), and keeps the focus', q('#toolwin [data-spof-sort="element"]')!.closest('th')!.getAttribute('aria-sort') === 'ascending' && names.join('\n') === names.slice().sort((x, y) => (x.toLowerCase() < y.toLowerCase() ? -1 : x.toLowerCase() > y.toLowerCase() ? 1 : 0)).join('\n') && doc.activeElement === q('#toolwin [data-spof-sort="element"]'));
+      const filter = q('#spof-filter') as HTMLInputElement;
+      filter.focus();
+      filter.value = 'hq-fw';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      check('the filter narrows the rows and says how many are shown; the focus stays in it', rows().length >= 1 && rows().length < impacts.length && rows().every((r) => /hq-fw/.test(r.textContent || '')) && / of \d+ single points of failure shown/.test(q('#spof-status')!.textContent || '') && doc.activeElement === filter);
+      (q('#toolwin tr[data-spof="device:hq-fw"] [data-spof-show]') as HTMLElement).click();
+      await tick();
+      check('Show in diagram selects it in the diagram; the window stays', app.session!.state.selected === 'device:hq-fw' && app.toolWindow() === 'spof');
+      filter.value = '';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const csv = spofCsv(spofRows(app.session!.model, singlePointsOfFailure(app.session!.model)));
+      check('the table as CSV: a header and a line per row', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,impact\n/.test(csv) && csv.trim().split('\n').length === impacts.length + 1);
+      // F6 / Shift+F6: the focus region by region: the left panel, the diagram, the right panel, the tool window
+      (q('#canvas') as unknown as HTMLElement).focus();
+      const regionOf = (): string => (['outline', 'canvas-wrap', 'side', 'sim-dock', 'toolwin'].find((id) => (q('#' + id) as HTMLElement).contains(doc.activeElement)) || 'none');
+      const f6 = (shift = false): string => {
+        doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', shiftKey: shift, bubbles: true, cancelable: true }));
+        return regionOf();
+      };
+      const seq = [f6(), f6(), f6(), f6()];
+      const back = f6(true);
+      f6();
+      f6();
+      f6();
+      const inWin = win.contains(doc.activeElement);
+      f6();
+      check('F6 moves the keyboard focus region by region (the right panel, the tool window, the left panel, the diagram), Shift+F6 back; into the window where its focus was', seq.join() === 'side,toolwin,outline,canvas-wrap' && back === 'outline' && inWin && regionOf() === 'outline', seq.join() + ' / ' + back);
+      (q('#canvas') as unknown as HTMLElement).focus();
+      // collapse, dock, move: remembered
+      (q('#toolwin .tw-collapse') as HTMLElement).click();
+      await tick();
+      check('Collapse folds it to its title bar (aria-expanded false); Expand opens it again', (q('#tw-body') as HTMLElement).hidden && q('#toolwin .tw-collapse')!.getAttribute('aria-expanded') === 'false');
+      (q('#toolwin .tw-collapse') as HTMLElement).click();
+      await tick();
+      const g0 = app.windows()!.geometry()!;
+      (q('#toolwin .tw-move') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true }));
+      (q('#toolwin .tw-grip') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const g1 = app.windows()!.geometry()!;
+      check('the move handle and the resize grip work with the arrow keys (Shift: further)', g1.x === g0.x - 64 && g1.h === g0.h + 16, `${g0.x},${g0.h} → ${g1.x},${g1.h}`);
+      // one at a time: Trace path replaces it; reopening remembers its place
+      app.openTrace();
+      await tick();
+      check('opening another window replaces it (one at a time)', app.toolWindow() === 'trace' && doc.querySelectorAll('#toolwin').length === 1);
+      app.openSpof();
+      await tick();
+      const g2 = app.windows()!.geometry()!;
+      check('… and the window opens again where it was left, at its size (local storage)', g2.x === g1.x && g2.h === g1.h && g2.w === g1.w);
+      (q('#toolwin .tw-dock') as HTMLElement).click();
+      await tick();
+      const r = win.getBoundingClientRect();
+      const canvasR = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+      check('Dock: a full-width panel at the bottom, under the diagram (it takes room, it covers nothing); the page doesn’t scroll', doc.body.classList.contains('tw-docked') && Math.abs(r.width - doc.documentElement.clientWidth) < 2 && r.top >= canvasR.bottom - 1 && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1 && q('#toolwin .tw-dock')!.getAttribute('aria-pressed') === 'true');
+      (q('#toolwin .tw-dock') as HTMLElement).click();
+      await tick();
+      // Esc closes it; the focus goes back
+      (q('#spof-filter') as HTMLElement).focus();
+      (q('#spof-filter') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc closes the window; the focus goes back to the main window (not lost on the page)', !app.toolWindowOpen() && win.hidden && doc.activeElement !== doc.body && !win.contains(doc.activeElement));
+      check('nothing of this changes the model or adds an undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // both themes
+      for (const theme of ['light', 'dark'] as const) {
+        app.theme.set(theme);
+        app.openSpof();
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(win);
+        const th = doc.defaultView!.getComputedStyle(q('#toolwin .spof-table th') as Element);
+        check(`${theme} theme: the window has the theme’s panel colours and a border`, cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && th.color !== cs.backgroundColor && cs.borderTopStyle !== 'none');
+      }
+      app.closeToolWindow();
+      app.theme.set('dark');
+      app.select(null);
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ the protocol simulation (protocol-simulation.yaml), in both themes
+    for (const theme of ['dark', 'light']) {
+      app.theme.set(theme as 'light' | 'dark');
+      try {
+        doc.defaultView!.sessionStorage.removeItem('netatlas.sim.hidden');
+        doc.defaultView!.sessionStorage.removeItem('netatlas.sim.params');
+      } catch (e) {
+        /* no storage */
+      }
+      app.loadExampleNamed('protocol-simulation.yaml');
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const undoBefore = (app.mdoc as ModelDoc).canUndo();
+      const startBtn = q('#btn-sim-start') as HTMLButtonElement;
+      const exitBtn = q('#btn-sim-exit') as HTMLButtonElement;
+      const cmd = (id: string): { enabled: boolean; reason?: string } => app.commands.find((c) => c.id === id)!.state(app);
+      check(`${theme}: with a model and no simulation, Start simulation… is available and Exit simulation is not (menu and palette agree)`, !startBtn.disabled && exitBtn.disabled && cmd('sim.start').enabled && !cmd('sim.exit').enabled);
+      // the previous tab and selection, to come back to after Exit
+      app.select('device:core2');
+      click('[data-tab="details"]');
+      await tick();
+      click('#simulate-btn');
+      startBtn.click();
+      await tick();
+      // the start dialog: the protocols first and open, the layers' sections collapsed below; Start and Cancel
+      const groups = Array.from(doc.querySelectorAll('#modal .pp-group .pp-gname')).map((g) => g.textContent || '');
+      const heads = Array.from(doc.querySelectorAll('#modal .psec-toggle')).map((b) => `${(b.textContent || '').replace('▸', '')}|${b.getAttribute('aria-expanded')}`);
+      const bodyKids = Array.from((q('#modal .modal-body') as HTMLElement).children).map((c) => c.className.split(' ')[0]);
+      check(
+        `${theme}: Start simulation… opens its dialog: the protocols first, open, grouped by layer with their counts, every one checked, the keyboard on the first; below, Layer 1 – Physical (8) … Layer 4 – Transport (8), collapsed; Cancel and Start`,
+        bodyKids.indexOf('pp') >= 0 && bodyKids.indexOf('pp') < bodyKids.indexOf('psecs') && groups[0] === 'Layer 2 (4 of 4)' && groups.indexOf('Multicast (3 of 3)') > 0 && Array.from(doc.querySelectorAll('#modal input[data-sim-proto]')).every((b) => (b as HTMLInputElement).checked) &&
+          doc.activeElement === q('#sim-pd-protos-p-arp') && /^ARP\d+ devices$/.test(((q('#sim-pd-protos-p-arp') as HTMLElement).closest('label') as HTMLElement).textContent || '') &&
+          heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (7)|false Layer 3 – Network (8)|false Layer 4 – Transport (8)|false' && (q('#sim-pd-l1') as HTMLElement).hidden && !!q('#modal [data-value="start"].primary') && !!q('#modal [data-value="cancel"]'),
+        `${groups.join(',')} | ${heads.join(' ')} | ${bodyKids.join(',')}`,
+      );
+      check(`${theme}: the dialog has the theme’s colours and fits the window; with the parameters collapsed nothing in it scrolls but the protocol list`, (() => {
+        const body = q('#modal .modal-body') as HTMLElement;
+        return doc.defaultView!.getComputedStyle(q('#modal')!).backgroundColor !== 'rgba(0, 0, 0, 0)' && (q('#modal') as HTMLElement).getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && body.scrollHeight <= body.clientHeight + 1;
+      })());
+      // Select all and Clear, for the list and for a group
+      click('#sim-pd-protos-none');
+      const none = Array.from(doc.querySelectorAll('#modal input[data-sim-proto]')).every((b) => !(b as HTMLInputElement).checked) && q('#modal .pp-count')!.textContent === '(0 of 18)';
+      click('#sim-pd-protos-all');
+      click('#modal [data-group-none="Traffic"]');
+      check(`${theme}: Clear unticks every protocol, Select all ticks them again; a group’s Clear only its own, its count follows`, none && q('#modal .pp-group[data-group="Traffic"] .pp-gcount')!.textContent === '(0 of 4)' && q('#modal .pp-count')!.textContent === '(14 of 18)');
+      // Senders: after the protocols, open, with core2 (selected in the diagram) preselected; the parameters below
+      {
+        const kids = Array.from((q('#modal .modal-body') as HTMLElement).children).map((c) => c.className.split(' ')[0]);
+        const tg = q('#sim-pd-senders-toggle') as HTMLElement;
+        check(
+          `${theme}: Senders between the protocols and the parameters, open, its summary as its name; core2, selected in the diagram, preselected; grouped by type with counts, icons and L2 / L3 badges`,
+          kids.indexOf('pp') < kids.indexOf('snd') && kids.indexOf('snd') < kids.indexOf('psecs') && tg.getAttribute('aria-expanded') === 'true' && (tg.textContent || '').replace('▸', '') === 'Senders (1 of 22): core2' &&
+            Array.from(doc.querySelectorAll('#sim-pd-senders .snd-fold')).some((b) => /^▸Switches \(1 of \d+\)$/.test(b.textContent || '')) && !!q('#sim-pd-senders .snd-item svg.snd-icon') && !!q('#sim-pd-senders .snd-badge'),
+          (tg.textContent || '') + ' ' + kids.join(','),
+        );
+        click('#sim-pd-senders-all');
+      }
+      (doc.querySelector('#modal [data-value="start"]') as HTMLElement).click();
+      await tick();
+      const ctl = app.simController()!;
+      ctl.setPlaying(false);
+      // (the clock ran for a moment before the pause: the start is read from the log)
+      const fresh = ctl.sim.events().some((e) => e.t === 0 && /fresh start: empty ARP, neighbour and MAC tables, every adjacency down/.test(e.detail)) && !ctl.sim.events().some((e) => e.t === 0 && (e.kind === 'table' || (e.kind === 'state' && e.protocol === 'ospf')));
+      await tick(50);
+      check(
+        `${theme}: Start starts it in the simulation layout; now Start is unavailable (“A simulation is already running”) and Exit is available`,
+        app.simulationOn() && doc.body.getAttribute('data-sim') === 'on' && startBtn.disabled && /A simulation is already running/.test(startBtn.title) && !exitBtn.disabled && !cmd('sim.start').enabled && cmd('sim.start').reason === 'A simulation is already running' && cmd('sim.exit').enabled,
+        startBtn.title,
+      );
+      const vis = (sel: string): boolean => {
+        const e = q(sel) as HTMLElement | null;
+        return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0;
+      };
+      check(
+        `${theme}: the layout: Simulation setup in place of the Objects list, Actions in place of the Inspector’s tabs, the simulation panel under the diagram (no floating window); each region named by its heading`,
+        vis('#sim-setup') && !vis('#outline-body') && vis('#sim-actions') && !vis('#side .tabs') && !vis('#side-body') && vis('#sim-dock') && !app.toolWindowOpen() &&
+          q('#outline')!.getAttribute('aria-labelledby') === 'sim-setup-title' && q('#side')!.getAttribute('aria-labelledby') === 'sim-actions-title' && q('#sim-dock')!.getAttribute('aria-labelledby') === 'sim-dock-title' &&
+          (q('#sim-dock') as HTMLElement).getBoundingClientRect().top >= (q('#canvas-wrap') as HTMLElement).getBoundingClientRect().bottom - 1 && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+      );
+      check(
+        `${theme}: the setup carries the dialog’s choice: the protocols open at the top (Traffic cleared), the parameters below with every layer collapsed`,
+        q('#sim-setup .pp-count')!.textContent === '(14 of 18)' && !ctl.shown.has('icmp') && ctl.shown.has('arp') && Array.from(doc.querySelectorAll('#sim-setup .psec-toggle')).every((b) => b.getAttribute('aria-expanded') === 'false') &&
+          (q('#sim-setup .pp') as HTMLElement).compareDocumentPosition(q('#sim-setup .psecs') as HTMLElement) === Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      click('#sim-setup-protos-all');
+      const sim = ctl.sim;
+      check(`${theme}: a fresh start at t = 0: every ARP and MAC table empty, no adjacency up`, fresh);
+      check(`${theme}: the setup has Senders after the protocols, collapsed, with its summary; every device a sender: no badges`, q('#sim-setup-senders-toggle')!.getAttribute('aria-expanded') === 'false' && /^▸Senders \(all 22\)$/.test(q('#sim-setup-senders-toggle')!.textContent || '') && !q('#canvas .sim-sender'));
+      check(
+        `${theme}: the simulation panel: Pause (primary), Step, the state, the speed 0.1×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
+        q('#sim-play')!.classList.contains('primary') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.1 0.25 0.5 1 2 4' && (q('#sim-pace') as HTMLSelectElement).value === 'readable' && (q('#sim-skip') as HTMLInputElement).checked &&
+          q('#sim-pace-text')!.textContent === 'Readable · 3 s per hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
+      );
+      // watch ARP resolve and OSPF reach Full
+      ctl.runTo(20000);
+      // (the panel takes its measured height on the next frames, as the rows are drawn)
+      ctl.refresh(true);
+      await tick(80);
+      {
+        // the panel: its header and three rows of each table by default, which is also its minimum
+        const b = app.dockBounds();
+        const dockH = (q('#sim-dock') as HTMLElement).getBoundingClientRect().height;
+        check(`${theme}: the simulation panel is by default its header and three rows of the status and the log (its minimum), lower than the diagram`, b.dflt === b.min && Math.abs(dockH - b.min) < 1.5 && dockH < (q('#canvas-wrap') as HTMLElement).getBoundingClientRect().height, `${dockH} ${JSON.stringify(b)}`);
+        // parallel: once the links are up, ARP, OSPF and PIM start together (within a few ms), and what waits says why
+        const ev = ctl.sim.events();
+        const firstOf = (f: (e: (typeof ev)[number]) => boolean): number => (ev.find(f) || { t: Infinity }).t;
+        const starts = [firstOf((e) => e.kind === 'message' && e.what === 'ARP Request'), firstOf((e) => e.kind === 'message' && e.protocol === 'ospf' && e.what === 'Hello'), firstOf((e) => e.kind === 'message' && e.protocol === 'pim' && e.what === 'Hello')];
+        check(`${theme}: independent exchanges run in parallel: ARP, OSPF and PIM Hellos start together once the links are up; waits are logged with their reason`, Math.max(...starts) - Math.min(...starts) < 5 && Math.min(...starts) >= 2000 && ev.some((e) => e.kind === 'wait' && / waiting for ARP /.test(e.detail)), starts.join(' '));
+      }
+      await tick();
+      check(`${theme}: ARP resolves before the first unicast packets (requests and replies in the log; entries in the tables)`, sim.events().some((e) => e.protocol === 'arp' && /ARP Reply/.test(e.detail)) && sim.arpTable('core1').length > 0 && sim.arpTable('r1').length > 0);
+      check(`${theme}: OSPF reaches Full on the ring`, sim.status().some((s) => s.protocol === 'ospf' && s.name.indexOf('ospf-r1-r3: r1 → r3') === 0 && s.state === 'Full'));
+      // the pacing on screen: a little real time, every hop on its way, the clock never past one
+      ctl.advance(400);
+      ctl.refresh(true);
+      const onWay = ctl.pacer.items.filter((it) => it.drawn && !it.f.hidden && it.f.view === 'physical' && ctl.pacer.state(it).phase === 'moving');
+      check(`${theme}: labelled dots in the diagram, never more than the limit; no hop on screen has been passed by the simulated clock`, doc.querySelectorAll('#canvas .layer-sim .sim-dot').length <= 48 && onWay.every((it) => sim.now < (it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat)), String(onWay.length));
+      // the device menu and the Actions panel offer the same
+      const r = (q('#canvas .node[data-ref="device:core1"]') as Element).getBoundingClientRect();
+      app.select('device:core1');
+      ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
+      await tick();
+      const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
+      check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP / MLD groups, querier election, multicast routes and snooping table), Send network packets…, Stop as sender, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send network packets…|Show IGMP / MLD groups|Show querier election|Show multicast routes|Show snooping table|Stop as sender|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
+      const acts = Array.from(doc.querySelectorAll('#sim-act-net .sim-ne-h button > span:last-child')).map((b) => b.textContent || '');
+      const net = q('#sim-act-net') as HTMLElement;
+      check(`${theme}: the Actions panel's Network events: five actions in order (Send network packets, Join multicast group, Leave multicast group, Start multicast stream, Interface actions), no object list and no table viewer; Active events below them`, acts.join('|') === 'Send network packets|Join multicast group|Leave multicast group|Start multicast stream|Interface actions' && !q('#sim-obj') && !/Show (ARP|MAC)/.test(net.textContent || '') && !!(net.compareDocumentPosition(q('#sim-act-events') as Node) & Node.DOCUMENT_POSITION_FOLLOWING), acts.join('|'));
+      (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
+      ctl.runTo(21000);
+      await tick();
+      const stTab = (): string => (q('#sd-sttabs [aria-pressed="true"]') || { textContent: '' }).textContent || '';
+      const st = q('#sim-status-table') as HTMLElement;
+      check(`${theme}: Show ARP table: the simulation panel’s status side shows core1’s ARP table (its tab pressed), with column headers, the timers in effect and the timer scale; no floating table`,
+        stTab() === 'ARP' && Array.from(st.querySelectorAll('thead th')).slice(0, 8).map((h) => h.textContent).join('|') === 'IP address|MAC address|Interface|VLAN|Type|State|Age|Expires in' && /ARP timeout5 min \(device\)/.test(st.textContent || '') && /Timer scalereal time/.test(st.textContent || '') && st.querySelectorAll('tbody tr[data-ip]').length > 0 && /\(simulated\)/.test(st.textContent || '') && !doc.querySelector('.sim-table-panel'));
+      ctl.showTable('mac', 'acc-sw');
+      await tick();
+      check(`${theme}: Show MAC table of acc-sw: acc-sw is selected, its MAC table shown: MAC, VLAN, port, type, age, expires in; the aging time with its default`, app.session!.state.selected === 'device:acc-sw' && stTab() === 'MAC' && Array.from(st.querySelectorAll('thead th')).map((h) => h.textContent).join('|') === 'MAC address|VLAN|Port|Type|Age|Expires in' && /MAC aging time2 min \(device\)/.test(st.textContent || '') && st.querySelectorAll('tbody tr[data-mac]').length > 0);
+      // the protocols shown change during the simulation without a restart
+      const tBefore = sim.now;
+      const arpBox = q('#sim-setup input[data-sim-proto="arp"]') as HTMLInputElement;
+      arpBox.click();
+      await tick();
+      check(`${theme}: hiding ARP during the simulation: no restart, the same time, the table stays and keeps its entries; the log says hidden events still happen`, sim.now === tBefore && stTab() === 'MAC' && sim.arpTable('core1').length > 0 && /of hidden protocols not listed \(they still run\)/.test(q('#sim-log-note')!.textContent || '') && !ctl.shown.has('arp'));
+      click('#sim-setup-protos-all');
+      await tick();
+      check(`${theme}: Select all shows every protocol again`, ctl.protocolEntries().every((e) => ctl.shown.has(e.id)) && arpBox.checked);
+      ctl.showStatus();
+      // fail the ring link from the diagram's menu: r3 notices at once, r1 when the dead interval expires; the traffic moves via r2
+      const cab = (q('#canvas g.cable[data-ref="link:l-carrier-r3"]') as Element).getBoundingClientRect();
+      ctl.diagramClick('link:l-carrier-r3', cab.left + cab.width / 2, cab.top + cab.height / 2);
+      await tick();
+      check(`${theme}: clicking a cable in the simulation offers Fail link and Highlight broadcast domain (no flapping: an interface's action)`, Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent).join('|') === 'Fail link|Highlight broadcast domain');
+      (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
+      await tick();
+      const tf = sim.now;
+      ctl.runTo(tf + 45000);
+      await tick();
+      const dead = sim.events().find((e) => e.t > tf && e.device === 'r1' && /dead interval expired/.test(e.detail));
+      const rerouted = sim.events().some((e) => e.t > tf && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail));
+      check(`${theme}: failed: the dead interval expires at r1, and the users’ traffic is rerouted via r2; the Actions panel lists it with Restore`, !!dead && rerouted && (q('#sim-events li[data-ref="link:l-carrier-r3"] button') || { textContent: '' }).textContent === 'Restore', `dead ${!!dead} rerouted ${rerouted} down ${sim.downRefs().join(',')} t ${tf}→${sim.now}: ${q('#sim-failed')!.textContent}`);
+      check(`${theme}: the diagram marks the failed cable (down); the banner says so`, !!q('#canvas [data-ref="link:l-carrier-r3"].sim-down') && /1 network event/.test(q('#sim-text')!.textContent || ''), q('#sim-text')!.textContent || '');
+      // the table timers faster: entries age; the MAC entries are relearned on the new path after another failure
+      (q('#sim-scale') as HTMLSelectElement).value = '60';
+      (q('#sim-scale') as HTMLSelectElement).dispatchEvent(new Event('change', { bubbles: true }));
+      ctl.showTable('mac', 'acc-sw');
+      ctl.runTo(sim.now + 30000);
+      await tick();
+      check(`${theme}: at a timer scale of 1:60 entries age out or are refreshed (core1’s 300 s timeout is 5 s here), and the tables say so`, sim.events().some((e) => e.device === 'core1' && e.kind === 'table' && /refreshing|expired/.test(e.detail)) && /1:60/.test(st.textContent || ''));
+      const coreMac = sim.engine.net.macs.get('core1:Vlan10')!.mac;
+      const before = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
+      ctl.failLink('link:l-acc-core1');
+      ctl.runTo(sim.now + 15000);
+      await tick();
+      const after = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
+      check(`${theme}: several events at once (a second failed cable); acc-sw learns core1’s MAC on the new path`, sim.netEvents().filter((e) => e.kind === 'fail').length === 2 && !!after && after.port === 'up2' && /up2/.test(st.textContent || ''), `${before && before.port} → ${after && after.port}`);
+      ctl.restoreLink('link:l-acc-core1');
+      ctl.restoreLink('link:l-carrier-r3');
+      ctl.runTo(sim.now + 60000);
+      const notFull = sim.status().filter((s) => s.protocol === 'ospf' && s.state !== 'Full' && !/ospf-cores/.test(s.name)).map((s) => s.name + ' ' + s.state);
+      check(`${theme}: Restore link: the adjacencies form again with their full handshake`, !notFull.length, notFull.join('; '));
+      // Interface actions: the device and interface chosen in the form (no selection needed), Start flapping there; Power off from the diagram
+      const rxEnd = app.session!.model.index.links.get('l-rx')!.a;
+      click('#sim-ne-iface-toggle');
+      const setv = (id: string, v: string): void => {
+        const e = q('#' + id) as HTMLSelectElement;
+        e.value = v;
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setv('sim-i-dev', rxEnd.device);
+      setv('sim-i-if', rxEnd.iface as string);
+      click('#sim-i-flap');
+      ctl.powerOff('br');
+      await tick();
+      const flapRow = q('#sim-events li[data-kind="flap"]') as HTMLElement | null;
+      const evRows = Array.from(doc.querySelectorAll('#sim-events li[data-ref]')).map((li) => li.getAttribute('data-ref') + '|' + ((li.querySelector('button') || { textContent: '' }).textContent || ''));
+      check(`${theme}: Interface actions: Start flapping for the interface chosen in the form: an event in progress with Stop flapping; Power off from the diagram: listed with Power on; the device is marked down`, !!flapRow && flapRow.getAttribute('data-status') === 'running' && !!flapRow.querySelector('button[data-op="stop"]') && evRows.indexOf('device:br|Power on') >= 0 && !!q('#canvas [data-ref="device:br"].sim-down') && /Active events \(\d\)/.test(q('#sim-act-events-h')!.textContent || ''), evRows.join(', '));
+      (q('#sim-events li[data-ref="device:br"] button') as HTMLElement).click();
+      ctl.stopFlap(`iface:${rxEnd.device}:${rxEnd.iface}`);
+      ctl.runTo(sim.now + 70000);
+      await tick();
+      check(`${theme}: Power on: br boots for its boot time and its sessions start afresh; the flapping stopped is listed as stopped`, sim.events().some((e) => e.device === 'br' && /br has booted/.test(e.detail)) && !sim.netEvents().length && sim.actions().some((v) => v.kind === 'flap' && v.status === 'stopped'));
+      // the setup's parameters: a change applies at once, is logged, and its collapsed layer says so
+      (q('#sim-pw-l3-btn') as HTMLElement).click();
+      const ttl = q('#sim-pw-ttl') as HTMLInputElement;
+      ttl.value = '32';
+      ttl.dispatchEvent(new Event('input', { bubbles: true }));
+      ttl.dispatchEvent(new Event('change', { bubbles: true }));
+      (q('#sim-pw-l3-btn') as HTMLElement).click();
+      await tick();
+      check(`${theme}: a parameter changed in the setup applies at once, is written to the event log, and its layer says “· 1 modified” while collapsed`, sim.params.simValue('ttl') === 32 && sim.events().some((e) => e.detail === 'Parameter changed: Default TTL / hop limit 64 → 32 (simulation)') && !!q('[data-param-row~="ttl"].modified') && q('#sim-pw-l3-btn')!.textContent === '▸Layer 3 – Network (8) · 1 modified' && q('#sim-pw-l3-btn')!.getAttribute('aria-expanded') === 'false');
+      (q('#sim-pw-reset-all') as HTMLElement).click();
+      await tick();
+      // a device's Simulation section stays editable during the simulation (in the Actions panel); the change applies there; Undo takes it back
+      app.select('device:core1');
+      await tick();
+      const simSec = q('#sim-act-attrs #fg-simulation') as HTMLElement | null;
+      check(`${theme}: the selected device’s Simulation section is in the Actions panel, once (collapsed, its count in its name)`, !!simSec && /^Simulation \(\d+\)$/.test(simSec.textContent || '') && simSec.getAttribute('aria-expanded') === 'false' && doc.querySelectorAll('#fg-simulation').length === 1, simSec ? `${simSec.textContent} ${simSec.getAttribute('aria-expanded')}` : 'none');
+      if (simSec) {
+        simSec.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+        simSec.click();
+        await tick();
+        const f = q('#sim-attr-mac_aging') as HTMLInputElement;
+        f.value = '90';
+        f.dispatchEvent(new Event('change', { bubbles: true }));
+        await tick();
+        const changed = /mac_aging: 90/.test(app.exportText()) && sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time on core1 5 min → 90 s (device)');
+        app.undo();
+        await tick();
+        check(`${theme}: an override there is written to the model, applies at once (logged as device), and Undo takes it back during the simulation`, changed && !/mac_aging: 90/.test(app.exportText()) && sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time on core1 90 s → 5 min (default)'));
+      }
+      // Layers 3 and 4: the storm of the lab's loop warned of; the dots' shapes; the packet inspector and Follow message; Send test; a broadcast domain; connections and sessions
+      const storm = q('#sim-storm') as HTMLElement;
+      const sc = doc.defaultView!.getComputedStyle(storm);
+      check(`${theme}: the lab’s loop without spanning tree storms: the banner and the simulation panel warn (an alert, in the error colour)`, /⚠ broadcast storm in VLAN 1/.test(q('#sim-text')!.textContent || '') && !storm.hidden && storm.getAttribute('role') === 'alert' && sc.color !== sc.backgroundColor && /l-lab-/.test(storm.textContent || ''), storm.textContent || '');
+      check(`${theme}: the dots’ shapes are explained: a circle unicast, a square broadcast, a diamond multicast`, doc.querySelectorAll('#sim-shapes svg').length === 3 && /unicast.*broadcast.*multicast/.test(q('#sim-shapes')!.textContent || ''));
+      ctl.advance(300);
+      const fi = ctl.pacer.items.find((it) => !!it.f.hdr && it.f.view === 'physical' && it.drawn);
+      const fl = fi ? fi.f : sim.engine.flights.filter((f) => !!f.hdr && f.view === 'physical').slice(-1)[0];
+      ctl.setPlaying(true);
+      if (fl) ctl.inspectFlight(fl.id);
+      await tick();
+      const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
+      const piHeads = pi ? Array.from(pi.querySelectorAll('.pi-layer h4')).map((h) => h.textContent || '') : [];
+      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, then its timing, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads.slice(-2).join() === 'Payload,Timing' && /Waited for/.test(pi.textContent || '') && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
+      if (pi && fi) {
+        (pi.querySelector('#pi-follow') as HTMLElement).click();
+        await tick();
+        check(`${theme}: Follow message: its conversation alone sets the pace; the simulation panel says so, with Stop following`, !!ctl.pacer.follow && ctl.pacer.follow.key === fi.key && !(q('#sim-follow') as HTMLElement).hidden && /^Following /.test(q('#sim-follow-text')!.textContent || '') && q('#pi-follow')!.textContent === 'Stop following');
+        click('#sim-follow-stop');
+      }
+      if (q('.sim-table-panel[data-table="packet"] .st-close')) (q('.sim-table-panel[data-table="packet"] .st-close') as HTMLElement).click();
+      ctl.sendTestFrom('pc1');
+      await tick();
+      const tSent = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'tcp', port: 22 });
+      ctl.runTo(sim.now + 3000);
+      await tick();
+      check(`${theme}: Send network packets… from pc1 (its menu): the Actions panel’s form with pc1; a TCP connection to a closed port of srv is refused (RST), listed in Active events`, (q('#sim-t-from') as HTMLSelectElement).value === 'pc1' && /^Test sent/.test(tSent) && /connection refused: RST from 10\.30\.0\.10 \(srv\)/.test((q('#sim-events li[data-kind="send"]') || { textContent: '' }).textContent || ''), (q('#sim-events li[data-kind="send"]') || { textContent: '' }).textContent || '');
+      {
+        // a Send test's messages are marked Test (the SYN, the RST), in the log too; paused, Send sends now and waits for Play; Send and play plays
+        const t = sim.tests()[0];
+        const marked = sim.events().filter((e) => e.test === t.id && e.kind === 'message').map((e) => e.what);
+        ctl.refresh(true);
+        await tick();
+        const tags = doc.querySelectorAll('#sd-log .sim-test-tag').length;
+        const was = ctl.playing;
+        ctl.setPlaying(false);
+        const at = ctl.t;
+        const m1 = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'icmp' });
+        await tick();
+        const sp = q('#sim-t-sendplay') as HTMLElement;
+        const pausedOk = /^Sent at t = .* It starts when the simulation plays\.$/.test(m1) && ctl.t === at && sim.tests()[0].started === at && !sp.hidden && ctl.drawItems().some((d) => d.test);
+        const m2 = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'icmp' }, true);
+        await tick();
+        const playOk = ctl.playing && sp.hidden && /^Test sent at t = /.test(m2);
+        ctl.setPlaying(was);
+        check(
+          `${theme}: a Send test’s messages are marked Test (the SYN and the RST, in the log too); paused, Send sends at the current time and says it starts on Play; Send and play sends and plays`,
+          marked.indexOf('TCP SYN') >= 0 && marked.indexOf('TCP RST') >= 0 && tags > 0 && pausedOk && playOk,
+          `${marked.join(',')} · ${tags} tags · ${m1} · ${m2}`,
+        );
+      }
+      ctl.highlightDomain({ dev: 'lab-h', iface: 'eth0' });
+      await tick();
+      const on = Array.from(doc.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort().join(',');
+      check(`${theme}: Highlight broadcast domain of the lab host: its two switches and itself, the rest dimmed`, !!q('svg.has-bcdomain') && on === 'device:lab-h,device:lab-sw1,device:lab-sw2' && !!q('#canvas .node.bc-off'), on);
+      ctl.clearDomain();
+      await tick();
+      ctl.showTable('conn', 'srv');
+      await tick();
+      const conn = !!q('#sim-status-table tr[data-state="LISTEN"]');
+      ctl.showTable('fw', 'fw1');
+      await tick();
+      check(`${theme}: srv’s connections (its open port) and fw1’s session table, with its policy at the top`, conn && /Reject/.test((q('#sim-status-table .st-timers') || { textContent: '' }).textContent || ''));
+      // multicast: the receivers get their streams; the tables; a join from a host's menu
+      ctl.showTable('mroute', 'r1');
+      await tick();
+      const mrt = st.textContent || '';
+      ctl.showTable('snoop', 'acc-sw');
+      await tick();
+      const snt = st.textContent || '';
+      check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
+      ctl.multicastFrom('pc2', 'join');
+      await tick();
+      const jmsg = ctl.joinGroup('pc2', 'eth0', '239.4.4.4', []);
+      await tick();
+      check(`${theme}: Join multicast group… from a host's menu: that form opens with the host; the join listed, with Leave group`, (q('#sim-j-dev') as HTMLSelectElement).value === 'pc2' && q('#sim-ne-join-toggle')!.getAttribute('aria-expanded') === 'true' && /^pc2:eth0 → 239\.4\.4\.4: joining at t = /.test(jmsg) && !!q('#sim-events li[data-kind="join"] button[data-op="leave"]'), jmsg);
+      (q('#sim-events li[data-kind="join"] button[data-op="leave"]') as HTMLElement).click();
+      await tick();
+      // the packet inspector pauses while in use: from a log message, then closed: playing again
+      {
+        ctl.setPlaying(true);
+        const msg = q('#sim-log-table .sim-msg-btn') as HTMLElement | null;
+        if (msg) msg.click();
+        await tick();
+        const paused = !ctl.playing && ctl.pausedBy === 'inspector' && q('#sim-state')!.textContent === 'Paused: inspecting packet';
+        const pi = q('.sim-table-panel[data-table="packet"] .st-close') as HTMLElement | null;
+        if (pi) pi.click();
+        await tick();
+        check(`${theme}: a log message opens the packet inspector and pauses (“Paused: inspecting packet”); closing it plays again`, !!msg && paused && ctl.playing && q('#sim-state')!.textContent === 'Playing');
+        ctl.setPlaying(false);
+      }
+      // Senders during the simulation: pc1 alone; its badge; the others' messages counted, not listed
+      {
+        ctl.setSenders(['pc1']);
+        ctl.runTo(sim.now + 6000);
+        await tick();
+        const { list, bySender } = ctl.logEvents();
+        check(
+          `${theme}: pc1 as the only sender: its badge, only its exchanges in the log (and those of Network events, always listed; the others counted), the change logged; every device again: no badge`,
+          Array.from(doc.querySelectorAll('#canvas .sim-sender')).map((x) => x.getAttribute('data-sender')).join() === 'pc1' && list.filter((e) => e.kind === 'message' && e.t > sim.now - 6000).every((e) => e.sender === 'pc1' || e.origin === 'pc1' || e.test !== undefined) && bySender > 0 &&
+            /messages from non-senders hidden/.test(q('#sim-log-note')!.textContent || '') && sim.events().some((e) => e.detail === 'Senders changed: pc1') && (q('#sim-setup-senders-toggle')!.textContent || '').indexOf('Senders (1 of 22): User PC') >= 0,
+        );
+        ctl.setSenders(app.session!.model.devices.map((x) => x.id));
+        await tick();
+      }
+      // an export: a still picture with labelled arrows and the note; no sender or receiver marks
+      ctl.advance(200);
+      ctl.refresh(true);
+      const svg = app.exportSvg();
+      check(`${theme}: an export during the simulation: “Protocol simulation, t = …”, a still picture (arrows with labels, no moving dots, no marks of the moment)`, /Protocol simulation, t = /.test(svg) && !/class="sim-dot"/.test(svg) && !/sim-tx|sim-rx|sim-pulse|sim-trail/.test(svg));
+      // Exit: the layout as before (the Details tab, core1 still selected: the last selection), the model unchanged, nothing to undo
+      exitBtn.click();
+      await tick();
+      check(
+        `${theme}: Exit simulation: the Objects list and the Inspector’s tabs again (the Details tab as before), the panel gone, Start available again; the model is as before (the Simulation edit was undone) and has no new undo step`,
+        !app.simulationOn() && !doc.body.hasAttribute('data-sim') && vis('#outline-body') && vis('#side .tabs') && !vis('#sim-dock') && !vis('#sim-setup') && q('#side .tabs .active')!.getAttribute('data-tab') === 'details' && q('#side')!.getAttribute('aria-label') === 'Inspector' &&
+          !doc.querySelector('.sim-table-panel') && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore,
+      );
+    }
+    // ------------------------------------------------ DHCP and DNS (campus-services.yaml), in both themes
+    for (const theme of ['light', 'dark'] as const) {
+      app.theme.set(theme);
+      app.loadExampleNamed('campus-services.yaml');
+      app.setView('physical');
+      await tick();
+      const errs = app.mdoc ? (app.mdoc as ModelDoc).result.errors.length + (app.mdoc as ModelDoc).result.warnings.length : -1;
+      // (a device's services: a line of badges under its type, every service in its tooltip)
+      const srvNode = q('#canvas [data-ref="device:srv"]');
+      const badges = srvNode ? [Array.from(srvNode.querySelectorAll('.dev-sub tspan, .dev-sub')).map((t) => t.textContent || '').join('\n'), (srvNode.querySelector(':scope > title') || { textContent: '' }).textContent || ''] : [];
+      const holes = Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).map((t) => t.textContent);
+      check(
+        `${theme}: campus-services: no problem; srv has its DHCP and DNS badges (a line under its type, every service in its tooltip), the DHCP clients a reserved lease line; the legend lists both servers`,
+        errs === 0 && /DHCP · DNS/.test(badges[0] || '') && /DHCP server \(DHCP\), DNS server \(DNS\)/.test(badges[1] || '') && holes.length === 3 && holes.every((t) => t === 'lease: assigned in a simulation') &&
+          legendOf(app.session!.model, 'physical').sections.some((x) => x.items.some((i) => /^DHCP server/.test(i.label)) && x.items.some((i) => /^DNS server/.test(i.label))),
+        `${errs} ${badges.join('|')} ${holes.join('|')}`,
+      );
+      // the Services card on srv: both boxes ticked, a scope with its fields, the zone with its derived records
+      app.select('device:srv');
+      await tick();
+      click('[data-tab="edit"]');
+      await tick();
+      const dhcpBox = q('#side-body input[data-act="netsvc"][data-svc="dhcp"]') as HTMLInputElement | null;
+      const dnsBox = q('#side-body input[data-act="netsvc"][data-svc="dns"]') as HTMLInputElement | null;
+      const card = (dhcpBox && dhcpBox.closest('[data-group="netservices"]')) as HTMLElement | null;
+      check(
+        `${theme}: srv’s Edit tab has the Services card: DHCP server and DNS server ticked; two scopes and the zone campus.example, whose records from the model’s DNS names are listed read-only`,
+        !!dhcpBox && dhcpBox.checked && !!dnsBox && dnsBox.checked && !!card && card.querySelectorAll('[data-card*="scopes"]').length === 2 && /Zone campus\.example/.test(card.textContent || '') && /web\.campus\.example/.test(card.textContent || ''),
+      );
+      // the simulation (every protocol and sender, the default parameters: earlier choices are not carried over here): leases in the reserved lines, marked; the tables; the indicator
+      app.startProtocolSimulation({ protocols: protocolEntriesOf(app.session!.model).map((e) => e.id), params: {}, senders: app.session!.model.devices.map((d) => d.id) });
+      await tick();
+      const ctl = app.simController()!;
+      ctl.setPlaying(false);
+      ctl.runTo(8000);
+      ctl.refresh(true);
+      await tick(80);
+      const leases = Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).map((t) => t.textContent || '').sort();
+      check(
+        `${theme}: in the simulation the clients’ leases are written into their reserved lines with “(DHCP lease)” (lap1 its reserved address; pc2 through the relay)`,
+        leases.join() === '10.10.10.100/24 (DHCP lease),10.10.10.21/24 (DHCP lease),10.10.20.100/24 (DHCP lease)' && doc.querySelectorAll('#canvas .lease-on').length === 3,
+        leases.join(' | '),
+      );
+      const ev = ctl.sim.events();
+      check(
+        `${theme}: DORA in parallel (the DISCOVERs within a few ms), pc2’s through the relay; DNS by name before the connection`,
+        (() => {
+          const disc = ev.filter((e) => e.kind === 'message' && e.what === 'DHCPDISCOVER' && /^DHCPDISCOVER from/.test(e.detail)).map((e) => e.t);
+          return disc.length >= 3 && Math.max(...disc) - Math.min(...disc) < 5 && ev.some((e) => /^core relays DHCPDISCOVER from pc2/.test(e.detail)) && ev.some((e) => /^DHCPOFFER from srv .* 10\.10\.20\.100\/24, lease 4 h/.test(e.detail)) &&
+            ev.some((e) => e.kind === 'message' && e.protocol === 'dns' && /web\.campus\.example/.test(e.detail));
+        })(),
+        ev.filter((e) => e.kind === 'message' && /^DHCP|^DNS/.test(e.what)).slice(0, 8).map((e) => e.detail.slice(0, 60)).join(' | '),
+      );
+      const shown = async (kind: string, dev: string, re: RegExp): Promise<boolean> => {
+        const ok = ctl.showTable(kind as never, dev);
+        await tick(60);
+        const panel = q('#sd-status');
+        return ok && !!panel && re.test(panel.textContent || '');
+      };
+      const tables = [await shown('dhcp', 'srv', /DHCP leases of srv[\s\S]*10\.10\.10\.21/), await shown('dnszone', 'srv', /DNS zone of srv[\s\S]*www/), await shown('dnscache', 'pc1', /DNS cache of pc1[\s\S]*web\.campus\.example/)];
+      ctl.showStatus();
+      check(`${theme}: Show DHCP leases (srv), Show DNS zone (srv) and Show DNS cache (pc1) show their tables in the panel’s status side`, tables.every((x) => x), tables.join());
+      const wrap = q('#canvas-wrap') as HTMLElement;
+      const after = doc.defaultView!.getComputedStyle(wrap, '::after');
+      const badge = q('.sim-badge') as HTMLElement;
+      check(
+        `${theme}: the indicator: a solid 2 px inset border that catches no click, and the “Simulation running” label`,
+        /inset/.test(after.boxShadow) && /2px/.test(after.boxShadow) && after.pointerEvents === 'none' && !!badge && /Simulation running/.test(badge.textContent || '') && doc.defaultView!.getComputedStyle(badge).borderTopStyle === 'solid',
+        after.boxShadow,
+      );
+      (q('#btn-sim-exit') as HTMLButtonElement).click();
+      await tick();
+      check(
+        `${theme}: Exit simulation from srv’s Edit tab: no “Editing is paused” notice or disabled Exit simulation is left, the form takes input, the Objects list can add again; the Edit tab as before, with the last selection (pc1, from Show DNS cache)`,
+        !q('.lock-note') && !q('#side-body [data-command="sim.exit"]') && !q('#side-body fieldset[disabled]') && !!q('#side-body input:not([disabled])') &&
+          Array.from(doc.querySelectorAll('#outline [data-act="add-entity"]')).every((b) => !(b as HTMLButtonElement).disabled) &&
+          q('#side .tabs .active')!.getAttribute('data-tab') === 'edit' && app.session!.state.selected === 'device:pc1',
+      );
+      check(`${theme}: after the simulation the reserved lines say again that the lease is assigned in a simulation`, Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).every((t) => t.textContent === 'lease: assigned in a simulation'));
+    }
+    app.theme.set('dark');
+
     // ------------------------------------------------ viewer interactions
-    app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+    app.loadExampleNamed('enterprise-wan.yaml');
     click('[data-view-btn="physical"]');
     const svg = doc.getElementById('canvas') as unknown as SVGSVGElement;
     const vp = doc.getElementById('viewport') as unknown as SVGGElement;
@@ -981,16 +2780,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       check('status after dragging: Physical "Manually adjusted", Logical still "Auto-arranged"', status('physical') === 'manual' && status('logical') === 'auto', status('physical') + ' / ' + status('logical'));
       {
-        const b = q('#btn-arrange') as HTMLButtonElement;
-        const cs = doc.defaultView!.getComputedStyle(b);
-        const br = b.getBoundingClientRect();
+        const bs = STRATS.map(arrangeBtn);
         check(
-          'the Auto-arrange button shows it: pencil icon, warning colour, hover text and accessible description say "manually adjusted"; still a clickable button',
-          shows('physical', 'manual') && !b.disabled && b.tagName === 'BUTTON' && br.width > 60 && /Auto-arrange/.test(b.textContent || '') && cs.borderTopStyle === 'dashed' && cs.cursor !== 'not-allowed' && b.getAttribute('aria-describedby') === 'arrange-status',
-          JSON.stringify(shown()),
+          'the Auto-arrange options show it: none is selected, all three can be clicked; the group’s hover text and accessible description say "manually adjusted"',
+          shows('physical', 'manual') && bs.every((b) => !b.disabled && b.tagName === 'BUTTON' && b.getAttribute('aria-pressed') === 'false' && doc.defaultView!.getComputedStyle(b).cursor !== 'not-allowed') && q('#arrange-group')!.getAttribute('aria-describedby') === 'arrange-status',
+          JSON.stringify(shown()) + ' ' + arrangeLook(),
         );
       }
-      check('Auto-arrange button is enabled once a model is open', !(q('#btn-arrange') as HTMLButtonElement).disabled);
+      check('every Auto-arrange option is enabled while the view matches none of them', STRATS.every((st) => !arrangeBtn(st).disabled));
     }
     const t0 = vp.getAttribute('transform');
     const sr = svg.getBoundingClientRect();
@@ -1004,7 +2801,31 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
     check('undo reverts the drag (and the stored positions)', !(app.mdoc as ModelDoc).hasStoredLayout('physical'));
     check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
-    check('… and the button shows the check mark and "matches the auto-arranged layout" (icon, hover text, description)', shows('physical', 'auto') && doc.defaultView!.getComputedStyle(q('#btn-arrange')!).borderTopStyle === 'solid', JSON.stringify(shown()));
+    check(
+      '… and Default is selected and disabled (the view is arranged with it); the description says so',
+      shows('physical', 'auto') && /arranged with Default/.test(shown().desc) && arrangeBtn('default').getAttribute('aria-pressed') === 'true' && !arrangeBtn('compact').disabled && !arrangeBtn('spacious').disabled,
+      JSON.stringify(shown()) + ' ' + arrangeLook(),
+    );
+    {
+      // a disabled Auto-arrange option can't be triggered: not by a click, a touch / pointer press, Enter / Space on it, or the A key
+      const dm = app.mdoc as ModelDoc;
+      const undoBefore = dm.canUndo();
+      const yamlBefore = app.exportText();
+      const b = arrangeBtn('default');
+      const r = b.getBoundingClientRect();
+      b.click();
+      b.dispatchEvent(pe('pointerdown', r.left + 5, r.top + 5));
+      b.dispatchEvent(pe('pointerup', r.left + 5, r.top + 5));
+      b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      b.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+      await tick(10);
+      check(
+        'a disabled Auto-arrange does nothing by mouse, touch, keyboard or the A shortcut (no dialog, no undo step, no stored layout, YAML unchanged)',
+        b.disabled && doc.activeElement !== b && !q('#modal[open]') && dm.canUndo() === undoBefore && !dm.hasStoredLayout('physical') && app.exportText() === yamlBefore,
+        `${dm.canUndo()}`,
+      );
+    }
     {
       const panelShown = (): boolean => {
         const o = q('#outline') as HTMLElement;
@@ -1035,11 +2856,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('[data-view-btn="logical"]');
     const ipsec = q('#viewport g.rel[data-ref="relation:ipsec-muc"] .tube-outer');
     const gre = q('#viewport g.rel[data-ref="relation:gre-muc"] .tube-outer');
+    const ospf = q('#viewport g.rel[data-ref="relation:ospf-muc"] .rel-line');
     const w = (e: Element | null): number => (e ? parseFloat(e.getAttribute('stroke-width') || '0') : 0);
-    check('GRE drawn inside IPsec (narrower tube on the same path)', !!ipsec && !!gre && w(gre) < w(ipsec) && gre!.getAttribute('d') === ipsec!.getAttribute('d'));
+    check(
+      'OSPF drawn inside GRE (both bound to the tunnel interfaces: narrower, on the same path); IPsec, bound to the underlay ports, on its own path',
+      !!ipsec && !!gre && !!ospf && w(ospf) < w(gre) && ospf!.getAttribute('d') === gre!.getAttribute('d') && gre!.getAttribute('d') !== ipsec!.getAttribute('d'),
+    );
     check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
     const svgText = app.exportSvg();
-    check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
+    check(
+      'SVG export is standalone: resolved colours as attributes, an explicit background, no stylesheet, no CSS variable, no prefers-color-scheme, no script, no external refs',
+      /^<svg[\s\S]*<rect class="export-background"[^>]*fill="#[0-9a-f]{6}"[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<style|var\(--|prefers-color-scheme|<script|https?:\/\/(?!www\.w3\.org)/.test(svgText),
+      (svgText.match(/<style|var\(--[a-z-]*|prefers-color-scheme/g) || []).slice(0, 5).join(', '),
+    );
     {
       // the exported file is parsed and laid out on its own, as a viewer would, and measured with real font metrics
       type Box = { x: number; y: number; w: number; h: number };
@@ -1113,7 +2942,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check('the diagram on screen has no Networks box drawn into it (export only)', !q('#canvas .svg-networks'));
       }
       // a model with several disconnected components and an unconnected device
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+      app.loadExampleNamed('metro-ring.yaml');
       const mP = measure(app.exportSvg());
       click('[data-view-btn="logical"]');
       const mL = measure(app.exportSvg());
@@ -1139,14 +2968,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           hidden.ok && has(hidden, 'Router loopbacks') && !has(hidden, 'Core link') && !has(hidden, 'Management'),
           hidden.labels.join(' | '),
         );
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'minimal.yaml'));
+        app.loadExampleNamed('minimal.yaml');
         const none = measure(app.exportSvg(), 'g.svg-networks');
         check('a view without relevant networks says so in the box (clear empty state)', none.ok && none.labels[0] === 'Networks — logical view' && none.labels.some((x) => /The model defines no networks\./.test(x)), none.labels.join(' | '));
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+        app.loadExampleNamed('metro-ring.yaml');
         click('[data-view-btn="logical"]');
       }
       check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
-      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="logical"]');
     }
     click('[data-view-btn="physical"]');
@@ -1157,19 +2986,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // ------------------------------------ device filter: Devices, Labels, Groups / Locations, Networks
     {
       if (app.mdoc) app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       const s = (): NonNullable<typeof app.session> => app.session!;
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const hint = q('#filter-hint') as HTMLElement;
       const btn = q('#devices-btn') as HTMLButtonElement;
-      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
+      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > .types-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
       const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
       check(
-        'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks only in the logical view; no Underlay',
-        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Endpoints' && right[5] === 'Servers' && right.length === 6 && !q('#opt-underlay') &&
-          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered() &&
-          (q('#opt-type-endpoint') as HTMLInputElement).checked && (q('#opt-type-server') as HTMLInputElement).checked && vis('#opt-type-endpoint') && vis('#opt-type-server'),
+        'top-right diagram controls: Devices (all selected), Device types (all), Labels, Groups / Locations, in both views; Networks and Routes only in the logical view; no Underlay, Endpoints or Servers switches',
+        /^Devices: all \(15\)/.test(right[0] || '') && /^Device types: All/.test(right[1] || '') && right[2] === 'Labels' && right[3] === 'Groups / Locations' && right[4] === 'Networks' && right[5] === 'Routes' && right.length === 6 && !q('#opt-underlay') &&
+          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !vis('#opt-routes') && (q('#opt-routes') as HTMLInputElement).checked && !btn.disabled && hint.hidden && !s().isFiltered() &&
+          !q('#opt-type-endpoint') && !q('#opt-type-server') && vis('#types-btn') && !(q('#types-btn') as HTMLButtonElement).disabled,
         right.join(' | '),
       );
       const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
@@ -1201,7 +3030,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       check('the panel filters its list without changing the selection, and Esc closes it', rows === 7 && (q('#devices-panel') as HTMLElement).hidden && doc.activeElement === btn && s().selectedDevices().size === 6, String(rows));
       // a move in the filtered view is temporary
-      check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === 'true' && /filtered view matches/.test(shown().desc), shown().desc);
+      check('the filtered view starts auto-arranged (Default) for its devices; the Auto-arrange group says so', status('physical') === 'auto' && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === 'true' && /^The filtered physical view is arranged with Default/.test(shown().desc) && shown().title === shown().desc && arrangeLook() === 'done', shown().desc + ' ' + arrangeLook());
       {
         const el2 = q('#viewport g.device[data-ref="device:hq-fw"] .dev-box') as unknown as SVGGraphicsElement;
         const rr = el2.getBoundingClientRect();
@@ -1223,7 +3052,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const logShown = shownDevices();
       check(
         'switching views: the logical view of the same devices, auto-arranged on its own (no move leaks), relations only among them',
-        status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && vis('#opt-networks'),
+        status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && (vis('#opt-networks') || !!q('#more-filters #opt-networks')),
         logShown.join(),
       );
       click('[data-view-btn="physical"]');
@@ -1235,7 +3064,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#opt-groups') as HTMLInputElement).click();
       check('Groups / Locations off hides the frames and keeps every device in place; on brings them back', hiddenFrames === 0 && devsNoFrames === keep.slice().sort().join() && count('g.group') >= 3 && JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved);
       // Auto-arrange in a filtered view: the subset only, temporary, no confirmation needed
-      click('#btn-arrange');
+      click('#btn-arrange-default');
       await tick(10);
       check('Auto-arrange in a filtered view re-arranges the shown devices only, temporarily: no dialog, YAML and undo unchanged', !q('#modal[open]') && status('physical') === 'auto' && app.exportText() === yaml && md().canUndo() === undo, status('physical'));
       // Select all: the complete diagram with its saved positions, unchanged
@@ -1244,7 +3073,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check(
         'Select all restores the complete diagram exactly as it was, hides the hint and gives Auto-arrange its normal meaning back',
-        !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === null && shown().desc === AUTO_MSG && app.exportText() === yaml,
+        !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === null && /^The physical view is arranged with Default/.test(shown().desc) && app.exportText() === yaml,
       );
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     }
@@ -1293,11 +3122,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
 
       check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent);
-      /** where every entry and its label is, and how wide the menu is: must not change with the selection */
+      /**
+       * where every row and its label is, and how wide the menu is: must not change with the selection
+       * (on a touch screen the selected row shows its quick actions at its end, which may only shorten its label)
+       */
       const geo = (): string => {
         const ol = q('#outline') as HTMLElement;
         const rows = olItems().map((b) => {
-          const r = b.getBoundingClientRect();
+          const r = (b.closest('.ol-row') as HTMLElement).getBoundingClientRect();
           const l = (b.querySelector('.ol-label') as HTMLElement).getBoundingClientRect();
           return `${b.getAttribute('data-ref')}@${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}/${Math.round(l.left)}`;
         });
@@ -1384,14 +3216,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
     }
 
-    // ------------------------------------ device-type visibility: Endpoints, Servers
+    // ------------------------------------ device-type visibility: the Device types filter
     {
       if (app.mdoc) app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'device-types.yaml'));
+      app.loadExampleNamed('device-types.yaml');
       const s = (): NonNullable<typeof app.session> => app.session!;
       const md = (): ModelDoc => app.mdoc as ModelDoc;
-      const ep = q('#opt-type-endpoint') as HTMLInputElement;
-      const sv = q('#opt-type-server') as HTMLInputElement;
+      const tbtn = q('#types-btn') as HTMLButtonElement;
+      const tpanel = q('#types-panel') as HTMLElement;
+      // the checkbox of a type in the (opened) Device types panel
+      const tbox = (k: string): HTMLInputElement => {
+        if (tpanel.hidden) tbtn.click();
+        return q(`#types-list input[data-type-keys="${k}"]`) as HTMLInputElement;
+      };
+      const ep = { click: (): void => tbox('endpoint').click(), get checked(): boolean { return tbox('endpoint').checked; } };
+      // (the example's server is a hypervisor: its row's keys are "server:hypervisor")
+      const svBox = (): HTMLInputElement => {
+        if (tpanel.hidden) tbtn.click();
+        return q('#types-list label[data-type-row="server"] input') as HTMLInputElement;
+      };
+      const sv = { click: (): void => svBox().click(), get checked(): boolean { return svBox().checked; } };
       const m = s().model;
       const typed = (t: string): string[] => m.devices.filter((d) => d.type === t).map((d) => d.id);
       const eps = typed('endpoint');
@@ -1402,10 +3246,23 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yaml = app.exportText();
       const undo = md().canUndo();
       const full = { physical: posOf('physical'), logical: posOf('logical') };
+      tbtn.click();
+      await tick();
+      const rows = Array.prototype.map.call(doc.querySelectorAll('#types-list label:not(.tp-sub)'), (r: Element) => [r.getAttribute('data-type-row'), ((r.querySelector('span') as HTMLElement).textContent || '').trim(), (r.querySelector('.tp-count') as HTMLElement).textContent]) as string[][];
+      const used = DEVICE_TYPES.filter((t) => m.devices.some((d) => d.type === t.id));
       check(
-        'Endpoints and Servers are on for a newly opened model; they switch the model types "endpoint" and "server"',
-        ep.checked && sv.checked && !ep.disabled && !sv.disabled && eps.length === 2 && srv.length === 1 && ep.getAttribute('data-device-type') === 'endpoint' && sv.getAttribute('data-device-type') === 'server' && DEVICE_TYPES.some((t) => t.id === 'endpoint') && DEVICE_TYPES.some((t) => t.id === 'server'),
+        'Device types: next to Devices, "Device types: All" for a new model; one checked row per type the model uses, by its display name and in the format\'s order, with its number of devices; types the model does not use are left out',
+        /^Device types: All/.test(tbtn.textContent || '') && tbtn.getAttribute('aria-expanded') === 'true' && rows.length === used.length && rows.every((r, i) => r[0] === used[i].id && r[1] === used[i].label && Number(r[2]) === m.devices.filter((d) => d.type === used[i].id).length) &&
+          Array.prototype.every.call(doc.querySelectorAll('#types-list input'), (b: HTMLInputElement) => b.checked && !b.disabled) && (q('#devices-btn') as HTMLElement).parentElement!.nextElementSibling === tbtn.parentElement && rows.find((r) => r[0] === 'endpoint')![2] === '2',
+        JSON.stringify(rows),
       );
+      check('the panel is a labelled dialog; the first type has the focus after the keyboard opens it (Arrow Down), and Esc closes it and returns the focus', (() => {
+        tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        const closed = tpanel.hidden && doc.activeElement === tbtn && tbtn.getAttribute('aria-expanded') === 'false';
+        tbtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        const first = q('#types-list input') as HTMLElement;
+        return closed && !tpanel.hidden && doc.activeElement === first && tpanel.getAttribute('role') === 'dialog' && /Device types/.test(tpanel.getAttribute('aria-label') || '');
+      })());
       for (const view of ['physical', 'logical'] as const) {
         click(`[data-view-btn="${view}"]`);
         await tick();
@@ -1419,51 +3276,74 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const kept = Array.from(s().positionsFor(view)).every(([id, p]) => !m.index.devices.has(id) || (!!pos.get(id) && pos.get(id)!.x === p.x && pos.get(id)!.y === p.y));
         const epLinks = m.links.filter((l) => eps.indexOf(l.a.device) >= 0 || eps.indexOf(l.b.device) >= 0);
         check(
-          `${view} view: Endpoints off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was`,
+          `${view} view: Endpoint off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was; the button and the status bar say "${used.length - 1} of ${used.length}"`,
           eps.every((id) => noEp.indexOf(id) < 0 && !inSvg(svgNoEp, id)) && noEp.every((id) => before.indexOf(id) >= 0) && noEp.length > 0 && kept && png.width > 0 && png.height > 0 && s().isFiltered() &&
-            !(q('#filter-hint') as HTMLElement).hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0),
-          `${noEp.join()} kept=${kept}`,
+            !(q('#filter-hint') as HTMLElement).hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0) &&
+            new RegExp(`^Device types: ${used.length - 1} of ${used.length}`).test(tbtn.textContent || '') && tbtn.classList.contains('filtered') && /off: Endpoint/.test(tbtn.getAttribute('aria-label') || '') &&
+            new RegExp(`device types: ${used.length - 1} of ${used.length} \\(off: Endpoint\\)`).test(q('#status')!.textContent || ''),
+          `${noEp.join()} kept=${kept} ${tbtn.textContent}`,
         );
         sv.click();
         await tick();
         const none = onScreen();
         const svgNone = app.exportSvg();
-        check(`${view} view: Servers off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked, none.join());
+        check(`${view} view: Server off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked && /off: .*Endpoint/.test(tbtn.getAttribute('aria-label') || '') && /off: .*Server/.test(tbtn.getAttribute('aria-label') || ''), none.join());
         ep.click();
         await tick();
         const epBack = onScreen();
-        check(`${view} view: Endpoints on again while Servers stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
+        check(`${view} view: Endpoint on again while Server stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
         sv.click();
         await tick();
         check(
           `${view} view: both on again: the complete diagram with its saved positions; the YAML, the undo history and the saved layout are unchanged`,
-          onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && (q('#filter-hint') as HTMLElement).hidden && ep.checked && sv.checked,
+          onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && (q('#filter-hint') as HTMLElement).hidden && ep.checked && sv.checked && /^Device types: All/.test(tbtn.textContent || ''),
         );
       }
-      // combined with the Devices selection
+      // Clear and Select all
       click('[data-view-btn="physical"]');
+      tbox('endpoint');
+      click('#types-none');
+      await tick();
+      const cleared = onScreen();
+      const clearedText = tbtn.textContent || '';
+      click('#types-all');
+      await tick();
+      check(
+        'Clear hides every device ("Device types: 0 of N", every box unchecked); Select all brings back the complete diagram with its saved positions',
+        cleared.length === 0 && new RegExp(`^Device types: 0 of ${used.length}`).test(clearedText) && !s().isFiltered() && posOf('physical') === full.physical && Array.prototype.every.call(doc.querySelectorAll('#types-list input'), (b: HTMLInputElement) => b.checked),
+        clearedText,
+      );
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      // combined with the Devices selection
       const btn = q('#devices-btn') as HTMLButtonElement;
-      const pick = ['edge', eps[0], srv[0]];
+      // (the hypervisor among the example's servers)
+      const hv = m.devices.filter((d) => d.type === 'server' && !!d.hypervisor).map((d) => d.id)[0];
+      const pick = ['edge', eps[0], hv];
       app.setDevices(pick);
       await tick();
       const subsetPos = posOf('physical');
       sv.click();
       await tick();
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       btn.click();
       await tick();
-      const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
+      const row = q(`#devices-list [data-device-row="${hv}"]`);
       const total = m.devices.length;
       check(
-        'with a device selection, Servers off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says why it is hidden), and the counts say what is shown',
-        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: Server off/.test(row.textContent || '') &&
+        'with a device selection, Server off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says "hidden: type Hypervisor server off": it is a hypervisor), and the counts say what is shown',
+        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: type Hypervisor server off/.test(row.textContent || '') &&
           (row.querySelector('input') as HTMLInputElement).checked && new RegExp(`showing 2 of ${total} devices`).test(q('#status')!.textContent || ''),
         `${onScreen().join()} ${btn.textContent}`,
       );
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       ep.click();
       await tick();
-      check('… Endpoints off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
+      check('… Endpoint off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
       ep.click();
       sv.click();
+      await tick();
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      btn.click();
       await tick();
       check(
         '… both on again: exactly the previous selection, with its devices where they were; the saved layout is untouched',
@@ -1472,12 +3352,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       app.setDevices(m.devices.map((d) => d.id));
       check('Select all brings back the complete diagram', !s().isFiltered() && posOf('physical') === full.physical);
+      // a model with Layer 2 and Layer 3 switches: Switch with two sub-entries
+      app.loadExampleNamed('protocol-simulation.yaml');
+      await tick();
+      const pm = s().model;
+      const l2 = pm.devices.filter((d) => d.type === 'switch' && !d.layer3).map((d) => d.id);
+      const l3 = pm.devices.filter((d) => d.type === 'switch' && d.layer3).map((d) => d.id);
+      const sw = tbox('switch:l2 switch:l3');
+      const sub2 = q('#types-list [data-type-row="switch:l2"]') as HTMLElement;
+      const sub3 = q('#types-list [data-type-row="switch:l3"]') as HTMLElement;
+      const subsOk = !!sw && !!sub2 && !!sub3 && sub2.classList.contains('tp-sub') && /Layer 2/.test(sub2.textContent || '') && (sub2.querySelector('.tp-count') as HTMLElement).textContent === String(l2.length) &&
+        (q('#types-list [data-type-row="switch"] .tp-count') as HTMLElement).textContent === String(l2.length + l3.length);
+      (sub2.querySelector('input') as HTMLInputElement).click();
+      await tick();
+      const shown = s().shownDevices();
+      check(
+        'Switch is one entry with Layer 2 and Layer 3 under it when the model has both: Layer 2 off hides only the Layer 2 switches, and Switch shows a mixed state',
+        subsOk && l2.length > 0 && l3.length > 0 && l2.every((id) => !shown.has(id)) && l3.every((id) => shown.has(id)) && tbox('switch:l2 switch:l3').indeterminate && /off: Layer 2 switch/.test(tbtn.getAttribute('aria-label') || ''),
+      );
+      tbox('switch:l2 switch:l3').click();
+      await tick();
+      check('… checking Switch shows both kinds again', !s().isFiltered() && !tbox('switch:l2 switch:l3').indeterminate && tbox('switch:l2').checked);
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     }
 
     // ------------------------ sizing and readability: long and multi-line labels
     {
-      const idx = EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml');
-      app.loadExample(idx);
+      app.loadExampleNamed('long-labels.yaml');
       const m = app.session!.model;
       click('[data-view-btn="physical"]');
       const lines = (ref: string, cls: string): string[] => {
@@ -1495,7 +3396,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           lines('group:dc', 'group-title').join(' ') === m.index.groups.get('dc')!.label,
         JSON.stringify([lines('device:core-a', 'dev-label'), lines('device:fw', 'dev-label'), lines('device:storage', 'dev-label'), lines('group:dc', 'group-title')]),
       );
-      check('boxes differ in size with their text (one-letter label < three lines < long wrapped label)', boxH('device:srv') < boxH('device:core-a') && boxH('device:core-a') < boxH('device:fw'), [boxH('device:srv'), boxH('device:core-a'), boxH('device:fw')].join(' '));
+      // the label part of a box grows with its lines; the entries with the interfaces' addresses come on top of that
+      const labelH = (ref: string): number => (q(`#viewport g[data-ref="${ref}"] .dev-label`) as unknown as SVGGraphicsElement).getBBox().height;
+      check(
+        'boxes differ in size with their text (one-letter label < three lines < long wrapped label), each grown around its label',
+        labelH('device:srv') < labelH('device:core-a') && labelH('device:core-a') < labelH('device:fw') && ['device:srv', 'device:core-a', 'device:fw'].every((r) => boxH(r) > labelH(r) + 12),
+        [labelH('device:srv'), labelH('device:core-a'), labelH('device:fw')].map(Math.round).join(' '),
+      );
       const straight = count('.cable.straight');
       const peerD = ['peer-1', 'peer-2', 'peer-3'].map((id) => (q(`#viewport g.cable[data-ref="link:${id}"] .cable-line`) as Element).getAttribute('d') || '');
       check(
@@ -1513,16 +3420,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return spans.length ? (Array.prototype.map.call(spans, (x: Element) => x.textContent) as string[]).join(' ') : t.textContent || '';
       };
       const pillRect = (id: string): DOMRect => (q(`#viewport g.pill[data-ref="relation:${id}"] .pill-box`) as Element).getBoundingClientRect();
-      const four = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'];
+      const four = ['ipsec-br', 'gre-br', 'bgp-br', 'bfd-br', 'syslog-br'];
       const apart = four.every((a, i) => four.slice(i + 1).every((b) => {
         const ra = pillRect(a);
         const rb = pillRect(b);
         return ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top;
       }));
       check(
-        'four labelled relations between the same two devices: four labels, each complete, at its own place; nested relations are named in their carrier\'s label',
-        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10' &&
-          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:gre-br"]'),
+        'five labelled lanes between the same two devices: five labels, each complete, at its own place; a nested relation is named in its carrier\'s label, a carrier on other ports in the label of what it carries',
+        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication' && pillText('gre-br') === 'GRE · primary › OSPF · area 0.0.0.10 (over IPsec)' &&
+          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:ospf-br"]'),
         four.map(pillText).join(' | '),
       );
       const netLines = lines('network:servers', 'net-sub').join(' ');
@@ -1556,12 +3463,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.select('device:br-rtr');
       const dragged = snapshot() !== before && status('logical') === 'manual';
       app.select(null);
-      click('#btn-arrange');
+      click('#btn-arrange-default');
       await answerDialog('arrange');
       const again = snapshot() === before && status('logical') === 'auto';
-      click('#btn-arrange');
+      const undoAfter = d.canUndo();
+      click('#btn-arrange-default');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
       await tick(10);
-      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); repeating it moves nothing and asks nothing', dragged && again && !q('#modal[open]') && snapshot() === before && /Already arranged/.test(q('#toast')!.textContent || ''), `${dragged} ${again}`);
+      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); then the button is disabled and A moves nothing and asks nothing', dragged && again && arrangeLook() === 'done' && !q('#modal[open]') && snapshot() === before && d.canUndo() === undoAfter, `${dragged} ${again} ${arrangeLook()}`);
       // a label typed with a line break in the editor
       app.select('device:srv');
       await setField('#side-body textarea[data-p=\'["devices",3,"label"]\']', 'srv-01\nhypervisor');
@@ -1580,7 +3489,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return out.sort().join(' ');
       };
       const wanIdx = EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name));
-      app.loadExample(wanIdx);
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       const physBefore = rects();
       {
@@ -1603,24 +3512,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const ad = app.mdoc as ModelDoc;
       /** the positions shown in a view, and the view's part of the layout section */
       const viewState = (v: 'physical' | 'logical'): string => JSON.stringify([Array.from(ad.displayedPositions(v).entries()), Array.from(ad.result.model!.layout[v].entries()), Array.from(ad.result.model!.layout.manual[v])]);
-      click('#btn-arrange');
-      await tick(10);
-      check(
-        'Auto-arrange has no view chooser: it arranges the view on screen at once and leaves the other view alone',
-        !q('#modal[open]') && ad.hasStoredLayout('logical') && !ad.hasStoredLayout('physical') && rects() === logBefore && ad.canUndo() === 'Auto-arrange (logical view)' && /nothing moved/.test(q('#toast')!.textContent || ''),
-        `${ad.canUndo()} / ${q('#toast')!.textContent}`,
-      );
-      click('[data-view-btn="physical"]');
-      click('#btn-arrange');
-      await tick(10);
-      check('arranging an automatic layout stores it without moving anything', !q('#modal[open]') && ad.hasStoredLayout('physical') && ad.hasStoredLayout('logical') && rects() === physBefore && /nothing moved/.test(q('#toast')!.textContent || ''));
-      click('[data-view-btn="logical"]');
-      check('… in the logical view as well', rects() === logBefore);
-      check('status after Auto-arrange: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
-      const undoLabel = ad.canUndo();
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-      await tick(10);
-      check('auto-arranging again changes nothing (no question, no move, no undo step)', !q('#modal[open]') && ad.canUndo() === undoLabel && rects() === logBefore && /Already arranged/.test(q('#toast')!.textContent || ''));
+      {
+        // a freshly loaded model already shows the auto-arranged layout in both views: nothing to arrange
+        const undoLabel = ad.canUndo();
+        const press = async (): Promise<void> => {
+          click('#btn-arrange-default');
+          doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+          await tick(10);
+        };
+        const logicalDone = shows('logical', 'auto');
+        await press();
+        click('[data-view-btn="physical"]');
+        const physicalDone = shows('physical', 'auto');
+        await press();
+        click('[data-view-btn="logical"]');
+        check(
+          'a freshly loaded model: Auto-arrange is disabled with the check mark in the logical and the physical view; a click or A changes nothing (no dialog, nothing stored, no undo step)',
+          logicalDone && physicalDone && !q('#modal[open]') && !ad.hasStoredLayout('logical') && !ad.hasStoredLayout('physical') && ad.canUndo() === undoLabel && rects() === logBefore && !ad.dirty,
+          JSON.stringify(shown()) + ' ' + arrangeLook(),
+        );
+      }
       // manual move, then arrange restores the deterministic positions; undo brings the manual one back
       ad.movePositions('logical', new Map([['hq-fw', { x: 4321, y: 1234 }]]), 'Move hq-fw');
       app.mdoc && app.select(null);
@@ -1648,7 +3559,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const logState = viewState('logical');
         const textBefore = app.exportText();
         const undoBefore = ad.canUndo();
-        click('#btn-arrange');
+        click('#btn-arrange-default');
         await tick(10);
         const asked = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
         check(
@@ -1662,7 +3573,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           'Cancel leaves both views untouched (positions, stored layout, YAML, undo history, status)',
           rects() === moved && viewState('logical') === logState && viewState('physical') === physState && app.exportText() === textBefore && ad.canUndo() === undoBefore && status('logical') === 'manual' && status('physical') === 'auto',
         );
-        click('#btn-arrange');
+        click('#btn-arrange-default');
         await answerDialog('arrange');
         check('after confirming, Auto-arrange ignores manual positions (same result as before the move)', rects() === logBefore && status('logical') === 'auto');
         check('… and the other view is exactly as it was', viewState('physical') === physState);
@@ -1689,7 +3600,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         re.arrange(['physical', 'logical']);
         re.addEntity('device', [['id', strNode('hq-spare')], ['type', strNode('switch')], ['group', strNode('hq-core')]]);
         (app as unknown as { afterEdit(n?: string): void }).afterEdit();
-        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().icon === '\u25CF' && /no longer matches the auto-arranged layout/.test(shown().desc), JSON.stringify(shown()));
+        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().current === '' && arrangeLook() === 'todo' && /no longer matches an Auto-arrange option/.test(shown().desc), JSON.stringify(shown()) + ' ' + arrangeLook());
         re.markSaved();
       }
       // an equivalent file with every list reversed arranges identically
@@ -1712,10 +3623,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const rd = app.mdoc as ModelDoc;
       rd.arrange(['physical', 'logical']);
       const layoutText = (t: string): string => t.slice(t.indexOf('\nlayout:'));
-      check('an equivalent file with all lists and keys in reverse order arranges identically', layoutText(rd.exportText()) === layoutText(exported));
+      // the same model in its original order, with both views arranged
+      const straight = ModelDoc.fromText(EXAMPLES[wanIdx].text, 'straight.yaml', 'file').doc as ModelDoc;
+      straight.arrange(['physical', 'logical']);
+      check('an equivalent file with all lists and keys in reverse order arranges identically', layoutText(rd.exportText()) === layoutText(straight.exportText()) && /\n {2}physical:/.test(layoutText(rd.exportText())));
       rd.markSaved();
       // cross-engine determinism: metro-ring-arranged.yaml was computed in Node when the app was built
-      const src = EXAMPLES.find((e) => e.name === 'metro-ring.yaml');
+      const src = exampleNamed('metro-ring.yaml');
       const ref = FIXTURES.find((e) => e.name === 'metro-ring-arranged.yaml');
       if (src && ref) {
         const md = ModelDoc.fromText(src.text, 'metro-ring.yaml', 'file').doc as ModelDoc;
@@ -1733,7 +3647,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'),
       d0 ? d0.exportText() : '',
     );
-    check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto' && shown().st === 'auto' && shown().desc === AUTO_MSG);
+    check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto' && shown().st === 'auto' && AUTO_RE.test(shown().desc));
     // the first device: no type preselected, and nothing saved for it
     click('#outline [data-act="add-entity"][data-kind="device"]');
     await tick();
@@ -1769,8 +3683,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exportText(),
     );
     check(
-      'devices have no vendor, model, role, management-address or router-ID field',
-      ['vendor', 'model', 'role', 'mgmt', 'router_id'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || ''),
+      'devices have no vendor, model or management-address field (their role is a field of its own); a router has a Protocols section; its router ID and AS number appear only with a protocol that uses them',
+      !!q(`#side-body [data-p='["devices",0,"role"]']`) && ['vendor', 'model', 'mgmt'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || '') &&
+        !!q('#side-body [data-group="protocols"] select[data-t="enable-service"]') && !q(`#side-body [data-p='["devices",0,"router_id"]']`) && !q(`#side-body [data-p='["devices",0,"asn"]']`),
     );
 
     click('#outline [data-act="add-entity"][data-kind="device"]');
@@ -1850,7 +3765,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           !q('#side-body [data-act="add-child"]') && !/Child interfaces|Parent/.test(q('#side-body')!.textContent || ''),
         typeOptions,
       );
-      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
+      check('a loopback has no parent, member or tunnel fields', !/Member ports|Bridge ports|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
 
       // an aggregate: a virtual interface that names several member ports
       click('#side-body [data-act="add-iface"]');
@@ -1873,16 +3788,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // a VLAN interface: it names its VLAN; the ports carrying its networks come from the link ends (checked below, once there are networks)
       click('#side-body [data-act="add-logical"][data-kind="virtual"]');
       await tick();
-      const netPorts = card(lg(2)) + ' > [data-derived="net-ports"]';
+      const bridgePorts = card(lg(2)) + ' [data-derived="bridge-ports"]';
       // a virtual interface is not assumed to be a bond or a VLAN interface: until it is one, both are offered and no ports are shown
       const plain = labels(lg(2));
-      const noPortsYet = !q(netPorts);
+      const noPortsYet = !q(bridgePorts);
       await setField(field(2, 'vlan'), '30');
       check(
-        'a VLAN interface names its VLAN; with no network of that VLAN it has no "Ports carrying its networks"; no port is entered on the interface',
-        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noPortsYet && !q(netPorts) && !/Member ports/.test(labels(lg(2))) &&
-          !/VLAN ID|Ports carrying/.test(labels(lg(1))) && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
-        `${plain} / ${labels(lg(2))} / ${labels(lg(1))}`,
+        'a VLAN interface names its VLAN; its Bridge ports are derived (read-only: no port of the device carries VLAN 30 yet); no port is entered on the interface',
+        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noPortsYet && !!q(bridgePorts) && /No port of this device has VLAN 30/.test((q(bridgePorts)!.textContent || '')) && !q(bridgePorts + ' input') && !/Member ports/.test(labels(lg(2))) &&
+          !/VLAN ID|Bridge ports/.test(labels(lg(1))) && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
+        `${plain} / ${labels(lg(2))} / ${labels(lg(1))} / ${q(bridgePorts) ? (q(bridgePorts)!.textContent || '') : 'no Bridge ports'}`,
       );
 
       // a tunnel: its source is any interface of the device (here a loopback) or an address
@@ -1900,7 +3815,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'a tunnel names its source (a loopback, an address or a port: not only a physical parent) and its destination; an unknown source is an error',
         viaLoopback && viaAddress && /tunnel source "eth7" is neither an IP address nor an interface of "router1"/.test(badSource) && dh().valid && t().source!.iface === 'eth0' && /Tunnel source\|Tunnel destination/.test(labels(lg(3))) &&
-          !/Member ports|Ports carrying VLAN/.test(labels(lg(3))) && /- \{id: tun0, type: tunnel, source: eth0, destination: edge2:lo0\}/.test(app.exportText()),
+          !/Member ports|Bridge ports/.test(labels(lg(3))) && /- \{id: tun0, type: tunnel, source: eth0, destination: edge2:lo0\}/.test(app.exportText()),
         `${viaLoopback} ${viaAddress} ${badSource} ${labels(lg(3))}`,
       );
 
@@ -1944,7 +3859,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           /missing required key "protocol"/.test(errs) && /at least 2 endpoints/.test(errs) && /protocol/.test(fieldErr) && count('g.rel') === 0,
         errs + ' // ' + fieldErr,
       );
-      click('#btn-download');
+      click('#btn-save-as');
       await tick(10);
       check('the incomplete relation makes export warn explicitly ("Download anyway")', /has errors/.test(q('#modal h2')!.textContent || '') && !!q('#modal [data-value="download"].danger'));
       await answerDialog('cancel');
@@ -2075,79 +3990,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('derived members and interface VLANs are never written to the YAML', !/\n {4}members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 3 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
 
-    // ------------------------------------ per-end networks on a link
-    {
-      // a third network without a VLAN: the picker is not limited to networks with VLAN IDs
-      click('#outline [data-act="add-entity"][data-kind="network"]');
-      await tick();
-      await setField('#side-body input[data-t="text"][data-p=\'["networks",2,"cidr"]\']', '192.0.2.0/24');
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      const end = (side: string): string => `#side-body [data-net-end="${side}"]`;
-      const n = (side: string): number => Number((q(end(side)) || { getAttribute: () => '-1' }).getAttribute('data-net-count'));
-      const mismatch = (): string => (q('#side-body [data-net-mismatch]') || { getAttribute: () => '' }).getAttribute('data-net-mismatch') || '';
-      const pick = (side: string): string => `#side-body select[data-t="net-pick"][data-p='["links",0,"${side}"]']`;
-      const options = (side: string): string => (Array.prototype.map.call((q(pick(side)) as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).filter((x) => x).join();
-      const lk = (): { a: string[]; b: string[] } => {
-        const l = (app.mdoc as ModelDoc).result.model!.links[0];
-        return { a: l.a.networks, b: l.b.networks };
-      };
-      const label = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .link-label'), (e: Element) => e.textContent || '') as string[]).join('|');
-      check(
-        'a link end without networks says "No network"; nothing is assumed; the picker offers every network, with or without a VLAN',
-        n('A') === 0 && n('B') === 0 && /No network/.test(text(end('A'))) && mismatch() === 'no' && !/networks: \[|vlans/.test((app.mdoc as ModelDoc).exportText()) && options('a') === 'net1,net2,net3' && !q('#side-body [data-t="vlan-add"]'),
-        options('a'),
-      );
-      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
-      await setField(pick('a'), 'net1');
-      await setField(pick('a'), 'net3');
-      check(
-        'two networks on end A, by id: listed as networks (the VLAN of a network is only shown with it), never as a trunk; end B is not touched',
-        n('A') === 2 && /2 networks/.test(text(end('A'))) && /net1 · VLAN 78/.test(text(end('A'))) && !/trunk/i.test(text(end('A'))) && n('B') === 0 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":[]}' &&
-          /a: \{device: router1, interface: eth0, networks: \[net1, net3\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
-        (app.mdoc as ModelDoc).exportText(),
-      );
-      click('[data-view-btn="physical"]');
-      check(
-        'the difference between the ends is shown (editor, problems, physical view) and not repaired',
-        mismatch() === 'yes' && /only at end A: net1, net3/.test(text('#side-body [data-net-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)) &&
-          count('.cable.net-mismatch') === 1 && count('.net-warn') === 1 && /networks differ/.test(label()) && !/trunk/i.test(label()),
-        text('#side-body [data-net-mismatch]') + ' / ' + label(),
-      );
-      await setField(pick('b'), 'net3');
-      await setField(pick('b'), 'net1');
-      check(
-        'the same networks at both ends (in any order): no difference; the cable is labelled with them, not as a trunk',
-        JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}' && mismatch() === 'no' && count('.cable.net-mismatch') === 0 && count('.net-warn') === 0 &&
-          /net1, net3/.test(label()) && !/trunk/i.test(label() + text('#side-body')) && !(app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)),
-        label(),
-      );
-      click('#side-body [data-act="del-net"][data-p=\'["links",0,"a"]\'][data-k="net3"]');
-      await tick();
-      check('removing a network from one end leaves the other end as it was (the difference is shown again)', JSON.stringify(lk()) === '{"a":["net1"],"b":["net3","net1"]}' && n('A') === 1 && n('B') === 2 && mismatch() === 'yes');
-      // selecting a network highlights the cables that carry it, with their ports
-      app.select('network:net3');
-      check('selecting a network highlights the cable that carries it at an end', count('.cable.hl') === 1, String(count('.cable.hl')));
-      app.select(null);
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      await setField(pick('a'), 'net3');
-      // a VLAN interface in a network carried on a port: "Ports carrying its networks" follows the link ends
-      await selectDevice(0);
-      await setField("#side-body [data-p='[\"devices\",0,\"logical_interfaces\",2,\"vlan\"]']", '78');
-      const netPorts = `#side-body [data-card='["devices",0,"logical_interfaces",2]'] > [data-derived="net-ports"]`;
-      const ports = (Array.prototype.map.call(doc.querySelectorAll(netPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
-      check(
-        'a VLAN interface shows "Ports carrying its networks" read-only, derived from the networks on the link ends',
-        ports === 'eth0' && /Ports carrying its networks \(net1\)/.test(text(netPorts)) && /net1 on/.test(text(netPorts)) && readOnly(netPorts) && /- \{id: virtual1, type: virtual, vlan: 78\}/.test(app.exportText()),
-        text(netPorts),
-      );
-      check('link-end networks and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}');
-      click('[data-view-btn="logical"]');
-    }
+    // (the ports' VLANs are tested on the VLAN example, in the section "VLANs on ports" above)
 
     // export the new model
-    click('#btn-download');
+    click('#btn-save-as');
     await tick(10);
     const dlgText = q('#modal')!.textContent || '';
     check('download dialog explains the export', /downloads location/.test(dlgText) && (q('#dl-name') as HTMLInputElement).value === 'new-network.yaml');
@@ -2162,25 +4008,24 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.logical.map((l) => l.id + ':' + l.type).join() === 'lo0:loopback,lo1:loopback' &&
           rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' && rm.index.interfaces.get('edge2:lo0')!.type === 'loopback' &&
           rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}`).join() === 'eth0:physical,eth9:physical' &&
-          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::78:>,tun0:tunnel:::eth0>edge2:lo0' &&
+          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::30:>,tun0:tunnel:::eth0>edge2:lo0' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
-        'export → reload: per-end networks are in the file; members and interface VLANs are derived again, not stored',
-        !!rm && JSON.stringify([rm.links[0].a.networks, rm.links[0].b.networks]) === '[["net1","net3"],["net3","net1"]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
-          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, networks: \[net3, net1\]\}/.test(created.text),
+        'export → reload: members and interface VLANs are derived again, not stored',
+        !!rm && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' && interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text),
         created.text);
       if (rd) {
         app.loadText(created.text, 'reloaded.yaml', 'file');
         click('[data-view-btn="physical"]');
         const physOk = count('.cable') === 1 && count('.net-warn') === 0;
         click('[data-view-btn="logical"]');
-        check('… and both views draw the reloaded file the same way (cable with matching ends; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 3, `${count('.member')} member lines`);
+        check('… and both views draw the reloaded file the same way (cable with matching ends; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 2, `${count('.member')} member lines, ${count('g.network')} networks`);
       }
     }
 
     // ------------------------ editor: import → edit → export → reload
-    const wanText = EXAMPLES.find((e) => /enterprise-wan/.test(e.name))!.text.replace('    label: hq-rtr1\n    type: router\n    group: hq-edge\n', '    label: hq-rtr1\n    type: router\n    group: hq-edge\n    attrs:\n      serial: JN11AB22CD\n      contract: {id: C-77, expires: 2027-01-31}\n');
+    const wanText = exampleNamed('enterprise-wan.yaml')!.text.replace('    label: hq-rtr1\n    type: router\n    group: hq-edge\n', '    label: hq-rtr1\n    type: router\n    group: hq-edge\n    attrs:\n      serial: JN11AB22CD\n      contract: {id: C-77, expires: 2027-01-31}\n');
     const imp = await app.loadFile(new File([wanText], 'acme-wan.yaml'));
     check('imported file opens in the editor', imp.ok && (app.mdoc as ModelDoc).origin === 'file' && (app.mdoc as ModelDoc).valid);
     app.select('device:hq-rtr1');
@@ -2192,9 +4037,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('#side-body [data-act="add-logical"][data-kind="loopback"]');
     await tick();
     await setField(`#side-body [data-t="list-append"][data-p='["devices",3,"logical_interfaces",2,"ip"]']`, '2001:db8:0:ff::1/128');
-    click('#btn-download');
+    click('#btn-save-as');
     await tick(10);
-    check('export of an imported file is offered as a new copy', /original file on your disk is not modified/.test(q('#modal')!.textContent || '') && (q('#dl-name') as HTMLInputElement).value === 'acme-wan-edited.yaml');
+    check('without a save picker, Save model as… of an imported file offers a downloaded copy under a new name (the opened file is not changed)', /“acme-wan.yaml” on your disk is not changed/.test(q('#modal')!.textContent || '') && (q('#dl-name') as HTMLInputElement).value === 'acme-wan-edited.yaml');
     await answerDialog('download');
     const edited = await lastDownload();
     if (edited) {
@@ -2232,7 +4077,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const dC = app.mdoc as ModelDoc;
     check('broken references are reported (not silently removed)', !dC.valid && dC.errors.some((e) => /unknown device "muc-rtr"/.test(e.message)) && /muc-rtr/.test(dC.exportText()));
     check('entities with errors are flagged in the outline', doc.querySelectorAll('#outline .ol-badge.err').length > 0);
-    click('#btn-download');
+    click('#btn-save-as');
     await tick(10);
     check('exporting an invalid model warns explicitly', /has errors/.test(q('#modal h2')!.textContent || '') && !!q('#modal [data-value="download"].danger'));
     await answerDialog('cancel');
@@ -2242,7 +4087,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // YAML tab: apply text edits, reject broken YAML without losing the model
     click('[data-tab="yaml"]');
     const ta = q('#yaml-src') as HTMLTextAreaElement;
-    ta.value = ta.value.replace('title: ACME Corp — enterprise WAN', 'title: ACME WAN (edited as text)');
+    ta.value = ta.value.replace('title: Enterprise WAN — HQ and two branches over VPN', 'title: ACME WAN (edited as text)');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     click('[data-tab="legend"]');
     click('[data-tab="yaml"]');
@@ -2262,7 +4107,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick();
     check('"move into attrs" fixes an unknown property', /attrs:\n\s+colour: blue/.test(app.exportText()));
 
-    // keys that are not part of the format are rejected with what to do instead (never read or converted)
+    // keys that are not part of the format are unknown keys (never read or converted)
     {
       const badFile = app.loadText(
         'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
@@ -2271,9 +4116,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       const msgs = badFile.errors.map((e) => e.message).join(' | ');
       check(
-        'a file with keys outside the format opens as a draft with one actionable error per key',
-        badFile.ok && badFile.errors.length === 12 && /"children" is not part of the format — interfaces are not nested/.test(msgs) && /"loopbacks" is not part of the format/.test(msgs) && /"speed" is not part of the format/.test(msgs) && /"vendor" is not part of the format/.test(msgs) && /"router_id" is not part of the format/.test(msgs) && /"type" is not part of the format/.test(msgs) &&
-          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is not part of the format/.test(msgs) && /write "kind: floor"/.test(msgs) &&
+        'a file with keys outside the format opens as a draft with one error per key',
+        badFile.ok && badFile.errors.length === 11 && ['children', 'loopbacks', 'speed', 'vendor', 'type', 'members'].every((k) => msgs.indexOf(`unknown key "${k}"`) >= 0) && msgs.indexOf('"lo0" is not a router ID') >= 0 &&
+          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && (app.mdoc as ModelDoc).result.model!.groups[0].kind === 'row' &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
       );
@@ -2432,7 +4277,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
       // enterprise WAN, zoomed in and panned away: the picture is still the whole diagram
       app.mdoc!.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       const res: { [view: string]: Awaited<ReturnType<typeof both>> } = {};
       for (const view of ['physical', 'logical']) {
         click(`[data-view-btn="${view}"]`);
@@ -2482,7 +4327,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       {
         // long labels: nothing shortened, nothing cut off
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml'));
+        app.loadExampleNamed('long-labels.yaml');
         for (const view of ['physical', 'logical']) {
           click(`[data-view-btn="${view}"]`);
           const r = await both('long-labels', view);
@@ -2497,7 +4342,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         lines.push('devices:');
         for (let g = 0; g < 8; g++)
           for (let n = 0; n < 12; n++) {
-            lines.push(`  - id: d${g}-${n}`, `    label: Device ${n} of site ${g}`, `    type: ${n === 0 ? 'router' : 'switch'}`, `    group: site-${g}`, '    interfaces:', `      - {id: up, ip: 10.${g}.0.${n + 1}/24}`, '      - {id: down}', '      - {id: wan}');
+            // (the switches are Layer 3 switches: their ports are routed, with addresses)
+            const r = n === 0 ? '' : 'routed: true, ';
+            lines.push(`  - id: d${g}-${n}`, `    label: Device ${n} of site ${g}`, `    type: ${n === 0 ? 'router' : 'switch'}`, ...(n === 0 ? [] : ['    layer3: true']), `    group: site-${g}`, '    interfaces:', `      - {id: up, ${r}ip: 10.${g}.0.${n + 1}/24}`, `      - {id: down${r ? ', routed: true' : ''}}`, `      - {id: wan${r ? ', routed: true' : ''}}`);
             lines.push('    logical_interfaces:', `      - {id: lo0, type: loopback, ip: 10.255.${g}.${n + 1}/32}`);
           }
         lines.push('links:');
@@ -2640,7 +4487,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         'interaction help: open, in two labelled groups (Pointer, Keyboard) listing every documented action',
         keys.open && keys.tagName === 'DETAILS' && /Mouse & keyboard/.test((keys.querySelector('summary') as HTMLElement).textContent || '') && groups.length === 2 &&
           groups.map((g) => (g.querySelector('h4') as HTMLElement).textContent).join() === 'Pointer,Keyboard' &&
-          pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | Ctrl+S: download',
+          pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Right-click: connect | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | C: connect | Ctrl+S: save',
         pairs,
       );
       check('… readable: side by side in a wide panel, nothing outside it, no text below 10.5px', Math.abs(rect(groups[0]).top - rect(groups[1]).top) < 2 && keyMisfits().length === 0, keyMisfits().join('; '));
@@ -2735,7 +4582,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('after renaming the object, the mark is on its entry under the new id', mark() === entry('core-renamed', '  - id: access') && /“core-renamed”/.test(q('#yaml-sel')!.textContent || ''), mark());
       // a long file: a selected entry out of sight is scrolled into view once; afterwards the reader's scroll position is respected
       if (app.mdoc) app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       check('opening another file: no selection, nothing marked', mark() === '' && q('#yaml-sel')!.getAttribute('data-state') === 'none' && !!q('[data-tab="yaml"].active'));
       app.select('device:hq-log');
       await tick();
@@ -2753,12 +4600,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="legend"]');
     }
 
-    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, View menu
+    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, Find menu
     {
       if (app.mdoc) app.mdoc.markSaved();
       const view = doc.defaultView as Window;
       const rect = (e: Element): DOMRect => e.getBoundingClientRect();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="logical"]');
       await tick();
       const m = app.session!.model;
@@ -2845,14 +4692,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const badge = q('#status .fname') as HTMLElement;
       const bar = rect(q('#status') as HTMLElement);
       check(
-        'status bar: the file name is a badge at the start (full name as tooltip); a long name is cut with "…" inside the bar, the rest of the status follows on the same line, the page does not scroll',
-        !!badge && badge === (q('#status') as HTMLElement).firstElementChild && badge.title === LONGNAME && badge.scrollWidth > badge.clientWidth && view.getComputedStyle(badge).textOverflow === 'ellipsis' &&
+        'status bar: the file name is a badge at the start (full name and how it is saved as tooltip); a long name is cut with "…" inside the bar, the rest of the status follows on the same line, the page does not scroll',
+        !!badge && badge === (q('#status') as HTMLElement).firstElementChild && badge.title.indexOf(LONGNAME + ': ') === 0 && /opened read-only/.test(badge.title) &&
+          (q('#status .fname-text') as HTMLElement).scrollWidth > (q('#status .fname-text') as HTMLElement).clientWidth && view.getComputedStyle(q('#status .fname-text') as HTMLElement).textOverflow === 'ellipsis' &&
           rect(badge).right <= bar.right && /1 devices/.test(q('#status .status-rest')!.textContent || '') && Math.abs(rect(q('#status .status-rest') as HTMLElement).top - rect(badge).top) < 6 &&
           doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
       );
 
       // the toolbar filters: one row; in a narrow toolbar the lower-priority ones go into "Filters", which says what is off
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="logical"]');
       await tick();
       const top = q('header.topbar') as HTMLElement;
@@ -2864,14 +4712,22 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const mid = parts.map((e) => rect(e).top + rect(e).height / 2);
         return mid.every((y) => Math.abs(y - mid[0]) < 2.5);
       };
-      check('wide window: every filter on the toolbar, on one row, no Filters button', inline().join() === 'Labels,Groups / Locations,Networks,Endpoints,Servers' && more.hidden && oneRow(), inline().join());
-      top.style.maxWidth = '900px';
+      const ORDER = ['Labels', 'Groups / Locations', 'Networks', 'Routes'];
+      const wideInline = inline();
+      check(
+        'wide window: the filters on one row, by priority; whatever does not fit is in the Filters drop-down (none in a window wide enough)',
+        wideInline.length >= 1 && wideInline.join() === ORDER.slice(0, wideInline.length).join() && more.hidden === (wideInline.length === ORDER.length) && oneRow(),
+        wideInline.join(),
+      );
+      top.style.maxWidth = '540px';
       app.layoutFilters();
       await tick();
       const narrowInline = inline();
       check(
-        'narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority',
-        oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline[0] === 'Labels' && !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5,
+        'narrow toolbar: the filters stay on one row; Devices and Device types stay; Routes, then Networks, … move into the Filters drop-down by priority',
+        // the ones that stay inline are the highest-priority ones, in order (possibly none at this width)
+        oneRow() && !more.hidden && narrowInline.length <= wideInline.length && narrowInline.join() === ORDER.slice(0, narrowInline.length).join() &&
+          !!q('#more-filters #opt-routes') && !!q('#view-filters > .devices-wrap') && !!q('#view-filters > .types-wrap') && rect(group).right <= rect(top).right + 0.5 && doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
         narrowInline.join(),
       );
       more.focus();
@@ -2879,10 +4735,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const firstInside = doc.activeElement as HTMLInputElement;
       const opened = !(q('#more-filters') as HTMLElement).hidden && more.getAttribute('aria-expanded') === 'true' && !!firstInside && (q('#more-filters') as HTMLElement).contains(firstInside);
-      const servers = q('#opt-type-server') as HTMLInputElement;
+      const servers = q('#opt-routes') as HTMLInputElement;
       servers.click();
       await tick();
-      const offShown = /1 off/.test(more.textContent || '') && more.classList.contains('filtered') && /Servers/.test(more.getAttribute('aria-label') || '') && app.session!.isTypeHidden('server');
+      const offShown = /1 off/.test(more.textContent || '') && more.classList.contains('filtered') && /Routes/.test(more.getAttribute('aria-label') || '') && !app.session!.state.showRoutes;
       (q('#more-filters') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
@@ -2893,28 +4749,47 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       top.style.maxWidth = '';
       app.layoutFilters();
       await tick();
-      check('back to a wide toolbar: every filter is inline again, with its state kept (Servers still off, shown unchecked)', inline().length === 5 && more.hidden && !servers.checked && servers.parentElement!.parentElement === group && oneRow());
+      check(
+        'back to a wide toolbar: the same filters are inline again, with their state kept (Routes still off, shown unchecked)',
+        inline().join() === wideInline.join() && !servers.checked && (wideInline.length === ORDER.length ? more.hidden && servers.parentElement!.parentElement === group : !more.hidden && /1 off/.test(more.textContent || '')) && oneRow(),
+        inline().join(),
+      );
       servers.click();
       await tick();
 
-      // the View menu: Find… and Filter outline… live there (and nowhere else), with the menus' keyboard rules
-      const viewBtn = q('#view-btn') as HTMLButtonElement;
+      // the Find menu: Find in diagram… and Filter object list… live there (and nowhere else), with the menus' keyboard rules
+      const viewBtn = q('#find-btn') as HTMLButtonElement;
+      {
+        // its name in both views: the visible text (which is also the button's accessible name), the tooltip and the menu's label;
+        // the View group of Physical / Logical keeps its own name
+        const names: string[] = [];
+        for (const v of ['physical', 'logical']) {
+          click(`[data-view-btn="${v}"]`);
+          names.push([(viewBtn.textContent || '').replace('▾', '').trim(), viewBtn.getAttribute('aria-label') === null, viewBtn.title, (q('#find-menu') as HTMLElement).getAttribute('aria-label'), (q('#view-title') as HTMLElement).textContent].join('|'));
+        }
+        check(
+          'the menu with Find in diagram… and Filter object list… is named "Find" in both views (text, accessible name, tooltip, the menu’s label); the Physical / Logical group is still "View"',
+          names.every((n) => n === 'Find|true|Find: find in the diagram, filter the object list|Find|View'),
+          names.join(' / '),
+        );
+      }
       click('#export-btn');
       (q('#export-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
       await tick();
-      const viaArrow = !(q('#view-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#view-menu') as HTMLElement).contains(doc.activeElement);
-      const entries = textsOf('#view-menu button');
+      const viaArrow = !(q('#find-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#find-menu') as HTMLElement).contains(doc.activeElement);
+      const entries = textsOf('#find-menu button');
       check(
-        'View menu next to Export: Find… (/) and Filter outline…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
-        viaArrow && entries.join(' | ') === 'Find…/ | Filter outline…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]'),
+        'Find menu next to Export: Find in diagram… (/), Filter object list… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
+          /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );
-      (q('#view-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-      click('#view-btn');
+      (q('#find-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      click('#find-btn');
       click('#btn-find');
       await tick();
       const s = q('#search') as HTMLInputElement;
-      const findOpened = app.findOpen && doc.activeElement === s && (q('#view-menu') as HTMLElement).hidden;
+      const findOpened = app.findOpen && doc.activeElement === s && (q('#find-menu') as HTMLElement).hidden;
       s.value = 'hq-fw';
       s.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
@@ -2924,17 +4799,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const picked = app.session!.state.selected === 'device:hq-fw';
       s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('View → Find… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '', `${findOpened} ${hits} ${picked}`);
+      check('Find → Find in diagram… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '' && (q('#find-bar') as HTMLElement).getAttribute('aria-label') === 'Find in diagram', `${findOpened} ${hits} ${picked}`);
       (doc.activeElement as HTMLElement | null)?.blur?.();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
       await tick();
       check('"/" still opens Find', app.findOpen && doc.activeElement === s);
       app.closeFind();
-      click('#view-btn');
+      click('#find-btn');
       click('#btn-outline-filter');
       await tick();
       const of = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
-      const ofOpened = !!of && doc.activeElement === of;
+      const ofOpened = !!of && doc.activeElement === of && of.placeholder === 'Filter the object list…';
+      const diagramBefore = new XMLSerializer().serializeToString(q('#viewport') as Element);
       of.value = 'muc';
       of.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
@@ -2943,14 +4819,1187 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       of2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
-        'View → Filter outline… shows the filter at the top of the outline with the cursor in it; it filters as before; Esc clears and removes it',
-        ofOpened && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
+        'Find → Filter object list… shows the filter at the top of the outline with the cursor in it; it filters the list, not the diagram; Esc clears and removes it',
+        ofOpened && new XMLSerializer().serializeToString(q('#viewport') as Element) === diagramBefore && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
         listed.join(' | '),
       );
       app.mdoc!.markSaved();
+      // a filter switched off before closing: the start screen shows the defaults again
+      (q('#opt-labels') as HTMLInputElement).click();
+      const labelsOff = !(q('#opt-labels') as HTMLInputElement).checked && !app.session!.state.showLabels;
       app.closeModel();
       check('without a model both View entries are disabled, like Export', (q('#btn-find') as HTMLButtonElement).disabled && (q('#btn-outline-filter') as HTMLButtonElement).disabled && !app.openFind());
+      {
+        // the start screen: every diagram filter is greyed out and inert, inline or in the Filters drop-down, in either view
+        const ids = ['opt-labels', 'opt-groups', 'opt-networks', 'opt-routes'];
+        const boxes = ids.map((id) => q('#' + id) as HTMLInputElement);
+        const devBtn = q('#devices-btn') as HTMLButtonElement;
+        const moreBtn = q('#more-filters-btn') as HTMLButtonElement;
+        const typesBtn = q('#types-btn') as HTMLButtonElement;
+        const allOff = (): boolean => boxes.every((b) => b.disabled && b.checked) && devBtn.disabled && typesBtn.disabled && moreBtn.disabled;
+        const wide = allOff() && doc.body.getAttribute('data-state') === 'empty';
+        const faded = boxes.every((b) => Number(doc.defaultView!.getComputedStyle(b.closest('label.opt') as Element).opacity) < 1);
+        // clicks, keyboard focus and Space do nothing
+        const tried: string[] = [];
+        for (const b of boxes) {
+          b.click();
+          b.focus();
+          if (doc.activeElement === b) tried.push('focus ' + b.id);
+          b.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+          (b.closest('label') as HTMLElement).click();
+          if (!b.checked) tried.push('changed ' + b.id);
+        }
+        // a narrow toolbar collapses filters into the drop-down: its button is disabled too, and it does not open
+        const top = q('header.topbar') as HTMLElement;
+        top.style.maxWidth = '360px';
+        app.layoutFilters();
+        await tick();
+        const collapsed = !moreBtn.hidden;
+        moreBtn.click();
+        app.openMoreFilters(true, true);
+        moreBtn.focus();
+        moreBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        await tick();
+        const panelClosed = (q('#more-filters') as HTMLElement).hidden && moreBtn.getAttribute('aria-expanded') === 'false' && doc.activeElement !== moreBtn;
+        devBtn.click();
+        typesBtn.click();
+        const devClosed = (q('#devices-panel') as HTMLElement).hidden && (q('#types-panel') as HTMLElement).hidden;
+        top.style.maxWidth = '';
+        app.layoutFilters();
+        check(
+          'start screen: Devices, Device types, Labels, Groups / Locations, Networks and Routes are disabled and greyed out, also when collapsed into a disabled Filters drop-down; clicks, focus and keys change nothing',
+          labelsOff && wide && faded && !tried.length && collapsed && moreBtn.disabled && panelClosed && devClosed && allOff() && !app.session,
+          `${labelsOff} ${wide} ${faded} ${tried.join()} collapsed=${collapsed} ${panelClosed} ${devClosed}`,
+        );
+        // the Auto-arrange button: disabled, no status, and the A key does nothing
+        doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+        await tick(10);
+        check('start screen: the Auto-arrange options are disabled without a status, and A does nothing', STRATS.every((st) => arrangeBtn(st).disabled) && shown().st === '' && shown().current === '' && !q('#modal[open]') && !app.mdoc);
+      }
       app.loadExample(0);
+      {
+        const ids = ['opt-labels', 'opt-groups'];
+        const ss = app.session!;
+        const physOk = ids.every((id) => !(q('#' + id) as HTMLInputElement).disabled && (q('#' + id) as HTMLInputElement).checked) && !(q('#devices-btn') as HTMLButtonElement).disabled && !(q('#types-btn') as HTMLButtonElement).disabled && !(q('#more-filters-btn') as HTMLButtonElement).disabled;
+        click('[data-view-btn="logical"]');
+        const net = q('#opt-networks') as HTMLInputElement;
+        const logOk = !net.disabled && net.checked;
+        click('[data-view-btn="physical"]');
+        check(
+          'opening a model enables every diagram filter again with its default (all on), in the physical and the logical view',
+          physOk && logOk && ss.state.showLabels && ss.state.showGroups && ss.state.showNetworks && ss.state.hiddenTypes.size === 0 && !ss.isFiltered(),
+          `${physOk} ${logOk}`,
+        );
+      }
+    }
+
+    // ------------------------------------------------ saving to a file the page may write (a stand-in for the browser's file handles)
+    {
+      interface FakeHandle extends WritableFile {
+        text: string;
+        writes: number;
+        perm: string;
+        fail: boolean;
+      }
+      const handle = (name: string, text = '', perm = 'granted'): FakeHandle => {
+        const h: FakeHandle = {
+          kind: 'file',
+          name,
+          text,
+          writes: 0,
+          perm,
+          fail: false,
+          getFile: async () => new File([h.text], name),
+          queryPermission: async () => h.perm,
+          requestPermission: async () => (h.perm === 'prompt' ? (h.perm = 'granted') : h.perm),
+          createWritable: async () => {
+            let buf = '';
+            return {
+              write: async (d: string): Promise<void> => {
+                if (h.fail) throw new Error('the disk is full');
+                buf += d;
+              },
+              close: async (): Promise<void> => {
+                h.text = buf;
+                h.writes++;
+              },
+            };
+          },
+        };
+        return h;
+      };
+      let nextSave: FakeHandle | null = null;
+      let nextOpen: FakeHandle | null = null;
+      let suggested = '';
+      let picks = 0;
+      const abort = (): Error => Object.assign(new Error('The user aborted a request.'), { name: 'AbortError' });
+      app.fileAccess = {
+        saveFile: async (name: string) => {
+          picks++;
+          suggested = name;
+          const h = nextSave;
+          nextSave = null;
+          if (!h) throw abort();
+          return h;
+        },
+        openFile: async () => {
+          const h = nextOpen;
+          nextOpen = null;
+          if (!h) throw abort();
+          return h;
+        },
+      };
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const edit = (title: string): void => {
+        md().setText(['title'], title);
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      };
+      const toastText = (): string => q('#toast')!.textContent || '';
+      const saveBtn = q('#btn-save') as HTMLButtonElement;
+      const saveAsBtn = q('#btn-save-as') as HTMLButtonElement;
+      const activeEx = (): string => (Array.prototype.map.call(doc.querySelectorAll('#menu-examples .active-example'), (e: Element) => e.getAttribute('data-example')) as string[]).join();
+      const had = downloads.length;
+
+      app.loadExample(2);
+      edit('Minimal, to be saved');
+      const before = { save: saveBtn.disabled, saveAs: saveAsBtn.disabled, ex: activeEx() };
+      // a cancelled picker changes nothing
+      click('#menu-btn');
+      saveAsBtn.click();
+      await tick(30);
+      check(
+        'Save model as…: closing the save picker without choosing saves nothing, keeps every edit and the unsaved state, and says so',
+        before.save && !before.saveAs && before.ex === '2' && picks === 1 && suggested === 'datacenter-evpn.yaml' && md().dirty && !app.linked && activeEx() === '2' && /cancelled: nothing was saved/.test(toastText()) && downloads.length === had && !q('#modal[open]'),
+        `${JSON.stringify(before)} picks=${picks} ${toastText()}`,
+      );
+      // choosing a file saves there and links the model to it: the example becomes the user's file
+      const mine = handle('my-minimal.yaml');
+      nextSave = mine;
+      click('#menu-btn');
+      saveAsBtn.click();
+      await tick(30);
+      const fs = app.fileState();
+      check(
+        'Save model as… with a chosen file writes the YAML there, links the model to it (Save model becomes available) and stops marking the example; nothing is downloaded',
+        mine.writes === 1 && mine.text === app.exportText() && !md().dirty && app.linked && !saveBtn.disabled && md().fileName === 'my-minimal.yaml' && activeEx() === '' && fs.kind === 'linked' &&
+          (q('#status .fname-text') as HTMLElement).textContent === 'my-minimal.yaml' && !q('#status .fname .mod-dot') && /Saved as “my-minimal\.yaml”\. Save model now updates this file\./.test(toastText()) && downloads.length === had,
+        `${mine.writes} ${fs.kind} ${toastText()}`,
+      );
+      // Save model: no file name, no confirmation of the application
+      edit('Minimal, saved twice');
+      const dotOnSave = saveBtn.getAttribute('data-modified') === 'true' && !!q('#status .fname .mod-dot');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
+      await tick(30);
+      check(
+        'Save model (Ctrl+S) updates the linked file at once: no file name asked, no dialog; the modified marks go away',
+        dotOnSave && mine.writes === 2 && /title: Minimal, saved twice/.test(mine.text) && !md().dirty && !q('#modal[open]') && picks === 2 && saveBtn.getAttribute('data-modified') === 'false' && /Saved “my-minimal\.yaml”\./.test(toastText()),
+        `${dotOnSave} writes=${mine.writes} picks=${picks}`,
+      );
+      // modified follows undo and redo against what was saved
+      app.undo();
+      const afterUndo = md().dirty && !!q('#status .fname .mod-dot');
+      app.redo();
+      check('after saving, undo marks the model modified again (it differs from the saved file) and redo returns to the saved state', afterUndo && !md().dirty && !q('#status .fname .mod-dot'));
+      // a failed write keeps everything, including the link
+      edit('Minimal, write fails');
+      mine.fail = true;
+      click('#menu-btn');
+      saveBtn.click();
+      await tick(30);
+      const failText = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+      await answerDialog('ok');
+      mine.fail = false;
+      check(
+        'a failed write is reported with the reason; the changes and the unsaved state are kept, and the model stays linked to its file',
+        /The model was not saved/.test(failText) && /“my-minimal\.yaml” was not saved: the disk is full\./.test(failText) && /still marked as modified/.test(failText) && md().dirty && app.linked && mine.writes === 2 && /title: Minimal, saved twice/.test(mine.text),
+        failText,
+      );
+      // a refused permission ends the link: Save model is no longer offered, Save model as… still is
+      mine.perm = 'denied';
+      click('#menu-btn');
+      saveBtn.click();
+      await tick(30);
+      const deniedText = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+      await answerDialog('ok');
+      check(
+        'a refused write permission is reported; the changes stay unsaved, Save model becomes unavailable and Save model as… stays available',
+        /did not allow this page to write to the file/.test(deniedText) && /Save model is no longer available for this file/.test(deniedText) && md().dirty && !app.linked && saveBtn.disabled && !saveAsBtn.disabled && mine.writes === 2,
+        deniedText,
+      );
+      // Open model… with the browser's picker links the model to the opened file (write permission is asked for on the first save)
+      const opened = handle('opened.yaml', exampleNamed('metro-ring.yaml')!.text, 'prompt');
+      nextOpen = opened;
+      click('#menu-btn');
+      click('#open');
+      await tick(20);
+      await answerDialog('discard');
+      for (let n = 0; n < 50 && (!app.mdoc || md().fileName !== 'opened.yaml'); n++) await tick(10);
+      const linkedAfterOpen = app.linked && !saveBtn.disabled && app.fileState().kind === 'linked' && activeEx() === '';
+      edit('Opened and saved');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
+      await tick(30);
+      check(
+        'Open model… through the browser’s picker links the model to the opened file; Save model asks the browser for write permission and updates that file',
+        linkedAfterOpen && opened.perm === 'granted' && opened.writes === 1 && /title: Opened and saved/.test(opened.text) && !md().dirty,
+        `${linkedAfterOpen} ${opened.perm} ${opened.writes}`,
+      );
+      // a file read through the file input (or dropped without a handle) is never linked
+      await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'from-input.yaml'));
+      const inputState = [app.linked, saveBtn.disabled, app.fileState().kind].join();
+      // Ctrl+S without a link means Save model as…; here the picker is cancelled
+      edit('From the input, edited');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
+      await tick(30);
+      check(
+        'a file opened through the file input is not linked (Save model unavailable); Ctrl+S then opens Save model as…, and cancelling it keeps the changes',
+        inputState === 'false,true,unlinked' && picks === 3 && md().dirty && md().fileName === 'from-input.yaml',
+        inputState + ' picks=' + picks,
+      );
+      md().markSaved();
+      // the example mark follows what is open: another example, a new model, closing
+      app.loadExample(0);
+      const a0 = activeEx();
+      app.loadExample(3);
+      const a3 = activeEx();
+      app.newModel();
+      const aNew = activeEx();
+      app.loadExample(1);
+      const a1 = activeEx();
+      app.closeModel();
+      check('the example mark moves to another example, and is cleared by a new model and by closing the model', a0 === '0' && a3 === '3' && aNew === '' && a1 === '1' && activeEx() === '', [a0, a3, aNew, a1, activeEx()].join('|'));
+      // without a save picker, a downloaded copy is not a saved file: the example stays the example
+      app.fileAccess = { saveFile: null, openFile: null };
+      app.loadExample(2);
+      edit('Example, downloaded');
+      click('#menu-btn');
+      saveAsBtn.click();
+      await answerDialog('download');
+      await tick(30);
+      check(
+        'without a save picker, Save model as… downloads a copy: the status says it is a copy that is not linked, the example stays marked, Save model stays unavailable',
+        downloads.length === had + 1 && downloads[downloads.length - 1].name === 'datacenter-evpn.yaml' && app.fileState().kind === 'copy' && /copy downloaded as “datacenter-evpn\.yaml”, not linked to a file/.test(q('#status .file-state')!.textContent || '') && activeEx() === '2' && saveBtn.disabled && !md().dirty,
+        app.fileState().text,
+      );
+    }
+
+    // ------------------------------------------------ Auto-arrange options in the application
+    {
+      app.loadExampleNamed('metro-ring.yaml');
+      app.setView('physical');
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const pos =(v: 'physical' | 'logical'): string => JSON.stringify(Array.from(app.session!.positionsFor(v)));
+      const want = (v: 'physical' | 'logical', st: 'default' | 'compact' | 'spacious'): string => JSON.stringify(Array.from(md().autoLayout(v, st)));
+      const logBefore = pos('logical');
+      click('#btn-arrange-compact');
+      await tick(10);
+      const compactShown = pos('physical') === want('physical', 'compact') && shown().current === 'compact' && arrangeBtn('compact').disabled && !arrangeBtn('default').disabled && !arrangeBtn('spacious').disabled && /arranged with Compact/.test(shown().desc);
+      const undoLabel = md().canUndo();
+      click('#btn-arrange-spacious');
+      await tick(10);
+      const spaciousShown = pos('physical') === want('physical', 'spacious') && shown().current === 'spacious';
+      click('#btn-arrange-spacious');
+      await tick(10);
+      check(
+        'Auto-arrange → Compact and → Spacious arrange the physical view (one undo step each), the matching option is selected and disabled, the others stay available; the logical view is not changed',
+        compactShown && undoLabel === 'Auto-arrange (physical view, Compact)' && spaciousShown && md().canUndo() === 'Auto-arrange (physical view, Spacious)' && pos('logical') === logBefore && status('logical') === 'auto',
+        `${compactShown} ${undoLabel} ${spaciousShown}`,
+      );
+      // the match comes from the positions: undo brings Compact back as the selected option
+      app.undo();
+      const back = shown().current === 'compact';
+      // a manual move: nothing matches, all three can be used, and replacing it asks first
+      const sv = app.session!;
+      const id = sv.model.devices[0].id;
+      const p = sv.positionsFor('physical').get(id)!;
+      md().movePositions('physical', new Map([[id, { x: p.x + 333, y: p.y + 77 }]]), 'Move ' + id);
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      const manual = shows('physical', 'manual');
+      click('#btn-arrange-compact');
+      await tick(10);
+      const asked = !!q('#modal[open]') && /Replace manual positions in the physical view\?/.test(q('#modal')!.textContent || '') && !!q('#modal [data-value="arrange"]') && /Compact/.test(q('#modal [data-value="arrange"]')!.textContent || '');
+      await answerDialog('cancel');
+      const kept = sv.positionsFor('physical').get(id)!.x === p.x + 333;
+      check('the selected option follows the positions (after undo: Compact); after a manual move no option is selected, and replacing manual positions with any option asks first (Cancel keeps them)', back && manual && asked && kept, `${back} ${manual} ${asked} ${kept}`);
+      // a filtered view: the options arrange the shown devices only, temporarily
+      const yaml = app.exportText();
+      app.setDevices(sv.model.devices.slice(0, 4).map((d) => d.id));
+      click('#btn-arrange-spacious');
+      await tick(10);
+      const filtered = app.session!.filteredArrangedWith('physical');
+      check('in a filtered view an option arranges the shown devices only, temporarily: the YAML is unchanged and the option is selected', filtered[0] === 'spacious' && shown().current === 'spacious' && app.exportText() === yaml && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === 'true', filtered.join());
+      app.setDevices(sv.model.devices.map((d) => d.id));
+      md().markSaved();
+      // identical results: a model with one device gets the same positions from every strategy; the tie is resolved in favour of Default
+      app.newModel();
+      md().addEntity('device');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      const same = STRATS.map((st) => `${st}:${arrangeBtn(st).getAttribute('aria-pressed')}/${arrangeBtn(st).disabled}/${arrangeBtn(st).classList.contains('same')}`).join(' ');
+      check(
+        'when strategies give identical positions, Default is the selected one and the others are disabled and say they give the same positions (they never pretend to differ)',
+        same === 'default:true/true/false compact:false/true/true spacious:false/true/true' && /gives exactly the same positions as Default/.test(arrangeBtn('compact').title) && /Compact, Spacious give the same positions/.test(shown().desc),
+        same + ' ' + shown().desc,
+      );
+      md().markSaved();
+    }
+
+    // ------------------------------------------------ interfaces in the diagram, and connecting them
+    {
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const center = (e: Element): { x: number; y: number } => {
+        const r = e.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      };
+      const ptr = (e: Element, type: string, button = 0): void => {
+        const c = center(e);
+        e.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: c.x, clientY: c.y, button, pointerId: 31, isPrimary: true }));
+      };
+      const leftClick = (e: Element): void => {
+        ptr(e, 'pointerdown');
+        ptr(e, 'pointerup');
+      };
+      const rightClick = (e: Element): MouseEvent => {
+        const c = center(e);
+        const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: c.x, clientY: c.y, button: 2 });
+        e.dispatchEvent(ev);
+        return ev;
+      };
+      const el = (ref: string): Element => q(`#viewport [data-endpoint][data-ref="${ref}"]`) as unknown as Element;
+      const cls = (ref: string): string => ['conn-source', 'conn-ok', 'conn-no', 'conn-start'].filter((c) => el(ref) && el(ref).classList.contains(c)).join();
+      const toastText = (): string => q('#toast')!.textContent || '';
+
+      // physical view: every port of a shown device, cabled or not
+      app.loadExampleNamed('device-types.yaml');
+      app.setView('physical');
+      await tick();
+      const chips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).join();
+      const chipTexts = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip text'), (e: Element) => e.textContent) as string[]).join();
+      check(
+        'physical view: a device’s ports without a cable are drawn as selectable chips in its box, each with its full name (also in a long run of similar names); ports with a cable stay ports',
+        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8,iface:sep:mgmt0' && chipTexts === 'Et3,Et4,Et5,Et6,Et7,Et8,mgmt0' && !q('#viewport .if-chip-prefix') && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
+        chips + ' ' + chipTexts + ' ' + drawnProblems().slice(0, 3).join('; '),
+      );
+      // left click selects the interface and opens it in the Edit tab; it never starts a connection
+      leftClick(el('iface:access:Et5'));
+      await tick();
+      check(
+        'left-clicking an interface chip selects that interface and opens it in the Edit tab (its card open); no connection is started',
+        app.session!.state.selected === 'iface:access:Et5' && !!q('[data-tab="edit"].active') && !!q('#side-body details.card[open]') && /Et5/.test((q('#side-body details.card[open] .card-title') as HTMLElement).textContent || '') && !app.connecting && !q('#canvas.connecting'),
+        String(app.session!.state.selected),
+      );
+      app.select(null);
+      // where a connection can start: ports without a cable and devices, not a port that has one
+      const startable = cls('iface:access:Et3') === 'conn-start' && cls('device:nms') === 'conn-start' && cls('iface:access:Et1') === '';
+      // the right-click on the background is the browser's, not ours
+      const bg = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+      (q('#canvas') as unknown as Element).dispatchEvent(bg);
+      // first right-click: the draft starts at that endpoint, with a line to the pointer
+      const first = rightClick(el('iface:access:Et3'));
+      const svg = q('#canvas') as unknown as Element;
+      const c3 = center(el('device:nms'));
+      svg.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: c3.x, clientY: c3.y, pointerId: 32 }));
+      const line = q('#conn-line');
+      check(
+        'right-click on an eligible endpoint starts a connection: the browser menu is suppressed only there, the endpoint is marked, compatible endpoints are marked, incompatible ones are not, and a line follows the pointer',
+        startable && !bg.defaultPrevented && first.defaultPrevented && app.connecting && !!q('#canvas.connecting') && cls('iface:access:Et3') === 'conn-source' && cls('device:nms') === 'conn-ok' && cls('iface:access:Et4') === 'conn-ok' &&
+          cls('iface:access:Et1') === 'conn-no' && cls('device:access') === 'conn-no' && !!line && line.getAttribute('x2') !== null && !(q('#connect-bar') as HTMLElement).hidden,
+        [startable, bg.defaultPrevented, first.defaultPrevented, cls('iface:access:Et3'), cls('device:nms'), cls('iface:access:Et1'), cls('device:access'), !!line].join(' '),
+      );
+      // an incompatible second endpoint: refused with the reason, the first endpoint is kept
+      const refused = rightClick(el('iface:access:Et1'));
+      await tick();
+      check(
+        'right-clicking an incompatible endpoint creates nothing: a short message says why, and the first endpoint stays chosen',
+        refused.defaultPrevented && app.connecting && /Not connected: port “access:Et1” already has a cable/.test(toastText()) && cls('iface:access:Et3') === 'conn-source' && !md().dirty && md().canUndo() === null,
+        toastText(),
+      );
+      // Esc cancels
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      check('Esc cancels an unfinished connection: no line, no marks, nothing added', !app.connecting && !q('#conn-line') && !q('#canvas.connecting') && cls('iface:access:Et3') === 'conn-start' && (q('#connect-bar') as HTMLElement).hidden && !md().dirty);
+      // switching views cancels too
+      rightClick(el('iface:access:Et3'));
+      app.setView('logical');
+      const cancelledBySwitch = !app.connecting && !q('#conn-line');
+      app.setView('physical');
+      check('switching views clears an unfinished connection safely', cancelledBySwitch && !app.connecting);
+      // second right-click on a compatible endpoint: a new link in the Edit tab, not yet in the model
+      rightClick(el('iface:access:Et3'));
+      rightClick(el('device:nms'));
+      await tick();
+      const idIn = q('#draft-id') as HTMLInputElement | null;
+      const draftText = (q('#side-body') as HTMLElement).textContent || '';
+      const create = q('#draft-create') as HTMLButtonElement | null;
+      check(
+        'the second right-click opens a new physical link in the Edit tab with both ends filled in (the device end stays the whole device) and the ID field focused; nothing is added before it is created',
+        !app.connecting && !!idIn && doc.activeElement === idIn && idIn.value === 'access-nms' && /New physical link/.test(draftText) && /interface access Et3/.test(draftText) && /device nms/.test(draftText) && /Not in the model yet/.test(draftText) &&
+          !!create && !create.disabled && !md().dirty && md().canUndo() === null && !/access-nms/.test(app.exportText()),
+        draftText.slice(0, 300),
+      );
+      // an invalid ID keeps Create disabled, with the reason; a valid one enables it
+      idIn!.value = 'bad id';
+      idIn!.dispatchEvent(new Event('input', { bubbles: true }));
+      const badId = create!.disabled && /An ID uses letters/.test(q('#draft-err-id')!.textContent || '') && idIn!.getAttribute('aria-invalid') === 'true';
+      idIn!.value = 'l-access-nms';
+      idIn!.dispatchEvent(new Event('input', { bubbles: true }));
+      const goodId = !create!.disabled && (q('#draft-err-id')!.textContent || '') === '';
+      click('#draft-create');
+      await tick();
+      const y = app.exportText();
+      check(
+        'Create adds the link with stable references (one undo step), selects it and draws it; the uncabled-port chip becomes a cabled port',
+        badId && goodId && /- \{id: l-access-nms, a: "access:Et3", b: nms\}/.test(y) && md().valid && md().canUndo() === 'Add link l-access-nms' && app.session!.state.selected === 'link:l-access-nms' &&
+          !!q('#viewport g.link[data-ref="link:l-access-nms"]') && !q('#viewport g.port-chip[data-ref="iface:access:Et3"]') && !!q('#viewport rect.port[data-ref="iface:access:Et3"]') && md().dirty,
+        y.split('\n').filter((l) => /l-access-nms/.test(l)).join(' / '),
+      );
+      app.undo();
+      check('undo removes the new link again; the port is an uncabled chip again', !/l-access-nms/.test(app.exportText()) && !!q('#viewport g.port-chip[data-ref="iface:access:Et3"]') && !md().dirty);
+      // the keyboard equivalent: select an endpoint, C, pick the second endpoint in the bar
+      app.select('iface:access:Et4');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true }));
+      await tick();
+      const pick = q('#connect-pick') as HTMLSelectElement;
+      const options = Array.prototype.map.call(pick.options, (o: HTMLOptionElement) => o.value) as string[];
+      const kb = app.connecting && doc.activeElement === pick && options.indexOf('device:nms') >= 0 && options.indexOf('iface:access:Et1') < 0 && options.indexOf('iface:access:Et4') < 0;
+      pick.value = 'device:nms';
+      pick.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      const kbDraft = !!q('#draft-id') && doc.activeElement === q('#draft-id');
+      (q('#draft-id') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'keyboard: C on a selected device or interface starts a connection and focuses the list of compatible endpoints; Enter opens the draft; Esc in the draft discards it (nothing added)',
+        kb && kbDraft && !q('#draft-id') && !md().dirty && /discarded; nothing was added/.test(toastText()),
+        `${kb} ${kbDraft} ${options.length}`,
+      );
+
+      // logical view: every logical interface, and relations between them
+      app.loadExampleNamed('datacenter-evpn.yaml');
+      app.setView('logical');
+      await tick();
+      const vchips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.logical-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).sort();
+      check(
+        'logical view: every logical interface of a shown device is drawn and selectable (loopbacks as rows, virtual and tunnel interfaces as chips), also without a relation',
+        vchips.indexOf('iface:leaf1:Vlan100') >= 0 && vchips.indexOf('iface:leaf1:Vxlan1') >= 0 && !!q('#viewport g.loop-chip[data-ref^="iface:leaf1:"]') && !q('#viewport [data-endpoint][data-ref="iface:leaf1:Et1"]') && drawnProblems().length === 0,
+        vchips.join() + ' loop=' + !!q('#viewport g.loop-chip[data-ref^="iface:leaf1:"]') + ' et1=' + !!q('#viewport [data-endpoint][data-ref="iface:leaf1:Et1"]') + ' ' + drawnProblems().slice(0, 3).join('; '),
+      );
+      // a relation needs different devices
+      rightClick(el('device:leaf1'));
+      rightClick(el('iface:leaf1:Vlan100'));
+      await tick();
+      const selfRefused = app.connecting && /same device/.test(toastText());
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      // two relations between the same logical interfaces
+      const relate = async (id: string, protocol: string, label: string): Promise<{ disabled: boolean; dup: string }> => {
+        rightClick(el('iface:leaf1:Vlan100'));
+        rightClick(el('iface:leaf2:Vlan100'));
+        await tick();
+        const set = (k: string, v: string): void => {
+          const i = q('#draft-' + k) as HTMLInputElement;
+          i.value = v;
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        const emptyProtocol = (q('#draft-create') as HTMLButtonElement).disabled && /Required: choose or type the protocol/.test(q('#draft-err-protocol')!.textContent || '');
+        set('id', id);
+        set('protocol', protocol);
+        set('label', label);
+        const r = { disabled: (q('#draft-create') as HTMLButtonElement).disabled || !emptyProtocol, dup: q('#draft-err-ends')!.textContent || '' };
+        if (!r.disabled) click('#draft-create');
+        await tick();
+        return r;
+      };
+      const r1 = await relate('bgp-vlan-a', 'bgp', 'tenant A');
+      const r2dup = await relate('bgp-vlan-b', 'bgp', 'tenant A');
+      const dupKept = !!q('#draft-id');
+      const setLabel = (v: string): void => {
+        const i = q('#draft-label') as HTMLInputElement;
+        i.value = v;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      setLabel('tenant B');
+      const r2ok = !(q('#draft-create') as HTMLButtonElement).disabled;
+      click('#draft-create');
+      await tick();
+      const m = md().result.model!;
+      const both = ['bgp-vlan-a', 'bgp-vlan-b'].map((x) => m.index.relations.get(x));
+      check(
+        'a logical interface can take part in several relations: a second relation between the same interfaces is refused only while it repeats the first (same protocol, label, direction), and allowed with another label',
+        selfRefused && !r1.disabled && r2dup.disabled && /The same relation already exists \(“bgp-vlan-a”/.test(r2dup.dup) && dupKept && r2ok && both.every((r) => !!r && r.endpoints.map((e) => e.device + ':' + e.iface).join() === 'leaf1:Vlan100,leaf2:Vlan100') && md().valid,
+        `${selfRefused} ${JSON.stringify(r1)} ${JSON.stringify(r2dup)} ${r2ok}`,
+      );
+      // both are drawn separately and selectable, editable, exported and reloaded
+      const drawnA = !!q('#viewport g.rel[data-ref="relation:bgp-vlan-a"]') && !!q('#viewport g.rel[data-ref="relation:bgp-vlan-b"]');
+      app.select('relation:bgp-vlan-b');
+      await tick();
+      await setField('#side-body [data-p=\'["relations",' + md().findEntity('relation', 'bgp-vlan-b')!.index + ',"description"]\']', 'second session on the same VLAN interfaces');
+      const svgText = app.exportSvg();
+      const back = ModelDoc.fromText(app.exportText(), 'x.yaml', 'file').doc as ModelDoc;
+      const bm = back.result.model!;
+      check(
+        'two relations on the same interfaces are drawn as separate lanes, each selectable and editable; both are in the SVG export and survive export → reload',
+        drawnA && app.session!.state.selected === 'relation:bgp-vlan-b' && /data-ref="relation:bgp-vlan-a"/.test(svgText) && /data-ref="relation:bgp-vlan-b"/.test(svgText) && !/id="conn-line"|class="[^"]*conn-(start|source|ok|no)/.test(svgText) &&
+          back.valid && bm.index.relations.get('bgp-vlan-a')!.label === 'tenant A' && bm.index.relations.get('bgp-vlan-b')!.description === 'second session on the same VLAN interfaces',
+        `${drawnA} ${app.session!.state.selected}`,
+      );
+      md().markSaved();
+    }
+
+    // ------------------------------------------------ Help: User Manual and License
+    {
+      app.mdoc && app.mdoc.markSaved();
+      app.loadExample(0);
+      app.setView('physical');
+      await tick();
+      const helpBtn = q('#help-btn') as HTMLButtonElement;
+      const dlg = q('#modal') as HTMLDialogElement;
+      const key = (target: Element, k: string): void => {
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      };
+      // the menu: Analyze, then Simulate, then Help, reached with the arrow keys like every menu
+      click('#analyze-btn');
+      key(q('#analyze-menu') as HTMLElement, 'ArrowRight');
+      await tick();
+      const simNext = !(q('#simulate-menu') as HTMLElement).hidden && (q('#simulate-btn') as HTMLElement).getAttribute('aria-expanded') === 'true';
+      key(q('#simulate-menu') as HTMLElement, 'ArrowRight');
+      await tick();
+      const viaArrow = simNext && !(q('#help-menu') as HTMLElement).hidden && helpBtn.getAttribute('aria-expanded') === 'true' && doc.activeElement === q('#btn-manual');
+      const entries = textsOf('#help-menu button');
+      key(q('#help-menu') as HTMLElement, 'Escape');
+      await tick();
+      check(
+        'the Simulate menu right after Analyze, then Help: User Manual and License, reached with the arrow keys; Esc closes it and returns to its button',
+        viaArrow && entries.join('|') === 'User Manual|License' && (q('#help-menu') as HTMLElement).hidden && doc.activeElement === helpBtn,
+        `${viaArrow} ${entries.join('|')}`,
+      );
+
+      // User Manual: a large dialog, its text focused and scrolling inside itself, the screenshots embedded and decodable
+      click('#help-btn');
+      click('#btn-manual');
+      await tick(20);
+      const man = q('#modal .manual') as HTMLElement;
+      const imgs = Array.prototype.slice.call(doc.querySelectorAll('#modal .manual img')) as HTMLImageElement[];
+      const decoded = await Promise.all(
+        imgs.map(
+          (i) =>
+            new Promise<boolean>((done) => {
+              // loaded from its data: URL, with the size the manual gives it (a broken image fails; nothing waits forever)
+              const im = new Image();
+              im.onload = () => done(im.naturalWidth === Number(i.getAttribute('width')) && im.naturalHeight === Number(i.getAttribute('height')));
+              im.onerror = () => done(false);
+              setTimeout(() => done(false), 5000);
+              im.src = i.src;
+            }),
+        ),
+      );
+      const secs = textsOf('#modal .man-sec > h3').join(' | ');
+      const topics = [/Open or create a model/, /Save or export/, /Physical and Logical/, /light or dark theme/, /Find and filter/, /Select and edit/, /Create connections/, /Auto-arrange/];
+      const r = dlg.getBoundingClientRect();
+      const root = doc.documentElement;
+      const fits = r.left >= 0 && r.top >= 0 && r.right <= root.clientWidth + 0.5 && r.bottom <= root.clientHeight + 0.5 && root.scrollHeight <= root.clientHeight && root.scrollWidth <= root.clientWidth;
+      const scrolls = man.scrollHeight > man.clientHeight && getComputedStyle(man).overflowY === 'auto';
+      check(
+        'Help → User Manual: a large dialog titled "NetAtlas User Manual" with ×, Close and Esc; its text has the focus and scrolls inside the dialog; every basic task has a section; the screenshots are embedded data: images that decode, each with a caption and alt text',
+        dlg.open && app.helpOpen === 'manual' && dlg.getAttribute('aria-labelledby') === 'modal-title' && (q('#modal-title') as HTMLElement).textContent === 'NetAtlas User Manual' &&
+          !!q('#modal .modal-x[aria-label="Close"]') && !!q('#modal [data-value="close"]') && doc.activeElement === man &&
+          topics.every((t) => t.test(secs)) && imgs.length >= 8 && decoded.every(Boolean) &&
+          imgs.every((i) => /^data:image\/webp;base64,/.test(i.src) && !!i.alt && !!(i.closest('figure') as HTMLElement).querySelector('figcaption')) &&
+          fits && scrolls && r.width > root.clientWidth * 0.6,
+        `${secs} // ${imgs.length} images, decoded ${decoded.filter(Boolean).length}, fits ${fits}, scrolls ${scrolls}, focus ${doc.activeElement && doc.activeElement.className}`,
+      );
+      // the contents list scrolls to a section and puts the focus on its heading; the page's address does not change
+      const hash = location.hash;
+      man.scrollTop = 0;
+      click('#modal [data-man-goto="man-arrange"]');
+      await tick();
+      const toArrange = doc.activeElement === q('#man-h-arrange') && man.scrollTop > 0 && location.hash === hash;
+      // keys typed in the dialog never act on the page behind it (L would switch to the logical view)
+      key(man, 'l');
+      key(man, 'a');
+      await tick();
+      const behind = app.session!.state.view === 'physical' && !app.mdoc!.dirty;
+      dlg.dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check(
+        'User Manual: the contents list moves to a section; the page’s shortcuts are off while it is open; Esc closes it and the focus returns to the Help button',
+        toArrange && behind && !dlg.open && app.helpOpen === null && doc.activeElement === helpBtn,
+        `${toArrange} ${behind} ${dlg.open} ${doc.activeElement && doc.activeElement.id}`,
+      );
+
+      // License: Apache License, Version 2.0, and the full LICENSE text embedded (no link to load anything)
+      click('#help-btn');
+      click('#btn-license');
+      await tick(20);
+      const lic = q('#modal .license') as HTMLElement;
+      const full = q('#modal .license-text') as HTMLElement;
+      const licText = full ? full.textContent || '' : '';
+      const smallDlg = dlg.getBoundingClientRect().width <= 562;
+      const named = /licensed under the Apache License, Version 2\.0 \(SPDX: Apache-2\.0\)/.test(lic.textContent || '');
+      const focusClose = doc.activeElement === q('#modal [data-value="close"]');
+      (q('#modal .license-full') as HTMLDetailsElement).open = true;
+      await tick();
+      const fullShown = full.getBoundingClientRect().height > 50 && full.scrollHeight > full.clientHeight;
+      click('#modal .modal-x');
+      await tick();
+      check(
+        'Help → License: a small dialog that names the Apache License, Version 2.0, with the full LICENSE text embedded (scrolling in place, no links); × closes it and the focus returns to the Help button',
+        named && smallDlg && focusClose && /^\s*Apache License\n\s*Version 2\.0, January 2004/.test(licText) && /END OF TERMS AND CONDITIONS/.test(licText) && licText.length > 10000 &&
+          !lic.querySelector('a') && fullShown && !dlg.open && doc.activeElement === helpBtn,
+        `${named} ${smallDlg} ${focusClose} ${licText.length} ${fullShown} ${dlg.open}`,
+      );
+      // without a model both entries work as well
+      app.closeModel();
+      click('#help-btn');
+      click('#btn-license');
+      await tick(20);
+      const noModel = dlg.open && app.helpOpen === 'license';
+      click('#modal [data-value="close"]');
+      await tick();
+      check('Help works without a model too (its entries are never disabled)', noModel && !dlg.open && !(q('#btn-manual') as HTMLButtonElement).disabled && !(q('#btn-license') as HTMLButtonElement).disabled);
+    }
+
+    // ------------------------------------------------ quick actions in the object list
+    {
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const fresh = async (): Promise<void> => {
+        app.mdoc && app.mdoc.markSaved();
+        app.loadExample(0);
+        app.setView('physical');
+        expandOutline();
+        await tick();
+      };
+      /** a press with the mouse: pointerdown (where the editor acts) and the click after it */
+      const press = (b: Element): void => {
+        b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+        (b as HTMLElement).click();
+      };
+      const quickBtn = (act: string, kind: string, index: number): HTMLElement | null => q(`#outline-body .ol-quick [data-act="${act}"][data-kind="${kind}"][data-index="${index}"]`);
+      await fresh();
+      app.select('device:hq-rtr1');
+      await tick();
+      {
+        // every row has the pair, named after the action and the object, and like the Edit tab's buttons;
+        // shown only for the row under the pointer or with the keyboard focus (on a touch screen: the selected row)
+        const rows = Array.prototype.slice.call(doc.querySelectorAll('#outline-body .ol-row')) as HTMLElement[];
+        const bad: string[] = [];
+        const touch = (doc.defaultView as Window).matchMedia('(hover: none)').matches;
+        for (const row of rows) {
+          const it = row.querySelector('.ol-item') as HTMLElement;
+          const kind = it.getAttribute('data-kind') || '';
+          const id = it.getAttribute('title') || '';
+          const bs = Array.prototype.slice.call(row.querySelectorAll('.ol-quick button')) as HTMLElement[];
+          if (bs.length !== 2 || bs[0].getAttribute('data-act') !== 'dup-entity' || bs[1].getAttribute('data-act') !== 'del-entity') bad.push(`${id}: not Duplicate and Delete`);
+          else if (bs[0].getAttribute('aria-label') !== `Duplicate ${kind} ${id}` || bs[1].getAttribute('aria-label') !== `Delete ${kind} ${id}`) bad.push(`${id}: named ${bs.map((b) => b.getAttribute('aria-label')).join(', ')}`);
+          if (it.contains(bs[0])) bad.push(`${id}: the actions are inside the entry`);
+          const shown = getComputedStyle(row.querySelector('.ol-quick') as HTMLElement).display !== 'none';
+          if (shown !== (touch && row.classList.contains('current'))) bad.push(`${id}: shown=${shown}`);
+        }
+        check(
+          'object list: each row has Duplicate and Delete beside (not inside) its entry, named with action and object; hidden unless the row is hovered, focused or (touch) selected',
+          rows.length > 30 && !bad.length,
+          `${rows.length} rows; ${bad.slice(0, 5).join('; ')}`,
+        );
+        // the rules that show them: hover (pointer devices), keyboard focus, and the selected row on touch screens
+        const css = Array.prototype.map.call(doc.querySelectorAll('style'), (s: Element) => s.textContent).join('\n');
+        check(
+          'the quick actions are shown by hover, by keyboard focus, and on touch screens for the selected row',
+          /\.ol-quick \{ display: none;/.test(css) && /@media \(hover: hover\) \{ \.ol-row:hover \.ol-quick \{ display: inline-flex; \} \}/.test(css) && /\.ol-row:focus-within \.ol-quick, \.ol-row\.acting \.ol-quick \{ display: inline-flex; \}/.test(css) && /@media \(hover: none\) \{ \.ol-row\.current \.ol-quick \{ display: inline-flex; \} \}/.test(css),
+        );
+      }
+      {
+        // Duplicate from the row of another object: the copy is added and selected, exactly as the Edit tab does it; the row's own select never runs
+        const before = md().exportText();
+        const count = md().entities('device').length;
+        const fw = md().entities('device').findIndex((e) => e.id === 'hq-fw');
+        press(quickBtn('dup-entity', 'device', fw) as HTMLElement);
+        await tick();
+        const viaQuick = md().exportText();
+        const selQuick = app.session!.state.selected;
+        const dirty = md().dirty && doc.body.getAttribute('data-dirty') === 'true';
+        app.undo();
+        await tick();
+        const undone = md().exportText() === before;
+        app.redo();
+        await tick();
+        const redone = md().exportText() === viaQuick;
+        // the same through the Edit tab
+        await fresh();
+        app.select('device:hq-fw');
+        click('[data-tab="edit"]');
+        await tick();
+        press(q('#side-body .insp-actions [data-act="dup-entity"]') as HTMLElement);
+        await tick();
+        check(
+          'quick Duplicate: the same copy as the Edit tab’s Duplicate (new id, selected), marks the model modified, one undo step, redo; it never selects the row it sits on',
+          md().entities('device').length === count + 1 && viaQuick === md().exportText() && selQuick === app.session!.state.selected && selQuick === 'device:hq-fw2' && dirty && undone && redone,
+          `${selQuick} ${app.session!.state.selected} ${dirty} ${undone} ${redone}`,
+        );
+      }
+      {
+        // Delete: the Edit tab's confirmation; Cancel changes nothing (not even the selection), Delete removes it, undo brings it back
+        await fresh();
+        app.select('device:hq-rtr1');
+        await tick();
+        const before = md().exportText();
+        const i2 = md().entities('device').findIndex((e) => e.id === 'hq-rtr2');
+        press(quickBtn('del-entity', 'device', i2) as HTMLElement);
+        await tick(10);
+        const asked = (q('#modal[open] #modal-title') || { textContent: '' }).textContent === 'Delete device “hq-rtr2”?';
+        await answerDialog('cancel');
+        const kept = md().exportText() === before && app.session!.state.selected === 'device:hq-rtr1' && !md().dirty;
+        press(quickBtn('del-entity', 'device', i2) as HTMLElement);
+        await answerDialog('delete');
+        await tick();
+        const gone = !md().entities('device').some((e) => e.id === 'hq-rtr2') && md().dirty && app.session!.state.selected === null;
+        const viaQuick = md().exportText();
+        app.undo();
+        await tick();
+        const back = md().exportText() === before;
+        await fresh();
+        app.select('device:hq-rtr2');
+        click('[data-tab="edit"]');
+        await tick();
+        press(q('#side-body .insp-actions [data-act="del-entity"]') as HTMLElement);
+        await answerDialog('delete');
+        await tick();
+        check(
+          'quick Delete: asks first like the Edit tab (Cancel keeps model and selection), deletes the same way, clears the selection, marks the model modified, and can be undone',
+          asked && kept && gone && back && md().exportText() === viaQuick,
+          `${asked} ${kept} ${gone} ${back}`,
+        );
+      }
+      {
+        // every kind of object: the quick actions give exactly what the Edit tab's buttons give
+        const bad: string[] = [];
+        for (const kind of ['device', 'link', 'network', 'relation', 'group', 'protocol'] as const) {
+          for (const act of ['dup-entity', 'del-entity']) {
+            await fresh();
+            const b = quickBtn(act, kind, 0);
+            if (!b) {
+              bad.push(`${kind}: no ${act}`);
+              continue;
+            }
+            press(b);
+            if (act === 'del-entity') await answerDialog('delete');
+            await tick();
+            const viaQuick = md().exportText();
+            await fresh();
+            click(`#outline-body .ol-item[data-kind="${kind}"][data-index="0"]`);
+            click('[data-tab="edit"]');
+            await tick();
+            const e = q(`#side-body .insp-actions [data-act="${act}"]`);
+            if (!e) {
+              bad.push(`${kind}: the Edit tab has no ${act}`);
+              continue;
+            }
+            press(e);
+            if (act === 'del-entity') await answerDialog('delete');
+            await tick();
+            if (md().exportText() !== viaQuick) bad.push(`${kind}: ${act} differs from the Edit tab`);
+          }
+        }
+        check('quick actions on every kind of object (device, link, network, relation, group, protocol) do exactly what the Edit tab’s Duplicate and Delete do', !bad.length, bad.join('; '));
+      }
+      {
+        // with the keyboard: Enter on a focused quick action acts (a click without pointerdown), and the focus stays in the list
+        await fresh();
+        const fw = md().entities('device').findIndex((e) => e.id === 'hq-fw');
+        const b = quickBtn('dup-entity', 'device', fw) as HTMLElement;
+        // (a keyboard user reaches it from its row, which shows it while the row has the focus; checked with real keys in test/quick-actions.test.mjs)
+        (b.parentElement as HTMLElement).style.display = 'inline-flex';
+        b.focus();
+        b.click();
+        await tick();
+        const focusAfter = doc.activeElement as HTMLElement | null;
+        check(
+          'Duplicate used from the keyboard: the copy is selected, its outline row in view, and the cursor in its first field (the ID) with the proposed id selected',
+          !!focusAfter && focusAfter.getAttribute('data-t') === 'id' && (focusAfter as HTMLInputElement).value === 'hq-fw2' && (focusAfter as HTMLInputElement).selectionStart === 0 && (focusAfter as HTMLInputElement).selectionEnd === 6 && app.session!.state.selected === 'device:hq-fw2' && !!q('#outline-body .ol-item.active[data-ref="device:hq-fw2"]'),
+          focusAfter ? `${focusAfter.className} ${focusAfter.getAttribute('data-t')}` : 'none',
+        );
+        md().markSaved();
+      }
+    }
+
+    // ------------------------------------------------ Edit and Details read alike
+    {
+      app.loadExample(0);
+      app.select('device:hq-rtr1');
+      click('[data-tab="edit"]');
+      await tick();
+      const editGroups = textsOf('#side-body .fgroup > .fgroup-title').join('|');
+      const editHead = !!q('#side-body .insp-head .badge') && !!q('#side-body .insp-head .ih-status');
+      const buttons = textsOf('#side-body .insp-actions .ib-label').join('|');
+      click('[data-tab="details"]');
+      await tick();
+      const detGroups = textsOf('#side-body .fgroup > .fgroup-title').join('|');
+      const detHead = !!q('#side-body .insp-head .badge') && !!q('#side-body .insp-head .ih-status');
+      const card = (sel: string): string => {
+        const e = q(sel);
+        if (!e) return '';
+        const cs = doc.defaultView!.getComputedStyle(e);
+        return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
+      };
+      check(
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Services, Simulation with its count, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Services\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        editGroups + ' // ' + detGroups,
+      );
+      click('[data-tab="legend"]');
+    }
+
+    // ---- ports: relations and links attached to the interfaces they reference, measured with real font metrics,
+    // in both themes, in the exported SVG, and with the pointer on them
+    {
+      app.loadExampleNamed('long-labels.yaml');
+      app.setView('logical');
+      await tick(30);
+      const vp = q('#viewport') as unknown as SVGGElement;
+      type P = { x: number; y: number };
+      type R = { x: number; y: number; w: number; h: number };
+      const num = (e: Element, k: string): number => parseFloat(e.getAttribute(k) || 'NaN');
+      const pts = (g: Element): P[] =>
+        ((g.querySelector('.hit') as Element).getAttribute('d') || '')
+          .slice(1)
+          .split('L')
+          .map((s) => s.trim().split(' ').map(Number))
+          .map(([x, y]) => ({ x, y }));
+      const portRects = (root: ParentNode, ref: string): R[] => Array.prototype.map.call(root.querySelectorAll(`rect.lport[data-ref="${ref}"]`), (r: Element) => ({ x: num(r, 'x'), y: num(r, 'y'), w: num(r, 'width'), h: num(r, 'height') })) as R[];
+      const inAny = (p: P, rs: R[]): boolean => rs.some((r) => p.x >= r.x - 0.6 && p.x <= r.x + r.w + 0.6 && p.y >= r.y - 0.6 && p.y <= r.y + r.h + 0.6);
+      /** GRE and OSPF of the branch router: from the port of Tunnel10 to the firewall's tunnel.10; Tunnel20 has none */
+      const bound = (root: ParentNode): boolean =>
+        ['gre-br', 'ospf-br'].every((id) => {
+          const g = root.querySelector(`g.rel[data-ref="relation:${id}"]`);
+          if (!g) return false;
+          const p = pts(g);
+          const a = p[0];
+          const b = p[p.length - 1];
+          const t10 = portRects(root, 'iface:br-rtr:Tunnel10');
+          const fw = portRects(root, 'iface:fw:tunnel.10');
+          return (inAny(a, t10) && inAny(b, fw)) || (inAny(b, t10) && inAny(a, fw));
+        }) && portRects(root, 'iface:br-rtr:Tunnel20').length === 0;
+      check('ports: in long-labels.yaml the branch router\'s GRE and OSPF end at the port of Tunnel10 (and at the firewall\'s tunnel.10); Tunnel20 has no port', bound(vp));
+      // with the browser's fonts: no end label over other text, no line through an end label
+      const segHit = (a: P, b: P, r: R): boolean => {
+        let t0 = 0;
+        let t1 = 1;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const clip = (p: number, qq: number): boolean => {
+          if (p === 0) return qq >= 0;
+          const t = qq / p;
+          if (p < 0) {
+            if (t > t1) return false;
+            if (t > t0) t0 = t;
+          } else {
+            if (t < t0) return false;
+            if (t < t1) t1 = t;
+          }
+          return true;
+        };
+        return clip(-dx, a.x - r.x) && clip(dx, r.x + r.w - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.y + r.h - a.y) && t0 <= t1;
+      };
+      const labelClashes = (root: SVGGElement): string[] => {
+        const out: string[] = [];
+        const texts = Array.prototype.slice.call(root.querySelectorAll('text')) as SVGTextElement[];
+        const rects = texts.map((t) => {
+          const b = t.getBBox();
+          return { x: b.x, y: b.y, w: b.width, h: b.height };
+        });
+        const lanes = Array.prototype.map.call(root.querySelectorAll('g.rel'), (g: Element) => ({ ref: g.getAttribute('data-ref'), pts: pts(g) })) as Array<{ ref: string; pts: P[] }>;
+        texts.forEach((t, i) => {
+          if (!t.classList.contains('end-label')) return;
+          const a = rects[i];
+          rects.forEach((b, j) => {
+            if (j !== i && a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h) out.push(`${t.textContent} / ${texts[j].textContent}`);
+          });
+          const inner = { x: a.x + 0.5, y: a.y + 0.5, w: a.w - 1, h: a.h - 1 };
+          for (const l of lanes) for (let k = 0; k + 1 < l.pts.length; k++) if (segHit(l.pts[k], l.pts[k + 1], inner)) out.push(`${t.textContent} crossed by ${l.ref}`);
+        });
+        return out;
+      };
+      const clashLong = labelClashes(vp);
+      check('ports: with the browser\'s fonts no end label covers other text or is crossed by a line (long-labels.yaml)', clashLong.length === 0 && !!vp.querySelector('text.end-label'), clashLong.slice(0, 4).join(' | '));
+      app.loadExampleNamed('port-bindings.yaml');
+      app.setView('logical');
+      await tick(30);
+      const clashPb = labelClashes(vp);
+      check('ports: … and in the stress example (port-bindings.yaml)', clashPb.length === 0 && vp.querySelectorAll('text.end-label').length >= 10, clashPb.slice(0, 4).join(' | '));
+
+      // both themes: the marks of ports, end labels and aggregates have the contrast WCAG 2.2 AA asks for
+      const hex = (s: string): string => {
+        const m = /rgba?\(([^)]+)\)/.exec(s);
+        if (!m) return s.trim().toLowerCase();
+        return '#' + m[1].split(',').slice(0, 3).map((v) => Math.round(parseFloat(v)).toString(16).padStart(2, '0')).join('');
+      };
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      const themeRows: string[] = [];
+      let themesOk = true;
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        app.setView('logical');
+        for (let n = 0; n < 40 && !q('#viewport rect.lport'); n++) await tick(10);
+        const canvas = hex(getComputedStyle(html).getPropertyValue('--canvas'));
+        // (read at once: a computed style is live, and empty once its element is gone)
+        const cs = (sel: string, prop: 'fill' | 'stroke'): string | undefined => {
+          const e = q(sel);
+          return e ? hex(getComputedStyle(e)[prop]) : undefined;
+        };
+        const port = cs('#viewport rect.lport:not(.dev-port)', 'fill');
+        const devPort = cs('#viewport rect.lport.dev-port', 'stroke');
+        const label = cs('#viewport text.end-label', 'fill');
+        const src = cs('#viewport text.end-label tspan[data-field="source"]', 'fill');
+        app.setView('physical');
+        for (let n = 0; n < 40 && !q('#viewport rect.lag-mark'); n++) await tick(10);
+        const pairs: Array<[string, string | undefined, number]> = [
+          ['port', port, 3],
+          ['device-level port', devPort, 3],
+          ['end label', label, 4.5],
+          ['src line', src, 4.5],
+          ['LAG bracket', cs('#viewport rect.lag-mark', 'stroke'), 3],
+          ['LAG name', cs('#viewport text.lag-label', 'fill'), 4.5],
+          ['device end', cs('#viewport rect.port.dev-end', 'stroke'), 3],
+        ];
+        for (const [what, color, min] of pairs) {
+          const c = color ? contrast(color, canvas) : 0;
+          if (!(c >= min)) themesOk = false;
+          themeRows.push(`${theme} ${what} ${color} ${c.toFixed(2)}`);
+        }
+      }
+      check('ports: in the light and the dark theme, ports, aggregate brackets and device-level ends have 3:1 against the diagram, end labels and aggregate names 4.5:1', themesOk, themeRows.filter((r) => /0\.00|\b[0-2]\.\d\d$/.test(r)).join(' | ') || themeRows.slice(0, 3).join(' | '));
+
+      // the exported SVG, in either theme: the same bindings, with the theme's colours written into the file
+      app.loadExampleNamed('long-labels.yaml');
+      app.setView('logical');
+      const exportRows: string[] = [];
+      let exportOk = true;
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        await tick(20);
+        const text = app.exportSvg();
+        const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+        const p = parsed.querySelector('rect.lport[data-ref="iface:br-rtr:Tunnel10"]');
+        const fill = p ? hex(p.getAttribute('fill') || '') : '';
+        const want = hex(getComputedStyle(html).getPropertyValue('--text'));
+        const ok = bound(parsed) && fill === want && !/hover-hl/.test(text);
+        if (!ok) exportOk = false;
+        exportRows.push(`${theme}: bound ${bound(parsed)} fill ${fill} want ${want}`);
+      }
+      check('ports: the exported SVG (light and dark) attaches GRE and OSPF to the port of Tunnel10 as on screen, and carries the theme\'s colour of the ports', exportOk, exportRows.join(' | '));
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+      await tick(20);
+
+      // the pointer on a port marks its interface's entry and every relation attached to it, and nothing at Tunnel20
+      const svgEl = q('#canvas') as unknown as SVGSVGElement;
+      const t10port = q('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') as unknown as Element;
+      t10port.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1 }));
+      await tick(10);
+      const hov = (sel: string): boolean => !!q(sel) && (q(sel) as unknown as Element).classList.contains('hover-hl');
+      const pointed = hov('#viewport g.rel[data-ref="relation:gre-br"]') && hov('#viewport g.rel[data-ref="relation:ospf-br"]') && hov('#viewport g.if-entry[data-ref="iface:br-rtr:Tunnel10"]') && !hov('#viewport g.if-entry[data-ref="iface:br-rtr:Tunnel20"]') && !hov('#viewport g.rel[data-ref="relation:bgp-br"]');
+      svgEl.dispatchEvent(new PointerEvent('pointerleave', { pointerId: 1 }));
+      await tick(10);
+      const cleared = !vp.querySelector('.hover-hl');
+      check('ports: pointing at the port of Tunnel10 marks its entry and its relations (GRE, OSPF), not Tunnel20 or the device-level ones; leaving clears the marks', pointed && cleared);
+      // … and pointing at a relation in the Objects list marks the interfaces at its ends in the diagram
+      const item = q('#outline .ol-item[data-ref="relation:ospf-br"]');
+      if (item) item.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerId: 1 }));
+      await tick(10);
+      const listMarks = hov('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') && hov('#viewport text.end-label[data-ref="iface:fw:tunnel.10"]') && hov('#viewport g.rel[data-ref="relation:ospf-br"]');
+      (q('#outline') as HTMLElement).dispatchEvent(new PointerEvent('pointerleave', { pointerId: 1 }));
+      await tick(10);
+      check('ports: pointing at a relation in the Objects list marks it and the ports and end labels of the interfaces at its ends', !!item && listMarks && !vp.querySelector('.hover-hl'));
+      // selecting it: the Edit tab marks its two ends and says which port each is drawn from
+      app.select('relation:ospf-br');
+      click('[data-tab="edit"]');
+      await tick(20);
+      const ends = Array.prototype.map.call(doc.querySelectorAll('#side-body .end-mark .ep-bind'), (e: Element) => e.textContent || '') as string[];
+      const selHl = (q('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') as unknown as Element).classList.contains('hl') && (q('#viewport g.if-entry[data-ref="iface:fw:tunnel.10"]') as unknown as Element).classList.contains('hl');
+      check(
+        'ports: a selected relation highlights the interfaces at both ends in the diagram, and the Edit tab marks its two endpoints with the port each is drawn from',
+        ends.length === 2 && /Tunnel10 on br-rtr/.test(ends.join(' ')) && /tunnel\.10 on fw/.test(ends.join(' ')) && selHl,
+        ends.join(' | '),
+      );
+      app.select(null);
+      click('[data-tab="legend"]');
+    }
+
+    // ------------------------------------------------ the device model: VPN gateway, Security gateway, Systems, both themes
+    {
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        app.loadExampleNamed('cross-domain.yaml');
+        app.setView('physical');
+        await tick(20);
+        app.select('device:cdg');
+        click('[data-tab="edit"]');
+        await tick(20);
+        const side = q('#side-body') as HTMLElement;
+        const impl = side.querySelector('select[data-key="implementation"]') as HTMLSelectElement | null;
+        check(
+          `${theme}: a Security gateway's Edit tab: Domain separation built in (no remove), its implementation chosen, two domains, the permitted direction, its transfer profile and its rule; management interfaces apart`,
+          /Domain separation \(built in\)/.test(side.textContent || '') && !!impl && impl.value === 'protocol_break' && side.querySelectorAll('.domain-card').length === 2 && side.querySelectorAll('.profile-card').length === 1 && side.querySelectorAll('.rule-card').length === 1 &&
+            side.querySelectorAll('.sep-dirs input:checked').length === 1 && /Management interfaces/.test(side.textContent || '') && !side.querySelector('[data-act="disable-service"][data-svc="separation"]'),
+          (side.textContent || '').slice(0, 200),
+        );
+        const drawn = Array.prototype.map.call(doc.querySelectorAll('#viewport text'), (e: Element) => e.textContent || '').join('|');
+        check(`${theme}: the gateway's ports say their domain and the management port says so, in text`, /domain Red/.test(drawn) && /domain Black/.test(drawn) && /management/.test(drawn), drawn.slice(0, 200));
+        const probs = drawnProblems();
+        check(`${theme}: cross-domain example, measured in the browser: nothing overlaps`, !probs.length, probs.slice(0, 3).join('; '));
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+      await tick(20);
+      // the trace with a service: leg 1 ends at the gateway, leg 2 is the gateway's own
+      app.select(null);
+      app.setTraceForm({ from: 'red-ws', to: '10.10.0.1', service: 'tcp/443', back: false });
+      app.openTrace();
+      await tick(20);
+      if (q('#trace-go')) (q('#trace-go') as HTMLElement).click();
+      await tick(20);
+      const leg = q('section.trace-leg');
+      check(
+        'Trace path with a service through a protocol break: leg 1 reaches the gateway, leg 2 is listed as the gateway\'s own transfer and both are marked',
+        !!q('#trace-service') && !!leg && /Leg 2 \(started by the gateway\)/.test(leg.textContent || '') && /protocol break at cdg|Protocol break at cdg/.test(leg.textContent || '') && !!q('#viewport .trace-main[data-ref="device:black-web"]'),
+        leg ? leg.textContent || '' : 'no leg',
+      );
+      app.exitTrace();
+      await tick(10);
+      // changing a type asks first, lists what goes, cancels or does it in one undo step
+      app.loadExampleNamed('device-types.yaml');
+      await tick(20);
+      app.select('device:fw');
+      click('[data-tab="edit"]');
+      await tick(20);
+      const yaml0 = app.exportText();
+      const typeSel = q('#side-body select[data-key="type"]') as HTMLSelectElement;
+      typeSel.value = 'switch';
+      typeSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick(30);
+      const dlgText = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+      check('changing a device\'s type asks first and lists what no longer fits (its kind)', /Change the type of fw\?/.test(dlgText) && /kind: ngfw/.test(dlgText), dlgText.slice(0, 200));
+      const cancel = Array.prototype.find.call(doc.querySelectorAll('#modal[open] .modal-btns button'), (b: Element) => /Cancel/.test(b.textContent || '')) as HTMLElement | undefined;
+      if (cancel) cancel.click();
+      await tick(30);
+      check('Cancel keeps the device as it was', app.exportText() === yaml0);
+      const typeSel2 = q('#side-body select[data-key="type"]') as HTMLSelectElement;
+      typeSel2.value = 'switch';
+      typeSel2.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick(30);
+      const go = Array.prototype.find.call(doc.querySelectorAll('#modal[open] .modal-btns button'), (b: Element) => /Change the type/.test(b.textContent || '')) as HTMLElement | undefined;
+      if (go) go.click();
+      await tick(30);
+      const changed = /- id: fw\n {4}label: fw1\n {4}type: switch\n/.test(app.exportText());
+      click('#btn-undo');
+      await tick(30);
+      check('confirming changes the type and removes the kind in one step; one undo brings both back', changed && app.exportText() === yaml0);
+      // a System's purpose is required and offered without a default; Find finds by role
+      app.select('device:nms');
+      await tick(20);
+      const purpose = q('#side-body select[data-key="purpose"]') as HTMLSelectElement | null;
+      check('a System shows its purpose (required, no default offered) and its icon among its purpose\'s', !!purpose && purpose.value === 'host' && Array.prototype.some.call(purpose.options, (o: HTMLOptionElement) => o.value === '' && /Select what it does/.test(o.textContent || '')));
+      app.mdoc!.markSaved();
+    }
+
+    // ------------------------------------------------ services and Wi-Fi: the Services card, Add service…, Wireless access, badges, both themes
+    {
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      const rgb = (x: string): number[] => {
+        const m = /rgba?\(([^)]+)\)/.exec(x);
+        return m ? m[1].split(',').map((y) => parseFloat(y)) : [0, 0, 0, 0];
+      };
+      const hex = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      const seenBg = (el: HTMLElement): string => {
+        const layers: number[][] = [];
+        for (let e: HTMLElement | null = el; e; e = e.parentElement) {
+          const b = rgb(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          const a = b.length > 3 ? b[3] : 1;
+          if (a > 0) layers.push([b[0], b[1], b[2], a]);
+          if (a >= 1) break;
+        }
+        let seen = [255, 255, 255];
+        for (const l of layers.reverse()) seen = seen.map((v, i) => l[i] * l[3] + v * (1 - l[3]));
+        return hex(seen);
+      };
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        app.loadExampleNamed('enterprise-campus.yaml');
+        app.setView('physical');
+        await tick(20);
+        app.select('device:srv');
+        click('[data-tab="edit"]');
+        await tick(20);
+        const side = q('#side-body') as HTMLElement;
+        const add = side.querySelector('select[data-t="add-service"]') as HTMLSelectElement | null;
+        const offered = add ? Array.prototype.filter.call(add.options, (o: HTMLOptionElement) => o.value && !o.disabled).map((o: HTMLOptionElement) => o.value) : [];
+        const off = add ? Array.prototype.filter.call(add.options, (o: HTMLOptionElement) => o.disabled).map((o: HTMLOptionElement) => o.textContent || '') : [];
+        check(
+          `${theme}: a server's Services card: a card per service it runs (NTP, AAA, Syslog collector, Monitoring), Add service… offers the rest it may run and lists the others disabled with the reason`,
+          ['ntp', 'aaa', 'syslog', 'monitoring'].every((id) => !!side.querySelector(`[data-svc-card="${id}"]`)) && offered.indexOf('proxy') >= 0 && offered.indexOf('ntp') < 0 &&
+            off.some((t) => /^Wireless access — /.test(t)) && off.some((t) => /^NAT — /.test(t)),
+          `offered ${offered.join(',')}; off ${off.join(' | ').slice(0, 200)}`,
+        );
+        const secret = side.querySelector('[data-svc-card="aaa"] input[data-p*="secret"]') as HTMLInputElement | null;
+        check(`${theme}: the AAA card's shared secret shows its placeholder`, !!secret && secret.value === '<radius-secret>', secret ? secret.value : 'no field');
+        const svcEls = Array.prototype.slice.call(side.querySelectorAll('[data-group="netservices"] .svc-name, [data-group="netservices"] label, [data-group="netservices"] .help')) as HTMLElement[];
+        const low = svcEls.map((el) => [el, contrast(hex(rgb(doc.defaultView!.getComputedStyle(el).color)), seenBg(el))] as [HTMLElement, number]).filter((x) => x[1] < 4.5);
+        check(`${theme}: the Services card's names, labels and help are readable (AA)`, svcEls.length > 0 && !low.length, low.slice(0, 3).map((x) => `${(x[0].textContent || '').slice(0, 30)}: ${x[1].toFixed(2)}`).join('; '));
+        const node = q('#viewport g.device[data-ref="device:srv"]');
+        const tip = node ? node.querySelector('title') : null;
+        const nodeText = node ? Array.prototype.map.call(node.querySelectorAll('text'), (e: Element) => e.textContent || '').join('|') : '';
+        check(`${theme}: srv's badge line says three services and how many more; its tooltip names them all`, /DHCP · DNS · NTP \+3/.test(nodeText) && !!tip && /Monitoring/.test(tip.textContent || ''), nodeText + ' / ' + (tip ? tip.textContent : 'no tooltip'));
+        app.select('device:ap1');
+        await tick(20);
+        const wcard = side.querySelector('[data-svc-card="wireless"]') as HTMLElement | null;
+        const nets = wcard ? wcard.querySelectorAll('.wifi-card').length : 0;
+        check(
+          `${theme}: an access point's Wireless access (built in, no Remove): a card per Wi-Fi network with its VLAN and its clients; the controller`,
+          !!wcard && nets === 2 && /Wireless access \(built in\)/.test(side.textContent || '') && !side.querySelector('[data-act="remove-service"][data-svc="wireless"]') && /w-laptop1/.test(wcard.textContent || '') && !!wcard.querySelector('[data-p*="controller"]'),
+          wcard ? (wcard.textContent || '').slice(0, 200) : 'no card',
+        );
+        const drawn = Array.prototype.map.call(doc.querySelectorAll('#viewport text'), (e: Element) => e.textContent || '').join('|');
+        check(`${theme}: the radio's end of a wireless connection says its SSID and VLAN`, /SSID “Campus-Guest”/.test(drawn), drawn.slice(0, 200));
+        const probs = drawnProblems();
+        check(`${theme}: enterprise-campus example, measured in the browser: nothing overlaps`, !probs.length, probs.slice(0, 3).join('; '));
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+      await tick(20);
+      // Add service… on a router: the empty block with its errors; one undo removes it
+      app.loadExampleNamed('multi-ssid-ap.yaml');
+      await tick(20);
+      app.select('device:guest-gw');
+      click('[data-tab="edit"]');
+      await tick(20);
+      const y0 = app.exportText();
+      const add = q('#side-body select[data-t="add-service"]') as HTMLSelectElement | null;
+      if (add) {
+        add.value = 'ntp';
+        add.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick(30);
+      const added = /guest-gw[\s\S]*?ntp:/.test(app.exportText()) && !!q('#side-body [data-svc-card="ntp"]') && /needs its stratum/.test(q('#side-body')!.textContent || '');
+      click('#btn-undo');
+      await tick(30);
+      check('Add service… writes the service with nothing chosen (its required fields are errors) and one undo takes it back', added && app.exportText() === y0);
+      // Find by SSID
+      const hits = search(app.session!.model, 'Guest', 200);
+      check('Find lists a Wi-Fi network by its SSID (its access point)', hits.some((h) => h.ref === 'device:ap1' && /Wi-Fi network/.test(h.kind)), hits.map((h) => h.kind + ':' + h.ref).join(', '));
+      app.mdoc!.markSaved();
+    }
+
+    // ------------------------------------------------ the Objects list: folding moves no section heading, both themes
+    {
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        const why = await outlineStability(app, doc);
+        check(`${theme}: Objects list: folding and unfolding a section (empty, populated, with a problem badge; by a click and by the keyboard; all at once) moves no heading; focus stays on it and takes no room`, !why.length, why.slice(0, 4).join('; '));
+        app.mdoc!.markSaved();
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
     }
 
     const perf = (doc.defaultView as Window).performance;

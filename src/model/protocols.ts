@@ -39,7 +39,6 @@ const BUILTINS: Builtin[] = [
   ['ldp', 'LDP', 'adjacency', '#495057'],
   ['pim', 'PIM', 'adjacency', '#d9480f'],
   ['bfd', 'BFD', 'adjacency', '#868e96'],
-  ['static', 'Static route', 'adjacency', '#343a40'],
   // redundancy / bundling
   ['lacp', 'LACP / LAG', 'redundancy', '#f08c00', ['lag', 'port-channel', 'etherchannel']],
   ['mlag', 'MLAG / vPC', 'redundancy', '#f59f00', ['vpc', 'mc-lag']],
@@ -54,9 +53,15 @@ const BUILTINS: Builtin[] = [
   ['syslog', 'Syslog', 'service', '#7950f2'],
   ['snmp', 'SNMP', 'service', '#845ef7'],
   ['radius', 'RADIUS', 'service', '#9775fa', ['tacacs', 'tacacs+']],
+  ['capwap', 'CAPWAP', 'service', '#d6336c', ['lwapp']],
   ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
   ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
   ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],
+  // layer 2 and multicast group management (simulated where the model has their relations)
+  ['stp', 'STP / RSTP', 'redundancy', '#5c7cfa', ['rstp', 'mstp']],
+  ['lldp', 'LLDP', 'other', '#748ffc'],
+  ['cdp', 'CDP', 'other', '#91a7ff'],
+  ['igmp', 'IGMP / MLD', 'adjacency', '#f76707', ['mld']],
 ];
 
 export const DEFAULT_STYLE: { [c in Category]: LineStyle } = {
@@ -82,6 +87,18 @@ for (const b of BUILTINS) for (const a of b[4] || []) ALIASES.set(a, b[0]);
 /** Canonical registry key for a protocol name ("eBGP" -> "bgp" only via aliases, never silently otherwise). */
 export function normalizeProtocol(name: string): string {
   return name.trim().toLowerCase();
+}
+
+/**
+ * The protocol a name stands for: itself when the registry defines it (a
+ * file's own definition of "ebgp" included), else the built-in protocol it
+ * is an alias of ("ibgp" → "bgp", "vpc" → "mlag"), else itself.
+ */
+export function protocolBase(registry: Map<string, ProtocolDef>, name: string): string {
+  const key = normalizeProtocol(name);
+  if (registry.has(key)) return key;
+  const alias = ALIASES.get(key);
+  return alias && registry.has(alias) ? alias : key;
 }
 
 /**

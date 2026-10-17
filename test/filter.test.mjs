@@ -16,6 +16,7 @@ const { exportBoxes, sceneRefs, viewNetworks } = load('diagram/networks-box.js')
 const { legendOf } = load('diagram/legend.js');
 const { groupRects } = load('diagram/physical.js');
 const { networkMembers } = load('model/derive.js');
+const { withVirtualNetworks } = load('model/virtual.js');
 
 const net = `netatlas: 1
 protocols:
@@ -38,7 +39,7 @@ devices:
     group: rack1
     interfaces: [{id: e0, ip: 10.0.0.2/30}, {id: e1, ip: 10.1.0.2/24}]
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.2/32}]
-  - {id: sw, type: switch, group: rack2, interfaces: [p1, p2, {id: p3, ip: 10.1.0.3/24}]}
+  - {id: sw, type: switch, group: rack2, interfaces: [{id: p1, vlans: 30}, {id: p2, vlans: 1}, {id: p3, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.1.0.3/24}]}
   - id: r3
     type: router
     group: far
@@ -46,7 +47,7 @@ devices:
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber}
-  - {id: l1s, a: {device: r1, interface: e2, networks: [v30]}, b: {device: sw, interface: p1, networks: [v30]}}
+  - {id: l1s, a: "r1:e2", b: "sw:p1"}
   - {id: l3s, a: "r3:e0", b: "sw:p2"}
 networks:
   - {id: lan, cidr: 10.1.0.0/24}
@@ -75,7 +76,7 @@ test('physical view of a subset: only the selected devices, links with both ends
   assert.equal(sorted(f.index.ifaceLink.keys()), 'r1:e0,r1:e2,r2:e0,sw:p1');
   // mixed group "site": kept, with only its included devices; "far" holds only r3
   assert.equal(ids(f.groups), 'site,rack1,rack2');
-  // networks: included members, or carried at an end of an included cable; not named-by-relation only
+  // networks: included members, or whose VLAN an end of an included cable carries; not named-by-relation only
   assert.equal(ids(f.networks), 'lan,p2p,v30');
   // a network with members on both sides shows only its included members
   assert.deepEqual(networkMembers(m, 'lan').map((x) => x.device), ['r1', 'r2', 'sw', 'r3']);
@@ -308,7 +309,8 @@ test('logical auto-arrange keeps each group together: no frame covers a device o
       nodes.forEach((n) => {
         if (n.kind === 'device' && within(n.id, gid)) return;
         // a network or hub whose devices all lie in the group is local to it, and placed inside its frame
-        const devs = n.kind === 'network' ? networkMembers(m, n.id).map((x) => x.device) : n.kind === 'hub' ? Array.from(new Set(m.index.relations.get(n.id).endpoints.map((e) => e.device))) : [];
+        // (the logical view's networks include the container networks: withVirtualNetworks)
+        const devs = n.kind === 'network' ? networkMembers(withVirtualNetworks(m), n.id).map((x) => x.device) : n.kind === 'hub' ? Array.from(new Set(m.index.relations.get(n.id).endpoints.map((e) => e.device))) : [];
         if (devs.length && devs.every((d) => !boxes.has(d) || within(d, gid))) return;
         assert.ok(!hit(r, { x: n.cx - n.w / 2, y: n.cy - n.h / 2, w: n.w, h: n.h }), `${f}: frame of ${gid} covers ${n.ref}`);
       });

@@ -27,7 +27,7 @@ test('each element type: selected entity and its direct relationships', () => {
   assert.deepEqual(ctxOf(wan, 'link:l-muc-sw'), { selected: 'link:l-muc-sw', related: ['device:muc-rtr', 'device:muc-sw'] });
   assert.deepEqual(ctxOf(wan, 'network:net-transit'), {
     selected: 'network:net-transit',
-    related: ['device:hq-fw', 'device:hq-rtr1', 'device:hq-rtr2', 'relation:ibgp-hq', 'relation:ospf-hq-area0'],
+    related: ['device:hq-fw', 'device:hq-rtr1', 'device:hq-rtr2', 'link:l-rtr1-fw', 'link:l-rtr2-fw', 'relation:ibgp-hq', 'relation:ospf-hq-area0'],
   });
   assert.deepEqual(ctxOf(wan, 'relation:gre-muc'), {
     selected: 'relation:gre-muc',

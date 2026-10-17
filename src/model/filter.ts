@@ -14,18 +14,20 @@
  *              that device.
  *   links      only links whose two ends are on included devices; a cable to
  *              a left-out device is not drawn at all (no dangling stub). The
- *              networks of their ends keep only included networks.
+ *              tagging of their ends is kept as it is (VLAN IDs).
  *   relations  only relations whose every endpoint device is included. A
  *              relation that also reaches a left-out device is left out
  *              entirely, never drawn as if it were complete.
  *              `over` keeps only included links, relations and networks.
  *   networks   physical view: a network with at least one included member,
- *              or assigned to an end of an included link.
+ *              or whose VLAN an end of an included link carries.
  *              logical view: a network with at least one included member, or
  *              in the `over` of an included relation.
  *              Membership is derived again from the included devices'
  *              addresses, so a network with members on both sides shows only
  *              its included members.
+ *   routes     the static routes of the included devices (they name only
+ *              their own device's interfaces).
  *   groups     a group that contains an included device, directly or through
  *              a child group, with its parent chain. A group with members on
  *              both sides contains only its included devices.
@@ -35,8 +37,8 @@
  *              resolve as in the full model.) Protocols have no device of
  *              their own; this is the only reference they have.
  */
-import { derive } from './derive';
-import { Device, Group, Interface, Link, Model, ModelIndex, Network, Relation, ifaceKey, relationDevices } from './types';
+import { derive, endNetworks } from './derive';
+import { Device, Group, Interface, Link, Model, ModelIndex, Network, Relation, Route, ifaceKey, relationDevices, routeKey } from './types';
 
 export type FilterView = 'physical' | 'logical';
 
@@ -72,7 +74,7 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   const netIds = new Set<string>();
   for (const n of model.networks) {
     if ((members.get(n.id) || []).length) netIds.add(n.id);
-    else if (view === 'physical' && links.some((l) => l.a.networks.indexOf(n.id) >= 0 || l.b.networks.indexOf(n.id) >= 0)) netIds.add(n.id);
+    else if (view === 'physical' && links.some((l) => endNetworks(model, l.a).indexOf(n.id) >= 0 || endNetworks(model, l.b).indexOf(n.id) >= 0)) netIds.add(n.id);
   }
   if (view === 'logical') {
     for (const r of rels0) for (const o of r.over) if (ix.networks.has(o)) netIds.add(o);
@@ -82,8 +84,6 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
     ...r,
     over: r.over.filter((o) => linkIds.has(o) || relIds.has(o) || netIds.has(o)),
   }));
-  // link ends name only networks of the filtered model
-  const links2: Link[] = links.map((l) => ({ ...l, a: { ...l.a, networks: l.a.networks.filter((n) => netIds.has(n)) }, b: { ...l.b, networks: l.b.networks.filter((n) => netIds.has(n)) } }));
 
   // groups: those holding an included device, with their parents
   const keep = new Set<string>();
@@ -101,12 +101,12 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   return {
     ...model,
     devices,
-    links: links2,
+    links,
     networks,
     relations,
     groups,
     layout: emptyLayout(),
-    index: indexOf(devices, links2, networks, relations, groups),
+    index: indexOf(devices, links, networks, relations, groups),
   };
 }
 
@@ -118,10 +118,20 @@ function indexOf(devices: Device[], links: Link[], networks: Network[], relation
   const interfaces = new Map<string, Interface>();
   for (const d of devices) for (const i of d.interfaces.concat(d.logical)) interfaces.set(ifaceKey(d.id, i.id), i);
   const ifaceLink = new Map<string, string>();
+  const radioLinks = new Map<string, string[]>();
+  const devById = new Map(devices.map((d) => [d.id, d] as [string, Device]));
   for (const l of links) {
-    if (l.a.iface !== undefined) ifaceLink.set(ifaceKey(l.a.device, l.a.iface), l.id);
-    if (l.b.iface !== undefined) ifaceLink.set(ifaceKey(l.b.device, l.b.iface), l.id);
+    for (const e of [l.a, l.b]) {
+      if (e.iface === undefined) continue;
+      const k = ifaceKey(e.device, e.iface);
+      if (!ifaceLink.has(k)) ifaceLink.set(k, l.id);
+      const d = devById.get(e.device);
+      // (a radio of a Wireless access: its wireless connections)
+      if (l.medium === 'wireless' && d && d.wireless && d.wireless.networks.some((x) => x.radio === e.iface)) radioLinks.set(k, (radioLinks.get(k) || []).concat([l.id]));
+    }
   }
+  const routes = new Map<string, Route>();
+  for (const d of devices) for (const r of d.routes) routes.set(routeKey(d.id, r.index), r);
   return {
     groups: new Map(groups.map((g) => [g.id, g] as [string, Group])),
     devices: new Map(devices.map((d) => [d.id, d] as [string, Device])),
@@ -130,5 +140,7 @@ function indexOf(devices: Device[], links: Link[], networks: Network[], relation
     networks: new Map(networks.map((n) => [n.id, n] as [string, Network])),
     relations: new Map(relations.map((r) => [r.id, r] as [string, Relation])),
     ifaceLink,
+    radioLinks,
+    routes,
   };
 }

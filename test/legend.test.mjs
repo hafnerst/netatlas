@@ -50,7 +50,7 @@ test('a short diagram is made taller for a long legend; a large one keeps its si
   assert.ok(small.box.h + 2 * legend.LEGEND_GAP >= small.bounds.h, 'the legend is the taller part here');
   assert.equal(small.viewBox.h, small.box.h + 2 * legend.LEGEND_GAP);
   let t = 'netatlas: 1\ndevices:\n';
-  for (let i = 0; i < 120; i++) t += `  - {id: d${i}, type: ${i % 2 ? 'router' : 'switch'}, interfaces: [e0, e1]}\n`;
+  for (let i = 0; i < 120; i++) t += `  - {id: d${i}, type: ${i % 2 ? 'router' : 'switch'}, interfaces: ${i % 2 ? '[e0, e1]' : '[{id: e0, vlans: 1}, {id: e1, vlans: 1}]'}}\n`;
   t += 'links:\n';
   for (let i = 0; i < 100; i += 2) t += `  - {id: l${i}, a: "d${i}:e0", b: "d${i + 1}:e0", medium: fiber}\n`;
   const big = exported(model(t), 'physical');
@@ -65,12 +65,13 @@ test('physical legend in the SVG: device types, cable media, speed, ports, locat
   const m = model(example('enterprise-wan.yaml'));
   const t = texts(exported(m, 'physical').root);
   assert.equal(t[0], 'Legend — physical view');
-  for (const want of ['DEVICES', 'Router', 'Switch', 'Firewall', 'CABLES (PHYSICAL LINKS)', 'Fiber', 'Copper', '1G (width grows with speed)', '100G', 'Port (label: interface name)', 'LOCATIONS / GROUPS', 'site', 'rack']) {
+  for (const want of ['DEVICES', 'Router', 'Layer 3 switch (L3: routes between its VLANs)', 'Layer 2 switch (L2: forwards frames only)', 'Firewall', 'CABLES (PHYSICAL LINKS)', 'Fiber', 'Copper', '1G (width grows with speed)', '100G', 'Port (label: interface name)', 'LOCATIONS / GROUPS', 'site', 'rack']) {
     assert.ok(t.includes(want), want + '\n' + t.join(' | '));
   }
   assert.ok(!t.some((x) => /mismatch/.test(x)), 'no mismatch symbol when no cable has one');
-  const mm = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\nnetworks:\n  - {id: n, cidr: 10.0.0.0/24}\nlinks:\n  - {id: l, a: {device: a, interface: e0, networks: [n]}, b: "b:e0"}\n');
-  assert.ok(texts(exported(mm, 'physical').root).includes('The two ends carry different networks'));
+  const mm = model('netatlas: 1\ndevices:\n  - {id: a, type: switch, interfaces: [{id: e0, vlans: 5}]}\n  - {id: b, type: switch, interfaces: [{id: e0, vlans: [5, 6]}]}\nnetworks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 5}\n  - {id: n6, cidr: 10.0.6.0/24, vlan: 6}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\n');
+  const mt = texts(exported(mm, 'physical').root);
+  assert.ok(mt.includes('VLANs differ: the ports at the two ends disagree') && mt.includes('Port VLANs: A 10 access port · T 10,20 trunk · N its native (untagged) VLAN · R · T a routed port’s tagged subinterfaces') && mt.includes('Access port (one VLAN) · trunk port (several VLANs, thick frame)'), mt.join(' | '));
   // symbols are real SVG content of the file (icons, lines), not references to the page
   const root = exported(m, 'physical').root;
   assert.ok(scene.findAll(root, (n) => scene.hasClass(n, 'icon')).length >= 5);

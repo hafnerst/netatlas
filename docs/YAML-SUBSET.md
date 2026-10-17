@@ -25,6 +25,7 @@ multi-line JSON is rejected.)
 | Comments | `# …` on their own line or after a value (preceded by a space) |
 | Document markers | an optional leading `---` and an optional trailing `...` |
 | Empty values | `key:` → null |
+| Empty flow collections | `bfd: {}` (an empty mapping: a protocol enabled without parameters), `[]` |
 | UTF-8 input, with or without a BOM, and LF / CRLF / CR line ends | |
 
 ### Scalar types (YAML 1.2 core schema)
@@ -39,8 +40,8 @@ multi-line JSON is rejected.)
 
 YAML 1.1 booleans (`yes`/`no`/`on`/`off`) are **strings**, so the "Norway
 problem" can't happen. netatlas also keeps the original text of every scalar,
-so values like `area: 0.0.0.1`, `key: 010` or `asn: 65001` show up exactly as
-written.
+so values like `area: 0.0.0.1`, `key: 010` or `peer-as: 65001` show up exactly as
+written, and `off` in `checks: {duplicate-mac: off}` is the word "off".
 
 ## Rejected, with an explicit error
 
@@ -114,11 +115,12 @@ writes the same subset back out.
   inserted in the documented order (e.g. `tier` after `group`, `type` right
   after the `id` of a logical interface).
 * A shorthand is only expanded when you edit it. `interfaces: [eth0]` becomes
-  `[{id: eth0, vrf: blue}]` once you set a VRF, an endpoint `"r1:eth0"`
-  becomes `{device: r1, interface: eth0, role: …}` once you give it a role,
-  and a link end `"r1:eth0"` becomes
-  `{device: r1, interface: eth0, vlans: [10, 20]}` once you add VLANs (and
-  goes back to `r1:eth0` when the last VLAN is removed).
+  `[{id: eth0, vrf: blue}]` once you set a VRF or its VLANs, and a link end
+  `"r1:eth0"` becomes `{device: r1, interface: eth0, duplex: full}` once you
+  set its port's duplex (and goes back to `r1:eth0` when that is removed).
+  A port's VLANs entered as `20, 10, 100-199` are written merged and in
+  order as a flow list, numbers as numbers and ranges as text: `[10, 20,
+  100-199]` (one VLAN as a number: `vlans: 10`).
 * Strings are quoted only when they'd otherwise read back differently
   (`"123"`, `"yes"`, `"a: b"`, `" padded"`). Text typed into a free-form
   attribute is typed like YAML would type it: `42` becomes a number, `true`

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { root, load, yaml, validate, state, byClass } from './helpers.mjs';
+import { root, load, yaml, validate, state, byClass, example, exampleNames } from './helpers.mjs';
 
 const { ModelDoc } = load('editor/document.js');
 const { layoutInput, layoutSignature } = load('layout/input.js');
@@ -14,8 +14,7 @@ const { autoPhysical, physicalBoxes } = load('layout/physical.js');
 const { logicalSpecs } = load('layout/logical.js');
 const W = load('yaml/write.js');
 
-const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
-const read = (f) => readFileSync(join(root, 'examples', f), 'utf8');
+const read = (f) => example(f);
 const readFixture = (f) => readFileSync(join(root, 'test', 'fixtures', f), 'utf8');
 const docOf = (text, name = 'x.yaml') => {
   const r = ModelDoc.fromText(text, name, 'file');
@@ -116,10 +115,14 @@ test('fields that do not affect geometry do not change the layout', () => {
   const base = layoutInput(docOf(read('enterprise-wan.yaml')).result.model);
   const text = read('enterprise-wan.yaml')
     .replace('description: ISP-1 uplink', 'description: some other uplink')
-    .replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.66/30')
+    // an address replaced by one just as long (addresses are drawn in full, so their length takes room)
+    .replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.6/30')
     .replace('encryption: aes-256-gcm', 'encryption: chacha20')
     .replace('# netatlas example: enterprise WAN', '# a different comment');
   assert.equal(layoutSignature(layoutInput(docOf(text).result.model)), layoutSignature(base));
+  // a longer address needs more room in its device's box: the layout input says so
+  const longer = read('enterprise-wan.yaml').replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.66/30');
+  assert.notEqual(layoutSignature(layoutInput(docOf(longer).result.model)), layoutSignature(base));
 });
 
 // --------------------------------------------------------------- idempotence
@@ -275,7 +278,7 @@ function islands() {
   const links = [];
   const rels = [];
   const add = (prefix, n, group) => {
-    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2], logical_interfaces: [{id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
+    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch, layer3: true' : 'router'}${group ? ', group: ' + group : ''}, interfaces: ${i ? '[{id: p0, vlans: 1}, {id: p1, vlans: 1}, {id: p2, vlans: 1}]' : '[p0, p1, p2]'}, logical_interfaces: [{id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
     for (let i = 1; i < n; i++) links.push(`  - {id: ${prefix}l${i}, a: "${prefix}${i}:p0", b: "${prefix}${Math.floor((i - 1) / 2)}:p${i % 2 ? 1 : 2}"}`);
     for (let i = 1; i < n; i++) rels.push(`  - {id: ${prefix}r${i}, protocol: ospf, endpoints: ["${prefix}${i}:lo0", "${prefix}0:lo0"]}`);
   };
@@ -309,8 +312,10 @@ test('disconnected components of different sizes: no overlaps in either view, co
     }
   }
   // the largest component is placed first (top-left); it is the grouped one, so its devices sit inside its frame, GROUP_PAD in from the edge
-  const { GROUP_PAD } = load('layout/sizes.js');
-  assert.ok(cs[0].x0 <= cs[1].x0 + GROUP_PAD + 1 && cs[0].y0 <= cs[1].y0 + 1);
+  // (and below its title area: the frame, not the first device, lines up with the top of the next component)
+  const { GROUP_PAD, groupHeader } = load('layout/sizes.js');
+  const head = groupHeader('g-big', 'site', 0).h;
+  assert.ok(cs[0].x0 <= cs[1].x0 + GROUP_PAD + 1 && cs[0].y0 <= cs[1].y0 + GROUP_PAD + head + 1, JSON.stringify(cs.slice(0, 2)));
 });
 
 test('dense relationships: a 12-router full mesh with tunnels stays readable', () => {
@@ -378,7 +383,7 @@ test('auto-arrange stays fast for a large model', () => {
   let t = 'netatlas: 1\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: s${g}, kind: site}\n`;
   t += 'devices:\n';
-  for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: [a, b, c], logical_interfaces: [{id: lo0, type: loopback, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
+  for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: ${i % 10 ? '[{id: a, vlans: 1}, {id: b, vlans: 1}, {id: c, vlans: 1}]' : '[a, b, c]'}, logical_interfaces: [{id: lo0, type: loopback, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
   t += 'links:\n';
   for (let i = 1; i < 400; i++) t += `  - {id: l${i}, a: "d${String(i).padStart(3, '0')}:a", b: "d${String(Math.floor(i / 2)).padStart(3, '0')}:${i % 2 ? 'b' : 'c'}"}\n`;
   t += 'relations:\n';

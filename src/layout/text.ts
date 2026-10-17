@@ -104,9 +104,37 @@ export interface TextBlock {
   w: number;
   /** lines × line height */
   h: number;
+  /** index of the first line in the monospace font (addresses, kept whole); none when absent */
+  mono?: number;
 }
 
 export function textBlock(s: string, size: number, maxW: number): TextBlock {
   const lines = wrapText(s, size, maxW);
   return { lines, size, w: lines.reduce((m, l) => Math.max(m, textWidth(l, size)), 0), h: lines.length * lineHeight(size) };
+}
+
+/**
+ * Estimated advance of a monospace character, in em. Addresses are drawn in
+ * the monospace font; real monospace fonts advance 0.55–0.60 em, so this
+ * estimate is a little wide, like the one above.
+ */
+export const MONO_EM = 0.62;
+
+/** Estimated width of a line in the monospace font. */
+export function monoWidth(s: string, size: number): number {
+  return s.length * size * MONO_EM;
+}
+
+/**
+ * A label followed by address lines: the label wraps as usual, the address
+ * lines are kept whole (an address is never broken across lines or
+ * shortened) and are drawn in the monospace font. `mono` is the index of the
+ * first address line; the block is as wide as its widest line.
+ */
+export function labelWithAddresses(label: string, addresses: string[], size: number, maxW: number): TextBlock {
+  const lines = label ? wrapText(label, size, maxW) : [];
+  const mono = lines.length;
+  const all = lines.concat(addresses);
+  const w = all.reduce((m, l, i) => Math.max(m, i >= mono ? monoWidth(l, size) : textWidth(l, size)), 0);
+  return addresses.length ? { lines: all, size, w, h: all.length * lineHeight(size), mono } : { lines: all, size, w, h: all.length * lineHeight(size) };
 }

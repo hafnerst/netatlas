@@ -9,20 +9,28 @@
  *   around the device.
  * - Cable labels are placed on the cable's longest segment, away from
  *   devices, port labels and other cable labels.
+ * - The addresses and identifiers of a device's interfaces are entries in
+ *   its box (model/addresses.ts), each named by its interface, so its owner
+ *   is never in doubt and no floating label can cover it.
  */
-import { CBox, Pt, Rect, boxRect, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { linkLabelText, linkNetworkLabel } from '../layout/input';
-import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
-import { DEVICE_ICON, DEVICE_TEXT_X, deviceBody, groupHeader, linkLabelBox } from '../layout/sizes';
-import { networkMismatch } from '../model/derive';
-import { deviceSubtitle } from '../model/device-types';
-import { Model } from '../model/types';
-import { deviceIcon } from './icons';
-import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
+import { CBox, Pt, Rect, boxRect, polylineCrossings, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
+import { entryTexts, linkLabelExtraFields, linkLabelText, linkTagNote, portLinks } from '../layout/input';
+import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
+import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, GROUP_KIND_SIZE, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
+import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, deviceOwnLines, routeTables } from '../model/addresses';
+import { sortedByName } from '../model/order';
+import { deviceSubtitle, deviceTypeLine } from '../model/device-types';
+import { Device, Model, ifaceKey, groupKindText } from '../model/types';
+import { BADGE_H, BADGE_W, deviceIcon, layerBadge, serviceBadge, glyphFor } from './icons';
+import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
+import { hostInterior } from '../layout/virtual';
+import { externalWires, interiorNodes } from './virtual';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
+import { capabilities } from '../model/capabilities';
+import { serviceBadgesText, serviceListText } from '../model/service-registry';
 
-export { deviceSubtitle, linkNetworkLabel };
+export { deviceSubtitle };
 
 export interface ViewOptions {
   showLabels: boolean;
@@ -35,9 +43,39 @@ export interface ViewOptions {
 export interface SceneResult {
   root: VNode;
   bounds: Rect;
+  /** the physical view: each cable's points, port to port (tests measure crossings with them) */
+  routes?: Map<string, Pt[]>;
+  /**
+   * What a reader would see as overlapping: labels that found no free place
+   * and pairs of overlapping nodes (after moving nodes by hand). 0 after
+   * Auto-arrange; the app reports any other number.
+   */
+  conflicts: number;
+}
+
+/** Pairs of overlapping rectangles (node boxes). */
+export function nodeOverlaps(rs: Rect[]): number {
+  let n = 0;
+  for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) if (rectsOverlap(rs[i], rs[j])) n++;
+  return n;
 }
 
 const STUB = 20;
+
+/** The arrow of a one-way cable: its tip a little before end b (the port square stays visible), pointing along the last segment. */
+function cableArrow(end: Pt, from: Pt, color: string): VNode {
+  const dx = end.x - from.x;
+  const dy = end.y - from.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const ux = dx / d;
+  const uy = dy / d;
+  const tip = { x: end.x - ux * 7, y: end.y - uy * 7 };
+  const L = 11;
+  const W = 5.5;
+  const bx = tip.x - ux * L;
+  const by = tip.y - uy * L;
+  return h('path', { class: 'arrow cable-arrow', d: `M${n(tip.x)} ${n(tip.y)}L${n(bx - uy * W)} ${n(by + ux * W)}L${n(bx + uy * W)} ${n(by - ux * W)}Z`, fill: color });
+}
 
 /** Device boxes after applying user drags. */
 export function physicalBoxes(layout: PhysicalLayout, positions: Map<string, Pt>): Map<string, CBox> {
@@ -75,7 +113,7 @@ export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<st
     for (const c of model.groups) if (c.parent === g.id && rects.has(c.id)) parts.push(rects.get(c.id) as Rect);
     if (!parts.length) continue;
     const u = unionRect(parts);
-    const head = groupHeader(g.label, g.kind, u.w);
+    const head = groupHeader(g.label, groupKindText(g), u.w, addressAttrLines(g.attrs));
     const w = Math.max(u.w + 2 * GROUP_PAD, head.minW);
     rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - GROUP_PAD - head.h, w, h: u.h + 2 * GROUP_PAD + head.h });
   }
@@ -84,10 +122,12 @@ export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<st
 
 /**
  * The frames of groups / locations (outermost first, so children draw on
- * top), with title and kind. Used by both views. Each title is blocked for
- * the label placer, so no label is placed on it.
+ * top). Used by both views. Their titles and kinds go to `titles`, which
+ * the renderers draw in the top layer with a halo, so no cable or relation
+ * line drawn across a frame's title can make it hard to read. Each title is
+ * blocked for the label placer, so no label is placed on it.
  */
-export function groupFrames(model: Model, grects: Map<string, Rect>, placer: LabelPlacer): VNode[] {
+export function groupFrames(model: Model, grects: Map<string, Rect>, placer: LabelPlacer, titles: VNode[] = []): VNode[] {
   const out: VNode[] = [];
   const depthSorted = model.groups.filter((g) => grects.has(g.id));
   const depthOf = (id: string): number => {
@@ -103,51 +143,109 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
   for (const g of depthSorted) {
     const r = grects.get(g.id) as Rect;
     const ks = groupKindStyle(g.kind);
-    const head = groupHeader(g.label, g.kind, r.w - 2 * GROUP_PAD);
+    const head = groupHeader(g.label, groupKindText(g), r.w - 2 * GROUP_PAD, addressAttrLines(g.attrs));
     out.push(
       h('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
         h('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
-        textLines({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
-        head.kind ? h('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
+      ]),
+    );
+    titles.push(
+      h('g', { class: 'group-label', 'data-ref': 'group:' + g.id }, [
+        textLines({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7, addressLineAttrs(head.title, addressAttrEntries(g.attrs).map((a) => ({ field: 'attr', value: a.key })))),
+        head.kind ? h('text', { class: 'halo group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
       ]),
     );
     placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
+    // … and so is its kind, at the right of the first line
+    if (head.kind) {
+      const kw = textWidth(head.kind, GROUP_KIND_SIZE) * 1.1;
+      placer.block({ x: r.x + r.w - 14 - kw, y: r.y + 8, w: kw + 4, h: 16 });
+    }
   }
   return out;
 }
 
-/** A device box with its icon and its full, wrapped label and subtitle. */
-export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = ''): VNode {
+/**
+ * A device box with its icon and its full, wrapped label and subtitle. With
+ * `bodyH`, the icon and text are centred in the top `bodyH` of the box (the
+ * rest holds the chips of its uncabled ports).
+ */
+export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean, services: Array<'dhcp' | 'dns'> = [], glyph?: string, servicesTip = ''): VNode {
   const x = b.cx - b.w / 2;
   const y = b.cy - b.h / 2;
   const body = deviceBody(label, sub, 0, 0);
   const textX = x + DEVICE_TEXT_X;
-  const top = b.cy - body.textH / 2;
-  return h('g', { class: 'node device ' + extraClass, 'data-ref': ref }, [
+  const mid = y + bodyH / 2;
+  const top = mid - body.textH / 2;
+  // a switch says its layer: an own glyph for a Layer 3 switch, and a badge over the icon's lower right corner (inside the icon's column)
+  const sw = capabilities({ type, layer3 }).switchFeatures;
+  const badge = sw ? layerBadge(!!layer3, x + 12 + DEVICE_ICON - BADGE_W, mid + DEVICE_ICON / 2 - BADGE_H + 5) : null;
+  return h('g', { class: 'node device ' + extraClass + (sw ? (layer3 ? ' layer3' : ' layer2') : ''), 'data-ref': ref, 'data-endpoint': 'device' }, [
+    servicesTip ? h('title', {}, `Services: ${servicesTip}`) : null,
     h('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
-    deviceIcon(type, x + 12, b.cy - DEVICE_ICON / 2, DEVICE_ICON),
+    deviceIcon(glyph || type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON, layer3),
+    badge,
+    // a server's DHCP and DNS servers: a badge each over the icon (DHCP above, DNS below), in its column
+    ...services.map((svc) => serviceBadge(svc, x + 12, svc === 'dhcp' ? mid - DEVICE_ICON / 2 - BADGE_H + 4 : mid + DEVICE_ICON / 2 - 4)),
     textLines({ class: 'dev-label' }, body.label, textX, top),
     body.sub.lines.length ? textLines({ class: 'dev-sub' }, body.sub, textX, top + body.textH - body.sub.h) : null,
   ]);
 }
 
-/** Where the label of a port is drawn, and the rectangle it covers. */
-function portLabelBox(p: PortPos): { x: number; y: number; anchor: string; rect: Rect } {
-  const w = textWidth(p.iface as string, PORT_FONT);
-  if (p.side === 'top' || p.side === 'bottom') {
-    const y = p.y + p.ny * 12 + (p.side === 'top' ? -1 : 8);
-    return { x: p.x, y, anchor: 'middle', rect: { x: p.x - w / 2, y: y - 9, w, h: 12 } };
-  }
-  const x = p.x + p.nx * PORT_LABEL_GAP;
-  const y = p.y - 5;
-  return { x, y, anchor: p.side === 'left' ? 'end' : 'start', rect: { x: p.side === 'left' ? x - w : x, y: y - 9, w, h: 12 } };
+/** One line of a port's label: the interface's name, or the port's tagging. */
+interface PortLabelLine {
+  text: string;
+  kind: 'name' | 'tag';
+  x: number;
+  y: number;
+  rect: Rect;
 }
 
 /**
- * Way points between `s` and `e` that lead around the device boxes the
- * straight line would pass through (at most a few bends).
+ * Where the label of a port is drawn: its interface's name and, under it,
+ * the layer-2 tagging of the link end ("U 10 · T 20,30"); the rectangles
+ * they cover. A port on the left or right side has its name above the
+ * cable and its tagging below it; a port on the top or bottom side has both
+ * beyond its end, the tagging outermost. The layout reserved this room
+ * (layout/physical.ts).
  */
-function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number): Pt[] {
+/** Height of the ⚠ mark above a cable label whose ends' tagging differs. */
+const WARN_MARK_H = 17;
+
+function portLabelBox(p: PortPos): { anchor: string; lines: PortLabelLine[]; rect: Rect } {
+  const lines: PortLabelLine[] = [];
+  const add = (text: string | undefined, kind: 'name' | 'tag', x: number, y: number, anchor: string): void => {
+    if (!text) return;
+    const w = textWidth(text, PORT_FONT);
+    const left = anchor === 'middle' ? x - w / 2 : anchor === 'end' ? x - w : x;
+    lines.push({ text, kind, x, y, rect: { x: left, y: y - 9, w, h: 12 } });
+  };
+  let anchor: string;
+  if (p.side === 'top' || p.side === 'bottom') {
+    anchor = 'middle';
+    const y = p.y + p.ny * 12 + (p.side === 'top' ? -1 : 8);
+    add(p.iface, 'name', p.x, y, anchor);
+    add(p.tag, 'tag', p.x, p.iface ? y + p.ny * 12 : y, anchor);
+  } else {
+    anchor = p.side === 'left' ? 'end' : 'start';
+    const x = p.x + p.nx * PORT_LABEL_GAP;
+    add(p.iface, 'name', x, p.y - 5, anchor);
+    add(p.tag, 'tag', x, p.y + 13, anchor);
+  }
+  return { anchor, lines, rect: lines.length ? unionRect(lines.map((l) => l.rect)) : { x: p.x, y: p.y, w: 0, h: 0 } };
+}
+
+/** What a cable crossing another one costs, in the choice of its way around a box: a long way round is better than a crossing. */
+export const ROUTE_CROSSING_COST = 400;
+
+/**
+ * Way points between `s` and `e` that lead around the boxes the straight
+ * line would pass through (at most a few bends), `m` clear of their corners.
+ * Of the ways around a box the shortest is taken, a way that crosses one of
+ * `avoid` (the other cables) costing ROUTE_CROSSING_COST more per crossing;
+ * on a tie the first in a fixed order (deterministic). Used by both views.
+ */
+export function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number, m = 12, avoid: Array<[Pt, Pt]> = []): Pt[] {
   if (depth >= 4) return [];
   let hit: Rect | null = null;
   let hitD = Infinity;
@@ -160,7 +258,6 @@ function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number): Pt[] {
     }
   }
   if (!hit) return [];
-  const m = 12;
   const corners: Pt[] = [
     { x: hit.x - m, y: hit.y - m },
     { x: hit.x + hit.w + m, y: hit.y - m },
@@ -175,17 +272,20 @@ function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number): Pt[] {
     ways.push([corners[i], corners[j]], [corners[j], corners[i]]);
   }
   const usable = ways
-    .map((w, i) => ({ w, i, cost: len(s, w[0]) + (w.length > 1 ? len(w[0], w[1]) : 0) + len(w[w.length - 1], e) }))
+    .map((w, i) => ({ w, i, cost: len(s, w[0]) + (w.length > 1 ? len(w[0], w[1]) : 0) + len(w[w.length - 1], e) + (avoid.length ? ROUTE_CROSSING_COST * polylineCrossings([s, ...w, e], avoid) : 0) }))
     .filter((x) => clear(s, x.w[0]) && clear(x.w[x.w.length - 1], e))
     .sort((p, q) => p.cost - q.cost || p.i - q.i);
   if (!usable.length) return [];
   const w = usable[0].w;
-  return [...detour(s, w[0], obstacles, depth + 1), ...w, ...detour(w[w.length - 1], e, obstacles, depth + 1)];
+  return [...detour(s, w[0], obstacles, depth + 1, m, avoid), ...w, ...detour(w[w.length - 1], e, obstacles, depth + 1, m, avoid)];
 }
 
-/** The points of a cable from port to port. */
-export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>): Pt[] {
-  const obstacles = Array.from(boxes.values());
+/**
+ * The points of a cable from port to port. Where it has to bend, it goes
+ * around the device boxes and around `ports` (the squares and labels of
+ * the other ports), so it never runs across another port of a device.
+ */
+export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, ports: Rect[] = [], avoid: Array<[Pt, Pt]> = []): Pt[] {
   const facing = pa.nx === -pb.nx && pa.ny === -pb.ny;
   const a = { x: pa.x, y: pa.y };
   const b = { x: pb.x, y: pb.y };
@@ -199,25 +299,42 @@ export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>): 
   }
   const sa = { x: pa.x + pa.nx * STUB, y: pa.y + pa.ny * STUB };
   const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };
-  return [a, sa, ...detour(sa, sb, obstacles, 0), sb, b];
+  // (a port area the stub ends in can't be avoided: it is left out; one a device's
+  // obstacle already covers is left out too, or the way around it could end inside that device's)
+  const inside = (p: Pt, r: Rect): boolean => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+  const covered = (r: Rect, o: Rect): boolean => r.x >= o.x && r.y >= o.y && r.x + r.w <= o.x + o.w && r.y + r.h <= o.y + o.h;
+  const around = Array.from(boxes.values());
+  const obstacles = around.concat(ports.filter((r) => !inside(sa, r) && !inside(sb, r) && !around.some((o) => covered(r, o))));
+  return [a, sa, ...detour(sa, sb, obstacles, 0, 12, avoid), sb, b];
 }
 
 export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewOptions): SceneResult {
   const boxes = physicalBoxes(layout, opts.positions);
-  const grects = groupRects(model, boxes);
-  const ports = assignPorts(model.links, boxes);
+  const ports = assignPorts(portLinks(model), boxes);
+  // a group's frame also holds the labels of its devices' top and bottom ports (a port's VLANs reach one line beyond its name)
+  const labelParts = new Map<string, Rect[]>();
+  for (const p of ports) {
+    if (!p.tag || (p.side !== 'top' && p.side !== 'bottom')) continue;
+    const d = model.index.devices.get(p.device);
+    if (!d || !d.group) continue;
+    labelParts.set(d.group, (labelParts.get(d.group) || []).concat([portLabelBox(p).rect]));
+  }
+  const grects = groupRects(model, boxes, labelParts);
   const portByKey = new Map<string, PortPos>(ports.map((p) => [p.key, p] as [string, PortPos]));
   const placer = new LabelPlacer();
   const obstacles = new Map<string, Rect>();
   model.devices.forEach((d) => {
-    const b = boxes.get(d.id) as CBox;
+    const b = boxes.get(d.id);
+    // (a guest is inside its host's box)
+    if (!b) return;
     placer.block(boxRect(b, 2));
     obstacles.set(d.id, boxRect(b, 5));
   });
 
   // ---- groups (outermost first so children draw on top)
   const showGroups = opts.showGroups !== false;
-  const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
+  const groupTitles: VNode[] = [];
+  const groupNodes = showGroups ? groupFrames(model, grects, placer, groupTitles) : [];
 
   // ---- ports and cables: port labels first, they have fixed places
   const linkNodes: VNode[] = [];
@@ -230,19 +347,73 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   if (opts.showLabels) {
     for (const { pa, pb } of drawn) {
       for (const p of [pa, pb]) {
-        if (!p.iface) continue;
         const pl = portLabelBox(p);
-        labelNodes.push(h('text', { class: 'halo port-label', 'data-ref': `iface:${p.device}:${p.iface}`, x: pl.x, y: pl.y, 'text-anchor': pl.anchor, 'font-size': PORT_FONT }, p.iface));
-        placer.block(pl.rect);
-        extra.push(pl.rect);
+        for (const ln of pl.lines) {
+          // the name belongs to the interface; the tagging to the end of the link (its field in the Edit tab)
+          const attrs =
+            ln.kind === 'name'
+              ? { class: 'halo port-label', 'data-ref': `iface:${p.device}:${p.iface}` }
+              : { class: 'halo port-tag', 'data-ref': 'link:' + p.linkId, 'data-field': p.key.slice(p.key.lastIndexOf(':') + 1), 'data-value': '' };
+          labelNodes.push(h('text', { ...attrs, x: ln.x, y: ln.y, 'text-anchor': pl.anchor, 'font-size': PORT_FONT }, ln.text));
+          placer.block(ln.rect);
+          extra.push(ln.rect);
+        }
       }
     }
   }
+  // the area of every port (its square and its label): other cables keep clear of it
+  const portArea = new Map<string, Rect[]>();
+  for (const { pa, pb } of drawn) {
+    for (const p of [pa, pb]) {
+      const rs: Rect[] = [{ x: p.x - 6.5, y: p.y - 6.5, w: 13, h: 13 }];
+      if (opts.showLabels) for (const ln of portLabelBox(p).lines) rs.push(ln.rect);
+      portArea.set(p.key, rs);
+    }
+  }
+  const otherPorts = (keys: string[]): Rect[] => {
+    const out: Rect[] = [];
+    portArea.forEach((rs, k) => {
+      if (keys.indexOf(k) < 0) out.push(...rs);
+    });
+    return out;
+  };
   // cables in id order, so label placement never depends on the order in the file
   const byId = drawn.slice().sort((p, q) => (p.l.id < q.l.id ? -1 : p.l.id > q.l.id ? 1 : 0));
   const labelAt = new Map<string, VNode[]>();
+  // a device other than the cable's own two is gone around together with its ports and their labels
+  const withPorts = new Map<string, Rect>();
+  obstacles.forEach((r, id) => {
+    const parts = [r];
+    for (const p of ports) if (p.device === id) parts.push(...(portArea.get(p.key) || []));
+    withPorts.set(id, unionRect(parts));
+  });
+  // Each cable is routed twice: alone, then knowing where the others run (their first ways), so that
+  // where it must go around a box it takes a side that crosses none of them when it can.
+  const routes = new Map<string, Pt[]>();
+  const aroundOf = (pa: PortPos, pb: PortPos): Map<string, Rect> => {
+    const around = new Map<string, Rect>();
+    obstacles.forEach((r, id) => around.set(id, id === pa.device || id === pb.device ? r : (withPorts.get(id) as Rect)));
+    return around;
+  };
+  for (const { l, pa, pb } of byId) routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key])));
+  const first = new Map(routes);
   for (const { l, pa, pb } of byId) {
-    const pts = cableRoute(pa, pb, obstacles);
+    const pts = first.get(l.id) as Pt[];
+    // (a straight cable has no way to choose)
+    if (pts.length <= 2) continue;
+    const avoid: Array<[Pt, Pt]> = [];
+    first.forEach((q, id) => {
+      if (id === l.id) return;
+      for (let k = 0; k + 1 < q.length; k++) avoid.push([q[k], q[k + 1]]);
+    });
+    routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), avoid));
+  }
+  // an aggregate's name keeps clear of the cables
+  routes.forEach((pts) => {
+    for (let k = 0; k + 1 < pts.length; k++) placer.blockLine(pts[k], pts[k + 1], 2);
+  });
+  for (const { l } of byId) {
+    const pts = routes.get(l.id) as Pt[];
     // the longest segment carries the label
     let seg = 0;
     let segLen = -1;
@@ -254,18 +425,22 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       }
     }
     const out: VNode[] = [];
-    const mismatch = !!networkMismatch(l.a.networks, l.b.networks);
+    const mismatch = !!linkTagNote(model, l);
     const text = opts.showLabels ? linkLabelText(model, l) : '';
+    const lineFields = opts.showLabels ? linkLabelExtraFields(l) : [];
+    const lines = lineFields.map((x) => x.line);
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
-    if (text) {
-      const box = linkLabelBox(text);
-      const step = Math.max(14, box.h + 2);
-      center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
-      const r = centerRect(center, box.w, box.h);
+    if (text || lines.length) {
+      const box = linkLabelBox(text, lines);
+      // ends whose layer-2 tagging differs are marked above the label: the mark is part of the room it takes
+      const mark = mismatch ? WARN_MARK_H : 0;
+      const step = Math.max(14, box.h + mark + 2);
+      center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h + mark);
+      const r = centerRect(center, box.w, box.h + mark);
       extra.push(r);
-      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
-      // ends that carry different networks are marked next to the label
-      if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
+      if (placer.leaderFrom) out.push(leaderLine(placer.leaderFrom, r, 'link:' + l.id));
+      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + mark + 1, addressLineAttrs(box.block, lineFields)));
+      if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y + 14, 'text-anchor': 'middle' }, '⚠'));
     } else if (mismatch) {
       // … and on the cable itself when labels are off
       out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
@@ -274,26 +449,37 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     for (const p of pts) extra.push({ x: p.x - 8, y: p.y - 8, w: 16, h: 16 });
     const ms = mediumStyle(l.medium);
     const d = pts.map((p, i) => (i ? 'L' : 'M') + n(p.x) + ' ' + n(p.y)).join('');
+    // the path runs from end a to end b (the traffic animation follows it); a one-way cable has an arrow at end b
+    const oneWay = l.direction === 'unidirectional';
     labelAt.set(l.id + '\u0000path', [
-      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' net-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
+      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' net-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}${oneWay ? ' one-way' : ''}`, 'data-ref': 'link:' + l.id }, [
         h('path', { class: 'hit', d }),
         h('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': speedWidth(l.speed), 'stroke-dasharray': ms.dash }),
+        oneWay ? cableArrow(pts[pts.length - 1], pts[pts.length - 2], ms.color) : null,
       ]),
     ]);
   }
+  // ---- aggregates (LAG / port-channel): a bracket around the run of member ports on a side, named by the aggregate
+  const lagNodes = lagMarks(model, ports, placer, opts.showLabels, extra);
+
   // emit in model order (as before), whatever order the labels were placed in
   for (const { l, pa, pb } of drawn) {
     const ms = mediumStyle(l.medium);
     linkNodes.push(...(labelAt.get(l.id + '\u0000path') as VNode[]));
     for (const p of [pa, pb]) {
+      // a trunk (several VLANs) is a larger square with a thick frame: its shape says it, not its colour
+      const trunk = !!p.tag && /^T /.test(p.tag);
+      const r = trunk ? 5.5 : 4.5;
       portNodes.push(
         h('rect', {
-          class: 'port',
+          // a cable plugged into the device as a whole (no interface named) ends in a hollow square
+          class: p.iface ? (trunk ? 'port trunk' : 'port') : 'port dev-end',
           'data-ref': p.iface ? `iface:${p.device}:${p.iface}` : 'device:' + p.device,
-          x: p.x - 4.5,
-          y: p.y - 4.5,
-          width: 9,
-          height: 9,
+          'data-endpoint': p.iface ? 'iface' : 'device',
+          x: p.x - r,
+          y: p.y - r,
+          width: 2 * r,
+          height: 2 * r,
           rx: 1.5,
           fill: ms.color,
         }),
@@ -302,11 +488,33 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     labelNodes.push(...(labelAt.get(l.id) as VNode[]));
   }
 
-  // ---- devices
-  const deviceNodes: VNode[] = model.devices.map((d) => {
-    const b = boxes.get(d.id) as CBox;
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type));
-  });
+  // ---- devices: label, the entries of their interfaces, and the chips of their uncabled ports at the bottom of the box;
+  // a host's interior (virtual switches, container networks, its guests) between its label and its entries
+  const deviceNodes: VNode[] = [];
+  const wireNodes: VNode[] = [];
+  const paint = { deviceNode, entryNodes };
+  for (const d of model.devices) {
+    const b = boxes.get(d.id);
+    // a guest is drawn inside its host
+    if (!b) continue;
+    const flow = spareChipFlow(spareIds(model, d), b.w);
+    const chipsH = chipStripH(flow);
+    const items = entryItems(model, d, 'physical');
+    const listH = physicalListH(entriesSize(items));
+    const inner = hostInterior(model, d.id);
+    const innerH = inner ? inner.h + ENTRY_MARGIN : 0;
+    if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
+    if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
+    const bodyH = b.h - chipsH - listH - innerH;
+    deviceNodes.push(deviceNode('device:' + d.id, d.label, [deviceTypeLine(d), serviceBadgesText(d)].filter((x) => !!x).join('\n'), d.type, b, 'type-' + cssToken(d.type) + (inner ? ' host' : ''), bodyH, d.layer3, [], glyphFor(d), serviceListText(d)));
+    if (inner) {
+      const ox = b.cx - inner.w / 2;
+      const oy = b.cy - b.h / 2 + bodyH;
+      const guests = new Map<string, Rect>();
+      interiorNodes(inner, ox, oy, paint, { nodes: deviceNodes, wires: wireNodes, guests });
+      wireNodes.push(...externalWires(inner, ox, oy, boxRect(b), ports, d.id));
+    }
+  }
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends
   const rects: Rect[] = [];
@@ -316,15 +524,176 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   const bounds = unionRect(rects);
 
   return {
+    conflicts: placer.conflicts + nodeOverlaps(Array.from(boxes.values()).map((b) => boxRect(b))),
+    routes,
     root: h('g', { class: 'scene scene-physical' }, [
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-links' }, linkNodes),
       h('g', { class: 'layer-nodes' }, deviceNodes),
-      h('g', { class: 'layer-ports' }, portNodes),
-      h('g', { class: 'layer-labels' }, labelNodes),
+      h('g', { class: 'layer-vwires' }, wireNodes),
+      h('g', { class: 'layer-ports' }, portNodes.concat(lagNodes.marks)),
+      h('g', { class: 'layer-labels' }, groupTitles.concat(labelNodes, lagNodes.labels)),
     ]),
     bounds,
   };
+}
+
+/**
+ * The aggregates of the physical view: for every virtual interface with
+ * member ports (a LAG, port-channel, bond), a bracket around each run of its
+ * cabled member ports along a side of the device, and the aggregate's name
+ * beside it. Both carry the aggregate's ref, so selecting it, or one of its
+ * members, highlights the bundle and its ports together.
+ */
+function lagMarks(model: Model, ports: PortPos[], placer: LabelPlacer, showLabels: boolean, extra: Rect[]): { marks: VNode[]; labels: VNode[] } {
+  const marks: VNode[] = [];
+  const labels: VNode[] = [];
+  for (const d of model.devices) {
+    for (const agg of d.logical.filter((i) => i.members.length > 0).slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      const ref = `iface:${d.id}:${agg.id}`;
+      const bySide = new Map<string, PortPos[]>();
+      for (const p of ports) {
+        if (p.device !== d.id) continue;
+        if (!bySide.has(p.side)) bySide.set(p.side, []);
+        (bySide.get(p.side) as PortPos[]).push(p);
+      }
+      bySide.forEach((list, side) => {
+        const horiz = side === 'top' || side === 'bottom';
+        list.sort((u, v) => (horiz ? u.x - v.x : u.y - v.y) || (u.key < v.key ? -1 : 1));
+        // runs of consecutive members (another port between two members ends a run)
+        const runs: PortPos[][] = [];
+        let cur: PortPos[] = [];
+        for (const p of list) {
+          if (p.iface !== undefined && agg.members.indexOf(p.iface) >= 0) cur.push(p);
+          else if (cur.length) {
+            runs.push(cur);
+            cur = [];
+          }
+        }
+        if (cur.length) runs.push(cur);
+        for (const run of runs) {
+          const x0 = Math.min(...run.map((p) => p.x));
+          const x1 = Math.max(...run.map((p) => p.x));
+          const y0 = Math.min(...run.map((p) => p.y));
+          const y1 = Math.max(...run.map((p) => p.y));
+          const r: Rect = horiz ? { x: x0 - 8.5, y: y0 - 6, w: x1 - x0 + 17, h: 12 } : { x: x0 - 6, y: y0 - 8.5, w: 12, h: y1 - y0 + 17 };
+          marks.push(h('rect', { class: 'lag-mark', 'data-ref': ref, 'data-side': side, x: r.x, y: r.y, width: r.w, height: r.h, rx: 6 }));
+          extra.push(r);
+          if (!showLabels) continue;
+          const w = textWidth(agg.id, LAG_FONT) * 1.15 + 4;
+          const hgt = 13;
+          const p0 = run[0];
+          const out = 12 + (horiz ? hgt / 2 : w / 2);
+          // beyond the ends of the bracket, outside the box
+          const cands: Pt[] = horiz
+            ? [
+                { x: r.x - 4 - w / 2, y: p0.y + p0.ny * 9 },
+                { x: r.x + r.w + 4 + w / 2, y: p0.y + p0.ny * 9 },
+                { x: r.x - 4 - w / 2, y: p0.y + p0.ny * 24 },
+                { x: r.x + r.w + 4 + w / 2, y: p0.y + p0.ny * 24 },
+              ]
+            : [
+                { x: p0.x + p0.nx * out, y: r.y - 3 - hgt / 2 },
+                { x: p0.x + p0.nx * out, y: r.y + r.h + 3 + hgt / 2 },
+                { x: p0.x + p0.nx * (out + 14), y: r.y - 3 - hgt / 2 },
+                { x: p0.x + p0.nx * (out + 14), y: r.y + r.h + 3 + hgt / 2 },
+              ];
+          const c = placer.place(cands, w, hgt, true);
+          const lr = centerRect(c, w, hgt);
+          extra.push(lr);
+          if (placer.leaderFrom) labels.push(leaderLine({ x: r.x + r.w / 2, y: r.y + r.h / 2 }, lr, ref));
+          labels.push(h('text', { class: 'halo lag-label addr', 'data-ref': ref, x: c.x, y: c.y + 3.5, 'text-anchor': 'middle', 'font-size': LAG_FONT }, agg.id));
+        }
+      });
+    }
+  }
+  return { marks, labels };
+}
+
+const LAG_FONT = 9.5;
+
+/** An entry in a device's box: what it shows, and the object it belongs to. */
+export interface EntryItem {
+  header: string;
+  lines: string[];
+  ref: string;
+  /** the field of the configuration each line shows (same order as `lines`) */
+  fields: LineField[];
+  /** classes: if-entry plus the kind (loop-chip, logical-chip kind-…, phys-entry, dev-addr, route-table) */
+  cls: string;
+  /** an interface can be an endpoint of a new connection; the device's own entry is not one */
+  endpoint: boolean;
+  /** a route table: the ref of each line (its route), which is selected on its own */
+  lineRefs?: string[];
+}
+
+/**
+ * The entries of a device's box in a view, in the order the layout sized
+ * them (layout/input.ts entryTexts): the device's own address lines, then
+ * its interfaces, then (logical view) its route tables.
+ */
+export function entryItems(model: Model, d: Device, view: 'physical' | 'logical'): EntryItem[] {
+  const texts = entryTexts(model, d, view);
+  const ifaces = deviceEntries(model, d, view);
+  const own = deviceAddressLines(d, model.services).length > 0 ? 1 : 0;
+  const tables = view === 'logical' ? routeTables(d) : [];
+  return texts.map((t, i) => {
+    if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: deviceOwnLines(d, model.services).map((x) => x.field), cls: 'if-entry dev-addr', endpoint: false };
+    if (i >= own + ifaces.length) {
+      const tb = tables[i - own - ifaces.length];
+      return { ...t, ref: 'device:' + d.id, fields: tb.refs.map(() => ({ field: '', value: '' })), cls: 'if-entry route-table', endpoint: false, lineRefs: tb.refs };
+    }
+    const e = ifaces[i - own];
+    const kind = e.kind === 'loopback' ? 'loop-chip' : e.kind === 'physical' ? 'phys-entry' : 'logical-chip kind-' + e.kind;
+    return { ...t, ref: e.ref, fields: e.fields, cls: 'if-entry ' + kind, endpoint: true };
+  });
+}
+
+/**
+ * Entries stacked from (x, y), each `w` wide: a frame, the interface's name,
+ * and its addresses and identifiers, one per line, in the monospace font.
+ */
+export function entryNodes(items: EntryItem[], x: number, y: number, w: number): VNode[] {
+  const out: VNode[] = [];
+  let top = y;
+  for (const it of items) {
+    const b = entryBox(it);
+    // a route table belongs to its device, but it is not highlighted with it: its frame and title follow the
+    // device's dimming only, and each line is its own route
+    const table = it.lineRefs ? { 'data-ref': it.ref } : {};
+    const kids: VNode[] = [h('rect', { ...table, x, y: top, width: w, height: b.h, rx: 4 })];
+    let ty = top + ENTRY_PAD_Y;
+    if (it.header) {
+      kids.push(textLines({ ...table, class: 'if-name addr', 'font-size': ENTRY_FONT }, { lines: [it.header], size: ENTRY_FONT, w: 0, h: ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
+      ty += ENTRY_LH;
+    }
+    // a route table's lines are each a route of their own (selectable, highlighted on their own)
+    const lineAttrs = it.lineRefs ? it.lineRefs.map((ref) => ({ 'data-ref': ref })) : it.fields.map(fieldAttrs);
+    if (it.lines.length) kids.push(textLines({ class: 'if-lines', 'font-size': ENTRY_FONT }, { lines: it.lines, size: ENTRY_FONT, w: 0, h: it.lines.length * ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty, lineAttrs));
+    out.push(h('g', { class: it.cls, 'data-ref': it.lineRefs ? undefined : it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
+    top += b.h + ENTRY_GAP;
+  }
+  return out;
+}
+
+/** A device's physical interfaces without a cable, in display order (as the layout sized them). */
+export function spareIds(model: Model, d: Device): string[] {
+  return sortedByName(d.interfaces.filter((i) => !model.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x);
+}
+
+/**
+ * Interface chips flowed from (x, y): one selectable chip per interface (ref
+ * "iface:<device>:<id>"), each with the interface's full name. `kindOf` adds a class per interface (e.g. its type).
+ */
+export function chipNodes(device: string, flow: ChipFlow, x: number, y: number, cls: string, kindOf: (id: string) => string): VNode[] {
+  return flow.items.map((c) => {
+    const ty = y + c.y + IFCHIP_H / 2 + IFCHIP_FONT * 0.35;
+    const kind = kindOf(c.id);
+    return h('g', { class: `if-chip ${cls}${kind ? ' kind-' + cssToken(kind) : ''}`, 'data-ref': `iface:${device}:${c.id}`, 'data-endpoint': 'iface' }, [
+      h('rect', { x: x + c.x, y: y + c.y, width: c.w, height: IFCHIP_H, rx: 3 }),
+      h('text', { x: x + c.x + c.w / 2, y: ty, 'text-anchor': 'middle', 'font-size': IFCHIP_FONT }, c.text),
+    ]);
+  });
 }
 
 function n(v: number): string {
@@ -334,4 +703,12 @@ function n(v: number): string {
 /** Safe token for use inside a class name (input-derived strings only ever reach classes through this). */
 export function cssToken(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 40);
+}
+
+/** A server's network services, for its badges ("dhcp", "dns"). */
+export function netServiceIds(d: { netServices?: { dhcp?: unknown; dns?: unknown } }): Array<'dhcp' | 'dns'> {
+  const out: Array<'dhcp' | 'dns'> = [];
+  if (d.netServices && d.netServices.dhcp) out.push('dhcp');
+  if (d.netServices && d.netServices.dns) out.push('dns');
+  return out;
 }

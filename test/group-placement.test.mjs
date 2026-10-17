@@ -73,8 +73,9 @@ test('enterprise-wan: the provider group lies between the Internet above it and 
   for (const [pe, rtr] of [['isp1-pe', 'hq-rtr1'], ['isp2-pe', 'hq-rtr2']]) {
     const dx = Math.abs(cx(dev(g, pe)) - cx(dev(g, rtr)));
     const dy = Math.abs(cy(dev(g, pe)) - cy(dev(g, rtr)));
-    // (the HQ box sits below the Munich branch's column: its core rack is as wide as the network names on its cables need)
-    assert.ok(dx < 160 && dy < 600, `${pe} - ${rtr}: ${dx} x ${dy}`);
+    // (the HQ box sits below the Munich branch's column: its core rack is as wide as the network names on its cables need;
+    // the routers' boxes hold the entries with their interfaces' addresses, which makes the HQ rows taller)
+    assert.ok(dx < 160 && dy < 800, `${pe} - ${rtr}: ${dx} x ${dy}`);
   }
   // the branches hang under the Internet too: the top of the diagram is the cloud
   for (const id of ['branch-muc', 'branch-ham']) assert.ok(group(g, id).y > cy(dev(g, 'inet')), id);
@@ -93,7 +94,8 @@ test('enterprise-wan: shorter, clearer cabling than with the provider group at t
   assert.ok(now.length < before.length * 0.75, `cable length ${now.length} vs ${before.length}`);
   assert.ok(now.crossings < before.crossings, `crossings ${now.crossings} vs ${before.crossings}`);
   // measured with the previous release of the layout: length 7385, 16 crossings, 6 bends around devices
-  assert.ok(now.length < 7385 * 0.6, 'cable length: ' + now.length);
+  // (the device boxes now also hold their interfaces' addresses, so the rows are a little further apart)
+  assert.ok(now.length < 7385 * 0.65, 'cable length: ' + now.length);
   assert.equal(now.crossings, 0, 'no two cables cross');
   assert.equal(now.bends, 0, 'no cable has to go around a device');
 });
@@ -124,7 +126,7 @@ groups:
 devices:
   - {id: wan, type: cloud, group: site, interfaces: [p0]}
   - {id: rtr, type: router, group: site, interfaces: [wan, lan]}
-  - {id: sw, type: switch, group: site, interfaces: [up, x1, x2]}
+  - {id: sw, type: switch, group: site, interfaces: [{id: up, vlans: 1}, {id: x1, vlans: 1}, {id: x2, vlans: 1}]}
   - {id: backup-a, type: storage, group: colo, interfaces: [e0]}
   - {id: backup-b, type: storage, group: colo, interfaces: [e0]}
 links:
@@ -167,14 +169,14 @@ devices:
   - {id: up, type: cloud, interfaces: [a, b]}
   - {id: c1, type: router, group: core, interfaces: [up, d1, d2, x]}
   - {id: c2, type: router, group: core, interfaces: [up, d3, d4, x]}
-  - {id: a1, type: switch, group: s1, interfaces: [u1]}
+  - {id: a1, type: switch, group: s1, interfaces: [{id: u1, vlans: 1}]}
   - {id: a2, type: server, group: s1, interfaces: [e0]}
-  - {id: b1, type: switch, group: s2, interfaces: [u1, u2, p1, p2, p3]}
+  - {id: b1, type: switch, group: s2, interfaces: [{id: u1, vlans: 1}, {id: u2, vlans: 1}, {id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
   - {id: b2, type: server, group: s2, interfaces: [e0]}
   - {id: b3, type: server, group: s2, interfaces: [e0]}
   - {id: b4, type: server, group: s2, interfaces: [e0]}
-  - {id: d1, type: switch, group: s3, interfaces: [u1]}
-  - {id: t1, type: switch, group: tiny, interfaces: [u1, u2]}
+  - {id: d1, type: switch, group: s3, interfaces: [{id: u1, vlans: 1}]}
+  - {id: t1, type: switch, group: tiny, interfaces: [{id: u1, vlans: 1}, {id: u2, vlans: 1}]}
   - {id: l1, type: server, group: lab, interfaces: [e0]}
   - {id: l2, type: server, group: lab, interfaces: [e0]}
   - {id: loose, type: server}

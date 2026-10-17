@@ -8,7 +8,7 @@ import { load, model, scene, example } from './helpers.mjs';
 const { Session } = load('diagram/session.js');
 const { exportBoxes } = load('diagram/networks-box.js');
 const { exportLegendSections } = load('diagram/legend.js');
-const { dnsNameLines, dnsShown, dnsSize, DNS_LINE_CHARS, MAX_DNS } = load('layout/sizes.js');
+const { dnsNameLines, dnsShown, dnsSize, DNS_LINE_CHARS } = load('layout/sizes.js');
 const { logicalSpecs } = load('layout/logical.js');
 const { layoutInput } = load('layout/input.js');
 
@@ -47,9 +47,9 @@ const chips = (root) => {
 };
 const textOf = (root) => scene.textOf(root);
 
-test('sizes: each name once, sorted, at most two, long names broken after a dot and never shortened', () => {
-  assert.deepEqual(dnsShown(['b.x', 'a.x', 'b.x', 'c.x']), { names: ['a.x', 'b.x'], more: 1 });
-  assert.equal(MAX_DNS, 2);
+test('sizes: each name once, sorted, every one of them, long names broken after a dot and never shortened', () => {
+  // a DNS name is an identifier: every one is written in the diagram, none is summed up as "+N more"
+  assert.deepEqual(dnsShown(['b.x', 'a.x', 'b.x', 'c.x']), ['a.x', 'b.x', 'c.x']);
   const lines = dnsNameLines(LONG);
   assert.ok(lines.length >= 2 && lines.every((l) => l.length <= DNS_LINE_CHARS), lines.join(' | '));
   assert.equal(lines.join(''), LONG, 'nothing is cut off');
@@ -58,8 +58,9 @@ test('sizes: each name once, sorted, at most two, long names broken after a dot 
   assert.equal(dnsNameLines(label).join(''), label);
   assert.ok(dnsNameLines(label).every((l) => l.length <= DNS_LINE_CHARS));
   assert.deepEqual(dnsNameLines('short.example'), ['short.example']);
-  // rows: the lines of the shown names plus a "+N more" row
+  // rows: the lines of the names
   assert.equal(dnsSize(['a.x', 'b.x', 'c.x']).rows, 3);
+  assert.equal(dnsSize([LONG]).rows, dnsNameLines(LONG).length);
   assert.equal(dnsSize([]).rows, 0);
 });
 
@@ -69,12 +70,12 @@ test('the logical view writes each name once under its device; the physical view
   s.setView('logical');
   const root = s.render().root;
   const c = chips(root);
-  // r1: two of its three names (sorted), then "+1 more name"; r2: its one name
-  assert.deepEqual(c.map((x) => `${x.ref}=${x.name}`), [`device:r1=${LONG}`, 'device:r1=mgmt.example.com', 'device:r2=r2.example.com']);
+  // r1: all three of its names (sorted); r2: its one name
+  assert.deepEqual(c.map((x) => `${x.ref}=${x.name}`), [`device:r1=${LONG}`, 'device:r1=mgmt.example.com', 'device:r1=r1.example.com', 'device:r2=r2.example.com']);
   assert.equal(c[0].text, LONG, 'a long name is written in full, over several lines');
-  assert.match(textOf(root), /\+1 more name\b/);
-  // r1.example.com (three interfaces) is the third name: counted in "+1 more", not written per interface
-  assert.equal(textOf(root).split('r1.example.com').length - 1, 0);
+  assert.doesNotMatch(textOf(root), /more name/);
+  // r1.example.com (three interfaces) is written once, not per interface
+  assert.equal(textOf(root).split('r1.example.com').length - 1, 1);
   assert.equal(textOf(root).split('r2.example.com').length - 1, 1);
   // the node is sized for the names: r1's node is taller than plain's, whose only chip is a loopback
   const specs = logicalSpecs(layoutInput(s.model));

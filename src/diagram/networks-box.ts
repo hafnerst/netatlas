@@ -19,11 +19,14 @@
  *
  * So a network reached only through loopbacks or tunnel interfaces is not in
  * the physical picture's list, and with the network nodes switched off the
- * logical list holds only what the drawn relations and loopbacks use.
+ * logical list holds only what the drawn relations and loopbacks use. The
+ * chips of interfaces without a line of their own (uncabled ports) and the
+ * entries with the addresses of interfaces in device boxes bring no networks
+ * in: they name an interface so it can be found and selected.
  */
 import { Rect } from '../layout/geometry';
 import { TextBlock, textBlock, textWidth } from '../layout/text';
-import { associatedInterfaces, interfaceNetworks } from '../model/derive';
+import { associatedInterfaces, interfaceNetworks, linkNetworks } from '../model/derive';
 import { compareNames } from '../model/order';
 import { splitRef } from '../model/queries';
 import { Model, Network, ifaceKey, loopbacks } from '../model/types';
@@ -33,12 +36,17 @@ import { SceneResult } from './physical';
 import { VNode, h, walk } from './scene';
 import { View } from './session';
 
-/** Every `data-ref` of a rendered scene: the elements the picture represents. */
+/**
+ * Every `data-ref` of a rendered scene: the elements the picture represents.
+ * Interface chips (uncabled ports) and interface entries (the addresses in
+ * device boxes) only name an interface so it can be found and selected;
+ * they bring no networks in.
+ */
 export function sceneRefs(root: VNode): Set<string> {
   const out = new Set<string>();
   walk(root, (n) => {
     const r = n.attrs['data-ref'];
-    if (r) out.add(r);
+    if (r && !/(^| )(if-chip|if-entry)( |$)/.test(n.attrs.class || '')) out.add(r);
   });
   return out;
 }
@@ -71,7 +79,7 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
     } else if (kind === 'link') {
       const l = ix.links.get(id);
       if (!l) return;
-      for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) ids.add(n);
+      for (const n of linkNetworks(model, l)) ids.add(n);
     } else if (kind === 'device') {
       // loopbacks are drawn under their device in the logical view only
       const d = view === 'logical' ? ix.devices.get(id) : undefined;

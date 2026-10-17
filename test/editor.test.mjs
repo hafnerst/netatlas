@@ -37,7 +37,8 @@ function full(n) {
 
 const exampleFiles = [];
 for (const f of readdirSync(join(root, 'examples'))) if (/\.ya?ml$/.test(f)) exampleFiles.push(join('examples', f));
-for (const f of readdirSync(join(root, 'examples', 'broken'))) exampleFiles.push(join('examples', 'broken', f));
+for (const f of readdirSync(join(root, 'test', 'examples'))) if (/\.ya?ml$/.test(f)) exampleFiles.push(join('test', 'examples', f));
+for (const f of readdirSync(join(root, 'test', 'examples', 'broken'))) exampleFiles.push(join('test', 'examples', 'broken', f));
 
 // ------------------------------------------------------------ serializer
 
@@ -238,12 +239,15 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   const before = d.references('device', 'hq-rtr2').length;
   assert.equal(d.renameEntity('device', d.findEntity('device', 'hq-rtr2').index, 'edge-b'), before);
   const dev = d.findEntity('device', 'edge-b').index;
-  assert.equal(d.renameInterface(d.interfaceEntries(dev).find((e) => e.id === 'lo0').path, 'loopback0'), 1);
+  // the loopback: the iBGP relation and the router ID that name it
+  assert.equal(d.renameInterface(d.interfaceEntries(dev).find((e) => e.id === 'lo0').path, 'loopback0'), 2);
+  assert.equal(d.text(['devices', dev, 'router_id']), 'loopback0');
   assert.equal(d.renameEntity('group', d.findEntity('group', 'hq').index, 'berlin'), 2);
+  // (the relations that run over it)
   assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 3);
   assert.equal(d.renameEntity('relation', d.findEntity('relation', 'ipsec-muc').index, 'ipsec-munich'), 1);
-  // the network is named by the link ends that carry it (5 cables, both ends) and by VRRP's "over"
-  assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 9);
+  // the network is named by VRRP's "over" (link ends name VLAN IDs, not networks)
+  assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 1);
   assert.equal(d.renameEntity('protocol', d.findEntity('protocol', 'macsec').index, 'macsec2'), 1);
   assert.ok(d.valid, d.errors.map((e) => e.message).join('\n'));
   const m = d.result.model;
@@ -261,7 +265,7 @@ test('renaming a loopback updates the relations that use it', () => {
 });
 
 test('deleting an entity reports (never silently removes) broken references; undo restores', () => {
-  const d = ModelDoc.fromText(readFileSync(join(root, 'examples', 'minimal.yaml'), 'utf8'), 'm.yaml', 'file').doc;
+  const d = ModelDoc.fromText(readFileSync(join(root, 'test', 'examples', 'minimal.yaml'), 'utf8'), 'm.yaml', 'file').doc;
   d.deleteEntity('device', 1);
   assert.ok(!d.valid);
   assert.ok(d.errors.some((e) => /unknown device "r2"/.test(e.message)));
@@ -286,13 +290,12 @@ test('shorthand forms are expanded only when edited, keeping their data', () => 
     d.ensureMap(['devices', 0, 'interfaces', 1]);
     d.setAt(['devices', 0, 'interfaces', 1, 'vrf'], yaml.strNode('blue'), KEY_ORDER.interface);
   });
-  // a link end becomes a mapping only when it gets networks; the other end is left as written
-  d.addEntity('network', [['id', yaml.strNode('n1')], ['cidr', yaml.strNode('10.0.0.0/24')]]);
-  assert.ok(d.addEndNetwork(['links', 0, 'a'], 'n1'));
+  // a link end becomes a mapping only when it gets a port setting; the other end is left as written
+  assert.ok(d.setEndText(['links', 0, 'a'], 'speed', '1G'));
   const out = d.exportText();
   assert.match(out, /interfaces: \[eth0, \{id: eth1, vrf: blue\}\]/);
   assert.match(out, /endpoints: \["r1:eth0", r2\]/, 'endpoints stay short');
-  assert.match(out, /a: \{device: r1, interface: eth1, networks: \[n1\]\}, b: r2:eth0\}/);
+  assert.match(out, /a: \{device: r1, interface: eth1, speed: 1G\}, b: r2:eth0\}/);
   assert.ok(d.valid);
 });
 
@@ -365,13 +368,14 @@ test('logical_interfaces: invalid addresses are errors with an explanation at th
   assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'logical_interfaces', 0, 'ip', 1]);
 });
 
-test('logical_interfaces: the router-ID field is gone, loopbacks and their addresses are not', () => {
-  const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    router_id: lo0\n'));
-  assert.equal(r.errors.length, 1);
-  assert.match(r.errors[0].message, /^"router_id" is not part of the format — a device has no router-ID field: delete this key/);
-  assert.deepEqual(r.model.devices[0].logical.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
-  assert.ok(!('routerId' in r.model.devices[0]));
-  // a loopback without IPv4 is fine: nothing depends on it being a router ID
+test('logical_interfaces: a router ID may name a loopback: it stands for the loopback’s IPv4 address', () => {
+  const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    type: router\n    router_id: lo0\n    protocols: {ospf: {}}\n'));
+  assert.deepEqual(r.errors.concat(r.warnings).map((e) => e.message), []);
+  assert.deepEqual(r.model.devices[0].routerId, { text: 'lo0', iface: 'lo0', address: '10.0.0.1' });
+  // a loopback without IPv4 can't be one; a port isn't a loopback
+  assert.match(validate.loadModel(loopDoc('[2001:db8::1/128]', '    type: router\n    router_id: lo0\n    protocols: {ospf: {}}\n')).errors[0].message, /loopback "lo0" has no IPv4 address to be the router ID/);
+  assert.match(validate.loadModel(loopDoc('[10.0.0.1/32]', '    type: router\n    router_id: eth0\n    protocols: {ospf: {}}\n')).errors[0].message, /"eth0" is a port: a router ID is an IPv4 address or a loopback of "r1"/);
+  // a loopback without IPv4 is fine when nothing names it
   const v6 = validate.loadModel(loopDoc('[2001:db8::1/128]'));
   assert.deepEqual(v6.errors.concat(v6.warnings), []);
 });
@@ -411,7 +415,9 @@ test('logical_interfaces: shown as chips in the logical view and in device detai
   assert.equal(chips.length, 4);
   assert.equal(byClass(log, 'rid').length, 0, 'no router-ID marker');
   assert.ok(!/★/.test(scene.textOf(log)));
-  assert.match(scene.textOf(log), /lo0  10\.255\.0\.2\/32 \+1/);
+  // every address in full under the loopback's name (dual stack together), nothing summed up as "+1"
+  assert.match(scene.textOf(log), /lo0[^\n]*\n10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);
+  assert.doesNotMatch(scene.textOf(log), /\+\d/);
   const det = scene.textOf(load('ui/panels.js').detailsFor(d.result.model, 'device:edge-b'));
   assert.match(det, /Logical interfaces \(4\)/);
   assert.match(det, /10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);

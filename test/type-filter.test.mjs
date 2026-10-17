@@ -1,7 +1,8 @@
-// Device-type visibility (the toolbar's Endpoints and Servers controls): it
-// narrows what the diagrams show, combines with the device selection without
+// Device-type visibility (the toolbar's Device types filter): it narrows
+// what the diagrams show, combines with the device selection without
 // changing it, keeps the other devices in place, and never touches the
-// document or its saved layout.
+// document or its saved layout. Switches are keyed by kind ("switch:l2",
+// "switch:l3").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -27,16 +28,33 @@ const drawn = (s) => {
 const ofType = (m, t) => m.devices.filter((d) => d.type === t).map((d) => d.id).sort();
 const others = (m, types) => m.devices.filter((d) => types.indexOf(d.type) < 0).map((d) => d.id).sort();
 const snap = (s, v) => JSON.stringify(Array.from(s.positionsFor(v)));
+// a server's keys: by the service it runs guests with (device-types.yaml's server is a hypervisor)
+const SERVER_KEYS = ['server', 'server:hypervisor', 'server:container'];
 
-test('the toolbar controls name the model\'s type identifiers, and are on by default in both views', () => {
+test('the Device types filter sits next to Devices; the Endpoints and Servers switches are gone; every type is shown by default', () => {
   const html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
-  const controls = [...html.matchAll(/<label class="opt"[^>]*><input id="opt-type-([a-z_]+)" type="checkbox" data-device-type="([a-z_]+)" checked> ([^<]+)<\/label>/g)].map((m) => [m[1], m[2], m[3]]);
-  assert.deepEqual(controls, [['endpoint', 'endpoint', 'Endpoints'], ['server', 'server', 'Servers']]);
-  for (const [, id] of controls) assert.ok(DEVICE_TYPES.some((t) => t.id === id), id);
-  // shown in both views (not "logical-only"), next to Labels and Groups / Locations
-  assert.ok(html.indexOf('id="opt-groups"') < html.indexOf('id="opt-type-endpoint"'));
+  assert.doesNotMatch(html, /opt-type-|data-device-type|> Endpoints<|> Servers</);
+  assert.match(html, /<button id="types-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="types-panel"[^>]*>Device types: <span id="types-count">All<\/span>/);
+  assert.ok(html.indexOf('id="devices-btn"') < html.indexOf('id="types-btn"') && html.indexOf('id="types-btn"') < html.indexOf('id="opt-labels"'), 'right after Devices, before the switches');
   const s = new Session(model(example('device-types.yaml')));
   assert.equal(s.state.hiddenTypes.size, 0);
+  assert.equal(s.isFiltered(), false);
+  assert.ok(DEVICE_TYPES.length === 15);
+});
+
+test('switches by kind: Layer 2 and Layer 3 switches can be hidden apart; both kinds off hides every switch', () => {
+  const m = model(example('protocol-simulation.yaml'));
+  const s = new Session(m);
+  const l2 = m.devices.filter((d) => d.type === 'switch' && !d.layer3).map((d) => d.id);
+  const l3 = m.devices.filter((d) => d.type === 'switch' && d.layer3).map((d) => d.id);
+  assert.ok(l2.length && l3.length);
+  assert.equal(s.setTypesVisible(['switch:l2'], false), true);
+  const shown = s.shownDevices();
+  assert.ok(l2.every((id) => !shown.has(id)) && l3.every((id) => shown.has(id)));
+  assert.equal(s.isDeviceTypeHidden(m.index.devices.get(l2[0])), true);
+  s.setTypesVisible(['switch:l2', 'switch:l3'], false);
+  assert.ok(m.devices.filter((d) => d.type === 'switch').every((d) => !s.shownDevices().has(d.id)));
+  s.setTypesVisible(['switch:l2', 'switch:l3'], true);
   assert.equal(s.isFiltered(), false);
 });
 
@@ -47,7 +65,8 @@ test('switching a type off hides its devices in both views; the others stay wher
   const s = new Session(m);
   const eps = ofType(m, 'endpoint');
   const srv = ofType(m, 'server');
-  assert.ok(eps.length >= 2 && srv.length >= 1);
+  const guests = m.devices.filter((d) => d.host !== undefined).map((d) => d.id).sort();
+  assert.ok(eps.length >= 2 && srv.length >= 1 && guests.length >= 2);
   const full = Object.fromEntries(VIEWS.map((v) => [v, s.positionsFor(v)]));
   const fullSnap = Object.fromEntries(VIEWS.map((v) => [v, snap(s, v)]));
   // what each view draws without a filter (the logical view leaves out devices without logical content)
@@ -65,16 +84,18 @@ test('switching a type off hides its devices in both views; the others stay wher
       if (m.index.devices.has(id)) assert.deepEqual(p, full[v].get(id), `${v} ${id}`);
     });
   }
-  s.setTypeVisible('server', false);
+  s.setTypesVisible(SERVER_KEYS, false);
   for (const v of VIEWS) {
     s.setView(v);
     // (in the logical view a device whose only relations reached a hidden device has nothing left to draw)
     const now = drawn(s);
     assert.ok(now.every((id) => without(v, eps.concat(srv)).indexOf(id) >= 0), v + ' ' + now);
-    if (v === 'physical') assert.deepEqual(now, without(v, eps.concat(srv)));
+    // (the physical view draws a guest only inside its host: the server's VM and the container in it go too)
+    if (v === 'physical') assert.deepEqual(now, without(v, eps.concat(srv, guests)));
+    if (v === 'physical') assert.deepEqual(s.hiddenWithHost().sort(), guests);
   }
   s.setTypeVisible('endpoint', true);
-  s.setTypeVisible('server', true);
+  s.setTypesVisible(SERVER_KEYS, true);
   assert.equal(s.isFiltered(), false);
   for (const v of VIEWS) assert.equal(snap(s, v), fullSnap[v], v);
   // the model and the document are never changed
@@ -114,14 +135,14 @@ test('combined with the device selection: shown = selected and not of a hidden t
   const pick = [router, eps[0], srv[0]];
   s.setDevices(pick);
   const subset = snap(s, 'physical');
-  s.setTypeVisible('server', false);
+  s.setTypesVisible(SERVER_KEYS, false);
   assert.deepEqual([...s.selectedDevices()].sort(), pick.slice().sort(), 'the selection is unchanged');
   assert.deepEqual([...s.shownDevices()].sort(), [router, eps[0]].sort());
   assert.deepEqual(drawn(s), [router, eps[0]].sort());
   s.setTypeVisible('endpoint', false);
   assert.deepEqual(drawn(s), [router]);
   s.setTypeVisible('endpoint', true);
-  s.setTypeVisible('server', true);
+  s.setTypesVisible(SERVER_KEYS, true);
   assert.deepEqual(drawn(s), pick.slice().sort(), 'on again: the previous selection is back');
   // the devices of the selection keep the places they had in the filtered view
   assert.equal(snap(s, 'physical'), subset);
@@ -148,7 +169,7 @@ test('the stored layout is untouched: drags and edits while a type is off stay t
   const yaml = doc.exportText();
   const s = new Session(doc.result.model);
   const stored = snap(s, 'physical');
-  s.setTypeVisible('server', false);
+  s.setTypesVisible(SERVER_KEYS, false);
   const id = s.viewModel('physical').devices[0].id;
   s.moveNode('device:' + id, { x: 5, y: 7 });
   assert.equal(s.commitTemporary('device:' + id), true, 'a move is temporary while filtered');
@@ -157,8 +178,8 @@ test('the stored layout is untouched: drags and edits while a type is off stay t
   const before = s.positionsFor('physical').get(id);
   doc.setText(['title'], 'Renamed');
   s.setModel(doc.result.model);
-  assert.ok(s.isTypeHidden('server'));
+  assert.ok(s.isTypeHidden('server:hypervisor'));
   assert.deepEqual(s.positionsFor('physical').get(id), before);
-  s.setTypeVisible('server', true);
+  s.setTypesVisible(SERVER_KEYS, true);
   assert.equal(snap(s, 'physical'), stored);
 });

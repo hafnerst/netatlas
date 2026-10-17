@@ -1,0 +1,126 @@
+# netatlas example: an OT cell behind a protocol gateway, watched through a
+# TAP.
+#
+# The engineering workstation on the IT side reaches the cell's PLC through
+# pgw, a System whose purpose is Layer 3 forwarder (it routes; its icon and
+# its kind label say what it is: an industrial protocol gateway). A System
+# always says what it does: host, Layer 2 or Layer 3 forwarder, inline,
+# passive monitor, pass-through or external network.
+#
+# Between the gateway and the cell switch sits a network TAP: a System that
+# is pass-through, with no IP stack. Its port pair net-a ↔ net-b carries the
+# original traffic on unchanged; its monitor port mon gets a copy of what
+# passes (port_pairs: copy) and sends nothing back. The copy goes to ids, an
+# IDS/IPS in passive mode: it receives copies and never forwards anything.
+#
+# Analyze ▾ → Trace path… from eng-ws to plc notes the TAP's copy; Simulate ▾
+# → Start simulation… shows the copies arriving at the IDS while the
+# original frames go on to the PLC.
+netatlas: 1
+title: OT cell — protocol gateway, TAP and passive IDS
+description: |
+  A PLC and an HMI behind a protocol gateway (a System, Layer 3 forwarder),
+  with a pass-through TAP whose monitor port feeds a passive IDS.
+
+groups:
+  - id: it
+    label: IT (engineering)
+    kind: zone
+  - id: cell
+    label: OT cell 1
+    kind: zone
+
+protocols:
+  - id: modbus
+    label: Modbus TCP
+    category: service
+    color: "#a61e4d"
+    description: the HMI polls the PLC's registers (user-defined protocol)
+
+devices:
+  - id: eng-ws
+    label: eng-ws (engineering)
+    type: endpoint
+    kind: pc
+    group: it
+    # (on the gateway's row: the IT side beside the cell, not under it)
+    tier: 1
+    simulation: {test_traffic: "on", test_targets: "10.71.0.10 icmp", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.70.1.10/24}
+    routes:
+      - {prefix: 10.71.0.0/24, via: 10.70.1.1, name: the cell}
+  - id: pgw
+    label: pgw (protocol gateway)
+    type: system
+    kind: other
+    kind_label: Industrial protocol gateway
+    purpose: l3_forwarder
+    icon: protocol_gateway
+    group: cell
+    interfaces:
+      - {id: it0, ip: 10.70.1.1/24}
+      - {id: ot0, ip: 10.71.0.1/24}
+  - id: tap
+    label: tap-1
+    type: system
+    kind: other
+    kind_label: Network TAP
+    purpose: pass_through
+    icon: tap
+    group: cell
+    port_pairs:
+      - {a: net-a, b: net-b, copy: [mon]}
+    interfaces: [net-a, net-b, mon]
+  - id: ids
+    label: ids-1 (sensor)
+    type: ids_ips
+    mode: passive
+    group: cell
+    interfaces:
+      - {id: mon0, description: receives the TAP's copy}
+  - id: cell-sw
+    type: switch
+    kind: industrial
+    role: access
+    group: cell
+    igmp_mld_snooping: {1: enabled}
+    interfaces:
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+      - {id: p3, vlans: 1}
+  - id: plc
+    label: plc-1
+    type: endpoint
+    kind: plc
+    group: cell
+    interfaces:
+      - {id: eth0, ip: 10.71.0.10/24}
+    routes:
+      - {prefix: 10.70.1.0/24, via: 10.71.0.1, name: engineering}
+  - id: hmi
+    label: hmi-1
+    type: endpoint
+    kind: hmi
+    group: cell
+    interfaces:
+      - {id: eth0, ip: 10.71.0.20/24}
+
+links:
+  - {id: l-eng, a: "eng-ws:eth0", b: "pgw:it0", speed: 1G}
+  - {id: l-pgw-tap, a: "pgw:ot0", b: "tap:net-a", speed: 100M}
+  - {id: l-tap-sw, a: "tap:net-b", b: "cell-sw:p1", speed: 100M}
+  - {id: l-tap-ids, a: "tap:mon", b: "ids:mon0", speed: 100M, direction: unidirectional, label: copy}
+  - {id: l-plc, a: "cell-sw:p2", b: "plc:eth0", speed: 100M}
+  - {id: l-hmi, a: "cell-sw:p3", b: "hmi:eth0", speed: 100M}
+
+relations:
+  - id: hmi-plc
+    protocol: modbus
+    label: register polling
+    endpoints: [hmi, plc]
+  - id: eng-plc
+    protocol: https
+    label: PLC web configuration
+    endpoints: [eng-ws, plc]
+    direction: unidirectional

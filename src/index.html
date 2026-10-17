@@ -11,6 +11,10 @@
 <style id="app-style">
 /*__CSS__*/
 </style>
+<!-- in <head>, so the stored theme is set before the first paint (the application itself starts on DOMContentLoaded) -->
+<script>
+/*__JS__*/
+</script>
 </head>
 <body data-state="empty" data-view="none" data-dirty="false">
 <header class="topbar">
@@ -19,12 +23,13 @@
     <span>netatlas</span><span class="version" title="netatlas version">v__VERSION__</span>
   </div>
   <div class="menu-wrap">
-    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new model, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new, open, save and close models; examples">File <span class="caret" aria-hidden="true">▾</span></button>
     <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
-      <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
-      <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
-      <button id="btn-download" type="button" role="menuitem" title="Download the current model as a YAML file (Ctrl+S)" disabled><span class="mi-label">Download model…</span><span class="mi-hint">Ctrl+S</span></button>
-      <button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
+      <button id="btn-new" type="button" role="menuitem" data-command="file.new" title="Start a new, empty model"><span class="mi-label">New model</span></button>
+      <button id="open" type="button" role="menuitem" data-command="file.open" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
+      <button id="btn-save" type="button" role="menuitem" data-command="file.save" title="Open or create a model first" disabled><span class="mi-label">Save model</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-save-as" type="button" role="menuitem" data-command="file.saveAs" title="Open or create a model first" disabled><span class="mi-label">Save model as…</span><span class="mi-hint">Ctrl+Shift+S</span></button>
+      <button id="btn-close" type="button" role="menuitem" data-command="file.close" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
       <div class="menu-sep" role="separator"></div>
       <div class="menu-title" id="menu-examples-title">Examples</div>
       <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
@@ -35,16 +40,46 @@
     <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
       <button id="btn-export-as" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="export-formats" title="Open or create a model first" disabled><span class="mi-label">Export view as…</span><span class="mi-hint sub-caret" aria-hidden="true">▸</span></button>
       <div id="export-formats" class="submenu" role="menu" aria-label="Export view as" hidden>
-        <button id="btn-export-png" type="button" role="menuitem" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
-        <button id="btn-export-svg" type="button" role="menuitem" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
+        <button id="btn-export-png" type="button" role="menuitem" data-command="export.png" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
+        <button id="btn-export-svg" type="button" role="menuitem" data-command="export.svg" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
       </div>
     </div>
   </div>
   <div class="menu-wrap">
-    <button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" title="View: find objects, filter the model outline">View <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="view-menu" class="dropdown menu" role="menu" aria-label="View" hidden>
-      <button id="btn-find" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Find…</span><span class="mi-hint">/</span></button>
-      <button id="btn-outline-filter" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Filter outline…</span></button>
+    <button id="find-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="find-menu" title="Find: find in the diagram, filter the object list">Find <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
+      <button id="btn-find" type="button" role="menuitem" data-command="find.diagram" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
+      <button id="btn-outline-filter" type="button" role="menuitem" data-command="find.outline" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+      <button id="btn-palette" type="button" role="menuitem" aria-haspopup="dialog" data-command="palette.open" title="Search every action and every object of the model, and run or select it (Ctrl+K)"><span class="mi-label">Command palette…</span><span class="mi-hint">Ctrl+K</span></button>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="analyze-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="analyze-menu" title="Analyze: windows that look at the network the model describes">Analyze <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>
+      <button id="btn-addressing" type="button" role="menuitem" data-command="analyze.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…</span><span class="mi-hint">I</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-focus" type="button" role="menuitem" data-command="focus.window" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Focus…</span><span class="mi-hint">Shift+F</span></button>
+      <button id="btn-focus-exit" type="button" role="menuitem" data-command="focus.exit" title="Focus mode is off" disabled><span class="mi-label">Exit focus</span><span class="mi-hint">Esc</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
+      <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: a hypothetical state in a window of its own; it never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
+      <button id="btn-sim-start" type="button" role="menuitem" data-command="sim.start" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Start simulation…</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>
+      <button id="btn-manual" type="button" role="menuitem" data-command="help.manual" aria-haspopup="dialog" title="A short guide to NetAtlas's basic tasks, with pictures"><span class="mi-label">User Manual</span></button>
+      <button id="btn-license" type="button" role="menuitem" data-command="help.license" aria-haspopup="dialog" title="The license NetAtlas is distributed under (Apache License, Version 2.0)"><span class="mi-label">License</span></button>
     </div>
   </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
@@ -52,15 +87,26 @@
     <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
     <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>
   </div>
-  <div class="seg" role="group" aria-label="View">
-    <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
-    <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+  <div id="view-group" class="tool-group view-group" role="group" aria-labelledby="view-title">
+    <span id="view-title" class="tool-group-title">View</span>
+    <div class="seg">
+      <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
+      <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+    </div>
   </div>
-  <div class="arrange-group" role="group" aria-label="Layout">
-    <button id="btn-arrange" type="button" class="arrange-btn" disabled aria-describedby="arrange-status" title="Recompute the positions of every object in the view on screen (A)"><span class="arrange-icon" aria-hidden="true"></span><span class="arrange-label">Auto-arrange</span></button>
+  <div id="arrange-group" class="tool-group arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
+    <span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange</span>
+    <div class="arrange-btns">
+      <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
+      <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
+      <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
+    </div>
     <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
-  <div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">
+  <div id="filters-slot" class="filters-slot">
+  <div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">
+  <span id="filters-title" class="tool-group-title">Filters</span>
+  <div id="view-filters" class="view-filters">
   <div class="devices-wrap">
     <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
     <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
@@ -73,34 +119,92 @@
       <p class="dp-note muted">A filtered diagram is arranged for the selected devices only. Its positions are temporary; the saved layout of the complete diagram is not changed.</p>
     </div>
   </div>
-  <label class="opt" data-priority="5"><input id="opt-labels" type="checkbox" checked> Labels</label>
-  <label class="opt" data-priority="4"><input id="opt-groups" type="checkbox" checked> Groups / Locations</label>
-  <label class="opt logical-only" data-priority="3"><input id="opt-networks" type="checkbox" checked> Networks</label>
-  <label class="opt" data-priority="2" title="Show devices of type Endpoint (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-endpoint" type="checkbox" data-device-type="endpoint" checked> Endpoints</label>
-  <label class="opt" data-priority="1" title="Show devices of type Server (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-server" type="checkbox" data-device-type="server" checked> Servers</label>
+  <div class="types-wrap">
+    <button id="types-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="types-panel" title="Choose the device types the diagram shows" disabled>Device types: <span id="types-count">All</span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="types-panel" class="dropdown devices-panel types-panel" role="dialog" aria-label="Device types shown in the diagram" hidden>
+      <div class="dp-tools">
+        <button id="types-all" type="button" class="mini" title="Show every type">Select all</button>
+        <button id="types-none" type="button" class="mini" title="Hide every type">Clear</button>
+      </div>
+      <div id="types-list" class="dp-list" role="group" aria-label="Device types"></div>
+      <p class="dp-note muted">Only the types this model uses are listed. A type switched off hides its devices and what only they connect; nothing is deleted, and the other devices keep their places.</p>
+    </div>
+  </div>
+  <label class="opt" data-priority="4"><input id="opt-labels" type="checkbox" checked disabled> Labels</label>
+  <label class="opt" data-priority="3"><input id="opt-groups" type="checkbox" checked disabled> Groups / Locations</label>
+  <label class="opt logical-only" data-priority="2"><input id="opt-networks" type="checkbox" checked disabled> Networks</label>
+  <label class="opt logical-only" data-priority="1" title="Show the static routes in the device boxes and the lines to their next hops (off: hidden; nothing moves, nothing is deleted)"><input id="opt-routes" type="checkbox" checked disabled> Routes</label>
+
   <div class="more-filters-wrap">
-    <button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden>Filters<span id="more-filters-count" class="mf-count"></span> <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters<span id="more-filters-count" class="mf-count"></span> <span class="caret" aria-hidden="true">▾</span></button>
     <div id="more-filters" class="dropdown more-filters" role="group" aria-label="More diagram filters" hidden></div>
   </div>
   </div>
+  </div>
+  </div>
+  <div class="theme-wrap">
+    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-theme-now="dark">
+      <svg class="ti ti-light" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+      <svg class="ti ti-dark" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    </button>
+    <span id="theme-tip" class="tip" role="tooltip">Theme</span>
+  </div>
 </header>
 <main>
-  <aside id="outline" aria-label="Model outline">
+  <aside id="outline" aria-labelledby="outline-title">
+    <div class="ol-header"><h2 id="outline-title" class="ol-heading">Objects</h2></div>
     <div id="outline-body"></div>
+    <div id="sim-setup" class="sim-panel" hidden>
+      <div class="ol-header"><h2 id="sim-setup-title" class="ol-heading">Simulation setup</h2></div>
+      <div id="sim-setup-body" class="sp-body"></div>
+    </div>
   </aside>
   <section id="canvas-wrap">
-    <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
-    <div id="find-bar" class="find-bar" role="search" aria-label="Find" hidden>
-      <input id="search" type="search" placeholder="Find device, network, address…" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
-      <button id="find-close" type="button" class="mini" aria-label="Close Find" title="Close (Esc)">×</button>
+    <svg id="canvas" role="img" aria-label="Network diagram" tabindex="-1"><g id="viewport"></g></svg>
+    <div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>
+      <input id="search" type="search" placeholder="Find device, network, address…" aria-label="Find in diagram: device, network, relation" autocomplete="off" spellcheck="false">
+      <button id="find-close" type="button" class="mini" aria-label="Close Find in diagram" title="Close (Esc)">×</button>
       <div id="search-results" class="dropdown" hidden></div>
     </div>
+    <div id="connect-bar" class="connect-bar" role="group" aria-labelledby="connect-text" hidden>
+      <span id="connect-text" class="cb-text"></span>
+      <select id="connect-pick" aria-label="Second endpoint of the new connection"></select>
+      <button id="connect-go" type="button" class="primary">Use endpoint</button>
+      <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
+    </div>
+    <div id="mode-banner" class="mode-banner" role="region" aria-label="Analysis mode" hidden>
+      <div id="mb-focus" class="mb-row" hidden>
+        <span class="mb-icon" aria-hidden="true">◎</span>
+        <span id="mode-text" class="mb-text" role="status"></span>
+        <span class="mb-hops" role="group" aria-label="Hops shown around the focused object">
+          <button id="focus-fewer" type="button" class="mini" data-command="focus.fewer" aria-label="One hop fewer">−</button>
+          <span id="focus-hops" class="mb-count">1 hop</span>
+          <button id="focus-more" type="button" class="mini" data-command="focus.more" aria-label="One hop more">+</button>
+        </span>
+        <button id="focus-exit" type="button" class="mini" data-command="focus.exit">Exit focus</button>
+      </div>
+      <div id="mb-sim" class="mb-row" hidden>
+        <span class="mb-icon" aria-hidden="true">◈</span>
+        <span id="sim-text" class="mb-text" role="status"></span>
+        <span id="sim-short" class="mb-text mb-short" aria-hidden="true"></span>
+
+        <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
+      </div>
+      <div id="mb-trace" class="mb-row" hidden>
+        <span class="mb-icon" aria-hidden="true">⇢</span>
+        <span id="trace-text" class="mb-text" role="status"></span>
+        <button id="trace-hops" type="button" class="mini" data-command="trace.open">Hop table</button>
+        <button id="trace-exit-banner" type="button" class="mini" data-command="trace.exit">Exit trace</button>
+      </div>
+    </div>
     <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
+    <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>
       <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
       <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
+      <button id="zoom-focus" type="button" data-command="focus.enter" title="Open or create a model first" disabled><span aria-hidden="true">◎ </span>Focus</button>
     </div>
     <div id="empty" class="overlay">
       <div class="start">
@@ -115,8 +219,8 @@
             <span class="start-sub">Start with an empty model</span>
           </button>
           <button id="open-empty" type="button" class="start-card start-drop">
-            <span class="start-title">Open YAML file…</span>
-            <span class="start-sub">Choose a file, or drop one here</span>
+            <span class="start-title">Open model…</span>
+            <span class="start-sub">Choose a YAML file, or drop one here</span>
           </button>
           <div class="start-card start-example">
             <label class="start-title" for="start-example">Load example</label>
@@ -130,11 +234,13 @@
       </div>
     </div>
     <div id="errors" class="overlay error-overlay"></div>
+    <div id="sim-badge" class="sim-badge" aria-hidden="true" hidden><span class="sim-badge-mark">◈</span> Simulation running</div>
     <div id="tooltip" role="tooltip" hidden></div>
     <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
   </section>
-  <aside id="side">
+  <aside id="side" aria-label="Inspector">
+    <div id="side-splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="Width of the side panel" aria-controls="side" tabindex="0" title="Drag to change the width of the side panel; double-click to reset it. With the keyboard: ← wider, → narrower (Shift: faster), Enter resets"></div>
     <nav class="tabs" role="tablist">
       <button type="button" data-tab="edit" title="Edit the selected object (E)">Edit</button>
       <button type="button" data-tab="details">Details</button>
@@ -144,6 +250,10 @@
       <button type="button" data-tab="yaml">YAML</button>
     </nav>
     <div id="side-body"></div>
+    <div id="sim-actions" class="sim-panel" hidden>
+      <div class="ol-header"><h2 id="sim-actions-title" class="ol-heading">Actions</h2></div>
+      <div id="sim-actions-body" class="sp-body"></div>
+    </div>
     <details id="keys" class="keys" open>
       <summary>Mouse &amp; keyboard</summary>
       <div class="keys-groups">
@@ -154,6 +264,7 @@
             <div><dt>Wheel</dt><dd>zoom</dd></div>
             <div><dt>Drag node</dt><dd>move</dd></div>
             <div><dt>Click</dt><dd>select</dd></div>
+            <div><dt>Right-click</dt><dd>connect</dd></div>
           </dl>
         </section>
         <section class="keys-group" aria-labelledby="keys-keyboard">
@@ -162,18 +273,26 @@
             <div><dt><kbd>Esc</kbd></dt><dd>clear</dd></div>
             <div><dt><kbd>P</kbd> / <kbd>L</kbd></dt><dd>view</dd></div>
             <div><dt><kbd>Ctrl+Z</kbd> / <kbd>Y</kbd></dt><dd>undo / redo</dd></div>
-            <div><dt><kbd>Ctrl+S</kbd></dt><dd>download</dd></div>
+            <div><dt><kbd>C</kbd></dt><dd>connect</dd></div>
+            <div><dt><kbd>Ctrl+S</kbd></dt><dd>save</dd></div>
           </dl>
         </section>
       </div>
     </details>
   </aside>
+  <div id="sim-paneltabs" class="sim-paneltabs" role="tablist" aria-label="Simulation panels" hidden>
+    <button id="spt-diagram" type="button" role="tab" aria-selected="false" aria-controls="canvas-wrap" tabindex="-1">Diagram</button>
+    <button id="spt-setup" type="button" role="tab" aria-selected="false" aria-controls="outline" tabindex="-1">Setup</button>
+    <button id="spt-actions" type="button" role="tab" aria-selected="true" aria-controls="side">Actions</button>
+  </div>
+  <section id="sim-dock" class="sim-dock" aria-labelledby="sim-dock-title" hidden>
+    <div id="dock-splitter" class="dock-splitter" role="separator" aria-orientation="horizontal" aria-label="Height of the simulation panel" aria-controls="sim-dock" tabindex="0" title="Drag to change the height of the simulation panel; double-click to reset it. With the keyboard: ↑ taller, ↓ lower (Shift: faster), Enter resets"></div>
+    <h2 id="sim-dock-title" class="sr-only">Simulation panel</h2>
+    <div id="sim-dock-body" class="sd"></div>
+  </section>
 </main>
 <footer id="status" aria-live="polite"></footer>
 <dialog id="modal"></dialog>
 <pre id="selftest" hidden></pre>
-<script>
-/*__JS__*/
-</script>
 </body>
 </html>

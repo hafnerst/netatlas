@@ -2,3 +2,4 @@
 # (examples are compared byte-for-byte by the round-trip tests).
 * text=auto eol=lf
 *.png binary
+*.webp binary

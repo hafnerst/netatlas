@@ -1,5 +1,6 @@
 /** Visual vocabulary shared by renderers and the legend. */
 import { hashColor } from '../model/protocols';
+import { parseSpeed } from '../model/speed';
 
 export interface MediumStyle {
   key: string;
@@ -25,14 +26,7 @@ export function mediumStyle(medium: string): MediumStyle {
   return { key: m, label: medium, color: hashColor('medium:' + m) };
 }
 
-/** Parse "10G", "100M", "1 Gbps", "400GbE" into bits per second. */
-export function parseSpeed(s: string | undefined): number | null {
-  if (!s) return null;
-  const m = /^\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMgGtT]?)(?:b(?:ps|it\/s|e)?|bps)?\s*$/i.exec(s.replace(/gbe$/i, 'G'));
-  if (!m) return null;
-  const mult: { [k: string]: number } = { '': 1, k: 1e3, m: 1e6, g: 1e9, t: 1e12 };
-  return parseFloat(m[1]) * mult[m[2].toLowerCase()];
-}
+export { parseSpeed };
 
 export function speedWidth(speed: string | undefined): number {
   const bps = parseSpeed(speed);

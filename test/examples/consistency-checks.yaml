@@ -1,0 +1,285 @@
+# netatlas example: a small network with a mistake for every consistency check.
+#
+# The file itself is valid (no format errors). The Problems tab lists what the
+# checks find, each with its check id; click one to go to the object. Every
+# case is marked below with the id of the check that reports it.
+# "checks:" at the end downgrades one check, to show how a model can do that.
+netatlas: 1
+title: Consistency checks demo
+description: |
+  One deliberate inconsistency per check: static routes, port VLANs, MTU,
+  speed and duplex, aggregates, addressing, router IDs, MAC addresses,
+  OSPF, BGP, tunnels, virtual addresses, VRFs, the protocols each
+  device enables, multicast, and DHCP.
+
+groups:
+  - {id: core, label: Core routers, kind: site}
+  - {id: access, label: Access switches, kind: site}
+
+devices:
+  - id: r1
+    type: router
+    group: core
+    router_id: lo0                                            # the router ID is the address of lo0
+    protocols:
+      bfd: {}
+      bgp: {asn: 65001}
+      ospf: {}
+      vrrp: {}
+    interfaces:
+      # link-mtu-mismatch (r2:e0 has 1500); vip-outside-subnet: 10.9.9.9 is not in 10.0.12.0/30
+      - id: e0
+        ip: 10.0.12.1/30
+        mtu: 9000
+        mac: "00:11:22:33:44:55"
+        protocols:
+          vrrp: {group: 12, virtual_ip: 10.9.9.9, priority: 200}
+      - {id: e1, ip: 10.0.13.1/30}                                        # link-subnet-mismatch (r3:e0 is in 10.0.31.0/30)
+      - {id: e2, ip: 10.0.20.0/24}                                        # address-reserved: the network address
+      - e3                                                                # Po1 member, to r2
+      - e4                                                                # Po1 member, to r3
+      - {id: e6, ip: 10.0.16.1/30, mtu: 1500}                             # tun0's underlay
+      - {id: e7, ip: 10.0.17.1/30, vrf: red}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+      # lag-member-speed (10G and 1G), lag-peer-devices (r2 and r3, no MLAG), lag-min-links (3 of 2)
+      - {id: Po1, type: virtual, members: [e3, e4], min_links: 3}
+      # tunnel-mtu: 1500 + 24 bytes of GRE > 1500 of e6; tunnel-endpoint-mismatch: r2:tun0 is sourced from 10.0.16.2
+      - {id: tun0, type: tunnel, ip: 172.16.0.1/30, mtu: 1500, source: e6, destination: 10.0.99.9}
+    routes:
+      - {prefix: 10.9.0.0/16, via: 10.0.12.1}                 # route-nexthop-self
+      - {prefix: 10.8.0.0/16, via: 172.16.255.1}              # route-nexthop-unresolved
+      - {prefix: 10.7.0.0/16, via: 10.0.13.2, interface: e0}  # route-nexthop-interface
+      - {prefix: 10.6.0.0/16, interface: lo0}                 # route-exit-interface
+      - {prefix: 10.5.0.0/16, via: 10.0.12.2}                 # route-duplicate (with the next one)
+      - {prefix: 10.5.0.0/16, via: 10.0.12.2}
+      - {prefix: 192.0.2.0/24, blackhole: true}               # route-conflict (with the next one)
+      - {prefix: 192.0.2.0/24, via: 10.0.12.2}
+      - {prefix: 10.4.0.0/16, via: 10.255.0.2}                # route-nexthop-recursive (info), through the next one
+      - {prefix: 10.255.0.2/32, via: 10.0.12.2}
+  - id: r2
+    type: router
+    group: core
+    router_id: 10.255.0.1                                     # duplicate-router-id (r1's lo0 has it, in one OSPF domain)
+    protocols:
+      bfd: {}
+      bgp: {asn: 65002}
+      ospf: {}
+      rip: {version: 2}                                       # protocol-unused (info): no RIP relation
+      vrrp: {}
+    interfaces:
+      # duplicate-mac (r1:e0); fhrp-group-mismatch: group 13 for the same virtual address as r1's group 12
+      - id: e0
+        ip: 10.0.12.2/30
+        mtu: 1500
+        mac: "00-11-22-33-44-55"
+        protocols:
+          vrrp: {group: 13, virtual_ip: 10.9.9.9}
+      - e3
+      - {id: e6, ip: 10.0.16.2/30, mtu: 1500}
+      - {id: e7, ip: 10.0.17.2/30, vrf: blue}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+      - {id: tun0, type: tunnel, ip: 172.16.0.2/30, mtu: 1400, source: e6, destination: 10.0.16.1}
+  - id: r3
+    type: router
+    group: core
+    protocols:
+      bgp: {asn: 65003}                                       # protocol-not-enabled: OSPF (ospf-13) is not enabled
+    interfaces:
+      - {id: e0, ip: 10.0.31.2/30}
+      - e4
+      - {id: e9, vrf: Red}                                    # vrf-name-case: r1:e7 is in VRF red
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.0.31.1}                   # needs no protocol: static routes are always in effect
+  # the ports' VLANs: one deliberate mismatch per cable between sw1 and sw2 (see the links t1 … t6)
+  - id: sw1
+    type: switch
+    group: access
+    igmp_mld_snooping: {1: enabled, 10: enabled, 20: enabled}
+    interfaces:
+      - {id: p1, vlans: [1, 10, 20], native: 1}
+      - {id: p2, vlans: 10}
+      - {id: p3, vlans: 10}
+      - {id: p4, vlans: 1}
+      - p5
+      - p6
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [p5, p6], vlans: [10, 20]}   # its members take its VLANs
+  - id: sw2
+    type: switch
+    group: access
+    igmp_mld_snooping: {1: enabled, 10: enabled, 20: enabled, 30: enabled, 99: enabled}
+    interfaces:
+      - {id: p1, vlans: [10, 30, 99], native: 99}
+      - {id: p2, vlans: 20}
+      - {id: p3, vlans: [10, 20]}
+      - {id: p4, vlans: 1}
+      - {id: p5, vlans: [10, 20]}
+      - {id: p6, vlans: [10, 30]}
+  # multicast: no RP for the sparse-mode group (multicast-no-rp); mc-rx's subnet has no querier (multicast-no-querier);
+  # mc-r1 and mc-r2 run PIM but have no PIM relation, so mc-r2's route towards the source fails the RPF check (multicast-rpf-not-pim)
+  - id: mc-src
+    type: server
+    interfaces:
+      - {id: eth0, ip: 10.70.0.10/24, multicast: {streams: [{group: 239.9.9.9}]}}
+    routes: [{prefix: 0.0.0.0/0, via: 10.70.0.1}]
+  - id: mc-r1
+    type: router
+    protocols: {pim: {}}
+    interfaces: [{id: e0, ip: 10.70.0.1/24}, {id: e1, ip: 10.0.71.1/30}]
+  - id: mc-r2
+    type: router
+    protocols: {pim: {}}
+    interfaces: [{id: e0, ip: 10.0.71.2/30}, {id: e1, ip: 10.72.0.1/24}]
+    routes: [{prefix: 10.70.0.0/24, via: 10.0.71.1}]
+  - id: mc-rx
+    type: endpoint
+    interfaces:
+      - {id: eth0, ip: 10.73.0.10/24, multicast: {join: [239.9.9.9]}}
+  # DHCP: dhcp1 serves the dhcp-lan network; dhcp-pc is on another segment without a server or a relay there
+  - id: dhcp1
+    type: server
+    services:
+      dhcp:
+        scopes:
+          - {network: dhcp-lan, range: 10.80.0.100-10.80.0.199, gateway: 10.80.0.1, dns: [10.80.0.10]}
+    interfaces: [{id: eth0, ip: 10.80.0.10/24}]
+  - id: dhcp-r
+    type: router
+    interfaces:
+      - {id: e0, ip: 10.80.0.1/24}
+      - {id: e1, ip: 10.81.0.1/24, dhcp_relay: [10.80.0.99]}               # dhcp-relay-no-server: 10.80.0.99 is no DHCP server
+  # dhcp-no-server: dhcp-pc's segment (10.81.0.0/24) has no DHCP server, and the relay there points to none
+  - id: dhcp-pc
+    type: endpoint
+    interfaces:
+      - {id: eth0, dhcp: true}
+  # virtualization: hv-a's uplink ends on sw3:q1, which carries VLAN 10 only (vswitch-uplink-vlan: port group pg20);
+  # vm-a1 has an address in the voice network (VLAN 20) on port group pg10 (vnic-network-vlan); vm-a2 can't restart
+  # on hv-b, which has no pg20 (ha-restart-portgroup); hv-a's VMs have more vCPUs and memory than it (hypervisor-overcommit);
+  # ct-host's macvlan network is in the voice network (VLAN 20), its parent eth1 in VLAN 10 (container-parent-vlan)
+  - id: sw3
+    type: switch
+    group: access
+    # no igmp_mld_snooping: VLAN 10 without a snooping choice (snooping-not-configured)
+    interfaces:
+      - {id: q1, vlans: 10}
+      - {id: q2, vlans: 10}
+  - id: hv-a
+    type: server
+    services:
+      hypervisor:
+        platform: kvm
+        cluster: c1
+        cpu: 4
+        ram: 8G
+        vswitches:
+          - name: br0
+            type: linux_bridge
+            uplinks: [vmnic0]
+            teaming: active_standby
+            port_groups:
+              - {name: pg10, vlans: 10}
+              - {name: pg20, vlans: 20}
+    interfaces: [vmnic0]
+  - id: hv-b
+    type: server
+    services:
+      hypervisor:
+        platform: kvm
+        cluster: c1
+        vswitches:
+          - {name: br0, type: linux_bridge, port_groups: [{name: pg10, vlans: 10}]}
+  - id: vm-a1
+    type: vm
+    host: hv-a
+    vcpu: 8
+    ram: 16G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: pg10, ip: 10.10.20.5/24}
+  - id: vm-a2
+    type: vm
+    host: hv-a
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: pg20}
+  - id: ct-host
+    type: server
+    services:
+      container_engine:
+        engine: docker
+        networks:
+          - {name: mv, driver: macvlan, parent: eth1, subnet: 10.10.20.0/24, gateway: 10.10.20.1, mode: bridge}
+    interfaces: [eth1]
+
+links:
+  - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber, speed: 10G}
+  - {id: l13, a: "r1:e1", b: "r3:e0", medium: fiber, speed: 10G}
+  - {id: lag-a, a: "r1:e3", b: "r2:e3", medium: fiber, speed: 10G}
+  - {id: lag-b, a: "r1:e4", b: "r3:e4", medium: copper, speed: 1G}
+  - {id: l-tun, a: "r1:e6", b: "r2:e6", medium: fiber, speed: 1G}
+  - {id: l-vrf, a: "r1:e7", b: "r2:e7", medium: fiber, speed: 1G}
+  # vlan-native-mismatch (native 1 / 99), vlan-trunk-mismatch (1, 20 / 30, 99), vlan-unknown (30, 99; VLAN 1 is every switch's default)
+  - id: t1
+    a: sw1:p1
+    b: sw2:p1
+  # vlan-access-mismatch: access ports in VLAN 10 and VLAN 20
+  - id: t2
+    a: sw1:p2
+    b: sw2:p2
+  # vlan-access-trunk: an access port in VLAN 10 to a trunk without a native VLAN
+  - id: t3
+    a: sw1:p3
+    b: sw2:p3
+  # link-speed-mismatch (1G / 100M), link-duplex-mismatch (full / half)
+  - id: t4
+    a: {device: sw1, interface: p4, speed: 1G, duplex: full}
+    b: {device: sw2, interface: p4, speed: 100M, duplex: half}
+    speed: 1G
+  # lag-member-vlans: Po1's members p5 and p6 end on ports with different VLANs (and t6 is a trunk mismatch too)
+  - {id: t5, a: "sw1:p5", b: "sw2:p5"}
+  - {id: t6, a: "sw1:p6", b: "sw2:p6"}
+
+  - {id: l-mc-src, a: "mc-src:eth0", b: "mc-r1:e0"}
+  - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}
+  - {id: l-dhcp1, a: "dhcp1:eth0", b: "dhcp-r:e0"}
+  - {id: l-dhcp-pc, a: "dhcp-pc:eth0", b: "dhcp-r:e1"}
+  - {id: l-hv-a, a: "sw3:q1", b: "hv-a:vmnic0"}
+  - {id: l-ct-host, a: "sw3:q2", b: "ct-host:eth1"}
+
+networks:
+  - {id: users, cidr: 10.10.10.0/24, vlan: 10}
+  - {id: voice, cidr: 10.10.20.0/24, vlan: 20}
+  - {id: core-12, cidr: 10.0.12.0/30}
+  - {id: dhcp-lan, cidr: 10.80.0.0/24}
+
+relations:
+  # ospf-area-mismatch, ospf-network-type-mismatch, ospf-timer-mismatch
+  - id: ospf-12
+    protocol: ospf
+    endpoints: ["r1:e0", "r2:e0"]
+    over: l12
+    attrs:
+      area: {r1: 0.0.0.0, r2: 0.0.0.1}
+      network-type: {r1: point-to-point, r2: broadcast}
+      hello: {r1: 10, r2: 5}
+  # bgp-peer-as: r1 expects AS 65099, r2 is in AS 65002
+  - id: ebgp-12
+    protocol: ebgp
+    endpoints: ["r1:e0", "r2:e0"]
+    attrs:
+      peer-as: {r1: 65099, r2: 65001}
+  # bgp-session-type: iBGP between AS 65001 and AS 65003
+  - {id: ibgp-13, protocol: ibgp, endpoints: ["r1:lo0", r3]}
+  # the VRRP group of r1:e0 and r2:e0 (its virtual address and groups are set at the interfaces)
+  - {id: vrrp-12, protocol: vrrp, endpoints: ["r1:e0", "r2:e0"], over: core-12}
+  # protocol-not-enabled: r3 does not enable OSPF
+  - {id: ospf-13, protocol: ospf, endpoints: ["r1:e1", "r3:e0"], over: l13}
+  # tunnel-endpoint-mismatch (see r1:tun0); tunnel-underlay: l13 joins r1 and r3, not r2
+  - {id: gre-12, protocol: gre, endpoints: ["r1:tun0", "r2:tun0"], over: l13}
+  # relation-vrf-mismatch: VRF red at r1, VRF blue at r2
+  - {id: bfd-vrf, protocol: bfd, endpoints: ["r1:e7", "r2:e7"], over: l-vrf}
+
+# a model can switch checks off or change their severity
+checks:
+  duplicate-mac: info

@@ -8,7 +8,7 @@
 # Note: YAML anchors/aliases are NOT supported by netatlas, so repeated
 # interface lists are written out in full.
 netatlas: 1
-title: FRA1 data-center fabric
+title: Data center — spine/leaf fabric with EVPN/VXLAN
 description: Spine/leaf fabric with BGP underlay and EVPN/VXLAN overlay.
 
 protocols:
@@ -41,74 +41,102 @@ groups:
 devices:
   - id: spine1
     type: switch
-    tier: 1
+    role: spine
+    layer3: true
     group: rack-a01
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65000}
     interfaces:
-      - {id: Et1, ip: 10.1.0.0/31}
-      - {id: Et2, ip: 10.1.0.2/31}
-      - {id: Et3, ip: 10.1.0.4/31}
-      - {id: Et4, ip: 10.1.0.6/31}
+      - {id: Et1, routed: true, ip: 10.1.0.0/31}
+      - {id: Et2, routed: true, ip: 10.1.0.2/31}
+      - {id: Et3, routed: true, ip: 10.1.0.4/31}
+      - {id: Et4, routed: true, ip: 10.1.0.6/31}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.1/32}
   - id: spine2
     type: switch
-    tier: 1
+    role: spine
+    layer3: true
     group: rack-a01
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65000}
     interfaces:
-      - {id: Et1, ip: 10.1.1.0/31}
-      - {id: Et2, ip: 10.1.1.2/31}
-      - {id: Et3, ip: 10.1.1.4/31}
-      - {id: Et4, ip: 10.1.1.6/31}
+      - {id: Et1, routed: true, ip: 10.1.1.0/31}
+      - {id: Et2, routed: true, ip: 10.1.1.2/31}
+      - {id: Et3, routed: true, ip: 10.1.1.4/31}
+      - {id: Et4, routed: true, ip: 10.1.1.6/31}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.2/32}
 
   - id: leaf1
     type: switch
-    tier: 2
+    role: leaf
+    layer3: true
     group: rack-a02
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65101}
+    igmp_mld_snooping: {100: enabled}
     interfaces:
-      - {id: Et49, ip: 10.1.0.1/31}
-      - {id: Et50, ip: 10.1.1.1/31}
-      - {id: Et51}
-      - {id: Et1}
+      - {id: Et49, routed: true, ip: 10.1.0.1/31}
+      - {id: Et50, routed: true, ip: 10.1.1.1/31}
+      - {id: Et51, vlans: 100}
+      - {id: Et1, vlans: 100}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.11/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12, attrs: {function: vtep}}
       - {id: Vlan100, type: virtual, ip: 192.168.100.2/24, vrf: tenant-a}
   - id: leaf2
     type: switch
-    tier: 2
+    role: leaf
+    layer3: true
     group: rack-a02
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65102}
+    igmp_mld_snooping: {100: enabled}
     interfaces:
-      - {id: Et49, ip: 10.1.0.3/31}
-      - {id: Et50, ip: 10.1.1.3/31}
-      - {id: Et51}
-      - {id: Et1}
+      - {id: Et49, routed: true, ip: 10.1.0.3/31}
+      - {id: Et50, routed: true, ip: 10.1.1.3/31}
+      - {id: Et51, vlans: 100}
+      - {id: Et1, vlans: 100}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.12/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12, attrs: {function: vtep}}
       - {id: Vlan100, type: virtual, ip: 192.168.100.3/24, vrf: tenant-a}
   - id: leaf3
     type: switch
-    tier: 2
+    role: leaf
+    layer3: true
     group: rack-a03
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65100}
+    igmp_mld_snooping: {100: enabled}
     interfaces:
-      - {id: Et49, ip: 10.1.0.5/31}
-      - {id: Et50, ip: 10.1.1.5/31}
-      - {id: Et1}
-      - {id: Et48, ip: 100.64.0.2/30}
+      - {id: Et49, routed: true, ip: 10.1.0.5/31}
+      - {id: Et50, routed: true, ip: 10.1.1.5/31}
+      - {id: Et1, vlans: 100}
+      - {id: Et48, routed: true, ip: 100.64.0.2/30}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.13/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.13, attrs: {function: vtep}}
       - {id: Vlan100, type: virtual, ip: 192.168.100.4/24, vrf: tenant-a}
   - id: leaf4
     type: switch
-    tier: 2
+    role: leaf
+    layer3: true
     group: rack-a03
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65104}
+    igmp_mld_snooping: {100: enabled}
     interfaces:
-      - {id: Et49, ip: 10.1.0.7/31}
-      - {id: Et50, ip: 10.1.1.7/31}
-      - {id: Et1}
+      - {id: Et49, routed: true, ip: 10.1.0.7/31}
+      - {id: Et50, routed: true, ip: 10.1.1.7/31}
+      - {id: Et1, vlans: 100}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.14/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.14, attrs: {function: vtep}}
@@ -119,25 +147,30 @@ devices:
     type: server
     group: rack-a02
     interfaces:
-      - {id: vmnic0}
-      - {id: vmnic1}
+      - {id: vmnic0, vlans: 100}
+      - {id: vmnic1, vlans: 100}
   - id: esx02
     label: esx02
     type: server
     group: rack-a03
     interfaces:
-      - {id: vmnic0}
+      - {id: vmnic0, vlans: 100}
   - id: k8s01
     label: k8s01
     type: server
     group: rack-a03
     interfaces:
-      - {id: ens1f0}
+      - {id: ens1f0, vlans: 100}
 
   - id: wan-pe
     label: Carrier PE
     type: router
+    role: pe
     group: wan
+    # (beside the spines: its cable goes down to the border leaf without crossing their row)
+    tier: 3
+    protocols:
+      bgp: {asn: 64512}
     interfaces:
       - {id: xe-0/1/0, ip: 100.64.0.1/30}
 
@@ -152,23 +185,23 @@ links:
   - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50", medium: fiber, speed: 100G}
   - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", medium: dac, speed: 100G, cable: DAC 0.5m}
   - id: esx01-a
-    a: {device: esx01, interface: vmnic0, networks: [vni-10100]}
-    b: {device: leaf1, interface: Et1, networks: [vni-10100]}
+    a: esx01:vmnic0
+    b: leaf1:Et1
     medium: dac
     speed: 25G
   - id: esx01-b
-    a: {device: esx01, interface: vmnic1, networks: [vni-10100]}
-    b: {device: leaf2, interface: Et1, networks: [vni-10100]}
+    a: esx01:vmnic1
+    b: leaf2:Et1
     medium: dac
     speed: 25G
   - id: esx02-a
-    a: {device: esx02, interface: vmnic0, networks: [vni-10100]}
-    b: {device: leaf3, interface: Et1, networks: [vni-10100]}
+    a: esx02:vmnic0
+    b: leaf3:Et1
     medium: dac
     speed: 25G
   - id: k8s01-a
-    a: {device: k8s01, interface: ens1f0, networks: [vni-10100]}
-    b: {device: leaf4, interface: Et1, networks: [vni-10100]}
+    a: k8s01:ens1f0
+    b: leaf4:Et1
     medium: dac
     speed: 25G
   - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", medium: fiber, speed: 10G, cable: "Cross-connect MMR-2 #118"}
@@ -228,4 +261,4 @@ relations:
     protocol: ebgp
     endpoints: ["leaf3:Et48", "wan-pe:xe-0/1/0"]
     over: wan-uplink
-    attrs: {local-as: 65100, peer-as: 64512}
+    attrs: {peer-as: {leaf3: 64512, wan-pe: 65100}}

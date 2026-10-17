@@ -1,0 +1,113 @@
+# netatlas example: DHCP and DNS on a campus, with per-port spanning tree.
+#
+# srv is the campus's DHCP and DNS server (services:). Its scopes lease
+# addresses to the clients of two VLANs: pc1 and lap1 are in VLAN 10 with
+# srv (their DHCPDISCOVER reaches it directly); pc2 is in VLAN 20, behind
+# the Layer 3 switch core, whose Vlan20 relays DHCP to srv (dhcp_relay).
+# The zone campus.example is made of the model's DNS names (web, srv, core)
+# and one CNAME (www). The PCs send test traffic by host name: each resolves
+# it first (DNS), then connects.
+#
+# The access switch acc is a Layer 2 switch with two uplinks to core: the
+# second one costs more (stp_cost), so the spanning tree blocks it; its
+# host ports are edge ports with BPDU guard (a switch plugged in there
+# would be shut down).
+#
+# Simulate ▾ → Start simulation…: watch the clients' DORA (DHCPDISCOVER,
+# OFFER, REQUEST, ACK) at the start, in parallel, pc2's through the relay;
+# then their DNS queries and connections. Show DHCP leases on srv, Show DNS
+# zone on srv, Show DNS cache on pc1.
+netatlas: 1
+title: Campus services (DHCP, DNS)
+description: |
+  A DHCP and DNS server for two VLANs (one through a relay on the Layer 3
+  switch), clients that connect by host name, and an access switch with
+  per-port spanning tree settings.
+
+devices:
+  - id: core
+    type: switch
+    role: core
+    layer3: true
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled}
+    simulation: {stp_mode: rstp, bridge_priority: 4096}
+    interfaces: [{id: g1, vlans: [10, 20]}, {id: g2, vlans: [10, 20]}, {id: g3, vlans: 10}, {id: g4, vlans: 30}]
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.1/24}
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.10.20.1/24, dhcp_relay: [10.10.10.10]}
+      - {id: Vlan30, type: virtual, vlan: 30, ip: 10.10.30.1/24}
+    dns_names: [{name: core.campus.example, interfaces: [Vlan30]}]
+  - id: acc
+    type: switch
+    role: access
+    igmp_mld_snooping: {10: enabled, 20: enabled}
+    simulation: {stp_mode: rstp}
+    interfaces:
+      - {id: u1, vlans: [10, 20]}
+      - {id: u2, vlans: [10, 20], simulation: {stp_cost: 200000}}
+      - {id: p1, vlans: 10, simulation: {stp_edge: on, stp_bpdu_guard: on}}
+      - {id: p2, vlans: 20, simulation: {stp_edge: on, stp_bpdu_guard: on}}
+      - {id: p3, vlans: 10, simulation: {stp_edge: on, stp_bpdu_guard: on}}
+  - id: srv
+    type: server
+    label: srv (DHCP, DNS)
+    services:
+      dhcp:
+        scopes:
+          - network: users
+            range: 10.10.10.100-10.10.10.199
+            gateway: 10.10.10.1
+            dns: [10.10.10.10]
+            domain: campus.example
+            exclude: [10.10.10.150]
+            reservations: [{mac: "02:00:00:00:10:21", ip: 10.10.10.21}]
+          - {network: staff, range: 10.10.20.100-10.10.20.199, gateway: 10.10.20.1, dns: [10.10.10.10], lease: 4h, domain: campus.example}
+      dns:
+        zones:
+          - name: campus.example
+            records: [{name: www, type: CNAME, value: web.campus.example}]
+            simulation: {record_ttl: 300}
+    interfaces: [{id: eth0, ip: 10.10.10.10/24}]
+    dns_names: [{name: srv.campus.example, interfaces: [eth0]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.10.10.1}]
+  - id: web
+    type: server
+    simulation: {listening: tcp/443}
+    interfaces: [{id: eth0, ip: 10.10.30.10/24}]
+    dns_names: [{name: web.campus.example, interfaces: [eth0]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.10.30.1}]
+  - id: pc1
+    type: endpoint
+    simulation: {test_traffic: "on", test_targets: "web.campus.example tcp/443", test_interval: 10}
+    interfaces: [{id: eth0, dhcp: true}]
+  - id: lap1
+    type: endpoint
+    interfaces: [{id: eth0, dhcp: true, mac: "02:00:00:00:10:21"}]
+  - id: pc2
+    type: endpoint
+    simulation: {test_traffic: "on", test_targets: "www.campus.example", test_interval: 10}
+    interfaces: [{id: eth0, dhcp: true}]
+
+links:
+  - id: up1
+    a: acc:u1
+    b: core:g1
+    speed: 1G
+  - id: up2
+    a: acc:u2
+    b: core:g2
+    speed: 1G
+  - {id: l-pc1, a: "pc1:eth0", b: acc:p1}
+  - {id: l-pc2, a: "pc2:eth0", b: acc:p2}
+  - {id: l-lap1, a: "lap1:eth0", b: acc:p3}
+  - {id: l-srv, a: "srv:eth0", b: core:g3}
+  - {id: l-web, a: "web:eth0", b: core:g4}
+
+networks:
+  - {id: users, cidr: 10.10.10.0/24, vlan: 10}
+  - {id: staff, cidr: 10.10.20.0/24, vlan: 20}
+  - {id: servers, cidr: 10.10.30.0/24, vlan: 30}
+
+relations:
+  - {id: dns-pc1, protocol: dns, endpoints: [pc1, srv]}
+  - {id: web-pc1, protocol: https, endpoints: [pc1, web]}

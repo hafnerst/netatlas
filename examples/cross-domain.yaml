@@ -1,0 +1,144 @@
+# netatlas example: a cross-domain boundary with a protocol break.
+#
+# cdg is a Security gateway between two domains, Red and Black (the names
+# are only labels: NetAtlas reads no classification, trust or direction
+# from them). Its implementation is a protocol break: nothing passes
+# through it. The Red workstation sends its web request to the gateway's
+# listening port (red0, port 443); the gateway's policy permits it (rule
+# red-web, transfer profile web), the first leg ends there, and the gateway
+# starts a second leg of its own to the Black web server. The answer comes
+# back on leg 2 and goes to the workstation on leg 1.
+#
+# The workstation also tries SSH to the Black server: no rule permits it, so
+# it ends at the gateway (an empty field never means "any", and everything
+# not permitted is denied). Black → Red is not a permitted direction at all.
+# The management interface mgmt0 belongs to neither domain and is never
+# forwarded: the management station reaches the gateway only.
+#
+# Analyze ▾ → Trace path… from red-ws to 10.10.0.1 with the service tcp/443
+# shows leg 1 and, correlated with it, leg 2; with tcp/22 to 10.20.0.80 the
+# trace stops at the gateway and says why. Simulate ▾ → Start simulation…
+# shows both legs and the denial in the timeline.
+#
+# This models the semantics of a protocol break. It does not reproduce a
+# particular product and gives no assurance of a real device's separation.
+netatlas: 1
+title: Cross-domain boundary (protocol break)
+description: |
+  Red and Black domains joined by a Security gateway that breaks the
+  protocol: one permitted web transfer in two legs, one denied transfer,
+  and a management network that reaches the gateway only.
+
+groups:
+  - id: red
+    label: Red domain
+    kind: zone
+  - id: black
+    label: Black domain
+    kind: zone
+  - id: mgmt
+    label: Management
+    kind: zone
+
+devices:
+  - id: red-ws
+    label: red-ws (workstation)
+    type: endpoint
+    kind: pc
+    group: red
+    simulation: {test_traffic: "on", test_targets: "10.10.0.1 tcp/443, 10.20.0.80 tcp/22", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.10.0.10/24}
+    routes:
+      - {prefix: 10.20.0.0/24, via: 10.10.0.1, name: towards Black (the gateway forwards nothing)}
+  - id: red-sw
+    type: switch
+    role: access
+    group: red
+    igmp_mld_snooping: {1: enabled}
+    interfaces:
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+  - id: cdg
+    label: cdg (cross-domain)
+    type: security_gateway
+    services:
+      separation:
+        implementation: protocol_break
+        domains:
+          - {name: Red, interfaces: [red0]}
+          - {name: Black, interfaces: [black0]}
+        directions:
+          - {from: Red, to: Black}
+        profiles:
+          - id: web
+            type: https
+            listen: {interface: red0, port: 443}
+            forward: {address: 10.20.0.80, port: 443}
+        rules:
+          - id: red-web
+            description: Red workstations may fetch from the Black web server
+            from: Red
+            to: Black
+            source: 10.10.0.0/24
+            destination: 10.20.0.80
+            protocol: tcp
+            ports: "443"
+            profile: web
+    management: [mgmt0]
+    interfaces:
+      - {id: red0, ip: 10.10.0.1/24}
+      - {id: black0, ip: 10.20.0.1/24}
+      - {id: mgmt0, ip: 10.99.0.1/24}
+  - id: black-sw
+    type: switch
+    role: access
+    group: black
+    igmp_mld_snooping: {1: enabled}
+    interfaces:
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+  - id: black-web
+    label: black-web
+    type: server
+    group: black
+    interfaces:
+      - {id: eth0, ip: 10.20.0.80/24}
+  - id: mgmt-st
+    label: mgmt-st (management)
+    type: endpoint
+    kind: pc
+    role: management
+    group: mgmt
+    interfaces:
+      - {id: eth0, ip: 10.99.0.10/24}
+
+links:
+  - {id: l-red-ws, a: "red-ws:eth0", b: "red-sw:p1", speed: 1G}
+  - {id: l-red-gw, a: "red-sw:p2", b: "cdg:red0", speed: 1G}
+  - {id: l-gw-black, a: "cdg:black0", b: "black-sw:p1", speed: 1G}
+  - {id: l-black-web, a: "black-sw:p2", b: "black-web:eth0", speed: 1G}
+  - {id: l-mgmt, a: "mgmt-st:eth0", b: "cdg:mgmt0", speed: 1G}
+
+relations:
+  - id: web-leg1
+    protocol: https
+    label: web transfer, leg 1 (ends at the gateway)
+    endpoints: [red-ws, cdg]
+    direction: unidirectional
+  - id: web-leg2
+    protocol: https
+    label: web transfer, leg 2 (started by the gateway)
+    endpoints: [cdg, black-web]
+    direction: unidirectional
+  - id: ssh-denied
+    protocol: ssh
+    category: service
+    label: SSH Red → Black (not permitted)
+    endpoints: [red-ws, black-web]
+    direction: unidirectional
+  - id: mgmt-snmp
+    protocol: snmp
+    label: monitoring (management network only)
+    endpoints: [mgmt-st, cdg]
+    direction: unidirectional

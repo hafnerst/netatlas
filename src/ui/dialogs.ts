@@ -7,18 +7,37 @@ export interface DialogOpts {
   buttons: Array<{ label: string; value: string; kind?: 'primary' | 'danger' }>;
   /** called once the dialog is built and shown (e.g. to keep a button in step with what is typed) */
   ready?: (dialog: HTMLElement) => void;
+  /** a class for the dialog element while it shows this content (e.g. its size) */
+  className?: string;
+  /** a × button in the title row that closes the dialog like Esc ("cancel") */
+  closeButton?: boolean;
+  /** the element (a selector inside the body) that gets the focus instead of the primary button */
+  focus?: string;
+}
+
+/** The event an element of a dialog's body dispatches to close the dialog with a value (see closeDialogWith). */
+const DONE_EVENT = 'netatlas-dialog-done';
+
+/** Close the open dialog from inside its body: showDialog resolves with `value`. */
+export function closeDialogWith(from: Element, value: string): void {
+  const Ev = (from.ownerDocument.defaultView as Window & typeof globalThis).CustomEvent;
+  from.dispatchEvent(new Ev(DONE_EVENT, { bubbles: true, detail: value }));
 }
 
 /**
  * Show the page's <dialog id="modal"> and resolve with the value of the
- * clicked button ("cancel" on Esc). The primary button, or the first input,
- * gets the focus.
+ * clicked button ("cancel" on Esc), or the value its body closes it with
+ * (closeDialogWith). The primary button, or the first input, gets the focus.
  */
 export function showDialog(doc: Document, opts: DialogOpts): Promise<string> {
   const dlg = doc.getElementById('modal') as HTMLDialogElement;
   while (dlg.firstChild) dlg.removeChild(dlg.firstChild);
+  dlg.className = opts.className || '';
+  dlg.setAttribute('aria-labelledby', 'modal-title');
   const form = el(doc, 'div', { class: 'modal-inner' });
-  form.appendChild(el(doc, 'h2', {}, [opts.title]));
+  const title = el(doc, 'h2', { id: 'modal-title' }, [opts.title]);
+  const closeX = opts.closeButton ? el(doc, 'button', { type: 'button', class: 'modal-x', 'aria-label': 'Close', title: 'Close (Esc)' }, ['×']) : null;
+  form.appendChild(closeX ? el(doc, 'div', { class: 'modal-head' }, [title, closeX]) : title);
   const bodyEl = el(doc, 'div', { class: 'modal-body' });
   for (const b of opts.body) bodyEl.appendChild(typeof b === 'string' ? doc.createTextNode(b) : b);
   form.appendChild(bodyEl);
@@ -28,6 +47,7 @@ export function showDialog(doc: Document, opts: DialogOpts): Promise<string> {
   return new Promise((resolve) => {
     const done = (v: string): void => {
       dlg.removeEventListener('cancel', onCancel);
+      dlg.removeEventListener(DONE_EVENT, onDone);
       if (dlg.open) dlg.close();
       resolve(v);
     };
@@ -35,7 +55,10 @@ export function showDialog(doc: Document, opts: DialogOpts): Promise<string> {
       e.preventDefault();
       done('cancel');
     };
+    const onDone = (e: Event): void => done(String((e as CustomEvent).detail));
     dlg.addEventListener('cancel', onCancel);
+    dlg.addEventListener(DONE_EVENT, onDone);
+    if (closeX) closeX.addEventListener('click', () => done('cancel'));
     for (const b of opts.buttons) {
       const btn = el(doc, 'button', { type: 'button', class: b.kind || '', 'data-value': b.value }, [b.label]);
       btn.addEventListener('click', () => done(b.value));
@@ -45,7 +68,9 @@ export function showDialog(doc: Document, opts: DialogOpts): Promise<string> {
     else dlg.setAttribute('open', '');
     if (opts.ready) opts.ready(dlg);
     const primary = btns.querySelector('.primary, .danger') as HTMLElement | null;
-    if (primary && !bodyEl.querySelector('input')) primary.focus();
+    const target = opts.focus ? (bodyEl.querySelector(opts.focus) as HTMLElement | null) : null;
+    if (target) target.focus();
+    else if (primary && !bodyEl.querySelector('input')) primary.focus();
     else {
       const inp = bodyEl.querySelector('input') as HTMLInputElement | null;
       if (inp) {

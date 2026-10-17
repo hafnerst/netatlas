@@ -1,0 +1,423 @@
+# netatlas example: the protocol simulation (Simulate → Start simulation…)
+#
+# A campus, a ring of three routers and a branch behind the internet, with
+# the main protocols at work from a freshly booted network:
+#   * Layer 2: hosts without MAC addresses (the simulation gives them
+#     generated ones), a Layer 2 access switch with a management address,
+#     trunks to two Layer 3 core switches, a loop that STP breaks, ARP and
+#     NDP, gratuitous ARP when the VRRP master changes.
+#   * core1 is a Layer 3 switch that routes between VLAN 10 (users) and
+#     VLAN 20 (lab, dual-stack); core1 and core2 share the users' gateway
+#     10.10.10.1 by VRRP. Device overrides (simulation:): core1's ARP
+#     timeout (300 s), acc-sw's MAC aging (120 s), the internet's
+#     latency (15 ms); acc-sw's uplink to core2 flaps from the start.
+#   * an OSPF ring with costs: r1 → r3 is preferred; its cable runs through
+#     a carrier's switch, so when the far side fails r1 only notices when
+#     the dead interval expires, and the traffic moves to r1 → r2 → r3.
+#   * iBGP between the loopbacks of r1 and r3 (over OSPF), BFD on r1 – r2.
+#   * IPsec protecting a GRE tunnel with OSPF over it, to the branch.
+#   * PIM with the RP at r1, a multicast source at the branch and a
+#     receiver behind r3 (IGMP).
+#   * a protocol of the model's own (telemetry) on a one-way relation.
+#   * Layer 4: pc1 sends test traffic every 5 s (simulation: test_traffic
+#     on): HTTPS to srv (open), SSH to srv (closed: a TCP RST), HTTPS to
+#     the DMZ server web through fw1, DNS to web (fw1 rejects it: ICMP
+#     administratively prohibited) and a ping to 203.0.113.80 (no route
+#     there: ICMP net unreachable from the gateway). The carrier path r1 –
+#     r3 has an MTU of 1400: srv's full-size answers get Fragmentation
+#     Needed and it lowers its path MTU.
+#   * a lab of two switches joined twice with their spanning tree off: a
+#     Layer 2 loop, so the first broadcast storms.
+#   * multicast: mcsrc in site B streams to 239.1.1.1 (any source, through
+#     the RP r1) and to 232.1.1.1 (source-specific). pc1 (VLAN 10) joins
+#     239.1.1.1, pc2 (VLAN 20) joins 232.1.1.1 from mcsrc, behind acc-sw
+#     (IGMP snooping: the streams reach only them). core1 and core2 both
+#     run PIM on VLAN 10: the lower address queries, core1 is the designated
+#     router (DR priority 200). Failing l-core1-r1 moves the tree via core2.
+#     pc3 in VLAN 30 joins too, but no router serves VLAN 30 (the
+#     consistency check says so): it never receives anything.
+#
+# Try: Start simulation, watch ARP resolve and OSPF reach Full; open the
+# ARP tables of core1 and r1 and the MAC table of acc-sw; then fail the
+# cable l-carrier-r3. Click a dot to inspect its packet; Send test… from
+# a device's menu; fail l-lab-b (or set lab-sw1's spanning tree back on)
+# to end the storm.
+netatlas: 1
+title: Protocol simulation
+description: |
+  The main protocols of the simulation: ARP and switching, VRRP, an OSPF
+  ring, iBGP between loopbacks, BFD, IPsec with GRE and OSPF, PIM and a
+  custom protocol.
+
+protocols:
+  - id: telemetry
+    label: Telemetry
+    category: service
+    color: "#0b7285"
+    description: streaming telemetry from the camera to the server (one way)
+
+groups:
+  - {id: campus, label: Campus, kind: site}
+  - {id: ring, label: Core ring, kind: site}
+  - {id: siteb, label: Site B, kind: site}
+  - {id: branch, label: Branch, kind: site}
+  - {id: dmz, label: DMZ, kind: site}
+  - {id: lab, label: Lab, kind: site}
+  - {id: iot, label: IoT, kind: site}
+
+devices:
+  # ---------------------------------------------------------------- campus
+  - id: pc1
+    label: User PC
+    type: endpoint
+    group: campus
+    simulation:
+      test_traffic: "on"
+      test_targets: srv tcp/443, srv tcp/22, web tcp/443, web udp/53, 203.0.113.80 icmp
+    interfaces:
+      - {id: eth0, ip: 10.10.10.21/24, multicast: {join: [239.1.1.1]}}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.10.1, name: default gateway (VRRP)}
+  - id: pc2
+    label: Lab PC
+    type: endpoint
+    group: campus
+    interfaces:
+      - id: eth0
+        ip: [10.10.20.22/24, "2001:db8:20::22/64"]
+        multicast:
+          join: [{group: 232.1.1.1, sources: [10.30.0.30]}]
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.20.1, name: default gateway}
+      - {prefix: "::/0", via: "2001:db8:20::1", name: default gateway (IPv6)}
+  - id: acc-sw
+    label: acc-sw
+    type: switch
+    group: campus
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
+    interfaces:
+      - {id: p1, vlans: 10}
+      - {id: p2, vlans: 20}
+      - {id: p3, vlans: 30}
+      - {id: up1, vlans: [10, 20, 99]}
+      - {id: up2, vlans: 10, simulation: {flapping: "on"}}   # the flapping uplink (with l-acc-core2)
+    logical_interfaces:
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.10/24, description: management}
+    simulation: {mac_aging: 120}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.99.0.1, name: management gateway}
+  - id: core1
+    type: switch
+    layer3: true
+    group: campus
+    router_id: lo0
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
+    simulation: {arp_timeout: 300}
+    protocols:
+      ospf: {}
+      vrrp: {}
+      pim: {mode: sparse}
+    interfaces:
+      - {id: down1, vlans: [10, 20, 99]}
+      - {id: peer, vlans: 10}
+      - {id: ge1, routed: true, ip: 10.0.1.1/30, mac: "02:00:00:c1:00:01"}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.1.1/32}
+      - id: Vlan10
+        type: virtual
+        vlan: 10
+        ip: 10.10.10.2/24
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.10.10.1, priority: 200}
+        simulation: {pim_dr_priority: 200}
+      - id: Vlan20
+        type: virtual
+        vlan: 20
+        ip: [10.10.20.1/24, "2001:db8:20::1/64"]
+        simulation: {pim_dr_priority: 200}
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.1/24}
+  - id: core2
+    type: switch
+    layer3: true
+    group: campus
+    router_id: lo0
+    protocols:
+      ospf: {}
+      vrrp: {}
+      pim: {mode: sparse}
+    igmp_mld_snooping: {10: enabled}
+    interfaces:
+      - {id: down1, vlans: 10}
+      - {id: peer, vlans: 10}
+      - {id: ge1, routed: true, ip: 10.0.2.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.1.2/32}
+      - id: Vlan10
+        type: virtual
+        vlan: 10
+        ip: 10.10.10.3/24
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.10.10.1, priority: 100}
+
+  # ---------------------------------------------------------------- ring
+  - id: r1
+    type: router
+    group: ring
+    router_id: lo0
+    protocols:
+      ospf: {}
+      bgp: {asn: 65001}
+      bfd: {}
+      pim: {mode: sparse}
+    interfaces:
+      - {id: ge0, ip: 10.0.1.2/30, mac: "02:00:00:01:00:00"}
+      - {id: ge1, ip: 10.0.12.1/30, mac: "02:00:00:01:00:01"}
+      - {id: ge2, ip: 10.0.13.1/30, mac: "02:00:00:01:00:02", mtu: 1400}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+  - id: r2
+    type: router
+    group: ring
+    router_id: lo0
+    protocols:
+      ospf: {}
+      bfd: {}
+      pim: {mode: sparse}
+    interfaces:
+      - {id: ge0, ip: 10.0.2.2/30}
+      - {id: ge1, ip: 10.0.12.2/30}
+      - {id: ge2, ip: 10.0.23.1/30}
+      - {id: wan, ip: 192.0.2.1/29, description: internet uplink}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+      - {id: Tunnel1, type: tunnel, ip: 172.16.0.1/30, mtu: 1400, source: wan, destination: 192.0.2.2}
+  - id: r3
+    type: router
+    group: ring
+    router_id: lo0
+    protocols:
+      ospf: {}
+      bgp: {asn: 65001}
+      pim: {mode: sparse}
+    interfaces:
+      - {id: ge0, ip: 10.0.13.2/30, mtu: 1400}
+      - {id: ge1, ip: 10.0.23.2/30}
+      - {id: ge2, ip: 10.30.0.1/24}
+      - {id: ge3, ip: 10.0.35.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.3/32}
+  - id: carrier
+    label: carrier switch
+    type: switch
+    group: ring
+    igmp_mld_snooping: {1: enabled}
+    interfaces: [{id: c1, vlans: 1}, {id: c2, vlans: 1}]
+
+  # ---------------------------------------------------------------- site B
+  - id: srv
+    label: App server
+    type: server
+    group: siteb
+    simulation: {listening: tcp/443}
+    interfaces:
+      - {id: eth0, ip: 10.30.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.30.0.1, name: default gateway}
+  - id: mcsrc
+    label: Video source
+    type: server
+    group: siteb
+    interfaces:
+      - id: eth0
+        ip: 10.30.0.30/24
+        multicast:
+          streams:
+            - {group: 239.1.1.1, port: 5004, interval: 2s}
+            - {group: 232.1.1.1, port: 5006, interval: 2s}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.30.0.1, name: default gateway}
+  - id: pc3
+    label: IoT display
+    type: endpoint
+    group: iot
+    interfaces:
+      - {id: eth0, ip: 10.10.30.23/24, multicast: {join: [239.1.1.1]}}
+  - id: rx
+    label: Video receiver
+    type: endpoint
+    group: siteb
+    interfaces:
+      - {id: eth0, ip: 10.30.0.20/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.30.0.1, name: default gateway}
+  - id: b-sw
+    label: b-sw
+    type: switch
+    group: siteb
+    igmp_mld_snooping: {1: enabled}
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]
+  - id: fw1
+    label: DMZ firewall
+    type: firewall
+    group: dmz
+    router_id: 10.0.35.2
+    simulation: {default_action: reject, allow: tcp/443}
+    protocols:
+      ospf: {}
+    interfaces:
+      - {id: outside, ip: 10.0.35.2/30}
+      - {id: dmz, ip: 10.50.0.1/24}
+  - id: web
+    label: DMZ web server
+    type: server
+    group: dmz
+    simulation: {listening: tcp/443}
+    interfaces:
+      - {id: eth0, ip: 10.50.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.50.0.1, name: default gateway}
+
+  # ---------------------------------------------------------------- lab: a loop without spanning tree
+  - id: lab-sw1
+    type: switch
+    group: lab
+    igmp_mld_snooping: {1: enabled}
+    simulation: {stp_mode: "off"}
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
+  - id: lab-sw2
+    type: switch
+    group: lab
+    igmp_mld_snooping: {1: enabled}
+    simulation: {stp_mode: "off"}
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]
+  - id: lab-h
+    label: Lab host
+    type: server
+    group: lab
+    interfaces:
+      - {id: eth0, ip: 10.60.0.10/24}
+
+  # ---------------------------------------------------------------- branch
+  - id: inet
+    label: Internet
+    type: cloud
+    simulation: {latency: 15}
+    interfaces: [a, b]
+  - id: br
+    label: branch router
+    type: router
+    group: branch
+    router_id: lo0
+    protocols:
+      ospf: {}
+      pim: {mode: sparse}
+    interfaces:
+      - {id: wan, ip: 192.0.2.2/29}
+      - {id: lan, ip: 10.40.0.1/24}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.4/32}
+      - {id: Tunnel1, type: tunnel, ip: 172.16.0.2/30, mtu: 1400, source: wan, destination: 192.0.2.1}
+  - id: cam
+    label: Camera
+    type: endpoint
+    group: branch
+    interfaces:
+      - {id: eth0, ip: 10.40.0.20/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.40.0.1, name: default gateway}
+
+links:
+  # campus: the access switch on trunks to both core switches, the cores joined too (a loop STP breaks)
+  - {id: l-pc1, a: "pc1:eth0", b: acc-sw:p1, medium: copper, speed: 1G}
+  - {id: l-pc2, a: "pc2:eth0", b: acc-sw:p2, medium: copper, speed: 1G}
+  - id: l-acc-core1
+    a: acc-sw:up1
+    b: core1:down1
+    medium: fiber
+    speed: 10G
+  - id: l-acc-core2
+    a: acc-sw:up2
+    b: core2:down1
+    medium: fiber
+    speed: 10G
+    label: flapping uplink
+  - id: l-core-peer
+    a: core1:peer
+    b: core2:peer
+    medium: fiber
+    speed: 10G
+  - {id: l-core1-r1, a: "core1:ge1", b: "r1:ge0", medium: fiber, speed: 10G}
+  - {id: l-core2-r2, a: "core2:ge1", b: "r2:ge0", medium: fiber, speed: 10G}
+  # the ring: r1 – r3 (preferred, through the carrier's switch), r1 – r2 and r2 – r3
+  - {id: l-r1-carrier, a: "r1:ge2", b: "carrier:c1", medium: fiber, speed: 10G, label: carrier A}
+  - {id: l-carrier-r3, a: "carrier:c2", b: "r3:ge0", medium: fiber, speed: 10G, label: carrier B}
+  - {id: l-r1-r2, a: "r1:ge1", b: "r2:ge1", medium: fiber, speed: 10G}
+  - {id: l-r2-r3, a: "r2:ge2", b: "r3:ge1", medium: fiber, speed: 10G}
+  # site B
+  - {id: l-r3-bsw, a: "r3:ge2", b: "b-sw:p1", medium: copper, speed: 10G}
+  - {id: l-srv, a: "srv:eth0", b: "b-sw:p2", medium: copper, speed: 10G}
+  - {id: l-rx, a: "rx:eth0", b: "b-sw:p3", medium: copper, speed: 1G}
+  - {id: l-mcsrc, a: "mcsrc:eth0", b: "b-sw:p4", medium: copper, speed: 1G}
+  - {id: l-pc3, a: "pc3:eth0", b: acc-sw:p3, medium: copper, speed: 1G}
+  - {id: l-r3-fw1, a: "r3:ge3", b: "fw1:outside", medium: copper, speed: 1G}
+  - {id: l-web, a: "fw1:dmz", b: "web:eth0", medium: copper, speed: 1G}
+  # the lab: two cables between two switches without spanning tree
+  - {id: l-lab-a, a: "lab-sw1:p1", b: "lab-sw2:p1", medium: copper, speed: 1G}
+  - {id: l-lab-b, a: "lab-sw1:p2", b: "lab-sw2:p2", medium: copper, speed: 1G}
+  - {id: l-lab-h, a: "lab-h:eth0", b: "lab-sw1:p3", medium: copper, speed: 1G}
+  # the branch behind the internet
+  - {id: l-r2-inet, a: "r2:wan", b: "inet:a", medium: fiber, speed: 1G}
+  - {id: l-inet-br, a: "inet:b", b: "br:wan", medium: fiber, speed: 1G}
+  - {id: l-cam, a: "cam:eth0", b: "br:lan", medium: copper, speed: 1G}
+
+networks:
+  - {id: net-users, label: Users, cidr: 10.10.10.0/24, vlan: 10}
+  - {id: net-lab, label: Lab, cidr: 10.10.20.0/24, vlan: 20}
+  - {id: net-lab6, label: Lab (IPv6), cidr: "2001:db8:20::/64", vlan: 20}
+  - {id: net-mgmt, label: Management, cidr: 10.99.0.0/24, vlan: 99}
+  - {id: net-siteb, label: Site B, cidr: 10.30.0.0/24}
+  - {id: net-branch, label: Branch LAN, cidr: 10.40.0.0/24}
+  - {id: net-wan, label: Internet transfer, cidr: 192.0.2.0/29}
+  - {id: net-dmz, label: DMZ, cidr: 10.50.0.0/24}
+  - {id: net-labloop, label: Lab loop, cidr: 10.60.0.0/24}
+  - {id: net-iot, label: IoT (no router), cidr: 10.10.30.0/24, vlan: 30}
+
+relations:
+  - {id: stp-campus, protocol: stp, label: RSTP, endpoints: [acc-sw, core1, core2]}
+  - {id: vrrp-users, protocol: vrrp, label: VIP 10.10.10.1, endpoints: ["core1:Vlan10", "core2:Vlan10"], over: net-users}
+  - id: ospf-cores
+    protocol: ospf
+    label: core LAN
+    endpoints: ["core1:Vlan10", "core2:Vlan10"]
+    over: net-users
+    attrs: {area: 0, cost: 20}
+  - {id: ospf-core1-r1, protocol: ospf, endpoints: ["core1:ge1", "r1:ge0"], over: l-core1-r1, attrs: {area: 0, cost: 10}}
+  - {id: ospf-core2-r2, protocol: ospf, endpoints: ["core2:ge1", "r2:ge0"], over: l-core2-r2, attrs: {area: 0, cost: 10}}
+  - id: ospf-r1-r3
+    protocol: ospf
+    label: preferred
+    endpoints: ["r1:ge2", "r3:ge0"]
+    over: [l-r1-carrier, l-carrier-r3]
+    attrs: {area: 0, cost: 10}
+  - {id: ospf-r1-r2, protocol: ospf, endpoints: ["r1:ge1", "r2:ge1"], over: l-r1-r2, attrs: {area: 0, cost: 20}}
+  - {id: ospf-r2-r3, protocol: ospf, endpoints: ["r2:ge2", "r3:ge1"], over: l-r2-r3, attrs: {area: 0, cost: 20}}
+  - {id: bfd-r1-r2, protocol: bfd, endpoints: ["r1:ge1", "r2:ge1"], over: l-r1-r2, attrs: {interval: 300ms, multiplier: 3}}
+  - {id: ibgp-r1-r3, protocol: bgp, label: iBGP loopbacks, endpoints: ["r1:lo0", "r3:lo0"]}
+  - {id: ipsec-br, protocol: ipsec, label: IKEv2, endpoints: ["r2:wan", "br:wan"], over: [l-r2-inet, l-inet-br]}
+  - {id: gre-br, protocol: gre, endpoints: ["r2:Tunnel1", "br:Tunnel1"], over: ipsec-br, attrs: {keepalive: "10 3"}}
+  - {id: ospf-br, protocol: ospf, label: over GRE, endpoints: ["r2:Tunnel1", "br:Tunnel1"], over: gre-br, attrs: {area: 0, cost: 50}}
+  - {id: pim-core1-r1, protocol: pim, endpoints: ["core1:ge1", "r1:ge0"], over: l-core1-r1, attrs: {rp: r1}}
+  - {id: pim-cores, protocol: pim, label: users LAN, endpoints: ["core1:Vlan10", "core2:Vlan10"], over: net-users}
+  - {id: pim-core2-r2, protocol: pim, endpoints: ["core2:ge1", "r2:ge0"], over: l-core2-r2}
+  - {id: pim-r1-r2, protocol: pim, endpoints: ["r1:ge1", "r2:ge1"], over: l-r1-r2}
+  - {id: pim-r1-r3, protocol: pim, endpoints: ["r1:ge2", "r3:ge0"], over: [l-r1-carrier, l-carrier-r3]}
+  - {id: pim-r2-r3, protocol: pim, endpoints: ["r2:ge2", "r3:ge1"], over: l-r2-r3}
+  - {id: pim-br, protocol: pim, endpoints: ["r2:Tunnel1", "br:Tunnel1"], over: gre-br}
+  - {id: igmp-rx, protocol: igmp, endpoints: ["rx:eth0", "r3:ge2"], over: net-siteb, attrs: {group: 239.1.1.1}}
+  - {id: ospf-r3-fw1, protocol: ospf, endpoints: ["r3:ge3", "fw1:outside"], over: l-r3-fw1, attrs: {area: 0, cost: 10}}
+  - {id: telemetry-cam, protocol: telemetry, direction: unidirectional, endpoints: ["cam:eth0", "srv:eth0"]}
+
+demands:
+  - {id: users-app, label: Users to the app server, source: pc1, destination: srv, bandwidth: 200M, class: business}
+  - {id: lab-v6, label: Lab PC to its gateway (IPv6), source: pc2, destination: "2001:db8:20::1", bandwidth: 10M}
+  - {id: cam-video, label: Camera multicast, source: cam, destination: 239.1.1.1, bandwidth: 8M, class: video}

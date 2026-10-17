@@ -1,0 +1,130 @@
+# netatlas example: static routing and VLANs at a dual-homed branch.
+#
+# * The branch router has two uplinks. Its default route goes to ISP A; a
+#   floating default (distance 250) to ISP B takes over when ISP A's next hop
+#   can't be reached.
+# * HQ is reached over both ISPs at once: two routes with the same distance
+#   (equal-cost multipath), and HQ does the same towards the branch.
+# * A blackhole route drops the benchmark prefix; the guest VRF has a
+#   blackhole default (guests get no further than the branch).
+# * Hosts have a default gateway: a static route to 0.0.0.0/0.
+# * Router on a stick: the router's port ge-0/0/2 is a routed port (its own
+#   address is in the management VLAN 99) with a subinterface per VLAN
+#   (ge-0/0/2.10, .20, .30: tagged). The switch's port Gi1/0/1 is a trunk of
+#   VLANs 10, 20, 30 and 99, native 99 (untagged); the access ports are in
+#   one VLAN each.
+netatlas: 1
+title: Branch routing and VLANs
+description: |
+  A dual-homed branch: floating static default route, equal-cost routes to
+  HQ, a blackhole, a guest VRF, host default gateways, and a trunk with a
+  native VLAN between the router and the access switch.
+
+groups:
+  - {id: branch, label: Branch office, kind: site}
+  - {id: hq, label: Headquarters, kind: site}
+  - {id: isp-a, label: ISP A, kind: provider}
+  - {id: isp-b, label: ISP B, kind: provider}
+
+devices:
+  - id: br-rtr
+    label: Branch router
+    type: router
+    group: branch
+    interfaces:
+      - {id: wan1, ip: 198.51.100.2/30, description: ISP A}
+      - {id: wan2, ip: 203.0.113.6/30, description: ISP B}
+      - {id: ge-0/0/2, ip: 10.20.99.1/24, description: trunk to the access switch (VLAN 99 untagged)}
+    logical_interfaces:
+      - {id: ge-0/0/2.10, type: virtual, vlan: 10, ip: 10.20.10.1/24, label: Users}
+      - {id: ge-0/0/2.20, type: virtual, vlan: 20, ip: 10.20.20.1/24, label: Voice}
+      - {id: ge-0/0/2.30, type: virtual, vlan: 30, ip: 10.20.30.1/24, vrf: GUEST, label: Guests}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 198.51.100.1, name: default via ISP A}
+      - {prefix: 0.0.0.0/0, via: 203.0.113.5, distance: 250, name: floating default via ISP B}
+      - {prefix: 10.10.0.0/16, via: 198.51.100.1, distance: 10, name: HQ via ISP A}
+      - {prefix: 10.10.0.0/16, via: 203.0.113.5, distance: 10, name: HQ via ISP B}
+      - {prefix: 198.18.0.0/15, blackhole: true, name: benchmark range}
+      - {prefix: 0.0.0.0/0, vrf: GUEST, blackhole: true, name: guests stay local}
+  - id: br-sw
+    label: Access switch
+    type: switch
+    group: branch
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
+    interfaces: [{id: Gi1/0/1, vlans: [10, 20, 30, 99], native: 99}, {id: Gi1/0/2, vlans: 10}, {id: Gi1/0/3, vlans: 20}]
+    logical_interfaces:
+      - {id: Vlan99, type: virtual, ip: 10.20.99.2/24, label: Management}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.99.1, name: default gateway}
+  - id: pc1
+    label: Office PC
+    type: endpoint
+    group: branch
+    interfaces:
+      - {id: eth0, ip: 10.20.10.50/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.10.1, name: default gateway}
+  - id: phone1
+    label: Desk phone
+    type: endpoint
+    group: branch
+    interfaces:
+      - {id: eth0, ip: 10.20.20.30/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.20.1}
+  - id: isp-a-pe
+    label: ISP A edge
+    type: router
+    group: isp-a
+    interfaces:
+      - {id: ge-0/0/1, ip: 198.51.100.1/30}
+      - {id: ge-0/0/2, ip: 198.51.100.9/30}
+    routes:
+      - {prefix: 10.20.0.0/16, via: 198.51.100.2, name: branch}
+      - {prefix: 10.10.0.0/16, via: 198.51.100.10, name: HQ}
+  - id: isp-b-pe
+    label: ISP B edge
+    type: router
+    group: isp-b
+    interfaces:
+      - {id: ge-0/0/1, ip: 203.0.113.5/30}
+      - {id: ge-0/0/2, ip: 203.0.113.9/30}
+    routes:
+      - {prefix: 10.20.0.0/16, via: 203.0.113.6, name: branch}
+      - {prefix: 10.10.0.0/16, via: 203.0.113.10, name: HQ}
+  - id: hq-rtr
+    label: HQ router
+    type: router
+    group: hq
+    interfaces:
+      - {id: wan1, ip: 198.51.100.10/30}
+      - {id: wan2, ip: 203.0.113.10/30}
+      - {id: lan0, ip: 10.10.0.1/24}
+    routes:
+      - {prefix: 10.20.0.0/16, via: 198.51.100.9, name: branch via ISP A}
+      - {prefix: 10.20.0.0/16, via: 203.0.113.9, name: branch via ISP B}
+
+links:
+  - {id: br-isp-a, a: "br-rtr:wan1", b: "isp-a-pe:ge-0/0/1", medium: fiber, speed: 1G}
+  - {id: br-isp-b, a: "br-rtr:wan2", b: "isp-b-pe:ge-0/0/1", medium: lte, speed: 150M}
+  - {id: hq-isp-a, a: "hq-rtr:wan1", b: "isp-a-pe:ge-0/0/2", medium: fiber, speed: 10G}
+  - {id: hq-isp-b, a: "hq-rtr:wan2", b: "isp-b-pe:ge-0/0/2", medium: fiber, speed: 10G}
+  # router on a stick: the routed port's subinterfaces tag 10, 20 and 30; the switch's trunk has 99 as its native VLAN
+  - id: br-trunk
+    a: br-rtr:ge-0/0/2
+    b: br-sw:Gi1/0/1
+    medium: copper
+    speed: 1G
+  - {id: br-pc1, a: br-sw:Gi1/0/2, b: "pc1:eth0", medium: copper, speed: 1G}
+  - {id: br-phone1, a: br-sw:Gi1/0/3, b: "phone1:eth0", medium: copper, speed: 1G}
+
+networks:
+  - {id: br-users, label: Branch users, cidr: 10.20.10.0/24, vlan: 10}
+  - {id: br-voice, label: Branch voice, cidr: 10.20.20.0/24, vlan: 20}
+  - {id: br-guest, label: Branch guests, cidr: 10.20.30.0/24, vlan: 30}
+  - {id: br-mgmt, label: Branch management, cidr: 10.20.99.0/24, vlan: 99}
+  - {id: wan-a, label: Branch – ISP A, cidr: 198.51.100.0/30}
+  - {id: wan-b, label: Branch – ISP B, cidr: 203.0.113.4/30}
+  - {id: hq-a, label: HQ – ISP A, cidr: 198.51.100.8/30}
+  - {id: hq-b, label: HQ – ISP B, cidr: 203.0.113.8/30}
+  - {id: hq-lan, label: HQ LAN, cidr: 10.10.0.0/24}

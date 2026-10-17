@@ -1,53 +1,133 @@
+/* Design tokens. Every colour of the application and of the diagram comes from
+   these; the two themes define the same names. The theme in effect is the
+   `data-theme` attribute of <html> ("light" or "dark"), set before the first
+   paint from the user's choice; without it the tokens are the dark ones, the
+   default (see ui/theme.ts). Contrast (WCAG 2.2 AA): text and
+   muted text at least 4.5:1 on every surface they are used on; control
+   boundaries (--control-border), focus rings (--accent), selection (--sel) and
+   diagram lines (--dev-stroke, --group-stroke, --member) at least 3:1 against
+   the canvas and the panels. test/theme.test.mjs checks the pairs. */
+/* The stacking order: one scale for every z-index of the application, lowest first. Nothing uses a
+   number of its own; a step may be raised by a little (+ 1, + 2) within its own layer only.
+
+     --z-overlay   diagram overlays: the simulation border and label, the mode banner, the find and
+                   connect bars, hints over the diagram (the diagram itself and its dots are below: 0)
+     --z-panel     the side panels, the simulation panel, their splitters, tool windows
+     --z-toolbar   the toolbar, with the menus and panels that open from it (the main menus and
+                   submenus, the diagram filters)
+     --z-menu      menus and popovers at the page level: the in-diagram menus, the device tables and
+                   the packet inspector, the search results, combo-box lists, the tabs' menu
+     --z-tooltip   tooltips and tips
+     --z-dialog    dialogs (a modal <dialog> is in the browser's top layer anyway)
+     --z-announce  announcements (the toast), the self-test report
+
+   A higher layer is always in front: a menu opened over the diagram in a simulation is above the
+   simulation border, which never catches a click (pointer-events: none).
+
+   Why the regions have explicit layers: the toolbar, the diagram and the simulation panel use container
+   queries, and `container-type` makes an element a stacking context (layout containment). A z-index
+   inside one then counts only within it: the menus inside the toolbar (z-index 20 then) were painted
+   under the diagram's frame (24, inside the diagram, which comes later in the page), whatever their
+   number. So these regions take their layer themselves: the diagram 0 (its overlays inside it),
+   the simulation panel --z-panel, the toolbar --z-toolbar (its menus, inside it, above every panel and
+   overlay). Fixed popovers at the page level (the in-diagram menus, the device tables, the packet
+   inspector) are on --z-menu. The side panels are no stacking contexts, so that what opens from them
+   (a combo list, the tabs' menu) reaches its own layer. Within one component, small local orders
+   (0–3: the segments of a button group, the YAML editor's highlight) stay below every layer.
+   test/zorder.test.mjs checks the order in a running simulation. */
 :root {
+  --z-overlay: 10;
+  --z-panel: 20;
+  --z-toolbar: 30;
+  --z-menu: 40;
+  --z-tooltip: 50;
+  --z-dialog: 60;
+  --z-announce: 70;
+}
+:root[data-theme="light"] {
+  /* surfaces: the page, panels, the diagram, and raised layers (menus, dialogs, tooltips) */
   --bg: #f6f7f9;
   --panel: #ffffff;
   --canvas: #fbfcfd;
+  --raised: #ffffff;
   --grid: #e9ecef;
   --text: #1f2328;
-  --muted: #667085;
+  --muted: #5f6879;
+  /* separators and decorative outlines (not a control's only boundary) */
   --border: #d0d7de;
+  /* the boundary of an input, select or button: 3:1 against the panels */
+  --control-border: #848d97;
+  /* the dashed frames of the toolbar groups: at least 3:1 against the toolbar, so a group reads as one */
+  --frame: #848d97;
   --accent: #1864ab;
   --accent-soft: #e7f0fa;
+  /* the part of the Edit tab that belongs to the selection: a tint and a bar (3:1 against the panel) */
+  --marked-bg: #f4f8fd;
+  --marked-bar: #1864ab;
+  /* text and icons on a filled accent / danger control */
+  --on-accent: #ffffff;
+  --link: #1864ab;
   --dev-fill: #ffffff;
-  --dev-stroke: #8c959f;
+  --dev-stroke: #848d97;
   --icon: #343a40;
   --group-fill: rgba(27, 31, 36, 0.025);
   --group-strong-fill: rgba(24, 100, 171, 0.045);
-  --group-stroke: #b6bec8;
+  --group-stroke: #868e96;
   --halo: #fbfcfd;
-  --member: #adb5bd;
+  --member: #868e96;
   --pill: #ffffff;
   --error: #c92a2a;
   --warn: #b35900;
-  --sel: #f59f00;
-  --ok: #2b8a3e;
+  --sel: #d9730d;
+  --trace: #a61e8a;
+  /* a simulated state: the frame around the diagram, its badge and banner (with a pattern and words, not colour alone) */
+  --sim: #5f3dc4;
+  --sim-soft: #f3f0ff;
+  --ok: #2a7d3a;
+  --shadow: rgba(0, 0, 0, 0.16);
+  --backdrop: rgba(0, 0, 0, 0.35);
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111418;
-    --panel: #171b21;
-    --canvas: #0d1014;
-    --grid: #1c2129;
-    --text: #e6e9ee;
-    --muted: #97a1ad;
-    --border: #2d333b;
-    --accent: #74c0fc;
-    --accent-soft: #1a2837;
-    --dev-fill: #1b2028;
-    --dev-stroke: #56606c;
-    --icon: #ced4da;
-    --group-fill: rgba(255, 255, 255, 0.025);
-    --group-strong-fill: rgba(116, 192, 252, 0.05);
-    --group-stroke: #3a424d;
-    --halo: #0d1014;
-    --member: #56606c;
-    --pill: #1b2028;
-    --error: #ff8787;
-    --ok: #69db7c;
-    --warn: #ffc078;
-    color-scheme: dark;
-  }
+/* Dark: dark grey surfaces (never pure black) that get lighter as they rise
+   (canvas < page < panel < raised), off-white text, and calmer, less
+   saturated accent and status colours that keep their meaning. */
+:root, :root[data-theme="dark"] {
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --bg: #1a1e24;
+  --panel: #20252c;
+  --canvas: #15181d;
+  --raised: #282e36;
+  --grid: #262b33;
+  --text: #e3e6ea;
+  --muted: #9ba4ae;
+  --border: #353c45;
+  --control-border: #737d88;
+  --frame: #737d88;
+  --accent: #7fb2e5;
+  --accent-soft: #22303f;
+  --marked-bg: #22303f;
+  --marked-bar: #7fb2e5;
+  --on-accent: #15181d;
+  --link: #7fb2e5;
+  --dev-fill: #20252c;
+  --dev-stroke: #7a838e;
+  --icon: #c9cfd6;
+  --group-fill: rgba(255, 255, 255, 0.025);
+  --group-strong-fill: rgba(127, 178, 229, 0.05);
+  --group-stroke: #737d88;
+  --halo: #15181d;
+  --member: #737d88;
+  --pill: #20252c;
+  --error: #f08a8a;
+  --warn: #e0b07a;
+  --sel: #e3a857;
+  --trace: #f38bd9;
+  --sim: #b197fc;
+  --sim-soft: #2a2540;
+  --ok: #7cc68a;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 /* The application shell is exactly as large as the browser viewport, whatever
@@ -76,14 +156,15 @@ button, select {
   cursor: pointer;
 }
 button:hover:not(:disabled), select:hover { border-color: var(--accent); }
+select { border-color: var(--control-border); }
 button:disabled { opacity: 0.45; cursor: default; }
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { button.primary { color: #0d1014; } }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
 
 .topbar {
+  position: relative; z-index: var(--z-toolbar);
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   /* the toolbar compacts itself by its own width (below), so the diagram filters keep the first row */
   container-type: inline-size;
@@ -103,17 +184,19 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; }
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; white-space: nowrap; }
-/* a narrower toolbar: the logo without name and version, Auto-arrange as its status icon (the name stays its title and accessible name) */
-@container (max-width: 1180px) {
+/* a narrower toolbar: the logo without name and version (the Auto-arrange label sits above its buttons, so it takes no width and stays) */
+@container (max-width: 1700px) {
   .brand > span { display: none; }
 }
-@container (max-width: 1000px) {
-  .arrange-btn .arrange-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .arrange-btn .arrange-icon:empty { display: inline-block; }
-  .arrange-btn .arrange-icon:empty::before { content: "\21BB"; }
+/* a very narrow toolbar: the menus' carets go (decorative: each menu button says it opens a menu, aria-haspopup) */
+@container (max-width: 700px) {
+  .menu-btn .caret { display: none; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
-.view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 0; flex-wrap: nowrap; }
+/* the slot takes the rest of the toolbar row and holds the framed Filters group at its right end */
+.filters-slot { display: flex; justify-content: flex-end; flex: 1 1 0; min-width: 0; }
+.filters-group { flex: 0 1 auto; min-width: 0; }
+.view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; min-height: 26px; }
 .view-filters > * { flex: none; }
 .more-filters-wrap { position: relative; }
 .more-filters-wrap > button[hidden] { display: none; }
@@ -123,23 +206,30 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .more-filters[hidden] { display: none; }
 .more-filters .opt { color: var(--text); min-height: 24px; }
 .more-filters .opt input { width: 16px; height: 16px; }
-/* Find (View → Find…, "/"): a bar over the top right of the diagram */
-.find-bar { position: absolute; top: 10px; right: 12px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 14px rgba(0, 0, 0, .14); }
+/* Find (Find → Find in diagram…, "/"): a bar over the top right of the diagram */
+.find-bar { position: absolute; top: 10px; right: 12px; z-index: calc(var(--z-overlay) + 2); display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); }
 .find-bar[hidden] { display: none; }
 .find-bar #search { flex: 1; min-width: 0; width: auto; }
-.find-bar #search-results { position: fixed; z-index: 45; margin-top: 0; min-width: 0; max-width: none; }
-/* the outline filter (View → Filter outline…) */
+.find-bar #search-results { position: fixed; z-index: var(--z-menu); margin-top: 0; min-width: 0; max-width: none; }
+/* the canvas region is its own layer (0): while the find results are open it rises to the menu layer, so the results (fixed, possibly reaching over the side panel at narrow widths) stay above the panels */
+#canvas-wrap:has(#search-results:not([hidden])) { z-index: var(--z-menu); }
+/* the outline filter (Find → Filter object list…) */
 .ol-filter { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
 .ol-filter .outline-filter { flex: 1; min-width: 0; margin: 0; }
 .ol-filter.active .outline-filter { border-color: var(--accent); }
 body:not([data-view="logical"]) .logical-only { display: none; }
 /* Devices filter: a button with a checkbox panel, in the top-right diagram controls */
 .devices-wrap { position: relative; }
-#devices-btn.filtered { border-color: var(--accent); color: var(--accent); }
+#devices-btn.filtered, #types-btn.filtered { border-color: var(--accent); color: var(--accent); }
+/* Device types filter: the same look as Devices */
+.types-wrap { position: relative; }
+.types-panel { width: 250px; }
+.dp-list label.tp-sub { padding-left: 22px; }
+.tp-count { margin-left: auto; flex: none; min-width: 2ch; text-align: right; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .devices-panel { right: 0; left: auto; width: 290px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .devices-panel[hidden] { display: none; }
 .dp-tools { display: flex; gap: 4px; align-items: center; }
-.dp-tools input { flex: 1; min-width: 0; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); color: var(--text); }
+.dp-tools input { flex: 1; min-width: 0; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); color: var(--text); }
 .dp-list { max-height: min(55vh, 420px); overflow: auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: var(--canvas); }
 .dp-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12.5px; overflow-wrap: anywhere; cursor: pointer; }
 .dp-list label[hidden] { display: none; }
@@ -150,15 +240,61 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .devices-panel > .dp-list { padding: 4px 6px; }
 .devices-panel .dp-tools button { width: auto; flex: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px; }
 /* subtle, accessible note while a filtered view is shown (outside the SVG: never exported) */
-.filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12); pointer-events: none; }
+.filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px var(--shadow); pointer-events: none; }
 .filter-hint[hidden] { display: none; }
+/* an analysis mode (focus): a banner across the top of the diagram, with its controls; the overlays below it move down */
+.mode-banner { position: absolute; top: 0; left: 0; right: 0; z-index: calc(var(--z-overlay) + 1); display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; border-bottom: 2px solid var(--accent); background: var(--accent-soft); color: var(--text); font-size: 12.5px; }
+.mode-banner[hidden], .mode-banner .mb-row[hidden] { display: none; }
+.mode-banner .mb-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.mode-banner .mb-row + .mb-row { border-top: 1px solid var(--border); padding-top: 4px; }
+.mode-banner .mb-icon { font-size: 15px; color: var(--accent); }
+.mode-banner .mb-text { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+.mode-banner .mb-hops { display: inline-flex; align-items: center; gap: 4px; }
+.mode-banner .mb-count { min-width: 3.6em; text-align: center; font-weight: 600; }
+body:not([data-mode="none"]) .find-bar, body:not([data-mode="none"]) .filter-hint { top: calc(var(--mode-banner-h, 40px) + 8px); }
+
+/* ---- path trace: the path, its equal-cost alternatives, the return path and where it stops, by line style and weight (not colour alone) */
+.has-trace .trace-off { opacity: .22; transition: opacity .15s; }
+.has-trace .group.trace-off, .has-trace .group-label.trace-off { opacity: .5; }
+.has-trace .trace-main .dev-box, .has-trace .trace-main .net-box { stroke: var(--trace) !important; stroke-width: 4 !important; }
+.has-trace .trace-alt .dev-box, .has-trace .trace-alt .net-box { stroke: var(--trace) !important; stroke-width: 3 !important; stroke-dasharray: 7 4; }
+.has-trace .trace-ret .dev-box, .has-trace .trace-ret .net-box { stroke: var(--trace) !important; stroke-width: 3 !important; stroke-dasharray: 1.5 3.5; stroke-linecap: round; }
+.has-trace .trace-stop .dev-box { stroke: var(--error) !important; stroke-width: 6 !important; stroke-dasharray: 12 3 2 3; }
+.has-trace .trace-main .cable-line, .has-trace .trace-main .rel-line, .has-trace .trace-main .tube-outer, .has-trace .trace-main.member { stroke-width: 5 !important; filter: drop-shadow(0 0 2.5px var(--trace)); }
+.has-trace .trace-alt .cable-line, .has-trace .trace-alt .rel-line, .has-trace .trace-alt .tube-outer, .has-trace .trace-alt.member { stroke-width: 3.5 !important; stroke-dasharray: 9 5 !important; filter: drop-shadow(0 0 1.5px var(--trace)); }
+.has-trace .trace-ret .cable-line, .has-trace .trace-ret .rel-line, .has-trace .trace-ret .tube-outer, .has-trace .trace-ret.member { stroke-width: 3.5 !important; stroke-dasharray: 1.5 5 !important; stroke-linecap: round; filter: drop-shadow(0 0 1.5px var(--trace)); }
+.has-trace .trace-main.if-entry rect, .has-trace .trace-main.if-chip rect, .has-trace rect.trace-main.port, .has-trace rect.trace-main.lport, .has-trace .trace-main.lag-mark { stroke: var(--trace) !important; stroke-width: 2.4 !important; }
+.has-trace .trace-alt.if-entry rect, .has-trace .trace-alt.if-chip rect, .has-trace rect.trace-alt.port, .has-trace rect.trace-alt.lport, .has-trace .trace-alt.lag-mark { stroke: var(--trace) !important; stroke-width: 2 !important; stroke-dasharray: 4 2; }
+.has-trace text.trace-main[data-ref^="route:"], .has-trace tspan.trace-main[data-ref^="route:"] { font-weight: 700; text-decoration: underline; }
+/* the note an exported picture carries while an analysis mode is on */
+text.export-note { font: 600 13px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; fill: var(--text); }
+/* the command palette: a search field over the results, near the top of the window */
+dialog#modal.palette-dialog { max-width: 640px; margin-top: min(12vh, 90px); }
+dialog#modal.palette-dialog .modal-inner { padding: 12px 14px 8px; }
+dialog#modal.palette-dialog .modal-inner h2 { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+dialog#modal.palette-dialog .modal-body { max-height: min(60vh, 520px); max-height: min(60dvh, 520px); overflow: hidden; display: flex; flex-direction: column; }
+dialog#modal.palette-dialog .modal-btns { display: none; }
+.palette { display: flex; flex-direction: column; min-height: 0; }
+.palette input { width: 100%; font-size: 15px; padding: 8px 10px; }
+.palette-help { margin: 4px 0 6px; }
+.palette-list { list-style: none; margin: 0; padding: 0; overflow: auto; overscroll-behavior: contain; min-height: 0; }
+.pal-head { padding: 6px 8px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.pal-opt { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+.pal-opt.active { border-color: var(--accent); background: var(--accent-soft); }
+.pal-opt.disabled { cursor: default; }
+.pal-opt.disabled .pal-label { color: var(--muted); }
+.pal-main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.pal-sub { margin-left: 8px; font-size: 11.5px; color: var(--muted); }
+.pal-keys { flex: none; font: 600 11px/1.5 var(--font-mono); padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); }
+.pal-reason { flex: 1 0 100%; font-size: 11.5px; color: var(--muted); font-style: italic; }
+.pal-none { padding: 8px; color: var(--muted); font-size: 12px; }
 .search-wrap { position: relative; }
-#search { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
+#search { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
-  position: absolute; top: 100%; left: 0; z-index: 20; min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
+  position: absolute; top: 100%; left: 0; z-index: var(--z-menu); min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
   max-height: min(360px, calc(100vh - 90px)); max-height: min(360px, calc(100dvh - 90px)); overflow: auto;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  background: var(--raised); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
+  box-shadow: 0 8px 24px var(--shadow);
 }
 .dropdown button { display: flex; gap: 8px; width: 100%; text-align: left; border: 0; padding: 5px 8px; }
 .dropdown button:hover { background: var(--accent-soft); }
@@ -184,18 +320,23 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown.menu .sub-caret { font-size: 10px; }
 .dropdown.menu [aria-expanded="true"] > .sub-caret { transform: rotate(90deg); }
 
-main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
-#canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
+/* the side panel: 480 px by default, or the width chosen with its splitter (--side-w, kept in local storage),
+   never so wide that the diagram has less than 360 px beside the object list (250 px) */
+main { display: grid; grid-template-columns: 250px minmax(0, 1fr) min(var(--side-w, 480px), max(320px, calc(100vw - 610px))); grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
+#canvas-wrap { position: relative; z-index: 0; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 #canvas {
   width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; user-select: none;
   background-image: radial-gradient(var(--grid) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 #canvas.dragging { cursor: grabbing; }
+/* the diagram takes the keyboard focus back from a tool window (F6) and after closing one: a ring inside the diagram area */
+#canvas:focus { outline: none; }
+#canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .zoombar {
   position: absolute; left: 12px; bottom: 12px; display: flex; gap: 4px; align-items: center;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  box-shadow: 0 2px 8px var(--shadow);
 }
 .zoombar button { padding: 2px 9px; }
 #zoom-level { min-width: 44px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -245,16 +386,29 @@ body.dropping #drop-hint { display: flex; }
 body[data-state="empty"].dropping #drop-hint { display: none; }
 
 #tooltip {
-  position: absolute; z-index: 30; pointer-events: none; max-width: 340px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
-  box-shadow: 0 6px 18px rgba(0,0,0,.16); font-size: 12px;
+  position: absolute; z-index: var(--z-tooltip); pointer-events: none; max-width: 340px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  box-shadow: 0 6px 18px var(--shadow); font-size: 12px;
 }
 #tooltip .tt-title { font-weight: 600; }
 #tooltip .tt-line { color: var(--muted); overflow-wrap: anywhere; }
 
-#side { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--panel); border-left: 1px solid var(--border); }
-.tabs { display: flex; flex: none; border-bottom: 1px solid var(--border); }
-.tabs button { flex: 1; border: 0; border-radius: 0; border-bottom: 2px solid transparent; padding: 8px 4px; background: none; color: var(--muted); }
+#side { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--panel); border-left: 1px solid var(--border); }
+/* the splitter: a handle on the panel's left edge, with a visible grip; wider to grab than it looks */
+.splitter { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; z-index: calc(var(--z-panel) + 1); cursor: col-resize; touch-action: none; }
+.splitter::before { content: ""; position: absolute; left: 2px; top: 50%; width: 4px; height: 40px; margin-top: -20px; border-radius: 2px; border-left: 1px solid var(--frame); border-right: 1px solid var(--frame); }
+.splitter:hover::before, .splitter.dragging::before { border-color: var(--accent); background: var(--accent); }
+.splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.splitter:focus-visible::before { border-color: var(--accent); }
+/* the tabs wrap onto a second row rather than being cut off or squeezed: every tab, the active one too, stays whole */
+.tabs { display: flex; flex-wrap: wrap; flex: none; border-bottom: 1px solid var(--border); padding-left: 8px; }
+/* a very short window (see ui/tab-overflow.ts): one row; the tabs that don't fit are in More ▾ */
+.tabs.one-row { flex-wrap: nowrap; }
+.tabs.one-row button[data-tab] { flex: none; }
+.tabs button[data-tab][hidden], .tabs-more[hidden] { display: none; }
+.tabs-more { flex: none; display: flex; margin-left: auto; }
+.tabs-more-menu { position: fixed; z-index: var(--z-menu); min-width: 0; }
+.tabs button { flex: 1 1 auto; white-space: nowrap; border: 0; border-radius: 0; border-bottom: 2px solid transparent; padding: 8px 4px; background: none; color: var(--muted); }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 /* the one scrolling region of the side panel: tabs above and hints below stay in place */
 #side-body { flex: 1 1 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 14px 16px; }
@@ -268,11 +422,11 @@ body[data-state="empty"].dropping #drop-hint { display: none; }
 .keys-group dl > div { display: contents; }
 .keys-group dt { color: var(--text); white-space: nowrap; }
 .keys-group dd { margin: 0; overflow-wrap: anywhere; }
-.keys kbd { font: 10.5px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); color: var(--text); }
+.keys kbd { font: 10.5px/1.3 var(--font-mono); padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); color: var(--text); }
 #side h3 { margin: 4px 0 8px; font-size: 15px; overflow-wrap: anywhere; }
 #side h4 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 /* the ID beside an object's name in its header: selectable on its own (the brackets are not part of the text) */
-.ih-id { margin-left: 6px; font: 500 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); user-select: all; overflow-wrap: anywhere; }
+.ih-id { margin-left: 6px; font: 500 12px var(--font-mono); color: var(--muted); user-select: all; overflow-wrap: anywhere; }
 .ih-id::before { content: "("; user-select: none; }
 .ih-id::after { content: ")"; user-select: none; }
 .badge { align-self: flex-start; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
@@ -284,7 +438,7 @@ table.kv, table.ports { border-collapse: collapse; width: 100%; }
 .ports tr.unused td { color: var(--muted); }
 .reflist { list-style: none; margin: 0; padding: 0; }
 .reflist li { padding: 2px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-button.ref { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; cursor: pointer; }
+button.ref { border: 0; background: none; padding: 0; color: var(--link); text-align: left; cursor: pointer; }
 button.ref:hover { text-decoration: underline; }
 .legend ul { list-style: none; padding: 0; margin: 0; }
 .legend-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
@@ -294,42 +448,70 @@ button.ref:hover { text-decoration: underline; }
 .issues { list-style: none; padding: 0; margin: 12px 0; }
 .issue { border: 1px solid var(--border); border-left: 4px solid var(--error); border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; background: var(--panel); }
 .issue.warning { border-left-color: var(--warn); }
+.issue.info { border-left-color: var(--accent); }
 .issue-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 11.5px; }
 .issue .sev { font-weight: 700; text-transform: uppercase; color: var(--error); }
 .issue.warning .sev { color: var(--warn); }
+.issue.info .sev { color: var(--accent); }
+.issue .check-id { color: var(--muted); font-size: 11px; }
+.issue .check-title { font-weight: 600; }
+.issue .issue-objects { margin-top: 3px; color: var(--muted); }
+.issue-list .check-id { color: var(--muted); font-size: 11px; }
+/* the Problems tab: the file's own problems, then the consistency checks with a severity filter */
+.problems-sec { margin-bottom: 14px; }
+.problems-sec > .fgroup-title { margin: 4px 0 6px; }
+.pr-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.pr-filter .pr-sev[aria-pressed="false"] { color: var(--muted); }
+.pr-filter .pr-sev.active { border-color: var(--accent); }
+.pr-overrides { margin: 0 0 8px; }
+.checks-table select { max-width: 100%; }
+.checks-table .check-id { display: block; overflow-wrap: anywhere; }
+.checks-table tr.changed td:first-child { font-weight: 600; }
 .issue .loc { font-weight: 600; }
 .issue .path { color: var(--muted); }
 .issue .msg { margin-top: 2px; overflow-wrap: anywhere; }
 .issue pre.src { margin: 6px 0 0; padding: 4px 8px; background: var(--canvas); border-radius: 4px; overflow-x: auto; font-size: 12px; }
 #status { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 12px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the open file: a compact badge at the start; a long name is shortened in the middle of the bar, never pushing it wider */
-#status .fname { flex: 0 1 auto; min-width: 4em; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--canvas); color: var(--text); font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 18px; }
+#status .fname { flex: 0 1 auto; min-width: 4em; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--canvas); color: var(--text); font-weight: 600; font-family: var(--font-mono); font-size: 11.5px; line-height: 18px; }
 #status .status-rest { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#selftest { position: fixed; inset: 40px; z-index: 100; overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
+#selftest { position: fixed; inset: 40px; z-index: calc(var(--z-announce) + 1); overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
 /* The model panel (#outline) is always shown. Narrower windows give it and the
    side panel less room; below 860px both move under the diagram, side by side,
    so neither ever lies on top of the diagram or its controls. */
 @media (max-width: 1100px) {
-  main { grid-template-columns: 200px minmax(0, 1fr) 340px; }
+  main { grid-template-columns: 200px minmax(0, 1fr) min(var(--side-w, 400px), max(320px, calc(100vw - 560px))); }
 }
 @media (max-width: 860px) {
   main { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: minmax(0, 1fr) minmax(0, 45%); }
+  /* the menu buttons give up some padding, so File … Help, undo/redo and View still share the first row */
+  .menu-btn { padding-left: 6px; padding-right: 6px; }
   #canvas-wrap { grid-column: 1 / -1; grid-row: 1; }
   #outline { grid-column: 1; grid-row: 2; border-top: 1px solid var(--border); }
   #side { grid-column: 2; grid-row: 2; border-top: 1px solid var(--border); }
+  /* under the diagram the two panels share the row: no splitter */
+  #side-splitter { display: none; }
 }
 /* Short windows (a small or strongly zoomed window): the shortcut help starts
    folded (see App), giving its room to the panel's content, and the toolbar
    gets tighter. */
 @media (max-height: 560px) {
   .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
-  .dropdown.menu { max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); }
+  .dropdown.menu { max-height: calc(100vh - 52px); max-height: calc(100dvh - 52px); }
   #side-body { padding-top: 6px; padding-bottom: 8px; }
+}
+/* Very short windows (a strongly zoomed or tiny window): the toolbar groups keep their frames, and their
+   labels give their height to the diagram; they remain the groups' accessible names. */
+@media (max-height: 400px) {
+  .tool-group { padding-top: 2px; padding-bottom: 2px; gap: 0; }
+  .tool-group-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
 /* ------------------------------------------------------------ diagram */
 .scene text:not([fill]) { fill: var(--text); }
-.scene text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+.scene text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-variant-numeric: tabular-nums; }
+/* addresses and identifiers: the monospace font (kept whole, never wrapped inside) */
+.scene text.addr, .scene tspan.addr { font-family: var(--font-mono); }
 .hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; }
 .group-box { fill: var(--group-fill); stroke: var(--group-stroke); stroke-width: 1.2; }
 .group-strong .group-box, .group-box.group-strong { fill: var(--group-strong-fill); stroke-width: 1.6; }
@@ -340,6 +522,12 @@ button.ref:hover { text-decoration: underline; }
 .device:hover .dev-box { stroke: var(--accent); stroke-width: 2; }
 .dev-label { font-size: 13px; font-weight: 600; }
 .dev-sub { font-size: 10.5px; fill: var(--muted) !important; }
+/* a switch's layer: "L2" / "L3" in a framed badge over the icon's corner (text and frame, not colour) */
+.dev-badge rect { fill: var(--panel); stroke: var(--text); stroke-width: 1; }
+.dev-badge.l3 rect { stroke-width: 1.6; }
+.dev-badge text { font-size: 8.5px; font-weight: 700; fill: var(--text); letter-spacing: 0.2px; }
+/* a DHCP client's lease in a simulation (its reserved line): the simulation's colour, bold; the text says what it is */
+.lease-on { font-weight: 700; fill: var(--sim); }
 .icon { fill: none; stroke: var(--icon); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .swatch .icon { stroke-width: 1.8; }
 .cable-line { fill: none; stroke-linejoin: round; }
@@ -348,6 +536,20 @@ button.ref:hover { text-decoration: underline; }
 .port { stroke: var(--dev-fill); stroke-width: 1.2; cursor: pointer; }
 .halo { paint-order: stroke; stroke: var(--halo); stroke-width: 3.5px; stroke-linejoin: round; }
 .port-label { font-size: 10px; fill: var(--muted) !important; }
+/* the layer-2 tagging of a link end, under its port's name: "U 10 · T 20,30" */
+.port-tag { font-size: 10px; fill: var(--text) !important; cursor: pointer; }
+.has-selection .hl.port-tag, .hover-hl.port-tag { text-decoration: underline; }
+/* static routes (logical view): a route table in the device box, a line per route, and a dotted line to each next hop */
+.if-entry.route-table { cursor: default; }
+.if-entry.route-table rect { stroke: var(--member); stroke-dasharray: 4 2; }
+.if-entry.route-table [data-ref^="route:"] { cursor: pointer; }
+.has-selection tspan.dim, .has-selection text.dim[data-ref^="route:"] { fill-opacity: .25; }
+.has-selection [data-ref^="route:"].hl:not(g), .selected[data-ref^="route:"]:not(g) { font-weight: 700; text-decoration: underline; }
+.next-hop { cursor: pointer; }
+.nh-line { fill: none; stroke: var(--member); stroke-width: 1.3; stroke-dasharray: 1.5 3.5; stroke-linecap: round; }
+.nh-arrow { fill: var(--member); }
+.has-selection .hl .nh-line, .selected .nh-line, .hover-hl .nh-line { stroke: var(--sel); stroke-width: 2; }
+.has-selection .hl .nh-arrow, .selected .nh-arrow { fill: var(--sel); }
 .link-label { font-size: 10.5px; font-weight: 600; }
 .link-label.net-mismatch, .net-warn { fill: var(--warn) !important; }
 .net-warn { font-size: 14px; font-weight: 700; cursor: pointer; }
@@ -368,14 +570,36 @@ button.ref:hover { text-decoration: underline; }
 .pill-box { fill: var(--pill); stroke-width: 1.3; }
 .pill-text { font-size: 10px; font-weight: 600; }
 .pill { cursor: pointer; }
+/* logical view: the port beside the row a relation is bound to (an interface: a solid bar; the device itself: a hollow
+   bar beside its name), and the end label naming the interface (the underlay a tunnel is sourced from on a second
+   line, after "src:"). Told apart by shape and text, not by colour alone. */
+.lport { fill: var(--text); stroke: var(--canvas); stroke-width: 1; cursor: pointer; }
+.lport.dev-port { fill: var(--canvas); stroke: var(--text); stroke-width: 1.4; }
+.end-label { font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; fill: var(--text) !important; cursor: pointer; }
+.end-label [data-field="source"], .end-label[data-field="source"] { font-weight: 400; font-style: italic; fill: var(--muted) !important; }
+/* physical view: an aggregate (LAG / port-channel) is a bracket around its member ports, named by its interface */
+.lag-mark { fill: none; stroke: var(--text); stroke-width: 1.4; cursor: pointer; }
+.lag-label { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; fill: var(--text) !important; cursor: pointer; }
+.port.dev-end { fill: var(--canvas) !important; stroke: var(--text); stroke-width: 1.4; }
+/* a trunk port (several VLANs): larger, with a thick frame in the text colour (its shape says it, not its colour) */
+.port.trunk { stroke: var(--text); stroke-width: 2.2; }
 /* selection / highlight */
 .has-selection .dim { opacity: .16; transition: opacity .15s; }
-.has-selection .group.dim { opacity: .45; }
+.has-selection .group.dim, .has-selection .group-label.dim { opacity: .45; }
 .selected .dev-box, .selected .net-box { stroke: var(--sel) !important; stroke-width: 3 !important; }
 .selected .cable-line, .selected.port { filter: drop-shadow(0 0 3px var(--sel)); }
 .selected .tube-outer, .selected .rel-line { filter: drop-shadow(0 0 3px var(--sel)); }
 .hl .cable-line { filter: drop-shadow(0 0 2px var(--sel)); }
-svg.export { background: var(--canvas); }
+/* the interfaces at the ends of a selected relation or link (and those of a selected interface): their entry, port and end label */
+.has-selection .hl.if-entry rect, .has-selection .hl.if-chip rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
+.has-selection rect.hl.lport, .has-selection rect.hl.port, .has-selection .hl.lag-mark { stroke: var(--sel); stroke-width: 2.2; }
+.has-selection .hl.end-label, .has-selection .hl.lag-label { text-decoration: underline; }
+.selected.lport, .selected.lag-mark { stroke: var(--sel) !important; stroke-width: 2.6 !important; }
+/* pointing at an interface, relation or link: what it is attached to (outline and weight, not colour alone) */
+.hover-hl .tube-outer, .hover-hl .rel-line, .hover-hl .cable-line { filter: drop-shadow(0 0 2.5px var(--accent)); }
+.hover-hl.if-entry rect, .hover-hl.if-chip rect { stroke: var(--accent) !important; stroke-width: 2 !important; }
+rect.hover-hl.lport, rect.hover-hl.port, .hover-hl.lag-mark { stroke: var(--accent); stroke-width: 2.2; }
+.hover-hl.end-label, .hover-hl.port-label, .hover-hl.lag-label { text-decoration: underline; }
 /* legend drawn into exported SVG files */
 /* … and, in the same style, the overview of the networks relevant to the exported view */
 .svg-legend .lg-box, .svg-networks .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
@@ -391,10 +615,19 @@ svg.export { background: var(--canvas); }
 .btn-group { display: inline-flex; gap: 4px; }
 button.ghost { background: none; }
 button.danger { color: var(--error); border-color: var(--error); }
-.modal-btns button.danger { background: var(--error); color: #fff; }
+.modal-btns button.danger { background: var(--error); color: var(--on-accent); }
 button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
-body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: inset 0 -2px 0 var(--warn); }
 #status .dirty { color: var(--warn); font-weight: 600; }
+/* the file name badge: a small dot while the model has unsaved changes (the badge itself keeps its colours) */
+#status .fname { display: inline-flex; align-items: center; gap: 5px; }
+#status .fname-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#status .mod-dot { flex: none; font-size: 9px; line-height: 1; color: var(--warn); }
+#status .file-state { font-style: italic; }
+/* File menu: Save model shows a dot while there is something to save; the loaded example is marked */
+.dropdown.menu #btn-save[data-modified="true"] .mi-label::after { content: " \25CF"; color: var(--warn); font-size: 9px; vertical-align: 2px; }
+.dropdown.menu .active-example { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
+.dropdown.menu .active-example .mi-label { font-weight: 600; }
+.dropdown.menu .active-example[data-modified="true"] .ex-state { color: var(--warn); }
 #status .errcount { color: var(--error); font-weight: 600; }
 .tabs button.has-errors { color: var(--error); }
 .tabs button { padding: 8px 2px; font-size: 12.5px; }
@@ -405,24 +638,45 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 #outline, #side-body { position: relative; }
 /* the scrollbar's room is always reserved: a list that grows or shrinks (a folded section showing its selected entry) never shifts the entries sideways */
 #outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; overscroll-behavior: contain; min-height: 0; min-width: 0; scrollbar-gutter: stable; }
-#outline-body { padding: 8px 8px 16px; }
-.outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
-.ol-section { margin-top: 10px; }
+/* the title of the object list: what it is for, in one compact row above it */
+.ol-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; padding: 7px 10px 0; }
+.ol-heading { margin: 0; font-size: 13px; font-weight: 700; line-height: 1.3; }
+
+#outline-body { padding: 4px 8px 16px; }
+.outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
+/* every section has the same spacing, open or folded: folding moves the sections below it, never its own heading */
+.ol-section { margin-top: 8px; }
 .ol-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 2px 2px 4px; }
-.ol-item { display: flex; width: 100%; align-items: center; gap: 6px; border: 0; background: none; border-radius: 5px; padding: 3px 6px; text-align: left; }
-.ol-item:hover { background: var(--accent-soft); }
+/* a row of the outline: the entry, and its quick actions (Duplicate, Delete) at the right */
+.ol-row { display: flex; align-items: center; gap: 2px; min-width: 0; border-radius: 5px; }
+.ol-item { display: flex; flex: 1 1 auto; min-width: 0; width: 100%; align-items: center; gap: 6px; border: 0; background: none; border-radius: 5px; padding: 3px 6px; text-align: left; }
+.ol-item:hover, .ol-row:hover { background: var(--accent-soft); }
+/* The quick actions are shown for one row at a time: the row under the pointer, or the row that
+   has the keyboard focus. Touch screens have no hover: there, the selected row shows them. They
+   take no room while hidden, so no label moves; a shown pair narrows only its own row's label. */
+.ol-quick { display: none; flex: none; align-items: center; gap: 2px; padding-right: 2px; }
+.ol-quick .icon-btn { padding: 2px 4px; min-height: 22px; border-radius: 5px; background: var(--panel); }
+.ol-quick .icon-btn .icon-svg { width: 14px; height: 14px; }
+.ol-quick .ib-label { display: none; }
+@media (hover: hover) { .ol-row:hover .ol-quick { display: inline-flex; } }
+/* (a press with the mouse never focuses an outline button: the outline acts on pointerdown and prevents it) */
+.ol-row:focus-within .ol-quick, .ol-row.acting .ol-quick { display: inline-flex; }
+@media (hover: none) { .ol-row.current .ol-quick { display: inline-flex; } }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 /* a section folds to its heading: the heading is a button (caret, title, count) next to "+ Add" */
 .ol-tools { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; margin: 0 0 2px; }
 .ol-tools > button { flex: none; }
-.ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; }
+.ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; line-height: 16px; text-transform: inherit; letter-spacing: inherit; color: inherit; }
+/* the heading's parts share one line box, so what a folded heading adds (its problem badge, its related count) never changes its height */
+.ol-toggle > * { line-height: 16px; }
 .ol-toggle:hover { background: var(--accent-soft); color: var(--text); }
-.ol-caret { width: 10px; flex: none; font-size: 10px; }
+.ol-caret { display: inline-block; width: 10px; flex: none; font-size: 10px; text-align: center; }
+/* one glyph in both states, turned when folded: a transform takes no room, so the title never moves */
+.ol-section.folded .ol-caret { transform: rotate(-90deg); }
 .ol-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ol-related { flex: none; color: var(--accent); letter-spacing: 0; }
 .ol-toggle .ol-badge { letter-spacing: 0; }
 .ol-head { gap: 4px; }
-.ol-section.folded { margin-top: 4px; }
 /* selection context in the element lists: shape and weight as well as colour */
 .ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
 .ol-item .ctx-mark { width: 10px; }
@@ -438,10 +692,35 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .reflist li.ctx-unrelated button.ref:hover, .reflist li.ctx-unrelated button.ref:focus-visible { color: var(--text); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ol-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: #fff; }
+/* a switch's layer beside its name in the object list */
+.ol-layer { flex: none; font-size: 10px; font-weight: 700; padding: 0 4px; border: 1px solid var(--text); border-radius: 3px; margin-left: 4px; line-height: 14px; }
+.ol-layer.l3 { border-width: 1.6px; }
+/* what a cable's ports carry (Objects list), and a port's mode badge: the mode is in the words; a trunk has a heavier frame, a routed port a dashed one */
+.ol-vlan { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.ol-vlan.mismatch { color: var(--error); font-weight: 600; }
+.mode-badge { display: inline-block; align-self: flex-start; max-width: 100%; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--text); border-radius: 4px; color: var(--text); background: var(--panel); overflow-wrap: anywhere; }
+.mode-badge.mode-trunk { border-width: 2px; padding: 0 5px; }
+.mode-badge.mode-routed { border-style: dashed; }
+.mode-badge.mode-unset { border-color: var(--error); color: var(--error); font-weight: 600; }
+.mode-badge.mode-unset::before { content: '! '; }
+.ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: var(--on-accent); }
 .ol-badge.err { background: var(--error); }
 .ol-badge.warn { background: var(--warn); }
-.inspector { display: flex; flex-direction: column; gap: 6px; }
+.inspector { display: flex; flex-direction: column; gap: 8px; }
+/* field groups (Edit) and sections (Details): titled cards, one look for both tabs */
+.fgroup { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+#side .fgroup > h4.fgroup-title { margin: 0 0 1px; font-size: 10.5px; color: var(--muted); }
+.details { display: flex; flex-direction: column; gap: 8px; }
+.details > .fgroup { gap: 4px; }
+.details > .fgroup > p { margin: 2px 0 0; }
+.inspector > .sub { margin-top: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 9px; }
+/* a new link or relation that is not in the model yet */
+.draft-note { margin: 0; padding: 6px 9px; border: 1px dashed var(--accent); border-radius: 7px; background: var(--accent-soft); font-size: 12px; }
+.draft-end { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; column-gap: 8px; }
+.draft-end .ih-id { grid-column: 2; margin-left: 0; }
+.draft-end-side { font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.field input[aria-invalid="true"] { border-color: var(--error); }
+.field-err:empty { display: none; }
 /* header of the edit panel: [type] [validation state] … [actions], the name below at full width */
 .insp-head { container-type: inline-size; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); }
 .ih-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
@@ -467,7 +746,7 @@ button.icon-btn.danger:hover:not(:disabled) { background: var(--error); border-c
 .issue-list li.warning b { color: var(--warn); }
 .field { display: flex; flex-direction: column; gap: 2px; }
 .field > label { font-size: 11.5px; color: var(--muted); font-weight: 500; }
-.field input[type="text"], .field textarea, .field select, .g-row input[type="text"], .list-ed input, .ep-row select { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); min-width: 0; }
+.field input[type="text"], .field textarea, .field select, .g-row input[type="text"], .list-ed input, .ep-row select { width: 100%; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); min-width: 0; }
 .field textarea { resize: vertical; font: inherit; }
 /* nothing chosen yet: the prompt must not look like a saved value */
 .field select.unset { color: var(--muted); font-style: italic; }
@@ -480,14 +759,14 @@ button.icon-btn.danger:hover:not(:disabled) { background: var(--error); border-c
 .help { color: var(--muted); font-size: 11px; }
 .ctl { display: flex; align-items: center; gap: 4px; }
 .ctl.row > * { flex: 1; min-width: 0; }
-.ctl.row > input[type="color"] { flex: none; width: 36px; height: 28px; padding: 1px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); }
-.ro { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ctl.row > input[type="color"] { flex: none; width: 36px; height: 28px; padding: 1px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); }
+.ro { font-family: var(--font-mono); }
 .sub { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .sub-head { display: flex; align-items: center; justify-content: space-between; }
 .sub-head h4 { margin: 4px 0 !important; }
 /* a narrow panel puts the add buttons under the heading instead of past the edge */
 .sub-head { gap: 4px 6px; flex-wrap: wrap; }
-.sub-head .ctl.row { flex: none; flex-wrap: wrap; margin-left: auto; }
+.sub-head .ctl.row { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .sub-head .ctl.row > * { flex: none; }
 .sub-head button { white-space: nowrap; }
 details.card { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; background: var(--canvas); }
@@ -515,13 +794,13 @@ details.attrs > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .ep-more { margin: 0 2px; }
 .g-map, .g-seq { display: flex; flex-direction: column; gap: 3px; padding-left: 4px; border-left: 2px solid var(--grid); margin: 2px 0; }
 .g-row { display: flex; gap: 4px; align-items: flex-start; }
-.g-row > .g-key { flex: 0 0 34%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.g-row > .g-key { flex: 0 0 34%; font-family: var(--font-mono); font-size: 12px; }
 .g-row > .g-val, .g-row > .g-map, .g-row > .g-seq { flex: 1; min-width: 0; }
 .g-val input { flex: 1; }
 .g-type { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .g-idx { color: var(--muted); padding-top: 4px; }
 .g-add { display: flex; gap: 4px; align-items: center; }
-.g-add .g-key { flex: 1; border-style: dashed !important; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); min-width: 0; }
+.g-add .g-key { flex: 1; border-style: dashed !important; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); min-width: 0; }
 .g-add select { padding: 2px 4px; font-size: 12px; }
 .other { margin-top: 4px; }
 .other h4 { color: var(--warn) !important; }
@@ -537,31 +816,31 @@ details.card > .field.derived { margin: 4px 10px; }
 .net-ed { display: flex; flex-direction: column; gap: 3px; }
 .net-state { font-size: 12px; font-weight: 600; }
 .net-state.muted { font-weight: 400; font-style: italic; }
-.vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.vlan-combo input[data-t="vlan-combo"] { min-width: 0; max-width: 100%; box-sizing: border-box; }
 /* DHCP switch beside the addresses of an interface; while it is on, manual addresses are greyed out */
 .field[data-dhcp] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; row-gap: 2px; }
 .field[data-dhcp] > :not(label):not(.dhcp-switch) { grid-column: 1 / -1; }
 button.dhcp-switch { white-space: nowrap; }
-button.dhcp-switch.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { button.dhcp-switch.on { color: #0d1014; } }
+button.dhcp-switch.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .dhcp-state { font-weight: 600; }
 .list-ed.disabled input { background: var(--grid); color: var(--muted); border-style: solid; cursor: not-allowed; }
 /* DNS names of a device */
 .dns-entry { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; padding: 5px 7px; background: var(--canvas); display: flex; flex-direction: column; gap: 4px; }
 .dns-entry.invalid { border-left: 3px solid var(--error); }
-.dns-entry select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-size: 12px; }
-.dns-name-row input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.dns-entry select { padding: 3px 6px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); font-size: 12px; }
+.dns-name-row input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--panel); font-family: var(--font-mono); font-size: 12.5px; }
 .dns-ifaces .ref-chip { flex: none; display: inline-flex; align-items: center; gap: 4px; }
 .dns-pick { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow: auto; margin: 3px 0 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); font-size: 12.5px; }
 .dns-pick-row { display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
 ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
-.vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: var(--font-mono); }
 .net-ed .list-row > * { flex: 1; min-width: 0; }
 .net-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }
 .yaml-tab { display: flex; flex-direction: column; gap: 6px; height: 100%; }
 /* the YAML editor: a plain text area over a band that marks the selected object's lines (drawn behind the text, never part of it) */
 .yaml-edit { position: relative; flex: 1; min-height: min(55vh, 100%); display: flex; background: var(--canvas); border-radius: 6px; }
-#yaml-src { position: relative; z-index: 1; width: 100%; min-height: 0; flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
+#yaml-src { position: relative; z-index: 1; width: 100%; min-height: 0; flex: 1; font: 12px/1.45 var(--font-mono); background: transparent; color: var(--text); border: 1px solid var(--control-border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
 .yaml-hl-clip { position: absolute; z-index: 0; overflow: hidden; pointer-events: none; }
 .yaml-hl { position: absolute; left: 0; right: 0; background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
 .yaml-hl[hidden] { display: none; }
@@ -570,44 +849,826 @@ ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
 .row-btns { display: flex; gap: 6px; }
 .issue.clickable { cursor: pointer; }
 .issue.clickable:hover { border-color: var(--accent); }
-dialog#modal { border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 560px; width: calc(100% - 32px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: hidden; background: var(--panel); color: var(--text); box-shadow: 0 16px 48px rgba(0,0,0,.3); }
-dialog#modal::backdrop { background: rgba(0,0,0,.35); }
+dialog#modal { border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 560px; width: calc(100% - 32px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: hidden; background: var(--raised); color: var(--text); box-shadow: 0 16px 48px var(--shadow); }
+dialog#modal::backdrop { background: var(--backdrop); }
 .modal-inner { display: flex; flex-direction: column; max-height: calc(100vh - 26px); max-height: calc(100dvh - 26px); padding: 18px 20px; }
 .modal-inner h2, .modal-btns { flex: none; }
 .modal-inner h2 { margin: 0 0 10px; font-size: 17px; }
 .modal-body { flex: 1 1 auto; min-height: 0; max-height: 60vh; overflow: auto; }
 .modal-body p { margin: 0 0 8px; }
+/* a title row with a × (the Help dialogs) */
+.modal-head { flex: none; display: flex; align-items: flex-start; gap: 10px; margin: 0 0 10px; }
+.modal-head h2 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.modal-x { flex: none; width: 30px; height: 30px; padding: 0; margin: -4px -6px 0 0; font-size: 18px; line-height: 1; border-color: transparent; background: none; }
+.modal-x:hover { background: var(--accent-soft); }
+/* Help → User Manual: as large as the window allows, its text scrolls inside the dialog (never the page) */
+dialog#modal.help-manual { max-width: 980px; width: calc(100% - 24px); height: calc(100vh - 24px); height: calc(100dvh - 24px); }
+dialog#modal.help-manual .modal-inner { height: 100%; max-height: none; padding: 14px 16px 12px; }
+dialog#modal.help-manual .modal-body { max-height: none; display: flex; flex-direction: column; }
+dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
+/* Analyze → Addressing overview: as large as the window; its tables scroll inside the dialog (sideways inside each table) */
+dialog#modal.addr-dialog { max-width: 1320px; width: calc(100% - 24px); height: calc(100vh - 24px); height: calc(100dvh - 24px); }
+dialog#modal.addr-dialog .modal-inner { height: 100%; max-height: none; padding: 14px 16px 12px; }
+dialog#modal.addr-dialog .modal-body { max-height: none; overscroll-behavior: contain; }
+dialog#modal.addr-dialog .modal-btns { margin-top: 10px; }
+.addr-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 4px; }
+.addr-controls input[type="search"] { flex: 1 1 220px; min-width: 0; max-width: 420px; }
+.addr-vrf { margin: 10px 0 14px; }
+.addr-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.addr-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.addr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.addr-table th, .addr-table td { text-align: left; vertical-align: top; padding: 4px 6px; border-bottom: 1px solid var(--grid); }
+.addr-table th { position: sticky; top: 0; background: var(--raised); color: var(--muted); font-weight: 500; font-size: 11px; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.addr-sort { border: 0; background: none; padding: 2px 0; font: inherit; color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.addr-sort:hover { color: var(--text); }
+th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { color: var(--text); font-weight: 600; text-decoration: none; }
+.addr-prefix { white-space: nowrap; }
+.addr-prefix .mini { margin-top: 2px; }
+.addr-nest, .addr-in { color: var(--muted); }
+.addr-row.addr-context td { color: var(--muted); }
+.addr-mrow > td { padding: 0 6px 8px 22px; background: var(--canvas); }
+.addr-members { padding-top: 4px; }
+.addr-mtable { width: auto; min-width: 60%; }
+.addr-util { white-space: nowrap; }
+.addr-bar { display: block; width: 64px; height: 6px; margin-top: 3px; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+.addr-bar > span { display: block; height: 100%; background: var(--accent); }
+.addr-free { min-width: 12em; }
+.addr-free summary { cursor: pointer; color: var(--link); font-family: inherit; }
+.addr-gw > div + div { margin-top: 2px; }
+.addr-issues h4 { margin: 10px 0 4px; font-size: 13px; }
+.addr-list { margin: 0; padding-left: 18px; font-size: 12px; }
+.addr-list li { margin: 2px 0; overflow-wrap: anywhere; }
+.mono { font-family: var(--font-mono); }
+.manual { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 8px 12px 2px; line-height: 1.5; }
+.manual:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.manual kbd, .man-keys kbd { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); font: 600 11.5px/1.5 var(--font-mono); white-space: nowrap; }
+.man-lead { color: var(--muted); }
+.man-toc { margin: 0 0 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); }
+.man-toc ol { margin: 0; padding-left: 20px; columns: 2 220px; column-gap: 24px; }
+.man-toc li { break-inside: avoid; }
+.man-link { border: 0; background: none; padding: 1px 2px; color: var(--link); text-align: left; text-decoration: underline; text-underline-offset: 2px; }
+.man-sec { padding-top: 10px; scroll-margin-top: 4px; }
+.man-sec + .man-sec { border-top: 1px solid var(--border); margin-top: 12px; }
+.man-sec h3 { margin: 4px 0 6px; font-size: 15px; }
+.man-sec h3:focus { outline: none; }
+.man-sec h3:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.man-steps { margin: 0 0 8px; padding-left: 22px; }
+.man-steps li { margin-bottom: 4px; }
+.man-note { color: var(--muted); }
+.man-figs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 6px; }
+.man-figs.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); align-items: start; }
+.man-fig { margin: 0; min-width: 0; }
+.man-fig img { display: block; max-width: 100%; height: auto; margin: 0 auto; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
+.man-fig figcaption { margin-top: 4px; font-size: 12px; color: var(--muted); text-align: center; }
+.man-keys { border-collapse: collapse; }
+.man-keys th { text-align: left; font-weight: 400; padding: 3px 14px 3px 0; white-space: nowrap; vertical-align: top; }
+.man-keys td { padding: 3px 0; }
+/* Help → License: a short note; the full text opens in place and scrolls inside itself */
+.license-full { margin-top: 4px; }
+.license-full summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.license-full > p { margin: 6px 0; }
+.license-text { max-height: min(320px, 45vh); max-height: min(320px, 45dvh); overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); font: 11.5px/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.license-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* "+ Port Range": two names, and a preview of what they create */
 .range-form { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .range-form label { flex: 1 1 160px; display: flex; flex-direction: column; gap: 3px; font-weight: 600; }
-.range-form input { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-weight: 400; }
+.range-form input { width: 100%; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); font-weight: 400; }
 .range-preview { min-height: 58px; margin-bottom: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); }
 .range-preview[data-state="error"] { border-color: var(--error); }
 .range-count { font-weight: 600; margin-bottom: 3px; }
 .range-list { max-height: 96px; overflow: auto; font-size: 12px; overflow-wrap: anywhere; }
 .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .dl-label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
-.dl-label input { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px; }
+.dl-label input { padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px; }
 .dl-warn { margin-top: 10px; border-left: 4px solid var(--error); padding: 6px 10px; background: var(--canvas); border-radius: 4px; }
-#toast { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 40; background: var(--text); color: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 6px 18px rgba(0,0,0,.2); max-width: 80%; }
+#toast { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: var(--z-announce); background: var(--text); color: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 6px 18px var(--shadow); max-width: 80%; }
 /* errors marked on the diagram */
 .device.has-error .dev-box, .network.has-error .net-box { stroke: var(--error) !important; stroke-width: 2.4 !important; stroke-dasharray: 5 3; }
 .rel.has-error .rel-line, .rel.has-error .tube-outer { stroke-dasharray: 3 3; }
-/* loopbacks in the logical view */
-.loop-chip rect { fill: var(--pill); stroke: var(--accent); stroke-width: 1; }
-.loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* interfaces without a line of their own: uncabled ports (physical view), virtual and tunnel interfaces (logical view) */
+.if-chip { cursor: pointer; }
+.if-chip rect { fill: var(--pill); stroke: var(--dev-stroke); stroke-width: 1; }
+.if-chip text { font-family: var(--font-mono); fill: var(--muted) !important; }
+.if-chip.port-chip rect { stroke-dasharray: 2 2; }
+.if-chip.kind-virtual rect { stroke: var(--accent); }
+.if-chip.kind-tunnel rect { stroke: var(--accent); stroke-dasharray: 4 2; }
+.if-chip:hover rect { stroke: var(--accent); stroke-width: 1.6; }
+.selected.if-chip rect, .selected.if-entry rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
+/* connecting (right-click): where a connection can start, its first endpoint, and the compatible second endpoints */
+#canvas .conn-start { cursor: context-menu; }
+#canvas.connecting { cursor: crosshair; }
+#canvas.connecting .conn-source .dev-box, #canvas.connecting .conn-source > rect, #canvas.connecting rect.conn-source { stroke: var(--sel) !important; stroke-width: 3 !important; }
+#canvas.connecting .conn-ok .dev-box, #canvas.connecting .conn-ok > rect, #canvas.connecting rect.conn-ok { stroke: var(--ok) !important; stroke-width: 2.2 !important; stroke-dasharray: 5 3; }
+#canvas.connecting .conn-ok { cursor: copy; }
+#canvas.connecting .conn-no { opacity: .35; cursor: not-allowed; }
+.conn-line { stroke: var(--sel); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
+/* the connect bar: the keyboard way to pick the second endpoint */
+.connect-bar { position: absolute; left: 12px; bottom: 12px; z-index: calc(var(--z-overlay) + 2); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 6px 8px; border: 1px solid var(--sel); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); font-size: 12.5px; }
+.connect-bar[hidden] { display: none; }
+.connect-bar .cb-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.connect-bar select { max-width: 100%; min-width: 0; }
+/* interface entries in a device box: the name, then its addresses and identifiers, in the monospace font.
+   The kind is told by the frame's line as well as its colour: loopback solid, virtual double weight, tunnel dashed,
+   physical port dotted; the device's own address lines have no frame of their own. */
+.if-entry { cursor: pointer; }
+.if-entry rect { fill: var(--pill); stroke: var(--dev-stroke); stroke-width: 1; }
+.if-entry text { font-family: var(--font-mono); fill: var(--text); }
+.if-entry .if-name { font-weight: 700; }
+.if-entry.loop-chip rect { stroke: var(--accent); }
+.if-entry.kind-virtual rect { stroke: var(--accent); stroke-width: 1.8; }
+.if-entry.kind-tunnel rect { stroke: var(--accent); stroke-dasharray: 5 2; }
+.if-entry.phys-entry rect { stroke-dasharray: 1.5 2; }
+.if-entry.dev-addr { cursor: default; }
+.if-entry.dev-addr rect { fill: none; stroke: none; }
+.if-entry:hover rect { stroke: var(--accent); stroke-width: 1.8; }
 /* configured DNS names under a device (logical view): dashed, unlike the loopback chips */
 .dns-chip rect { fill: var(--pill); stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 2; }
-.dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
+.dns-chip text { font-size: 9.5px; font-family: var(--font-mono); fill: var(--muted) !important; }
 
-/* auto-arrange button and per-view layout status */
-.arrange-group { display: inline-flex; align-items: center; gap: 6px; }
-.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); display: inline-flex; align-items: center; gap: 5px; }
-.arrange-btn:disabled { color: inherit; border-color: var(--border); }
-/* layout status of the shown view: icon + colour (the message is the title / description) */
-.arrange-icon { display: inline-block; min-width: 1em; text-align: center; font-weight: 700; }
-.arrange-icon:empty { display: none; }
-.arrange-btn[data-status="auto"] .arrange-icon { color: #2f9e44; }
-.arrange-btn[data-status="manual"] { border-color: var(--warn); border-style: dashed; box-shadow: inset 0 -2px 0 var(--warn); }
-.arrange-btn[data-status="manual"] .arrange-icon { color: var(--warn); }
-.arrange-btn[data-status="edited"] { border-style: dashed; }
+/* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
+/* Toolbar groups (View, Auto-arrange, Filters): a label above the controls, both inside a dashed
+   frame that reads as one control: clearly visible against the toolbar (--frame), yet lighter than the
+   controls' own borders when they are hovered or pressed. One definition, so the three look alike. */
+.tool-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 6px 4px; border: 1px dashed var(--frame); border-radius: 8px; flex: none; }
+.tool-group-title { font-size: 10px; line-height: 12px; color: var(--muted); text-align: center; letter-spacing: .03em; white-space: nowrap; }
+/* the controls inside a group are as tall as the Auto-arrange buttons */
+.tool-group button { padding-top: 2px; padding-bottom: 2px; }
+.arrange-btns { display: flex; }
+/* without a model: the View and Filters labels fade like their controls */
+body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-state="loaded"]) .filters-group .tool-group-title { opacity: .45; }
+.arrange-btn { flex: 1 1 0; border-radius: 0; margin-left: -1px; padding: 2px 9px; white-space: nowrap; }
+.arrange-btns .arrange-btn:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.arrange-btns .arrange-btn:last-child { border-radius: 0 6px 6px 0; }
+/* the current option: marked like the active view switch, and not clickable (nothing to do) */
+.arrange-btn.current, .arrange-btn.current:disabled { opacity: 1; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; z-index: 1; cursor: default; }
+/* an option that gives the same positions as the current one: disabled, plain */
+.arrange-btn.same:disabled { opacity: .55; cursor: default; }
+/* without a model: faded like the other controls that need a model */
+.arrange-group:not([data-status]) .arrange-btn:disabled, .arrange-group:not([data-status]) .arrange-title { opacity: .45; }
+/* the diagram filters on the start screen: greyed out like the other controls that need a model */
+.opt:has(input:disabled) { opacity: 0.45; cursor: default; }
+
+/* The theme switch: an icon button at the right end of the toolbar, always shown (never in a menu).
+   A toggle between Light and Dark: the icon shows the theme in effect (sun: light, moon: dark); the
+   tooltip and the accessible name say that theme and what a press does. */
+.theme-wrap { position: relative; flex: none; margin-left: auto; }
+.theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 30px; padding: 0; }
+.theme-btn .ti { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: none; }
+.theme-btn[data-theme-now="light"] .ti-light, .theme-btn[data-theme-now="dark"] .ti-dark { display: block; }
+.theme-wrap .tip {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: var(--z-tooltip); width: max-content; max-width: min(260px, calc(100vw - 24px));
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text);
+  box-shadow: 0 4px 14px var(--shadow); font-size: 12px; white-space: normal; pointer-events: none; visibility: hidden; opacity: 0; transition: opacity .12s;
+}
+.theme-wrap:hover .tip, .theme-btn:focus-visible + .tip { visibility: visible; opacity: 1; }
+/* a label placed away from what it belongs to (no free place next to it) is tied to it by a thin dashed line */
+.leader { fill: none; stroke: var(--member); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
+/* overlaps after moving nodes by hand: said in words, outside the picture (never exported) */
+.overlap-hint { position: absolute; right: 12px; bottom: 12px; z-index: calc(var(--z-overlay) + 1); max-width: min(420px, calc(100% - 200px)); padding: 5px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--raised); color: var(--text); font-size: 12px; box-shadow: 0 2px 8px var(--shadow); }
+.overlap-hint > span:first-child { color: var(--warn); font-weight: 700; }
+.overlap-hint[hidden] { display: none; }
+
+/* Segmented controls (View, Auto-arrange, and the direction switch in the editor): neighbouring
+   segments share one border column (margin-left: -1px), and a later segment paints over the column
+   it shares with the one before it. A segment whose border changes is therefore lifted above its
+   neighbours (stacking order only: nothing moves or changes size), so its border is complete on all
+   four sides: the selected one above the plain ones, the hovered one above both, the keyboard-
+   focused one (with its focus ring) on top. */
+.seg button, .arrange-btn { position: relative; z-index: 0; }
+.seg button.active, .arrange-btn.current, .arrange-btn.current:disabled { z-index: 1; }
+.seg button:hover:not(:disabled), .arrange-btn:hover:not(:disabled) { z-index: 2; }
+.seg button:focus-visible, .arrange-btn:focus-visible { z-index: 3; }
+
+/* The selection in the Edit tab: the section (the object's header, the selected interface's card, or
+   the field of the line it was clicked on) is tinted, has an accent bar on its left and a "Selected"
+   tag, so it does not depend on colour alone. It is not the error mark (a red outer border with an
+   error badge), a hover (border colour) or the focus ring (an outline around the control), and it
+   leaves all three visible. */
+.sel-mark { background: var(--marked-bg) !important; box-shadow: inset 3px 0 0 var(--marked-bar); }
+/* the ends of a selected relation or link: where it is attached (an accent bar and the "↔" note, not colour alone) */
+.end-mark { background: var(--marked-bg); box-shadow: inset 3px 0 0 var(--marked-bar); border-radius: 5px; padding-left: 7px; margin-left: -7px; }
+.ep-bind { margin-top: 2px; overflow-wrap: anywhere; }
+.field.sel-mark, .list-row.sel-mark, .g-row.sel-mark { border-radius: 5px; padding-left: 7px; margin-left: -7px; }
+.list-row.sel-mark, .g-row.sel-mark { padding-top: 2px; padding-bottom: 2px; margin-top: -2px; margin-bottom: -2px; }
+.sel-tag { flex: none; display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--marked-bar); border-radius: 99px; color: var(--accent); background: var(--panel); font-size: 10.5px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; white-space: nowrap; vertical-align: 1px; }
+
+/* ---- failure simulation: down and degraded objects, by line style (dotted, dash-dot) and fading, not colour alone */
+.has-sim .sim-down { opacity: .55; }
+.has-sim .sim-down .dev-box, .has-sim .sim-down .net-box { stroke: var(--error) !important; stroke-width: 3.5 !important; stroke-dasharray: 2 4 !important; stroke-linecap: round; }
+.has-sim .sim-degraded .dev-box, .has-sim .sim-degraded .net-box { stroke: var(--warn) !important; stroke-width: 3 !important; stroke-dasharray: 10 4 2 4 !important; }
+.has-sim .sim-down.sim-booting { opacity: .75; }
+.has-sim .sim-down.sim-booting .dev-box { stroke: var(--accent) !important; stroke-dasharray: 7 3 !important; stroke-linecap: butt; }
+.has-sim .sim-down .cable-line, .has-sim .sim-down .rel-line, .has-sim .sim-down .tube-outer, .has-sim .sim-down.member { stroke-dasharray: 2 6 !important; stroke-linecap: round; }
+.has-sim .sim-degraded .cable-line, .has-sim .sim-degraded .rel-line, .has-sim .sim-degraded .tube-outer, .has-sim .sim-degraded.member { stroke-dasharray: 10 4 2 4 !important; }
+.has-sim rect.sim-down.port, .has-sim rect.sim-down.lport, .has-sim .sim-down.if-entry rect, .has-sim .sim-down.if-chip rect, .has-sim .sim-down.lag-mark { stroke: var(--error) !important; stroke-dasharray: 2 3; }
+.has-sim rect.sim-degraded.port, .has-sim rect.sim-degraded.lport, .has-sim .sim-degraded.if-entry rect, .has-sim .sim-degraded.if-chip rect, .has-sim .sim-degraded.lag-mark { stroke: var(--warn) !important; stroke-dasharray: 6 2 1.5 2; }
+.has-sim text.sim-down[data-ref^="route:"], .has-sim tspan.sim-down[data-ref^="route:"] { text-decoration: line-through; }
+.has-sim text.sim-degraded[data-ref^="route:"], .has-sim tspan.sim-degraded[data-ref^="route:"] { font-style: italic; text-decoration: underline dotted; }
+
+/* ---- simulation mode: recognisable beyond colour. A thin solid border inside the diagram's edge (--sim, at
+   least 3:1 against the canvas in both themes), the "Simulation running" label in its corner, the banner with
+   its ◈ mark, a marker in the status bar; editing is paused (the Edit tab is read-only). The border is an
+   overlay: it never catches a click, and every menu, popover and dialog is in front of it. */
+body[data-mode~="simulation"] #canvas-wrap::after { content: ""; position: absolute; inset: 0; z-index: var(--z-overlay); pointer-events: none; box-shadow: inset 0 0 0 2px var(--sim); }
+.sim-badge { position: absolute; right: 12px; bottom: 12px; z-index: calc(var(--z-overlay) + 1); padding: 2px 9px; border: 2px solid var(--sim); border-radius: 6px; background: var(--raised); color: var(--text); font-size: 12.5px; font-weight: 700; letter-spacing: .02em; pointer-events: none; }
+.sim-badge[hidden] { display: none; }
+/* a narrow diagram (a wide side panel, a narrow window): the badge stands above the zoom bar, not beside it */
+#canvas-wrap { container-type: inline-size; }
+@container (max-width: 560px) {
+  .sim-badge { bottom: 58px; }
+}
+.sim-badge-mark { color: var(--sim); }
+body[data-mode~="simulation"] .mode-banner { border-bottom-color: var(--sim); }
+.mode-banner #mb-sim { background: var(--sim-soft); margin: -6px -12px 0; padding: 6px 12px; border-bottom: 2px dashed var(--sim); }
+.mode-banner #mb-sim .mb-icon { color: var(--sim); }
+.mode-banner #mb-sim + .mb-row { border-top: 0; }
+.mode-banner .mb-short { display: none; }
+body[data-mode~="simulation"] .overlap-hint { bottom: 50px; }
+/* a very short window: the simulation's banner is one short line that says "Simulation running" itself (the full
+   text stays there for screen readers), in place of the badge, so the diagram keeps some room */
+@media (max-height: 420px) {
+  .mode-banner #mb-sim .mb-text:not(.mb-short) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .mode-banner #mb-sim .mb-short { display: block; flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .mode-banner #sim-results { display: none; }
+  .sim-badge { display: none; }
+}
+#status .sim-marker { flex: none; padding: 0 7px; border: 2px dashed var(--sim); border-radius: 6px; color: var(--text); font-weight: 700; white-space: nowrap; }
+#status .sim-marker > span { color: var(--sim); }
+.lock-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; padding: 8px 10px; border: 2px dashed var(--sim); border-radius: 8px; background: var(--sim-soft); color: var(--text); }
+.lock-note p { flex: 1 1 200px; margin: 0; overflow-wrap: anywhere; }
+.lock-note p > span { color: var(--sim); }
+fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
+.sim-in-analysis { margin: 0 0 8px; padding: 4px 8px; border-left: 3px dashed var(--sim); background: var(--sim-soft); color: var(--text); }
+.sim-in-analysis > span { color: var(--sim); }
+.export-sim-frame { fill: none; stroke: var(--sim); stroke-width: 4; stroke-dasharray: 12 6; }
+
+/* ---- the Analysis tab: Trace path */
+.trace-form { display: grid; gap: 6px; margin: 8px 0 10px; }
+.trace-form .tf-row { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); align-items: center; gap: 6px; }
+.trace-form .tf-row input, .trace-form .tf-row select { width: 100%; min-width: 0; }
+.trace-form .tf-check { display: flex; align-items: flex-start; gap: 6px; }
+.trace-form .tf-check input { margin-top: 3px; }
+.tf-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.trace-error { color: var(--error); font-weight: 600; }
+.trace-status { margin: 8px 0 4px; font-weight: 600; }
+.trace-status.stopped, .trace-end.stopped { color: var(--error); }
+.hop-dev { font-weight: 600; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.hop-table .th-n { font-variant-numeric: tabular-nums; color: var(--muted); }
+.hop-table .th-tag { font-weight: 400; font-size: 11.5px; padding: 0 5px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
+.hop-table td { overflow-wrap: anywhere; }
+.hop-table .th-k { display: inline-block; min-width: 4.6em; color: var(--muted); font-size: 11.5px; }
+.hop-table .th-note { font-size: 11.5px; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.trace-end { margin: 4px 0 10px; overflow-wrap: anywhere; }
+.trace-key .tk { padding: 0 3px; border: 2px solid var(--trace); border-radius: 3px; }
+.trace-key .tk-alt { border-style: dashed; }
+.trace-key .tk-ret { border-style: dotted; }
+.trace-key .tk-stop { border-style: double; border-width: 3px; border-color: var(--error); }
+
+/* ---- the Edit tab: routing services (protocols) of a device, their parameters, suggestions */
+.svc-card { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px 2px; margin: 6px 0 8px; }
+.svc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.svc-name { font-weight: 600; }
+.svc-btns { display: inline-flex; gap: 4px; }
+.legend-badge { font-size: 11px; font-weight: 600; fill: var(--text); letter-spacing: 0.02em; }
+.sep-dirs { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.chips-ed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chips-ed select { flex: 1 1 12em; min-width: 0; }
+ul.sep-summary { margin: 4px 0 8px 18px; padding: 0; overflow-wrap: anywhere; }
+.svc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.svc-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
+button.chip { border: 1px dashed var(--accent); border-radius: 12px; padding: 2px 10px; background: var(--accent-soft); color: var(--text); font-size: 12px; text-align: left; overflow-wrap: anywhere; }
+button.chip:hover { border-style: solid; }
+button.chip .chip-why { color: var(--muted); }
+.ep-params { border-left: 3px solid var(--border); padding-left: 8px; margin: 4px 0 8px; }
+.ep-params-label { font-weight: 600; font-size: 12px; margin-bottom: 2px; }
+ul.removal-list { margin: 6px 0 8px 18px; padding: 0; font-family: var(--mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
+details.svc-own-rid > summary { cursor: pointer; font-size: 12px; color: var(--link); margin: 2px 0 4px; }
+
+/* ---- the Edit tab: input helpers (suggestion chips, Generate, the VRF combobox) right under their field */
+.helpers { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 4px 0 2px; }
+.helpers button.chip.helper { padding: 1px 8px; font-size: 11.5px; border-style: solid; background: var(--panel); }
+.helpers button.chip.helper:hover { background: var(--accent-soft); }
+.helpers button.chip.helper:focus-visible, .combo-opt[aria-selected="true"] { outline: 2px solid var(--focus, var(--accent)); outline-offset: 1px; }
+.ctl.combo { position: relative; display: block; }
+.ctl.combo > input { width: 100%; }
+ul.combo-list { position: absolute; z-index: var(--z-menu); left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 2px 0; list-style: none; max-height: 220px; overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px var(--shadow); }
+ul.combo-list[hidden] { display: none; }
+.combo-opt { display: flex; justify-content: space-between; gap: 8px; padding: 3px 8px; cursor: pointer; overflow-wrap: anywhere; }
+.combo-opt:hover, .combo-opt[aria-selected="true"] { background: var(--accent-soft); }
+.combo-count, .combo-empty { color: var(--muted); font-size: 11.5px; }
+.combo-empty { padding: 3px 8px; }
+.combo-note[hidden] { display: none; }
+
+/* ---- tool windows (ui/toolwindow.ts): non-modal windows of Analyze and Simulate. Floating over the diagram
+   (moved and resized, kept inside the browser window), or docked: a full-width row of the page under the diagram,
+   above the status bar (it takes room and covers nothing). Narrow windows always dock. */
+.toolwin { position: fixed; z-index: calc(var(--z-panel) + 2); display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 28px var(--shadow); }
+.toolwin[hidden] { display: none; }
+.tw-head { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--border); cursor: move; user-select: none; touch-action: none; }
+.toolwin.docked .tw-head { cursor: default; }
+.toolwin.collapsed .tw-head { border-bottom: 0; }
+.tw-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-tools { flex: none; display: flex; gap: 4px; }
+.tw-btn { padding: 2px 8px; min-width: 28px; line-height: 1.3; }
+.tw-move { cursor: move; }
+.tw-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 14px 18px; }
+.tw-body[hidden] { display: none; }
+.tw-grip { position: absolute; right: 2px; bottom: 2px; width: 20px; height: 20px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 11px; line-height: 20px; cursor: nwse-resize; touch-action: none; }
+.toolwin.collapsed .tw-grip { display: none; }
+body.tw-docked { grid-template-rows: auto minmax(0, 1fr) auto auto; }
+.toolwin.docked { position: relative; border-radius: 0; border-width: 2px 0 0; box-shadow: none; }
+.toolwin.docked .tw-grip { top: 2px; bottom: auto; cursor: ns-resize; }
+.toolwin.docked .tw-grip::before { content: ""; }
+.toolwin h3 { font-size: 13.5px; margin: 14px 0 6px; }
+.table-wrap { overflow-x: auto; max-width: 100%; }
+/* the Trace path window: the form in a grid that wraps, the hops as tables */
+.trace-form .tf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 6px 14px; }
+table.hop-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.hop-table th, table.hop-table td { text-align: left; vertical-align: top; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+table.hop-table thead th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+/* interface names stay whole (ge-0/0/1, Tunnel10); a long one may widen the table, which scrolls inside the window */
+table.hop-table td.hop-if { white-space: nowrap; overflow-wrap: normal; }
+table.hop-table tr.hop-more td { border-bottom-style: dashed; color: var(--muted); font-size: 11.5px; }
+table.hop-table tr.hop-under th, table.hop-table tr.hop-under td:nth-child(2) { padding-left: 14px; }
+table.hop-table tr.hop-under { font-style: italic; }
+.trace-section { margin-top: 6px; border-top: 1px solid var(--border); }
+/* the Single points of failure window */
+.spof-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
+.spof-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
+.spof-out { display: flex; flex-wrap: wrap; gap: 4px; }
+table.spof-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.spof-table th, table.spof-table td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+table.spof-table thead th { white-space: nowrap; }
+table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overflow-wrap: normal; }
+.th-sort { border: 0; background: none; padding: 0; font-weight: 600; color: inherit; }
+.th-sort:hover { text-decoration: underline; }
+/* the Focus window */
+.focus-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.focus-sel { overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------ protocol simulation */
+/* the dots: above the lines, below the boxes; their labels above everything, framed, with a halo (text in the theme's colour, the frame in the protocol's) */
+.layer-sim .sim-dot { stroke: var(--panel); stroke-width: 1.5; }
+.layer-sim .sim-arrow, .layer-sim .sim-arrow-tail { stroke: var(--panel); stroke-width: 1; }
+.layer-sim .sim-lost circle { fill: var(--panel); stroke: var(--error); stroke-width: 2; }
+.layer-sim .sim-lost path { stroke: var(--error); stroke-width: 2; fill: none; }
+.layer-sim, .layer-sim *, .layer-sim-labels, .layer-sim-labels * { pointer-events: none; }
+/* a dot opens the packet inspector: within a hit area around it (screen pixels, any zoom), outlined, the nearest one */
+.layer-sim [data-flight], .layer-sim [data-flight] * { pointer-events: auto; cursor: pointer; }
+svg.sim-dot-hover, svg.sim-dot-hover * { cursor: pointer !important; }
+.layer-sim .sim-hit circle { fill: none; pointer-events: none; }
+.layer-sim .sim-hit-under { stroke: var(--panel); opacity: 0.9; }
+.layer-sim .sim-hit-ring { stroke: var(--text); stroke-dasharray: 3 2; }
+.has-bcdomain [data-ref].bc-off { opacity: .28; }
+.has-bcdomain .bc-on .dev-box, .has-bcdomain .bc-on .net-box { stroke: var(--accent) !important; stroke-width: 3.5 !important; }
+.has-bcdomain .bc-on .cable-line { stroke: var(--accent) !important; stroke-width: 4 !important; }
+.has-bcdomain rect.bc-on.port, .has-bcdomain rect.bc-on.lport, .has-bcdomain .bc-on.if-entry rect, .has-bcdomain .bc-on.if-chip rect { stroke: var(--accent) !important; stroke-width: 2.5 !important; }
+.sim-shapes { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+.sim-shapes svg { vertical-align: -2px; }
+.sim-storm { border: 2px solid var(--error); border-radius: 4px; padding: 4px 8px; color: var(--error); font-weight: 600; }
+.sim-msg-btn { background: none; border: 0; padding: 0; color: var(--link); text-decoration: underline; cursor: pointer; font: inherit; text-align: left; }
+.sim-msg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pi-layer { margin: 6px 0; }
+.pi-layer h4 { margin: 0 0 2px; font-size: 12px; }
+.pi-layer dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 10px; margin: 0; font-size: 12px; }
+.pi-layer dt { color: var(--muted); }
+.pi-layer dd { margin: 0; overflow-wrap: anywhere; }
+.sim-label rect { fill: var(--panel); stroke-width: 1.3; opacity: 0.94; }
+.sim-label text { font-size: 10px; fill: var(--text); }
+.sim-label.lost rect { stroke: var(--error); stroke-dasharray: 3 2; }
+.sim-label.lost text { fill: var(--error); }
+/* the hops: sender and receiver marked, the arrival pulse, a followed message's trail, the others faint while one is followed */
+.node.sim-tx .dev-box { stroke: var(--accent) !important; stroke-width: 3 !important; }
+.node.sim-rx .dev-box { stroke: var(--ok) !important; stroke-width: 3 !important; }
+.layer-sim .sim-pulse { fill: none; stroke-width: 2.5; }
+.layer-sim .sim-trail { fill: none; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.4; }
+/* cable activity: traffic not drawn as dots (bundled, or the scenario behind a Network event): a lit cable, dashed, with a short count */
+.layer-sim .sim-activity { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 2 5; opacity: 0.55; }
+.layer-sim-labels .sim-activity-label text { font-size: 9px; }
+.layer-sim-labels .sim-activity-label rect { stroke-dasharray: 2 2; }
+/* a Send test's messages: their labels bold (the word "Test" says it, not the weight alone); "Test" in the event log */
+.layer-sim-labels .sim-test text { font-weight: 700; }
+.sim-test-tag { display: inline-block; padding: 0 4px; border: 1px solid var(--sim); border-radius: 3px; font-size: 0.85em; font-weight: 700; line-height: 1.3; color: var(--text); }
+.layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
+/* the scenario behind Network events: grey dots that go on moving; nothing to point at */
+.layer-sim .sim-bg { fill: var(--muted) !important; stroke: var(--panel); opacity: 0.6; pointer-events: none; }
+/* the background's short labels: its kind in grey, nothing to point at */
+.layer-sim-labels .sim-bg-label { pointer-events: none; }
+.layer-sim-labels .sim-bg-label rect { fill: var(--panel); stroke: var(--border); stroke-width: 0.8; opacity: 0.85; }
+.layer-sim-labels .sim-bg-label text { font-size: 8.5px; fill: var(--muted); }
+.sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
+.sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+.sim-scroll { overflow: auto; max-height: 260px; }
+table.sim-table, table.st-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.st-table th, table.st-table td { white-space: nowrap; }
+table.sim-table th, table.sim-table td, table.st-table th, table.st-table td { text-align: left; vertical-align: top; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+table.sim-table thead th, table.st-table thead th { position: sticky; top: 0; background: var(--panel); white-space: nowrap; }
+table.sim-table td.st-up { color: var(--ok); white-space: nowrap; }
+table.sim-table td.st-down { color: var(--muted); white-space: nowrap; }
+td.mono { font-family: var(--font-mono); white-space: nowrap; }
+.sim-log td:nth-child(2), .sim-log td:nth-child(3) { white-space: nowrap; }
+/* the log: events of the same moment are one group (a line above it, a ditto mark on its other rows); what waits for a precondition is muted and italic */
+table.sim-table tr.sim-t-first td { border-top: 2px solid var(--border); }
+table.sim-table tr.sim-t-first td, table.sim-table tr.sim-t-same td { border-bottom-style: dotted; }
+table.sim-table tr.sim-t-end td { border-bottom: 2px solid var(--border); }
+.sim-ditto { color: var(--muted); padding-left: 2ch; }
+table.sim-table tr[data-kind="wait"] td:nth-child(5), table.sim-table tr[data-kind="wait"] td:nth-child(7) { font-style: italic; color: var(--muted); }
+
+/* ---------------- the protocol checkboxes (Start simulation…, Simulation setup) */
+.pp { display: flex; flex-direction: column; min-height: 0; gap: 4px; }
+.pp-head { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.pp-title { flex: 1 1 auto; margin: 0; font-size: 13.5px; }
+.pp-count { font-weight: 400; color: var(--muted); }
+.pp-tools { display: flex; gap: 4px; }
+.pp-list { min-height: 0; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 8px; padding: 0 8px; background: var(--canvas); }
+.pp-group { padding: 4px 0 6px; border-bottom: 1px solid var(--border); }
+.pp-group:last-child { border-bottom: 0; }
+.pp-ghead { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; margin-bottom: 2px; grid-column: 1 / -1; }
+.pp-gname { flex: 1 1 auto; font-size: 12px; font-weight: 700; }
+.pp-gcount { font-weight: 400; color: var(--muted); }
+.pp-gtools { display: flex; gap: 4px; }
+.pp-item { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12.5px; cursor: pointer; }
+.pp-item input { flex: none; width: 16px; height: 16px; margin: 0; }
+.pp-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.pp-uses { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.psecs-title { flex: 1 1 auto; margin: 0; font-size: 13.5px; }
+.psecs-note { flex-basis: 100%; margin: 0; }
+.psec-caret { display: inline-block; width: 1.1em; color: var(--muted); transition: transform 0.12s; }
+[aria-expanded="true"] > .psec-caret { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .psec-caret { transition: none; } }
+
+/* ---------------- Start simulation… : protocols first, the parameters collapsed below; only the protocol list scrolls */
+dialog#modal.sim-start-dialog { max-width: 680px; }
+dialog#modal.sim-start-dialog .modal-body { max-height: none; display: flex; flex-direction: column; gap: 10px; overflow: auto; overscroll-behavior: contain; }
+dialog#modal.sim-start-dialog .modal-body > * { flex: none; }
+dialog#modal.sim-start-dialog .modal-body > .pp { flex: 0 1 auto; min-height: 140px; }
+.sim-start-dialog .pp-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); column-gap: 14px; }
+.sim-start-dialog .sim-pd-intro { margin: 0; }
+.sim-start-dialog .psecs { margin: 0; }
+.sim-start-dialog .modal-btns button { min-width: 96px; min-height: 34px; }
+.sim-start-dialog .modal-btns .primary { font-weight: 650; }
+
+/* ---------------- the simulation layout: Simulation setup (left), Actions (right), the simulation panel (under them) */
+.sim-panel[hidden], .sim-dock[hidden], .sim-paneltabs[hidden] { display: none !important; }
+body[data-sim="on"] main { grid-template-columns: 280px minmax(0, 1fr) 330px; grid-template-rows: minmax(0, 1fr) var(--dock-h, 280px); }
+body[data-sim="on"] #outline { grid-column: 1; grid-row: 1; }
+body[data-sim="on"] #canvas-wrap { grid-column: 2; grid-row: 1; }
+body[data-sim="on"] #side { grid-column: 3; grid-row: 1; }
+body[data-sim="on"] #sim-dock { grid-column: 1 / -1; grid-row: 2; }
+body[data-sim="on"] #outline > .ol-header, body[data-sim="on"] #outline-body { display: none; }
+body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim="on"] #keys, body[data-sim="on"] #side-splitter, body[data-sim="on"] #side .tabs-more { display: none; }
+.sim-panel { display: flex; flex-direction: column; min-height: 0; }
+#side > .sim-panel { flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.sp-body { padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 10px; }
+#sim-setup .pp-list { max-height: min(44vh, 400px); }
+.sp-note { margin: -4px 0 0; }
+.sp-sec { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.sp-sec:last-child { border-bottom: 0; }
+.sp-h { margin: 2px 0 0; font-size: 13px; }
+.sp-h-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
+.sp-bulk-group { display: inline-flex; gap: 4px; flex: none; }
+button.sp-bulk { padding: 0; width: 28px; height: 28px; justify-content: center; color: var(--text); }
+button.sp-bulk:disabled { opacity: .38; cursor: default; }
+.sp-field { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; align-items: center; }
+.sp-field > label { font-size: 12.5px; font-weight: 600; }
+.sp-field > p { grid-column: 1 / -1; margin: 0; }
+.sp-field select, .sp-field input, .sim-test-form select, .sim-test-form input[type="text"], .sim-test-form input[type="number"] { min-width: 0; width: 100%; min-height: 30px; box-sizing: border-box; }
+.sp-actions { display: flex; flex-direction: column; gap: 4px; }
+.sp-actions.sp-inline { flex-direction: row; flex-wrap: wrap; }
+.sp-act { text-align: left; min-height: 32px; padding: 4px 10px; }
+.sp-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sp-primary { min-height: 34px; min-width: 104px; font-weight: 650; }
+.sp-disc { display: flex; flex-direction: column; gap: 4px; }
+.sp-toggle { display: flex; align-items: center; gap: 2px; align-self: flex-start; min-height: 28px; padding: 2px 4px; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; border-radius: 6px; }
+.sp-toggle:hover { background: var(--accent-soft); }
+.sim-test-form { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; align-items: center; }
+.sim-test-form > label { font-size: 12.5px; }
+/* Send test: the source's state under From, across the form (its address, lease or why it can't send) */
+.sim-t-note { grid-column: 1 / -1; margin: 0 0 4px; overflow-wrap: anywhere; }
+.sim-t-note:empty, .sim-t-one:empty { display: none; }
+#sim-t-need { margin: 4px 0 0; }
+.sim-t-cell { min-width: 0; }
+.sim-t-cell > [hidden] { display: none; }
+.sim-t-one { display: block; font-size: 12.5px; overflow-wrap: anywhere; padding: 4px 0; }
+.sim-test-form select:disabled, .sim-test-form input:disabled { opacity: 0.55; cursor: not-allowed; }
+.sim-test-form > label:has(+ select:disabled), .sim-test-form > label:has(+ span > input:disabled) { opacity: 0.6; }
+.sim-tests li > .mini { margin-left: 2px; }
+.sim-test-form > [hidden] { display: none; }
+.sim-tests { margin: 0; padding-left: 18px; font-size: 12px; }
+.sim-tests:empty { display: none; }
+.sim-tests li[data-ok="false"] { color: var(--error); }
+.sim-events { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+#sim-act-attrs:empty { display: none; }
+/* the simulation panel */
+.sim-dock { position: relative; z-index: var(--z-panel); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); border-top: 2px solid var(--sim); }
+.dock-splitter { position: absolute; left: 0; right: 0; top: -6px; height: 10px; z-index: calc(var(--z-panel) + 1); cursor: row-resize; touch-action: none; }
+.dock-splitter::before { content: ""; position: absolute; left: 50%; top: 3px; width: 48px; height: 4px; margin-left: -24px; border-radius: 2px; border-top: 1px solid var(--frame); border-bottom: 1px solid var(--frame); background: var(--panel); }
+.dock-splitter:hover::before, .dock-splitter.dragging::before, .dock-splitter:focus-visible::before { background: var(--accent); border-color: var(--accent); }
+.dock-splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sd { container: dock / inline-size; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sd-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.sd-group { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.sd-head select { min-height: 30px; }
+.sd-play { min-width: 88px; min-height: 34px; font-weight: 650; }
+.sd-btn, .sd-exit { min-height: 34px; padding: 4px 12px; }
+.sd-scale[hidden] { display: none; }
+.sd-pace { white-space: nowrap; }
+.sd-skipped { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.sd-skipped:empty { display: none; }
+.sd-spacer { flex: 1 1 0; min-width: 0; }
+.sd-time { font-size: 14px; font-weight: 650; white-space: nowrap; }
+.sd-notes { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; padding: 3px 10px; }
+.sd-notes > :empty { display: none; }
+.sd-notes:not(:has(> :not(:empty):not([hidden]))) { display: none; }
+.sd-follow { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-weight: 600; }
+.sd-follow[hidden] { display: none; }
+/* a storm: one line in the panel (all of it in its tooltip and to assistive technology; the banner says it too) */
+.sd .sim-storm { flex: none; margin: 2px 10px; padding: 2px 8px; font-size: 12px; border-width: 1.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-body > .sim-shapes { margin: -6px 0 0; }
+.sd-tabs { display: none; flex: none; gap: 4px; padding: 2px 10px 0; }
+.sd-tabs [role="tab"] { min-height: 26px; padding: 1px 12px; border-radius: 6px 6px 0 0; }
+.sd-tabs [aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
+.sd-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
+.sd-pane { display: flex; flex-direction: column; gap: 4px; min-height: 0; min-width: 0; padding: 4px 10px 6px; }
+.sd-status { border-right: 1px solid var(--border); }
+.sd-panehead { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.sd-h { margin: 0; font-size: 13px; }
+.sd-pane .sim-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
+.sd-pane > p { flex: none; margin: 0; }
+.sd-sttabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.sd-st[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
+.sd-dev { font-family: var(--font-mono); }
+.sim-log-filters { flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+#sim-log-filter { flex: 1 1 150px; min-width: 0; width: auto; margin: 0; }
+.sim-log-filters select { min-height: 28px; max-width: 100%; }
+.st-inline { padding: 0; overflow: visible; }
+@container dock (max-width: 900px) {
+  .sd-tabs { display: flex; }
+  .sd-body { grid-template-columns: minmax(0, 1fr); }
+  .sd-status { border-right: 0; }
+  .sd[data-pane="status"] .sd-log, .sd[data-pane="log"] .sd-status { display: none; }
+}
+.pi-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0 6px; }
+/* the playback state beside Play / Pause and Step */
+.sd-state { color: var(--muted); white-space: nowrap; min-width: 4.5em; }
+.sd-allsnd { font-size: 12px; white-space: nowrap; }
+/* the panel's tables: one line a row (the whole text in its tooltip, the packet inspector and to assistive technology), so that a low panel shows several rows */
+.sd table.sim-table { table-layout: fixed; }
+.sd table.sim-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-top: 1px; padding-bottom: 1px; }
+.sd-status table.sim-table th:nth-child(1) { width: 18%; }
+.sd-status table.sim-table th:nth-child(2) { width: 30%; }
+.sd-status table.sim-table th:nth-child(3) { width: 18%; }
+.sd-log table.sim-table th:nth-child(1) { width: 9.5ch; }
+.sd-log table.sim-table th:nth-child(2), .sd-log table.sim-table th:nth-child(3) { width: 12%; }
+.sd-log table.sim-table th:nth-child(4) { width: 13%; }
+.sd-log table.sim-table th:nth-child(5) { width: 17%; }
+.sd-log table.sim-table th:nth-child(6) { width: 9%; }
+.sd-lognote { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-lognote:empty::before { content: "\00a0"; }
+.sd-pane .sd-panehead { min-height: 0; }
+.sd-pane { padding-top: 2px; padding-bottom: 2px; gap: 2px; }
+.sd .sim-log-filters select, .sd #sim-log-filter { min-height: 26px; padding-top: 1px; padding-bottom: 1px; }
+.sd .sim-storm { margin-top: 1px; margin-bottom: 1px; padding-top: 1px; padding-bottom: 1px; }
+.sd table.sim-table thead th { padding-top: 1px; padding-bottom: 1px; }
+
+/* ---------------- Senders (Start simulation…, Simulation setup) */
+.snd { display: flex; flex-direction: column; min-height: 0; gap: 4px; }
+.snd-head { margin: 0; font-size: 13.5px; }
+.snd-toggle { width: 100%; text-align: left; font-size: 13.5px; }
+.snd-sum { overflow-wrap: anywhere; }
+.snd-body { position: relative; display: flex; flex-direction: column; gap: 5px; min-height: 0; }
+.snd-body[hidden] { display: none; }
+.snd-find { width: 100%; min-height: 28px; box-sizing: border-box; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); color: var(--text); }
+.snd-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.snd-by[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
+.snd-menu { position: absolute; z-index: var(--z-menu); min-width: 180px; max-height: 240px; overflow: auto; }
+.snd-menu[hidden] { display: none; }
+.snd-menuitem { display: block; width: 100%; text-align: left; }
+.snd-list { min-height: 0; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 8px; padding: 2px 8px 6px; background: var(--canvas); }
+#sim-setup .snd-list { max-height: min(40vh, 320px); }
+.snd-group { padding: 2px 0; }
+.snd-fold { display: flex; align-items: center; gap: 2px; width: 100%; min-height: 26px; padding: 2px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-align: left; border-radius: 4px; }
+.snd-fold:hover { background: var(--accent-soft); }
+.snd-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); column-gap: 12px; }
+.snd-items[hidden] { display: none; }
+.snd-item { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12.5px; cursor: pointer; min-width: 0; }
+.snd-item input { flex: none; width: 16px; height: 16px; margin: 0; }
+.snd-icon { flex: none; }
+.snd-icon .icon { stroke: currentColor; stroke-width: 1.8; }
+.snd-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.snd-badge { flex: none; font-size: 10px; font-weight: 700; padding: 0 3px; border: 1px solid var(--frame); border-radius: 3px; color: var(--text); }
+dialog#modal.sim-start-dialog .modal-body > .snd { flex: 0 1 auto; min-height: 150px; }
+dialog#modal.sim-start-dialog .snd-body { flex: 1 1 auto; }
+dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
+/* a sender's badge in the diagram: a framed ▶ on its box's top left corner (shape, not colour, says it), never over a text */
+.layer-sim-senders, .layer-sim-senders * { pointer-events: none; }
+/* a device's lifecycle: powered off, booting (symbol and word, never the colour alone) */
+.sim-power rect { fill: var(--panel); stroke: var(--muted); stroke-width: 1; }
+.sim-power text { font-size: 9.5px; font-weight: 600; fill: var(--text); }
+/* the LED: green operational, red powered off, blue booting; hollow grey without a power state */
+.sim-power .sim-led { fill: var(--ok); stroke: var(--panel); stroke-width: 1; }
+.sim-power[data-power="off"] rect { stroke: var(--error); stroke-width: 1.4; }
+.sim-power[data-power="off"] .sim-led { fill: var(--error); }
+.sim-power[data-power="booting"] rect { stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 4 2; }
+.sim-power[data-power="booting"] .sim-led { fill: var(--accent); }
+.sim-power[data-power="passive"] .sim-led, .sim-power[data-power="external"] .sim-led, .sim-power[data-power="unknown"] .sim-led { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+.sim-power[data-power="passive"] text, .sim-power[data-power="external"] text, .sim-power[data-power="unknown"] text { fill: var(--muted); }
+.sim-querier rect { fill: var(--panel); stroke: var(--accent); stroke-width: 1.2; }
+.sim-querier text { font-size: 9.5px; font-weight: 600; fill: var(--accent); }
+.sim-querier[data-role="starting"] rect { stroke-dasharray: 3 2; }
+.sim-querier[data-role="standby"] rect, .sim-querier[data-role="none"] rect { stroke: var(--muted); }
+.sim-querier[data-role="standby"] text, .sim-querier[data-role="none"] text { fill: var(--muted); font-weight: 500; }
+.sim-querier[data-role="none"] rect { stroke-dasharray: 2 2; }
+/* a snooping switch's role per VLAN: one badge per VLAN with snooping enabled, a sign and words besides the colour */
+.sim-snoop-vlan rect { fill: var(--panel); stroke: var(--control-border); stroke-width: 1; }
+.sim-snoop-vlan text { font-size: 9.5px; font-weight: 500; fill: var(--text); }
+.sim-snoop-probe { font-size: 9.5px; font-weight: 600; }
+.sim-snoop-vlan .sim-snoop-icon { font-size: 9px; fill: var(--muted); }
+.sim-snoop-vlan[data-role="querier"] rect, .sim-snoop-vlan[data-role="starting"] rect { stroke: var(--accent); stroke-width: 1.2; }
+.sim-snoop-vlan[data-role="querier"] text, .sim-snoop-vlan[data-role="starting"] text { fill: var(--accent); font-weight: 600; }
+.sim-snoop-vlan[data-role="starting"] rect { stroke-dasharray: 3 2; }
+.sim-snoop-vlan[data-querier="none"] rect { stroke: var(--muted); stroke-dasharray: 2 2; }
+.sim-snoop-vlan[data-querier="none"] text:not(.sim-snoop-icon) { fill: var(--muted); }
+.sim-snoop-vlan[data-role="off"] rect, .sim-snoop-vlan[data-role="booting"] rect { stroke: var(--muted); stroke-dasharray: none; }
+.sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
+.sim-sender path { fill: var(--text); }
+/* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
+@media (max-width: 1100px) {
+  body[data-sim="on"] main { grid-template-columns: 236px minmax(0, 1fr) 286px; }
+}
+.sim-paneltabs { display: none; }
+#spt-diagram { display: none; }
+@media (max-width: 860px) {
+  body[data-sim="on"] main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto minmax(0, 0.9fr) var(--dock-h, 240px); }
+  body[data-sim="on"] #canvas-wrap { grid-column: 1; grid-row: 1; }
+  body[data-sim="on"] .sim-paneltabs { grid-column: 1; grid-row: 2; display: flex; gap: 4px; padding: 4px 10px 0; background: var(--panel); border-top: 1px solid var(--border); }
+  body[data-sim="on"] #outline, body[data-sim="on"] #side { grid-column: 1; grid-row: 3; border-top: 0; border-left: 0; border-right: 0; }
+  body[data-sim="on"] #sim-dock { grid-column: 1; grid-row: 4; }
+  body[data-sim="on"][data-sim-tab="setup"] #side, body[data-sim="on"]:not([data-sim-tab="setup"]) #outline { display: none; }
+  .sim-paneltabs [role="tab"] { min-height: 30px; padding: 3px 14px; border-radius: 6px 6px 0 0; }
+  .sim-paneltabs [aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
+  #sim-setup .pp-list { max-height: none; }
+}
+/* narrow and not tall (a small or strongly zoomed window): Diagram, Setup and Actions take turns above the simulation panel */
+@media (max-width: 860px) and (max-height: 700px) {
+  body[data-sim="on"] main { grid-template-rows: minmax(0, 1fr) auto var(--dock-h, 120px); }
+  body[data-sim="on"] #canvas-wrap, body[data-sim="on"] #outline, body[data-sim="on"] #side { grid-column: 1; grid-row: 1; }
+  body[data-sim="on"] .sim-paneltabs { grid-row: 2; }
+  body[data-sim="on"] #sim-dock { grid-row: 3; }
+  body[data-sim="on"] #spt-diagram { display: inline-block; }
+  body[data-sim="on"]:not([data-sim-tab="diagram"]) #canvas-wrap { visibility: hidden; }
+  body[data-sim="on"][data-sim-tab="diagram"] #side, body[data-sim="on"][data-sim-tab="diagram"] #outline { display: none; }
+}
+/* the simulation panel's toolbar in a narrower panel: the labels give their room (the controls keep their names), and in a
+   narrow one the pacing's description goes to a second row, so that the clock and Exit stay on the first */
+@container dock (max-width: 1100px) {
+  .sd-group > label:not(.check) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .sd-long { display: none; }
+  .sd-head { gap: 4px 10px; }
+}
+/* a medium panel: the log's filters stay on one row (the panes' headings remain for assistive technology) */
+@container dock (max-width: 1300px) {
+  .sd-log .sd-h, .sd-status .sd-h { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .sd .sim-log-filters select { max-width: 7.5em; }
+  .sd #sim-log-filter { flex-basis: 100px; }
+}
+/* (narrower still: the filters a little smaller, so that they keep to one row beside the status and the panel to three rows) */
+@container dock (max-width: 1000px) {
+  .sd .sim-log-filters { gap: 4px; }
+  .sd .sim-log-filters select { max-width: 6.2em; padding-left: 4px; padding-right: 2px; }
+  .sd #sim-log-filter { flex-basis: 70px; }
+}
+@container dock (max-width: 860px) {
+  .sd-head { gap: 4px 8px; padding: 4px 8px; }
+  .sd-pace { order: 99; flex-basis: 100%; }
+  #sim-pace { max-width: 8em; }
+  .sd-play { min-width: 64px; }
+}
+/* the in-diagram menu */
+.sim-menu { position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column; min-width: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 8px; box-shadow: 0 6px 20px var(--shadow); padding: 4px; }
+.sim-menu-title { font-size: 11.5px; color: var(--muted); padding: 2px 8px 4px; max-width: 260px; overflow-wrap: anywhere; }
+.sim-menu-state { font-size: 11.5px; padding: 0 8px 5px; max-width: 260px; overflow-wrap: anywhere; color: var(--text); }
+.sim-menu-state[data-power="off"]::before { content: "\23FB\00A0"; color: var(--error); }
+.sim-menu-state[data-power="booting"]::before { content: "\21BB\00A0"; color: var(--accent); }
+.sim-menu-state[data-power="operational"]::before { content: "\25CF\00A0"; color: var(--ok); }
+.sim-menu-state[data-power="passive"]::before, .sim-menu-state[data-power="external"]::before, .sim-menu-state[data-power="unknown"]::before { content: "\25CB\00A0"; color: var(--muted); }
+.sim-menu-item { text-align: left; border: none; background: transparent; padding: 5px 10px; border-radius: 5px; color: var(--text); }
+.sim-menu-item:hover, .sim-menu-item:focus-visible { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
+/* the ARP and MAC tables */
+.sim-table-panel { position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column; max-height: min(70vh, 520px, calc(100vh - 16px)); max-width: calc(100vw - 16px); background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 24px var(--shadow); }
+.st-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border-bottom: 1px solid var(--border); cursor: move; touch-action: none; }
+.st-title { flex: 1; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.st-move, .st-close { border: 1px solid var(--control-border); background: var(--raised); color: var(--text); border-radius: 5px; min-width: 26px; min-height: 24px; }
+.st-body { overflow: auto; padding: 6px 8px 10px; }
+.st-timers { margin: 0 0 6px; font-size: 11.5px; display: grid; gap: 1px; }
+.st-timers div { display: flex; flex-wrap: wrap; gap: 0 6px; }
+.st-timers dt { font-weight: 600; }
+.st-timers dd { margin: 0; color: var(--muted); }
+.st-table caption { text-align: left; font-weight: 600; font-size: 12px; padding: 4px 0; }
+.st-scroll { overflow-x: auto; }
+
+/* ---------------- the simulation's Layer 1–4 parameters (start dialog, Simulation window) */
+dialog#modal.sim-start-dialog { max-width: 720px; }
+dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavior: contain; }
+.psecs { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.psec-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.psec { border: 1px solid var(--border); border-radius: 8px; }
+.psec-head { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13.5px; }
+.psec-toggle { flex: 1 1 auto; text-align: left; border: none; background: none; font: inherit; font-weight: 600; color: var(--text); padding: 6px 10px; border-radius: 8px; min-width: 0; }
+.psec-toggle:hover { background: var(--accent-soft); }
+.psec-mod { color: var(--accent); padding-right: 10px; font-weight: 600; }
+.psec-body { padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+.psec-body[hidden], .sp-disc > [hidden] { display: none; }
+.prow { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: flex-start; padding: 4px 0 4px 8px; border-left: 3px solid transparent; }
+.prow.modified { border-left-color: var(--accent); }
+.pmod { order: 9; flex-basis: 100%; font-size: 11px; font-weight: 700; color: var(--accent); }
+.pmod[hidden] { display: none; }
+.pfield { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pfield > label { font-size: 12px; font-weight: 600; }
+.pinput { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pinput input, .pinput select { flex: 1 1 auto; min-width: 0; max-width: 16em; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); }
+.pinput input[aria-invalid="true"] { border-color: var(--error); border-width: 2px; }
+.punit { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.phelp { margin: 0; overflow-wrap: anywhere; }
+.perr { margin: 0; }
+.perr[hidden] { display: none; }
+.psec-foot { display: flex; justify-content: flex-end; }
+/* the network events in effect, each with its way back */
+/* Network events: four actions, each a heading with its form */
+.sim-ne { margin: 2px 0; }
+#side .sim-ne-h, .sim-ne > h4.sim-ne-h { margin: 0; font-size: inherit; font-weight: normal; text-transform: none; letter-spacing: normal; color: inherit; }
+.sim-ne-h .sp-toggle { font-weight: 600; }
+.sim-ne > [id^="sim-ne-"] { padding: 4px 0 8px 14px; }
+.sim-ev-form .sp-row { margin-top: 6px; }
+.sim-i-state { margin: 4px 0 0; overflow-wrap: anywhere; }
+.sim-i-state:empty { display: none; }
+/* an interface shut or flapping: the form marked (a bar and a tint), its state in words with an icon */
+.sim-i-form[data-state] { border-left: 3px solid var(--accent); padding-left: 8px; background: var(--accent-soft); border-radius: 4px; }
+.sim-i-form[data-state="shut"] { border-left-color: var(--error); }
+.sim-i-form[data-state] .sim-i-state { font-weight: 600; }
+/* Active events: compact rows; the state by icon and word, bars with their numbers */
+.sim-ev-bar-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; justify-content: space-between; }
+.sim-ev-bar-top p { margin: 0; }
+.sim-events li.sim-ev { display: block; font-size: 12.5px; padding: 5px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); min-width: 0; }
+.sim-ev-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.sim-ev-icon { width: 1.1em; text-align: center; }
+.sim-ev-title { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.sim-ev-status { font-size: 11.5px; padding: 0 5px; border: 1px solid currentColor; border-radius: 9px; }
+.sim-ev-time { margin-left: auto; font-size: 11.5px; }
+.sim-ev[data-status="running"] .sim-ev-icon, .sim-ev[data-status="running"] .sim-ev-status, .sim-ev[data-status="queued"] .sim-ev-status { color: var(--accent); }
+.sim-ev[data-status="completed"] .sim-ev-icon, .sim-ev[data-status="completed"] .sim-ev-status { color: var(--ok); }
+.sim-ev[data-status="failed"] .sim-ev-icon, .sim-ev[data-status="failed"] .sim-ev-status { color: var(--error); }
+.sim-ev[data-status="paused"] .sim-ev-icon, .sim-ev[data-status="paused"] .sim-ev-status { color: var(--warn); }
+.sim-ev-target, .sim-ev-summary { overflow-wrap: anywhere; min-width: 0; }
+.sim-ev-target { color: var(--muted); }
+.sim-ev-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: 2px 0; }
+.sim-ev-progress { flex: 1 1 90px; min-width: 60px; max-width: 220px; height: 8px; accent-color: var(--accent); }
+.sim-ev-count { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.sim-ev-bar { display: flex; flex: 1 1 90px; min-width: 60px; max-width: 220px; height: 8px; border: 1px solid var(--control-border); border-radius: 4px; overflow: hidden; background: var(--canvas); }
+.sim-ev-seg { display: block; flex-basis: 0; min-width: 2px; }
+.sim-ev-seg.ok { background: var(--ok); }
+.sim-ev-seg.fail { background: var(--error); background-image: repeating-linear-gradient(45deg, transparent 0 3px, var(--panel) 3px 4px); }
+.sim-ev-seg.pending { background: var(--muted); opacity: 0.45; }
+.sim-ev-seg.unknown { background: transparent; }
+.sim-ev-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 8px; margin-top: 3px; }
+.sim-ev-details { flex: 1 1 100%; min-width: 0; }
+.sim-ev-details summary { cursor: pointer; font-size: 12px; width: fit-content; }
+.sim-ev-details ul { margin: 2px 0 4px; padding-left: 16px; overflow-wrap: anywhere; }
+.sim-ev-other .sim-ev-title { font-weight: normal; }
+.sim-ev-other .sim-ev-actions { margin-top: 2px; }
+#sim-act-events-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* a device's Simulation section in the Edit tab */
+.fgroup-disclosure { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.fgroup-toggle { border: none; background: none; padding: 0; font: inherit; font-weight: inherit; color: inherit; text-align: left; }
+.fgroup-toggle::before { content: '▸'; display: inline-block; width: 1.1em; color: var(--muted); }
+.fgroup-toggle[aria-expanded="true"]::before { content: '▾'; }
+.fgroup-toggle:hover { text-decoration: underline; }
+.sim-attrs { display: flex; flex-direction: column; gap: 10px; }
+.sim-attrs[hidden] { display: none; }
+.sim-attr.overridden { border-left: 3px solid var(--accent); padding-left: 6px; }
+.sim-attr-state { margin: 0; overflow-wrap: anywhere; }
+.sim-attr > button { align-self: flex-start; }
+.sim-live { margin-bottom: 10px; }
+.fgroup-disclosure > span { text-transform: none; letter-spacing: normal; font-weight: 400; }
+
+/* a host card: the button that adds a guest, as wide as its text */
+.guest-add { margin-top: 4px; }
+.guest-add > button { width: auto; }
+
+/* a host's interior in the physical view (diagram/virtual.ts): virtual switches and container networks as bars,
+   port groups as pills, the guests' boxes, and the wires from their vNICs / veths and from the host's ports */
+.vbar-box { fill: var(--group-fill); stroke: var(--dev-stroke); stroke-width: 1.2; }
+.cnet-bar .vbar-box { stroke-dasharray: 5 3; }
+.vbar-title { fill: var(--text); font-weight: 600; cursor: pointer; }
+.pg-pill { cursor: pointer; }
+.pg-box { fill: var(--pill); stroke: var(--member); stroke-width: 1; }
+.pg-name, .pg-sub { fill: var(--text); }
+.pg-name { font-weight: 600; }
+.vlane-title { fill: var(--text); font-style: italic; }
+.vwire { fill: none; stroke: var(--member); stroke-width: 1.4; stroke-linejoin: round; }
+.vwire-uplink, .vwire-passthrough, .vwire-parent { stroke-width: 2; }
+.has-selection .hl .vbar-box, .has-selection .hl.pg-pill .pg-box, .selected .vbar-box, .selected.pg-pill .pg-box { stroke: var(--sel) !important; stroke-width: 2.2 !important; }
+.has-selection .hl.vwire { stroke: var(--sel); stroke-width: 2.4; }
+/* a container network in the logical view (a bridge behind its host's NAT, an overlay): dashed */
+.cnet-net .net-box { stroke-dasharray: 7 4; }

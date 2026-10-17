@@ -9,6 +9,7 @@
  */
 import { EXAMPLES } from '../generated/examples';
 import { App } from '../ui/app';
+import { outlineStability } from './outline-check';
 
 interface Check {
   name: string;
@@ -134,7 +135,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     }
 
     // a long device form: every interface card open
-    app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+    app.loadExampleNamed('enterprise-wan.yaml');
     app.select('device:hq-core1');
     await tick();
     const cards = doc.querySelectorAll('#side-body details');
@@ -151,9 +152,337 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     const r = lastInput.getBoundingClientRect();
     state('focusing the last field of the form', r.bottom > vh() || r.top < 0 ? ['the focused field is outside the window'] : []);
     state('the model outline is longer than its panel', scrollsInside('#outline', true));
+    {
+      // the routing services of a device (its Protocols section) and the suggestions to enable one: inside the panel, nothing cut off sideways
+      app.loadExampleNamed('consistency-checks.yaml');
+      app.select('device:r3');
+      app.showTab('edit');
+      await tick();
+      const why: string[] = [];
+      const side = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const els = doc.querySelectorAll('#side-body .svc-card, #side-body button.chip, #side-body select[data-t="enable-service"], #side-body [data-group="protocols"] input');
+      if (els.length < 4) why.push(`the Protocols section shows ${els.length} parts`);
+      for (let i = 0; i < els.length; i++) {
+        const r = els[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side.left - 0.5 || r.right > side.right + 0.5) why.push(`"${(els[i].textContent || els[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways (${Math.round(r.left)}–${Math.round(r.right)} of ${Math.round(side.left)}–${Math.round(side.right)})`);
+      }
+      const sb = q('#side-body') as HTMLElement;
+      if (sb.scrollWidth > sb.clientWidth + 1) why.push(`the Edit tab scrolls sideways (${sb.scrollWidth} > ${sb.clientWidth})`);
+      state('a device’s Protocols section and its suggestions fit the panel', why.concat(problems()));
+      // an interface with its input helpers and the VRF combobox, open
+      app.loadExampleNamed('addressing.yaml');
+      app.select('iface:core:ge-0/0/3');
+      app.showTab('edit');
+      await tick();
+      const vrf = q('#side-body input[role="combobox"]') as HTMLInputElement | null;
+      const hw: string[] = [];
+      if (vrf) {
+        vrf.focus();
+        vrf.value = '';
+        vrf.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+      } else hw.push('no VRF combobox');
+      const side2 = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const parts = doc.querySelectorAll('#side-body .helpers button, #side-body ul.combo-list, #side-body input[role="combobox"]');
+      if (parts.length < 3) hw.push(`the helpers show ${parts.length} parts`);
+      for (let i = 0; i < parts.length; i++) {
+        const r = parts[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side2.left - 0.5 || r.right > side2.right + 0.5) hw.push(`"${(parts[i].textContent || parts[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      }
+      const sb2 = q('#side-body') as HTMLElement;
+      if (sb2.scrollWidth > sb2.clientWidth + 1) hw.push(`the Edit tab scrolls sideways (${sb2.scrollWidth} > ${sb2.clientWidth})`);
+      state('an interface’s input helpers and the open VRF combobox fit the panel', hw.concat(problems()));
+      if (vrf) vrf.blur();
+      // a trunk port's VLANs: the chips, the open VLAN combobox, the Native VLAN picker, the suggestions and the mode badge; the Objects list's VLAN tags
+      app.loadExampleNamed('vlan-ports.yaml');
+      app.select('iface:acc3:Gi0/1');
+      app.showTab('edit');
+      await tick();
+      const vc = q('#side-body input[data-t="vlan-combo"]') as HTMLInputElement | null;
+      const vw: string[] = [];
+      if (vc) {
+        vc.focus();
+        vc.value = '';
+        vc.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+      } else vw.push('no VLAN combobox');
+      const side3 = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const vparts = doc.querySelectorAll('#side-body .vlan-chip, #side-body ul.combo-list, #side-body input[data-t="vlan-combo"], #side-body select[data-t="vlan-native"], #side-body button[data-act="vlan-copy"], #side-body .mode-badge');
+      if (vparts.length < 6) vw.push(`the port's VLANs show ${vparts.length} parts`);
+      for (let i = 0; i < vparts.length; i++) {
+        const r = vparts[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side3.left - 0.5 || r.right > side3.right + 0.5) vw.push(`"${(vparts[i].textContent || vparts[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      }
+      const sb3 = q('#side-body') as HTMLElement;
+      if (sb3.scrollWidth > sb3.clientWidth + 1) vw.push(`the Edit tab scrolls sideways (${sb3.scrollWidth} > ${sb3.clientWidth})`);
+      // a cable's row in the Objects list keeps its name readable beside the VLAN tag
+      const olRow = q('#outline-body .ol-item[data-ref="link:wrong-native"]');
+      const olLabel = olRow ? (olRow.querySelector('.ol-label') as HTMLElement | null) : null;
+      if (olRow && !olRow.querySelector('.ol-vlan')) vw.push('the Objects list shows no VLAN tag for the cable');
+      if (olLabel && olLabel.getBoundingClientRect().width > 0 && olLabel.getBoundingClientRect().width < 40) vw.push(`a cable's name in the Objects list is squeezed to ${Math.round(olLabel.getBoundingClientRect().width)}px by its VLAN tag`);
+      state('a trunk port’s VLANs (chips, the open combobox, native VLAN, suggestions) and the Objects list’s VLAN tags fit', vw.concat(problems()));
+      if (vc) vc.blur();
+      // a hypervisor: the Services card with its Hypervisor configuration and a virtual switch open, its guests with + VM
+      app.loadExampleNamed('virtualization.yaml');
+      app.select('device:hv1');
+      app.showTab('edit');
+      await tick();
+      const hw2: string[] = [];
+      const hcard = q('#side-body details[data-svc-card="hypervisor"]') as HTMLDetailsElement | null;
+      if (hcard) hcard.open = true;
+      else hw2.push('no Hypervisor card');
+      const vsc = q('#side-body details[data-vswitch="vSwitch0"]') as HTMLDetailsElement | null;
+      if (vsc) vsc.open = true;
+      else hw2.push('no virtual switch card');
+      await tick();
+      const side4 = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const hparts = doc.querySelectorAll('#side-body input[data-act="netsvc"], #side-body details[data-svc-card] summary, #side-body details[data-vswitch] input, #side-body details[data-vswitch] select, #side-body button[data-act="add-guest"], #side-body [data-derived^="guests-"] button');
+      if (hparts.length < 8) hw2.push(`the Hypervisor's configuration shows ${hparts.length} parts`);
+      for (let i = 0; i < hparts.length; i++) {
+        const r = hparts[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side4.left - 0.5 || r.right > side4.right + 0.5) hw2.push(`"${(hparts[i].textContent || hparts[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      }
+      const sb4 = q('#side-body') as HTMLElement;
+      if (sb4.scrollWidth > sb4.clientWidth + 1) hw2.push(`the Edit tab scrolls sideways (${sb4.scrollWidth} > ${sb4.clientWidth})`);
+      state('a hypervisor’s Services card (its configuration and a virtual switch open, its guests with + VM) fits the panel', hw2.concat(problems()));
+      app.loadExampleNamed('enterprise-wan.yaml');
+      await tick();
+      // the tool windows of Analyze: inside the browser window (docked at the bottom when it is narrow), their title
+      // bar's buttons shown, nothing in them cut off sideways (a table scrolls in its own box); the page never scrolls
+      const tws: string[] = [];
+      const view = { w: doc.documentElement.clientWidth, h: doc.documentElement.clientHeight };
+      const narrow = (doc.defaultView as Window).innerWidth <= 860;
+      const checkWindow = (name: string): void => {
+        const w = q('#toolwin') as HTMLElement;
+        const r = w.getBoundingClientRect();
+        if (w.hidden || r.width < 1) {
+          tws.push(`${name}: not shown`);
+          return;
+        }
+        if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) tws.push(`${name}: leaves the browser window (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')})`);
+        if (narrow && (!doc.body.classList.contains('tw-docked') || Math.abs(r.width - view.w) > 2)) tws.push(`${name}: not docked full-width in a narrow window`);
+        for (const sel of ['.tw-close', '.tw-collapse', '#tw-title']) {
+          const e = w.querySelector(sel) as HTMLElement | null;
+          const er = e ? e.getBoundingClientRect() : null;
+          if (!er || er.width < 1 || er.right > r.right + 0.5 || er.left < r.left - 0.5) tws.push(`${name}: ${sel} is not shown whole`);
+        }
+        const body = q('#tw-body') as HTMLElement;
+        if (body.scrollWidth > body.clientWidth + 1) tws.push(`${name}: the window scrolls sideways (${body.scrollWidth} > ${body.clientWidth})`);
+        const els = w.querySelectorAll('button, input, select, label, h3, p');
+        const br = body.getBoundingClientRect();
+        for (let i = 0; i < els.length; i++) {
+          const e = els[i] as HTMLElement;
+          if (e.closest('.table-wrap, .addr-scroll, .sim-scroll, .tw-head')) continue;
+          const er = e.getBoundingClientRect();
+          if (er.width < 1) continue;
+          if (er.left < br.left - 0.5 || er.right > br.right + 0.5) tws.push(`${name}: "${(e.textContent || e.getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the window sideways`);
+        }
+        if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) tws.push(`${name}: the page scrolls`);
+      };
+      void app.openAddressing();
+      await tick();
+      checkWindow('Addressing overview');
+      app.select('device:hq-fw');
+      app.openFocusWindow(true);
+      await tick();
+      checkWindow('Focus');
+      app.exitFocus();
+      app.select(null);
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: true });
+      app.openTrace();
+      app.runTrace();
+      await tick();
+      checkWindow('Trace path');
+      app.openSpof();
+      await tick();
+      checkWindow('Single points of failure');
+      app.closeToolWindow();
+      await tick();
+      state('the tool windows (addressing, focus, trace path, single points of failure) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
+      // Start simulation…: its dialog with every layer's section open fits the window; nothing in it is wider than the dialog
+      {
+        const why: string[] = [];
+        void app.openStartDialog();
+        await tick();
+        for (const b of Array.from(doc.querySelectorAll('#modal .psec-toggle')) as HTMLElement[]) b.click();
+        await tick();
+        const dlg = q('#modal') as HTMLElement;
+        const dr = dlg.getBoundingClientRect();
+        if (dr.left < -0.5 || dr.top < -0.5 || dr.right > view.w + 0.5 || dr.bottom > view.h + 0.5) why.push('the start dialog leaves the browser window');
+        for (const e of Array.from(dlg.querySelectorAll('input, select, button, label, .phelp')) as HTMLElement[]) {
+          const r = e.getBoundingClientRect();
+          if (r.width && (r.right > dr.right + 0.5 || r.left < dr.left - 0.5)) why.push(`start dialog: ${e.tagName.toLowerCase()} ${e.id || e.textContent} is wider than the dialog`);
+        }
+        const start = q('#modal [data-value="start"]') as HTMLElement;
+        const sr = start.getBoundingClientRect();
+        if (sr.bottom > view.h + 0.5 || sr.width < 1) why.push('the Start button is not in view');
+        if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) why.push('with the start dialog: the page scrolls');
+        (q('#modal [data-value="cancel"]') as HTMLElement).click();
+        await tick();
+        state('the start dialog with all its sections open fits the browser window; its fields wrap, the page does not scroll', why.slice(0, 6).concat(problems()));
+      }
+      // the protocol simulation: its layout at this size (Simulation setup, the diagram, Actions, the simulation panel under
+      // them; below 860 px Setup and Actions as tabs above the panel), each region whole and inside the window, none on
+      // another, nothing in them wider than they are; the packet inspector inside the window; the page never scrolls
+      {
+        const why: string[] = [];
+        app.startProtocolSimulation();
+        const ctl = app.simController()!;
+        ctl.setPlaying(false);
+        ctl.runTo(15000);
+        app.select('device:hq-rtr1');
+        ctl.showTable('arp', 'hq-rtr1');
+        await tick();
+        const fl = ctl.sim.engine.flights.filter((f) => !!f.hdr).slice(-1)[0];
+        if (fl) ctl.inspectFlight(fl.id);
+        // a layer of parameters open, Send test's options open, an event in effect
+        (q('#sim-pw-l1-btn') as HTMLElement).click();
+        (q('#sim-setup-senders-toggle') as HTMLElement).click();
+        (q('#sim-t-more-toggle') as HTMLElement).click();
+        // Send test filled in (its longest form: a source with several interfaces, a destination with several, a series)
+        const tset = (id: string, v: string, ev = 'change'): void => {
+          const e = q('#' + id) as HTMLInputElement | HTMLSelectElement;
+          e.value = v;
+          e.dispatchEvent(new Event(ev));
+        };
+        tset('sim-t-type', 'unicast');
+        tset('sim-t-from', 'hq-rtr1');
+        tset('sim-t-to', 'hq-core1');
+        tset('sim-t-kind', 'tcp');
+        tset('sim-t-port', '443', 'input');
+        tset('sim-t-count', '100', 'input');
+        // every action of Network events open, the send sent: an event in Active events with its details open
+        for (const id of ['sim-ne-join-toggle', 'sim-ne-stream-toggle', 'sim-ne-iface-toggle']) (q('#' + id) as HTMLElement).click();
+        tset('sim-i-dev', 'hq-rtr1');
+        (q('#sim-t-send') as HTMLElement).click();
+        await tick();
+        const evd = q('#sim-events li[data-kind="send"] details') as HTMLDetailsElement | null;
+        if (evd) evd.open = true;
+        ctl.sim.powerOff('hq-rtr2');
+        ctl.refresh(true);
+        await tick();
+        const narrowSim = (doc.defaultView as Window).innerWidth <= 860;
+        // narrow and short: Diagram, Setup and Actions take turns above the panel
+        const shortSim = narrowSim && (q('#spt-diagram') as HTMLElement).getClientRects().length > 0;
+        const tabRegion = (): string => ({ diagram: 'canvas-wrap', setup: 'outline', actions: 'side' } as { [k: string]: string })[doc.body.getAttribute('data-sim-tab') || 'actions'];
+        const rect = (id: string): DOMRect => (q('#' + id) as HTMLElement).getBoundingClientRect();
+        const inside = (name: string, r: DOMRect): void => {
+          if (r.width < 1 || r.height < 1) why.push(`${name}: not shown`);
+          else if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) why.push(`${name}: leaves the browser window (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')})`);
+        };
+        const apart = (ids: string[]): void => {
+          for (let i = 0; i < ids.length; i++)
+            for (let j = i + 1; j < ids.length; j++) {
+              const a = rect(ids[i]);
+              const b = rect(ids[j]);
+              const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+              const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+              if (w > 1 && h > 1) why.push(`#${ids[i]} and #${ids[j]} overlap`);
+            }
+        };
+        const sideways = (id: string): void => {
+          const e = q('#' + id) as HTMLElement;
+          if (e.scrollWidth > e.clientWidth + 1) why.push(`#${id} scrolls sideways (${e.scrollWidth} > ${e.clientWidth})`);
+        };
+        const regions = (): string[] => (shortSim ? [tabRegion(), 'sim-paneltabs', 'sim-dock'] : narrowSim ? ['canvas-wrap', 'sim-paneltabs', tabRegion() === 'outline' ? 'outline' : 'side', 'sim-dock'] : ['outline', 'canvas-wrap', 'side', 'sim-dock']);
+        // a window with almost no room under the toolbar (300 % zoom): the clock and Exit stay reachable, nothing more is asked
+        const tiny = (q('main') as HTMLElement).clientHeight < 120;
+        const layoutOk = (): void => {
+          if (tiny) {
+            for (const id of ['sim-play', 'sim-exit']) inside('#' + id, rect(id));
+            if (rect('sim-exit').top < (q('main') as HTMLElement).getBoundingClientRect().top - 0.5) why.push('#sim-exit is under the toolbar');
+            return;
+          }
+          for (const id of regions()) inside('#' + id, rect(id));
+          apart(regions());
+          for (const id of ['sim-play', 'sim-step', 'sim-speed', 'sim-time', 'sim-exit']) inside('#' + id, rect(id));
+          if (regions().indexOf('canvas-wrap') >= 0 && rect('canvas-wrap').height < 80) why.push(`the diagram keeps only ${Math.round(rect('canvas-wrap').height)} px`);
+          sideways('sim-dock-body');
+          sideways('sim-actions');
+          sideways('outline');
+        };
+        layoutOk();
+        if (narrowSim) {
+          if ((q('#sim-paneltabs') as HTMLElement).getBoundingClientRect().height < 1) why.push('narrow: no tabs above the panel');
+          for (const t of shortSim ? ['diagram', 'setup', 'actions'] : ['setup', 'actions']) {
+            (q('#spt-' + t) as HTMLElement).click();
+            await tick();
+            if (!tiny && rect(tabRegion()).height < 1) why.push(`narrow: the ${t} tab shows nothing`);
+            if (t === 'setup' && rect('side').height > 0) why.push('narrow: the Setup tab does not show the setup in place of the actions');
+            layoutOk();
+          }
+        } else if (!(q('#sim-paneltabs') as HTMLElement).hidden && rect('sim-paneltabs').height > 0) why.push('wide: the Setup / Actions tabs are shown');
+        const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
+        if (fl && !pi) why.push('the packet inspector did not open');
+        if (pi) inside('the packet inspector', pi.getBoundingClientRect());
+        if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) why.push('in the simulation layout: the page scrolls');
+        app.exitSimulation();
+        await tick();
+        if (doc.querySelector('.sim-table-panel')) why.push('the packet inspector stays open after Exit simulation');
+        if (!(q('#sim-dock') as HTMLElement).hidden || (q('#outline-body') as HTMLElement).getBoundingClientRect().width < 1) why.push('Exit simulation does not bring back the Objects list and close the panel');
+        state(`the simulation layout${shortSim ? ' (narrow and short: Diagram, Setup and Actions as tabs above the simulation panel)' : narrowSim ? ' (narrow: Setup and Actions as tabs above the simulation panel)' : ''} fits the browser window: setup, diagram, actions and the panel each whole, none over another; a table, the packet inspector, Senders, a parameter layer and Send test’s options open; the page does not scroll`, why.slice(0, 8).concat(problems()));
+      }
+      app.select(null);
+      await tick();
+    }
     const zoom = (q('.zoombar') as HTMLElement).getBoundingClientRect();
     const canvas = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
     state('diagram controls stay inside the diagram area', zoom.top < canvas.top || zoom.bottom > canvas.bottom || zoom.left < canvas.left || zoom.right > canvas.right || zoom.bottom > vh() ? ['the zoom bar leaves the diagram area'] : []);
+    {
+      // the Auto-arrange group: its label above one row of three buttons, inside a dashed frame, within the window
+      const g = q('#arrange-group') as HTMLElement;
+      const gr = g.getBoundingClientRect();
+      const tr = (q('#arrange-title') as HTMLElement).getBoundingClientRect();
+      const bs = ['default', 'compact', 'spacious'].map((s) => (q('#btn-arrange-' + s) as HTMLElement).getBoundingClientRect());
+      const why: string[] = [];
+      const cs = (doc.defaultView as Window).getComputedStyle(g);
+      if (cs.borderTopStyle !== 'dashed') why.push('the group has no dashed frame');
+      // in a very short window the label is hidden (it stays the group's accessible name)
+      const short = (doc.defaultView as Window).matchMedia('(max-height: 400px)').matches;
+      if (short) {
+        if (tr.width > 1 || (q('#arrange-title') as HTMLElement).textContent !== 'Auto-arrange') why.push('in a very short window the label should be hidden, not removed');
+      } else {
+        if (tr.width < 1 || tr.height < 1) why.push('the label is not shown');
+        if (bs.some((b) => b.top < tr.bottom - 0.5)) why.push('the label is not above the buttons');
+      }
+      if (bs.some((b) => Math.abs(b.top - bs[0].top) > 0.5 || Math.abs(b.height - bs[0].height) > 0.5)) why.push('the buttons are not on one row');
+      if (bs[1].left < bs[0].right - 1.5 || bs[2].left < bs[1].right - 1.5 || bs[1].left > bs[0].right + 0.5 || bs[2].left > bs[1].right + 0.5) why.push('the buttons are not side by side');
+      if ([tr].concat(bs).some((r) => r.left < gr.left - 0.5 || r.right > gr.right + 0.5 || r.top < gr.top - 0.5 || r.bottom > gr.bottom + 0.5)) why.push('the label or a button leaves the frame');
+      if (gr.left < -0.5 || gr.right > vw() + 0.5 || gr.top < -0.5) why.push('the group leaves the window');
+      state('the Auto-arrange group: label above the three buttons, in one dashed frame', why);
+    }
+    {
+      // View, Auto-arrange and Filters: each a label above its controls in a dashed frame, all three alike
+      const win = doc.defaultView as Window;
+      const why: string[] = [];
+      const look: string[] = [];
+      for (const [id, controls] of [['view-group', '.seg button'], ['arrange-group', '.arrange-btn'], ['filters-group', '#view-filters > *']] as Array<[string, string]>) {
+        const g = q('#' + id) as HTMLElement;
+        const gr = g.getBoundingClientRect();
+        const title = g.querySelector('.tool-group-title') as HTMLElement;
+        const tr = title.getBoundingClientRect();
+        const cs = win.getComputedStyle(g);
+        const ts = win.getComputedStyle(title);
+        look.push([cs.borderTopStyle, cs.borderTopWidth, cs.borderTopColor, cs.borderTopLeftRadius, cs.paddingTop, cs.paddingLeft, cs.rowGap, ts.fontSize, ts.color].join(' '));
+        if (cs.borderTopStyle !== 'dashed') why.push(`${id} has no dashed frame`);
+        const short = win.matchMedia('(max-height: 400px)').matches;
+        if (short ? tr.width > 1 || !(title.textContent || '').trim() : tr.width < 1 || tr.height < 1) why.push(short ? `the ${id} label should be hidden but kept in a very short window` : `the ${id} label is not shown`);
+        const shown = (Array.prototype.slice.call(g.querySelectorAll(controls)) as HTMLElement[]).filter((e) => e.offsetWidth > 0);
+        if (!shown.length) why.push(`${id} shows no controls`);
+        for (const e of shown) {
+          const r = e.getBoundingClientRect();
+          if (!short && r.top < tr.bottom - 0.5) why.push(`the ${id} label is not above "${(e.textContent || '').trim().slice(0, 16)}"`);
+          if (r.left < gr.left - 0.5 || r.right > gr.right + 0.5 || r.bottom > gr.bottom + 0.5) why.push(`"${(e.textContent || '').trim().slice(0, 16)}" leaves the ${id} frame`);
+        }
+        if (gr.left < -0.5 || gr.right > vw() + 0.5 || gr.top < -0.5) why.push(`${id} leaves the window`);
+      }
+      if (look.some((l) => l !== look[0])) why.push('the groups differ: ' + look.join(' | '));
+      state('the View, Auto-arrange and Filters groups: labels above their controls, the same dashed frame', why);
+    }
 
     // drop-downs of the toolbar open over the page: fully visible, not clipped by the toolbar, inside the window
     const popup = (sel: string): string[] => {
@@ -170,9 +499,9 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       }
       return why;
     };
-    click('#view-btn');
+    click('#find-btn');
     await tick();
-    state('View menu open', popup('#view-menu'));
+    state('Find menu open', popup('#find-menu'));
     click('#btn-find');
     await tick();
     const search = q('#search') as HTMLInputElement;
@@ -181,6 +510,45 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     await tick();
     state('Find bar with its results drop-down', popup('#find-bar').concat(popup('#search-results')));
     app.closeFind();
+
+    // Help: the menu, and both dialogs inside the window with their close buttons reachable; their text scrolls inside them
+    click('#help-btn');
+    await tick();
+    state('Help menu open', popup('#help-menu'));
+    const helpDialog = (scroller: string): string[] => {
+      const why: string[] = [];
+      const d = q('#modal[open]');
+      if (!d) return ['no dialog'];
+      const r = d.getBoundingClientRect();
+      if (r.left < -0.5 || r.top < -0.5 || r.right > vw() + 0.5 || r.bottom > vh() + 0.5) why.push(`the dialog leaves the window (${Math.round(r.left)},${Math.round(r.top)} – ${Math.round(r.right)},${Math.round(r.bottom)})`);
+      for (const sel of ['#modal .modal-x', '#modal [data-value="close"]']) {
+        const b = q(sel);
+        const br = b ? b.getBoundingClientRect() : null;
+        const hit = br ? doc.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2) : null;
+        if (!b || !br || br.width < 1 || br.top < -0.5 || br.bottom > vh() + 0.5 || br.right > vw() + 0.5 || !hit || !b.contains(hit)) why.push(`${sel} cannot be reached`);
+      }
+      const s = q('#modal ' + scroller) as HTMLElement;
+      if (s && s.scrollHeight > s.clientHeight + 1) {
+        s.scrollTop = s.scrollHeight;
+        if (Math.abs(s.scrollTop + s.clientHeight - s.scrollHeight) > 1.5) why.push(`${scroller} does not scroll to its end`);
+        s.scrollTop = 0;
+      }
+      if (s && s.scrollWidth > s.clientWidth + 1) why.push(`${scroller} is wider than the dialog (${s.scrollWidth} > ${s.clientWidth})`);
+      return why;
+    };
+    click('#btn-manual');
+    await tick(20);
+    state('Help → User Manual open', helpDialog('.manual'));
+    (q('#modal') as HTMLElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+    await tick();
+    click('#help-btn');
+    click('#btn-license');
+    await tick(20);
+    (q('#modal .license-full') as HTMLDetailsElement).open = true;
+    await tick();
+    state('Help → License open with the full text', helpDialog('.license-text'));
+    click('#modal .modal-x');
+    await tick();
 
     // the diagram filters stay on one row; what does not fit is in the Filters drop-down, which says what is off
     for (const view of ['logical', 'physical']) {
@@ -224,7 +592,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       const badge = q('#status .fname') as HTMLElement;
       const br = badge.getBoundingClientRect();
       const why: string[] = [];
-      if (badge.title !== long) why.push('the full name is not its tooltip');
+      if (badge.title.indexOf(long + ':') !== 0) why.push('the full name is not its tooltip');
       if (br.left < bar.left || br.right > bar.right + 0.5 || br.width > bar.width * 0.5 + 1) why.push(`the badge takes ${Math.round(br.width)} of ${Math.round(bar.width)}px`);
       if ((q('#status') as HTMLElement).scrollHeight > (q('#status') as HTMLElement).clientHeight + 1) why.push('the status bar wraps');
       state('a long file name in the status bar', why);
@@ -276,7 +644,10 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     click('[data-tab="problems"]');
     await tick();
     state('problems list with 120 entries', scrollsInside('#side-body', true));
-    click('#btn-download');
+    // the largest dialog of saving: the download of a copy (a browser without a save picker), with the model's errors
+    app.fileAccess = { saveFile: null, openFile: null };
+    click('#menu-btn');
+    click('#btn-save-as');
     await tick(10);
     const dlg = q('#modal[open] .modal-inner');
     const dr = dlg ? dlg.getBoundingClientRect() : null;
@@ -286,7 +657,61 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     state('the dialog buttons can be reached', !cr || cr.bottom > vh() + 0.5 || cr.top < 0 ? ['the dialog buttons are outside the window'] : []);
     if (cancel) cancel.click();
     await tick(10);
+
+    // the ports of the stress example, at this window size (and so at this zoom of the browser): every lane ends at a
+    // port mark, every port is drawn, and no end label covers other text, measured with the browser's fonts
+    for (const view of ['logical', 'physical']) {
+      app.mdoc && app.mdoc.markSaved();
+      app.loadExampleNamed('port-bindings.yaml');
+      click(`[data-view-btn="${view}"]`);
+      await tick(20);
+      const why: string[] = [];
+      const vp = q('#viewport') as unknown as SVGGElement;
+      const marks = view === 'logical' ? 'rect.lport' : 'rect.port';
+      const rects = (Array.prototype.slice.call(vp.querySelectorAll(marks)) as SVGRectElement[]).map((r) => r.getBBox());
+      if (rects.length < (view === 'logical' ? 20 : 14)) why.push(`only ${rects.length} port marks`);
+      const lines = Array.prototype.slice.call(vp.querySelectorAll(view === 'logical' ? 'g.rel:not(.hub-rel) .hit' : 'g.cable .cable-line')) as SVGPathElement[];
+      for (const l of lines) {
+        const p = (l.getAttribute('d') || '').slice(1).split('L').map((s) => s.trim().split(' ').map(Number));
+        for (const [x, y] of [p[0], p[p.length - 1]]) {
+          if (!rects.some((b) => x >= b.x - 0.6 && x <= b.x + b.width + 0.6 && y >= b.y - 0.6 && y <= b.y + b.height + 0.6)) why.push(`a line ends at ${x},${y}, at no port`);
+        }
+      }
+      // text measured at the diagram's own size (100 %): at the tiny zoom "Fit" gives in a small window the browser's
+      // text boxes grow by a pixel or two (font hinting), which says nothing about what a reader sees
+      const z = app as unknown as { zoom: { k: number; tx: number; ty: number }; applyZoom(): void };
+      const was = z.zoom;
+      z.zoom = { k: 1, tx: was.tx, ty: was.ty };
+      z.applyZoom();
+      await tick();
+      const texts = Array.prototype.slice.call(vp.querySelectorAll('text')) as SVGTextElement[];
+      const boxes = texts.map((t) => t.getBBox());
+      z.zoom = was;
+      z.applyZoom();
+      texts.forEach((t, i) => {
+        if (!t.classList.contains('end-label') && !t.classList.contains('lag-label')) return;
+        const a = boxes[i];
+        boxes.forEach((b, j) => {
+          if (j !== i && a.x + 1 < b.x + b.width && b.x + 1 < a.x + a.width && a.y + 1 < b.y + b.height && b.y + 1 < a.y + a.height) why.push(`"${t.textContent}" covers "${texts[j].textContent}"`);
+        });
+      });
+      const c = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+      if (c.width < 40 || c.height < 40) why.push('the diagram has no room');
+      state(`${view} view of port-bindings.yaml: every line at a port, end labels over no other text`, why.slice(0, 6));
+    }
     app.mdoc && app.mdoc.markSaved();
+    // the Objects list at this window size (both themes): folding moves no section heading, the focus stays and takes no room
+    {
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        state(`${theme}: Objects list: folding and unfolding moves no section heading`, (await outlineStability(app, doc)).slice(0, 6));
+        app.mdoc && app.mdoc.markSaved();
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+    }
   } catch (e) {
     checks.push({ name: 'viewport check crashed', ok: false, detail: String((e as Error).stack || e) });
   }

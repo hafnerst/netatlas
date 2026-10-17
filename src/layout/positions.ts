@@ -15,7 +15,7 @@
  *     (in id order) without moving anything else.
  */
 import { Pt } from './geometry';
-import { LayoutInput, cmp } from './input';
+import { LayoutInput, cmp, physicalInput } from './input';
 import { autoLogical, logicalEdges, logicalSpecs } from './logical';
 import { autoPhysical, physicalBaseSize } from './physical';
 
@@ -36,8 +36,10 @@ export function refToId(ref: string): string {
 }
 
 /** Nodes of a view with sizes and neighbors, sorted by id. */
-export function viewNodes(view: LayoutView, input: LayoutInput): PlaceNode[] {
+export function viewNodes(view: LayoutView, full: LayoutInput): PlaceNode[] {
   if (view === 'physical') {
+    // (guests are drawn inside their hosts)
+    const input = physicalInput(full);
     const nbrs = new Map<string, Set<string>>();
     for (const d of input.devices) nbrs.set(d.id, new Set());
     const add = (a: string, b: string): void => {
@@ -59,6 +61,7 @@ export function viewNodes(view: LayoutView, input: LayoutInput): PlaceNode[] {
     });
     return input.devices.map((d) => ({ id: d.id, ...physicalBaseSize(d), nbrs: Array.from(nbrs.get(d.id) as Set<string>).sort(cmp) }));
   }
+  const input = full;
   const specs = logicalSpecs(input);
   const nbrs = new Map<string, Set<string>>();
   for (const s of specs) nbrs.set(s.id, new Set());

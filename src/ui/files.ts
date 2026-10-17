@@ -1,7 +1,9 @@
 /**
- * Local files: reading a file the user picked or dropped, and saving text by
- * letting the browser download it. Nothing is ever uploaded: reading uses the
- * File API, saving uses a Blob URL.
+ * Local files: reading a file the user picked or dropped, writing a model to
+ * a file the user chose (where the browser can), and saving text by letting
+ * the browser download it. Nothing is ever uploaded: reading uses the File
+ * API, writing a file handle of the File System Access API, downloading a
+ * Blob URL.
  */
 import { MAX_INPUT_BYTES, Origin } from '../editor/document';
 
@@ -15,6 +17,82 @@ export async function readTextFile(file: File): Promise<{ text: string } | { err
     return { text: new TextDecoder('utf-8', { fatal: true }).decode(buf) };
   } catch (e) {
     return { error: 'The file is not valid UTF-8 text. Save it as UTF-8 and try again.' };
+  }
+}
+
+// ------------------------------------------------- files the page may write
+
+/**
+ * A file the page may write to: a handle of the browser's File System Access
+ * API (Chromium-based browsers), obtained only from an explicit user action
+ * (a save or open picker, or a dropped file). Typed structurally, with only
+ * what NetAtlas uses, so it can be stood in for in the self-test.
+ */
+export interface WritableFile {
+  kind?: string;
+  name: string;
+  getFile?(): Promise<File>;
+  createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }>;
+  queryPermission?(opts: { mode: 'readwrite' }): Promise<string>;
+  requestPermission?(opts: { mode: 'readwrite' }): Promise<string>;
+}
+
+/** What the browser offers for picking files to open and save (feature-detected, never assumed). */
+export interface FileAccess {
+  /** a picker that returns a handle the page can write to (null: only downloads are possible) */
+  saveFile: ((suggestedName: string) => Promise<WritableFile>) | null;
+  /** a picker for opening that returns a handle with the file (null: use the file input) */
+  openFile: (() => Promise<WritableFile>) | null;
+}
+
+const YAML_TYPES = [{ description: 'YAML file', accept: { 'text/yaml': ['.yaml', '.yml'] } }];
+
+/** The browser's file pickers, where it has them (Chromium-based browsers; not Firefox or Safari). */
+export function detectFileAccess(win: Window | null): FileAccess {
+  const w = win as unknown as { showSaveFilePicker?: (o: object) => Promise<WritableFile>; showOpenFilePicker?: (o: object) => Promise<WritableFile[]>; isSecureContext?: boolean } | null;
+  if (!w || w.isSecureContext === false) return { saveFile: null, openFile: null };
+  const save = typeof w.showSaveFilePicker === 'function' ? w.showSaveFilePicker.bind(w) : null;
+  const open = typeof w.showOpenFilePicker === 'function' ? w.showOpenFilePicker.bind(w) : null;
+  return {
+    saveFile: save ? (suggestedName: string) => save({ suggestedName, types: YAML_TYPES }) : null,
+    openFile: open ? async () => (await open({ multiple: false, types: YAML_TYPES }))[0] : null,
+  };
+}
+
+/** Did the user close a picker (or a permission prompt) without choosing? */
+export function isCancel(e: unknown): boolean {
+  return !!e && typeof e === 'object' && (e as { name?: string }).name === 'AbortError';
+}
+
+/** Can the page write through this handle at all? (A handle from a file input never exists; one from a picker may be read-only.) */
+export function isWritable(h: unknown): h is WritableFile {
+  return !!h && typeof h === 'object' && typeof (h as WritableFile).createWritable === 'function' && ((h as WritableFile).kind === undefined || (h as WritableFile).kind === 'file');
+}
+
+export type WriteOutcome = { ok: true } | { ok: false; reason: 'denied' | 'failed'; message: string };
+
+/**
+ * Write text to a file handle, replacing its content. Asks for write
+ * permission first when the browser hasn't granted it yet (the browser may
+ * show its own prompt). Never throws: a refusal or a failed write is
+ * returned, so the caller can keep the unsaved state.
+ */
+export async function writeFile(h: WritableFile, text: string): Promise<WriteOutcome> {
+  try {
+    if (h.queryPermission) {
+      let p = await h.queryPermission({ mode: 'readwrite' });
+      if (p !== 'granted' && h.requestPermission) p = await h.requestPermission({ mode: 'readwrite' });
+      if (p !== 'granted') return { ok: false, reason: 'denied', message: 'the browser did not allow this page to write to the file' };
+    }
+    const w = await h.createWritable();
+    await w.write(text);
+    await w.close();
+    return { ok: true };
+  } catch (e) {
+    if (isCancel(e)) return { ok: false, reason: 'denied', message: 'writing to the file was not allowed' };
+    const name = e && typeof e === 'object' ? (e as { name?: string }).name : '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') return { ok: false, reason: 'denied', message: 'the browser did not allow this page to write to the file' };
+    return { ok: false, reason: 'failed', message: e instanceof Error && e.message ? e.message : String(e) };
   }
 }
 

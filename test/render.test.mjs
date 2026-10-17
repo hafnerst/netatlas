@@ -73,7 +73,7 @@ test('logical view: relations drawn, no cables; tunnels are tubes, adjacencies l
   assert.ok(scene.hasClass(vrrp, 'style-dotted'));
 });
 
-test('logical view: GRE nested inside IPsec, OSPF inside GRE (same path, narrower)', () => {
+test('logical view: OSPF nested inside GRE (same ports, same path, narrower); IPsec, bound to the underlay port, runs from it', () => {
   const s = wan();
   s.setView('logical');
   const v = s.render().root;
@@ -81,11 +81,14 @@ test('logical view: GRE nested inside IPsec, OSPF inside GRE (same path, narrowe
   const ipsec = path('ipsec-muc', 'tube-outer');
   const gre = path('gre-muc', 'tube-outer');
   const ospf = path('ospf-muc', 'rel-line');
-  assert.equal(gre.d, ipsec.d);
+  // GRE and OSPF are bound to hq-rtr1:st0.10 and muc-rtr:Tunnel10: one strand, OSPF inside the GRE tube
   assert.equal(ospf.d, gre.d);
-  assert.ok(+gre['stroke-width'] < +ipsec['stroke-width']);
-  // label summarises the stack
-  assert.match(scene.textOf(v), /IPsec · IKEv2 site-to-site › GRE › OSPF/);
+  assert.ok(+ospf['stroke-width'] < +gre['stroke-width']);
+  // IPsec is bound to hq-rtr1:ge-0/0/0 and muc-rtr:wan0: it leaves from those ports, not from the tunnel's
+  assert.notEqual(gre.d, ipsec.d);
+  // the labels summarise each stack, and GRE says what it is carried over
+  assert.match(scene.textOf(v), /GRE › OSPF \(over IPsec\)/);
+  assert.match(scene.textOf(v), /IPsec · IKEv2 site-to-site/);
 });
 
 test('logical view: parallel relations between the same devices get distinct lanes', () => {
@@ -207,7 +210,7 @@ test('larger generated input renders within a reasonable time', () => {
   let t = 'netatlas: 1\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: site${g}, kind: site}\n`;
   t += 'devices:\n';
-  for (let i = 0; i < 300; i++) t += `  - {id: d${i}, type: ${i % 10 === 0 ? 'router' : 'switch'}, group: site${i % 10}, interfaces: [p1, p2, p3]}\n`;
+  for (let i = 0; i < 300; i++) t += `  - {id: d${i}, type: ${i % 10 === 0 ? 'router' : 'switch'}, group: site${i % 10}, interfaces: ${i % 10 === 0 ? '[p1, p2, p3]' : '[{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]'}}\n`;
   t += 'links:\n';
   for (let i = 1; i < 300; i++) t += `  - {id: l${i}, a: "d${i}:p1", b: "d${Math.floor(i / 2)}:p${i % 2 ? 2 : 3}"}\n`;
   t += 'relations:\n';

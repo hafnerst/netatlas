@@ -30,9 +30,9 @@
  *
  * Group boxes are never stored: they are derived from their devices.
  */
-import { CBox, Pt, textWidth } from './geometry';
-import { LDev, LEnd, LayoutInput, cmp } from './input';
-import { GROUP_PAD, deviceBody, groupHeader, linkLabelBox } from './sizes';
+import { CBox, Pt, segmentHitsRect, textWidth } from './geometry';
+import { LDev, LEnd, LayoutInput, cmp, physicalInput } from './input';
+import { ChipFlow, ENTRY_MARGIN, GROUP_PAD, IFCHIP_PAD, chipFlow, chipStripH, deviceBody, groupHeader, linkLabelBox } from './sizes';
 
 export { GROUP_PAD };
 
@@ -44,6 +44,8 @@ export interface PortPos {
   linkId: string;
   device: string;
   iface?: string;
+  /** the port's layer-2 tagging, written as a second line of its label */
+  tag?: string;
   side: Side;
   x: number;
   y: number;
@@ -70,6 +72,8 @@ const LAYER_GAP = 96;
 /** rounds of reordering, and what one crossing of two cables costs compared with cable length (px) */
 const ROUNDS = 6;
 const CROSSING_COST = 160;
+/** what a straight cable through a third device's box adds to the cost of a placement (less than a crossing: it may be gone around cleanly) */
+const BLOCKED_COST = 150;
 const MAX_EXCHANGES = 300;
 /** a layer below the top one may be at least this wide before it continues on a second line */
 const LOWER_LAYER_W = 1800;
@@ -82,11 +86,15 @@ const MAX_PORT_W = 1200;
 const MAX_PORT_H = 800;
 /** distance from a side port to the start of its label */
 export const PORT_LABEL_GAP = 7;
+/** The line a port's VLANs take beyond its name (a port on a device's top or bottom side): the room the rows keep for it. */
+export const TAG_LINE = 12;
 
 interface GNode {
   id: string | null;
   label: string;
   kind: string;
+  /** address lines under the title */
+  extra: string[];
   tiers: string[][];
   children: GNode[];
   /** root only: ungrouped devices, tier rows per connected component */
@@ -99,10 +107,27 @@ interface Block {
   place(x: number, y: number): void;
 }
 
-/** Size of a device box for its label and subtitle alone (ports may enlarge it). */
+/**
+ * Size of a device box for its label and subtitle, the entries with its
+ * interfaces' addresses and identifiers under them, and the strip of chips
+ * of its ports without a cable at its bottom (cabled ports may enlarge it).
+ */
 export function physicalBaseSize(d: LDev): { w: number; h: number } {
   const b = deviceBody(d.label, d.sub, BASE_W, BASE_H);
-  return { w: b.w, h: b.h };
+  // a host's interior (its virtual switches, container networks and guests) sits under its name
+  const w = Math.max(b.w, d.physList[0] ? d.physList[0] + 2 * ENTRY_MARGIN : 0, d.interior[0]);
+  const flow = spareChipFlow(d.spare, w);
+  return { w: Math.max(w, flow.w + 2 * IFCHIP_PAD), h: b.h + d.interior[1] + physicalListH(d.physList) + chipStripH(flow) };
+}
+
+/** Height a device's address entries take in its physical box (0 without any). */
+export function physicalListH(list: [number, number]): number {
+  return list[1] ? list[1] + ENTRY_MARGIN : 0;
+}
+
+/** The chips of a device's uncabled ports, for a box `w` wide. */
+export function spareChipFlow(ids: string[], w: number): ChipFlow {
+  return chipFlow(ids, Math.max(60, w - 2 * IFCHIP_PAD));
 }
 
 /** Stable sort by numeric key; equal keys keep their current order. */
@@ -127,7 +152,9 @@ function tiersOf(ids: string[], tier: Map<string, number>): string[][] {
 }
 
 /** Auto-arranged device centers for the physical view. */
-export function autoPhysical(input: LayoutInput): Map<string, Pt> {
+export function autoPhysical(full: LayoutInput): Map<string, Pt> {
+  // (guests are drawn inside their hosts)
+  const input = physicalInput(full);
   const size = new Map<string, { w: number; h: number }>();
   const tier = new Map<string, number>();
   for (const d of input.devices) {
@@ -148,8 +175,8 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
 
   // --- group tree
   const nodes = new Map<string, GNode>();
-  const root: GNode = { id: null, label: '', kind: '', tiers: [], children: [], comps: [] };
-  for (const g of input.groups) nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, tiers: [], children: [], comps: [] });
+  const root: GNode = { id: null, label: '', kind: '', extra: [], tiers: [], children: [], comps: [] };
+  for (const g of input.groups) nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, extra: g.extra, tiers: [], children: [], comps: [] });
   for (const g of input.groups) {
     const parent = g.parent && nodes.has(g.parent) ? (nodes.get(g.parent) as GNode) : root;
     parent.children.push(nodes.get(g.id) as GNode);
@@ -216,7 +243,9 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
   // facing sides (known once ports are assigned) and the label of a cable
   // that joins the two directly
   const sidePad = new Map<string, { left: number; right: number }>();
-  const labelW = new Map(input.linkLabels.map((l) => [l.id, linkLabelBox(l.text).w] as [string, number]));
+  // and above and below a row: a port on a device's top or bottom side writes its VLANs one line further out than its name
+  const vPad = new Map<string, { top: number; bottom: number }>();
+  const labelW = new Map(input.linkLabels.map((l) => [l.id, linkLabelBox(l.text, l.extra).w] as [string, number]));
   const between = new Map<string, number>();
   for (const l of input.links) {
     const w = labelW.get(l.id);
@@ -237,8 +266,10 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     for (const t of tiers) for (let i = 0; i < t.length; i += MAX_PER_ROW) rows.push(t.slice(i, i + MAX_PER_ROW));
     const rw = rows.map(rowWidth);
     const rh = rows.map((r) => r.reduce((m, id) => Math.max(m, (size.get(id) as { h: number }).h), 0));
+    const rt = rows.map((r) => r.reduce((m, id) => Math.max(m, vPad.has(id) ? (vPad.get(id) as { top: number }).top : 0), 0));
+    const rb = rows.map((r) => r.reduce((m, id) => Math.max(m, vPad.has(id) ? (vPad.get(id) as { bottom: number }).bottom : 0), 0));
     const w = rows.length ? rw.reduce((m, x) => Math.max(m, x), 0) : 0;
-    const h = rh.reduce((s, x) => s + x, 0) + VGAP * Math.max(0, rows.length - 1);
+    const h = rh.reduce((s, x, i) => s + x + rt[i] + rb[i], 0) + VGAP * Math.max(0, rows.length - 1);
     return {
       w,
       h,
@@ -246,13 +277,14 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
         let cy = y;
         rows.forEach((r, i) => {
           let cx = x + (w - rw[i]) / 2;
+          cy += rt[i];
           r.forEach((id, k) => {
             const s = size.get(id) as { w: number; h: number };
             if (k) cx += gap(r[k - 1], id);
             pos.set(id, { x: cx + s.w / 2, y: cy + rh[i] / 2 });
             cx += s.w;
           });
-          cy += rh[i] + VGAP;
+          cy += rh[i] + rb[i] + VGAP;
         });
       },
     };
@@ -519,7 +551,7 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     const content = arrange(units, 0, 'g:' + (n.id as string));
     // at least as wide as the group's title needs; the title area grows with its lines
     const contentW = Math.max(content.w, 140);
-    const head = groupHeader(n.label, n.kind, contentW);
+    const head = groupHeader(n.label, n.kind, contentW, n.extra);
     const innerW = Math.max(contentW, head.minW - 2 * GROUP_PAD);
     return {
       w: innerW + 2 * GROUP_PAD,
@@ -588,6 +620,27 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
         }
       }
     }
+    // a cable whose straight line runs through a third device has to go around it: that way can cross
+    // what leaves the device, so a placement that keeps such devices out of the way is better
+    if (seg.length <= 600 && input.devices.length <= 400) {
+      const rects = input.devices.map((d) => {
+        const p = pos.get(d.id) as Pt;
+        const sz = size.get(d.id) as { w: number; h: number };
+        return { id: d.id, r: { x: p.x - sz.w / 2, y: p.y - sz.h / 2, w: sz.w, h: sz.h } };
+      });
+      cables.forEach((l, i) => {
+        const [a, b] = seg[i];
+        const x0 = Math.min(a.x, b.x);
+        const x1 = Math.max(a.x, b.x);
+        const y0 = Math.min(a.y, b.y);
+        const y1 = Math.max(a.y, b.y);
+        for (const o of rects) {
+          // (a box beside the cable's extent can't be in its way: the exact test only for the others)
+          if (o.r.x > x1 || o.r.x + o.r.w < x0 || o.r.y > y1 || o.r.y + o.r.h < y0) continue;
+          if (o.id !== l.a.device && o.id !== l.b.device && segmentHitsRect(a, b, o.r)) total += BLOCKED_COST;
+        }
+      });
+    }
     return total;
   };
   /** what a round is built from: the placement before it and the order of every row */
@@ -643,6 +696,21 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
           }
         }
       }
+      // and two devices of one row: the sweep orders a row by where its neighbours are, which can't see
+      // that a cable to one side (an uplink, a leaf's server) crosses the cables of a device beside it
+      for (const row of best.rows) {
+        for (let i = 0; i < row.length && tries < MAX_EXCHANGES; i++) {
+          for (let j = i + 1; j < row.length && tries < MAX_EXCHANGES; j++) {
+            tries++;
+            [row[i], row[j]] = [row[j], row[i]];
+            const c = place();
+            if (c < bestCost - 0.5) {
+              bestCost = c;
+              improved = true;
+            } else [row[i], row[j]] = [row[j], row[i]];
+          }
+        }
+      }
       if (!improved) break;
     }
     place();
@@ -668,10 +736,16 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     }
   }
   for (const p of ports) {
-    if (p.side !== 'left' && p.side !== 'right') continue;
+    if (p.side === 'top' || p.side === 'bottom') {
+      if (!p.tag) continue;
+      let vp = vPad.get(p.device);
+      if (!vp) vPad.set(p.device, (vp = { top: 0, bottom: 0 }));
+      vp[p.side] = TAG_LINE;
+      continue;
+    }
     let pad = sidePad.get(p.device);
     if (!pad) sidePad.set(p.device, (pad = { left: 0, right: 0 }));
-    pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface));
+    pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface, p.tag));
   }
   // the same arrangement again, with the grown boxes
   restore();
@@ -685,7 +759,8 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
 }
 
 /** Device boxes: sizes from labels and ports, centers from `positions`. */
-export function physicalBoxes(input: LayoutInput, positions: Map<string, Pt>): Map<string, CBox> {
+export function physicalBoxes(full: LayoutInput, positions: Map<string, Pt>): Map<string, CBox> {
+  const input = physicalInput(full);
   const boxes = new Map<string, CBox>();
   for (const d of input.devices) {
     const p = positions.get(d.id) || { x: 0, y: 0 };
@@ -700,14 +775,29 @@ export function physicalBoxes(input: LayoutInput, positions: Map<string, Pt>): M
   return boxes;
 }
 
-/** Room a label of a left/right port takes beside its device. */
-function sideLabelWidth(iface: string | undefined): number {
-  return iface ? PORT_LABEL_GAP + textWidth(iface, PORT_FONT) + 4 : 0;
+/** Width of a port's label: its name, and its tagging under it. */
+export function portLabelTextWidth(iface: string | undefined, tag: string | undefined): number {
+  return Math.max(iface ? textWidth(iface, PORT_FONT) : 0, tag ? textWidth(tag, PORT_FONT) : 0);
 }
 
-function portLabelWidth(iface: string | undefined): number {
-  return iface ? textWidth(iface, PORT_FONT) + 12 : 14;
+/** Room a label of a left/right port takes beside its device. */
+export function sideLabelWidth(iface: string | undefined, tag?: string): number {
+  return iface || tag ? PORT_LABEL_GAP + portLabelTextWidth(iface, tag) + 4 : 0;
 }
+
+function portLabelWidth(iface: string | undefined, tag: string | undefined): number {
+  return iface || tag ? portLabelTextWidth(iface, tag) + 12 : 14;
+}
+
+/**
+ * Room a port on the left or right side needs along it: above the cable its
+ * name, under it its tagging (if any). Two ports one above the other are
+ * kept apart by what the upper one needs below plus what the lower one
+ * needs above.
+ */
+const SIDE_ABOVE = 16;
+const SIDE_BELOW = 6;
+const SIDE_BELOW_TAGGED = 18;
 
 /**
  * Place a port for every link end on the side of its device facing the peer.
@@ -740,9 +830,14 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
     peer: Pt;
     /** room the port needs along its side */
     slot: number;
+    /** of that, the room before its position (above it, on a left/right side) and after it (below) */
+    pre: number;
+    post: number;
     /** position along the side (x for top/bottom, y for left/right), absolute */
     at: number;
     list: Pending[];
+    /** the aggregate the port is a member of ('' for none) */
+    lag: string;
   }
   const bySide = new Map<string, Pending[]>();
   const byKey = new Map<string, Pending>();
@@ -768,6 +863,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
         linkId: l.id,
         device: me.device,
         iface: me.iface,
+        tag: me.tag,
         side,
         x: 0,
         y: 0,
@@ -777,7 +873,11 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
       const k = me.device + '|' + side;
       if (!bySide.has(k)) bySide.set(k, []);
       const list = bySide.get(k) as Pending[];
-      const e: Pending = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface) : 22, at: 0, list };
+      const w = portLabelWidth(me.iface, me.tag);
+      const below = me.tag ? SIDE_BELOW_TAGGED : SIDE_BELOW;
+      const e: Pending = vertical
+        ? { p, peer: { x: ob.cx, y: ob.cy }, slot: w, pre: w / 2, post: w / 2, at: 0, list, lag: me.lag || '' }
+        : { p, peer: { x: ob.cx, y: ob.cy }, slot: SIDE_ABOVE + below, pre: SIDE_ABOVE, post: below, at: 0, list, lag: me.lag || '' };
       list.push(e);
       byKey.set(p.key, e);
       out.push(p);
@@ -794,10 +894,11 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
   bySide.forEach((list) => {
     const horiz = isHoriz(list[0]);
     const [lo, hi] = range(list[0]);
-    list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || cmp(u.p.key, v.p.key));
+    // (the members of an aggregate to the same peer next to each other)
+    list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || cmp(u.lag, v.lag) || cmp(u.p.key, v.p.key));
     const total = list.reduce((s, e) => s + e.slot, 0);
     const n = list.length;
-    const sep = (i: number): number => (list[i].slot + list[i + 1].slot) / 2;
+    const sep = (i: number): number => list[i].post + list[i + 1].pre;
     /** nearest positions to `want` that keep the slots apart: the mean of pushing right and pushing left */
     const spread = (want: number[]): number[] => {
       const f = want.slice();
@@ -820,7 +921,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
       const scale = (hi - lo) / total;
       let cur = lo;
       for (const e of list) {
-        e.at = cur + (e.slot * scale) / 2;
+        e.at = cur + e.pre * scale;
         cur += e.slot * scale;
       }
       return;
@@ -839,8 +940,8 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
     const [lo, hi] = range(e);
     if (to < lo + endGap(e) - 0.01 || to > hi - endGap(e) + 0.01) return false;
     const i = e.list.indexOf(e);
-    if (i > 0 && to < e.list[i - 1].at + (e.list[i - 1].slot + e.slot) / 2 - 0.01) return false;
-    if (i < e.list.length - 1 && to > e.list[i + 1].at - (e.list[i + 1].slot + e.slot) / 2 + 0.01) return false;
+    if (i > 0 && to < e.list[i - 1].at + e.list[i - 1].post + e.pre - 0.01) return false;
+    if (i < e.list.length - 1 && to > e.list[i + 1].at - e.post - e.list[i + 1].pre + 0.01) return false;
     return true;
   };
   for (let round = 0; round < 2; round++) {

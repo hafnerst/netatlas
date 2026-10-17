@@ -1,0 +1,167 @@
+# netatlas example: VLANs on ports, and VLAN interfaces bound to their bridge ports.
+#
+# * acc1 is a Layer 2 access switch: ports Gi1/0/1-10 are access ports in
+#   VLAN 10 (users), Gi1/0/11-20 in VLAN 20 (staff); its uplink Gi1/0/48 is
+#   a trunk of VLANs 10, 20 and 99 with 99 (management) as its native VLAN.
+#   Its management address is on its one VLAN interface, Vlan99.
+# * core1 is a Layer 3 switch: Vlan10 and Vlan20 route between the two
+#   VLANs. Each VLAN interface is written once and binds to every port of
+#   its VLAN by itself (its "bridge ports"): Gi1/0/1 and the aggregate Po1.
+#   Te1/3 is a routed uplink to the router (routed: true, an address).
+# * acc2 hangs off core1 by an aggregate (Po1, a trunk): its members
+#   Te1/1 and Te1/2 take the aggregate's VLANs.
+# * rtr1 is a router with a bridge port (ge-0/0/1 in VLAN 30) and its BVI
+#   (bvi30, the VLAN interface of VLAN 30): the lab behind it.
+# * Deliberate mistakes: acc3's uplink trunk has native VLAN 20 where acc1's
+#   has 10 (untagged frames leak from one VLAN into the other), and it
+#   carries VLAN 30, which acc1 does not allow (those frames are dropped).
+#   The checks report both; the simulation shows their effect in the log.
+#
+# Edit a port: its VLANs are a list (one VLAN: access; several: trunk, with
+# an optional native VLAN). "Assign VLANs to ports…" gives a range of ports
+# the same VLANs in one step.
+netatlas: 1
+title: VLANs on ports
+description: |
+  Access and trunk ports with their VLANs, a native VLAN, an aggregate
+  trunk, a routed port, VLAN interfaces bound to their bridge ports, a
+  router's bridge port with its BVI, and two deliberate VLAN mismatches.
+
+groups:
+  - {id: building, label: Building A, kind: site}
+  - {id: lab, label: Lab, kind: site}
+
+devices:
+  - id: core1
+    type: switch
+    layer3: true
+    group: building
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
+    interfaces:
+      - {id: Gi1/0/1, vlans: [10, 20, 99], native: 99, description: to acc1}
+      - Te1/1
+      - Te1/2
+      - {id: Te1/3, routed: true, ip: 10.0.0.2/30, description: routed uplink to rtr1}
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [Te1/1, Te1/2], vlans: [10, 20, 99], native: 99}
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.1/24}
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.20.1/24}
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.1/24}
+    routes:
+      - {prefix: 10.30.30.0/24, via: 10.0.0.1, name: lab behind rtr1}
+  - id: acc1
+    type: switch
+    group: building
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
+    interfaces:
+      - {id: Gi1/0/1, vlans: 10}
+      - {id: Gi1/0/2, vlans: 10}
+      - {id: Gi1/0/3, vlans: 10}
+      - {id: Gi1/0/4, vlans: 10}
+      - {id: Gi1/0/5, vlans: 10}
+      - {id: Gi1/0/6, vlans: 10}
+      - {id: Gi1/0/7, vlans: 10}
+      - {id: Gi1/0/8, vlans: 10}
+      - {id: Gi1/0/9, vlans: 10}
+      - {id: Gi1/0/10, vlans: 10}
+      - {id: Gi1/0/11, vlans: 20}
+      - {id: Gi1/0/12, vlans: 20}
+      - {id: Gi1/0/13, vlans: 20}
+      - {id: Gi1/0/14, vlans: 20}
+      - {id: Gi1/0/15, vlans: 20}
+      - {id: Gi1/0/16, vlans: 20}
+      - {id: Gi1/0/17, vlans: 20}
+      - {id: Gi1/0/18, vlans: 20}
+      - {id: Gi1/0/19, vlans: 20}
+      - {id: Gi1/0/20, vlans: 20}
+      - {id: Gi1/0/47, vlans: [10, 20], native: 10, description: to acc3}
+      - {id: Gi1/0/48, vlans: [10, 20, 99], native: 99, description: uplink to core1}
+    logical_interfaces:
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.11/24, label: Management}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.99.0.1}
+  - id: acc2
+    type: switch
+    group: building
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
+    interfaces:
+      - Te1/1
+      - Te1/2
+      - {id: Gi1/0/1, vlans: 10}
+      - {id: Gi1/0/2, vlans: 20}
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [Te1/1, Te1/2], vlans: [10, 20, 99], native: 99}
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.12/24, label: Management}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.99.0.1}
+  # the deliberate mistakes: its uplink's native VLAN is 20 (acc1's is 10), and it carries VLAN 30, which acc1 does not allow
+  - id: acc3
+    type: switch
+    group: building
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled}
+    interfaces:
+      - {id: Gi0/1, vlans: [10, 20, 30], native: 20, description: uplink to acc1}
+      - {id: Gi0/2, vlans: 10}
+      - {id: Gi0/3, vlans: 30}
+  - id: rtr1
+    type: router
+    group: lab
+    interfaces:
+      - {id: ge-0/0/0, ip: 10.0.0.1/30, description: to core1}
+      - {id: ge-0/0/1, vlans: 30, description: bridge port of the lab}
+    logical_interfaces:
+      - {id: bvi30, type: virtual, vlan: 30, ip: 10.30.30.1/24, label: BVI of the lab}
+    routes:
+      - {prefix: 10.0.0.0/8, via: 10.0.0.2, name: the building via core1}
+  - id: pc1
+    type: endpoint
+    group: building
+    simulation: {test_traffic: "on", test_targets: "pc2, lab1", test_interval: 10}
+    interfaces: [{id: eth0, ip: 10.10.10.21/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.10.10.1}]
+  - id: pc2
+    type: endpoint
+    group: building
+    interfaces: [{id: eth0, ip: 10.20.20.21/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.20.20.1}]
+  - id: pc3
+    type: endpoint
+    group: building
+    interfaces: [{id: eth0, ip: 10.10.10.22/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.10.10.1}]
+  - id: pc4
+    type: endpoint
+    group: building
+    interfaces: [{id: eth0, ip: 10.10.10.24/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.10.10.1}]
+  - id: pc5
+    type: endpoint
+    group: building
+    interfaces: [{id: eth0, ip: 10.30.30.25/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.30.1}]
+  - id: lab1
+    type: server
+    group: lab
+    interfaces: [{id: eth0, ip: 10.30.30.10/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.30.1}]
+
+links:
+  - {id: up-acc1, a: "acc1:Gi1/0/48", b: "core1:Gi1/0/1", medium: fiber, speed: 10G}
+  - {id: lag-1, a: "acc2:Te1/1", b: "core1:Te1/1", medium: fiber, speed: 10G}
+  - {id: lag-2, a: "acc2:Te1/2", b: "core1:Te1/2", medium: fiber, speed: 10G}
+  - {id: routed-up, a: "core1:Te1/3", b: "rtr1:ge-0/0/0", medium: fiber, speed: 10G}
+  # vlan-native-mismatch (native 10 at acc1, 20 at acc3) and vlan-trunk-mismatch (VLAN 30 only at acc3)
+  - {id: wrong-native, a: "acc1:Gi1/0/47", b: "acc3:Gi0/1", medium: copper, speed: 1G}
+  - {id: l-pc1, a: "pc1:eth0", b: "acc1:Gi1/0/1", medium: copper, speed: 1G}
+  - {id: l-pc2, a: "pc2:eth0", b: "acc1:Gi1/0/11", medium: copper, speed: 1G}
+  - {id: l-pc3, a: "pc3:eth0", b: "acc2:Gi1/0/1", medium: copper, speed: 1G}
+  - {id: l-pc4, a: "pc4:eth0", b: "acc3:Gi0/2", medium: copper, speed: 1G}
+  - {id: l-pc5, a: "pc5:eth0", b: "acc3:Gi0/3", medium: copper, speed: 1G}
+  - {id: l-lab1, a: "lab1:eth0", b: "rtr1:ge-0/0/1", medium: copper, speed: 1G}
+
+networks:
+  - {id: users, cidr: 10.10.10.0/24, vlan: 10}
+  - {id: staff, cidr: 10.20.20.0/24, vlan: 20}
+  - {id: mgmt, label: Management, cidr: 10.99.0.0/24, vlan: 99}
+  - {id: lab-net, label: Lab, cidr: 10.30.30.0/24, vlan: 30}
+  - {id: uplink, label: Routed uplink, cidr: 10.0.0.0/30}

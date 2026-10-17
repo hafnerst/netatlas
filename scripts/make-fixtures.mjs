@@ -3,8 +3,8 @@
 // they are reproducible:
 //
 //   test/fixtures/editor-new-network.yaml   a model created from "New" and built up
-//   test/fixtures/minimal-edited.yaml       examples/minimal.yaml imported and edited
-//   test/fixtures/metro-ring-arranged.yaml  examples/metro-ring.yaml after Auto-arrange
+//   test/fixtures/minimal-edited.yaml       test/examples/minimal.yaml imported and edited
+//   test/fixtures/metro-ring-arranged.yaml  test/examples/metro-ring.yaml after Auto-arrange
 //
 //   node scripts/make-fixtures.mjs          write the files
 //   node scripts/make-fixtures.mjs --check  exit 1 if they are out of date
@@ -25,11 +25,11 @@ const Y = require(join(root, 'build/js/yaml/parse.js'));
 const s = Y.strNode;
 const flowList = (...xs) => Y.seqNode(xs.map(s), true);
 
-/** "New" → two routers, loopbacks, ports, a VLAN interface and a tunnel interface, a cable, iBGP between loopbacks and a GRE tunnel. */
+/** "New" → two routers, loopbacks, ports, a subinterface and a tunnel interface, a cable, iBGP between loopbacks and a GRE tunnel. */
 export function buildNewNetwork() {
   const d = ModelDoc.create();
   d.change('Edit title', () => d.setAt(['title'], s('Lab: two edge routers'), KEY_ORDER.top));
-  d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, ports, a VLAN interface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
+  d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, ports, a subinterface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
   // New starts empty: add both routers, choosing their type explicitly
   const a = d.addEntity('device', [['id', s('edge-a')], ['type', s('router')]]);
   d.addLoopback(a, ['10.255.0.1/32'], 'Router ID', 'lo0');
@@ -39,14 +39,20 @@ export function buildNewNetwork() {
   d.addLoopback(0, ['2001:db8:ffff::a/128'], 'BGP source (IPv6)', 'lo1');
   d.addLoopback(b, ['10.255.0.2/32', '2001:db8:ffff::2/128'], 'Router ID', 'lo0');
   d.addLoopback(b, ['2001:db8:ffff::b/128'], 'BGP source (IPv6)', 'lo1');
+  // both run BGP in one AS, with their loopback lo0 as the router ID
+  for (const dev of [0, b]) {
+    d.enableService(dev, 'bgp');
+    d.setInteger(['devices', dev, 'protocols', 'bgp', 'asn'], '65000');
+    d.setText(['devices', dev, 'router_id'], 'lo0');
+  }
   // physical ports and a cable
   // (speed and medium belong to the cable, not to the ports)
   d.addInterface(0, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.1/31')]]);
   d.addInterface(b, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.0/31')]]);
-  // logical interfaces: a VLAN interface (its VLAN comes from the network of its address; the port carrying its
-  // network is derived from the cable ends) and a tunnel interface sourced from the loopback, towards the other router's loopback
+  // logical interfaces: a subinterface of the routed port (its VLAN comes from the network of its address; it is
+  // tagged on its port, ge-0/0/0, as its name says) and a tunnel interface sourced from the loopback, towards the other router's loopback
   for (const [dev, n, peer] of [[0, 1, 2], [b, 2, 1]]) {
-    d.addLogical(dev, 'virtual', [['id', s('irb.100')], ['label', s('Management')], ['ip', flowList(`10.100.0.${n}/24`)]]);
+    d.addLogical(dev, 'virtual', [['id', s('ge-0/0/0.100')], ['label', s('Management')], ['ip', flowList(`10.100.0.${n}/24`)]]);
     d.addLogical(dev, 'tunnel', [['id', s('gr-0/0/0.1')], ['ip', flowList(`172.16.0.${n}/30`)], ['source', s('lo0')], ['destination', s(`10.255.0.${peer}`)]]);
   }
   d.addEntity('link', [['id', s('cable-1')], ['a', s('edge-a:ge-0/0/0')], ['b', s('edge-b:ge-0/0/0')], ['medium', s('fiber')], ['speed', s('10G')], ['cable', s('LC-LC OM4 3m')]]);
@@ -55,15 +61,14 @@ export function buildNewNetwork() {
   d.addEntity('network', [['id', s('net-mgmt')], ['label', s('Management')], ['cidr', s('10.100.0.0/24')], ['vlan', Y.numNode(100)]]);
   // a network that only loopbacks are in: part of the logical view, not of the physical one
   d.addEntity('network', [['id', s('net-loopbacks')], ['label', s('Router loopbacks')], ['cidr', s('10.255.0.0/24')]]);
-  // the cable carries the core network and the management network at both ends (configured per end)
-  for (const side of ['a', 'b']) for (const net of ['net-core', 'net-mgmt']) d.addEndNetwork(['links', 0, side], net);
+  // the ports are routed (routers' ports without VLANs): the core network on the ports, the management VLAN tagged by the subinterfaces
   // logical relations sourced from loopbacks
   d.addEntity('relation', [
     ['id', s('ibgp-v6')],
     ['protocol', s('ibgp')],
     ['endpoints', flowList('edge-a:lo1', 'edge-b:lo1')],
     ['over', s('cable-1')],
-    ['attrs', Y.mapNode([['asn', Y.numNode(65000)], ['address-family', flowList('ipv6-unicast', 'evpn')]])],
+    ['attrs', Y.mapNode([['address-family', flowList('ipv6-unicast', 'evpn')]])],
   ]);
   d.addEntity('relation', [
     ['id', s('gre-lab')],
@@ -79,11 +84,17 @@ export function buildNewNetwork() {
 
 /** minimal.yaml imported → loopbacks, BGP between loopbacks, attrs, rename. */
 export function buildMinimalEdited() {
-  const text = readFileSync(join(root, 'examples', 'minimal.yaml'), 'utf8');
+  const text = readFileSync(join(root, 'test', 'examples', 'minimal.yaml'), 'utf8');
   const d = ModelDoc.fromText(text, 'minimal.yaml', 'file').doc;
   d.change('Edit title', () => d.setAt(['title'], s('Minimal example (edited in netatlas)'), KEY_ORDER.top));
   for (const [i, n] of [[0, 1], [1, 2]]) {
     d.addLoopback(i, [`10.255.0.${n}/32`, `2001:db8:ffff::${n}/128`], 'Router ID', 'lo0');
+  }
+  // the loopbacks become the router IDs; both also run BGP (AS 65001)
+  for (const i of [0, 1]) {
+    d.setText(['devices', i, 'router_id'], 'lo0');
+    d.enableService(i, 'bgp');
+    d.setInteger(['devices', i, 'protocols', 'bgp', 'asn'], '65001');
   }
   // rename r1 -> edge-1: every reference (link, relations) follows
   d.renameEntity('device', 0, 'edge-1');
@@ -93,7 +104,7 @@ export function buildMinimalEdited() {
     ['protocol', s('ibgp')],
     ['endpoints', flowList('edge-1:lo0', 'r2:lo0')],
     ['over', s('ospf-1')],
-    ['attrs', Y.mapNode([['asn', Y.numNode(65001)], ['update-source', s('lo0')]])],
+    ['attrs', Y.mapNode([['update-source', s('lo0')]])],
   ]);
   d.arrange(['physical', 'logical']);
   return d;
@@ -101,7 +112,7 @@ export function buildMinimalEdited() {
 
 /** metro-ring.yaml loaded -> Auto-arrange (both views) -> exported. */
 export function buildMetroArranged() {
-  const text = readFileSync(join(root, 'examples', 'metro-ring.yaml'), 'utf8');
+  const text = readFileSync(join(root, 'test', 'examples', 'metro-ring.yaml'), 'utf8');
   const d = ModelDoc.fromText(text, 'metro-ring.yaml', 'file').doc;
   d.arrange(['physical', 'logical']);
   return d;
@@ -115,11 +126,11 @@ const outputs = [
 
 const header = {
   'metro-ring-arranged.yaml':
-    '# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n' +
+    '# netatlas test fixture: test/examples/metro-ring.yaml after Auto-arrange (both views) and export\n' +
     '# (generated by scripts/make-fixtures.mjs). The positions are in the\n' +
     '# "layout" section at the end; the network itself is unchanged.\n',
   'editor-new-network.yaml': '# netatlas test fixture: a model created with "New" in the editor and built up\n# with the editor operations (generated by scripts/make-fixtures.mjs).\n',
-  'minimal-edited.yaml': '# netatlas test fixture: examples/minimal.yaml after being imported and edited\n# (generated by scripts/make-fixtures.mjs): loopbacks with IPv4 + IPv6,\n# r1 renamed to edge-1 (references updated), cable attributes and an iBGP\n# session between the loopbacks. Original comments are preserved.\n',
+  'minimal-edited.yaml': '# netatlas test fixture: test/examples/minimal.yaml after being imported and edited\n# (generated by scripts/make-fixtures.mjs): loopbacks with IPv4 + IPv6,\n# r1 renamed to edge-1 (references updated), cable attributes and an iBGP\n# session between the loopbacks. Original comments are preserved.\n',
 };
 
 export function render(name) {

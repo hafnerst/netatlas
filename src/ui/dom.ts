@@ -9,12 +9,25 @@ export const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const SAFE_ATTR = /^(?:[a-z][a-z0-9-]*|viewBox|preserveAspectRatio)$/;
 
+/** Attributes that hold a colour a scene element is painted with. */
+const PAINT_ATTR = /^(?:fill|stroke|stop-color|color)$/;
+let paint: ((color: string) => string) | null = null;
+
+/**
+ * The colour mapping of the theme in effect (diagram/palette.ts): applied to
+ * the fill and stroke colours of every element created from scene data, so
+ * the diagram, the legends and the exports are drawn in the theme's colours.
+ */
+export function setPaint(fn: ((color: string) => string) | null): void {
+  paint = fn;
+}
+
 export function materialize(v: VNode, doc: Document, inSvg = false): Element {
   const svg = inSvg || v.tag === 'svg';
   const el = svg ? doc.createElementNS(SVG_NS, v.tag) : doc.createElement(v.tag);
   for (const name of Object.keys(v.attrs)) {
     if (!SAFE_ATTR.test(name) || /^on/i.test(name) || name === 'href' || name === 'src' || name === 'style') continue;
-    el.setAttribute(name, v.attrs[name]);
+    el.setAttribute(name, paint && PAINT_ATTR.test(name) ? paint(v.attrs[name]) : v.attrs[name]);
   }
   if (v.text !== undefined) el.appendChild(doc.createTextNode(v.text));
   for (const c of v.children) el.appendChild(materialize(c, doc, svg && v.tag !== 'foreignObject'));
@@ -32,11 +45,11 @@ export function mount(parent: Element, nodes: VNode | VNode[], inSvg = false): v
 export function el(
   doc: Document,
   tag: string,
-  attrs: { [k: string]: string } = {},
+  attrs: { [k: string]: string | null } = {},
   children: Array<Node | string | null> = [],
 ): HTMLElement {
   const e = doc.createElement(tag);
-  for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+  for (const k of Object.keys(attrs)) if (attrs[k] !== null) e.setAttribute(k, attrs[k] as string);
   for (const c of children) {
     if (c === null) continue;
     e.appendChild(typeof c === 'string' ? doc.createTextNode(c) : c);

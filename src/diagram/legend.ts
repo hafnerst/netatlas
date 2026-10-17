@@ -5,14 +5,17 @@
  * two can't disagree. DOM-free, like the renderers.
  */
 import { Rect, textWidth } from '../layout/geometry';
-import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
-import { networkMismatch } from '../model/derive';
+import { DEVICE_TYPE_IDS, deviceTypeLabel, kindLabel, purposeDef } from '../model/device-types';
+import { endTagText, tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
-import { deviceIcon, iconName } from './icons';
+import { isGuest } from '../model/virtual';
+import { deviceIcon, iconName, layerBadge, glyphFor } from './icons';
 import { VNode, h } from './scene';
 import { View } from './session';
 import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from './style';
+import { capabilities } from '../model/capabilities';
+import { SERVICES, deviceServices, MAX_BADGES } from '../model/service-registry';
 
 /** Swatches are drawn in a box of this width; `swatchH` is 18 unless an item says otherwise. */
 export const SWATCH_W = 44;
@@ -69,10 +72,34 @@ export function relationSwatchParts(def: ProtocolDef): VNode[] {
 export function legendOf(model: Model, view: View): Legend {
   const sections: LegendSection[] = [];
   if (view === 'physical') {
-    // in the format's order; devices without a type last
+    // in the format's order; devices without a type last; each glyph the model draws once: a kind's or a System's
+    // own glyph with its name ("Endpoint · PLC"), the kinds that keep the type's glyph in brackets ("Firewall (NGFW)")
     const rank = (t: string): number => (DEVICE_TYPE_IDS.indexOf(t) + DEVICE_TYPE_IDS.length + 1) % (DEVICE_TYPE_IDS.length + 1);
     const types = Array.from(new Set(model.devices.map((d) => iconName(d.type)))).sort((p, q) => rank(p) - rank(q));
-    sections.push({ title: 'Devices', items: types.map((t) => ({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: deviceTypeLabel(t) || 'No type' })) });
+    const items: LegendItem[] = [];
+    for (const t of types) {
+      const ds = model.devices.filter((d) => iconName(d.type) === t);
+      if (capabilities({ type: t }).switchFeatures) {
+        items.push(...switchItems(model));
+        continue;
+      }
+      const plain = ds.filter((d) => glyphFor(d) === iconName(d.type, d.layer3));
+      if (plain.length) {
+        const kinds = Array.from(new Set(plain.map((d) => kindLabel(d)).filter((k): k is string => !!k))).sort();
+        items.push({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: (deviceTypeLabel(t) || 'No type') + (kinds.length ? ` (${kinds.join(', ')})` : '') });
+      }
+      const variants = new Map<string, string>();
+      for (const d of ds) {
+        const g = glyphFor(d);
+        if (g === iconName(d.type, d.layer3) || variants.has(g)) continue;
+        const purpose = d.purpose ? purposeDef(d.purpose) : undefined;
+        const what = [purpose ? purpose.label : '', kindLabel(d) || ''].filter((x) => !!x).join(', ');
+        variants.set(g, `${deviceTypeLabel(t)} · ${what || g}`);
+      }
+      for (const [g, label] of Array.from(variants).sort((a, b) => (a[1] < b[1] ? -1 : 1))) items.push({ swatch: [deviceIcon(g, 11, 0, 22)], swatchH: 22, label });
+    }
+    items.push(...netServiceItems(model));
+    sections.push({ title: 'Devices', items });
     const media = new Map<string, { label: string; color: string; dash?: string }>();
     for (const l of model.links) {
       const m = mediumStyle(l.medium);
@@ -83,9 +110,20 @@ export function legendOf(model: Model, view: View): Legend {
       sections.push({
         title: 'Cables (physical links)',
         items: Array.from(media.values()).map((m) => ({ swatch: [h('path', { d: LINE, stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })], label: m.label })),
-        more: [{ ...width('1G'), label: '1G (width grows with speed)' }, width('100G'), PORT_ITEM, ...(model.links.some((l) => !!networkMismatch(l.a.networks, l.b.networks)) ? [MISMATCH_ITEM] : [])],
+        more: [
+          { ...width('1G'), label: '1G (width grows with speed)' },
+          width('100G'),
+          PORT_ITEM,
+          ...(model.links.some((l) => !l.a.iface || !l.b.iface) ? [DEVICE_END_ITEM] : []),
+          ...(model.devices.some((d) => d.logical.some((i) => i.members.length > 0)) ? [LAG_ITEM] : []),
+          ...(model.links.some((l) => !!endTagText(model, l.a) || !!endTagText(model, l.b)) ? [TAG_ITEM] : []),
+          ...(model.links.some((l) => /^T /.test(endTagText(model, l.a)) || /^T /.test(endTagText(model, l.b))) ? [TRUNK_ITEM] : []),
+          ...(model.links.some((l) => !!tagMismatch(model, l)) ? [MISMATCH_ITEM] : []),
+        ],
       });
     }
+    const virt = virtualItems(model);
+    if (virt.length) sections.push({ title: VIRTUAL_TITLE, items: virt });
     const groups = groupSection(model);
     if (groups) sections.push(groups);
     return {
@@ -108,6 +146,14 @@ export function legendOf(model: Model, view: View): Legend {
       items: protos.map(([p, u]) => ({ swatch: relationSwatchParts(u.def), label: u.def.label, protocol: p, count: u.count, custom: u.def.custom })),
     });
   }
+  // a switch's layer is marked in both views
+  const switches = switchItems(model);
+  if (switches.length) sections.push({ title: 'Switches', items: switches });
+  // a server's DHCP and DNS badges too
+  const svcs = netServiceItems(model);
+  if (svcs.length) sections.push({ title: 'Servers', items: svcs });
+  // a guest names the host it runs on
+  if (model.devices.some((d) => isGuest(d) && d.host !== undefined)) sections.push({ title: VIRTUAL_TITLE, items: [RUNS_ON_ITEM] });
   sections.push({
     title: 'Other symbols',
     items: [
@@ -118,12 +164,15 @@ export function legendOf(model: Model, view: View): Legend {
           h('path', { class: 'tube-outer', d: LINE, stroke: '#e8590c', 'stroke-width': 7 }),
           h('path', { class: 'tube-inner', d: LINE, 'stroke-width': 2 }),
         ],
-        label: 'Carried inside (e.g. GRE over IPsec)',
+        label: 'Carried inside (e.g. OSPF over GRE, bound to the same interfaces)',
       },
+      IFACE_PORT_ITEM,
+      ...(model.relations.some((r) => r.endpoints.some((e) => !e.iface)) ? [DEVICE_PORT_ITEM] : []),
       { swatch: [h('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })], label: 'Multipoint hub (3+ devices)' },
       { swatch: [h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })], label: 'IP network' },
       { swatch: [h('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
       ...(model.devices.some((d) => d.dnsNames.length > 0) ? [DNS_ITEM] : []),
+      ...(model.devices.some((d) => d.routes.length > 0) ? [ROUTES_ITEM, NEXT_HOP_ITEM] : []),
     ],
     note: Array.from(used.values()).some((u) => u.def.custom) ? '* defined in this file’s "protocols" section' : undefined,
   });
@@ -149,7 +198,58 @@ const GROUPS_TITLE = 'Locations / groups';
 
 /** symbols of the physical view that the Legend tab and the exported legend share */
 const PORT_ITEM: LegendItem = { swatch: [h('rect', { class: 'port', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' })], label: 'Port (label: interface name)' };
-const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'The two ends carry different networks' };
+/** a cable end without an interface: plugged into the device as a whole */
+const DEVICE_END_ITEM: LegendItem = { swatch: [h('rect', { class: 'port dev-end', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5 })], label: 'Cable end at the device (no port named)' };
+/** an aggregate's bracket around its member ports */
+const LAG_ITEM: LegendItem = {
+  swatch: [
+    h('rect', { class: 'port', x: 9, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }),
+    h('rect', { class: 'port', x: 26, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }),
+    h('rect', { class: 'lag-mark', x: 4, y: 3, width: 36, height: 12, rx: 6 }),
+  ],
+  label: 'Aggregate (LAG): its member ports, named by the aggregate',
+};
+/** the port beside an interface's row in the logical view, with its end label */
+const IFACE_PORT_ITEM: LegendItem = {
+  swatch: [
+    h('rect', { class: 'dev-box', x: 1, y: 1, width: 14, height: 16, rx: 2 }),
+    h('rect', { class: 'lport', x: 12, y: 5, width: 6, height: 8, rx: 1.5 }),
+    h('path', { class: 'rel-line', d: 'M18 9H43', stroke: '#868e96', 'stroke-width': 2.4 }),
+  ],
+  label: 'Port of an interface: its relations start there (end label: its name, "src:" the underlay)',
+};
+/** the device-level port beside a device's name */
+const DEVICE_PORT_ITEM: LegendItem = {
+  swatch: [
+    h('rect', { class: 'dev-box', x: 1, y: 1, width: 14, height: 16, rx: 2 }),
+    h('rect', { class: 'lport dev-port', x: 12, y: 5, width: 6, height: 8, rx: 1.5 }),
+    h('path', { class: 'rel-line', d: 'M18 9H43', stroke: '#868e96', 'stroke-width': 2.4 }),
+  ],
+  label: 'Device-level port: relations bound to the device as a whole',
+};
+const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLANs differ: the ports at the two ends disagree' };
+/** a port's VLANs, as its label's second line */
+const TAG_ITEM: LegendItem = {
+  swatch: [h('text', { class: 'port-tag', x: 22, y: 13, 'text-anchor': 'middle', 'font-size': 9 }, 'A · T · N')],
+  label: 'Port VLANs: A 10 access port · T 10,20 trunk · N its native (untagged) VLAN · R · T a routed port’s tagged subinterfaces',
+};
+/** a trunk port: larger, with a thick frame */
+const TRUNK_ITEM: LegendItem = {
+  swatch: [h('rect', { class: 'port', x: 9, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }), h('rect', { class: 'port trunk', x: 25, y: 3.5, width: 11, height: 11, rx: 1.5, fill: '#868e96' })],
+  label: 'Access port (one VLAN) · trunk port (several VLANs, thick frame)',
+};
+
+/** a device's route table and the line from a route to its next hop (logical view; hidden with Routes) */
+export const ROUTES_LABEL = 'Static routes (route table in the device, per VRF)';
+export const NEXT_HOP_LABEL = 'Route → next hop (dotted, to the interface that has the next-hop address)';
+const ROUTES_ITEM: LegendItem = {
+  swatch: [h('g', { class: 'if-entry route-table' }, [h('rect', { x: 3, y: 2, width: 38, height: 14, rx: 3 }), h('text', { x: 6, y: 12, 'font-size': 8 }, '0/0 via')])],
+  label: ROUTES_LABEL,
+};
+const NEXT_HOP_ITEM: LegendItem = {
+  swatch: [h('path', { class: 'nh-line', d: LINE }), h('path', { class: 'nh-arrow', d: 'M41 9L35 5.5L35 12.5Z' })],
+  label: NEXT_HOP_LABEL,
+};
 
 /** a device's DNS names, as written under it in the logical view */
 const DNS_LABEL = 'DNS name (as configured, not looked up)';
@@ -168,6 +268,8 @@ export interface ExportOptions {
   showGroups?: boolean;
   /** DNS names are drawn under devices (logical view; default: if the model has any) */
   dnsShown?: boolean;
+  /** route tables and next-hop lines are drawn (logical view; default true) */
+  showRoutes?: boolean;
 }
 
 const PAD = 14;
@@ -191,6 +293,7 @@ export function exportLegendSections(model: Model, view: View, opts: ExportOptio
         if (i.protocol !== undefined) return !opts.hiddenProtocols.has(i.protocol);
         if (/^IP network|^Network membership/.test(i.label)) return opts.showNetworks && model.networks.length > 0;
         if (i.label === DNS_LABEL) return opts.dnsShown !== false;
+        if (i.label === ROUTES_LABEL || i.label === NEXT_HOP_LABEL) return opts.showRoutes !== false;
         return true;
       });
     }
@@ -254,4 +357,65 @@ export function svgLegend(model: Model, view: View, opts: ExportOptions, bounds:
     box,
     viewBox,
   };
+}
+
+const VIRTUAL_TITLE = 'Virtualization';
+
+/** a guest in the logical view: its second line names its host */
+const RUNS_ON_ITEM: LegendItem = {
+  swatch: [h('rect', { class: 'dev-box', x: 2, y: 1, width: 40, height: 16, rx: 3 }), h('text', { x: 22, y: 12, 'text-anchor': 'middle', 'font-size': 7 }, 'runs on')],
+  label: 'Guest (VM or container): "runs on" names its host',
+};
+
+/**
+ * The physical view's symbols for what is drawn inside a host's box (those
+ * the model has): virtual switches with their port groups, container
+ * networks, the guests' boxes, and the wires.
+ */
+function virtualItems(model: Model): LegendItem[] {
+  const out: LegendItem[] = [];
+  const hv = model.devices.some((d) => !!d.hypervisor && d.hypervisor.vswitches.length > 0);
+  const ce = model.devices.some((d) => !!d.containerEngine && d.containerEngine.networks.length > 0);
+  if (!hv && !ce && !model.devices.some((d) => isGuest(d) && d.host !== undefined)) return out;
+  if (hv) {
+    out.push({
+      swatch: [h('rect', { class: 'vbar-box', x: 1, y: 1, width: 42, height: 16, rx: 3 }), h('g', { class: 'pg-pill' }, [h('rect', { class: 'pg-box', x: 5, y: 5, width: 16, height: 9, rx: 2 })]), h('g', { class: 'pg-pill' }, [h('rect', { class: 'pg-box', x: 24, y: 5, width: 16, height: 9, rx: 2 })])],
+      label: 'Virtual switch with its port groups (each with its VLAN)',
+    });
+  }
+  if (ce) {
+    out.push({
+      swatch: [h('g', { class: 'cnet-bar' }, [h('rect', { class: 'vbar-box', x: 1, y: 4, width: 42, height: 10, rx: 3 })])],
+      label: 'Container network (bridge, macvlan, overlay …): dashed',
+    });
+  }
+  out.push({
+    swatch: [h('rect', { class: 'dev-box', x: 1, y: 1, width: 42, height: 16, rx: 3 }), h('rect', { class: 'dev-box', x: 22, y: 5, width: 16, height: 9, rx: 2 })],
+    label: 'Guest drawn inside its host (a container in a VM: inside the VM)',
+  });
+  out.push({ swatch: [h('path', { class: 'vwire', d: 'M3 14V9H41' })], label: 'Virtual wire: vNIC / veth to its port group or network' });
+  if (hv || model.devices.some((d) => !!d.containerEngine && d.containerEngine.networks.some((n) => n.parent !== undefined))) {
+    out.push({ swatch: [h('rect', { class: 'port', x: 3, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }), h('path', { class: 'vwire vwire-uplink', d: 'M12 9H41' })], label: 'Uplink: a host port to its virtual switch (passthrough: to the guest)' });
+  }
+  return out;
+}
+
+/** The legend's server-service entries: a DHCP server and a DNS server (those the model has), with their badges; a DHCP client's interface. */
+function netServiceItems(model: Model): LegendItem[] {
+  // the badges the model's devices carry, each named once ("DHCP DHCP server", "WIFI Wireless access", "SEP Domain separation")
+  const used = SERVICES.filter((s) => model.devices.some((d) => deviceServices(d).indexOf(s) >= 0));
+  if (!used.length) return [];
+  const out: LegendItem[] = [{ swatch: [h('text', { class: 'legend-badge', x: 2, y: 15 }, 'A · B +n')], swatchH: 22, label: `a device's services under its type (at most ${MAX_BADGES}, then how many more; all in its tooltip)` }];
+  for (const s of used) out.push({ swatch: [h('text', { class: 'legend-badge', x: 2, y: 15 }, s.badge)], swatchH: 22, label: s.label });
+  return out;
+}
+
+/** The legend's switch entries: the Layer 2 and the Layer 3 switch (those the model has), each with its glyph and badge. */
+function switchItems(model: Model): LegendItem[] {
+  const out: LegendItem[] = [];
+  for (const l3 of [false, true]) {
+    if (!model.devices.some((d) => capabilities(d).switchFeatures && !!d.layer3 === l3)) continue;
+    out.push({ swatch: [deviceIcon('switch', 4, 0, 22, l3), layerBadge(l3, 17, 12)], swatchH: 24, label: l3 ? 'Layer 3 switch (L3: routes between its VLANs)' : 'Layer 2 switch (L2: forwards frames only)' });
+  }
+  return out;
 }

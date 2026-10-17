@@ -1,11 +1,15 @@
-// Runs the in-page self-test (dist/netatlas.html#selftest) in a headless
-// Chromium-based browser (Chrome, Edge or Chromium) with DNS resolution
-// disabled, and reports the results. Exit code 0 = all checks passed,
-// 2 = no browser found (skipped), 1 = failures.
+// Runs an in-page self-test in a headless Chromium-based browser (Chrome,
+// Edge or Chromium) with DNS resolution disabled, and reports the results.
+// Exit code 0 = all checks passed, 2 = no browser found (skipped), 1 = failures.
 //
-//   node scripts/browser-selftest.mjs            run the self-test
+//   node scripts/browser-selftest.mjs            the full self-test on the test build (build/netatlas-test.html#selftest:
+//                                                public and internal examples)
+//   node scripts/browser-selftest.mjs --public   the released application's own self-test (dist/netatlas.html#selftest:
+//                                                its public examples, both themes, the Objects list, offline)
 //   node scripts/browser-selftest.mjs --shot     also write screenshots to dist/screenshots/
-//   node scripts/browser-selftest.mjs --viewport run the viewport check (#viewportcheck) at several window sizes
+//   node scripts/browser-selftest.mjs --viewport the viewport check (build/netatlas-test.html#viewportcheck) at several window sizes
+//
+// "npm run build" writes both pages.
 //
 // Set NETATLAS_BROWSER=/path/to/chrome to choose the browser explicitly.
 import { execFileSync } from 'node:child_process';
@@ -15,7 +19,11 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const html = resolve(root, 'dist', 'netatlas.html');
+/** The released application (public examples only). */
+export const releaseHtml = resolve(root, 'dist', 'netatlas.html');
+/** The test build: the application with the internal examples, the full self-test and the viewport check. */
+export const testHtml = resolve(root, 'build', 'netatlas-test.html');
+const html = testHtml;
 
 export function findBrowser() {
   const env = process.env.NETATLAS_BROWSER;
@@ -59,11 +67,13 @@ export function run(browser, url, extra) {
         // any DNS lookup fails: proves nothing on the page needs the network
         '--host-resolver-rules=MAP * ~NOTFOUND',
         `--user-data-dir=${profile}`,
-        '--virtual-time-budget=120000',
+        // the self-test's waits run on virtual time; under a loaded machine (the whole test suite at once) it needs more than 2 minutes of it
+        '--virtual-time-budget=180000',
         ...extra,
         url,
       ],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'] },
+      // about 30 s alone, but several times that while npm test runs the other browser tests in parallel
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300000, stdio: ['ignore', 'pipe', 'pipe'] },
     );
   } finally {
     try {
@@ -78,11 +88,11 @@ function decode(s) {
   return s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
-function runPage(hash, extra) {
+function runPage(hash, extra, page = testHtml) {
   const browser = findBrowser();
   if (!browser) return { skipped: true };
-  if (!existsSync(html)) throw new Error('dist/netatlas.html not found — run "npm run build" first');
-  const dom = run(browser, pathToFileURL(html).href + '#' + hash, [...extra, '--dump-dom']);
+  if (!existsSync(page)) throw new Error(`${page} not found — run "npm run build" first`);
+  const dom = run(browser, pathToFileURL(page).href + '#' + hash, [...extra, '--dump-dom']);
   const m = /<pre id="selftest"[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
   if (!m || !m[1].trim()) {
     const last = /data-selftest-last="([^"]*)"/.exec(dom);
@@ -94,6 +104,11 @@ function runPage(hash, extra) {
 export function runSelfTest() {
   // desktop size: model panel, diagram and side panel next to each other
   return runPage('selftest', ['--window-size=1600,1000']);
+}
+
+/** The released application's own self-test (its public examples), at a desktop size or the given one. */
+export function runPublicSelfTest(size = '1600,1000') {
+  return runPage('selftest', ['--window-size=' + size], releaseHtml);
 }
 
 /**
@@ -138,7 +153,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   console.log(`\n${failed ? 'FAIL' : 'PASS'}: viewport check at ${VIEWPORTS.length} window sizes`);
   process.exit(failed ? 1 : 0);
 } else if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const res = runSelfTest();
+  const res = process.argv.includes('--public') ? runPublicSelfTest() : runSelfTest();
   if (res.skipped) {
     console.log('SKIPPED: no Chrome/Edge/Chromium found (set NETATLAS_BROWSER=/path/to/browser)');
     process.exit(2);
@@ -163,7 +178,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const shots = [[0, 'physical'], [0, 'logical'], [1, 'physical'], [1, 'logical'], [2, 'logical'], [0, 'logical&select=relation:gre-muc'], [0, 'physical&select=relation:gre-muc']];
     for (const [ex, view] of shots) {
       const file = join(outDir, `example${ex}-${view.replace(/[^a-z0-9-]+/gi, "_")}.png`);
-      run(res.browser, pathToFileURL(html).href + `#example=${ex}&view=${view}`, ['--window-size=1600,1000', `--screenshot=${file}`, '--hide-scrollbars']);
+      run(res.browser, pathToFileURL(releaseHtml).href + `#example=${ex}&view=${view}`, ['--window-size=1600,1000', `--screenshot=${file}`, '--hide-scrollbars']);
       console.log('screenshot:', file);
     }
   }
