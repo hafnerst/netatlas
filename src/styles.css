@@ -1056,6 +1056,8 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .has-sim .sim-down { opacity: .55; }
 .has-sim .sim-down .dev-box, .has-sim .sim-down .net-box { stroke: var(--error) !important; stroke-width: 3.5 !important; stroke-dasharray: 2 4 !important; stroke-linecap: round; }
 .has-sim .sim-degraded .dev-box, .has-sim .sim-degraded .net-box { stroke: var(--warn) !important; stroke-width: 3 !important; stroke-dasharray: 10 4 2 4 !important; }
+.has-sim .sim-down.sim-booting { opacity: .75; }
+.has-sim .sim-down.sim-booting .dev-box { stroke: var(--accent) !important; stroke-dasharray: 7 3 !important; stroke-linecap: butt; }
 .has-sim .sim-down .cable-line, .has-sim .sim-down .rel-line, .has-sim .sim-down .tube-outer, .has-sim .sim-down.member { stroke-dasharray: 2 6 !important; stroke-linecap: round; }
 .has-sim .sim-degraded .cable-line, .has-sim .sim-degraded .rel-line, .has-sim .sim-degraded .tube-outer, .has-sim .sim-degraded.member { stroke-dasharray: 10 4 2 4 !important; }
 .has-sim rect.sim-down.port, .has-sim rect.sim-down.lport, .has-sim .sim-down.if-entry rect, .has-sim .sim-down.if-chip rect, .has-sim .sim-down.lag-mark { stroke: var(--error) !important; stroke-dasharray: 2 3; }
@@ -1451,6 +1453,11 @@ dialog#modal.sim-start-dialog .snd-body { flex: 1 1 auto; }
 dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 /* a sender's badge in the diagram: a framed ▶ on its box's top left corner (shape, not colour, says it), never over a text */
 .layer-sim-senders, .layer-sim-senders * { pointer-events: none; }
+/* a device's lifecycle: powered off, booting (symbol and word, never the colour alone) */
+.sim-power rect { fill: var(--panel); stroke-width: 1.6; }
+.sim-power text { font-size: 10.5px; font-weight: 700; fill: var(--text); }
+.sim-power[data-power="off"] rect { stroke: var(--error); }
+.sim-power[data-power="booting"] rect { stroke: var(--accent); stroke-dasharray: 4 2; }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
@@ -1508,6 +1515,10 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 /* the in-diagram menu */
 .sim-menu { position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column; min-width: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 8px; box-shadow: 0 6px 20px var(--shadow); padding: 4px; }
 .sim-menu-title { font-size: 11.5px; color: var(--muted); padding: 2px 8px 4px; max-width: 260px; overflow-wrap: anywhere; }
+.sim-menu-state { font-size: 11.5px; padding: 0 8px 5px; max-width: 260px; overflow-wrap: anywhere; color: var(--text); }
+.sim-menu-state[data-power="off"]::before { content: "\23FB\00A0"; color: var(--error); }
+.sim-menu-state[data-power="booting"]::before { content: "\21BB\00A0"; color: var(--accent); }
+.sim-menu-state[data-power="operational"]::before { content: "\25CF\00A0"; color: var(--ok); }
 .sim-menu-item { text-align: left; border: none; background: transparent; padding: 5px 10px; border-radius: 5px; color: var(--text); }
 .sim-menu-item:hover, .sim-menu-item:focus-visible { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
 /* the ARP and MAC tables */
@@ -1574,6 +1585,7 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .sim-ev[data-status="running"] .sim-ev-icon, .sim-ev[data-status="running"] .sim-ev-status, .sim-ev[data-status="queued"] .sim-ev-status { color: var(--accent); }
 .sim-ev[data-status="completed"] .sim-ev-icon, .sim-ev[data-status="completed"] .sim-ev-status { color: var(--ok); }
 .sim-ev[data-status="failed"] .sim-ev-icon, .sim-ev[data-status="failed"] .sim-ev-status { color: var(--error); }
+.sim-ev[data-status="paused"] .sim-ev-icon, .sim-ev[data-status="paused"] .sim-ev-status { color: var(--warn); }
 .sim-ev-target, .sim-ev-summary { overflow-wrap: anywhere; min-width: 0; }
 .sim-ev-target { color: var(--muted); }
 .sim-ev-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: 2px 0; }

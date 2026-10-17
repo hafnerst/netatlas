@@ -2,7 +2,7 @@
 import { deviceKindLabel, deviceTypeLine, roleLabel } from '../model/device-types';
 import { sortedByName } from '../model/order';
 import { Attrs, CATEGORIES, Interface, LinkEnd, Model, ProtocolDef, RelEndpoint, Route, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices, VpnService, VPN_OPERATIONS, VPN_TECHNOLOGIES } from '../model/types';
-import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
+import { LegendItem, LegendSection, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
 import { iconNode } from './dom';
 import { View } from '../diagram/session';
@@ -704,8 +704,23 @@ function row(item: LegendItem): VNode {
   return h('li', { class: 'legend-row' }, [swatchSvg(item.swatch, item.swatchH), h('span', {}, item.label)]);
 }
 
-export function legendFor(model: Model, view: View, hidden: Set<string>): VNode {
+/** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them). */
+function simStateSection(): LegendSection {
+  const pill = (state: string, text: string): VNode[] => [h('g', { class: 'sim-power', 'data-power': state }, [h('rect', { x: 3, y: 1, width: 38, height: 16, rx: 8 }), h('text', { x: 22, y: 12.5, 'text-anchor': 'middle' }, text)])];
+  return {
+    title: 'Simulation: device state',
+    items: [
+      { swatch: pill('off', '⏻ Off'), label: '⏻ Off: powered off (or down with its host or its container engine); it takes no part' },
+      { swatch: pill('booting', '↻'), label: '↻ Booting: powered on, it takes part when its boot time is over' },
+      { swatch: [], label: 'No badge: operational (powered on and booted)' },
+    ],
+    note: 'Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. An external network, a patch panel or a TAP has no power state of its own. The badge’s tooltip and the device’s menu say the state with its time.',
+  };
+}
+
+export function legendFor(model: Model, view: View, hidden: Set<string>, simulation = false): VNode {
   const legend = legendOf(model, view);
+  if (simulation) legend.sections.unshift(simStateSection());
   const sections: VNode[] = legend.sections.map((s) =>
     h('section', {}, [
       h('h4', {}, s.title),

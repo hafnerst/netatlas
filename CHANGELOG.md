@@ -240,6 +240,33 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Multicast streams of Network events in real time, side by side.** A
+  stream started under Network events sends its first datagram at once,
+  then one every interval of real time (1 s: every second), whatever the
+  pacing, the playback speed, the model's size or the scenario. Each
+  stream keeps its own schedule from its own start (deadlines from the
+  start, so no drift); several run at once, those due together in the
+  order they were started, so two 1 s streams each send every second and
+  never take turns. Datagrams go at the current simulated time through the
+  simulation's own forwarding; while a stream runs, the simulated clock
+  runs with real time (*· streams in real time*), so they are forwarded at
+  once and the scenario goes on behind them, and in Readable pacing
+  several datagrams are on their way at once. Paused or hidden, the
+  schedule stands (nothing caught up); Stop cancels a stream's later
+  datagrams, Exit all of them; a stall sends one datagram, not a burst,
+  and counts the rest as skipped. The schedule (`realtime.ts`) takes an
+  injected clock, so its tests never sleep.
+- **A device's state in the diagram.** Powered off: a **⏻ Off** badge at
+  the box's top right corner; booting after Power on: **↻ Booting** until
+  its boot time is over; operational: no badge. Symbol, word and frame, in
+  both themes, over the box (nothing moves); the tooltip, its accessible
+  name and the device's menu say the state with its time (*Booting:
+  powered on, up at t = 45 s*). It is the state packet processing reads,
+  and only the device's own: a shut interface or a cable down never mark
+  a device off. An external network, a patch panel or a TAP has no power
+  state (no badge, no Power off). The Legend tab explains the badges
+  while a simulation runs.
+- **Paused** as an event state: a stream while the simulation is paused.
 - **Foreground and background in the simulation's display.** While a
   Network event with traffic of its own runs (a send, a stream, a join),
   its traffic alone holds the clock and the gaps between its messages are
@@ -1044,6 +1071,16 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **A stream of Network events' interval is real time** (before:
+  simulated time, so in Readable pacing a 1 s stream showed a datagram
+  about every 10 s, and a second stream took turns with the first). Its
+  event says so (*every 1 s of real time*), counts the datagrams its
+  source sent, and says when its source is off (*not sending: srv is
+  off*). The model's own streams keep to simulated time.
+- **A booting device is marked apart from one powered off** (blue dashed
+  outline instead of red dotted).
+- **Power off is not offered** for an external network, a patch panel or
+  a TAP.
 - **The scenario's dots beyond 6 exchanges at once** are cable activity
   instead of more dots (before: up to 48 dots, the rest not drawn).
 - **Send test is Send network packets** (its form and a device's menu
@@ -1337,6 +1374,10 @@ live protocol simulation replaces them.
 
 ### Fixed
 
+- **Real time pacing stood still after a Step.** A Step or Next exchange
+  (or a jump) moved the simulation ahead of the real-time clock's
+  reference, and the clock waited until the display caught up with it;
+  it now goes on from where the simulation was left.
 - **Multicast from Network events was not drawn.** A join's reports and a
   stream's datagrams were generated and forwarded, and their events
   listed, but the diagram draws only the protocols ticked in the setup,

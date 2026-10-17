@@ -63,7 +63,7 @@ async function main() {
     await page.settle();
 
     // the whole window, physical view
-    await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 45 });
+    await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 40 });
 
     // the logical view of the metro ring example
     await page.eval('netatlas.loadExampleNamed("metro-ring.yaml"), netatlas.setView("logical"), true');
@@ -78,7 +78,7 @@ async function main() {
       const v = await page.rect('#viewport');
       const x = Math.max(c.x, v.x - 16);
       const y = Math.max(c.y, v.y - 16);
-      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 48 });
+      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 43 });
     }
     await page.eval('netatlas.loadExample(0), netatlas.setView("logical"), true');
     await page.settle(200);
@@ -283,7 +283,7 @@ async function main() {
       await page.eval(`localStorage.removeItem('netatlas.window.spof'), netatlas.openSpof(), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(250);
-      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 45 });
+      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 40 });
       await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
@@ -336,13 +336,17 @@ async function main() {
       await page.settle(200);
       const tf = await page.rect('#sim-act-net');
       await save('send-test', { x: tf.x + 2, y: tf.y, w: tf.w - 4, h: Math.min(tf.h, 420) }, { quality: 26 });
-      // Active events: the series sent, a join, flapping; a few seconds on (one event each, with their states and progress)
+      // Active events: the series sent, a join, flapping, then two streams side by side; a few real seconds on (one event each, with their states and progress)
       await page.eval(`(() => { const c = netatlas.simController(); c.startFlap('link:l-rx'); c.joinGroup('pc2', 'eth0', '239.4.4.4', []); const k = document.getElementById('sim-t-kind'); k.value = 'icmp'; k.dispatchEvent(new Event('change')); document.getElementById('sim-t-send').click();
-        c.runTo(c.t + 4500); c.refresh(true); document.getElementById('sim-act-events').scrollIntoView({ block: 'start' }); document.getElementById('toast').hidden = true; return true; })()`);
+        c.startStream('srv', 'eth0', '239.1.1.1', 5010, 1000, 500); c.startStream('pc2', 'eth0', '239.1.1.1', 5012, 1000, 500); c.setPlaying(true); return true; })()`);
+      // (the streams' interval is real time: play for it)
+      await new Promise((r) => setTimeout(r, 4500));
+      // (taken while playing: In progress)
+      await page.eval(`(() => { const c = netatlas.simController(); c.refresh(true); document.getElementById('sim-act-events').scrollIntoView({ block: 'start' }); document.getElementById('toast').hidden = true; return true; })()`);
       await page.settle(200);
       const ae = await page.rect('#sim-act-events');
       await save('active-events', { x: ae.x + 2, y: ae.y, w: ae.w - 4, h: Math.min(ae.h, 225) }, { quality: 24 });
-      await page.eval(`(() => { const c = netatlas.simController(); c.sim.stopRuns(); c.stopFlap('link:l-rx'); c.leaveGroup('pc2', 'eth0', '239.4.4.4'); c.runTo(c.t + 6000); return true; })()`);
+      await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(false); c.sim.stopRuns(); c.stopFlap('link:l-rx'); c.leaveGroup('pc2', 'eth0', '239.4.4.4'); c.sim.stopStream('srv', 'eth0', '239.1.1.1'); c.sim.stopStream('pc2', 'eth0', '239.1.1.1'); c.runTo(c.t + 6000); return true; })()`);
       // core1's Simulation section in the Actions panel, editable while the simulation runs
       await page.eval(`netatlas.select('device:core1'), true`);
       await page.settle(200);
@@ -350,6 +354,12 @@ async function main() {
       await page.settle(200);
       const sa = await page.rect('#sim-actions');
       await save('sim-device', { x: sa.x + 2, y: sa.y, w: sa.w - 4, h: Math.min(sa.h, 460) }, { quality: 38 });
+      // the devices' state in the diagram: lab-h powered off, lab-sw2 booting, lab-sw1 operational (no badge)
+      await page.eval(`(() => { const c = netatlas.simController(); c.powerOff('lab-h'); c.powerOff('lab-sw2'); c.powerOn('lab-sw2'); netatlas.select('device:lab-h', true); netatlas.select(null); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
+      await page.settle(250);
+      const labs = [];
+      for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) labs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
+      await save('device-state', around(labs, 16), { quality: 30 });
       await page.eval(`netatlas.exitSimulation(), true`);
       await page.settle(100);
       // the start dialog: the protocols first; a modified value in Layer 3, collapsed again

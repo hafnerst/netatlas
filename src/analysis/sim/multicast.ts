@@ -66,6 +66,7 @@ import { L3Iface, SimDevice } from './net';
 import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, vlanRef } from './params';
 import { routerId } from './proto-routing';
 import { ProtocolSim, Sess } from './protocols';
+import { RealTimeScheduler } from './realtime';
 import { GridTable, L4, Msg, NetEvent, Pkt, SessionStatus, TableTimer } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -171,6 +172,14 @@ export interface Stream {
   tag?: number;
   /** when it was stopped (Stop stream) */
   stoppedAt?: number;
+  /** started by Network events: on the real-time schedule (its entry), its interval real time, not simulated */
+  rt?: number;
+  /** real time: sends left out because the page was late by more than an interval (a stall), and those due while its source was off */
+  skipped?: number;
+  offMissed?: number;
+  /** the simulated time of its last datagram, and between the last two (real time: what a receiver may expect) */
+  lastAt?: number;
+  gap?: number;
 }
 
 /** What a receiver got of a group. */
@@ -200,6 +209,8 @@ export class Multicast {
   private events: NetEvent[] = [];
   private seq = 0;
   private noted = new Map<string, number>();
+  /** the real-time schedule of Network events (a stream of Network events sends on it; null: on the simulated clock) */
+  realtime: RealTimeScheduler | null = null;
   /** a test's datagram reached a member: the transport layer's callback */
   onTestReceived: ((test: number, dev: string, from: IpAddr) => void) | null = null;
 
@@ -1309,6 +1320,18 @@ export class Multicast {
 
   private runStream(st: Stream, first: number): void {
     const gen = ++st.gen;
+    // a stream of Network events: every interval of real time, on its own grid (the first datagram at once)
+    if (st.origin === 'event' && this.realtime) {
+      const rt = this.realtime;
+      const e = rt.add(st.interval, () => {
+        if (st.gen !== gen || !st.running) return;
+        const r = rt.get(st.rt as number);
+        st.skipped = r ? r.skipped : st.skipped;
+        this.sendStream(st);
+      });
+      st.rt = e.id;
+      return;
+    }
     this.P.periodic(
       () => st.gen === gen && st.running,
       () => st.interval,
@@ -1318,11 +1341,16 @@ export class Multicast {
   }
 
   private sendStream(st: Stream): void {
-    if (!this.e.deviceOn(st.dev)) return;
+    if (!this.e.deviceOn(st.dev)) {
+      if (st.rt !== undefined) st.offMissed = (st.offMissed || 0) + 1;
+      return;
+    }
     const g = A(st.group);
     const h = this.hostAddr(st.dev, st.iface, g.version);
     if (!h) return;
     st.sent++;
+    if (st.lastAt !== undefined) st.gap = this.e.now - st.lastAt;
+    st.lastAt = this.e.now;
     const demand = st.origin === 'demand';
     const msg: Msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', ' : ''}datagram ${st.sent} from ${st.dev} (${formatAddr(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: formatAddr(h.addr) } };
     const pkt = this.e.newPacket(h.addr, g, h.l3.vrf, msg, [], 0);
@@ -1342,6 +1370,8 @@ export class Multicast {
     st.running = false;
     st.stoppedAt = this.e.now;
     st.gen++;
+    // its future sends are cancelled
+    if (st.rt !== undefined && this.realtime) this.realtime.remove(st.rt);
     const i = this.events.findIndex((x) => x.kind === 'stream' && x.ref === `iface:${dev}:${iface}` && x.group === st.group);
     if (i >= 0) this.events.splice(i, 1);
     else this.events.push({ kind: 'stopped', ref: `iface:${dev}:${iface}`, group: st.group, since: this.e.now, state: `stream to ${st.group} stopped` });
@@ -1436,7 +1466,9 @@ export class Multicast {
     // a receiver that lost its stream
     for (const r of this.rx.values()) {
       const st = this.streams.find((x) => x.group === r.group && x.running);
-      if (!st || r.gapNoted || r.last < 0 || now - r.last <= 3 * st.interval + 2000) continue;
+      // (a real-time stream's datagrams come every interval of real time: as far apart in simulated time as they came lately)
+      const every = st ? Math.max(st.interval, st.gap || 0) : 0;
+      if (!st || r.gapNoted || r.last < 0 || now - r.last <= 3 * every + 2000) continue;
       if (!this.member(r.dev, this.joinedIface(r.dev, r.group) || '', A(r.group), A(Array.from(r.sources)[0] || '0.0.0.0'))) continue;
       r.gapNoted = true;
       this.e.note('drop', 'mcast', r.dev, '', 'stream lost', 'waiting', `${r.dev} has received nothing of ${r.group} for ${durationText(now - r.last)} (the stream comes every ${durationText(st.interval)}): its branch of the tree is broken`);

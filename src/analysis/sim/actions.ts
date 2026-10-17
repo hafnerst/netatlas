@@ -13,6 +13,8 @@
  *   says how it went.
  * - **Failed:** it could not be carried out at all (the simulation refused
  *   it, or no message of a send could be sent).
+ * - **Paused:** a stream of real time while the simulation is paused (its
+ *   schedule stands, and goes on from there when it plays).
  * - **Stopped:** ended by Stop before its end (a series, a stream, flapping).
  * - **Cancelled:** stopped before anything was sent.
  *
@@ -42,12 +44,12 @@ import { DELIVERY_LABEL, KIND_LABEL, TestPlan } from './test-plan';
 import { Test } from './transport';
 
 export type ActionKind = 'send' | 'join' | 'stream' | 'shut' | 'flap';
-export type ActionStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped' | 'cancelled';
+export type ActionStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'cancelled';
 
 export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping' };
-export const STATUS_LABEL: Record<ActionStatus, string> = { queued: 'Queued', running: 'In progress', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
+export const STATUS_LABEL: Record<ActionStatus, string> = { queued: 'Queued', running: 'In progress', paused: 'Paused', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
 /** An icon per state (beside its word: never the colour alone). */
-export const STATUS_ICON: Record<ActionStatus, string> = { queued: '◷', running: '▶', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
+export const STATUS_ICON: Record<ActionStatus, string> = { queued: '◷', running: '▶', paused: '❚❚', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
 
 /** The events kept: the oldest finished ones go beyond this; Clear finished removes them all. */
 export const MAX_ACTIONS = 50;
@@ -227,6 +229,10 @@ export interface ActionContext {
   /** the flapping cycles in effect (0: until stopped), its down and up times */
   flapCycles: number;
   flapTimes: string;
+  /** the real-time schedule stands (the simulation paused) */
+  rtPaused?: boolean;
+  /** is a device on (a stream's source) */
+  deviceOn?(dev: string): boolean;
 }
 
 function failedView(a: ActionRecord, title: string): ActionView {
@@ -262,14 +268,26 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
     const got = rx.reduce((n, x) => n + x[1], 0);
     // where its copies stop (a router without multicast routing, no member behind a snooping switch …): from the log
     const stop = a.traffic !== undefined ? c.lastDrop(a.traffic) : null;
+    const real = st.rt !== undefined;
+    const off = st.running && c.deviceOn ? !c.deviceOn(st.dev) : false;
+    const status: ActionStatus = !st.running ? 'stopped' : real && c.rtPaused ? 'paused' : 'running';
+    const every = `every ${sec(st.interval)}${real ? ' of real time' : ''}`;
+    const left = (st.skipped || 0) + (st.offMissed || 0);
     return {
       ...base,
-      status: st.running ? 'running' : 'stopped',
+      status,
       ended: st.running ? undefined : st.stoppedAt,
       progress: { done: st.sent, total: null, unit: 'datagrams sent' },
-      summary: `${st.sent} datagram${st.sent === 1 ? '' : 's'} sent · ${rx.length ? `received by ${rx.map((x) => `${x[0]} (${x[1]})`).join(', ')}` : `no member received any yet${stop ? ` · stops at ${stop.device}` : ''}`}`,
+      summary: `${st.sent} datagram${st.sent === 1 ? '' : 's'} sent, ${every}${off ? ` · not sending: ${st.dev} is off` : ''} · ${rx.length ? `received by ${rx.map((x) => `${x[0]} (${x[1]})`).join(', ')}` : `no member received any yet${stop ? ` · stops at ${stop.device}` : ''}`}`,
       controls: st.running ? [{ op: 'stop', label: 'Stop stream' }] : [],
-      details: [`UDP to ${st.group}:${st.port}, ${st.size} bytes every ${sec(st.interval)} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`, `Generated: ${st.sent} datagrams. Received: ${got} in all, counted at the members (a member's copy is one).`, 'Who receives it: the members of the group that multicast routing reaches (Join multicast group).', ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : [])],
+      details: [
+        `Stream #${st.id}: UDP to ${st.group}:${st.port} from source port ${st.sport}, ${st.size} bytes ${every} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`,
+        ...(real ? ['The interval is real time: the first datagram at the start, then one every interval of playing time (a pause shifts the schedule; the playback speed and the scenario don’t change it). Each datagram goes at the simulated time it is due.'] : []),
+        `Generated: ${st.sent} datagram${st.sent === 1 ? '' : 's'} at the source (the copies multicast replicates are not counted). Received: ${got} in all, counted at the members (a member's copy is one).`,
+        ...(left ? [`Not sent: ${left}${st.offMissed ? ` (${st.offMissed} while ${st.dev} was off)` : ''}${st.skipped ? ` (${st.skipped} the page was too late for: the browser was busy or suspended)` : ''}.`] : []),
+        'Who receives it: the members of the group that multicast routing reaches (Join multicast group).',
+        ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : []),
+      ],
     };
   }
   if (a.kind === 'shut' && a.shut) {

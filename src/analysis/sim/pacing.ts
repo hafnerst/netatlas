@@ -62,10 +62,19 @@
  *
  * Real time: the simulated clock runs with the display clock (1 s = 1 s at
  * 1×), held by nothing; every hop shows briefly (RT_HOP) as a sign of its
- * traffic, bundled as above. A Network event's interval is then a real
- * interval. When the simulation can't keep up (more work than a frame
- * allows), it falls behind and says so (`behind`), never catching up in a
- * burst.
+ * traffic, bundled as above. When the simulation can't keep up (more work
+ * than a frame allows), it falls behind and says so (`behind`), never
+ * catching up in a burst.
+ *
+ * Streams of Network events in real time. A stream started from Network
+ * events sends on the real-time schedule (realtime.ts), every interval of
+ * real time, whatever the pacing. While one runs (`host.realtime`), the
+ * simulated clock runs as in Real time pacing too, held by nothing, so its
+ * datagrams are forwarded at once and the scenario goes on at its own pace
+ * (× the speed) behind them; the dots keep the pacing's hop time (Readable:
+ * about 3 s a hop), so several datagrams are on their way at once. A reply
+ * is drawn after the message it answers has arrived on screen (a hop of the
+ * same conversation and Network event from the other side), never before.
  *
  * Next exchange (paused): on to the end of the exchange that is first on
  * screen (all its hops arrived), or of the next one to start.
@@ -207,6 +216,8 @@ export interface PacerHost {
   testRunning?(): boolean;
   /** is a Network event running with traffic of its own (a send, a stream, a join)? Its traffic is then the foreground. */
   foreground?(): boolean;
+  /** is a stream of Network events on the real-time schedule? The clock then runs in real time. */
+  realtime?(): boolean;
 }
 
 /** A cable (or relation) with traffic not drawn as dots, lately: its protocols and how many hops of each. */
@@ -237,10 +248,12 @@ export class Pacer {
   convLimit = CONV_LIMIT;
   /** a Network event's traffic is the foreground now (refreshed as the clock moves) */
   fgNow = false;
+  /** a stream of Network events runs on the real-time schedule: the clock runs in real time, held by nothing */
+  rtNow = false;
   /** real time: the simulation can't keep up (simulated ms behind, lately; 0: in step) */
   behind = 0;
-  /** real time: the display clock and simulated time it counts from */
-  private rt: { clock: number; now: number } | null = null;
+  /** real time: the display clock and simulated time it counts from, and where it left the simulation (moved since by other means: a Step, a jump: counted from there) */
+  private rt: { clock: number; now: number; left: number } | null = null;
   /** the hops counted as cable activity, with when (display clock) */
   private act: Array<{ f: Flight; at: number }> = [];
   private byId = new Map<number, PaceItem>();
@@ -261,7 +274,9 @@ export class Pacer {
   /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are. */
   describe(): string {
     const sp = `${this.speed}×`;
-    const base = this.mode === 'readable' ? `Readable · ${HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${this.behind > 0 ? ' · behind' : ''}`;
+    const behind = this.behind > 0 ? ' · behind' : '';
+    const base = this.mode === 'readable' ? `Readable · ${HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
+    if (this.rtNow && this.mode !== 'realtime') return `${base} · streams in real time${behind}`;
     return this.fgNow ? `${base} · your events in front` : base;
   }
 
@@ -326,7 +341,7 @@ export class Pacer {
 
   /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any; while a Send test runs, of a test)? */
   private holds(it: PaceItem, tests = this.testHolds()): boolean {
-    if (!this.drawnShown(it) || this.mode === 'realtime') return false;
+    if (!this.drawnShown(it) || this.mode === 'realtime' || this.rtNow) return false;
     if (this.follow) return it.key === this.follow.key;
     return !tests || it.test;
   }
@@ -347,6 +362,7 @@ export class Pacer {
   /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
   private refreshForeground(): void {
     this.fgNow = !!this.host.foreground && this.host.foreground();
+    this.rtNow = !!this.host.realtime && this.host.realtime();
   }
 
   private drawnShown(it: PaceItem): boolean {
@@ -402,15 +418,18 @@ export class Pacer {
       // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
       if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS) continue;
       const parent = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
-      const after = parent ? this.arrival(parent) : -Infinity;
+      let after = parent ? this.arrival(parent) : -Infinity;
+      const test = f.test !== undefined;
+      const h = this.host.headers ? this.host.headers(f) : undefined;
+      const key = conversationKey(f.protocol, h, f.label);
+      // a Network event's reply (its first hop) after the message it answers has arrived on screen: a hop of its conversation from the other side
+      if (!parent && test && f.sender !== undefined)
+        for (const x of this.items) if (x.f.test === f.test && x.key === key && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
       // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Network event's is always drawn
       const shown = this.host.shown(f);
-      const test = f.test !== undefined;
-      const h = this.host.headers ? this.host.headers(f) : undefined;
-      const key = conversationKey(f.protocol, h, f.label);
       // the scenario's: in the background while a Network event runs (cable activity); else bundled, a few conversations at a time
       const followed = !!this.follow && this.follow.key === key;
       const room = live[f.view] < this.limit;
@@ -482,7 +501,7 @@ export class Pacer {
     const e = this.host.engine;
     this.refreshForeground();
     this.register();
-    if (this.mode === 'realtime') {
+    if (this.mode === 'realtime' || this.rtNow) {
       this.realTime();
       return;
     }
@@ -539,7 +558,7 @@ export class Pacer {
    */
   private realTime(): void {
     const e = this.host.engine;
-    if (!this.rt) this.rt = { clock: this.clock, now: e.now };
+    if (!this.rt || Math.abs(e.now - this.rt.left) > EPS) this.rt = { clock: this.clock, now: e.now, left: e.now };
     const target = this.rt.now + (this.clock - this.rt.clock);
     if (target <= e.now) return;
     const until = Date.now() + JUMP_BUDGET;
@@ -550,8 +569,11 @@ export class Pacer {
     this.register();
     if (e.now < target - 1) {
       this.behind = target - e.now;
-      this.rt = { clock: this.clock, now: e.now };
-    } else this.behind = 0;
+      this.rt = { clock: this.clock, now: e.now, left: e.now };
+    } else {
+      this.behind = 0;
+      this.rt.left = e.now;
+    }
   }
 
   /**

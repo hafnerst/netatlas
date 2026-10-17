@@ -10,10 +10,11 @@
 // operational apart.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, withClock } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
-const sim = (text, opts) => new S.Simulation(model(text), opts);
+/** A simulation with a fake real clock (its streams of Network events send on real time): `s.play(ms)` moves both on. */
+const sim = (text, opts) => withClock(new S.Simulation(model(text), opts));
 const view = (s, id) => s.actions().find((v) => v.id === id);
 const flightsOf = (s, tag, from = 0) => s.engine.flights.filter((f) => f.test === tag && f.t0 >= from);
 
@@ -43,7 +44,8 @@ test('the private house has no multicast protocol to tick: a join’s reports an
   assert.ok(j.traffic !== undefined && st.traffic !== undefined && j.traffic !== st.traffic);
   // never the id of a test
   assert.ok(!s.tests().some((t) => t.id === j.traffic || t.id === st.traffic));
-  s.runTo(11500);
+  // 2.5 s: the stream's datagrams at 0, 1 and 2 s of real time
+  s.play(2500);
   // the join: its membership reports (control traffic, never datagrams), from tv's Wi-Fi interface into VLAN 20
   const jr = flightsOf(s, j.traffic, 9000);
   assert.ok(jr.length > 0);
@@ -64,7 +66,7 @@ test('the private house has no multicast protocol to tick: a join’s reports an
   assert.equal(st.stream.sent, 3);
   assert.ok(sf.length > 3 * 3, `${sf.length} flights for 3 datagrams`);
   const v = view(s, st.id);
-  assert.match(v.summary, /^3 datagrams sent · no member received any yet · stops at core$/);
+  assert.match(v.summary, /^3 datagrams sent, every 1 s of real time · no member received any yet · stops at core$/);
   assert.ok(v.details.some((d) => /^Last stopped at core: core routes no multicast \(it runs no PIM\)/.test(d)), v.details.join(' | '));
   assert.deepEqual(v.tests, [st.traffic]);
   // in the log, found by the event's id: the first datagram (a message with its headers: the packet inspector)
@@ -76,17 +78,17 @@ test('with a multicast router and a member: the stream reaches the member only; 
   const s = sim(MC);
   s.runTo(5000);
   const st = s.actStream('h3', 'eth0', '239.2.2.2', 5004, 500, 1000);
-  s.runTo(7600);
+  s.play(2600);
   const sf = flightsOf(s, st.traffic, 5000);
   const to = new Set(sf.map((f) => f.track.ref));
   assert.ok(to.has('link:l5') && to.has('link:l3'), 'from h3 to the member h1');
   assert.ok(!to.has('link:l4'), 'not to h2: snooping knows it is no member');
   assert.equal(st.stream.rx.get('h1'), st.stream.sent);
-  assert.match(view(s, st.id).summary, /^\d+ datagrams sent · received by h1 \(\d+\)$/);
-  // Stop: no datagram of it after the stop; those on their way arrive
+  assert.match(view(s, st.id).summary, /^6 datagrams sent, every 0\.5 s of real time · received by h1 \(6\)$/);
+  // Stop: no datagram of it after the stop (its future sends cancelled); those on their way arrive
   s.actionControl(st.id, 'stop');
   const at = s.now;
-  s.runTo(at + 5000);
+  s.play(5000);
   assert.equal(flightsOf(s, st.traffic, at + 1).length, 0);
   // a join: reports from h2, recorded by q1; the model's own reports (h1's answers to queries) carry no id
   const j = s.actJoin('h2', 'eth0', '239.2.2.2', []);
@@ -104,24 +106,26 @@ test('with a multicast router and a member: the stream reaches the member only; 
   assert.ok(s.events().some((e) => e.test === j.traffic && /leaves the group/.test(e.detail)));
 });
 
-test('a stream is scheduled by the simulation: its datagrams at its interval of simulated time, the same whether run at once or in steps; none while the clock stands', () => {
-  const times = (step) => {
-    const s = sim(MC);
-    s.runTo(5000);
-    const st = s.actStream('h3', 'eth0', '239.2.2.2', 5004, 750, 1000);
-    for (let t = 5000; t <= 9000; t += step) s.runTo(t);
-    return s.events().filter((e) => e.test === st.traffic && e.kind === 'message').map((e) => e.t).concat([st.stream.sent]);
-  };
-  assert.deepEqual(times(37), times(4000));
+test('a stream of Network events is scheduled in real time: its datagrams at its interval of real time, whatever simulated time does; a stream of the model on the simulated clock', () => {
   const s = sim(MC);
   s.runTo(5000);
   const st = s.actStream('h3', 'eth0', '239.2.2.2', 5004, 750, 1000);
-  s.runTo(5000 + 3100);
-  assert.equal(st.stream.sent, 5, 'at 5, 5.75, 6.5, 7.25 and 8 s (each with the timers’ small jitter)');
-  // the clock standing (paused): nothing more
-  const n = s.engine.flights.length;
-  s.runTo(s.now);
-  assert.equal(s.engine.flights.length, n);
+  assert.equal(st.stream.sent, 1, 'the first datagram at once');
+  // simulated time alone (a jump, a held clock): no datagram of it
+  s.runTo(60000);
+  assert.equal(st.stream.sent, 1);
+  // 3.1 s of real time with the clock standing: at 0, 0.75, 1.5, 2.25 and 3 s, each at the simulated time it was due
+  for (let i = 0; i < 31; i++) {
+    s.clock.t += 100;
+    s.pumpRealTime();
+  }
+  assert.equal(st.stream.sent, 5);
+  assert.equal(s.now, 60000);
+  // the model's streams still follow the simulated clock (the scenario)
+  const m = sim(MC.replace('{id: eth0, ip: 10.5.0.13/24}', '{id: eth0, ip: 10.5.0.13/24, multicast: {streams: [{group: 239.3.3.3, interval: 1s}]}}'));
+  m.runTo(20000);
+  const own = m.multicast.streams.filter((x) => x.origin === 'model');
+  assert.ok(own.length === 1 && own.every((x) => x.rt === undefined && x.sent >= 10), 'the model’s stream: every simulated second');
 });
 
 test('interface states: administrative and operational apart; Shut interface ends a flapping first; a shut interface can’t flap; one flapping per cable; Stop flapping cancels its later transitions', () => {

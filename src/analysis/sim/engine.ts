@@ -232,6 +232,14 @@ interface Delivery {
   cancelled: boolean;
 }
 
+/** A device's lifecycle (Engine.powerState): its state, since when, until when it boots, why it is off. */
+export interface DevicePower {
+  state: 'on' | 'off' | 'booting';
+  since?: number;
+  until?: number;
+  why?: string;
+}
+
 export interface EngineOptions {
   /** the ARP / NDP / MAC table timers run this many times faster (1 = real time) */
   timerScale?: number;
@@ -674,6 +682,30 @@ export class Engine {
   /** Is a device on (powered and booted)? An inline appliance that failed open is off, but passes frames. */
   deviceOn(dev: string): boolean {
     return !this.off.has(dev);
+  }
+
+  /**
+   * A device's lifecycle now, from the same state packet processing reads (`off`, `booting`): on
+   * (powered and booted), booting (powered on, until its boot time is over; it takes no part yet), off
+   * (powered off, down with its host or its container engine, waiting for its host). Null: no lifecycle
+   * of its own (an external network, a patch panel or TAP), unless it was powered off all the same, and
+   * the simulation's own bridges. Only the device itself counts: a shut interface, a cable down or a
+   * peer away leave it on.
+   */
+  powerState(dev: string): DevicePower | null {
+    const sd = this.net.devices.get(dev);
+    if (!sd || sd.virt) return null;
+    const b = this.booting.get(dev);
+    if (b !== undefined) return { state: 'booting', since: this.off.get(dev) as number, until: b };
+    if (this.off.has(dev)) {
+      const host = this.hostedOff.get(dev);
+      const why = host !== undefined ? (this.enginesOff.has(host) ? `stopped with the container engine of ${host}` : this.off.has(host) ? `down with its host ${host}` : `waits for its host ${host}`) : this.bypass.has(dev) ? 'failed open: frames pass unchecked' : undefined;
+      return { state: 'off', since: this.off.get(dev) as number, why };
+    }
+    const md = this.model.index.devices.get(dev);
+    const c = md ? capabilities(md) : null;
+    if (c && (c.externalTransit || c.passThrough)) return null;
+    return { state: 'on' };
   }
 
   /** the members of an aggregate that LACP does not let distribute yet (or any more), by port key */

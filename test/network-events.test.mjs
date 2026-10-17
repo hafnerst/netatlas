@@ -7,12 +7,13 @@
 // that state with its way back; finished events stay, up to a limit.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, withClock } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const A = load('analysis/sim/actions.js');
 
-const sim = (text, opts) => new S.Simulation(model(text), opts);
+/** (with a fake real clock: a stream of Network events sends on real time; `s.play(ms)` moves both on) */
+const sim = (text, opts) => withClock(new S.Simulation(model(text), opts));
 const view = (s, id) => s.actions().find((v) => v.id === id);
 
 /** One LAN: a multicast router (the querier), a switch, h1 a member of 239.2.2.2, h2 and h3 not. */
@@ -165,15 +166,15 @@ test('a stream runs until Stop stream: datagrams generated and those received pe
   const s = sim(MC());
   s.runTo(5000);
   const a = s.actStream('h3', 'eth0', '239.2.2.2', 5004, 1000, 1316);
-  s.runTo(s.now + 5500);
+  s.play(5500);
   let v = view(s, a.id);
   assert.equal(v.status, 'running');
   assert.deepEqual(v.progress, { done: 6, total: null, unit: 'datagrams sent' });
-  assert.match(v.summary, /^6 datagrams sent · received by h1 \(\d+\)$/);
+  assert.match(v.summary, /^6 datagrams sent, every 1 s of real time · received by h1 \(6\)$/);
   assert.equal(a.stream.rx.has('h2'), false, 'not a member: nothing counted');
   assert.equal(s.actionControl(a.id, 'stop'), true);
   const sent = a.stream.sent;
-  s.runTo(s.now + 5000);
+  s.play(5000);
   v = view(s, a.id);
   assert.equal(v.status, 'stopped');
   assert.equal(a.stream.sent, sent);

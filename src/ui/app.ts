@@ -936,6 +936,8 @@ export class App {
     const fr = this.simFailure();
     const failed = fr ? failureRefs(fr) : null;
     const dom = this.simulation && this.simulation.highlighted ? this.simulation.highlighted() : null;
+    // a device's lifecycle (powered off, booting): the simulation's own state, apart from what is down for other reasons
+    const power = this.simulation && this.simulation.powerMarks ? this.simulation.powerMarks() : null;
     this.svg.classList.toggle('has-selection', !!keep);
     this.svg.classList.toggle('has-trace', !!tr);
     this.svg.classList.toggle('has-sim', !!failed);
@@ -960,6 +962,9 @@ export class App {
       const st = failed ? failed.get(ref) : undefined;
       e.classList.toggle('sim-down', st === 'down');
       e.classList.toggle('sim-degraded', st === 'degraded');
+      const pw = power ? power.get(ref) : undefined;
+      e.classList.toggle('sim-off', pw === 'off');
+      e.classList.toggle('sim-booting', pw === 'booting');
       e.classList.toggle('bc-on', !!dom && dom.has(ref));
       e.classList.toggle('bc-off', !!dom && !dom.has(ref) && (ref.indexOf('device:') === 0 || ref.indexOf('link:') === 0 || ref.indexOf('relation:') === 0 || ref.indexOf('network:') === 0));
     }
@@ -1143,7 +1148,7 @@ export class App {
           },
         ]);
       }
-    } else if (this.tab === 'legend') mount(body, legendFor(s.viewModel(), s.state.view, s.state.hiddenProtocols));
+    } else if (this.tab === 'legend') mount(body, legendFor(s.viewModel(), s.state.view, s.state.hiddenProtocols, !!this.simulation));
     else mount(body, relationList(s.model, this.selectionContext()));
     restoreFocus(this.doc, focus);
   }
