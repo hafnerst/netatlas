@@ -2434,10 +2434,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
       await tick();
       const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
-      check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP / MLD groups, multicast routes and snooping table), Send network packets…, Stop as sender, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send network packets…|Show IGMP / MLD groups|Show multicast routes|Show snooping table|Stop as sender|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
+      check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP / MLD groups, querier election, multicast routes and snooping table), Send network packets…, Stop as sender, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send network packets…|Show IGMP / MLD groups|Show querier election|Show multicast routes|Show snooping table|Stop as sender|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
       const acts = Array.from(doc.querySelectorAll('#sim-act-net .sim-ne-h button > span:last-child')).map((b) => b.textContent || '');
       const net = q('#sim-act-net') as HTMLElement;
-      check(`${theme}: the Actions panel's Network events: four actions in order (Send network packets, Join multicast group, Start multicast stream, Interface actions), no object list and no table viewer; Active events below them`, acts.join('|') === 'Send network packets|Join multicast group|Start multicast stream|Interface actions' && !q('#sim-obj') && !/Show (ARP|MAC)/.test(net.textContent || '') && !!(net.compareDocumentPosition(q('#sim-act-events') as Node) & Node.DOCUMENT_POSITION_FOLLOWING), acts.join('|'));
+      check(`${theme}: the Actions panel's Network events: five actions in order (Send network packets, Join multicast group, Leave multicast group, Start multicast stream, Interface actions), no object list and no table viewer; Active events below them`, acts.join('|') === 'Send network packets|Join multicast group|Leave multicast group|Start multicast stream|Interface actions' && !q('#sim-obj') && !/Show (ARP|MAC)/.test(net.textContent || '') && !!(net.compareDocumentPosition(q('#sim-act-events') as Node) & Node.DOCUMENT_POSITION_FOLLOWING), acts.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       ctl.runTo(21000);
       await tick();
@@ -2462,7 +2462,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const cab = (q('#canvas g.cable[data-ref="link:l-carrier-r3"]') as Element).getBoundingClientRect();
       ctl.diagramClick('link:l-carrier-r3', cab.left + cab.width / 2, cab.top + cab.height / 2);
       await tick();
-      check(`${theme}: clicking a cable in the simulation offers Fail link, Start flapping and Highlight broadcast domain`, Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent).join('|') === 'Fail link|Start flapping|Highlight broadcast domain');
+      check(`${theme}: clicking a cable in the simulation offers Fail link and Highlight broadcast domain (no flapping: an interface's action)`, Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent).join('|') === 'Fail link|Highlight broadcast domain');
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       await tick();
       const tf = sim.now;
@@ -2508,7 +2508,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const evRows = Array.from(doc.querySelectorAll('#sim-events li[data-ref]')).map((li) => li.getAttribute('data-ref') + '|' + ((li.querySelector('button') || { textContent: '' }).textContent || ''));
       check(`${theme}: Interface actions: Start flapping for the interface chosen in the form: an event in progress with Stop flapping; Power off from the diagram: listed with Power on; the device is marked down`, !!flapRow && flapRow.getAttribute('data-status') === 'running' && !!flapRow.querySelector('button[data-op="stop"]') && evRows.indexOf('device:br|Power on') >= 0 && !!q('#canvas [data-ref="device:br"].sim-down') && /Active events \(\d\)/.test(q('#sim-act-events-h')!.textContent || ''), evRows.join(', '));
       (q('#sim-events li[data-ref="device:br"] button') as HTMLElement).click();
-      ctl.stopFlap('link:l-rx');
+      ctl.stopFlap(`iface:${rxEnd.device}:${rxEnd.iface}`);
       ctl.runTo(sim.now + 70000);
       await tick();
       check(`${theme}: Power on: br boots for its boot time and its sessions start afresh; the flapping stopped is listed as stopped`, sim.events().some((e) => e.device === 'br' && /br has booted/.test(e.detail)) && !sim.netEvents().length && sim.actions().some((v) => v.kind === 'flap' && v.status === 'stopped'));

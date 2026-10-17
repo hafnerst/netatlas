@@ -39,14 +39,14 @@
  *   cycles done).
  */
 import { Flap } from './engine';
-import { Stream } from './multicast';
+import { LeaveWatch, Stream } from './multicast';
 import { DELIVERY_LABEL, KIND_LABEL, TestPlan } from './test-plan';
 import { Test } from './transport';
 
-export type ActionKind = 'send' | 'join' | 'stream' | 'shut' | 'flap';
+export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap';
 export type ActionStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'cancelled';
 
-export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping' };
+export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping' };
 export const STATUS_LABEL: Record<ActionStatus, string> = { queued: 'Queued', running: 'In progress', paused: 'Paused', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
 /** An icon per state (beside its word: never the colour alone). */
 export const STATUS_ICON: Record<ActionStatus, string> = { queued: '◷', running: '▶', paused: '❚❚', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
@@ -83,6 +83,8 @@ export interface ActionRecord {
   traffic?: number;
   run?: SendRun;
   join?: { dev: string; iface: string; group: string; sources: string[]; until: number; by?: string; byAt?: number; leftAt?: number };
+  /** a leave: whether it could be sent, what the network had learned and what became of each (removed, or kept by another member) */
+  leave?: { dev: string; iface: string; group: string; sent: boolean; watch: LeaveWatch[]; until: number; removed: string[]; kept: string[]; done?: number };
   stream?: Stream;
   shut?: { dev: string; iface: string; upAt?: number };
   flap?: { ref: string; obj: Flap };
@@ -262,6 +264,30 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
       details: [`${j.dev}:${j.iface} joins ${j.group}${j.sources.length ? ' (sources ' + j.sources.join(', ') + ')' : ''} at ${at(a.at)}: an unsolicited report at once and one more later.`, j.by ? `Recorded by ${j.by} at ${at(j.byAt as number)}.` : done ? 'No multicast router on its segment recorded the membership by the second report.' : 'Waiting for a multicast router to record it.', 'The membership lasts until Leave group; data reaches it only if multicast routing brings it there.'],
     };
   }
+  if (a.kind === 'leave' && a.leave) {
+    const l = a.leave;
+    const pending = l.watch.length - l.removed.length - l.kept.length;
+    const done = l.done !== undefined;
+    const what = !l.watch.length ? 'nothing learned on its way to remove' : [l.removed.length ? `removed at ${l.removed.join(', ')}` : '', l.kept.length ? `kept at ${l.kept.join(', ')}: another member there answered` : ''].filter((x) => x).join(' · ');
+    if (!l.sent)
+      return { ...base, status: 'failed', ended: a.at, summary: `${l.dev}:${l.iface} could not send its leave (its interface or device is down) · its membership ended locally`, state: `not a member of ${l.group}`, controls: [], details: [`${l.dev}:${l.iface} leaves ${l.group} at ${at(a.at)}: it answers no query for it any more, but no leave could be sent now.`, l.watch.length ? `The network forgets it when no report arrives within the membership interval: ${l.watch.map((w) => w.where).join(', ')}.` : 'Nothing was learned of it on its way.'] };
+    return {
+      ...base,
+      status: done ? 'completed' : 'running',
+      ended: l.done,
+      progress: l.watch.length ? { done: l.removed.length + l.kept.length, total: l.watch.length, unit: 'entries settled' } : undefined,
+      summary: `leave sent${done ? ' · ' + what : ` · cleanup pending (${pending} of ${l.watch.length})${l.removed.length ? ' · removed at ' + l.removed.join(', ') : ''}`}`,
+      state: `not a member of ${l.group}`,
+      controls: [],
+      details: [
+        `${l.dev}:${l.iface} leaves ${l.group} at ${at(a.at)}: its membership ends now (it answers no query for the group any more) and its leave goes out: an IGMPv2 Leave / MLDv1 Done, or an IGMPv3 / MLDv2 report that blocks its sources.`,
+        l.watch.length ? `What the network had learned of it on its way: ${l.watch.map((w) => w.where).join(', ')}. Each goes after the querier's group-specific queries (robustness × last member query interval) unless another member there answers; fast leave removes a switch's port at once.` : 'Nothing was learned of it on its way (no snooping switch, no multicast router recorded it).',
+        ...(l.removed.length ? [`Removed: ${l.removed.join(', ')}.`] : []),
+        ...(l.kept.length ? [`Kept (another member there still wants the group): ${l.kept.join(', ')}.`] : []),
+        'A stream to the group goes on; only the way to this host closes.',
+      ],
+    };
+  }
   if (a.kind === 'stream' && a.stream) {
     const st = a.stream;
     const rx = Array.from(st.rx.entries()).sort((x, y) => (x[0] < y[0] ? -1 : 1));
@@ -314,6 +340,6 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
     summary: f.ended ? `${f.done} cycle${f.done === 1 ? '' : 's'} done` : `now ${f.down ? 'down' : 'up'} · cycle ${f.done + (f.down ? 1 : 0)}${total ? ' of ' + total : ''}`,
     state: f.ended ? 'link up' : f.down ? 'link down' : 'link up',
     controls: f.ended ? [] : [{ op: 'stop', label: 'Stop flapping' }],
-    details: [`Cable ${f.link} from ${at(f.since)}: ${c.flapTimes}.`, f.ended ? `${f.ended === 'done' ? 'Its cycles done' : 'Stopped'} at ${at(f.endedAt as number)}.` : 'Until its cycles are done, or Stop flapping.'],
+    details: [`Port ${f.ref.slice(6)} from ${at(f.since)}: ${c.flapTimes}; its cable ${f.link} goes down and up with it (the port stays administratively up).`, f.ended ? `${f.ended === 'done' ? 'Its cycles done' : 'Stopped'} at ${at(f.endedAt as number)}.` : 'Until its cycles are done, or Stop flapping.'],
   };
 }

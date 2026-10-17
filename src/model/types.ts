@@ -769,8 +769,6 @@ export interface LinkSimulation {
   latency?: number;
   /** share of frames lost, in percent */
   loss?: number;
-  /** it flaps from the start (with the simulation's flapping times) */
-  flapping?: boolean;
 }
 
 /**

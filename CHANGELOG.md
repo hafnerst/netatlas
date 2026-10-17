@@ -251,8 +251,51 @@ there is no conversion of files written for the earlier drafts.
   examples has its choice (`private-house.yaml`: VLAN 10, 20 and 30
   enabled, management and transit disabled; the IoT network has the
   snooping querier).
+- **Flapping is a port's, never a cable's:** a link's `simulation:` no
+  longer has `flapping` (an unknown key whose error says where it goes); a
+  port flaps from the start with its own `simulation: {flapping: "on"}`
+  (an interface attribute, ports only), its cable following.
 
 ### Added
+
+- **The IGMP / MLD querier election, by the protocol.** It starts by itself
+  with the simulation: every candidate (a multicast router's interface
+  with its querier on; a switch's VLAN with the snooping querier on,
+  snooping enabled and an address there) takes itself for the querier and
+  sends its startup queries (robustness of them, a quarter of the query
+  interval apart); whoever hears a lower address stops; the lowest of each
+  LAN is the elected querier once its startup queries are sent and queries
+  every query interval; a non-querier takes over after the other querier
+  present interval; a candidate that comes back starts afresh. Per LAN, as
+  far as its queries reach: two LANs with the same VLAN ID elect apart, a
+  router can hold different roles on its interfaces. Snooping switches
+  take part like routers (before: a switch's snooping querier queried only
+  while it had no router port).
+- **The active querier in the diagram:** *Querier · VLAN 10* beside the
+  device's status (several LANs listed, more than two counted), dashed
+  *Querier? · VLAN 10* while it is the querier only for now; a tooltip and
+  accessible name with the LAN, interface and address; in the Legend; gone
+  at Exit.
+- **Show querier election** (a router's or a switch candidate's menu): per
+  LAN its address, role (*Querier (starting)*, *Querier*, *Non-querier*,
+  *Not a candidate*, *Down*), the querier it yields to, how long until it
+  would take over, its general queries. **Show group memberships** says
+  who queries the host's LAN (the last query heard), or that none did.
+- **Leave multicast group** in Network events, right below Join multicast
+  group (and in Expand all / Collapse all, a host's menu, a join's Leave
+  group): a host, its interface and one of that interface's groups (none
+  chosen for you; IGMP or MLD by its family), with a note of what it sends.
+  Its event follows what the network had learned on the host's way (a
+  snooping switch's port facing it, a router's group on its subnet):
+  *leave sent · cleanup pending*, then *removed at …* or *kept at …:
+  another member there answered*; *Failed* when its interface or device is
+  down (its membership ends at the host all the same). Its leave report is
+  drawn and inspectable with the event's id.
+- A switch that is a VLAN's querier answers a leave with group-specific
+  queries, so another member behind the same port keeps it.
+- The internal example `multicast-querier.yaml` (test build only): two
+  querier candidates, a snooping switch, a sender and four receivers, and
+  a second LAN with the same VLAN ID.
 
 - **Expand all / Collapse all for Network events.** Two icon buttons beside
   the heading open or close the four actions' forms at once (not Active
@@ -1111,6 +1154,21 @@ there is no conversion of files written for the earlier drafts.
   addresses.
 
 ### Changed
+
+- **Flapping is an interface action only.** A cable's menu no longer has
+  Start / Stop flapping, and the simulation refuses a cable as a flapping
+  target (*… is no interface: flapping is an interface action*); a port
+  flaps, its cable goes down and up with it, the port stays
+  administratively up. One cable flaps from one end at a time (the other
+  end's attempt says which end flaps).
+- **Members stay members:** a join's membership lasts until the host
+  leaves; its answers to the queries keep the network's entries alive, and
+  a leave stops them for good (no later answer, whatever queries come).
+- A join of Network events is recorded by the first device that learns
+  it: a snooping switch's port (*membership recorded by sw (VLAN 1, port
+  p4)*) or a multicast router.
+- Network events has five actions: Send network packets, Join multicast
+  group, Leave multicast group, Start multicast stream, Interface actions.
 
 - **Snooping enabled never floods a group without members.** A switch with
   snooping enabled sends a group only to the ports where a member of that

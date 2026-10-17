@@ -84,13 +84,18 @@ test('the first packets and those a minute later take their configured screen ti
     const clockHidden = show.clock;
     const hiddenAt = hide.at;
     const shownAt = show.at;
+    // (how many hops start and arrive in a few seconds depends on the scenario's traffic then: on until 5, at most 6 s more)
     await wait(5000);
-    const hid = JSON.parse(await page.eval(READ));
+    let hid = JSON.parse(await page.eval(READ));
+    for (let more = 0; more < 6000 && ratios(hid, (r) => r.start < hiddenAt && r.end > shownAt).length < 5; more += 1000) {
+      await wait(1000);
+      hid = JSON.parse(await page.eval(READ));
+    }
     assert.equal(clockHidden, clockBefore, 'hidden: the display clock stands still');
     assert.ok(Math.max(...hid.steps) <= P.FRAME_MAX * hid.speed + 1e-6, 'no jump after the tab is shown again');
     // the hops that moved while it was hidden took their time plus the hidden time; the others theirs
     const across = (r) => r.start < hiddenAt && r.end > shownAt;
-    assertPaced(ratios(hid, across), 'around a hidden tab');
+    assertPaced(ratios(hid, across), 'around a hidden tab', 3);
     for (const r of ratios(hid).filter(across)) {
       const shown = (r.end - r.start - (shownAt - hiddenAt)) * hid.speed;
       assert.ok(Math.abs(shown - r.hop) / r.hop < 0.08, `a hop across the hidden time moved for its own time on screen: ${shown.toFixed(0)} of ${r.hop.toFixed(0)} ms`);
@@ -100,9 +105,13 @@ test('the first packets and those a minute later take their configured screen ti
     await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(false); c.runTo(c.t + 60000); c.setPlaying(true); return true; })()`);
     await page.eval(RECORD);
     await wait(8000);
-    const late = JSON.parse(await page.eval(READ));
+    let late = JSON.parse(await page.eval(READ));
+    for (let more = 0; more < 12000 && ratios(late).length < 5; more += 2000) {
+      await wait(2000);
+      late = JSON.parse(await page.eval(READ));
+    }
     const r2 = ratios(late);
-    assertPaced(r2, 'a minute later');
+    assertPaced(r2, 'a minute later', 3);
     // the same hop (cable, direction, latency) is given the same time early and late: nothing learned meanwhile
     const key = (r) => `${r.track}|${r.lat.toFixed(6)}`;
     const firstHop = new Map(r1.map((r) => [key(r), r.hop]));

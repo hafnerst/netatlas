@@ -23,7 +23,7 @@ const sim = (text, opts) => new S.Simulation(model(text), opts);
 const events = (s, f) => s.events().filter(f);
 const pe = example('protocol-simulation.yaml');
 /** the example without its flapping uplink */
-const steady = pe.replace(/\n *simulation: \{flapping: true\}/, '');
+const steady = pe.replace(', simulation: {flapping: "on"}}', '}');
 
 /** Every flight of a run, collected step by step (the engine keeps only the last seconds). */
 function flightsOf(s, to) {
@@ -182,7 +182,9 @@ test('a device’s simulation: block: overrides only, checked for the attribute,
   assert.match(msg(`netatlas: 1\ntitle: t\ndevices:\n  - {id: r, type: router, arp_timeout: 60}\n`), /unknown key "arp_timeout"/);
   // a cable
   const link = (b) => `netatlas: 1\ntitle: t\ndevices:\n  - {id: a, interfaces: [p]}\n  - {id: b, interfaces: [p]}\nlinks:\n  - {id: l, a: "a:p", b: "b:p", simulation: ${b}}\n`;
-  assert.deepEqual(model(link('{latency: 5, loss: 1.5, flapping: true}')).links[0].simulation, { latency: 5, loss: 1.5, flapping: true });
+  assert.deepEqual(model(link('{latency: 5, loss: 1.5}')).links[0].simulation, { latency: 5, loss: 1.5 });
+  // flapping is an interface's, never a cable's: the error says where it goes
+  assert.match(errorsOf(link('{flapping: true}')).map((e) => e.message).join(' | '), /unknown key "flapping" \(flapping is an interface’s: write simulation: \{flapping: "on"\} on one of the cable’s ports \(the cable follows it\)\)/);
   assert.match(msg(link('{latency: -1}')), /Link latency must be from 0 s/);
   assert.match(msg(link('{latency: fast}')), /Link latency is not a duration/);
   assert.match(msg(link('{jitter: 1}')), /unknown key "jitter"/);
@@ -275,7 +277,10 @@ test('network events: a failed relation, flapping (its cycles, then it stops), s
   assert.ok(s.fail('relation:' + rel.id));
   assert.equal(s.fail('relation:' + rel.id), false, 'once');
   const link = s.model.links[0].id;
-  assert.ok(s.startFlap('link:' + link));
+  // flapping is an interface's: a cable is refused, its port flaps (the cable follows)
+  assert.equal(s.startFlap('link:' + link), false);
+  const fp = `iface:${s.model.links[0].a.device}:${s.model.links[0].a.iface}`;
+  assert.ok(s.startFlap(fp));
   const [dev, port] = [s.model.links[1].a.device, s.model.links[1].a.iface];
   assert.ok(s.shut(dev, port));
   assert.deepEqual(s.netEvents().map((e) => e.kind).sort(), ['fail', 'flap', 'shut']);
@@ -284,7 +289,7 @@ test('network events: a failed relation, flapping (its cycles, then it stops), s
   assert.equal(s.engine.portUp(dev, port), false);
   // flapping: 3 cycles of 5 s down and 10 s up, then it stops by itself
   s.runTo(30000 + 3 * 15000 + 100);
-  const flaps = events(s, (e) => e.what === 'Flap down' && /Flapping cable/.test(e.detail));
+  const flaps = events(s, (e) => e.what === 'Flap down' && /^Flapping port .*: down, its cable .* with it/.test(e.detail));
   assert.equal(flaps.length, 3);
   assert.ok(events(s, (e) => /stops flapping after 3 cycles/.test(e.detail)).length);
   assert.ok(!s.netEvents().some((e) => e.kind === 'flap'));
@@ -295,10 +300,10 @@ test('network events: a failed relation, flapping (its cycles, then it stops), s
   // continuous flapping until Stop flapping
   const c = sim(example('ospf-reroute.yaml'), { params: { 'flap-cycles': 0, 'flap-down': 1000, 'flap-up': 1000 } });
   c.runTo(5000);
-  c.startFlap('link:' + link);
+  assert.ok(c.startFlap(fp));
   c.runTo(25000);
   assert.ok(events(c, (e) => e.what === 'Flap down').length >= 9);
-  assert.ok(c.stopFlap('link:' + link));
+  assert.ok(c.stopFlap(fp));
   c.runTo(30000);
   assert.ok(c.engine.cableUp(link));
 });
@@ -441,7 +446,7 @@ test('determinism with parameter changes and network events at the same simulate
     s.setParam('arp-timeout', 20000);
     s.powerOff('r2');
     s.runTo(35000);
-    s.startFlap('link:l-r1-carrier');
+    s.startFlap('iface:r1:ge2');
     s.setParam('ospf-hello', 3000);
     s.runTo(60000);
     s.powerOn('r2');

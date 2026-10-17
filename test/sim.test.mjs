@@ -20,7 +20,7 @@ const sim = (text, opts) => new S.Simulation(model(text), opts);
 const events = (s, f) => s.events().filter(f);
 const pe = example('protocol-simulation.yaml');
 /** the example without its flapping uplink (for tests that time switching on acc-sw's uplinks) */
-const steady = pe.replace(/\n *simulation: \{flapping: true\}/, '');
+const steady = pe.replace(', simulation: {flapping: "on"}}', '}');
 const reroute = example('ospf-reroute.yaml');
 
 test('a fresh start: empty ARP, neighbour and MAC tables, every session down, the cabled interfaces up after the link-up delay', () => {

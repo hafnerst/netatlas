@@ -26,7 +26,7 @@ const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** The four actions' state, the bulk buttons, where the heading and the buttons are. */
+/** The five actions' state, the bulk buttons, where the heading and the buttons are. */
 const BULK = `(() => { const r = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
   return { open: Array.from(document.querySelectorAll('#sim-act-net .sim-ne-h .sp-toggle')).map((b) => b.getAttribute('aria-expanded') === 'true' && !document.getElementById(b.getAttribute('aria-controls')).hidden),
     expand: document.getElementById('sim-ne-expand').disabled, collapse: document.getElementById('sim-ne-collapse').disabled,
@@ -126,7 +126,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       // ------------------------------------------------------------ Expand all / Collapse all
       let b = await page.eval(BULK);
       assert.deepEqual(b.names, ['Expand all Network events sections', 'Collapse all Network events sections', 'Expand all Network events sections']);
-      assert.deepEqual(b.open, [true, false, false, false]);
+      assert.deepEqual(b.open, [true, false, false, false, false]);
       assert.deepEqual([b.expand, b.collapse], [false, false], 'mixed: both');
       const at0 = b.at;
       // a value typed in a form, a stream running: kept through both
@@ -143,7 +143,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.key('Enter');
       await page.settle(60);
       b = await page.eval(BULK);
-      assert.deepEqual(b.open, [true, true, true, true]);
+      assert.deepEqual(b.open, [true, true, true, true, true]);
       assert.deepEqual([b.expand, b.collapse], [true, false], 'all open: Expand all disabled');
       assert.equal(b.focus, 'sim-ne-collapse', 'the focus handed to Collapse all');
       assert.equal(b.events, false, 'Active events untouched');
@@ -154,7 +154,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.key(' ', 'Space', 32);
       await page.settle(60);
       b = await page.eval(BULK);
-      assert.deepEqual(b.open, [false, false, false, false]);
+      assert.deepEqual(b.open, [false, false, false, false, false]);
       assert.deepEqual([b.expand, b.collapse], [false, true], 'all closed: Collapse all disabled');
       assert.equal(b.focus, 'sim-ne-expand');
       assert.deepEqual(b.at, at0);
@@ -168,7 +168,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       // one opened by hand: mixed again
       await page.eval(`document.getElementById('sim-ne-collapse').click(), document.getElementById('sim-ne-iface-toggle').click(), true`);
       b = await page.eval(BULK);
-      assert.deepEqual([b.open, b.expand, b.collapse], [[false, false, false, true], false, false]);
+      assert.deepEqual([b.open, b.expand, b.collapse], [[false, false, false, false, true], false, false]);
       // nothing wider than the panel
       assert.equal(await page.eval(`(() => { const box = document.getElementById('sim-act-net'); return box.scrollWidth <= box.clientWidth + 1; })()`), true);
 
@@ -184,7 +184,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       let t = await tbl();
       assert.match(t.text, /No memberships and no router port learned in VLAN 10, 20, 30\./);
       assert.match(t.text, /Snooping enabled in VLAN 10, 20, 30/);
-      assert.match(t.text, /Snooping querier of VLAN 20 \(192\.168\.20\.1\)/);
+      assert.match(t.text, /VLAN 20: the IGMP querier \(192\.168\.20\.1\), elected\./);
       assert.match(t.text, /core routes no multicast \(it runs no PIM\)/);
       // the TV joins (the form): the open table shows its port without being opened again
       await page.eval(`document.getElementById('sim-ne-join-toggle').click(), true`);

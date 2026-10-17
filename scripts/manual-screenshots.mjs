@@ -296,7 +296,7 @@ async function main() {
       await page.eval(`(() => { const c = netatlas.simController(); c.showTable('arp', 'core1'); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 32 });
+      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 28 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }
@@ -408,7 +408,7 @@ async function main() {
       await page.eval(`netatlas.fit(), document.getElementById('toast').hidden = true, true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 27 });
+      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 24 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }
@@ -533,6 +533,20 @@ async function main() {
         const y = Math.min(r.y, banner.y);
         await save('sim-ha', { x: r.x, y, w: r.w, h: r.y + r.h - y }, { quality: 40 });
       }
+      await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
+    // the querier election (the internal example): q1 the elected querier of LAN A, q2 a candidate without a mark
+    {
+      await page.eval(`netatlas.loadExampleNamed('multicast-querier.yaml'), netatlas.setView('physical'), netatlas.select(null), true`);
+      await page.settle(150);
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ params: {} }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(15000), netatlas.select('device:sw', true), netatlas.select(null), netatlas.simController().refresh(true), document.getElementById('toast').hidden = true, true`);
+      await page.settle(250);
+      const qs = [];
+      for (const d of ['q1', 'q2', 'sw']) qs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
+      qs.push(await page.rect('#canvas .sim-querier[data-device="q1"]'));
+      await save('querier', around(qs, 10), { quality: 30 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }

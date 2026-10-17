@@ -1468,6 +1468,9 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-power[data-power="booting"] .sim-led { fill: var(--accent); }
 .sim-power[data-power="passive"] .sim-led, .sim-power[data-power="external"] .sim-led, .sim-power[data-power="unknown"] .sim-led { fill: none; stroke: var(--muted); stroke-width: 1.4; }
 .sim-power[data-power="passive"] text, .sim-power[data-power="external"] text, .sim-power[data-power="unknown"] text { fill: var(--muted); }
+.sim-querier rect { fill: var(--panel); stroke: var(--accent); stroke-width: 1.2; }
+.sim-querier text { font-size: 9.5px; font-weight: 600; fill: var(--accent); }
+.sim-querier[data-role="starting"] rect { stroke-dasharray: 3 2; }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
