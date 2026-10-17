@@ -63,8 +63,8 @@
 # provider gives the house no IPv6 here), and sends router advertisements for
 # fd00:10::/64; the laptop and the phone form their IPv6 address from it
 # (SLAAC, with duplicate address detection) and learn the core as their IPv6
-# default router, while DHCP still gives them their IPv4 lease. The NAS has a
-# static IPv6 address beside its IPv4 one. The other networks stay IPv4 only.
+# default router, while DHCP still gives them their IPv4 lease. The other
+# networks stay IPv4 only.
 #
 # Applications: the thermostat is an Endpoint and stays one, yet runs two
 # applications: Local control, a TCP listener on port 8080 the TV (same IoT
@@ -276,7 +276,7 @@ devices:
       storage:
         protocols: [smb]
     interfaces:
-      - {id: eth0, ip: [192.168.10.20/24, fd00:10::20/64]}
+      - {id: eth0, ip: 192.168.10.20/24}
     dns_names:
       - {name: nas.home.arpa, interfaces: [eth0]}
     routes:

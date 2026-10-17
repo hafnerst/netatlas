@@ -48,24 +48,44 @@ networks:
 
 devices:
   - id: gm-a
+    tier: 1
     label: gm-a (GPS clock)
     type: server
     kind: appliance
     group: cell-a
     services:
-      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable, priority1: 100, clock_class: 6, timestamping: hardware}
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: source_capable
+        priority1: 100
+        clock_class: 6
+        timestamping: hardware
     interfaces:
       - {id: eth0, ip: 10.0.10.11/24}
   - id: gm-b
+    tier: 1
     label: gm-b (standby clock)
     type: server
     kind: appliance
     group: cell-a
     services:
-      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable, priority1: 110, timestamping: hardware, clock_offset: +2ms, drift: 10ppm}
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: source_capable
+        priority1: 110
+        timestamping: hardware
+        clock_offset: +2ms
+        drift: 10ppm
     interfaces:
       - {id: eth0, ip: 10.0.10.12/24}
   - id: sw-a
+    tier: 2
     type: switch
     kind: industrial
     group: cell-a
@@ -77,6 +97,7 @@ devices:
       - {id: p2, vlans: 10}
       - {id: p3, vlans: 10}
   - id: rt
+    tier: 3
     label: rt (boundary clock)
     type: router
     group: cell-b
@@ -86,6 +107,7 @@ devices:
       - {id: a, ip: 10.0.10.1/24}
       - {id: b, ip: 10.0.20.1/24}
   - id: sw-b
+    tier: 4
     type: switch
     kind: industrial
     group: cell-b
@@ -95,22 +117,39 @@ devices:
       - {id: p2, vlans: 20}
       - {id: p3, vlans: 20}
   - id: plc-b
+    tier: 5
     label: plc-b
     type: endpoint
     kind: plc
     group: cell-b
     services:
-      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: receiver_only, timestamping: hardware, clock_offset: -5ms, drift: 25ppm}
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: receiver_only
+        timestamping: hardware
+        clock_offset: "-5ms"
+        drift: 25ppm
     interfaces:
       - {id: eth0, ip: 10.0.20.21/24}
   - id: drv-b
+    tier: 5
     label: drv-b (drive)
     type: endpoint
     kind: other
     kind_label: Servo drive
     group: cell-b
     services:
-      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: receiver_only, clock_offset: +1ms, drift: -15ppm}
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: receiver_only
+        clock_offset: +1ms
+        drift: "-15ppm"
     interfaces:
       - {id: eth0, ip: 10.0.20.22/24}
 

@@ -110,7 +110,13 @@ devices:
       applications:
         - {id: registers, name: Modbus TCP registers, profile: tcp_server, port: 502}
         - {id: web, name: Web configuration, profile: tcp_server, port: 443}
-        - {id: telemetry, name: Telemetry, profile: mqtt_client, broker: edge, publish: [plant/cell1/plc-1/temperature, plant/cell1/plc-1/pressure], qos: "1", interval: 5s}
+        - id: telemetry
+          name: Telemetry
+          profile: mqtt_client
+          broker: edge
+          publish: [plant/cell1/plc-1/temperature, plant/cell1/plc-1/pressure]
+          qos: "1"
+          interval: 5s
     interfaces:
       - {id: eth0, ip: 10.71.0.10/24}
     routes:
