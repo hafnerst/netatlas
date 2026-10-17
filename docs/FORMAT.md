@@ -1,10 +1,12 @@
-# netatlas YAML format (version 1)
+# netatlas YAML format (version 2)
 
-This document is the contract of **NetAtlas YAML model format version 1**,
+This document is the contract of **NetAtlas YAML model format version 2**,
 the only model format NetAtlas supports. Every file declares it with
-`netatlas: 2`; a missing line or any other value is an error. The model
-format version is independent of the application version: NetAtlas 0.1.3 is
-an application release, and it reads and writes model format 1.
+`netatlas: 2`; a missing line or any other value is an error, and a file of
+format 1 is refused as a whole with one message that says what changed
+(below): NetAtlas does not convert it. The model format version is
+independent of the application version: an application release reads and
+writes model format 2.
 
 A netatlas file describes **one** network architecture. It separates two
 things that are often mixed up in diagrams:
@@ -37,6 +39,25 @@ relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
 checks: {...}          # optional: switch consistency checks off or change their severity
 ```
+
+### Changes from format 1
+
+Format 2 is not backward compatible, and NetAtlas reads no format 1 file
+(there is no migration). A file with `netatlas: 1` gets one error, *this
+file is model format 1, which NetAtlas no longer reads*, and no model. To
+bring one up to date by hand:
+
+| Format 1 | Format 2 |
+|---|---|
+| `netatlas: 1` | `netatlas: 2` |
+| `dhcp: true` on an interface | `ipv4: dhcp` ([DHCP](#dhcp)); `ipv4: static` or nothing for written addresses |
+| `dhcp: false` | delete it |
+| `services: {application: {name: …, ports: [tcp/443]}}`, one per device | `services: {applications: [{id: …, name: …, profile: tcp_server, port: 443}, …]}`, a list ([Applications](#applications-servicesapplications)) |
+| applications on Servers, VMs and containers only | also on a host-capable Endpoint (a PLC, an HMI, a camera, a printer, an IoT device …) and a Storage device |
+
+New in format 2, with nothing to convert: an interface's IPv6 method and a
+router's advertisements ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
+DHCPv6 scopes, the `mqtt_broker` and `ptp` services.
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never
 silently disappear. That includes `scenarios:` and `risk_groups:`, which
@@ -1059,12 +1080,15 @@ Every physical interface and every virtual or tunnel interface has an explicit D
       - {id: eth3}                                       # no address, and not DHCP either
 ```
 
-* `dhcp` is `true` or `false`, and an omitted `dhcp` is `false`. An
-  interface without addresses is **not** assumed to use DHCP. The editor
-  creates every interface with DHCP off and writes nothing for it; switching
-  DHCP on writes `ipv4: dhcp`, switching it off removes the key again.
-* DHCP and manual addresses exclude each other. `ipv4: dhcp` together with
-  an `ip` is an **error** (attached to the addresses). Neither value is
+* `ipv4` is the interface's IPv4 method: `dhcp` (it obtains its address by
+  DHCP) or `static` (its IPv4 addresses are the ones written under `ip:`);
+  omitted, it is static. An interface without addresses is **not** assumed
+  to use DHCP. The editor creates every interface with DHCP off and writes
+  nothing for it; switching DHCP on writes `ipv4: dhcp`, switching it off
+  removes the key again. Its IPv6 addresses are independent of it (`ipv6`,
+  below): `ipv4: dhcp` with IPv6 addresses written under `ip:` is fine.
+* DHCP and manual IPv4 addresses exclude each other. `ipv4: dhcp` together
+  with an IPv4 address under `ip` is an **error** (attached to the addresses). Neither value is
   dropped or chosen: fix the file by deleting one of them.
 * DHCP is not an address. The address the interface will obtain is unknown,
   so it contributes to no network's membership and has no derived VLAN until
@@ -1076,7 +1100,7 @@ Every physical interface and every virtual or tunnel interface has an explicit D
 * **A loopback can't use DHCP.** It is an address of the device itself and is
   always configured, so `ipv4: dhcp` on a loopback is an **error** (kept in
   the file, not dropped), and the loopback still needs its address.
-  `dhcp: false` on a loopback is accepted. The editor shows no DHCP switch on
+  `ipv4: static` on a loopback is accepted. The editor shows no DHCP switch on
   a loopback card; if the file has `ipv4: dhcp` there, the switch is shown
   only so that it can be turned off.
 * In the editor the **DHCP** switch sits next to the addresses (not on a loopback). While it is
@@ -1102,6 +1126,72 @@ an interface of a device that routes (a router, a Layer 3 switch, a
 firewall …) and that has an address; elsewhere it is an error, and so is a
 value that isn't an IPv4 address. The consistency check `dhcp-relay-no-server`
 reports a helper address that is no DHCP server of the model.
+
+### IPv6 host configuration (`ipv6`, `ipv6_ra`)
+
+An interface's IPv6 addresses are written under `ip:` like its IPv4 ones
+(`ip: [192.168.10.1/24, fd00:10::1/64]`), or configured automatically.
+`ipv6` chooses how, one method instead of independent flags:
+
+| `ipv6` | What it does |
+|---|---|
+| omitted | the IPv6 addresses written under `ip:` (none written: no IPv6) |
+| `static` | the same, said explicitly (an error without an IPv6 address under `ip:`) |
+| `slaac` | an address in each advertised prefix (SLAAC, RFC 4862); default routers and DNS from the advertisements |
+| `dhcpv6` | its address from a DHCPv6 server (stateful); default routers from the advertisements |
+| `slaac_dhcpv6` | both |
+
+```yaml
+    interfaces:
+      - {id: wlan0, ipv4: dhcp, ipv6: slaac}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: [192.168.10.1/24, fd00:10::1/64], ipv6_ra: {prefixes: [fd00:10::/64]}}
+```
+
+Every interface with IPv6 also has its **link-local address** (fe80::/64,
+from its MAC address, EUI-64), checked by duplicate address detection
+before it is used. A loopback or a tunnel configures nothing automatically
+(an error); written addresses and `ipv6:` combine (a static address beside
+SLAAC).
+
+**Router advertisements** are configured on the router's interface, never
+implied: `ipv6_ra` turns them on, and its `prefixes` are required (no
+connected prefix is advertised without being written). Only on a device that
+routes, and not on a loopback or a tunnel.
+
+| `ipv6_ra` key | Meaning | Default |
+|---|---|---|
+| **`prefixes`** | the prefixes it advertises (Prefix Information options) | — (required) |
+| `autonomous` | the hosts may form SLAAC addresses in them (A flag); then each must be a /64 | `true` |
+| `managed` | addresses from DHCPv6 (M flag) | `false` |
+| `other` | other configuration (DNS) from DHCPv6 (O flag) | `false` |
+| `dns` | DNS servers (RDNSS option, RFC 8106), IPv6 addresses | none |
+| `interval` | MaxRtrAdvInterval | 600 s (RFC 4861) |
+| `router_lifetime` | how long it is a default router; 0: never one; at least `interval` | 3 × interval |
+| `valid_lifetime`, `preferred_lifetime` | of the prefixes; preferred ≤ valid | 30 days, 7 days |
+| `dns_lifetime` | of the DNS servers (needs `dns`) | 3 × interval |
+
+**DHCPv6** servers are DHCP scopes of an IPv6 network
+([Network services](#network-services-services-dhcp-and-dns-servers)): with a
+`range` stateful (it leases addresses, renewed at T1, rebound at T2, expired
+after the valid lifetime), without one stateless (information only: its
+`dns` are required then). A DHCPv6 scope has **no `gateway`** (an error:
+hosts learn their default router from the advertisements, not from DHCPv6)
+and no reservations. The server answers on its own link; DHCPv6 relay and
+prefix delegation are not modelled.
+
+In the simulation (`analysis/sim/ipv6.ts`) routers send their advertisements
+(RFC 4861: the initial ones faster, then at random within the interval, an
+answer to a Router Solicitation); hosts solicit after their link comes up,
+form addresses, run duplicate address detection, keep each router until its
+lifetime ends and each address until its valid lifetime ends (deprecated
+after the preferred one; the two-hour rule of RFC 4862 §5.5.3 e). An
+interface's status says it briefly: *SLAAC address acquired*, *DHCPv6
+pending*, *No default router*, *Duplicate address*, *Address deprecated*;
+*Show IPv6 configuration* lists its addresses with their origin and lifetimes, its default
+routers and its DNS servers. An application or a test to a host name takes
+the family of its own `ip_version` (AAAA for IPv6) and never falls back to
+the other family.
 
 ### DNS names
 
@@ -1204,7 +1294,7 @@ The parameters of the services without a section of their own:
 
 | Service | Parameters (required in **bold**) | What the simulation does |
 |---|---|---|
-| `ntp` | **`stratum`** (1–15) or **`upstreams`** (addresses): one of them | asks its upstreams (NTP client request / server response, every 64 s); listens on UDP 123 |
+| `ntp` | **`stratum`** (1–15) or **`upstreams`** (addresses): one of them | asks its upstreams (NTP client request / server response, every 64 s); listens on UDP 123. With a stratum it serves time as a reference (taken as given); with upstreams it is *unsynchronized* (stratum 16) until a usable upstream answered, then *synchronized* to it at one stratum more, and unsynchronized again after 8 unanswered polls. No offset or accuracy is computed; NTP and PTP never discipline each other |
 | `aaa` | **`protocol`** (`radius`, `tacacs`), **`secret`** (a placeholder), **`clients`** (devices) | each client's authentication request and the answer; listens on UDP 1812 (TACACS+: TCP 49) |
 | `syslog` | `port` (514), `transport` (`udp`, `tcp`), `senders` (devices) | its senders' messages (one way), besides its syslog relations |
 | `monitoring` | **`targets`** (devices), `icmp_interval`, `snmp_interval` | polls each target by SNMP (and the ICMP probes of the monitoring attributes) |
@@ -1213,7 +1303,9 @@ The parameters of the services without a section of their own:
 | `nat` | **`inside`**, **`outside`** (interfaces), **`rules`**: each **`type`** `pat` / `snat` (**`source`**, `to`) or `dnat` (**`protocol`**, **`port`**, **`to`**, `to_port`) | translates on the way from inside to outside (PAT, source NAT) and forwards outside ports in (destination NAT), the replies translated back; the path tracer notes the translation |
 | `wireless_controller` | **`aps`** (devices: controller-managed access points) | the CAPWAP control channel with each access point (echo every 30 s); listens on UDP 5246 |
 | `storage` | **`protocols`** (`nfs`, `smb`, `iscsi`) | listens on TCP 2049, 445, 3260 |
-| `application` | **`name`**, **`ports`** (`tcp/443`, `udp/5060` …) | listens on its ports and answers |
+| `mqtt_broker` | `port` (1883), `retry_interval` (advanced) | an MQTT 3.1.1 broker: [MQTT](#mqtt-broker-and-clients) |
+| `applications` | a list: [Applications](#applications-servicesapplications) | each listener, client and periodic sender |
+| `ptp` | [PTP](#ptp-servicesptp) | a PTP clock |
 | `inspection` | `block` (`tcp/23`, `udp/69`, `icmp`) | an inline IDS/IPS drops what it blocks; a passive one raises an alert and lets it pass |
 
 A secret (an AAA shared secret, a Wi-Fi passphrase) is written as a
@@ -1227,6 +1319,153 @@ added twice.
 The diagram writes a device's services as **badges** in a line under its
 type — at most three, then how many more (`DHCP · DNS · NTP +3`); its
 tooltip names every one, and the legend lists the badges the model uses.
+
+### What NetAtlas models: support levels
+
+Every protocol, service and application profile says how far NetAtlas goes
+with it, in one of three levels, where it is chosen or configured (a compact
+**ⓘ** disclosure: closed, keyboard operable, two short lines when opened)
+and in the simulation's protocol list:
+
+| Level | Meaning |
+|---|---|
+| *Diagram only* | drawn and documented; no configuration is checked and nothing is simulated (a user-defined protocol: its demonstration packets carry nothing of it) |
+| *Configuration and validation* | its configuration is structured and checked; its behaviour is not simulated |
+| *Modeled behavior* | the simulation runs it: what it does is the first line, what it does not the second (*Not modeled: …*) |
+
+The statements are kept with their definitions (`model/support.ts`, the
+service registry, `model/sim-profiles.ts`, `model/applications.ts`).
+
+### Applications (`services.applications`)
+
+A device runs any number of applications, a list under `services:`. A
+Server, a VM, a container, a Storage device, a System whose purpose is Host
+and a **host-capable Endpoint** (a PC, a PLC, an HMI, a camera, a printer, an
+IoT device …) may run them; an Endpoint stays an Endpoint. Passive devices
+(a pass-through or monitoring System, a TAP) and a Security gateway run
+none (the latter only its Domain separation).
+
+```yaml
+    services:
+      applications:
+        - {id: registers, name: Modbus TCP registers, profile: tcp_server, port: 502}
+        - {id: telemetry, name: Telemetry, profile: mqtt_client, broker: edge, publish: [plant/cell1/plc-1/temperature], qos: "1", interval: 5s}
+```
+
+Each has an **`id`** (unique on the device; others name it
+`device/id`), a **`name`** (a label: "Modbus TCP" names it, NetAtlas
+simulates TCP, not Modbus) and a **`profile`**, which says what it does and
+which fields it has:
+
+| `profile` | What it does | Its fields (required in **bold**) |
+|---|---|---|
+| `tcp_server` | TCP listener: accepts connections on its port and answers each request | **`port`**, `bind`, `response_size`, `response_delay` |
+| `udp_server` | UDP listener: answers each datagram on its port | **`port`**, `bind`, `response_size`, `response_delay` |
+| `udp_receiver` | UDP receiver: takes datagrams on its port, answers none | **`port`**, `bind` |
+| `tcp_client` | TCP request/response: connects to its peer, sends a request, waits for the answer | **`peer`** (and **`port`** when the peer is no application), `interval`, `count`, `start`, `request_size`, `timeout`, `retries`, `ip_version` |
+| `udp_client` | UDP request/response: a request datagram, waits for the answer | the same |
+| `udp_sender` | periodic one-way UDP messages to its peer | **`peer`** (**`port`**), `interval`, `count`, `start`, `request_size`, `ip_version` |
+| `mqtt_client` | MQTT client: publisher, subscriber or both | **`broker`**, `client_id`, `publish`, `subscribe`, `qos`, `interval`, `count`, `start`, `payload_size`, `keepalive`, `retry_interval` |
+
+* **`peer`**: an application (`plc/registers`: its device and port follow
+  from it, and its profile must answer this one: a TCP client's peer is a
+  TCP listener), or a device, an address or a host name with a `port`. A
+  renamed device or application renames its peers; a removed one lists the
+  applications that name it first, and they report their missing peer.
+* **Sizes, delays, timeouts** are modelling defaults when empty (TCP request
+  120 bytes, answer 1460; UDP 40 and 200; MQTT payload 64), shown as
+  placeholders and never written for you; the editor keeps them in a closed
+  *Advanced* section.
+* **`start`**: empty or `manual`, it runs when started (*Network events →
+  Start application*); `simulation_start`, with the simulation (3 s after
+  the senders start). An application sends nothing unless started: there is
+  no hidden startup traffic. With an `interval` it repeats every interval of
+  real time, `count` times or until stopped (*Active events*); without one it
+  sends one request. Each start is one entry in *Active events*: its
+  messages as one operation, with what each came to.
+* **`ip_version`** (`4`, `6`): the family to its peer, IPv4 if empty (an
+  address peer: its own). A host name is resolved for that family only
+  (A or AAAA); without an address of that family the application fails and
+  says so: there is no fallback to the other family.
+* **Conflicts**: two listeners on one port and protocol of one device (and
+  of an overlapping `bind`), or a listener on a port a service of the device
+  listens on (NTP 123, the MQTT broker's 1883, PTP 319/320 …), are errors.
+  `bind` must name an interface of the device; a `count` needs an
+  `interval`.
+
+### MQTT broker and clients
+
+A device with the `mqtt_broker` service is an MQTT broker (version 3.1.1,
+the one modelled), listening on TCP `port` (1883). An application with the
+profile `mqtt_client` connects to its `broker` (a device of the model with
+the service); it publishes to its `publish` topics (no wildcards: each
+topic gets one message every `interval`) and subscribes to its `subscribe`
+filters (`+` one level, `#` the rest, MQTT §4.7; a `$…` topic matches no
+filter starting with a wildcard). Its `client_id` (empty:
+`device-application`) must be unique at its broker (an error; in the
+simulation a second CONNECT with an identifier in use takes the session
+over, as the standard says).
+
+In the simulation, over TCP: CONNECT and CONNACK (clean sessions only),
+SUBSCRIBE and SUBACK, PUBLISH to the broker, which forwards a copy to every
+matching subscription at the lower QoS of the two; QoS 0, and QoS 1 with
+PUBACK and a retry with DUP (QoS 2 is not modelled); PINGREQ and PINGRESP
+after `keepalive` of silence (the broker drops a client after 1.5 ×);
+UNSUBSCRIBE and DISCONNECT when stopped; a reconnect 5 s after a lost
+connection. Every message goes through the broker: no IP multicast, no
+IGMP. *Show MQTT sessions* (the broker) lists its clients and their
+subscriptions, *Show MQTT clients* a client's state, its publications and
+what it received by topic. A message's inspection shows its fixed header,
+topic, QoS and packet id and the payload's size, never its contents or any
+credentials (none are modelled: no authentication, no TLS, no retained
+messages, no will).
+
+### PTP (`services.ptp`)
+
+A PTP clock: PTPv2 of IEEE 1588-2008, its **Default delay request-response
+profile over UDP/IPv4** (the one supported, `profile: default_e2e_udp4`):
+event messages to UDP 319 and general messages to UDP 320 of 224.0.1.129
+(TTL 1), two-step clocks, end-to-end delay measurement. Nothing is inferred
+from a device's type or kind, and no device type is added: a clock is
+written where it runs.
+
+```yaml
+    services:
+      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable, priority1: 100}
+```
+
+| Key | Meaning |
+|---|---|
+| **`clock`** | `ordinary` (one port), `boundary` (several ports: a slave port toward the grandmaster, master ports elsewhere), `transparent` (an end-to-end transparent clock: a switch that corrects the residence time of what it forwards; never a time source) |
+| **`profile`** | `default_e2e_udp4` |
+| **`domain`** | 0–127; only clocks of one domain take part in one election (not for a transparent clock, which corrects every domain) |
+| **`interfaces`** | its PTP ports: an ordinary clock's one IPv4 interface, a boundary clock's IPv4 interfaces on a device that routes (at least two), a transparent clock's switch ports (no addresses, at least two, on a device that bridges) |
+| **`role`** | an ordinary clock's: `source_capable` (it may become the grandmaster) or `receiver_only` (slave only: clock class 255) |
+| advanced | `priority1`, `clock_class`, `clock_accuracy`, `variance`, `priority2` (its data set: 128, 248, 254, 65535, 128); `announce_interval` (1–16 s, 2 s), `sync_interval` (0.5–2 s, 1 s), `delay_req_interval` (1–32 s, 1 s), `announce_receipt_timeout` (3); `clock_offset` (`+250us`, `-3ms`) and `drift` (`20ppm`): its modelled local clock (empty: from the device); `timestamping`: `hardware` (8 ns, on the wire) or `software` (1 µs, before queueing; the default) |
+
+In the simulation (`analysis/sim/ptp.ts`) the ports join 224.0.1.129 by
+IGMP; the clocks send Announces and elect the grandmaster with the best
+master clock algorithm (foreign master qualification, the data set
+comparison and the state decision of §9.3), and each port goes through its
+states (INITIALIZING, LISTENING, PRE_MASTER, MASTER, PASSIVE, UNCALIBRATED,
+SLAVE, FAULTY). Masters send Sync and Follow_Up; slaves send Delay_Req and
+get Delay_Resp, and compute their offset and mean path delay from the
+modelled timestamps; a servo corrects their clock. Every clock is a
+modelled local clock (offset and drift) beside the simulation's own time,
+which it never moves. A clock is *synchronized* after three offsets in a
+row below 1 µs (hardware timestamps) or 100 µs (software), the model's
+rule; *acquiring* before; in *holdover* when its master went silent (its
+clock runs free from its last correction; holdover quality is not
+modelled); *unsynchronized* without a master. A grandmaster that fails is
+forgotten after the announce receipt timeout, and the next best clock takes
+over; when it comes back it wins again. Clocks in different domains or
+without a path between them never synchronize. Each clock's state is a
+compact mark on its box (*★ PTP · Grandmaster*, *✓ PTP · Synchronized*,
+*PTP · Acquiring*, *✕ PTP · Holdover*, *PTP · Transparent clock*); *Show PTP clock* lists its ports and their
+states, its data sets, parent and grandmaster, its last offset and path
+delay, and a transparent clock's corrected residence times. Not modelled:
+one-step clocks, peer delay, gPTP / IEEE 802.1AS, other profiles, TSN,
+management messages, clock accuracy against a reference.
 
 ### Wireless access: Wi-Fi networks on VLANs
 
@@ -2829,8 +3068,10 @@ next to the object and field they concern.
   of the device; a tunnel destination that is neither an address nor a
   device or interface of the model; `members`, `vlan`, `source` or
   `destination` on an interface of another type;
-* `dhcp` that isn't `true` or `false`, `ipv4: dhcp` on an interface
-  that also has addresses, and `ipv4: dhcp` on a loopback;
+* `ipv4` that isn't `dhcp` or `static`, `ipv4: dhcp` on an interface
+  that also has IPv4 addresses, and `ipv4: dhcp` on a loopback; an `ipv6`
+  method that isn't one, `ipv6: static` without an IPv6 address, router
+  advertisements on a device that routes nothing or without prefixes;
 * a DNS name that isn't a valid host name, is listed twice on a device, has
   no interface, names an unknown interface or one with `ipv4: dhcp`, or
   lists an interface twice;

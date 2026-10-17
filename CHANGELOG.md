@@ -7,10 +7,98 @@ releases may still change behaviour.
 
 Two version numbers are involved. The **application version** (0.1.3) names
 a NetAtlas release and is shown next to the logo. The **model format
-version** (`netatlas: 1`) names the YAML format a model file is written in;
+version** (`netatlas: 2`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
+
+Model format 2: applications on host-capable devices, IPv6 host
+configuration, what NetAtlas models for each protocol, MQTT, and time
+synchronization with NTP state and PTP.
+
+### Changed (model format 2)
+
+- **The model format is version 2**, and NetAtlas reads no other: a file
+  with `netatlas: 1` gets one error saying it is format 1 and what changed,
+  and no model; there is no migration. Every example, test model and
+  document uses format 2. What to change by hand is in
+  [Changes from format 1](docs/FORMAT.md#changes-from-format-1).
+- **`ipv4: dhcp`** replaces `dhcp: true` (`ipv4: static` or nothing for
+  written addresses); an interface's IPv4 method no longer touches its IPv6
+  addresses.
+- **Applications are a list**, `services.applications`, each with its id,
+  name and profile; the single `services.application` (a name and ports) is
+  gone.
+
+### Added
+
+- **Applications on host-capable devices.** An Endpoint that is a host (a
+  PLC, an HMI, a camera, a printer, an IoT device …), a Server, a VM, a
+  container, a storage device and a host System run any number of
+  applications without changing type; passive devices and a Security
+  gateway run none. Profiles: TCP listener and TCP request/response, UDP
+  listener, UDP request/response, UDP receiver, periodic one-way UDP
+  messages, MQTT client. In the editor each is a collapsed entry (*Name ·
+  profile · port or peer*), opened with its basic fields and a closed
+  Advanced section; Add application focuses the profile; Duplicate; Remove
+  lists the applications that name it first; one undo step each; renames
+  follow. Validation: listener conflicts (also with a service's port),
+  peers that are missing or can't answer the profile, bind interfaces,
+  client identifiers per broker.
+- **Traffic profiles in the simulation.** Network events → **Start
+  application** starts a client, a periodic sender or an MQTT client; one
+  entry per start in Active events with what each message came to. No
+  application sends anything unless started (or `start:
+  simulation_start`). Request and answer sizes, response delay, timeout and
+  retries are modelling defaults unless set; a host name is resolved for the
+  application's IP version only, with no fallback to the other family.
+- **MQTT 3.1.1.** An `mqtt_broker` service; clients connect, subscribe
+  (`+` and `#` filters), publish at QoS 0 or 1 (PUBACK, DUP retry), keep
+  alive, reconnect, unsubscribe and disconnect; the broker fans each
+  publication out to the matching subscribers; a client identifier in use
+  takes the session over. Show MQTT sessions and Show MQTT clients; the
+  inspection shows topic, QoS and size, never a payload.
+- **IPv6 host configuration.** An interface's `ipv6` method (static, SLAAC,
+  DHCPv6, both) and a router interface's explicit `ipv6_ra` (prefixes
+  required; flags, DNS servers, lifetimes and interval collapsed under
+  Advanced). Simulated: link-local addresses, duplicate address detection,
+  Router Solicitations and Advertisements, SLAAC with lifetimes and the
+  two-hour rule, default router discovery and expiry, DNS from RDNSS or
+  DHCPv6, stateful and stateless DHCPv6 with renewal, rebinding and expiry.
+  A DHCP scope of an IPv6 network is a DHCPv6 server and has no gateway.
+  Short statuses (*SLAAC address acquired*, *DHCPv6 pending*, *No default
+  router*, *Duplicate address*, *Address deprecated*) and Show IPv6
+  configuration.
+- **What NetAtlas models.** Every protocol, service and application profile
+  states its level — *Diagram only*, *Configuration and validation* or
+  *Modeled behavior* — and what is and isn't simulated, as a compact,
+  keyboard-operable ⓘ disclosure where it is chosen or configured and in
+  the simulation's protocol list; user-defined protocols are *Diagram
+  only*.
+- **NTP state.** A client is unsynchronized (stratum 16) until a usable
+  upstream answered, then synchronized at one stratum more, and loses it
+  after 8 unanswered polls; Show NTP status separates configured upstreams
+  from the source in use and serving time from being synchronized.
+- **PTP.** A `ptp` service: IEEE 1588-2008, its Default delay
+  request-response profile over UDP/IPv4 multicast, two-step; ordinary,
+  boundary and end-to-end transparent clocks; the best master clock
+  algorithm from Announces, port states, Sync / Follow_Up / Delay_Req /
+  Delay_Resp, residence-time correction, modelled local clocks with offset
+  and drift, acquiring / synchronized / holdover / unsynchronized,
+  grandmaster failure and recovery, domain and connectivity isolation. A
+  compact mark per clock in the diagram and Show PTP clock.
+- **Examples.** `private-house.yaml` has a dual-stack Internal network and a
+  thermostat with two applications; `ot-network.yaml` the PLC's
+  applications, an MQTT broker and a matching and a non-matching
+  subscriber; the new `timing-ptp.yaml` two grandmaster candidates, a
+  transparent and a boundary clock and receiving clocks.
+
+### Fixed
+
+- A router delivered multicast for a group its own interface had joined
+  only to multicast routing, never to itself.
+- The simulation's owner lookup took any device with a virtual address for
+  the owner of any address.
 
 ## [0.1.3] - 2026-10-17
 

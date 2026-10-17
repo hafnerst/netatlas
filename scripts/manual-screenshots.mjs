@@ -430,6 +430,18 @@ async function main() {
       };
       await card('private-house', 'ap-b', 'svc-wireless', 'wifi-edit', 560);
       await card('enterprise-campus', 'srv', 'netservices', 'services-add', 560, '[data-svc-card="ntp"]');
+      // the thermostat's applications (private-house.yaml): two collapsed entries, the second opened with its Advanced section closed
+      await page.eval(`netatlas.loadExampleNamed('private-house.yaml'), netatlas.setView("physical"), netatlas.select("device:thermostat"), netatlas.showTab("edit"), true`);
+      await page.settle(150);
+      await page.eval(`(() => { document.getElementById('toast').hidden = true; const d = document.querySelector('#side-body details.app-card[data-app="sync"]'); d.open = true; document.querySelector('#side-body [data-svc-card="applications"]').scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      {
+        const a = await page.rect('#side-body [data-svc-card="applications"]');
+        const sb = await page.rect('#side-body');
+        const top = Math.max(sb.y, a.y - 4);
+        await save('applications', { x: a.x - 4, y: top, w: a.w + 8, h: Math.min(sb.y + sb.h - top, a.y + a.h + 4 - top, 520) }, { quality: 38 });
+      }
     }
 
     // the device model: a System's Identity card (ot-network.yaml); the Security gateway (cross-domain.yaml): the diagram, its
@@ -547,6 +559,23 @@ async function main() {
       for (const d of ['q1', 'q2', 'sw']) qs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
       qs.push(await page.rect('#canvas .sim-querier[data-device="q1"]'));
       await save('querier', around(qs, 10), { scale: 0.88, quality: 20 });
+      await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
+    // PTP (timing-ptp.yaml): the clocks' marks, gm-a the grandmaster through the transparent and the boundary clock
+    {
+      await page.eval(`netatlas.loadExampleNamed('timing-ptp.yaml'), netatlas.setView('physical'), netatlas.select(null), true`);
+      await page.settle(150);
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ params: {} }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(60000), netatlas.simController().refresh(true), document.getElementById('toast').hidden = true, true`);
+      await page.settle(250);
+      // cell A at 100 %, centred on its transparent clock
+      await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); netatlas.select('device:sw-a', true); netatlas.select(null); return true; })()`);
+      await page.settle(250);
+      const qs = [];
+      for (const d of ['gm-a', 'gm-b', 'sw-a']) qs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
+      for (const d of ['gm-a', 'gm-b', 'sw-a']) qs.push(await page.rect(`#canvas .sim-ptp[data-device="${d}"]`));
+      await save('ptp', around(qs, 10), { scale: 0.88, quality: 22 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }

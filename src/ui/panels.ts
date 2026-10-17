@@ -732,10 +732,10 @@ function simStateSection(model?: Model): LegendSection {
 function ptpLegend(): LegendItem[] {
   const mark = (state: string, text: string): VNode[] => [h('g', { class: 'sim-ptp', 'data-state': state }, [h('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, text)])];
   return [
-    { swatch: mark('grandmaster', '★ PTP · GM'), label: 'PTP · Grandmaster: the time source the best master clock algorithm elected in its domain (from the Announces it hears; its own clock, not verified against a reference)' },
-    { swatch: mark('synchronized', '✓ PTP · Sync'), label: 'PTP · Synchronized: three offsets in a row below 1 µs (hardware timestamps) or 100 µs (software) — this model’s rule, not a guaranteed accuracy' },
-    { swatch: mark('acquiring', 'PTP · Acq.'), label: 'PTP · Acquiring (dashed): a master chosen, its servo not locked yet; Listening: no master heard yet' },
-    { swatch: mark('holdover', '✕ PTP · Hold'), label: 'PTP · Holdover or Unsynchronized (dotted): no Sync, or no master; its clock runs free from its last correction (holdover quality is not modelled)' },
+    { swatch: mark('grandmaster', '★ PTP'), label: '★ PTP · Grandmaster: the time source the best master clock algorithm elected in its domain (from the Announces it hears; its own clock, not verified against a reference)' },
+    { swatch: mark('synchronized', '✓ PTP'), label: '✓ PTP · Synchronized: three offsets in a row below 1 µs (hardware timestamps) or 100 µs (software) — this model’s rule, not a guaranteed accuracy' },
+    { swatch: mark('acquiring', 'PTP'), label: 'PTP · Acquiring (dashed): a master chosen, its servo not locked yet; Listening: no master heard yet' },
+    { swatch: mark('holdover', '✕ PTP'), label: '✕ PTP · Holdover or Unsynchronized (dotted): no Sync, or no master; its clock runs free from its last correction (holdover quality is not modelled)' },
     { swatch: mark('transparent', 'PTP · TC'), label: 'PTP · Transparent clock: a switch that corrects the residence time of what it forwards; no time source' },
   ];
 }
