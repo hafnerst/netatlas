@@ -157,6 +157,7 @@ than one endpoint on the same device is bound by the first of them.
 | `icon` | | Systems only: one of its purpose's icons (`console`, `protocol_gateway`, `tap` …). Not written: the purpose's first. |
 | `host` | VMs and containers: yes | A **guest's host**: the device it runs on — for a VM a server with the Hypervisor service, for a container a server or a VM with the Container engine service. Required on a VM or a container (except a [cloud instance](#public-cloud-regions-vpcs-and-vnets)), an error on any other type. See [Virtualization](#virtualization-hypervisors-vms-and-containers). |
 | `layer3` | | Switches and VMs only: `layer3: true` makes a switch a **Layer 3 switch** (a VM a virtual router or firewall), with the full Layer 3+ feature set (routing protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels, VRFs). Without it a switch is a **Layer 2 switch** (see [Layer 2 and Layer 3 switches](#layer-2-and-layer-3-switches)). On any other type it is an error. |
+| `igmp_mld_snooping` | switches: every VLAN of their ports | Switches only: **IGMP / MLD snooping per VLAN**, `enabled` or `disabled` for each VLAN (or range) its ports carry: `igmp_mld_snooping: {10: enabled, 20: enabled, 99: disabled}`. A VLAN without a choice is an error of the checks (`snooping-not-configured`). See [IGMP / MLD snooping per VLAN](#igmp--mld-snooping-per-vlan). |
 | `group` | | Id of the group the device is located in. A guest (VM or container) has none of its own: it is where its host is, and `group` on it is an error — except a cloud instance, which is in its cloud group. |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the device's role, else from what it does (see [Roles](#roles)). Set it to place a device elsewhere. |
 | `guest_os`, `vcpu`, `ram` | | VMs only, optional: the guest operating system (text), its virtual CPUs (a whole number) and its memory (`8G`, `512M`). The host's inventory (`cpu`, `ram`) counts them. |
@@ -665,6 +666,41 @@ protocols disabled, in a group *Requires Layer 3*, with the reason; nothing
 of Layer 3 is suggested; the relation endpoint pickers leave the switch out
 of relations that need Layer 3 (and say why), and the command palette's
 *Enable a protocol* says the same.
+
+#### IGMP / MLD snooping per VLAN
+
+Whether a switch snoops IGMP (IPv4) and MLD (IPv6) is **its own
+configuration**, chosen explicitly for **each VLAN its ports carry** — the
+switched VLANs of a Layer 3 switch too (not its routed ports, and not a VLAN
+that only has a VLAN interface). Two switches may choose differently for
+the same VLAN. One choice covers both address families (IGMP and MLD
+together; the format has no separate MLD setting):
+
+```yaml
+- id: dist
+  type: switch
+  igmp_mld_snooping: {10: enabled, 20: enabled, 30-39: enabled, 99: disabled}
+  interfaces:
+    - {id: up, vlans: [10, 20, 30-39, 99]}
+```
+
+| Value | In the simulation |
+|---|---|
+| `enabled` | The switch learns **router ports** (where IGMP / MLD queries or PIM Hellos arrive) and **member ports** per VLAN and group (where a member's report arrives). A group's data goes to its member ports in that VLAN and to the router ports, never back out of the port it came in on. A group **without members** goes to the router ports only — **never flooded to the hosts**. Reports and leaves go to the router ports only (no other host hears them); queries and the other link-local groups (224.0.0.0/24, ff02::/16: routing protocols' control traffic) are flooded. |
+| `disabled` | Every multicast frame is flooded to every port of the VLAN (and only that VLAN). |
+| not written | **Not configured**: an error of the consistency checks (`snooping-not-configured`, one finding per switch listing its VLANs), never taken as either value. Until it is chosen the simulation floods that VLAN's multicast, as a switch without snooping, and its log says so. |
+
+Keys are VLAN IDs (1–4094) or ranges (`30-39`); values `enabled` or
+`disabled`; a VLAN chosen twice, any other value and the key on a device
+that is not a switch are errors; a choice for a VLAN none of the switch's
+ports carries is a warning (it does nothing). In the Edit tab a switch has
+an **IGMP / MLD snooping** section: a row per VLAN (or range) with *Not
+configured — choose*, *Enabled* or *Disabled*.
+
+Snooping is Layer 2 only. What crosses a VLAN interface of a Layer 3 switch
+is **multicast routing** (PIM, see [Multicast](#multicast)): snooping never
+routes, and routing never needs snooping. The snooping querier and fast
+leave are the VLAN's [simulation attributes](#vlan-attributes-2).
 
 Making a switch a Layer 2 switch (unticking **Supports Layer 3**)
 asks first and lists what goes with it, in one undo step: its protocols
@@ -2066,7 +2102,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | Flapping: up time | 10 s | 100 ms – 1 h | a demonstration value |  |
 | Flapping: cycles | 3 (0: continuous) | 0 (continuous) – 1000 | a demonstration value |  |
 
-#### Layer 2 – Data link (8)
+#### Layer 2 – Data link (7)
 
 | Parameter | Default | Range | Source of the default | Also |
 |---|---|---|---|---|
@@ -2076,7 +2112,6 @@ a list of `VLAN: value` pairs, ranges allowed.
 | NDP reachable time | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | attribute `ndp_reachable_time` (interface) |
 | MAC aging time | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | attribute `mac_aging` (device) |
 | Spanning tree | RSTP | `rstp`, `mstp`, `pvst`, `stp`, `off` | IEEE 802.1D-2004 (RSTP, the default of current switches) | attribute `stp_mode` (device) |
-| IGMP / MLD snooping | On | `on`, `off` | on by default on current switches (Cisco IOS, Junos; RFC 4541) | attribute `igmp_snooping` (VLAN) |
 | Default MTU | 1500 | 68 – 65535 | RFC 894 (IP over Ethernet) | configured: an interface’s mtu |
 
 #### Layer 3 – Network (8)
@@ -2193,14 +2228,18 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `multicast_passthrough` | Multicast passthrough | Off | `on`, `off` | firewalls drop multicast unless configured (PAN-OS, Cisco ASA) | interfaces with an address of firewalls |  |
 | `multicast_to_unicast` | Multicast to unicast | Off | `on`, `off` | off unless configured (Cisco VideoStream, Aruba) | access-point radios of access points |  |
 
-#### VLAN attributes (4)
+#### VLAN attributes (2)
+
+IGMP / MLD snooping itself is no simulation attribute: it is each switch's
+own configuration, [`igmp_mld_snooping`](#igmp--mld-snooping-per-vlan). The
+former attributes `igmp_snooping` and `unknown_multicast` are unknown
+attributes now (the error says where snooping is configured); with snooping
+enabled a group without members is never flooded.
 
 | Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
 |---|---|---|---|---|---|---|
-| `igmp_snooping` | IGMP / MLD snooping | On | `on`, `off` | on by default on current switches (Cisco IOS, Junos; RFC 4541) | every switch carrying the VLAN | yes |
 | `snooping_querier` | Snooping querier | Off | `on`, `off` | off unless configured (Cisco ip igmp snooping querier) | every switch carrying the VLAN |  |
 | `fast_leave` | Fast leave | Off | `on`, `off` | off unless configured (Cisco immediate-leave) | every switch carrying the VLAN |  |
-| `unknown_multicast` | Unknown multicast | Flood in the VLAN | `flood`, `drop` | flooding until a member reports (RFC 4541 §2.1.2 allows it) | every switch carrying the VLAN |  |
 
 #### Relation attributes (13)
 
@@ -2236,7 +2275,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | Device type | Device-wide simulation attributes |
 |---|---|
 | Router (`router`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
-| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `igmp_snooping`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `bridge_priority`, `bridge_priority_vlans`, `stp_edge`, `stp_bpdu_guard`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `router_port_aging` |
+| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `bridge_priority`, `bridge_priority_vlans`, `stp_edge`, `stp_bpdu_guard`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `router_port_aging` |
 | Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ha_failover`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `default_action`, `allow`, `stateful`, `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`, `icmp_session_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
 | Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `association_time`, `client_idle_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
 | Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
@@ -2345,15 +2384,31 @@ What the simulation does with them:
   goes. A membership not reported for robustness × query interval +
   response interval expires. Reports: v2 to the group, v3 to 224.0.0.22,
   MLDv2 to ff02::16 (ICMPv6 143), all with TTL 1.
-- **Snooping** (per switch and VLAN, RFC 4541): router ports from queries
-  and PIM Hellos (for the router-port aging time), member ports from
-  reports (for the membership interval; with fast leave a leave removes the
-  port at once). Reports go to the router ports only; a group's data to its
-  member and router ports; a group without members is flooded or, with
-  `unknown_multicast: drop`, sent to the router ports only; link-local
-  groups are always flooded; with snooping off everything is flooded. A
-  switch with `snooping_querier: on` queries a VLAN that has no router port
-  (from its VLAN interface's address, else 0.0.0.0).
+- **Snooping** (RFC 4541), each switch's own choice per VLAN
+  ([`igmp_mld_snooping`](#igmp--mld-snooping-per-vlan)). Enabled: router
+  ports from queries and PIM Hellos (for the router-port aging time), member
+  ports per VLAN and group from reports (for the membership interval:
+  robustness × query interval + response interval; refreshed by the
+  answers to queries; with fast leave a leave removes the port at once,
+  else after the last member queries; a port whose link goes down loses
+  its entries at once; a switch powered off forgets them; a new simulation
+  starts with none). Reports and leaves go to the router ports only; a
+  group's data to its member ports in that VLAN and the router ports, never
+  back out of its ingress port; **a group without members goes to the
+  router ports only, never to the hosts** (the log says where it ends);
+  link-local groups (queries, routing protocols) are always flooded.
+  Forwarding is by group: the sources an IGMPv3 / MLDv2 member names are
+  shown in the snooping table but not filtered at the switch. Disabled, or
+  not configured (an error of the checks): everything is flooded in the
+  VLAN. A switch with `snooping_querier: on` (and snooping enabled) queries
+  a VLAN that has no router port, from its VLAN interface's IPv4 address;
+  without one it is no querier (the log says so). The querier sends IGMP
+  queries only (no MLD queries): IPv6 members are learned from their
+  unsolicited reports and from the queries of a multicast router.
+- **Snooping is not routing.** On a Layer 3 switch snooping decides what
+  goes out of the ports of each VLAN; what crosses its VLAN interfaces to
+  other VLANs is multicast routing, which needs PIM (and a member there).
+  A Layer 3 switch without PIM routes no multicast, whatever its snooping.
 - **PIM sparse mode**: the designated router of a segment (the highest
   `pim_dr_priority`, then address) joins (*, G) towards the RP for its
   members, hop by hop along the unicast route (each RPF neighbour must be
@@ -2392,10 +2447,12 @@ stream**; the groups and streams of the model can be left or stopped the
 same way. A model's `interval` is simulated time (its stream belongs to
 the scenario); a stream started during the simulation sends every
 interval of real time instead, side by side with any others (see the
-README's *Foreground and background*). **Show IGMP groups** (a router: its interfaces' querier state and
+README's *Foreground and background*). **Show IGMP / MLD groups** (a router: its interfaces' querier state and
 groups, with the last reporter, version, sources and expiry), **Show
-multicast table** (a switch: per VLAN and group the member ports and router
-ports) and **Show multicast routes** (a router: (*, G) and (S, G) with their
+snooping table** (a switch: per VLAN its router ports and each group's
+member ports with version, sources, reporter and time left, and each VLAN's
+setting), **Show group memberships** (a host: its own groups, version,
+filter and what it received) and **Show multicast routes** (a router: (*, G) and (S, G) with their
 RPF interface and neighbour, outgoing interfaces and flags, and the RP)
 show the state, with the timers in effect.
 
@@ -2797,6 +2854,7 @@ VLANs is routed, not "access in VLAN 1").
 | `tunnel-underlay` | warning | a tunnel whose `over` does not connect its endpoints (links join their two devices, networks their members, relations their devices) | tunnel relations: endpoints, `over` |
 | `vrf-name-case` | warning | VRF names that differ only in case (the spelling used most is taken as meant; the others are reported) | interfaces: `vrf`; routes: `vrf` |
 | `relation-vrf-mismatch` | warning | a relation between interfaces in different VRFs (only where both name a VRF: a VRF interface facing one without, as a provider edge facing a customer, is normal) | relation endpoints; interfaces: `vrf` |
+| `snooping-not-configured` | error | a switch that carries VLANs on its ports without an IGMP / MLD snooping choice for each (one finding per switch, listing them); until chosen the simulation floods their multicast | devices (switches): `igmp_mld_snooping`; their ports' and aggregates' `vlans` |
 | `multicast-no-querier` | warning | an interface that joins a group in a subnet where no multicast router (PIM, its querier not off) has an interface, and no switch on its Layer 2 way is a snooping querier | interfaces: `multicast.join`, `ip`; devices: `protocols.pim`, simulation `igmp_querier`, `snooping_querier`; links |
 | `multicast-no-rp` | warning | routers in PIM sparse mode and any-source groups joined or streamed, but no rendezvous point (no `rp`, no `candidate_rp: yes`, no relation `rp`) | devices: `protocols.pim`; relations: `rp`; interfaces: `multicast` |
 | `multicast-rpf-not-pim` | warning | a PIM router whose unicast route towards a stream's source (or the RP) leaves through an interface to a device it has no PIM relation with there: joins cannot go that way and the traffic fails the RPF check | devices: `protocols.pim`, `routes`; interfaces: `multicast.streams`, `ip`; PIM relations |

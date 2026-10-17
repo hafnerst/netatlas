@@ -47,7 +47,7 @@ test('Supports Layer 3: the checkbox, the protocols disabled with their reason o
     assert.ok(f.opts.length >= 10 && f.opts.every((o) => /— requires Layer 3\|true$/.test(o)), f.opts.join(', '));
     for (const p of ['OSPF', 'BGP', 'IS-IS', 'EIGRP', 'RIP', 'PIM', 'LDP', 'VRRP', 'HSRP']) assert.ok(f.opts.some((o) => o.indexOf(p) === 0), p);
     assert.equal(f.enabled, 0, 'none can be chosen');
-    assert.match(f.why, /require Layer 3: tick Supports Layer 3 above\. Its Layer 2 protocols \(STP, LACP, LLDP, IGMP \/ MLD snooping\) and management routes need nothing more/);
+    assert.match(f.why, /require Layer 3: tick Supports Layer 3 above\. Its Layer 2 protocols \(STP, LACP, LLDP\) and management routes need nothing more; IGMP \/ MLD snooping is its own section/);
     assert.equal(f.chips, 0, 'nothing suggested');
     // a value that still arrives (a script, a stale form) changes nothing: the reason is said instead
     const yamlBefore = await page.eval(`netatlas.exportText()`);

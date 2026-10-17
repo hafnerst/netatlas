@@ -52,6 +52,7 @@ devices:
     services:
       ntp:
         upstreams: [10.20.30.10]
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
     interfaces:
       - {id: d1, vlans: [10, 20, 99]}
       - {id: s1, vlans: 30}
@@ -65,6 +66,7 @@ devices:
     type: switch
     role: distribution
     group: dc
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
     interfaces:
       - {id: up, vlans: [10, 20, 99]}
       - {id: a1, vlans: [10, 20, 99]}
@@ -73,6 +75,7 @@ devices:
     type: switch
     role: access
     group: bldg-a
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
     interfaces:
       - {id: up, vlans: [10, 20, 99]}
       - {id: ap, vlans: [10, 20, 99]}
@@ -80,6 +83,7 @@ devices:
     type: switch
     role: access
     group: bldg-a
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
     interfaces:
       - {id: up, vlans: [10, 20, 99]}
       - {id: ap, vlans: [10, 20, 99]}

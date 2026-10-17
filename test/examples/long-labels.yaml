@@ -30,6 +30,7 @@ devices:
     protocols:
       bgp: {asn: 65010}
       ospf: {}
+    igmp_mld_snooping: {10: enabled}
     interfaces:
       - {id: Hu1/0/49, vlans: 10}
       - {id: Hu1/0/50, vlans: 10}
@@ -50,6 +51,7 @@ devices:
     protocols:
       bgp: {asn: 65010}
       ospf: {}
+    igmp_mld_snooping: {10: enabled}
     interfaces:
       - {id: Hu1/0/49, vlans: 10}
       - {id: Hu1/0/50, vlans: 10}

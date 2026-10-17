@@ -101,6 +101,7 @@ devices:
     type: switch
     role: dmz
     group: dmz
+    igmp_mld_snooping: {1: enabled}
     interfaces:
       - {id: p1, vlans: 1}
       - {id: p2, vlans: 1}

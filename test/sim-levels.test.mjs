@@ -60,13 +60,15 @@ test('every attribute has its level: per device, per interface, per VLAN, per re
   const lv = (k) => Pm.paramDef(k).level || 'device';
   for (const k of ['boot-time', 'ecmp-max', 'spf-delay', 'ttl', 'icmp-rate', 'bcast-ping', 'tcp-syn-retries', 'mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'bridge-priority', 'bridge-priority-vlans', 'mrouter-aging', 'spt-switchover', 'fw-action', 'fw-tcp', 'ha-failover', 'ips-fail', 'restart-policy', 'snmp-interval', 'ap-association', 'ap-idle', 'listening', 'test-traffic', 'test-targets', 'app-timeout']) assert.equal(lv(k), 'device', k);
   for (const k of ['arp-timeout', 'arp-retransmit', 'arp-retries', 'ndp-reachable', 'ping', 'icmp-errors', 'link-up-delay', 'los-detect', 'storm-bc', 'storm-mc', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'lacp-rate', 'igmp-version', 'igmp-unsolicited', 'igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'pim-dr-priority', 'directed-broadcast', 'mc-passthrough', 'mc-to-unicast', 'ap-beacon']) assert.equal(lv(k), 'interface', k);
-  for (const k of ['igmp-snooping', 'snoop-querier', 'fast-leave', 'unknown-mc']) assert.equal(lv(k), 'vlan', k);
+  for (const k of ['snoop-querier', 'fast-leave']) assert.equal(lv(k), 'vlan', k);
+  // IGMP / MLD snooping itself is no simulation attribute: the switch's configuration (igmp_mld_snooping)
+  for (const k of ['igmp-snooping', 'unknown-mc']) assert.throws(() => Pm.paramDef(k), /unknown simulation parameter/);
   // a hypervisor's VM restart time, a virtual switch's failover detection, a container engine's start time: per service object
   for (const [k, svc] of [['vm-restart', 'hypervisor'], ['failover-detect', 'vswitch'], ['container-start', 'container_engine']]) assert.deepEqual([lv(k), Pm.paramDef(k).svc], ['service', svc], k);
   for (const k of ['vrrp-advert', 'ike-lifetime', 'child-lifetime', 'rekey-margin', 'dpd-interval', 'dpd-retries', 'mc-tunnel', 'lb-hc-interval', 'lb-hc-timeout', 'lb-hc-fall', 'lb-persistence', 'lb-algorithm', 'service-response']) assert.equal(lv(k), 'relation', k);
   // a device-wide default only where real devices have one
   const dd = Pm.PARAMS.filter((p) => p.level && p.level !== 'device' && p.devDefault).map((p) => p.key).sort();
-  assert.deepEqual(dd, ['arp-retransmit', 'arp-retries', 'arp-timeout', 'child-lifetime', 'dpd-interval', 'dpd-retries', 'icmp-errors', 'igmp-lmqi', 'igmp-max-resp', 'igmp-querier', 'igmp-query', 'igmp-robustness', 'igmp-snooping', 'igmp-unsolicited', 'igmp-version', 'ike-lifetime', 'mc-tunnel', 'ndp-reachable', 'ping', 'rekey-margin', 'service-response', 'stp-bpdu-guard', 'stp-edge', 'dhcp-offer-delay', 'dhcp-ping-check'].sort());
+  assert.deepEqual(dd, ['arp-retransmit', 'arp-retries', 'arp-timeout', 'child-lifetime', 'dpd-interval', 'dpd-retries', 'icmp-errors', 'igmp-lmqi', 'igmp-max-resp', 'igmp-querier', 'igmp-query', 'igmp-robustness', 'igmp-unsolicited', 'igmp-version', 'ike-lifetime', 'mc-tunnel', 'ndp-reachable', 'ping', 'rekey-margin', 'service-response', 'stp-bpdu-guard', 'stp-edge', 'dhcp-offer-delay', 'dhcp-ping-check'].sort());
   // where each kind of object's attributes apply
   const sw = { id: 's', type: 'switch', caps: Cap.capabilities({ type: 'switch' }), ip: false, routes: false, aggregate: true, ipsec: false, snmpManager: false, hypervisor: false };
   const port = { port: true, ip: false, dhcp: false, lag: false, bridgePort: true, radio: false };
@@ -122,7 +124,11 @@ test('wrong level: a port’s attribute on the device, a device’s on a port, a
   assert.match(errs(SW({ p1: '{id: p1, simulation: {stp_mode: stp}}' })).join('|'), /"stp_mode" \(spanning tree\) is set per device: in the device’s simulation:, not on an interface/);
   assert.match(errs(SW({ p1: '{id: p1, simulation: {fast_leave: on}}' })).join('|'), /"fast_leave" \(fast leave\) is set per VLAN: in the simulation: of the network with that VLAN, not on an interface/);
   assert.match(errs(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, simulation: {fast_leave: on}}\n' })).join('|'), /network "n" has simulation attributes of a VLAN but no VLAN: give it its "vlan:"/);
-  assert.deepEqual(errs(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 1, simulation: {fast_leave: on, igmp_snooping: off}}\n' })), []);
+  assert.deepEqual(errs(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 1, simulation: {fast_leave: on}}\n' })), []);
+  // the removed attributes say where snooping is configured now
+  assert.match(errs(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 1, simulation: {igmp_snooping: off}}\n' })).join('|'), /unknown simulation attribute "igmp_snooping": IGMP \/ MLD snooping is the switch’s own configuration — igmp_mld_snooping on each switch, enabled or disabled per VLAN/);
+  assert.match(errs(SW({ sw1: ', simulation: {igmp_snooping: off}' })).join('|'), /unknown simulation attribute "igmp_snooping": IGMP \/ MLD snooping is the switch’s own configuration/);
+  assert.match(errs(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 1, simulation: {unknown_multicast: drop}}\n' })).join('|'), /unknown simulation attribute "unknown_multicast": with IGMP \/ MLD snooping enabled a group without members goes to the multicast router ports only/);
   // on an object it does not apply to
   assert.match(errs(SW().replace('{id: h1, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24}]}', '{id: h1, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24, simulation: {stp_edge: on}}]}')).join('|'), /"stp_edge" \(edge port \(portfast\)\) does not apply to h1:eth0, a port with an address/);
   assert.match(errs(SW({ more: 'relations:\n  - {id: x, protocol: ssh, endpoints: [h1, h2], simulation: {ike_lifetime: 1h}}\n' })).join('|'), /"ike_lifetime" \(ike sa lifetime\) does not apply to relation "x"/);

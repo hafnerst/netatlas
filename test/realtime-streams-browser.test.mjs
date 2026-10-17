@@ -4,10 +4,10 @@
 // datagram every real second in Readable pacing, both with datagrams on
 // their way at once, each inspectable with its own port; paused, both say
 // Paused and send nothing; Stop one, the other goes on. A device's
-// lifecycle in the diagram: powered off "⏻ Off", booting "↻ Booting", a
-// tooltip with its state, the box neither moved nor resized, its label
-// clear; operational: no badge; a shut interface marks no device off; an
-// external network has no badge and no Power off; Exit clears it all.
+// lifecycle in the diagram (its status indicator): Operational, Powered
+// off, Booting, a tooltip with its state, the box neither moved nor
+// resized, its label clear; a shut interface marks no device off; an
+// external network says External and has no Power off; Exit clears it all.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -39,7 +39,7 @@ const DEV = (id) => `(() => { const n = document.querySelector('#canvas .node[da
     stroke: b ? getComputedStyle(b.querySelector('rect')).stroke : null, off: n.classList.contains('sim-off'), booting: n.classList.contains('sim-booting'), down: n.classList.contains('sim-down'), overlapsLabel: hit }; })()`;
 
 for (const theme of ['light', 'dark']) {
-  test(`${theme}: two streams side by side in real seconds, Paused, Stop one; devices powered off and booting in the diagram, operational without a badge`, { skip, timeout: 300000 }, async () => {
+  test(`${theme}: two streams side by side in real seconds, Paused, Stop one; devices operational, powered off and booting in the diagram`, { skip, timeout: 300000 }, async () => {
     const page = await openPage(url, { width: 1440, height: 900 });
     const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
     try {
@@ -111,13 +111,15 @@ for (const theme of ['light', 'dark']) {
       // ---------------------------------------------------------------- device state
       await page.eval(`netatlas.simController().setPlaying(false), true`);
       const before = await page.eval(DEV('lab-h'));
-      assert.equal(before.power, null, 'operational: no badge');
+      assert.equal(before.power, 'operational');
+      assert.equal(before.text, 'Operational');
+      assert.match(before.tip, /^lab-h: Operational: powered on and booted/);
       assert.equal(before.off || before.booting || before.down, false);
       await page.eval(`netatlas.simController().powerOff('lab-h'), true`);
       await page.settle(100);
       let d = await page.eval(DEV('lab-h'));
       assert.equal(d.power, 'off');
-      assert.equal(d.text, '⏻ Off');
+      assert.equal(d.text, 'Powered off');
       assert.match(d.tip, /^lab-h: Powered off at t = [\d.]+ s$/);
       assert.equal(d.aria, d.tip);
       assert.ok(d.off && d.down && !d.booting);
@@ -135,7 +137,7 @@ for (const theme of ['light', 'dark']) {
       await page.settle(100);
       d = await page.eval(DEV('lab-h'));
       assert.equal(d.power, 'booting');
-      assert.equal(d.text, '↻ Booting');
+      assert.equal(d.text, 'Booting');
       assert.match(d.tip, /^lab-h: Booting: powered on, up at t = [\d.]+ s; it takes no part until then$/);
       assert.ok(d.booting && d.down && !d.off);
       assert.deepEqual(d.box, before.box);
@@ -148,18 +150,19 @@ for (const theme of ['light', 'dark']) {
       await page.eval(`(() => { const c = netatlas.simController(); c.runTo(${up} + 1); c.refresh(true); return true; })()`);
       await page.settle(100);
       d = await page.eval(DEV('lab-h'));
-      assert.equal(d.power, null, 'booted: operational, no badge');
+      assert.equal(d.power, 'operational', 'booted: operational');
       assert.ok(!d.off && !d.booting);
       assert.deepEqual(d.box, before.box);
       // a shut interface marks the interface, never the device off
       await page.eval(`netatlas.simController().shut('srv', 'eth0'), true`);
       await page.settle(100);
       d = await page.eval(DEV('srv'));
-      assert.equal(d.power, null);
+      assert.equal(d.power, 'operational');
       assert.ok(!d.off && !d.booting);
-      // an external network: no lifecycle, no badge, no Power off, no state line
+      // an external network: no lifecycle of its own: External, no Power off
       const inet = await page.eval(`(() => { const c = netatlas.simController(); return { items: c.itemsFor('device:inet').map((i) => i.label), state: c.sim.deviceState('inet').state }; })()`);
-      assert.equal(inet.state, 'none');
+      assert.equal(inet.state, 'external');
+      assert.equal((await page.eval(DEV('inet'))).text, 'External');
       assert.ok(inet.items.indexOf('Power off') < 0, inet.items.join(', '));
       // Exit: no badge, no mark
       await page.eval(`netatlas.simController().powerOff('lab-h'), true`);

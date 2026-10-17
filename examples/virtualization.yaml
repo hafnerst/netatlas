@@ -42,6 +42,7 @@ devices:
     type: switch
     layer3: true
     group: dc
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 40: enabled, 99: enabled}
     interfaces:
       - {id: Gi1/0/1, vlans: [10, 20, 30, 99], description: to tor1}
       - {id: Gi1/0/2, vlans: [10, 20, 30, 99], description: to tor2}
@@ -57,6 +58,7 @@ devices:
   - id: tor1
     type: switch
     group: rack1
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
     interfaces:
       - {id: Gi1/0/1, vlans: [10, 20, 30, 99], description: hv1 vmnic0}
       - {id: Gi1/0/2, vlans: [10, 20, 30, 99], description: hv2 vmnic0}
@@ -65,6 +67,7 @@ devices:
   - id: tor2
     type: switch
     group: rack2
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
     interfaces:
       - {id: Gi1/0/1, vlans: [10, 20, 30, 99], description: hv1 vmnic1}
       - {id: Gi1/0/2, vlans: [10, 20, 30, 99], description: hv2 vmnic1}

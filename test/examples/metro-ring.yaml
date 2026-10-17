@@ -126,6 +126,7 @@ devices:
     label: OOB switch
     type: switch
     group: oob
+    igmp_mld_snooping: {1: enabled}
     interfaces:
       - {id: p1, vlans: 1}
       - {id: p2, vlans: 1}

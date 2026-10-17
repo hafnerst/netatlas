@@ -49,6 +49,7 @@ devices:
     label: w-sw
     type: switch
     group: west
+    igmp_mld_snooping: {10: enabled, 30: enabled}
     interfaces: [{id: p1, vlans: [10, 30]}, {id: p2, vlans: 10}, {id: p3, vlans: 10}, {id: p4, vlans: 30}]
   - id: w1
     type: router
@@ -140,6 +141,7 @@ devices:
     label: e-sw
     type: switch
     group: east
+    igmp_mld_snooping: {1: enabled}
     interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
   - id: e-srv
     label: Video and app server

@@ -28,6 +28,7 @@ devices:
   - id: a
     type: switch
     layer3: true
+    igmp_mld_snooping: {10: enabled, 20: disabled}
     interfaces:
       - {id: e0, vlans: [10, 20], native: 10}
       - {id: e1, vlans: 10}
@@ -41,6 +42,7 @@ devices:
       - {id: Vlan20, type: virtual, vlan: 20, ip: 10.2.0.1/24}
   - id: b
     type: switch
+    igmp_mld_snooping: {10-20: enabled}
     interfaces:
       - {id: e0, vlans: [10, 20], native: 10}
       - {id: e1, vlans: 10}

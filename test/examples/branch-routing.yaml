@@ -50,6 +50,7 @@ devices:
     label: Access switch
     type: switch
     group: branch
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
     interfaces: [{id: Gi1/0/1, vlans: [10, 20, 30, 99], native: 99}, {id: Gi1/0/2, vlans: 10}, {id: Gi1/0/3, vlans: 20}]
     logical_interfaces:
       - {id: Vlan99, type: virtual, ip: 10.20.99.2/24, label: Management}

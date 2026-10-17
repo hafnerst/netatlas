@@ -96,6 +96,7 @@ devices:
     type: switch
     role: access
     group: lab
+    igmp_mld_snooping: {1: enabled}
     interfaces:
       - {id: p1, vlans: 1}
       - {id: p2, vlans: 1}
@@ -149,6 +150,7 @@ devices:
     type: switch
     role: management
     group: mgmt
+    igmp_mld_snooping: {1: enabled}
     interfaces:
       - {id: p1, vlans: 1}
       - {id: p2, vlans: 1}

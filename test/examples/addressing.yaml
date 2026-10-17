@@ -82,6 +82,7 @@ devices:
     group: hq
     protocols:
       vrrp: {}
+    igmp_mld_snooping: {10: enabled, 20: enabled}
     interfaces:
       - {id: xe-1, vlans: [10, 20], mac: 3c:fd:fe:00:10:01}
       - {id: xe-2, mac: 3c:fd:fe:00:10:02}

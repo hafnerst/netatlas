@@ -48,6 +48,7 @@ devices:
         scopes:
           - {network: staff, range: 10.10.10.100-10.10.10.199, gateway: 10.10.10.1, dns: [10.10.10.1]}
           - {network: iot, range: 10.10.30.100-10.10.30.199, gateway: 10.10.30.1, dns: [10.10.30.1]}
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled}
     interfaces:
       - {id: p1, vlans: [10, 20, 30]}
       - {id: p2, vlans: 20}
@@ -69,6 +70,7 @@ devices:
     type: switch
     role: access
     group: closet
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled}
     interfaces:
       - {id: up, vlans: [10, 20, 30]}
       - {id: ap, vlans: [10, 20, 30]}

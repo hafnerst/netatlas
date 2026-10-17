@@ -96,6 +96,7 @@ devices:
   - id: sw1
     type: switch
     group: access
+    igmp_mld_snooping: {1: enabled, 10: enabled, 20: enabled}
     interfaces:
       - {id: p1, vlans: [1, 10, 20], native: 1}
       - {id: p2, vlans: 10}
@@ -108,6 +109,7 @@ devices:
   - id: sw2
     type: switch
     group: access
+    igmp_mld_snooping: {1: enabled, 10: enabled, 20: enabled, 30: enabled, 99: enabled}
     interfaces:
       - {id: p1, vlans: [10, 30, 99], native: 99}
       - {id: p2, vlans: 20}
@@ -160,6 +162,7 @@ devices:
   - id: sw3
     type: switch
     group: access
+    # no igmp_mld_snooping: VLAN 10 without a snooping choice (snooping-not-configured)
     interfaces:
       - {id: q1, vlans: 10}
       - {id: q2, vlans: 10}

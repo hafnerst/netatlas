@@ -14,6 +14,12 @@ import { LinkSimulation, Model } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 import { Ctx, Reader, get, isNull, kindOf, suggest } from './reader';
 
+/** Simulation attributes that are gone, and where their meaning lives now (said instead of a spelling suggestion). */
+const REMOVED: { [yaml: string]: string } = {
+  igmp_snooping: ': IGMP / MLD snooping is the switch’s own configuration — igmp_mld_snooping on each switch, enabled or disabled per VLAN',
+  unknown_multicast: ': with IGMP / MLD snooping enabled a group without members goes to the multicast router ports only (never flooded); disabled, everything is flooded — choose it per VLAN in the switch’s igmp_mld_snooping',
+};
+
 /** Could an attribute apply to a device like this (its type, layer, mode, purpose; the Inspector narrows it by what the device has)? */
 export function typeAllows(a: Applies, d: DeviceLike): boolean {
   const c = capabilities(d);
@@ -81,7 +87,7 @@ export function readDeviceSimulation(r: Reader, c: Ctx, n: YNode | undefined, pa
     const def = deviceParamByYaml(k);
     const node = e.value;
     if (!def) {
-      c.error(m, `${path}.${k}`, `unknown simulation attribute "${k}"${suggest(k, allowed.map((p) => p.yaml), 30)}`, { key: k, line: e.keyLine });
+      c.error(m, `${path}.${k}`, `unknown simulation attribute "${k}"${REMOVED[k] || suggest(k, allowed.map((p) => p.yaml), 30)}`, { key: k, line: e.keyLine });
       return;
     }
     if (!deviceWide(def)) {
@@ -134,7 +140,7 @@ export function readSimBlock(r: Reader, c: Ctx, n: YNode | undefined, path: stri
     const def = deviceParamByYaml(k);
     const node = e.value;
     if (!def) {
-      c.error(m, `${path}.${k}`, `unknown simulation attribute "${k}"${suggest(k, here.map((p) => p.yaml), 30)}`, { key: k, line: e.keyLine });
+      c.error(m, `${path}.${k}`, `unknown simulation attribute "${k}"${REMOVED[k] || suggest(k, here.map((p) => p.yaml), 30)}`, { key: k, line: e.keyLine });
       return;
     }
     if ((def.level || 'device') !== level) {

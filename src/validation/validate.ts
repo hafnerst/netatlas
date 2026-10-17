@@ -15,6 +15,7 @@ import { readMulticast } from './multicast';
 import { SimBlock, checkObjectBlocks, readDeviceSimulation, readLinkSimulation, readSimBlock } from './simulation';
 import { NetServiceNodes, checkNetServices, readAddressList, readNetServices } from './netservices';
 import { readVlanRanges, vlanTextOf } from './vlans';
+import { checkSnoopingVlans, readSnooping } from './snooping';
 import { VirtNodes, checkVirtual, isGuestType, readGuestFields, readVirtIface, readVirtServices } from './virtual';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 import { isVm } from '../model/virtual';
@@ -337,6 +338,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const mnodes: DeviceModelNodes = { device: id, map: m, path: dpath };
     modelNodes.push({ dev, nodes: mnodes });
     readDeviceModel(r, c, m, dpath, dev, mnodes);
+    // a switch's IGMP / MLD snooping per VLAN (its own configuration, not a simulation attribute)
+    dev.snooping = readSnooping(r, c, m, dpath, dev);
     // its services by the registry (which it may run, its built-in functions, the ones without a reader of their own), then the appliance functions
     svcBlocks.push(readServiceBlock(r, c, get(m, 'services'), dpath + '.services', dev, m));
     readApplianceFunctions(r, c, get(m, 'services'), dpath + '.services', dev, mnodes);
@@ -648,6 +651,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       portNodes.set(k, { node: ifaceNodes.get(k) as YMap, path: ifacePaths.get(k) as string });
     }
     portRules(c, dev, portNodes, memberOf);
+    checkSnoopingVlans(c, m, dpath, dev);
     if (isLayer2Switch(dev)) layer2SwitchRules(c, m, dpath, dev);
     for (const s of dev.services) {
       const def = services.get(s.id);

@@ -121,17 +121,33 @@ const DHCP_STATE: { [k: string]: string } = { INIT: 'about to ask', SELECTING: '
 /** What a Simulation takes: the engine's options, and the real-time schedule's clock (real ms; the tests' fake). */
 export type SimOptions = EngineOptions & { realClock?: () => number };
 
-/** A device's lifecycle in words: the state, a short label (the diagram's badge), and a line for its tooltip and menu. */
+/**
+ * A device's lifecycle in words: the state, a short label (the diagram's
+ * status indicator), and a line for its tooltip and menu. Operational,
+ * powered off and booting are its power state (the engine's, which packet
+ * processing uses); passive (a patch panel, a TAP, a pass-through) and
+ * external (a cloud, an external network) have none of their own; unknown:
+ * the simulation has no such device (yet).
+ */
 export interface DeviceStateView {
-  state: 'operational' | 'off' | 'booting' | 'none';
-  /** "Operational", "Powered off", "Booting"; "" for no lifecycle */
+  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown';
+  /** "Operational", "Powered off", "Booting", "Passive", "External", "Unknown" */
   label: string;
   /** "Booting: up at t = 45 s", "Powered off at t = 12 s (down with its host esx-01)" */
   detail: string;
 }
 
-export function deviceStateView(p: DevicePower | null): DeviceStateView {
-  if (!p) return { state: 'none', label: '', detail: 'No power state of its own (passive or an external network)' };
+/** Does the state belong to a device with a power state of its own (it can be powered off and on)? */
+export function hasLifecycle(st: DeviceStateView): boolean {
+  return st.state === 'operational' || st.state === 'off' || st.state === 'booting';
+}
+
+export function deviceStateView(p: DevicePower | null, none: 'passive' | 'external' | 'unknown' = 'passive'): DeviceStateView {
+  if (!p) {
+    if (none === 'external') return { state: 'external', label: 'External', detail: 'External: a network outside the model (one hop); it has no power state of its own' };
+    if (none === 'unknown') return { state: 'unknown', label: 'Unknown', detail: 'Unknown: the simulation has no state for it' };
+    return { state: 'passive', label: 'Passive', detail: 'Passive: it passes signals without a power state of its own (a patch panel, a TAP, a pass-through)' };
+  }
   if (p.state === 'booting') return { state: 'booting', label: 'Booting', detail: `Booting: powered on, up at t = ${fmtSec(p.until as number)}; it takes no part until then` };
   if (p.state === 'off') return { state: 'off', label: 'Powered off', detail: `Powered off at t = ${fmtSec(p.since as number)}${p.why ? ' (' + p.why + ')' : ''}` };
   return { state: 'operational', label: 'Operational', detail: 'Operational: powered on and booted (its interfaces, cables and peers have their own state)' };
@@ -204,7 +220,11 @@ export class Simulation {
 
   /** A device's lifecycle as the diagram, its menu and the events say it (the state packet processing reads). */
   deviceState(dev: string): DeviceStateView {
-    return deviceStateView(this.engine.powerState(dev));
+    const p = this.engine.powerState(dev);
+    if (p) return deviceStateView(p);
+    const md = this.model.index.devices.get(dev);
+    const sd = this.engine.net.devices.get(dev);
+    return deviceStateView(null, !md || !sd ? 'unknown' : capabilities(md).externalTransit ? 'external' : capabilities(md).passThrough ? 'passive' : 'unknown');
   }
 
   /** The devices' lifecycle, by id (the model's devices). */
@@ -525,6 +545,11 @@ export class Simulation {
 
   snoopTable(dev: string): GridTable {
     return this.multicast.snoopTable(dev);
+  }
+
+  /** A host's own group memberships (Show group memberships). */
+  memberTable(dev: string): GridTable {
+    return this.multicast.memberTable(dev);
   }
 
   mrouteTable(dev: string): GridTable {

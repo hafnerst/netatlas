@@ -19,6 +19,7 @@ import { headOf, objectHead } from './panels';
 import { compareNames, sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey, CLOUD_GROUP_KINDS, CLOUD_PROVIDERS, VPN_OPERATIONS, VPN_TECHNOLOGIES, SEPARATION_IMPLEMENTATIONS, TRANSFER_PROFILES, WIFI_SECURITY } from '../model/types';
 import { PortL2, containingNetworks, derivedVlanText, endL2, endNetworks, endTagText, interfaceAddresses, interfaceVlans, isBridgePort, lagOf, networkMembers, portBadgeText, portL2, portRuns, subinterfaceParent, tagMismatch, tagMismatchText, vlanPortsByMode, vlanRangesText } from '../model/derive';
+import { SNOOPING_KEY, hasSnooping, unsetSnoopingVlans } from '../model/snooping';
 import { Capabilities, ROUTE_DEVICE_TYPES, capabilities, deviceRoutingRole, isLayer2Switch, relationNeedsLayer3, layer3Option, DeviceLike, ROUTING_PROTOCOL_TYPES } from '../model/capabilities';
 import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
@@ -1078,6 +1079,8 @@ export class Editor {
       for (const x of this.applianceGroups(base, index)) w.appendChild(x);
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
+      const snoop = this.snoopingGroup(base, index);
+      if (snoop) w.appendChild(snoop);
       const svcs = this.netServicesGroup(base, index);
       if (svcs) w.appendChild(svcs);
       const dnsc = this.dnsClientGroup(base);
@@ -1324,6 +1327,51 @@ export class Editor {
   }
 
   /**
+   * A switch's IGMP / MLD snooping (`igmp_mld_snooping`), its own
+   * configuration: one choice per VLAN its ports carry — Not configured (an
+   * error until chosen), Enabled or Disabled — beside what each means. A
+   * range written in the file is one row; VLANs without a choice are listed
+   * as runs. Another device that has the key gets it listed to remove.
+   */
+  private snoopingGroup(base: Path, devIndex: number): HTMLElement | null {
+    const doc = this.doc;
+    const type = doc.text(base.concat('type')) || '';
+    const node = doc.get(base.concat(SNOOPING_KEY));
+    const model = doc.result.model;
+    const devId = doc.text(base.concat('id')) || '';
+    const dev = model && devId ? model.index.devices.get(devId) : undefined;
+    if (!hasSnooping({ type, layer3: doc.text(base.concat('layer3')) === 'true' })) {
+      if (!node) return null;
+      return this.group('IGMP / MLD snooping', [this.e('p', { class: 'field-err' }, ['Only switches snoop IGMP / MLD: remove igmp_mld_snooping here (in the YAML tab), or change what the device is.'])], 'snooping');
+    }
+    const rows: Array<{ key: string; value: string }> = [];
+    if (node && node.kind === 'map') node.entries.forEach((e, k) => rows.push({ key: k, value: e.value.kind === 'scalar' ? String(e.value.value) : '' }));
+    // the VLANs of its ports without a choice, as runs (a choice on a run writes the run)
+    const unset = dev ? unsetSnoopingVlans(dev) : [];
+    for (const run of vlanRangesText(unset).split(',').filter((x) => x)) rows.push({ key: run, value: '' });
+    const first = (k: string): number => Number(k.split('-')[0]) || 0;
+    rows.sort((a, b) => first(a.key) - first(b.key));
+    const kids: HTMLElement[] = [];
+    kids.push(this.e('p', { class: 'help', id: `snoop-help-${devIndex}` }, ['Per VLAN its ports carry, for IGMP (IPv4) and MLD (IPv6) together. Enabled: a group goes only to ports where a member reported it, and to multicast router ports — never flooded when nobody did. Disabled: multicast is flooded in the VLAN. Not configured is an error until you choose.']));
+    if (!rows.length) kids.push(this.e('p', { class: 'muted small' }, ['Its ports carry no VLAN yet: give them their VLANs first.']));
+    for (const r of rows) {
+      const shown = r.key.replace('-', '–');
+      const sel = this.e('select', { id: `snoop-${devIndex}-${r.key}`, 'data-t': 'snooping', 'data-index': String(devIndex), 'data-key': r.key, 'data-p': J(base.concat(SNOOPING_KEY, r.key)), 'aria-describedby': `snoop-help-${devIndex}` }) as HTMLSelectElement;
+      sel.appendChild(this.e('option', { value: '' }, ['Not configured — choose']));
+      sel.appendChild(this.e('option', { value: 'enabled' }, ['Enabled']));
+      sel.appendChild(this.e('option', { value: 'disabled' }, ['Disabled']));
+      if (r.value && r.value !== 'enabled' && r.value !== 'disabled') sel.appendChild(this.e('option', { value: r.value }, [r.value + ' (invalid)']));
+      sel.value = r.value;
+      if (!r.value) sel.classList.add('unset', 'invalid');
+      const f = this.e('div', { class: 'field snoop-row', 'data-p': J(base.concat(SNOOPING_KEY, r.key)) }, [this.e('label', { for: `snoop-${devIndex}-${r.key}` }, [`VLAN ${shown}`]), sel]);
+      if (!r.value) f.appendChild(this.e('div', { class: 'field-err' }, [`VLAN ${shown}: no IGMP / MLD snooping choice — choose Enabled or Disabled.`]));
+      for (const is of doc.issuesAt(base.concat(SNOOPING_KEY, r.key))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      kids.push(f);
+    }
+    return this.group('IGMP / MLD snooping', kids, 'snooping');
+  }
+
+  /**
    * A device's routing services (its `protocols:`). Only Layer 3+ devices
    * have the section; on another device enabled protocols are listed so
    * they can be removed. Each enabled protocol shows its parameters at the
@@ -1351,7 +1399,7 @@ export class Editor {
       sel.appendChild(og);
       sel.classList.add('unset');
       const f = this.field('Enable a protocol', sel, []);
-      f.appendChild(this.e('p', { class: 'help', id: `l3-why-${devIndex}` }, [`Routing protocols, multicast routing and VRRP / HSRP require Layer 3: tick Supports Layer 3 above. Its Layer 2 protocols (STP, LACP, LLDP, IGMP / MLD snooping) and management routes need nothing more.`]));
+      f.appendChild(this.e('p', { class: 'help', id: `l3-why-${devIndex}` }, [`Routing protocols, multicast routing and VRRP / HSRP require Layer 3: tick Supports Layer 3 above. Its Layer 2 protocols (STP, LACP, LLDP) and management routes need nothing more; IGMP / MLD snooping is its own section.`]));
       kids.push(f);
       return this.group('Protocols (routing services)', kids, 'protocols');
     }
@@ -3075,7 +3123,7 @@ export class Editor {
     return this.simSection({ path: p, device: dev, at: ifaceRef(dev, ifId), idBase: 'if-' + dev + '-' + ifId, what: 'this interface', name: `${dev}:${ifId}` }, defs);
   }
 
-  /** A network's Simulation subsection: its VLAN's (snooping, the snooping querier, fast leave …), for every switch carrying it. */
+  /** A network's Simulation subsection: its VLAN's (the snooping querier, fast leave), for every switch carrying it (snooping itself is each switch's own configuration). */
   vlanSimSection(netIndex: number): HTMLElement | null {
     const doc = this.getDoc();
     if (!doc) return null;
@@ -3083,7 +3131,7 @@ export class Editor {
     const vlan = Number(doc.text(p.concat('vlan')));
     if (!vlan) return null;
     const defs = vlanAttributes(this.writtenSim(p));
-    return this.simSection({ path: p, device: undefined, at: vlanRef(vlan), idBase: 'net-' + netIndex, what: `VLAN ${vlan}`, name: `VLAN ${vlan}`, note: `For every switch carrying VLAN ${vlan}; a switch's own setting is the default where none is set here.` }, defs);
+    return this.simSection({ path: p, device: undefined, at: vlanRef(vlan), idBase: 'net-' + netIndex, what: `VLAN ${vlan}`, name: `VLAN ${vlan}`, note: `For every switch carrying VLAN ${vlan}. IGMP / MLD snooping itself is each switch's configuration (its IGMP / MLD snooping section).` }, defs);
   }
 
   /** A relation's Simulation subsection: a session's, a tunnel's, a redundancy group's or a service's (its pool) attributes. */
@@ -4570,6 +4618,12 @@ export class Editor {
         const box = target as HTMLInputElement;
         doc.setSepDirection(p, target.getAttribute('data-from') as string, target.getAttribute('data-to') as string, box.checked);
         note = box.checked ? `${target.getAttribute('data-from')} → ${target.getAttribute('data-to')} is a permitted direction now (its rules say what may pass).` : `${target.getAttribute('data-from')} → ${target.getAttribute('data-to')} is no longer permitted: nothing passes that way.`;
+        break;
+      }
+      case 'snooping': {
+        const key = target.getAttribute('data-key') as string;
+        doc.setSnooping(Number(target.getAttribute('data-index')), key, val as '' | 'enabled' | 'disabled');
+        note = `IGMP / MLD snooping of VLAN ${key.replace('-', '–')}: ${val || 'not configured (an error until chosen)'}.`;
         break;
       }
       case 'text':

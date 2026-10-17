@@ -93,6 +93,7 @@ devices:
     protocols:
       ospf: {}
       vrrp: {}
+    igmp_mld_snooping: {100: enabled, 200: enabled}
     interfaces:
       - {id: Et1}
       - {id: Et2}
@@ -113,6 +114,7 @@ devices:
     group: hq
     protocols:
       vrrp: {}
+    igmp_mld_snooping: {100: enabled, 200: enabled}
     interfaces:
       - {id: Et1}
       - {id: Et2}
