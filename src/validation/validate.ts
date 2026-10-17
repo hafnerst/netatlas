@@ -21,6 +21,8 @@ import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader,
 import { isVm } from '../model/virtual';
 import { readServiceBlock, checkServices, ServiceNodes } from './services';
 import { AppNodes, checkApplications } from './applications';
+import { checkRaPrefixes, readIpv6 } from './ipv6';
+import { ipConfigured } from '../model/ipv6';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -528,6 +530,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
       };
+      // its IPv6 method and, a router's, its router advertisements
+      readIpv6(r, c, im, ipath, iface, dev);
+      checkRaPrefixes(c, iface, im, ipath);
       // settings per interface of services the device enables (a VRRP group …)
       const ip = get(im, 'protocols');
       if (!isNull(ip)) iface.services = readServices(r, c, ip as YNode, ipath + '.protocols', services, 'interface', id, [], dev);
@@ -1414,9 +1419,10 @@ function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: s
     if (capabilities(dev).switchFeatures && !lag && !configured(i)) {
       c.error(a.node, a.path + '.vlans', `"${i.id}" of switch "${dev.id}" needs its VLANs: one VLAN (an access port) or several (a trunk)${dev.layer3 ? ', or "routed: true" for a routed port' : ''}`, { key: 'vlans' });
     }
-    if (cfg.vlans.length && (i.addresses.length || i.dhcp)) {
-      const ipN = get(a.node, i.dhcp ? 'ipv4' : 'ip') as YNode;
-      c.error(ipN, `${a.path}.${i.dhcp ? 'ipv4' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
+    if (cfg.vlans.length && ipConfigured(i)) {
+      const key = i.dhcp ? 'ipv4' : i.addresses.length ? 'ip' : i.ra ? 'ipv6_ra' : 'ipv6';
+      const ipN = get(a.node, key) as YNode;
+      c.error(ipN, `${a.path}.${key}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : key === 'ip' ? 'the address' : key === 'ipv6_ra' ? 'its router advertisements' : 'its IPv6 configuration'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
     }
   }
   for (const g of dev.logical) {
@@ -1643,7 +1649,7 @@ function layer2SwitchRules(c: Ctx, m: YMap, dpath: string, dev: Device): void {
   const ridNode = get(m, 'router_id');
   if (ridNode && !isNull(ridNode)) c.error(ridNode as YNode, dpath + '.router_id', `"${dev.id}" is a Layer 2 switch: it has no router ID (${fix})`);
   const all = deviceInterfaces(dev);
-  const addressed = all.filter((i) => i.addresses.length || i.dhcp);
+  const addressed = all.filter((i) => ipConfigured(i));
   const mgmt = addressed[0];
   for (const i of addressed.slice(1)) {
     const at = nodeOf(i);

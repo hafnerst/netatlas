@@ -32,6 +32,7 @@
  */
 import { ServiceRegistry, usesRouterId } from './services';
 import { interfaceAddresses, interfaceVlanText, interfaceVlans } from './derive';
+import { autoIpv6 } from './ipv6';
 import { parseAddress, parsePrefix } from './ip';
 import { compareNames, sortedByName } from './order';
 import { Attrs, Device, Interface, Model, Route, routeKey } from './types';
@@ -122,6 +123,13 @@ function listLines(head: string, items: string[]): string[] {
  */
 export const LEASE_PLACEHOLDER = 'lease: assigned in a simulation';
 
+/**
+ * The line of an interface with automatic IPv6 (SLAAC, DHCPv6): reserved as
+ * wide as the longest status a simulation writes there (its address and
+ * where it came from, "SLAAC pending", "DHCPv6 pending", "duplicate address").
+ */
+export const IPV6_PLACEHOLDER = 'IPv6 automatic: learned in a simulation (SLAAC/DHCPv6)';
+
 /** A lease as the diagram writes it ("10.1.1.50/24 (DHCP lease)"; a link-local fallback says so). */
 export function leaseText(addr: string, kind: 'dhcp' | 'link-local'): string {
   return kind === 'link-local' ? `${addr} (link-local)` : `${addr} (DHCP lease)`;
@@ -153,12 +161,18 @@ function l3Lines(model: Model, i: Interface): Array<[string, LineField]> {
   const out: Array<[string, LineField]> = tags.length ? [[tags.join(' · '), { field: tagField, value: '' }]] : [];
   // a DHCP client's address is leased at runtime: its line is reserved here (a simulation writes the lease into it)
   const lease: Array<[string, LineField]> = i.dhcp ? [[LEASE_PLACEHOLDER, { field: 'lease', value: '' }]] : [];
+  // automatic IPv6: its line is reserved here (a simulation writes its address or its state into it)
+  const v6: Array<[string, LineField]> = autoIpv6(i.ipv6) ? [[IPV6_PLACEHOLDER, { field: 'ipv6', value: '' }]] : [];
   const relay: Array<[string, LineField]> = i.dhcpRelay && i.dhcpRelay.length ? [[`DHCP relay → ${i.dhcpRelay.join(', ')}`, { field: 'dhcp_relay', value: '' }]] : [];
+  // a router's advertisements: the prefixes it advertises
+  const ra: Array<[string, LineField]> = i.ra ? [[`RA ${i.ra.prefixes.join(', ') || '(no prefix)'}`, { field: 'ipv6_ra', value: '' }]] : [];
   return out.concat(
     lease,
+    v6,
     orderedAddresses(i.addresses).map((a): [string, LineField] => [a, { field: 'ip', value: a }]),
     gatewayLines(model, i),
     relay,
+    ra,
   );
 }
 

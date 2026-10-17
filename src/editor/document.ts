@@ -640,6 +640,7 @@ export class ModelDoc {
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
     const ik = ifaceSchemaKind(path);
     if (ik) return ik;
+    if (path.length === 5 && path[4] === 'ipv6_ra' && ifaceSchemaKind(path.slice(0, 4))) return 'ipv6Ra';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';

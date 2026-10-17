@@ -42,6 +42,7 @@ import { parsePrefix, IpAddr } from '../../model/ip';
 import { Device, Interface, Link, LinkEnd, Model, PortGroup, deviceInterfaces, ifaceKey } from '../../model/types';
 import { cnetRef, clusterMembers, networkAttachments, portGroupAttachments, portGroupL2, portGroupOf, virtBridgeId, virtLinkId, vswitchRef, isVm } from '../../model/virtual';
 import { networkOf } from '../ipmath';
+import { ipConfigured } from '../../model/ipv6';
 import { IfaceMac, interfaceMacs } from './mac';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -109,6 +110,8 @@ export interface L3Iface {
   ports: string[];
   mac: string;
   macSimulated: boolean;
+  /** its IPv6 link-local address once duplicate address detection passed (an interface with automatic IPv6 or router advertisements; ipv6.ts) */
+  ll?: SimAddr;
 }
 
 export interface SimDevice {
@@ -327,13 +330,13 @@ export function buildNet(model: Model): SimNet {
       }
       if (i.type === 'virtual' && i.members.length) {
         // a routed aggregate (no VLANs): one layer-3 interface over its members
-        if (!bridgeKind(i.id) && (addrs.length || i.dhcp || routedPort(i.id) || !bridge)) sd.l3.set(i.id, { ...base, kind: 'aggregate', vlan: 0, ports: i.members.slice().sort(cmp) });
+        if (!bridgeKind(i.id) && (addrs.length || ipConfigured(i) || routedPort(i.id) || !bridge)) sd.l3.set(i.id, { ...base, kind: 'aggregate', vlan: 0, ports: i.members.slice().sort(cmp) });
         continue;
       }
       if (i.type === 'virtual') {
         const vs = interfaceVlans(model, i);
         const vlan = vs.length ? vs[0] : 0;
-        if (!addrs.length && !i.dhcp) continue;
+        if (!addrs.length && !ipConfigured(i)) continue;
         const parent = subinterfaceParent(model, i);
         if (parent !== undefined) {
           // a subinterface ("ge-0/0/2.10"): its VLAN 802.1Q-tagged on its port (an aggregate: on its members)
@@ -346,7 +349,7 @@ export function buildNet(model: Model): SimNet {
       }
       // a physical port: routed (a router's port without VLANs, a Layer 3 switch's routed port), or on a device that does not bridge
       if (memberOf.has(i.id)) continue;
-      if (routedPort(i.id) || ((addrs.length || i.dhcp) && !bridgeKind(i.id)) || !bridge) sd.l3.set(i.id, { ...base, kind: 'routed', vlan: 0, ports: [i.id] });
+      if (routedPort(i.id) || ((addrs.length || ipConfigured(i)) && !bridgeKind(i.id)) || !bridge) sd.l3.set(i.id, { ...base, kind: 'routed', vlan: 0, ports: [i.id] });
     }
     if (bridge) {
       // bridge ports: cabled ports without addresses; an aggregate without addresses is one port

@@ -546,11 +546,15 @@ export class NetServicesSim {
 
   // ------------------------------------------------------------ DNS: the resolver
 
-  /** The DNS servers of a host: its lease's, else its configured ones. */
+  /** the DNS servers a host learned for IPv6 (router advertisements, DHCPv6; ipv6.ts) */
+  v6Dns: ((dev: string) => IpAddr[]) | null = null;
+
+  /** The DNS servers of a host: its lease's, else its configured ones; then those it learned for IPv6. */
   dnsServers(dev: string): IpAddr[] {
-    for (const l of this.P.e.leases.values()) if (l.dev === dev && l.dns.length) return l.dns.slice();
+    const learned = this.v6Dns ? this.v6Dns(dev) : [];
+    for (const l of this.P.e.leases.values()) if (l.dev === dev && l.dns.length) return l.dns.concat(learned);
     const d = this.P.m.index.devices.get(dev);
-    return d && d.dnsServers ? d.dnsServers.map((x) => parseAddress(x) as IpAddr) : [];
+    return (d && d.dnsServers ? d.dnsServers.map((x) => parseAddress(x) as IpAddr) : []).concat(learned);
   }
 
   /**

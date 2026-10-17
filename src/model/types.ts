@@ -1,6 +1,7 @@
 /** Validated, typed network model produced from the YAML input. */
 import type { ServiceRegistry } from './services';
 import type { AppInstance } from './applications';
+import type { Ipv6Method, RaConfig } from './ipv6';
 
 /**
  * How a logical relation is drawn. Protocols are open-ended; categories are the
@@ -133,8 +134,12 @@ export interface Interface {
    * may obtain is known, so it is in no network until an address is written.
    */
   dhcp: boolean;
-  /** manually configured addresses; always empty when `dhcp` is true in a valid model */
+  /** manually configured addresses (IPv4 and IPv6); no IPv4 one when `dhcp` is true in a valid model */
   addresses: string[];
+  /** how it gets its IPv6 addresses (`ipv6:`, model/ipv6.ts): static when it has IPv6 addresses and nothing is written; none without */
+  ipv6?: Ipv6Method;
+  /** a router interface's IPv6 router advertisements (`ipv6_ra:`), when written */
+  ra?: RaConfig;
   /** name of the VRF this interface is assigned to (display only) */
   vrf?: string;
   mac?: string;

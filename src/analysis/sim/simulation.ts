@@ -8,6 +8,7 @@
 import { CUSTOM_SUPPORT, SimGroup, simProfile } from '../../model/sim-profiles';
 import type { Support } from '../../model/support';
 import { serviceDef } from '../../model/service-registry';
+import { autoIpv6, ipConfigured } from '../../model/ipv6';
 import { Model } from '../../model/types';
 import { capabilities } from '../../model/capabilities';
 import { snoopingChoice, switchedVlans } from '../../model/snooping';
@@ -25,6 +26,7 @@ import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
 import { AppSim } from './apps';
 import { MqttSim } from './mqtt';
+import { Ipv6Sim } from './ipv6';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
@@ -55,6 +57,7 @@ const ENTRY_SUPPORT: { [id: string]: Support } = {
   udp: { level: 'modeled', does: 'Datagrams to open ports and their answers; ICMP port unreachable from a closed port.', not: 'payload contents.' },
   demand: { level: 'modeled', does: 'Each demand’s packets along the path routing gives it, rerouted after failures.', not: 'bandwidth: no link is loaded or congested.' },
   mcast: { level: 'modeled', does: 'Each stream’s datagrams, replicated by snooping switches and multicast routing to the members.', not: 'bandwidth and rate limits.' },
+  dhcpv6: { level: 'modeled', does: 'Stateful (Solicit, Advertise, Request, Reply; Renew at T1, Rebind at T2, expiry) and stateless (Information-request, Reply) DHCPv6 between a client and a server on its link, with DNS servers and duplicate address detection of the address.', not: 'prefix delegation, relay agents, Decline and Release, DUID types other than DUID-LL, authentication.' },
 };
 
 /** The support of an entry of the setup's list: its profile's, else the traffic's (custom: drawn only). */
@@ -191,6 +194,8 @@ export class Simulation {
   readonly apps: AppSim;
   /** MQTT: the brokers and their clients (mqtt.ts) */
   readonly mqtt: MqttSim;
+  /** IPv6 host configuration: link-local addresses, router discovery, SLAAC, DAD, DHCPv6 (ipv6.ts) */
+  readonly ipv6: Ipv6Sim;
 
   constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
@@ -207,6 +212,8 @@ export class Simulation {
     this.multicast.realtime = this.realtime;
     this.multicast.install();
     this.netsvc = new NetServicesSim(this.protocols);
+    this.ipv6 = new Ipv6Sim(this.protocols);
+    this.netsvc.v6Dns = (d) => this.ipv6.dnsServers(d);
     this.transport = new Transport(this.protocols);
     this.transport.multicast = this.multicast;
     this.transport.netsvc = this.netsvc;
@@ -1044,9 +1051,11 @@ export class Simulation {
         const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
         const dhcp = !!mi && !!mi.dhcp;
         const at = this.attachment(d.id, l.id);
+        // automatic IPv6: its state in a few words (SLAAC pending, DHCPv6 pending, an address, no default router …)
+        const v6 = this.ipv6.status(d.id, l.id);
         if (!dhcp) {
           if (!l.addrs.length) {
-            ifaces.push({ id: l.id, dhcp: false, ready: false, usable: false, label: `${l.id} - No IP address`, status: 'no IP address' });
+            ifaces.push({ id: l.id, dhcp: false, ready: false, usable: false, label: `${l.id} - ${v6 || 'No IP address'}`, status: v6 || 'no IP address' });
             continue;
           }
           ifaces.push({ id: l.id, dhcp: false, ready: true, usable: true, label: `${l.id} - ${l.addrs.map((a) => formatAddr(a.addr)).join(', ')}`, bcast: bcastOf(l.addrs), status: `${l.addrs.map((a) => a.text).join(', ')}${at ? ' · ' + at : ''}` });
@@ -1071,7 +1080,7 @@ export class Simulation {
           status = `link-local ${lease.addr.text} (no DHCP server answered: only its own segment)`;
         } else status = `DHCP: no lease yet (${cs ? DHCP_STATE[cs.state] || cs.state : 'not started'}): a test waits for it`;
         const label = lease ? `${l.id} - ${formatAddr(lease.addr.addr)} (${lease.kind === 'dhcp' ? 'DHCP' : 'link-local'})` : `${l.id} - No DHCP lease`;
-        ifaces.push({ id: l.id, dhcp: true, ready, usable: true, label, bcast: lease ? bcastOf([lease.addr]) : undefined, status: status + (at ? ' · ' + at : '') });
+        ifaces.push({ id: l.id, dhcp: true, ready, usable: true, label, bcast: lease ? bcastOf([lease.addr]) : undefined, status: status + (v6 ? ' · IPv6: ' + v6 : '') + (at ? ' · ' + at : '') });
       }
       const usable = ifaces.filter((i) => i.usable);
       if (!usable.length) {
@@ -1205,11 +1214,11 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   const ifs = (d: Model['devices'][number]): Model['devices'][number]['interfaces'] => d.interfaces.concat(d.logical);
   for (const d of model.devices) {
     // (a DHCP client too: it has its address once leased)
-    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && (i.addresses.length || i.dhcp));
+    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && ipConfigured(i));
     if (!addrs.length) continue;
     add('arp', 'ARP', 'Layer 2', 'device', d.id);
     add('garp', 'Gratuitous ARP', 'Layer 2', 'device', d.id);
-    if (addrs.some((i) => i.addresses.some((a) => a.indexOf(':') >= 0))) add('ndp', 'NDP', 'Layer 2', 'device', d.id);
+    if (addrs.some((i) => i.addresses.some((a) => a.indexOf(':') >= 0) || autoIpv6(i.ipv6) || !!i.ra)) add('ndp', 'NDP', 'Layer 2', 'device', d.id);
   }
   for (const r of model.relations) {
     const p = relationProfile(model, r);
@@ -1225,8 +1234,16 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   for (const dm of model.demands) add('demand', 'Demands (data)', 'Traffic', 'demand', dm.id);
   // Layer 3 and 4: ICMP (echo, errors), TCP and UDP (tests, health checks, probes): every addressed device can send them
   for (const d of model.devices) {
-    if (!ifs(d).some((i) => i.addresses.length || i.dhcp)) continue;
+    if (!ifs(d).some((i) => ipConfigured(i))) continue;
     for (const [id, label] of [['icmp', 'ICMP / ICMPv6'], ['tcp', 'TCP (tests)'], ['udp', 'UDP (tests)']]) add(id, label, 'Traffic', 'device', d.id);
+  }
+  // DHCPv6: its servers (a scope on an IPv6 network) and clients
+  for (const d of model.devices) {
+    const v6scope = !!d.netServices && !!d.netServices.dhcp && d.netServices.dhcp.scopes.some((s) => {
+      const n = s.network ? model.networks.find((x) => x.id === s.network) : undefined;
+      return !!n && !!n.cidr && n.cidr.indexOf(':') >= 0;
+    });
+    if (v6scope || ifs(d).some((i) => i.ipv6 === 'dhcpv6' || i.ipv6 === 'slaac_dhcpv6' || (i.ipv6 === 'slaac' && model.devices.some((r) => ifs(r).some((x) => !!x.ra && x.ra.other))))) add('dhcpv6', 'DHCPv6', 'Services', 'device', d.id);
   }
   // MQTT: its brokers and clients
   for (const d of model.devices) {

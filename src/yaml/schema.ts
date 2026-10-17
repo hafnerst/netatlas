@@ -74,9 +74,11 @@ export const SCHEMA = {
   dnsZone: ['name', 'records', 'simulation'],
   dnsRecord: ['name', 'type', 'value'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  interface: ['id', 'label', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  /** a router interface's IPv6 router advertisements (`ipv6_ra:`) */
+  ipv6Ra: ['prefixes', 'dns', 'managed', 'other', 'autonomous', 'router_lifetime', 'interval', 'preferred_lifetime', 'valid_lifetime', 'dns_lifetime'],
   /** an interface's `multicast:` block, a group it joins written as a mapping, a stream it sends */
   multicast: ['join', 'streams'],
   mcJoin: ['group', 'sources'],

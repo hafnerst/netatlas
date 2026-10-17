@@ -325,7 +325,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     needs: systemHost,
     params: [
       { key: 'port', label: 'Listener port', type: 'port', ...PORT, help: 'The TCP port its clients connect to (1883, the IANA port without TLS, if empty).', placeholder: '1883' },
-      { key: 'retry_interval', label: 'QoS 1 retry interval', type: 'duration', advanced: true, help: 'A QoS 1 delivery without PUBACK is sent again (DUP) after this, within the connection (a modelling default of 20 s if empty).', placeholder: '20s' },
+      { key: 'retry_interval', label: 'QoS 1 retry interval', type: 'duration', advanced: true, help: 'A QoS 1 delivery without PUBACK goes again (DUP) after this (empty: 20 s, a default).', placeholder: '20s' },
     ],
   },
   {

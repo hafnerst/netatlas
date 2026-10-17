@@ -147,7 +147,7 @@ export type MenuItem = { label: string; act: () => void };
 
 /** The tables of a device the simulation panel can show (the status side's tabs). */
 type DevTable = Exclude<TableKind, 'packet'>;
-const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients' };
+const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6' };
 
 /** An interval in seconds as the form has it: "1 s", "0.25 s". */
 function secText(sec: number): string {
@@ -1285,6 +1285,17 @@ export class SimController implements SimulationMode {
     // MQTT: a broker's sessions, a device's clients
     if (this.sim.mqtt.brokers.has(dev)) out.push('mqtt');
     if (this.sim.mqtt.clients.some((c) => c.run.dev === dev)) out.push('mqttc');
+    if (this.sim.ipv6.hasTable(dev)) out.push('ipv6');
+    return out;
+  }
+
+  /** Automatic IPv6 as the diagram writes it into the interfaces' reserved lines. */
+  ipv6Marks(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const h of this.sim.ipv6.hosts.values()) {
+      const m = this.sim.ipv6.mark(h.dev, h.iface);
+      if (m) out.set(`iface:${h.dev}:${h.iface}`, m);
+    }
     return out;
   }
 
@@ -1324,6 +1335,7 @@ export class SimController implements SimulationMode {
     if (kind === 'dnszone') return () => this.sim.dnsZoneGrid(dev);
     if (kind === 'mqtt') return () => this.sim.mqttBrokerTable(dev);
     if (kind === 'mqttc') return () => this.sim.mqttClientTable(dev);
+    if (kind === 'ipv6') return () => this.sim.ipv6.table(dev);
     if (kind === 'arp') return () => ({ v4: this.sim.arpTable(dev), v6: this.sim.ndTable(dev), timers: this.sim.arpTimers(dev), scale: this.sim.timerScale });
     if (kind === 'mac') return () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale });
     if (kind === 'conn') return () => ({ rows: this.sim.connTable(dev), listening: this.sim.transport.listening(dev).text });
@@ -1471,13 +1483,13 @@ export class SimController implements SimulationMode {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       const tabs = this.deviceTables(dev);
-      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone', mqtt: 'Show MQTT sessions', mqttc: 'Show MQTT clients' };
+      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone', mqtt: 'Show MQTT sessions', mqttc: 'Show MQTT clients', ipv6: 'Show IPv6 configuration' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
       // multicast: a host's memberships, a router's IGMP / MLD groups and multicast routes, a switch's snooping table
       for (const k of ['members', 'igmp', 'querier', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
-      for (const k of ['dhcp', 'dnszone', 'dnscache', 'mqtt', 'mqttc'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      for (const k of ['ipv6', 'dhcp', 'dnszone', 'dnscache', 'mqtt', 'mqttc'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
       else items.push({ label: 'Use as sender', act: () => void this.setSender(dev, true) });
       const sdv = this.sim.engine.net.devices.get(dev);
