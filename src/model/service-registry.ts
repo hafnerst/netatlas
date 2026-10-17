@@ -22,6 +22,7 @@
  */
 import { Capabilities, DeviceLike, capabilities } from './capabilities';
 import { DEVICE_TYPE_IDS, deviceTypeLabel } from './device-types';
+import type { Support } from './support';
 
 /** What a parameter holds, as written. */
 export type SvcParamType =
@@ -91,6 +92,8 @@ export interface SvcDef {
   lists?: SvcList[];
   /** read and edited by its own code (DHCP, DNS, the Hypervisor, the Container engine, the VPN gateway, Domain separation, Wireless access) */
   custom?: boolean;
+  /** what NetAtlas does with it: drawn, checked, or simulated, and what it leaves out (model/support.ts) */
+  support: Support;
 }
 
 const SERVERS = ['server', 'vm', 'container'];
@@ -107,6 +110,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'DHCP server',
     badge: 'DHCP',
     help: 'Leases addresses to the clients of its scopes.',
+    support: { level: 'modeled', does: 'Leases from its scopes: DISCOVER, OFFER, REQUEST and ACK, relays, renewal, rebinding and expiry.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82.' },
     types: ['router', 'switch', 'firewall', ...SERVERS],
     needs: l3Switch,
     params: [],
@@ -117,6 +121,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'DNS server',
     badge: 'DNS',
     help: 'Answers queries for its zones; a router or firewall as a forwarder.',
+    support: { level: 'modeled', does: 'Answers A and AAAA queries from its zones (the model’s DNS names and its own records), follows CNAMEs, asks its forwarders.', not: 'DNSSEC, zone transfers, TCP fallback.' },
     types: ['router', 'firewall', ...SERVERS],
     needs: routedFirewall,
     params: [],
@@ -127,6 +132,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'NTP',
     badge: 'NTP',
     help: 'Serves time: its own stratum, or what it takes from its upstreams.',
+    support: { level: 'modeled', does: 'Serves time on UDP 123 (its stratum, or one more than its upstream’s) and asks its upstreams at the poll interval; whether it is synchronized follows from their answers.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
     types: ['router', 'switch', 'firewall', 'server', 'vm', 'system'],
     needs: systemHost,
     params: [
@@ -139,6 +145,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'AAA',
     badge: 'AAA',
     help: 'Authenticates its clients by RADIUS or TACACS+.',
+    support: { level: 'modeled', does: 'Its clients send authentication requests at a demonstration interval and get an answer (reachability and policy apply).', not: 'credentials and the shared secret are not checked; no accounting.' },
     types: SERVERS,
     params: [
       { key: 'protocol', label: 'Protocol', type: 'enum', required: true, options: [{ id: 'radius', label: 'RADIUS' }, { id: 'tacacs', label: 'TACACS+' }], help: 'RADIUS (UDP 1812) or TACACS+ (TCP 49).' },
@@ -151,6 +158,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Syslog collector',
     badge: 'LOG',
     help: 'Collects log messages from its senders.',
+    support: { level: 'modeled', does: 'Its senders send log messages at a demonstration interval (one way; reachability and policy apply).', not: 'message contents, severities and facilities.' },
     types: [...SERVERS, 'system'],
     needs: systemHost,
     params: [
@@ -164,6 +172,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Monitoring',
     badge: 'MON',
     help: 'Probes its targets by ICMP and polls them by SNMP.',
+    support: { level: 'modeled', does: 'ICMP probes and SNMP polls of its targets, with their intervals and timeouts, and each target’s up or down state.', not: 'MIB contents, traps, thresholds.' },
     types: [...SERVERS, 'system'],
     needs: systemHost,
     params: [
@@ -177,6 +186,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Proxy',
     badge: 'PRX',
     help: 'Ends client connections and opens its own to the upstream.',
+    support: { level: 'modeled', does: 'Ends each client connection and opens its own to the upstream (a full TCP proxy), with its connect and client timeouts.', not: 'caching, HTTP semantics, TLS inspection.' },
     types: [...SERVERS, 'firewall'],
     needs: routedFirewall,
     params: [
@@ -191,6 +201,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Load balancing',
     badge: 'LB',
     help: 'Spreads a virtual service over its healthy backends.',
+    support: { level: 'modeled', does: 'Spreads connections over its healthy backends by its algorithm, with health checks, persistence and source NAT.', not: 'layer 7 rules, TLS offload.' },
     types: ['load_balancer', ...SERVERS],
     builtIn: ['load_balancer'],
     params: [
@@ -206,6 +217,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'VPN gateway',
     badge: 'VPN',
     help: 'Ends site-to-site tunnels or remote-access clients.',
+    support: { level: 'configured', does: 'Its tunnels, remote-access pool and protected networks are checked; it forwards only to and from them. The tunnels’ own sessions are the IPsec / WireGuard / OpenVPN relations’.', not: 'remote-access client logins and their key exchange.' },
     types: ['vpn_gateway', 'router', 'firewall', 'server', 'vm'],
     needs: routedFirewall,
     builtIn: ['vpn_gateway'],
@@ -218,6 +230,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'NAT',
     badge: 'NAT',
     help: 'Translates addresses between its inside and outside interfaces.',
+    support: { level: 'modeled', does: 'PAT, source NAT and destination NAT (port forwarding) between its inside and outside interfaces, with the translations for the replies.', not: 'ALGs, hairpinning, port-block allocation.' },
     types: ['router', 'switch', 'firewall', 'load_balancer', 'vpn_gateway', 'vm', 'system'],
     needs: (c) => (!c.l3Forward ? 'NAT is a Layer 3 forwarder’s: it routes nothing' : null),
     params: [
@@ -246,6 +259,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Wireless access',
     badge: 'WIFI',
     help: 'Its Wi-Fi networks, each bridged to its VLAN.',
+    support: { level: 'modeled', does: 'Each Wi-Fi network bridged to its VLAN, client association (its time), beacons and the idle timeout.', not: 'radio propagation, interference, roaming, the security handshake.' },
     types: ['ap', 'router'],
     builtIn: ['ap'],
     required: true,
@@ -257,6 +271,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Wireless controller',
     badge: 'WLC',
     help: 'Manages access points (CAPWAP control).',
+    support: { level: 'modeled', does: 'The CAPWAP control channel to its access points (echo requests at the RFC 5415 interval).', not: 'firmware and radio management (channels, power).' },
     types: ['server', 'vm', 'system'],
     needs: systemHost,
     params: [{ key: 'aps', label: 'Managed access points', type: 'devices', required: true, help: 'The access points it manages (each in Controller-managed mode).' }],
@@ -266,6 +281,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Hypervisor',
     badge: 'HV',
     help: 'Runs VMs on its virtual switches.',
+    support: { level: 'modeled', does: 'Its virtual switches with port groups and teaming, uplink failover, VMs powered with their host and restarted by HA.', not: 'live migration traffic, resource scheduling.' },
     types: ['server'],
     params: [],
     custom: true,
@@ -275,6 +291,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Container engine',
     badge: 'CTR',
     help: 'Runs containers on its container networks.',
+    support: { level: 'modeled', does: 'Its container networks (bridge with NAT, host, macvlan, ipvlan, overlay), published ports and container start and restart.', not: 'orchestration, service discovery, overlay encapsulation details.' },
     types: ['server', 'vm'],
     params: [],
     custom: true,
@@ -284,6 +301,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Storage service',
     badge: 'STOR',
     help: 'Serves storage by NFS, SMB or iSCSI.',
+    support: { level: 'configured', does: 'Its protocols are checked and their ports (NFS 2049, SMB 445, iSCSI 3260) are open in the simulation, so tests and applications reach them.', not: 'NFS, SMB and iSCSI themselves.' },
     types: ['storage', 'server', 'vm'],
     params: [
       {
@@ -302,6 +320,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Applications',
     badge: 'APP',
     help: 'Its applications: listeners, clients, periodic messages, MQTT clients.',
+    support: { level: 'modeled', does: 'Each application’s profile: listeners, TCP and UDP clients, periodic messages, MQTT clients (see each profile).', not: 'payload contents and application semantics: a name such as Modbus TCP labels it only.' },
     types: [...SERVERS, 'storage', 'system', 'endpoint'],
     needs: hostOnly,
     params: [],
@@ -312,6 +331,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Inspection',
     badge: 'IPS',
     help: 'Inspects what passes: blocks inline, alerts passively.',
+    support: { level: 'modeled', does: 'Traffic matching its block list is dropped inline or alerted on passively, with its inspection latency and fail-open or fail-closed.', not: 'signatures and protocol decoding beyond ports.' },
     types: ['ids_ips'],
     builtIn: ['ids_ips'],
     params: [{ key: 'block', label: 'Block / alert on', type: 'portlist', help: 'Traffic it acts on (tcp/23, udp/69, icmp): inline it drops it, passive it alerts.', placeholder: 'tcp/23' }],
@@ -321,6 +341,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Domain separation',
     badge: 'SEP',
     help: 'Transfers between its two domains only what its policy permits.',
+    support: { level: 'modeled', does: 'Only permitted transfers cross, by its implementation: a filtering bridge, a filtering router, or a protocol break with its transfer profiles.', not: 'content inspection of what it transfers.' },
     types: ['security_gateway'],
     builtIn: ['security_gateway'],
     required: true,

@@ -20,6 +20,8 @@
  * "default" in the event log when the model writes nothing.
  */
 
+import type { Support } from './support';
+
 export type SimGroup = 'Layer 2' | 'Routing' | 'Redundancy' | 'Tunnels and overlays' | 'Services' | 'Custom';
 export const SIM_GROUPS: readonly SimGroup[] = ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Services', 'Custom'];
 
@@ -75,6 +77,8 @@ export interface SimProfile {
   label: string;
   group: SimGroup;
   behaviour: SimBehaviour;
+  /** what the simulation does for it, and what it leaves out (model/support.ts; filled from SUPPORT below) */
+  support?: Support;
   messages: SimMessage[];
   /** how its messages travel: protocol / port, unicast or multicast address, a handshake */
   transport: string;
@@ -963,8 +967,55 @@ export function customProfile(id: string, label: string): SimProfile {
     states: ['Sending'],
     failure: 'Packets are lost where the way is broken.',
     restore: 'Packets pass again.',
+    support: CUSTOM_SUPPORT,
   };
 }
+
+/**
+ * What the simulation does for each built-in protocol, by its behaviour,
+ * with a protocol's own statement where it differs. Every built-in
+ * protocol has a behaviour of the engine, so each is modeled within the
+ * stated scope; a protocol of the model's own (customProfile) is drawn
+ * only, whatever demonstration packets it sends.
+ */
+const SESSION_NOT = 'payload contents and cryptographic operations; the protocol’s own negotiation is reduced to its profile’s handshake.';
+const BY_BEHAVIOUR: { [b: string]: Support } = {
+  arp: { level: 'modeled', does: 'Requests, replies and the ARP table with its timers are simulated before IPv4 unicast.', not: 'proxy ARP, ARP inspection.' },
+  ndp: { level: 'modeled', does: 'Neighbor Solicitation and Advertisement and the neighbour states (INCOMPLETE … PROBE) are simulated before IPv6 unicast.', not: 'SEND, proxy NDP. Router discovery, SLAAC and duplicate address detection are the interfaces’ IPv6 configuration.' },
+  garp: { level: 'modeled', does: 'Announcements when an interface comes up and when a redundancy group’s master changes are simulated.', not: 'ARP inspection or conflict handling beyond the log.' },
+  stp: { level: 'modeled', does: 'A spanning tree per VLAN blocks loops; ports converge with the RSTP or STP timers and BPDUs are shown.', not: 'the tree is computed from the topology, not negotiated BPDU by BPDU; no MSTP regions.' },
+  advert: { level: 'modeled', does: 'Periodic advertisements and each neighbour entry with its hold time are simulated.', not: 'their TLV contents.' },
+  lacp: { level: 'modeled', does: 'LACPDUs on every member, bundling and min-links are simulated.', not: 'system and port priorities, keys, fast timers.' },
+  ospf: { level: 'modeled', does: 'Hellos, the adjacency states up to Full (DBD, LSR, LSU, LSAck), their timers and the flooding after a change are simulated; routes come from the adjacencies that are up.', not: 'LSA contents field by field, area types, authentication.' },
+  isis: { level: 'modeled', does: 'Hellos, the adjacency states and their timers are simulated; routes come from the adjacencies that are up.', not: 'LSPs field by field, levels’ details, authentication.' },
+  eigrp: { level: 'modeled', does: 'Hellos, Updates, the neighbour states with their hold time, and Queries and Replies when a neighbour is lost are simulated; routes come from the adjacencies that are up.', not: 'DUAL’s feasibility computation, metrics from bandwidth and delay.' },
+  rip: { level: 'modeled', does: 'Requests, periodic and triggered Responses and the neighbour timeout are simulated; routes come from the neighbours that are heard.', not: 'the table’s entries field by field (metrics, route tags).' },
+  bgp: { level: 'modeled', does: 'The TCP session, OPEN, KEEPALIVE, the hold timer and UPDATEs are simulated; routes come from the sessions that are up.', not: 'path attributes and policies (local preference, communities), route reflection, authentication.' },
+  ldp: { level: 'modeled', does: 'Hellos, the session and its label mapping messages are simulated.', not: 'label-switched forwarding: traffic follows the IP path.' },
+  pim: { level: 'modeled', does: 'Hellos with the DR election, Join/Prune, Register, the RP’s Bootstrap announcement, the RPF check and multicast forwarding (sparse, SSM, dense) are simulated.', not: 'an election among BSR candidates (the RP is configured), Auto-RP, asserts.' },
+  igmp: { level: 'modeled', does: 'Reports, leaves, queries, the querier election and switches’ snooping per VLAN are simulated.', not: 'IGMP proxying.' },
+  bfd: { level: 'modeled', does: 'Control packets and the detection time are simulated; a session down takes its client protocols down.', not: 'echo mode, authentication.' },
+  fhrp: { level: 'modeled', does: 'The election, advertisements, the virtual MAC and failover with a gratuitous ARP are simulated.', not: 'object tracking, load sharing details.' },
+  ike: { level: 'modeled', does: 'IKEv2 exchanges, SA lifetimes, rekeying and dead peer detection are simulated; traffic is carried in ESP.', not: 'cryptographic operations: proposals, keys and authentication are not checked.' },
+  session: { level: 'modeled', does: 'Session establishment (its profile’s handshake), keepalives and the dead interval are simulated; traffic is encapsulated where the profile has a header.', not: SESSION_NOT },
+  data: { level: 'modeled', does: 'Traffic is encapsulated in its header along the relation and decapsulated at the far end.', not: 'a control plane of its own (learning, signalling).' },
+  service: { level: 'modeled', does: 'Requests (and their answers) cross the network at a demonstration interval between the relation’s ends: reachability, firewall policy and closed ports apply.', not: 'message contents and the server’s application logic.' },
+  'dhcp-server': { level: 'modeled', does: 'DISCOVER, OFFER, REQUEST and ACK, relays, leases with renewal, rebinding and expiry are simulated from the servers’ scopes.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82.' },
+};
+const BY_PROTOCOL: { [id: string]: Support } = {
+  dns: { level: 'modeled', does: 'A relation’s demonstration queries cross the network; name resolution itself (A / AAAA, CNAME, forwarders, the resolver cache) is simulated from the DNS servers’ zones.', not: 'DNSSEC, TCP fallback, recursion beyond the model’s servers.' },
+  ntp: { level: 'modeled', does: 'Client requests and server responses at the poll interval; the clients’ synchronization state (synchronized, unsynchronized) and the servers’ stratum follow from them.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
+  https: { level: 'modeled', does: 'TCP connections with requests and answers at a demonstration interval are simulated (the TLS handshake is part of the connection’s time).', not: 'TLS itself: certificates and encryption are not checked.' },
+  stp: BY_BEHAVIOUR.stp,
+};
+for (const p of SIM_PROFILES) p.support = BY_PROTOCOL[p.id] || BY_BEHAVIOUR[p.behaviour];
+
+/** What a protocol of the model's own gets: drawn, with demonstration packets of its name. */
+export const CUSTOM_SUPPORT: Support = {
+  level: 'drawn',
+  does: 'Its relations are drawn; in the simulation it only sends demonstration packets of its name between the endpoints.',
+  not: 'its messages, states and timers (they are unknown to NetAtlas).',
+};
 
 const BY_ID = new Map(SIM_PROFILES.map((p) => [p.id, p] as [string, SimProfile]));
 

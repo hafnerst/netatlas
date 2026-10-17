@@ -1146,6 +1146,15 @@ details.card.app-card > .adv-section, details.card.app-card > .app-actions, deta
 .adv-section > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 3px 0; }
 .adv-section > .field { margin: 4px 0; }
 .app-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+/* what NetAtlas does for a protocol, service or profile (model/support.ts): closed until opened */
+.support-note { margin: 2px 0 6px; font-size: 12px; }
+.support-note > summary { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; color: var(--muted); list-style: none; border-radius: 4px; padding: 0 2px; }
+.support-note > summary::-webkit-details-marker { display: none; }
+.support-note > summary:hover { color: var(--text); }
+.support-note[data-support="drawn"] > summary, .support-note[data-support="configured"] > summary { font-style: italic; }
+.support-note .sup-i { font-style: normal; }
+.support-note > p { margin: 3px 0 0 4px; overflow-wrap: anywhere; }
+.support-note .sup-key { font-weight: 600; }
 .legend-badge { font-size: 11px; font-weight: 600; fill: var(--text); letter-spacing: 0.02em; }
 .sep-dirs { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .chips-ed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
@@ -1309,6 +1318,7 @@ table.sim-table tr[data-kind="wait"] td:nth-child(5), table.sim-table tr[data-ki
 .pp-item input { flex: none; width: 16px; height: 16px; margin: 0; }
 .pp-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .pp-uses { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pp-fid { flex: none; font-size: 11px; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; padding: 0 5px; }
 .psecs-title { flex: 1 1 auto; margin: 0; font-size: 13.5px; }
 .psecs-note { flex-basis: 100%; margin: 0; }
 .psec-caret { display: inline-block; width: 1.1em; color: var(--muted); transition: transform 0.12s; }
@@ -14230,6 +14240,7 @@ exports.SERVICES = [
         label: 'DHCP server',
         badge: 'DHCP',
         help: 'Leases addresses to the clients of its scopes.',
+        support: { level: 'modeled', does: 'Leases from its scopes: DISCOVER, OFFER, REQUEST and ACK, relays, renewal, rebinding and expiry.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82.' },
         types: ['router', 'switch', 'firewall', ...SERVERS],
         needs: l3Switch,
         params: [],
@@ -14240,6 +14251,7 @@ exports.SERVICES = [
         label: 'DNS server',
         badge: 'DNS',
         help: 'Answers queries for its zones; a router or firewall as a forwarder.',
+        support: { level: 'modeled', does: 'Answers A and AAAA queries from its zones (the model’s DNS names and its own records), follows CNAMEs, asks its forwarders.', not: 'DNSSEC, zone transfers, TCP fallback.' },
         types: ['router', 'firewall', ...SERVERS],
         needs: routedFirewall,
         params: [],
@@ -14250,6 +14262,7 @@ exports.SERVICES = [
         label: 'NTP',
         badge: 'NTP',
         help: 'Serves time: its own stratum, or what it takes from its upstreams.',
+        support: { level: 'modeled', does: 'Serves time on UDP 123 (its stratum, or one more than its upstream’s) and asks its upstreams at the poll interval; whether it is synchronized follows from their answers.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
         types: ['router', 'switch', 'firewall', 'server', 'vm', 'system'],
         needs: systemHost,
         params: [
@@ -14262,6 +14275,7 @@ exports.SERVICES = [
         label: 'AAA',
         badge: 'AAA',
         help: 'Authenticates its clients by RADIUS or TACACS+.',
+        support: { level: 'modeled', does: 'Its clients send authentication requests at a demonstration interval and get an answer (reachability and policy apply).', not: 'credentials and the shared secret are not checked; no accounting.' },
         types: SERVERS,
         params: [
             { key: 'protocol', label: 'Protocol', type: 'enum', required: true, options: [{ id: 'radius', label: 'RADIUS' }, { id: 'tacacs', label: 'TACACS+' }], help: 'RADIUS (UDP 1812) or TACACS+ (TCP 49).' },
@@ -14274,6 +14288,7 @@ exports.SERVICES = [
         label: 'Syslog collector',
         badge: 'LOG',
         help: 'Collects log messages from its senders.',
+        support: { level: 'modeled', does: 'Its senders send log messages at a demonstration interval (one way; reachability and policy apply).', not: 'message contents, severities and facilities.' },
         types: [...SERVERS, 'system'],
         needs: systemHost,
         params: [
@@ -14287,6 +14302,7 @@ exports.SERVICES = [
         label: 'Monitoring',
         badge: 'MON',
         help: 'Probes its targets by ICMP and polls them by SNMP.',
+        support: { level: 'modeled', does: 'ICMP probes and SNMP polls of its targets, with their intervals and timeouts, and each target’s up or down state.', not: 'MIB contents, traps, thresholds.' },
         types: [...SERVERS, 'system'],
         needs: systemHost,
         params: [
@@ -14300,6 +14316,7 @@ exports.SERVICES = [
         label: 'Proxy',
         badge: 'PRX',
         help: 'Ends client connections and opens its own to the upstream.',
+        support: { level: 'modeled', does: 'Ends each client connection and opens its own to the upstream (a full TCP proxy), with its connect and client timeouts.', not: 'caching, HTTP semantics, TLS inspection.' },
         types: [...SERVERS, 'firewall'],
         needs: routedFirewall,
         params: [
@@ -14314,6 +14331,7 @@ exports.SERVICES = [
         label: 'Load balancing',
         badge: 'LB',
         help: 'Spreads a virtual service over its healthy backends.',
+        support: { level: 'modeled', does: 'Spreads connections over its healthy backends by its algorithm, with health checks, persistence and source NAT.', not: 'layer 7 rules, TLS offload.' },
         types: ['load_balancer', ...SERVERS],
         builtIn: ['load_balancer'],
         params: [
@@ -14329,6 +14347,7 @@ exports.SERVICES = [
         label: 'VPN gateway',
         badge: 'VPN',
         help: 'Ends site-to-site tunnels or remote-access clients.',
+        support: { level: 'configured', does: 'Its tunnels, remote-access pool and protected networks are checked; it forwards only to and from them. The tunnels’ own sessions are the IPsec / WireGuard / OpenVPN relations’.', not: 'remote-access client logins and their key exchange.' },
         types: ['vpn_gateway', 'router', 'firewall', 'server', 'vm'],
         needs: routedFirewall,
         builtIn: ['vpn_gateway'],
@@ -14341,6 +14360,7 @@ exports.SERVICES = [
         label: 'NAT',
         badge: 'NAT',
         help: 'Translates addresses between its inside and outside interfaces.',
+        support: { level: 'modeled', does: 'PAT, source NAT and destination NAT (port forwarding) between its inside and outside interfaces, with the translations for the replies.', not: 'ALGs, hairpinning, port-block allocation.' },
         types: ['router', 'switch', 'firewall', 'load_balancer', 'vpn_gateway', 'vm', 'system'],
         needs: (c) => (!c.l3Forward ? 'NAT is a Layer 3 forwarder’s: it routes nothing' : null),
         params: [
@@ -14369,6 +14389,7 @@ exports.SERVICES = [
         label: 'Wireless access',
         badge: 'WIFI',
         help: 'Its Wi-Fi networks, each bridged to its VLAN.',
+        support: { level: 'modeled', does: 'Each Wi-Fi network bridged to its VLAN, client association (its time), beacons and the idle timeout.', not: 'radio propagation, interference, roaming, the security handshake.' },
         types: ['ap', 'router'],
         builtIn: ['ap'],
         required: true,
@@ -14380,6 +14401,7 @@ exports.SERVICES = [
         label: 'Wireless controller',
         badge: 'WLC',
         help: 'Manages access points (CAPWAP control).',
+        support: { level: 'modeled', does: 'The CAPWAP control channel to its access points (echo requests at the RFC 5415 interval).', not: 'firmware and radio management (channels, power).' },
         types: ['server', 'vm', 'system'],
         needs: systemHost,
         params: [{ key: 'aps', label: 'Managed access points', type: 'devices', required: true, help: 'The access points it manages (each in Controller-managed mode).' }],
@@ -14389,6 +14411,7 @@ exports.SERVICES = [
         label: 'Hypervisor',
         badge: 'HV',
         help: 'Runs VMs on its virtual switches.',
+        support: { level: 'modeled', does: 'Its virtual switches with port groups and teaming, uplink failover, VMs powered with their host and restarted by HA.', not: 'live migration traffic, resource scheduling.' },
         types: ['server'],
         params: [],
         custom: true,
@@ -14398,6 +14421,7 @@ exports.SERVICES = [
         label: 'Container engine',
         badge: 'CTR',
         help: 'Runs containers on its container networks.',
+        support: { level: 'modeled', does: 'Its container networks (bridge with NAT, host, macvlan, ipvlan, overlay), published ports and container start and restart.', not: 'orchestration, service discovery, overlay encapsulation details.' },
         types: ['server', 'vm'],
         params: [],
         custom: true,
@@ -14407,6 +14431,7 @@ exports.SERVICES = [
         label: 'Storage service',
         badge: 'STOR',
         help: 'Serves storage by NFS, SMB or iSCSI.',
+        support: { level: 'configured', does: 'Its protocols are checked and their ports (NFS 2049, SMB 445, iSCSI 3260) are open in the simulation, so tests and applications reach them.', not: 'NFS, SMB and iSCSI themselves.' },
         types: ['storage', 'server', 'vm'],
         params: [
             {
@@ -14425,6 +14450,7 @@ exports.SERVICES = [
         label: 'Applications',
         badge: 'APP',
         help: 'Its applications: listeners, clients, periodic messages, MQTT clients.',
+        support: { level: 'modeled', does: 'Each application’s profile: listeners, TCP and UDP clients, periodic messages, MQTT clients (see each profile).', not: 'payload contents and application semantics: a name such as Modbus TCP labels it only.' },
         types: [...SERVERS, 'storage', 'system', 'endpoint'],
         needs: hostOnly,
         params: [],
@@ -14435,6 +14461,7 @@ exports.SERVICES = [
         label: 'Inspection',
         badge: 'IPS',
         help: 'Inspects what passes: blocks inline, alerts passively.',
+        support: { level: 'modeled', does: 'Traffic matching its block list is dropped inline or alerted on passively, with its inspection latency and fail-open or fail-closed.', not: 'signatures and protocol decoding beyond ports.' },
         types: ['ids_ips'],
         builtIn: ['ids_ips'],
         params: [{ key: 'block', label: 'Block / alert on', type: 'portlist', help: 'Traffic it acts on (tcp/23, udp/69, icmp): inline it drops it, passive it alerts.', placeholder: 'tcp/23' }],
@@ -14444,6 +14471,7 @@ exports.SERVICES = [
         label: 'Domain separation',
         badge: 'SEP',
         help: 'Transfers between its two domains only what its policy permits.',
+        support: { level: 'modeled', does: 'Only permitted transfers cross, by its implementation: a filtering bridge, a filtering router, or a protocol break with its transfer profiles.', not: 'content inspection of what it transfers.' },
         types: ['security_gateway'],
         builtIn: ['security_gateway'],
         required: true,
@@ -17845,14 +17873,29 @@ exports.appSummary = appSummary;
 exports.topicFilterProblem = topicFilterProblem;
 exports.topicNameProblem = topicNameProblem;
 exports.topicMatches = topicMatches;
+const TCP_SUPPORT = {
+    level: 'modeled',
+    does: 'Connections (the three-way handshake, retransmission, FIN) with a request and its answer of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports apply.',
+    not: 'payload contents and application semantics: a name such as Modbus TCP labels it, nothing of Modbus is simulated.',
+};
+const UDP_SUPPORT = {
+    level: 'modeled',
+    does: 'Datagrams (and their answers, for request/response) of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports (ICMP port unreachable) apply.',
+    not: 'payload contents and application semantics: a label names the application, its protocol is not simulated.',
+};
+const MQTT_SUPPORT = {
+    level: 'modeled',
+    does: 'MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection.',
+    not: 'QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents.',
+};
 exports.APP_PROFILES = [
-    { id: 'tcp_server', label: 'TCP listener (request/response)', short: 'TCP listener', help: 'Accepts TCP connections on its port and answers each request.', transport: 'tcp', listener: true, client: false, answered: false, peerProfiles: [] },
-    { id: 'tcp_client', label: 'TCP client (request/response)', short: 'TCP request/response', help: 'Connects to its peer, sends a request and waits for the answer.', transport: 'tcp', listener: false, client: true, answered: true, peerProfiles: ['tcp_server'] },
-    { id: 'udp_server', label: 'UDP listener (request/response)', short: 'UDP listener', help: 'Answers each datagram that arrives on its port.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [] },
-    { id: 'udp_client', label: 'UDP client (request/response)', short: 'UDP request/response', help: 'Sends a request datagram to its peer and waits for the answer.', transport: 'udp', listener: false, client: true, answered: true, peerProfiles: ['udp_server'] },
-    { id: 'udp_receiver', label: 'UDP receiver (one-way)', short: 'UDP receiver', help: 'Takes datagrams on its port and answers none.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [] },
-    { id: 'udp_sender', label: 'Periodic UDP messages (one-way)', short: 'UDP messages', help: 'Sends a datagram to its peer every interval; nothing comes back.', transport: 'udp', listener: false, client: true, answered: false, peerProfiles: ['udp_receiver', 'udp_server'] },
-    { id: 'mqtt_client', label: 'MQTT client (publish / subscribe)', short: 'MQTT', help: 'An MQTT 3.1.1 client of a broker: publishes to its topics and receives what matches its subscriptions.', transport: 'tcp', listener: false, client: true, answered: false, peerProfiles: [], port: 1883 },
+    { id: 'tcp_server', label: 'TCP listener (request/response)', short: 'TCP listener', help: 'Accepts TCP connections on its port and answers each request.', transport: 'tcp', listener: true, client: false, answered: false, peerProfiles: [], support: TCP_SUPPORT },
+    { id: 'tcp_client', label: 'TCP client (request/response)', short: 'TCP request/response', help: 'Connects to its peer, sends a request and waits for the answer.', transport: 'tcp', listener: false, client: true, answered: true, peerProfiles: ['tcp_server'], support: TCP_SUPPORT },
+    { id: 'udp_server', label: 'UDP listener (request/response)', short: 'UDP listener', help: 'Answers each datagram that arrives on its port.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [], support: UDP_SUPPORT },
+    { id: 'udp_client', label: 'UDP client (request/response)', short: 'UDP request/response', help: 'Sends a request datagram to its peer and waits for the answer.', transport: 'udp', listener: false, client: true, answered: true, peerProfiles: ['udp_server'], support: UDP_SUPPORT },
+    { id: 'udp_receiver', label: 'UDP receiver (one-way)', short: 'UDP receiver', help: 'Takes datagrams on its port and answers none.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [], support: UDP_SUPPORT },
+    { id: 'udp_sender', label: 'Periodic UDP messages (one-way)', short: 'UDP messages', help: 'Sends a datagram to its peer every interval; nothing comes back.', transport: 'udp', listener: false, client: true, answered: false, peerProfiles: ['udp_receiver', 'udp_server'], support: UDP_SUPPORT },
+    { id: 'mqtt_client', label: 'MQTT client (publish / subscribe)', short: 'MQTT', help: 'An MQTT 3.1.1 client of a broker: publishes to its topics and receives what matches its subscriptions.', transport: 'tcp', listener: false, client: true, answered: false, peerProfiles: [], port: 1883, support: MQTT_SUPPORT },
 ];
 function appProfile(id) {
     return exports.APP_PROFILES.find((p) => p.id === id);
@@ -28520,7 +28563,7 @@ __defs["model/sim-profiles"] = function (module, exports) {
  * "default" in the event log when the model writes nothing.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAC_AGING_DEFAULT = exports.ND_DELAY_DEFAULT = exports.ND_RETRIES_DEFAULT = exports.ND_RETRANS_DEFAULT = exports.NDP_REACHABLE_DEFAULT = exports.ARP_TIMEOUT_DEFAULT = exports.SIM_PROFILES = exports.SERVICE_DEMO = exports.SIM_GROUPS = void 0;
+exports.MAC_AGING_DEFAULT = exports.ND_DELAY_DEFAULT = exports.ND_RETRIES_DEFAULT = exports.ND_RETRANS_DEFAULT = exports.NDP_REACHABLE_DEFAULT = exports.ARP_TIMEOUT_DEFAULT = exports.CUSTOM_SUPPORT = exports.SIM_PROFILES = exports.SERVICE_DEMO = exports.SIM_GROUPS = void 0;
 exports.customProfile = customProfile;
 exports.simProfile = simProfile;
 exports.timerDefault = timerDefault;
@@ -29380,8 +29423,54 @@ function customProfile(id, label) {
         states: ['Sending'],
         failure: 'Packets are lost where the way is broken.',
         restore: 'Packets pass again.',
+        support: exports.CUSTOM_SUPPORT,
     };
 }
+/**
+ * What the simulation does for each built-in protocol, by its behaviour,
+ * with a protocol's own statement where it differs. Every built-in
+ * protocol has a behaviour of the engine, so each is modeled within the
+ * stated scope; a protocol of the model's own (customProfile) is drawn
+ * only, whatever demonstration packets it sends.
+ */
+const SESSION_NOT = 'payload contents and cryptographic operations; the protocol’s own negotiation is reduced to its profile’s handshake.';
+const BY_BEHAVIOUR = {
+    arp: { level: 'modeled', does: 'Requests, replies and the ARP table with its timers are simulated before IPv4 unicast.', not: 'proxy ARP, ARP inspection.' },
+    ndp: { level: 'modeled', does: 'Neighbor Solicitation and Advertisement and the neighbour states (INCOMPLETE … PROBE) are simulated before IPv6 unicast.', not: 'SEND, proxy NDP. Router discovery, SLAAC and duplicate address detection are the interfaces’ IPv6 configuration.' },
+    garp: { level: 'modeled', does: 'Announcements when an interface comes up and when a redundancy group’s master changes are simulated.', not: 'ARP inspection or conflict handling beyond the log.' },
+    stp: { level: 'modeled', does: 'A spanning tree per VLAN blocks loops; ports converge with the RSTP or STP timers and BPDUs are shown.', not: 'the tree is computed from the topology, not negotiated BPDU by BPDU; no MSTP regions.' },
+    advert: { level: 'modeled', does: 'Periodic advertisements and each neighbour entry with its hold time are simulated.', not: 'their TLV contents.' },
+    lacp: { level: 'modeled', does: 'LACPDUs on every member, bundling and min-links are simulated.', not: 'system and port priorities, keys, fast timers.' },
+    ospf: { level: 'modeled', does: 'Hellos, the adjacency states up to Full (DBD, LSR, LSU, LSAck), their timers and the flooding after a change are simulated; routes come from the adjacencies that are up.', not: 'LSA contents field by field, area types, authentication.' },
+    isis: { level: 'modeled', does: 'Hellos, the adjacency states and their timers are simulated; routes come from the adjacencies that are up.', not: 'LSPs field by field, levels’ details, authentication.' },
+    eigrp: { level: 'modeled', does: 'Hellos, Updates, the neighbour states with their hold time, and Queries and Replies when a neighbour is lost are simulated; routes come from the adjacencies that are up.', not: 'DUAL’s feasibility computation, metrics from bandwidth and delay.' },
+    rip: { level: 'modeled', does: 'Requests, periodic and triggered Responses and the neighbour timeout are simulated; routes come from the neighbours that are heard.', not: 'the table’s entries field by field (metrics, route tags).' },
+    bgp: { level: 'modeled', does: 'The TCP session, OPEN, KEEPALIVE, the hold timer and UPDATEs are simulated; routes come from the sessions that are up.', not: 'path attributes and policies (local preference, communities), route reflection, authentication.' },
+    ldp: { level: 'modeled', does: 'Hellos, the session and its label mapping messages are simulated.', not: 'label-switched forwarding: traffic follows the IP path.' },
+    pim: { level: 'modeled', does: 'Hellos with the DR election, Join/Prune, Register, the RP’s Bootstrap announcement, the RPF check and multicast forwarding (sparse, SSM, dense) are simulated.', not: 'an election among BSR candidates (the RP is configured), Auto-RP, asserts.' },
+    igmp: { level: 'modeled', does: 'Reports, leaves, queries, the querier election and switches’ snooping per VLAN are simulated.', not: 'IGMP proxying.' },
+    bfd: { level: 'modeled', does: 'Control packets and the detection time are simulated; a session down takes its client protocols down.', not: 'echo mode, authentication.' },
+    fhrp: { level: 'modeled', does: 'The election, advertisements, the virtual MAC and failover with a gratuitous ARP are simulated.', not: 'object tracking, load sharing details.' },
+    ike: { level: 'modeled', does: 'IKEv2 exchanges, SA lifetimes, rekeying and dead peer detection are simulated; traffic is carried in ESP.', not: 'cryptographic operations: proposals, keys and authentication are not checked.' },
+    session: { level: 'modeled', does: 'Session establishment (its profile’s handshake), keepalives and the dead interval are simulated; traffic is encapsulated where the profile has a header.', not: SESSION_NOT },
+    data: { level: 'modeled', does: 'Traffic is encapsulated in its header along the relation and decapsulated at the far end.', not: 'a control plane of its own (learning, signalling).' },
+    service: { level: 'modeled', does: 'Requests (and their answers) cross the network at a demonstration interval between the relation’s ends: reachability, firewall policy and closed ports apply.', not: 'message contents and the server’s application logic.' },
+    'dhcp-server': { level: 'modeled', does: 'DISCOVER, OFFER, REQUEST and ACK, relays, leases with renewal, rebinding and expiry are simulated from the servers’ scopes.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82.' },
+};
+const BY_PROTOCOL = {
+    dns: { level: 'modeled', does: 'A relation’s demonstration queries cross the network; name resolution itself (A / AAAA, CNAME, forwarders, the resolver cache) is simulated from the DNS servers’ zones.', not: 'DNSSEC, TCP fallback, recursion beyond the model’s servers.' },
+    ntp: { level: 'modeled', does: 'Client requests and server responses at the poll interval; the clients’ synchronization state (synchronized, unsynchronized) and the servers’ stratum follow from them.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
+    https: { level: 'modeled', does: 'TCP connections with requests and answers at a demonstration interval are simulated (the TLS handshake is part of the connection’s time).', not: 'TLS itself: certificates and encryption are not checked.' },
+    stp: BY_BEHAVIOUR.stp,
+};
+for (const p of exports.SIM_PROFILES)
+    p.support = BY_PROTOCOL[p.id] || BY_BEHAVIOUR[p.behaviour];
+/** What a protocol of the model's own gets: drawn, with demonstration packets of its name. */
+exports.CUSTOM_SUPPORT = {
+    level: 'drawn',
+    does: 'Its relations are drawn; in the simulation it only sends demonstration packets of its name between the endpoints.',
+    not: 'its messages, states and timers (they are unknown to NetAtlas).',
+};
 const BY_ID = new Map(exports.SIM_PROFILES.map((p) => [p.id, p]));
 /** The profile of a built-in protocol (by its base id), or undefined. */
 function simProfile(id) {
@@ -33305,6 +33394,8 @@ const helpers_2 = __req("analysis/helpers");
 const icons_1 = __req("diagram/icons");
 const service_registry_1 = __req("model/service-registry");
 const applications_1 = __req("model/applications");
+const sim_profiles_1 = __req("model/sim-profiles");
+const support_note_1 = __req("ui/support-note");
 /** The attributes that find a control of the Edit tab or the outline again after a render. */
 const BACK_ATTRS = ['data-act', 'data-t', 'data-kind', 'data-index', 'data-p', 'data-svc'];
 const J = (p) => JSON.stringify(p);
@@ -34378,8 +34469,11 @@ class Editor {
                 .concat(this.ids('protocol'))
                 .filter((x) => !l2 || !(0, capabilities_1.relationNeedsLayer3)(rm ? (0, protocols_1.protocolBase)(rm.protocols, x) : x, ((0, protocols_1.builtinProtocols)().get(x) || { category: '' }).category));
             g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+            const pname = doc.text(base.concat('protocol'));
+            const pprof = pname && rm ? (0, sim_profiles_1.simProfile)((0, protocols_1.protocolBase)(rm.protocols, pname)) : undefined;
             g('Protocol', [
                 this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'),
+                pname ? (0, support_note_1.supportNote)(this.d, pprof && pprof.support ? pprof.support : sim_profiles_1.CUSTOM_SUPPORT, pprof ? pprof.label : pname) : null,
                 this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, '(from protocol)'),
                 this.directionField(base.concat('direction')),
             ], 'protocol');
@@ -34406,7 +34500,8 @@ class Editor {
         }
         else if (kind === 'protocol') {
             g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-            g('Drawing', [this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, types_1.LINE_STYLES, '(from category)')], 'drawing');
+            const own = (0, sim_profiles_1.simProfile)((0, protocols_1.normalizeProtocol)(doc.text(base.concat('id')) || ''));
+            g('Drawing', [this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, types_1.LINE_STYLES, '(from category)'), (0, support_note_1.supportNote)(this.d, own && own.support ? own.support : sim_profiles_1.CUSTOM_SUPPORT, doc.text(base.concat('label')) || doc.text(base.concat('id')) || 'this protocol')], 'drawing');
             // a protocol of the model as a routing service devices can enable
             const pm = doc.result.model;
             const pid = doc.text(base.concat('id')) || '';
@@ -35670,7 +35765,7 @@ class Editor {
             const on = !!doc.get(sp.concat(id));
             const cb = this.e('input', { type: 'checkbox', id: `svc-${id}-${devIndex}`, 'data-act': 'netsvc', 'data-svc': id, 'data-index': String(devIndex), title });
             cb.checked = on;
-            return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label])]);
+            return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label]), on ? (0, support_note_1.supportNote)(this.d, (0, service_registry_1.serviceDef)(id).support, label) : null]);
         };
         if (may('dhcp') || doc.get(sp.concat('dhcp')))
             kids.push(box('dhcp', 'DHCP server', 'Leases addresses to the DHCP clients of its scopes’ networks'));
@@ -35801,7 +35896,11 @@ class Editor {
         if (prm.key === 'profile') {
             const sel = this.labelledSelect(fp, o, applications_1.APP_PROFILES.map((x) => [x.id, x.label]), 'Select a profile');
             sel.setAttribute('data-t', 'app-profile');
-            return this.field(label, sel, fp, ((0, applications_1.appProfile)(doc.text(fp)) || { help: prm.help }).help);
+            const prof = (0, applications_1.appProfile)(doc.text(fp));
+            const f = this.field(label, sel, fp, (prof || { help: prm.help }).help);
+            if (prof)
+                f.appendChild((0, support_note_1.supportNote)(this.d, prof.support, prof.label));
+            return f;
         }
         if (prm.key === 'peer') {
             // the listeners of the other devices this profile can talk to, then the devices
@@ -35863,7 +35962,7 @@ class Editor {
             this.e('span', { class: 'svc-name' }, [def.label + (builtIn ? ' (built in)' : '')]),
             builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': def.id, 'data-index': String(devIndex), title: `Remove ${def.label}`, 'aria-label': `Remove ${def.label}` }, ['×']),
         ]);
-        const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help])]);
+        const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help]), (0, support_note_1.supportNote)(this.d, def.support, def.label)]);
         if (!doc.get(p)) {
             card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-block', 'data-p': J(p), 'data-what': def.label + ' configuration' }, [`+ Configure ${def.label}`])]));
             return card;
@@ -35939,6 +36038,7 @@ class Editor {
                 builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'wireless', 'data-index': String(devIndex), title: 'Remove Wireless access', 'aria-label': 'Remove Wireless access' }, ['×']),
             ]),
             this.e('p', { class: 'help' }, ['Each Wi-Fi network is bridged to its own VLAN; they share the radio and the uplink.']),
+            (0, support_note_1.supportNote)(this.d, (0, service_registry_1.serviceDef)('wireless').support, 'Wireless access'),
         ]);
         if (!doc.get(p)) {
             card.appendChild(this.e('p', { class: 'field-err' }, ['It needs its Wi-Fi networks: none is chosen for it.']));
@@ -36926,6 +37026,7 @@ class Editor {
             const vpnBuiltIn = (0, service_registry_1.isBuiltIn)((0, service_registry_1.serviceDef)('vpn'), this.likeAt(base));
             if (!vpnBuiltIn)
                 kids.unshift(this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, ['A service of this device']), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'vpn', 'data-index': String(devIndex), title: 'Remove the VPN gateway', 'aria-label': 'Remove the VPN gateway' }, ['×'])]));
+            kids.push((0, support_note_1.supportNote)(this.d, (0, service_registry_1.serviceDef)('vpn').support, 'VPN gateway'));
             out.push(this.group(vpnBuiltIn ? 'VPN gateway (built in)' : 'VPN gateway', kids, 'vpn'));
         }
         // the other built-in functions: an access point's Wireless access, a load balancer's Load balancing, an IDS/IPS's Inspection
@@ -37037,6 +37138,7 @@ class Editor {
             isel.classList.add('unset');
         const def = types_1.SEPARATION_IMPLEMENTATIONS.find((x) => x.id === impl);
         kids.push(this.field('Implementation *', isel, sp.concat('implementation'), def ? def.help : types_1.SEPARATION_IMPLEMENTATIONS.map((x) => `${x.label}: ${x.help}`).join(' ')));
+        kids.push((0, support_note_1.supportNote)(this.d, (0, service_registry_1.serviceDef)('separation').support, 'Domain separation'));
         // the two domains
         const dl = doc.get(sp.concat('domains'));
         const nd = dl && dl.kind === 'seq' ? dl.items.length : 0;
@@ -41817,6 +41919,72 @@ function scopeSuggestions(model, networkId) {
     if (a <= h.last && b - a >= 1)
         out.range.push({ value: `${v4(a)}-${v4(b)}`, label: `${v4(a)}–${v4(b)}`, title: `${b - a + 1} addresses of ${n.id} no interface of the model has` });
     return out;
+}
+
+};
+__defs["ui/support-note"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.supportNote = supportNote;
+/**
+ * What NetAtlas does for a protocol, service or profile, where it is chosen
+ * or configured: a compact disclosure ("ⓘ Modeled behavior") that opens to
+ * two short lines, what is simulated or checked and what is not
+ * (model/support.ts). A native <details>: keyboard operable, announced as a
+ * disclosure, closed until it is opened. Never a warning on every action.
+ */
+const support_1 = __req("model/support");
+const dom_1 = __req("ui/dom");
+function supportNote(doc, s, name) {
+    return (0, dom_1.el)(doc, 'details', { class: 'support-note', 'data-support': s.level }, [
+        (0, dom_1.el)(doc, 'summary', { title: (0, support_1.supportText)(s), 'aria-label': `${name}: ${(0, support_1.supportLabel)(s.level)} (what NetAtlas simulates)` }, [(0, dom_1.el)(doc, 'span', { class: 'sup-i', 'aria-hidden': 'true' }, ['ⓘ']), ' ', (0, support_1.supportLabel)(s.level)]),
+        (0, dom_1.el)(doc, 'p', { class: 'sup-does' }, [s.does]),
+        (0, dom_1.el)(doc, 'p', { class: 'sup-not' }, [(0, dom_1.el)(doc, 'span', { class: 'sup-key' }, ['Not modeled: ']), s.not]),
+    ]);
+}
+
+};
+__defs["model/support"] = function (module, exports) {
+"use strict";
+/**
+ * What NetAtlas actually does for a protocol, a service or a profile: one
+ * of three levels, with a short statement of what is simulated and what is
+ * not. The definitions themselves carry it (model/sim-profiles.ts for the
+ * protocols, model/service-registry.ts for the services,
+ * model/applications.ts for the application profiles); the editor, the
+ * Start simulation dialog and the documentation read it from there.
+ *
+ *   drawn       Diagram representation: drawn and documented (a custom
+ *               protocol may send demonstration packets of its name); no
+ *               behaviour of its own is checked or simulated.
+ *   configured  Structured configuration and validation: its settings are
+ *               read and checked against the model, its ports and
+ *               references take part where they apply, its protocol
+ *               exchanges are not simulated.
+ *   modeled     Modeled runtime behaviour: the simulation runs its
+ *               exchanges and state within the stated scope. Never "full
+ *               support": `not` says what is left out.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SUPPORT_LEVELS = void 0;
+exports.supportLabel = supportLabel;
+exports.supportLines = supportLines;
+exports.supportText = supportText;
+exports.SUPPORT_LEVELS = [
+    { id: 'drawn', label: 'Diagram only', help: 'Drawn and documented; no behaviour of its own is checked or simulated.' },
+    { id: 'configured', label: 'Configuration and validation', help: 'Its settings are checked against the model; its protocol exchanges are not simulated.' },
+    { id: 'modeled', label: 'Modeled behavior', help: 'The simulation runs its exchanges and state, within the stated limits.' },
+];
+function supportLabel(level) {
+    return exports.SUPPORT_LEVELS.find((x) => x.id === level).label;
+}
+/** The support as two short lines: "Modeled behavior: …" and "Not modeled: …". */
+function supportLines(s) {
+    return [`${supportLabel(s.level)}: ${s.does}`, `Not modeled: ${s.not}`];
+}
+/** The support as one sentence, for a tooltip or a screen reader. */
+function supportText(s) {
+    return supportLines(s).join(' ');
 }
 
 };
@@ -54293,6 +54461,21 @@ const actions_1 = __req("analysis/sim/actions");
 const test_plan_1 = __req("analysis/sim/test-plan");
 const ip_1 = __req("model/ip");
 exports.ENTRY_GROUPS = ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Multicast', 'Services', 'Traffic', 'Custom'];
+/** The support of the entries that are no relation protocol's profile: the tests' transport and the traffic. */
+const ENTRY_SUPPORT = {
+    icmp: { level: 'modeled', does: 'Echo requests and replies, and the ICMP errors routers and hosts send (unreachable, time exceeded, fragmentation needed with path MTU discovery).', not: 'ICMP redirects, router discovery over ICMPv4.' },
+    tcp: { level: 'modeled', does: 'The three-way handshake, segments by the path MTU, retransmission with backoff, RST, FIN and TIME_WAIT, keepalive probes, firewall sessions.', not: 'congestion control and windows: no throughput is computed.' },
+    udp: { level: 'modeled', does: 'Datagrams to open ports and their answers; ICMP port unreachable from a closed port.', not: 'payload contents.' },
+    demand: { level: 'modeled', does: 'Each demand’s packets along the path routing gives it, rerouted after failures.', not: 'bandwidth: no link is loaded or congested.' },
+    mcast: { level: 'modeled', does: 'Each stream’s datagrams, replicated by snooping switches and multicast routing to the members.', not: 'bandwidth and rate limits.' },
+};
+/** The support of an entry of the setup's list: its profile's, else the traffic's (custom: drawn only). */
+function entrySupport(id) {
+    if (ENTRY_SUPPORT[id])
+        return ENTRY_SUPPORT[id];
+    const p = (0, sim_profiles_1.simProfile)(id);
+    return p && p.support ? p.support : sim_profiles_1.CUSTOM_SUPPORT;
+}
 /** "3 relations", "1 device". */
 function usesText(e) {
     return `${e.uses} ${e.unit}${e.uses === 1 ? '' : 's'}`;
@@ -55309,7 +55492,7 @@ function protocolEntriesOf(model) {
     const users = new Map();
     const add = (id, label, group, unit, user) => {
         if (!seen.has(id))
-            seen.set(id, { id, label, group, uses: 0, unit });
+            seen.set(id, { id, label, group, uses: 0, unit, support: entrySupport(id) });
         const u = users.get(id) || new Set();
         u.add(user);
         users.set(id, u);
@@ -65514,6 +65697,7 @@ exports.protocolPicker = protocolPicker;
  */
 const simulation_1 = __req("analysis/sim/simulation");
 const dom_1 = __req("ui/dom");
+const support_1 = __req("model/support");
 /** The checkbox id of a protocol in a list. */
 function protoBoxId(prefix, protocol) {
     return prefix + '-p-' + protocol.replace(/[^a-z0-9-]/gi, '_');
@@ -65540,14 +65724,18 @@ function protocolPicker(doc, o) {
             (0, dom_1.el)(doc, 'div', { class: 'pp-ghead' }, [(0, dom_1.el)(doc, 'span', { class: 'pp-gname', id: gid }, [g + ' ', gc]), (0, dom_1.el)(doc, 'span', { class: 'pp-gtools' }, [ga, gn])]),
         ]);
         for (const e of es) {
-            const cb = (0, dom_1.el)(doc, 'input', { type: 'checkbox', 'data-sim-proto': e.id, id: protoBoxId(o.id, e.id) });
+            // what the simulation does for it: in its tooltip and for a screen reader; a protocol it only draws says so beside its name
+            const did = protoBoxId(o.id, e.id) + '-sup';
+            const cb = (0, dom_1.el)(doc, 'input', { type: 'checkbox', 'data-sim-proto': e.id, id: protoBoxId(o.id, e.id), 'aria-describedby': did });
             boxes.set(e.id, cb);
-            fs.appendChild((0, dom_1.el)(doc, 'label', { class: 'check pp-item', for: cb.id }, [
+            fs.appendChild((0, dom_1.el)(doc, 'label', { class: 'check pp-item', for: cb.id, title: (0, support_1.supportText)(e.support), 'data-support': e.support.level }, [
                 cb,
                 (0, dom_1.el)(doc, 'span', { class: 'sim-swatch', 'aria-hidden': 'true', style: `background:${o.color(e.id)}` }),
                 (0, dom_1.el)(doc, 'span', { class: 'pp-name' }, [e.label]),
+                e.support.level !== 'modeled' ? (0, dom_1.el)(doc, 'span', { class: 'pp-fid' }, [e.support.level === 'drawn' ? 'demo packets only' : 'not simulated']) : null,
                 (0, dom_1.el)(doc, 'span', { class: 'pp-uses' }, [(0, simulation_1.usesText)(e)]),
             ]));
+            fs.appendChild((0, dom_1.el)(doc, 'span', { class: 'sr-only', id: did }, [(0, support_1.supportText)(e.support)]));
         }
         list.appendChild(fs);
         groups.push({ g, ids: es.map((e) => e.id), count: gc, all: ga, none: gn });

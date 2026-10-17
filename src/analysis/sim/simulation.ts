@@ -5,7 +5,8 @@
  * only. Deterministic: the same model, the same actions at the same
  * simulated times, the same timeline. It never changes the model.
  */
-import { SimGroup, simProfile } from '../../model/sim-profiles';
+import { CUSTOM_SUPPORT, SimGroup, simProfile } from '../../model/sim-profiles';
+import type { Support } from '../../model/support';
 import { Model } from '../../model/types';
 import { capabilities } from '../../model/capabilities';
 import { snoopingChoice, switchedVlans } from '../../model/snooping';
@@ -40,6 +41,24 @@ export interface SimProtocolEntry {
   uses: number;
   /** what `uses` counts: "device", "relation", "demand", "stream" */
   unit: 'device' | 'relation' | 'demand' | 'stream';
+  /** what the simulation does for it (model/support.ts): a custom protocol's is drawn only */
+  support: Support;
+}
+
+/** The support of the entries that are no relation protocol's profile: the tests' transport and the traffic. */
+const ENTRY_SUPPORT: { [id: string]: Support } = {
+  icmp: { level: 'modeled', does: 'Echo requests and replies, and the ICMP errors routers and hosts send (unreachable, time exceeded, fragmentation needed with path MTU discovery).', not: 'ICMP redirects, router discovery over ICMPv4.' },
+  tcp: { level: 'modeled', does: 'The three-way handshake, segments by the path MTU, retransmission with backoff, RST, FIN and TIME_WAIT, keepalive probes, firewall sessions.', not: 'congestion control and windows: no throughput is computed.' },
+  udp: { level: 'modeled', does: 'Datagrams to open ports and their answers; ICMP port unreachable from a closed port.', not: 'payload contents.' },
+  demand: { level: 'modeled', does: 'Each demand’s packets along the path routing gives it, rerouted after failures.', not: 'bandwidth: no link is loaded or congested.' },
+  mcast: { level: 'modeled', does: 'Each stream’s datagrams, replicated by snooping switches and multicast routing to the members.', not: 'bandwidth and rate limits.' },
+};
+
+/** The support of an entry of the setup's list: its profile's, else the traffic's (custom: drawn only). */
+function entrySupport(id: string): Support {
+  if (ENTRY_SUPPORT[id]) return ENTRY_SUPPORT[id];
+  const p = simProfile(id);
+  return p && p.support ? p.support : CUSTOM_SUPPORT;
 }
 
 /** "3 relations", "1 device". */
@@ -1130,7 +1149,7 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   const seen = new Map<string, SimProtocolEntry>();
   const users = new Map<string, Set<string>>();
   const add = (id: string, label: string, group: SimEntryGroup, unit: SimProtocolEntry['unit'], user: string): void => {
-    if (!seen.has(id)) seen.set(id, { id, label, group, uses: 0, unit });
+    if (!seen.has(id)) seen.set(id, { id, label, group, uses: 0, unit, support: entrySupport(id) });
     const u = users.get(id) || new Set<string>();
     u.add(user);
     users.set(id, u);

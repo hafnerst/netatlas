@@ -30,6 +30,7 @@
  * at the simulation's start when its `start` says so.
  */
 import type { SvcParam, SvcValues } from './service-registry';
+import type { Support } from './support';
 
 export type AppProfileId = 'tcp_server' | 'tcp_client' | 'udp_server' | 'udp_client' | 'udp_receiver' | 'udp_sender' | 'mqtt_client';
 
@@ -51,16 +52,34 @@ export interface AppProfile {
   peerProfiles: AppProfileId[];
   /** the conventional port of the profile (a default after the profile is chosen, never a requirement) */
   port?: number;
+  /** what the simulation does for it (model/support.ts) */
+  support: Support;
 }
 
+const TCP_SUPPORT: Support = {
+  level: 'modeled',
+  does: 'Connections (the three-way handshake, retransmission, FIN) with a request and its answer of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports apply.',
+  not: 'payload contents and application semantics: a name such as Modbus TCP labels it, nothing of Modbus is simulated.',
+};
+const UDP_SUPPORT: Support = {
+  level: 'modeled',
+  does: 'Datagrams (and their answers, for request/response) of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports (ICMP port unreachable) apply.',
+  not: 'payload contents and application semantics: a label names the application, its protocol is not simulated.',
+};
+const MQTT_SUPPORT: Support = {
+  level: 'modeled',
+  does: 'MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection.',
+  not: 'QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents.',
+};
+
 export const APP_PROFILES: readonly AppProfile[] = [
-  { id: 'tcp_server', label: 'TCP listener (request/response)', short: 'TCP listener', help: 'Accepts TCP connections on its port and answers each request.', transport: 'tcp', listener: true, client: false, answered: false, peerProfiles: [] },
-  { id: 'tcp_client', label: 'TCP client (request/response)', short: 'TCP request/response', help: 'Connects to its peer, sends a request and waits for the answer.', transport: 'tcp', listener: false, client: true, answered: true, peerProfiles: ['tcp_server'] },
-  { id: 'udp_server', label: 'UDP listener (request/response)', short: 'UDP listener', help: 'Answers each datagram that arrives on its port.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [] },
-  { id: 'udp_client', label: 'UDP client (request/response)', short: 'UDP request/response', help: 'Sends a request datagram to its peer and waits for the answer.', transport: 'udp', listener: false, client: true, answered: true, peerProfiles: ['udp_server'] },
-  { id: 'udp_receiver', label: 'UDP receiver (one-way)', short: 'UDP receiver', help: 'Takes datagrams on its port and answers none.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [] },
-  { id: 'udp_sender', label: 'Periodic UDP messages (one-way)', short: 'UDP messages', help: 'Sends a datagram to its peer every interval; nothing comes back.', transport: 'udp', listener: false, client: true, answered: false, peerProfiles: ['udp_receiver', 'udp_server'] },
-  { id: 'mqtt_client', label: 'MQTT client (publish / subscribe)', short: 'MQTT', help: 'An MQTT 3.1.1 client of a broker: publishes to its topics and receives what matches its subscriptions.', transport: 'tcp', listener: false, client: true, answered: false, peerProfiles: [], port: 1883 },
+  { id: 'tcp_server', label: 'TCP listener (request/response)', short: 'TCP listener', help: 'Accepts TCP connections on its port and answers each request.', transport: 'tcp', listener: true, client: false, answered: false, peerProfiles: [], support: TCP_SUPPORT },
+  { id: 'tcp_client', label: 'TCP client (request/response)', short: 'TCP request/response', help: 'Connects to its peer, sends a request and waits for the answer.', transport: 'tcp', listener: false, client: true, answered: true, peerProfiles: ['tcp_server'], support: TCP_SUPPORT },
+  { id: 'udp_server', label: 'UDP listener (request/response)', short: 'UDP listener', help: 'Answers each datagram that arrives on its port.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [], support: UDP_SUPPORT },
+  { id: 'udp_client', label: 'UDP client (request/response)', short: 'UDP request/response', help: 'Sends a request datagram to its peer and waits for the answer.', transport: 'udp', listener: false, client: true, answered: true, peerProfiles: ['udp_server'], support: UDP_SUPPORT },
+  { id: 'udp_receiver', label: 'UDP receiver (one-way)', short: 'UDP receiver', help: 'Takes datagrams on its port and answers none.', transport: 'udp', listener: true, client: false, answered: false, peerProfiles: [], support: UDP_SUPPORT },
+  { id: 'udp_sender', label: 'Periodic UDP messages (one-way)', short: 'UDP messages', help: 'Sends a datagram to its peer every interval; nothing comes back.', transport: 'udp', listener: false, client: true, answered: false, peerProfiles: ['udp_receiver', 'udp_server'], support: UDP_SUPPORT },
+  { id: 'mqtt_client', label: 'MQTT client (publish / subscribe)', short: 'MQTT', help: 'An MQTT 3.1.1 client of a broker: publishes to its topics and receives what matches its subscriptions.', transport: 'tcp', listener: false, client: true, answered: false, peerProfiles: [], port: 1883, support: MQTT_SUPPORT },
 ];
 
 export function appProfile(id: string | undefined): AppProfile | undefined {

@@ -44,6 +44,8 @@ import { scopeSuggestions } from '../analysis/helpers';
 import { purposeIcons } from '../diagram/icons';
 import { SERVICES, SvcDef, SvcParam, serviceDef, serviceEligibility, isBuiltIn, builtInServices } from '../model/service-registry';
 import { APP_PARAMS, APP_PROFILES, appProfile, appSummary } from '../model/applications';
+import { CUSTOM_SUPPORT, simProfile } from '../model/sim-profiles';
+import { supportNote } from './support-note';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 /**
@@ -1124,8 +1126,11 @@ export class Editor {
         .concat(this.ids('protocol'))
         .filter((x) => !l2 || !relationNeedsLayer3(rm ? protocolBase(rm.protocols, x) : x, (builtinProtocols().get(x) || { category: '' }).category));
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      const pname = doc.text(base.concat('protocol'));
+      const pprof = pname && rm ? simProfile(protocolBase(rm.protocols, pname)) : undefined;
       g('Protocol', [
         this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'),
+        pname ? supportNote(this.d, pprof && pprof.support ? pprof.support : CUSTOM_SUPPORT, pprof ? pprof.label : pname) : null,
         this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'),
         this.directionField(base.concat('direction')),
       ], 'protocol');
@@ -1148,7 +1153,8 @@ export class Editor {
       notes();
     } else if (kind === 'protocol') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)')], 'drawing');
+      const own = simProfile(normalizeProtocol(doc.text(base.concat('id')) || ''));
+      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)'), supportNote(this.d, own && own.support ? own.support : CUSTOM_SUPPORT, doc.text(base.concat('label')) || doc.text(base.concat('id')) || 'this protocol')], 'drawing');
       // a protocol of the model as a routing service devices can enable
       const pm = doc.result.model;
       const pid = doc.text(base.concat('id')) || '';
@@ -2392,7 +2398,7 @@ export class Editor {
       const on = !!doc.get(sp.concat(id));
       const cb = this.e('input', { type: 'checkbox', id: `svc-${id}-${devIndex}`, 'data-act': 'netsvc', 'data-svc': id, 'data-index': String(devIndex), title }) as HTMLInputElement;
       cb.checked = on;
-      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label])]);
+      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label]), on ? supportNote(this.d, (serviceDef(id) as SvcDef).support, label) : null]);
     };
     if (may('dhcp') || doc.get(sp.concat('dhcp'))) kids.push(box('dhcp', 'DHCP server', 'Leases addresses to the DHCP clients of its scopes’ networks'));
     const dhcp = doc.get(sp.concat('dhcp'));
@@ -2516,7 +2522,10 @@ export class Editor {
     if (prm.key === 'profile') {
       const sel = this.labelledSelect(fp, o, APP_PROFILES.map((x) => [x.id, x.label] as [string, string]), 'Select a profile');
       sel.setAttribute('data-t', 'app-profile');
-      return this.field(label, sel, fp, (appProfile(doc.text(fp)) || { help: prm.help }).help);
+      const prof = appProfile(doc.text(fp));
+      const f = this.field(label, sel, fp, (prof || { help: prm.help }).help);
+      if (prof) f.appendChild(supportNote(this.d, prof.support, prof.label));
+      return f;
     }
     if (prm.key === 'peer') {
       // the listeners of the other devices this profile can talk to, then the devices
@@ -2570,7 +2579,7 @@ export class Editor {
       this.e('span', { class: 'svc-name' }, [def.label + (builtIn ? ' (built in)' : '')]),
       builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': def.id, 'data-index': String(devIndex), title: `Remove ${def.label}`, 'aria-label': `Remove ${def.label}` }, ['×']),
     ]);
-    const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help])]);
+    const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help]), supportNote(this.d, def.support, def.label)]);
     if (!doc.get(p)) {
       card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-block', 'data-p': J(p), 'data-what': def.label + ' configuration' }, [`+ Configure ${def.label}`])]));
       return card;
@@ -2646,6 +2655,7 @@ export class Editor {
         builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'wireless', 'data-index': String(devIndex), title: 'Remove Wireless access', 'aria-label': 'Remove Wireless access' }, ['×']),
       ]),
       this.e('p', { class: 'help' }, ['Each Wi-Fi network is bridged to its own VLAN; they share the radio and the uplink.']),
+      supportNote(this.d, (serviceDef('wireless') as SvcDef).support, 'Wireless access'),
     ]);
     if (!doc.get(p)) {
       card.appendChild(this.e('p', { class: 'field-err' }, ['It needs its Wi-Fi networks: none is chosen for it.']));
@@ -3564,6 +3574,7 @@ export class Editor {
       }
       const vpnBuiltIn = isBuiltIn(serviceDef('vpn') as SvcDef, this.likeAt(base));
       if (!vpnBuiltIn) kids.unshift(this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, ['A service of this device']), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'vpn', 'data-index': String(devIndex), title: 'Remove the VPN gateway', 'aria-label': 'Remove the VPN gateway' }, ['×'])]));
+      kids.push(supportNote(this.d, (serviceDef('vpn') as SvcDef).support, 'VPN gateway'));
       out.push(this.group(vpnBuiltIn ? 'VPN gateway (built in)' : 'VPN gateway', kids, 'vpn'));
     }
     // the other built-in functions: an access point's Wireless access, a load balancer's Load balancing, an IDS/IPS's Inspection
@@ -3667,6 +3678,7 @@ export class Editor {
     if (!impl) isel.classList.add('unset');
     const def = SEPARATION_IMPLEMENTATIONS.find((x) => x.id === impl);
     kids.push(this.field('Implementation *', isel, sp.concat('implementation'), def ? def.help : SEPARATION_IMPLEMENTATIONS.map((x) => `${x.label}: ${x.help}`).join(' ')));
+    kids.push(supportNote(this.d, (serviceDef('separation') as SvcDef).support, 'Domain separation'));
     // the two domains
     const dl = doc.get(sp.concat('domains'));
     const nd = dl && dl.kind === 'seq' ? dl.items.length : 0;

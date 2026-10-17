@@ -11,6 +11,7 @@
  */
 import { ENTRY_GROUPS, SimEntryGroup, SimProtocolEntry, usesText } from '../analysis/sim/simulation';
 import { el } from './dom';
+import { supportText } from '../model/support';
 
 export interface ProtocolPickerOpts {
   /** a prefix for the element ids (the dialog's and the panel's lists can be on the page together) */
@@ -61,16 +62,20 @@ export function protocolPicker(doc: Document, o: ProtocolPickerOpts): ProtocolPi
       el(doc, 'div', { class: 'pp-ghead' }, [el(doc, 'span', { class: 'pp-gname', id: gid }, [g + ' ', gc]), el(doc, 'span', { class: 'pp-gtools' }, [ga, gn])]),
     ]);
     for (const e of es) {
-      const cb = el(doc, 'input', { type: 'checkbox', 'data-sim-proto': e.id, id: protoBoxId(o.id, e.id) }) as HTMLInputElement;
+      // what the simulation does for it: in its tooltip and for a screen reader; a protocol it only draws says so beside its name
+      const did = protoBoxId(o.id, e.id) + '-sup';
+      const cb = el(doc, 'input', { type: 'checkbox', 'data-sim-proto': e.id, id: protoBoxId(o.id, e.id), 'aria-describedby': did }) as HTMLInputElement;
       boxes.set(e.id, cb);
       fs.appendChild(
-        el(doc, 'label', { class: 'check pp-item', for: cb.id }, [
+        el(doc, 'label', { class: 'check pp-item', for: cb.id, title: supportText(e.support), 'data-support': e.support.level }, [
           cb,
           el(doc, 'span', { class: 'sim-swatch', 'aria-hidden': 'true', style: `background:${o.color(e.id)}` }),
           el(doc, 'span', { class: 'pp-name' }, [e.label]),
+          e.support.level !== 'modeled' ? el(doc, 'span', { class: 'pp-fid' }, [e.support.level === 'drawn' ? 'demo packets only' : 'not simulated']) : null,
           el(doc, 'span', { class: 'pp-uses' }, [usesText(e)]),
         ]),
       );
+      fs.appendChild(el(doc, 'span', { class: 'sr-only', id: did }, [supportText(e.support)]));
     }
     list.appendChild(fs);
     groups.push({ g, ids: es.map((e) => e.id), count: gc, all: ga, none: gn });
