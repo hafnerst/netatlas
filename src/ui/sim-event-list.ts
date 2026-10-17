@@ -39,7 +39,7 @@ export function listKey(views: ActionView[], others: NetEvent[]): string {
 
 /** One event of Network events. */
 function actionItem(doc: Document, h: EventListHost, v: ActionView, open: boolean): HTMLElement {
-  const finished = v.status !== 'queued' && v.status !== 'running';
+  const finished = v.status !== 'queued' && v.status !== 'running' && v.status !== 'paused';
   const head = el(doc, 'div', { class: 'sim-ev-head' }, [
     el(doc, 'span', { class: 'sim-ev-icon', 'aria-hidden': 'true' }, [STATUS_ICON[v.status]]),
     el(doc, 'span', { class: 'sim-ev-title' }, [v.title]),

@@ -1,9 +1,11 @@
 // Foreground and background on screen (headless Chrome/Edge/Chromium through
 // the DevTools protocol; skipped without one), the busy internal example,
 // both themes: the scenario bundled (a few exchanges as dots, lit cables with
-// counts for the rest); a stream started: its dots in front, the scenario as
-// cable activity, the panel says so, a dot of it opens the inspector; Real
-// time pacing: the clock and the stream with the real seconds; Next exchange.
+// counts for the rest); a stream started: its dots in front, a datagram
+// every real second in Readable pacing too, the clock in real time, the
+// scenario as cable activity, the panel says so, a dot of it opens the
+// inspector; Real time pacing: the clock and the stream with the real
+// seconds; Next exchange.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -36,10 +38,15 @@ for (const theme of ['light', 'dark']) {
       assert.equal(u.pace, 'Readable · 3 s per hop · 1×');
       // a stream from pc1: in front; the scenario behind as cable activity
       await page.eval(`netatlas.simController().startStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500), true`);
+      const s0 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, performance.now()]`);
       await wait(3000);
       u = await ui();
-      assert.equal(u.pace, 'Readable · 3 s per hop · 1× · your events in front');
+      assert.match(u.pace, /^Readable · 3 s per hop · 1× · streams in real time( · behind)?$/);
       assert.ok(u.fgDots > 0, 'the stream’s dots');
+      // a datagram every real second, Readable pacing or not (the first at once): within a frame or two of the real seconds
+      const s1 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, performance.now()]`);
+      const secs = (s1[1] - s0[1]) / 1000;
+      assert.ok(s1[0] >= Math.floor(secs) && s1[0] <= Math.floor(secs) + 2, `${s1[0]} datagrams in ${secs.toFixed(2)} s`);
       const fresh = await page.eval(`(() => { const p = netatlas.simController().pacer; const a = netatlas.simController().sim.actions()[0]; return p.items.filter((it) => it.f.view === 'physical' && it.f.test === undefined && it.f.t0 >= a.at).every((it) => !it.drawn); })()`);
       assert.equal(fresh, true, 'the scenario’s hops since the stream started: cable activity, not dots');
       // a dot of the stream opens the inspector, among the activity (paused for the click)

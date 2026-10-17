@@ -19,6 +19,8 @@ export interface SimulationMode {
   key(): string;
   /** what is failed in the simulated state (null: nothing) */
   failure(): FailureResult | null;
+  /** the devices powered off or booting, by ref ("device:pc1" → "booting"): the simulation's lifecycle state */
+  powerMarks?(): Map<string, 'off' | 'booting'>;
   /** refs the diagram highlights on top (a broadcast domain; null: none) */
   highlighted?(): Set<string> | null;
   /** called once when simulation mode ends (Exit simulation, Esc, another model) */

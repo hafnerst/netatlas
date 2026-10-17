@@ -11,7 +11,8 @@ import { capabilities } from '../../model/capabilities';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
-import { Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
+import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
+import { RealTimeScheduler } from './realtime';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
@@ -117,6 +118,25 @@ export function runActive(r: TestRun): boolean {
 
 const DHCP_STATE: { [k: string]: string } = { INIT: 'about to ask', SELECTING: 'asking (DHCPDISCOVER)', REQUESTING: 'requesting the offered address', RENEWING: 'renewing', REBINDING: 'rebinding' };
 
+/** What a Simulation takes: the engine's options, and the real-time schedule's clock (real ms; the tests' fake). */
+export type SimOptions = EngineOptions & { realClock?: () => number };
+
+/** A device's lifecycle in words: the state, a short label (the diagram's badge), and a line for its tooltip and menu. */
+export interface DeviceStateView {
+  state: 'operational' | 'off' | 'booting' | 'none';
+  /** "Operational", "Powered off", "Booting"; "" for no lifecycle */
+  label: string;
+  /** "Booting: up at t = 45 s", "Powered off at t = 12 s (down with its host esx-01)" */
+  detail: string;
+}
+
+export function deviceStateView(p: DevicePower | null): DeviceStateView {
+  if (!p) return { state: 'none', label: '', detail: 'No power state of its own (passive or an external network)' };
+  if (p.state === 'booting') return { state: 'booting', label: 'Booting', detail: `Booting: powered on, up at t = ${fmtSec(p.until as number)}; it takes no part until then` };
+  if (p.state === 'off') return { state: 'off', label: 'Powered off', detail: `Powered off at t = ${fmtSec(p.since as number)}${p.why ? ' (' + p.why + ')' : ''}` };
+  return { state: 'operational', label: 'Operational', detail: 'Operational: powered on and booted (its interfaces, cables and peers have their own state)' };
+}
+
 export class Simulation {
   readonly engine: Engine;
   readonly protocols: ProtocolSim;
@@ -125,10 +145,13 @@ export class Simulation {
   /** DHCP and DNS: the servers' scopes and zones, the clients, the resolvers */
   readonly netsvc: NetServicesSim;
   readonly model: Model;
+  /** the real-time schedule of Network events (a stream's datagrams); its clock injected for the tests */
+  readonly realtime: RealTimeScheduler;
 
-  constructor(model: Model, opts: EngineOptions = {}) {
+  constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
     this.engine = new Engine(model, opts);
+    this.realtime = new RealTimeScheduler(opts.realClock);
     this.protocols = new ProtocolSim(this.engine, { ...ROUTING_BEHAVIOURS, ...OTHER_BEHAVIOURS });
     installBootGarp(this.protocols);
     installFhrp(this.protocols);
@@ -137,6 +160,7 @@ export class Simulation {
     installDemands(this.protocols);
     installCustomL2(this.protocols);
     this.multicast = new Multicast(this.protocols);
+    this.multicast.realtime = this.realtime;
     this.multicast.install();
     this.netsvc = new NetServicesSim(this.protocols);
     this.transport = new Transport(this.protocols);
@@ -152,6 +176,42 @@ export class Simulation {
   /** The simulated time (ms). */
   get now(): number {
     return this.engine.now;
+  }
+
+  /**
+   * The real-time schedule's turn (once an animation frame, before the clock moves): the streams of
+   * Network events send what is due now, at the current simulated time; returns how many datagrams.
+   */
+  pumpRealTime(): number {
+    return this.realtime.pump();
+  }
+
+  /** Is anything on the real-time schedule (a stream of Network events running)? */
+  realtimeActive(): boolean {
+    return this.realtime.active();
+  }
+
+  /** The simulation plays or pauses (a hidden tab pauses it too): the real-time schedule with it. */
+  setRealTimeRunning(on: boolean): void {
+    this.realtime.setRunning(on);
+  }
+
+  /** The simulation is closed (Exit simulation, another model): nothing scheduled sends again. */
+  close(): void {
+    this.realtime.clear();
+    this.realtime.setRunning(false);
+  }
+
+  /** A device's lifecycle as the diagram, its menu and the events say it (the state packet processing reads). */
+  deviceState(dev: string): DeviceStateView {
+    return deviceStateView(this.engine.powerState(dev));
+  }
+
+  /** The devices' lifecycle, by id (the model's devices). */
+  deviceStates(): Map<string, DeviceStateView> {
+    const out = new Map<string, DeviceStateView>();
+    for (const d of this.model.devices) out.set(d.id, this.deviceState(d.id));
+    return out;
   }
 
   /** Run to simulated time t (ms). */
@@ -268,7 +328,7 @@ export class Simulation {
     if (this.acts.length > MAX_ACTIONS) {
       const v = views();
       for (let i = 0; i < v.length && this.acts.length > MAX_ACTIONS; i++) {
-        if (v[i].status === 'queued' || v[i].status === 'running') continue;
+        if (v[i].status === 'queued' || v[i].status === 'running' || v[i].status === 'paused') continue;
         const id = v[i].id;
         this.acts = this.acts.filter((x) => x.id !== id);
       }
@@ -291,6 +351,8 @@ export class Simulation {
         return null;
       },
       shut: (d, i) => this.engine.isShut(d, i),
+      rtPaused: !this.realtime.running,
+      deviceOn: (d) => this.engine.deviceOn(d),
       flapCycles: this.engine.params.num('flap-cycles'),
       flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,
     };
@@ -405,7 +467,7 @@ export class Simulation {
 
   /** Clear finished: the events no longer queued or in progress leave the list. */
   clearFinished(): number {
-    const keep = new Set(this.actions().filter((v) => v.status === 'queued' || v.status === 'running').map((v) => v.id));
+    const keep = new Set(this.actions().filter((v) => v.status === 'queued' || v.status === 'running' || v.status === 'paused').map((v) => v.id));
     const n = this.acts.length - keep.size;
     this.acts = this.acts.filter((a) => keep.has(a.id));
     return n;
@@ -425,7 +487,7 @@ export class Simulation {
         if (e.kind === 'shut' && a.shut) return e.ref === `iface:${a.shut.dev}:${a.shut.iface}` && v.controls.length > 0;
         if (e.kind === 'flap' && a.flap) return e.ref === a.flap.ref && v.status === 'running';
         if (e.kind === 'join' && a.join) return e.ref === `iface:${a.join.dev}:${a.join.iface}` && e.group === a.join.group && v.controls.length > 0;
-        if (e.kind === 'stream' && a.stream) return e.ref === `iface:${a.stream.dev}:${a.stream.iface}` && e.group === a.stream.group && v.status === 'running';
+        if (e.kind === 'stream' && a.stream) return e.ref === `iface:${a.stream.dev}:${a.stream.iface}` && e.group === a.stream.group && (v.status === 'running' || v.status === 'paused');
         return false;
       });
     return this.netEvents().filter((e) => !covered(e));

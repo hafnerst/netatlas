@@ -2389,7 +2389,10 @@ What the simulation does with them:
 The window's **Multicast** section (and a host's menu) joins a group or
 starts a stream as a network event, ended by **Leave group** / **Stop
 stream**; the groups and streams of the model can be left or stopped the
-same way. **Show IGMP groups** (a router: its interfaces' querier state and
+same way. A model's `interval` is simulated time (its stream belongs to
+the scenario); a stream started during the simulation sends every
+interval of real time instead, side by side with any others (see the
+README's *Foreground and background*). **Show IGMP groups** (a router: its interfaces' querier state and
 groups, with the last reporter, version, sources and expiry), **Show
 multicast table** (a switch: per VLAN and group the member ports and router
 ports) and **Show multicast routes** (a router: (*, G) and (S, G) with their

@@ -49,7 +49,7 @@ import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
 import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
-import { SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
+import { DeviceStateView, SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
 import { IfaceForm, JoinForm, StreamForm } from './sim-event-forms';
@@ -194,7 +194,9 @@ export class SimController implements SimulationMode {
     opts: SimStartOptions | string[] = {},
   ) {
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
-    this.sim = new Simulation(host.model(), { params: o.params });
+    // the real-time schedule (a stream's interval) counts the page's own clock
+    const win = host.doc.defaultView;
+    this.sim = new Simulation(host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
     // closing the packet inspector ends the pause it caused
@@ -218,6 +220,7 @@ export class SimController implements SimulationMode {
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
         foreground: () => this.sim.foregroundActive(),
+        realtime: () => this.sim.realtimeActive(),
       },
       MAX_DOTS,
     );
@@ -296,6 +299,10 @@ export class SimController implements SimulationMode {
     this.anim.clear();
     if (this.badges && this.badges.parentNode) this.badges.parentNode.removeChild(this.badges);
     this.badges = null;
+    if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
+    this.power = null;
+    // nothing scheduled sends again
+    this.sim.close();
     this.closeMenu();
     this.host.doc.removeEventListener('visibilitychange', this.onVis);
   }
@@ -332,6 +339,8 @@ export class SimController implements SimulationMode {
 
   /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
   schedule(): void {
+    // the real-time schedule runs while the simulation does (paused, hidden or closed: it stands)
+    this.sim.setRealTimeRunning(this.running());
     const w = this.host.doc.defaultView;
     if (!w) return;
     if (this.raf) w.cancelAnimationFrame(this.raf);
@@ -359,6 +368,8 @@ export class SimController implements SimulationMode {
 
   /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
   advance(wallMs: number): void {
+    // the streams of Network events first: what is due now goes at the current simulated time
+    if (this.sim.pumpRealTime()) this.actionsKey = '';
     this.pacer.frame(wallMs);
   }
 
@@ -659,6 +670,90 @@ export class SimController implements SimulationMode {
     this.badges = g;
   }
 
+  private powerKey = '';
+  private power: SVGGElement | null = null;
+  /** the devices' lifecycle, as of a state version of the simulation (every power change counts one) */
+  private powerStates: { ver: number; states: Map<string, DeviceStateView> } | null = null;
+
+  /** The devices' lifecycle now (computed again only when the simulation's state changed). */
+  private deviceStates(): Map<string, DeviceStateView> {
+    const ver = this.sim.engine.stateVersion;
+    if (!this.powerStates || this.powerStates.ver !== ver) this.powerStates = { ver, states: this.sim.deviceStates() };
+    return this.powerStates.states;
+  }
+
+  /**
+   * The devices' lifecycle in the diagram, as the simulation has it now: a device powered off or
+   * booting has a badge at its box's top right corner, a symbol and a word ("⏻ Off", "↻ Booting")
+   * with its state in a tooltip; an operational device has none (the legend says so). Drawn over the
+   * box, so nothing moves; redrawn when a device's state changes.
+   */
+  private drawPower(): void {
+    const scene = this.host.scene();
+    const states = this.deviceStates();
+    const marked = Array.from(states).filter((x) => x[1].state === 'off' || x[1].state === 'booting').sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    const key = `${marked.map((x) => x[0] + '=' + x[1].detail).join('|')}|${this.host.view()}`;
+    if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
+    if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
+    this.power = null;
+    this.powerKey = key;
+    if (!scene || !marked.length) return;
+    const doc = this.host.doc;
+    const NS = 'http://www.w3.org/2000/svg';
+    const g = doc.createElementNS(NS, 'g') as SVGGElement;
+    g.setAttribute('class', 'layer-sim-power');
+    for (const [dev, st] of marked) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const off = st.state === 'off';
+      const text = off ? '⏻ Off' : '↻ Booting';
+      const w = off ? 38 : 60;
+      const x = b.x + b.width - w - 6;
+      const y = b.y - 8;
+      const s = doc.createElementNS(NS, 'g');
+      s.setAttribute('class', 'sim-power');
+      s.setAttribute('data-power', st.state);
+      s.setAttribute('data-device', dev);
+      s.setAttribute('role', 'img');
+      s.setAttribute('aria-label', `${dev}: ${st.detail}`);
+      const t = doc.createElementNS(NS, 'title');
+      t.textContent = `${dev}: ${st.detail}`;
+      const r = doc.createElementNS(NS, 'rect');
+      r.setAttribute('x', x.toFixed(1));
+      r.setAttribute('y', y.toFixed(1));
+      r.setAttribute('width', String(w));
+      r.setAttribute('height', '16');
+      r.setAttribute('rx', '8');
+      const tx = doc.createElementNS(NS, 'text');
+      tx.setAttribute('x', (x + w / 2).toFixed(1));
+      tx.setAttribute('y', (y + 11.5).toFixed(1));
+      tx.setAttribute('text-anchor', 'middle');
+      tx.textContent = text;
+      s.appendChild(t);
+      s.appendChild(r);
+      s.appendChild(tx);
+      g.appendChild(s);
+    }
+    // above the boxes, below the dots' labels
+    const labels = scene.querySelector(':scope > .layer-sim-labels');
+    if (labels) scene.insertBefore(g, labels);
+    else scene.appendChild(g);
+    this.power = g;
+  }
+
+  /** The devices' lifecycle for the diagram's marks, by ref (those powered off or booting). */
+  powerMarks(): Map<string, 'off' | 'booting'> {
+    const out = new Map<string, 'off' | 'booting'>();
+    for (const [id, st] of this.deviceStates()) if (st.state === 'off' || st.state === 'booting') out.set('device:' + id, st.state);
+    return out;
+  }
+
   /** The on-screen length of a flight's line (diagram units), in the view on screen; null elsewhere. */
   private lengths = new Map<string, number | null>();
   private trackLength(f: Flight): number | null {
@@ -726,6 +821,7 @@ export class SimController implements SimulationMode {
     }
     this.anim.setScene(this.host.scene());
     this.drawBadges();
+    this.drawPower();
     const view = this.host.view();
     const r = this.anim.draw(this.drawItems(), { view, reduce: this.host.reduce(), color: (p) => this.color(p), activity: this.pacer.activity(view), name: (p) => this.protocolName(p) });
     this.notDrawn = r.left + this.queued();
@@ -740,6 +836,7 @@ export class SimController implements SimulationMode {
   sceneChanged(): void {
     this.lengths.clear();
     this.badgesKey = '';
+    this.powerKey = '';
     this.refresh(false);
   }
 
@@ -864,7 +961,7 @@ export class SimController implements SimulationMode {
     this.actionsKey = '';
     this.refresh(true);
     if (a.error) return a.error;
-    return `${a.target}: streaming from t = ${fmtSec(this.t)}; see Active events.`;
+    return `${a.target}: streaming from t = ${fmtSec(this.t)}, one datagram every ${interval / 1000} s of real time; see Active events.`;
   }
 
   stopStream(dev: string, iface: string, group: string): boolean {
@@ -1107,8 +1204,10 @@ export class SimController implements SimulationMode {
         }
       }
       this.domainItems(dev, items, x, y);
-      if (this.sim.engine.off.has(dev)) items.push({ label: this.sim.engine.booting.has(dev) ? 'Power off (stop booting)' : 'Power on', act: () => (this.sim.engine.booting.has(dev) ? this.powerOff(dev) : this.powerOn(dev)) });
-      else items.push({ label: 'Power off', act: () => this.powerOff(dev) });
+      // (an external network, a patch panel or TAP has no power of its own: no Power off)
+      const lifecycle = this.sim.deviceState(dev).state !== 'none';
+      if (lifecycle && this.sim.engine.off.has(dev)) items.push({ label: this.sim.engine.booting.has(dev) ? 'Power off (stop booting)' : 'Power on', act: () => (this.sim.engine.booting.has(dev) ? this.powerOff(dev) : this.powerOn(dev)) });
+      else if (lifecycle) items.push({ label: 'Power off', act: () => this.powerOff(dev) });
       // a container host: its engine
       const md = this.sim.model.index.devices.get(dev);
       if (md && md.containerEngine && !this.sim.engine.off.has(dev)) {
@@ -1136,7 +1235,9 @@ export class SimController implements SimulationMode {
     const items = this.itemsFor(ref, x, y);
     if (!items.length) return false;
     const r = ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref;
-    this.openMenu(this.label(r), items, x, y);
+    // a device's menu says its state first ("Operational", "Booting: …", "Powered off at …")
+    const st = r.indexOf('device:') === 0 ? this.sim.deviceState(r.slice(7)) : null;
+    this.openMenu(this.label(r), items, x, y, st && st.state !== 'none' ? st : null);
     return true;
   }
 
@@ -1176,7 +1277,7 @@ export class SimController implements SimulationMode {
     this.openMenu(`${dev}: interfaces`, items, x, y);
   }
 
-  private openMenu(title: string, items: MenuItem[], x: number, y: number): void {
+  private openMenu(title: string, items: MenuItem[], x: number, y: number, state: { state: string; detail: string } | null = null): void {
     this.closeMenu();
     const doc = this.host.doc;
     const back = doc.activeElement as HTMLElement | null;
@@ -1188,7 +1289,9 @@ export class SimController implements SimulationMode {
       });
       return b;
     });
-    const box = el(doc, 'div', { class: 'sim-menu', role: 'menu', 'aria-label': `Simulation: ${title}` }, [el(doc, 'div', { class: 'sim-menu-title', 'aria-hidden': 'true' }, [title]), ...buttons]);
+    const head = [el(doc, 'div', { class: 'sim-menu-title', 'aria-hidden': 'true' }, [title])];
+    if (state) head.push(el(doc, 'div', { class: 'sim-menu-state', 'data-power': state.state, 'aria-hidden': 'true' }, [state.detail]));
+    const box = el(doc, 'div', { class: 'sim-menu', role: 'menu', 'aria-label': `Simulation: ${title}${state ? '. ' + state.detail : ''}` }, [...head, ...buttons]);
     doc.body.appendChild(box);
     const w = doc.defaultView;
     const vw = w ? w.innerWidth : 1000;
@@ -1679,8 +1782,8 @@ export class SimController implements SimulationMode {
     const ul = q('sim-events');
     if (ul && ek !== this.eventsKey) {
       this.eventsKey = ek;
-      const going = views.filter((v) => v.status === 'queued' || v.status === 'running').length + others.length;
-      const done = views.length - views.filter((v) => v.status === 'queued' || v.status === 'running').length;
+      const going = views.filter((v) => v.status === 'queued' || v.status === 'running' || v.status === 'paused').length + others.length;
+      const done = views.length - views.filter((v) => v.status === 'queued' || v.status === 'running' || v.status === 'paused').length;
       const sum = views.length + others.length ? `${going} in effect or in progress · ${done} finished` : 'None yet: start one above, or from the diagram’s menus.';
       const fe = q('sim-failed') as HTMLElement;
       if (fe.textContent !== sum) fe.textContent = sum;
