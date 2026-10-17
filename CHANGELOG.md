@@ -5,18 +5,32 @@ All notable changes to NetAtlas are listed here. The format follows
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
 releases may still change behaviour.
 
-Two version numbers are involved. The **application version** (0.1.2) names
+Two version numbers are involved. The **application version** (0.1.3) names
 a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
-### Model format 1: changes before launch
+## [0.1.3] - 2026-10-17
+
+NetAtlas 0.1.3 is still one self-contained, offline HTML file
+(`dist/netatlas.html`) with no third-party code. It reads and writes YAML
+model format 1 (`netatlas: 1`). Its largest addition is the protocol
+simulation (Simulate ▸ Start simulation…): Layer 1–4 behaviour, routing,
+DHCP and DNS, virtualization, multicast with IGMP / MLD snooping and the
+querier election, Network events, real-time streams and the packet
+inspector.
+
+### Upgrading from 0.1.2
 
 NetAtlas is not released for production use yet, so model format 1 still
 changes. These changes are made within version 1 (files keep `netatlas: 1`);
-there is no conversion of files written for the earlier drafts.
+there is no conversion of files written for 0.1.2 or the earlier drafts.
+Keys that 0.1.2 accepted and this release rejects get an error that says
+what to write instead, and a file with errors still opens as a draft so it
+can be fixed in the editor. The built-in examples are already migrated.
+The changes:
 
 - **Static routes:** a device may have `routes`, each with `prefix` and a
   next hop (`via`, `interface`, both, or `blackhole: true`), and optionally
@@ -1749,6 +1763,20 @@ live protocol simulation replaces them.
   were still enabled; now every diagram filter (and the **Filters**
   drop-down) is disabled until a model is open, and shows its default.
 
+### Known limitations
+
+* The protocol simulation is a teaching and planning model, not an
+  emulator: timers and protocol state follow the RFCs where stated, but
+  convergence details (spanning tree, OSPF flooding, BGP policy) are
+  simplified, and IGMPv1, statically configured multicast router ports and
+  vendor variants of unregistered-multicast handling are not modelled.
+* Auto-arrange reserves no room for the simulation's per-VLAN snooping
+  badges; they are placed in free space beside their switch.
+* Real-time streams follow the browser's frames: a datagram goes in the
+  first frame at or after its moment; a busy model can fall behind real
+  time (*· behind*).
+* See the README's "Limitations" section for details.
+
 ## [0.1.2] - 2026-10-02
 
 NetAtlas 0.1.2 is still one self-contained, offline HTML file
@@ -2062,6 +2090,7 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
+[0.1.3]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.3
 [0.1.2]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.0
