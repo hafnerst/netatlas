@@ -7,7 +7,7 @@
 #
 # Note: YAML anchors/aliases are NOT supported by netatlas, so repeated
 # interface lists are written out in full.
-netatlas: 1
+netatlas: 2
 title: Data center — spine/leaf fabric with EVPN/VXLAN
 description: Spine/leaf fabric with BGP underlay and EVPN/VXLAN overlay.
 

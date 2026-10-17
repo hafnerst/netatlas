@@ -640,7 +640,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
 
     // a draft with many problems, and a dialog on top
     app.mdoc && app.mdoc.markSaved();
-    app.loadText('netatlas: 1\ndevices:\n' + Array.from({ length: 60 }, (_, i) => `  - {id: d${i}, vendor: x, interfaces: [{id: e0, type: x}]}\n`).join(''), 'many-errors.yaml', 'file');
+    app.loadText('netatlas: 2\ndevices:\n' + Array.from({ length: 60 }, (_, i) => `  - {id: d${i}, vendor: x, interfaces: [{id: e0, type: x}]}\n`).join(''), 'many-errors.yaml', 'file');
     click('[data-tab="problems"]');
     await tick();
     state('problems list with 120 entries', scrollsInside('#side-body', true));

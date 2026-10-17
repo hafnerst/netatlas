@@ -74,12 +74,12 @@ test('Trace path: the hop table’s columns; the tool windows’ commands (F6, C
 });
 
 test('removed: scenarios (a scenarios: key is unknown), their templates and steps, risk groups and maintenance, X and the step keys, the Analysis and Simulation tabs', () => {
-  const r = validate.loadModel('netatlas: 1\ndevices: [{id: a}]\nscenarios:\n  - id: s\n    steps: [{fail: {device: a}}]\n');
+  const r = validate.loadModel('netatlas: 2\ndevices: [{id: a}]\nscenarios:\n  - id: s\n    steps: [{fail: {device: a}}]\n');
   assert.equal(r.errors.length, 1);
   assert.match(r.errors[0].message, /^unknown key "scenarios"/);
-  const rg = validate.loadModel('netatlas: 1\ndevices: [{id: a, risk_groups: [x]}]\n');
+  const rg = validate.loadModel('netatlas: 2\ndevices: [{id: a, risk_groups: [x]}]\n');
   assert.match(rg.errors[0].message, /^unknown key "risk_groups"/);
-  assert.equal('scenarios' in validate.loadModel('netatlas: 1\n').model, false);
+  assert.equal('scenarios' in validate.loadModel('netatlas: 2\n').model, false);
   for (const m of ['analysis/scenario.ts', 'analysis/templates.ts', 'validation/scenarios.ts', 'ui/simulation.ts', 'ui/templates.ts', 'ui/traffic.ts']) assert.equal(existsSync(join(root, 'src', m)), false, m);
   const ids = C.buildCommands().map((c) => c.id);
   for (const id of ['sim.add', 'sim.prev', 'sim.next', 'sim.save', 'sim.templates', 'sim.traffic', 'sim.trafficPause', 'panel.analysis', 'panel.simulation']) assert.ok(ids.indexOf(id) < 0, id);

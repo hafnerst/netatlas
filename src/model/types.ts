@@ -1,5 +1,6 @@
 /** Validated, typed network model produced from the YAML input. */
 import type { ServiceRegistry } from './services';
+import type { AppInstance } from './applications';
 
 /**
  * How a logical relation is drawn. Protocols are open-ended; categories are the
@@ -127,7 +128,7 @@ export interface Interface {
   label?: string;
   type: InterfaceKind;
   /**
-   * The interface obtains its address by DHCP (`dhcp: true`; omitted = false).
+   * The interface obtains its IPv4 address by DHCP (`ipv4: dhcp`; omitted: static).
    * It is a configuration flag, not an address: nothing about the address it
    * may obtain is known, so it is in no network until an address is written.
    */
@@ -242,6 +243,8 @@ export interface Device {
   wireless?: WirelessService;
   /** the other services of the registry it runs (model/service-registry.ts), by id: NTP, AAA, syslog, monitoring, proxy, NAT … */
   appServices?: Map<string, ServiceInstance>;
+  /** its application instances (`services.applications`, model/applications.ts), in file order */
+  applications?: AppInstance[];
   /** a Security gateway's built-in Domain separation (`services.separation`) */
   separation?: SeparationService;
   /**

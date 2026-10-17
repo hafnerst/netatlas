@@ -63,7 +63,7 @@
 # zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by
 # the DSL router. Fail l-core-dist: both upper-floor access points lose
 # their uplink.
-netatlas: 1
+netatlas: 2
 title: Private house — three floors, Wi-Fi on VLANs
 description: |
   A DSL modem/router with NAT and a firewall, a Layer 3 switch in the
@@ -111,9 +111,8 @@ devices:
     tier: 9
     group: provider
     services:
-      application:
-        name: Web
-        ports: [tcp/443]
+      applications:
+        - {id: web, name: Web, profile: tcp_server, port: 443}
     interfaces:
       - {id: eth0, ip: 203.0.113.80/24}
   - id: dsl-router
@@ -277,14 +276,14 @@ devices:
     group: basement
     simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: phone
     type: endpoint
     tier: 4
     kind: mobile
     group: floor1
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: guest-phone
     type: endpoint
     tier: 4
@@ -292,7 +291,7 @@ devices:
     group: floor1
     simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: laptop
     type: endpoint
     tier: 2
@@ -300,7 +299,7 @@ devices:
     group: floor2
     simulation: {test_traffic: "on", test_targets: "nas.home.arpa tcp/445, 203.0.113.80 tcp/443", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: thermostat
     type: endpoint
     tier: 2
@@ -308,7 +307,7 @@ devices:
     kind_label: Thermostat
     group: floor2
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 
 links:
   - {id: l-dsl, a: "dsl-router:wan", b: "isp:house", medium: dsl, speed: 100M, label: VDSL2 (PPPoE)}

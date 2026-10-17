@@ -130,7 +130,7 @@ test('containers: SNAT out of their host, the reply back; published ports to the
 });
 
 test('macvlan: the host can’t reach its own containers on the network’s parent', () => {
-  const s = sim(`netatlas: 1
+  const s = sim(`netatlas: 2
 devices:
   - id: sw
     type: switch

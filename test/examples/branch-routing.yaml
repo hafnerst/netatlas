@@ -13,7 +13,7 @@
 #   (ge-0/0/2.10, .20, .30: tagged). The switch's port Gi1/0/1 is a trunk of
 #   VLANs 10, 20, 30 and 99, native 99 (untagged); the access ports are in
 #   one VLAN each.
-netatlas: 1
+netatlas: 2
 title: Branch routing and VLANs
 description: |
   A dual-homed branch: floating static default route, equal-cost routes to

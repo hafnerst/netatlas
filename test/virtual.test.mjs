@@ -22,7 +22,7 @@ const ok = (t) => {
 
 // a switch with two trunks and an access port to a KVM host (a Linux bridge on two uplinks, three port groups,
 // a management interface), a VM on it, and a Docker host with a bridge, a macvlan, a host and a none network and a container
-export const BASE = `netatlas: 1
+export const BASE = `netatlas: 2
 groups:
   - {id: dc, kind: site}
 devices:
@@ -249,7 +249,7 @@ test('containers: their network on the host (or an overlay that lists it), addre
   assert.match(one(veth('      - {id: eth0, type: veth, network: host, ip: 10.20.0.9/24}\n')), /"host" is a host network: the container shares its host's interfaces and addresses — delete its own address/);
   assert.deepEqual(errs(veth('      - {id: eth0, type: veth, network: host}\n')), []);
   assert.match(one(veth('      - {id: eth0, type: veth, network: none, ip: 10.9.9.9/24}\n')), /"none" is a none network: the container has no network there/);
-  assert.match(one(veth('      - {id: eth0, type: veth, network: bridge, dhcp: true}\n')), /DHCP is modelled on macvlan networks only/);
+  assert.match(one(veth('      - {id: eth0, type: veth, network: bridge, ipv4: dhcp}\n')), /DHCP is modelled on macvlan networks only/);
   // published ports: a bridge network's, each host port and protocol once per host address
   assert.match(one(veth('      - {id: eth0, type: veth, network: lan, ip: 10.10.0.70/24, publish: [{host_port: 80, port: 80, protocol: tcp}]}\n')), /published ports are a bridge network's \(DNAT on the host\): "lan" is a macvlan network/);
   assert.match(one(veth('      - {id: eth0, type: veth, network: bridge, ip: 172.17.0.2, publish: [{host_port: 8080, port: 80, protocol: tcp}]}\n      - {id: eth1, type: veth, network: bridge, ip: 172.17.0.3, publish: [{host_port: 8080, port: 81, protocol: tcp}]}\n')), /tcp\/8080 on every address of "ch" is already published by c1:eth0/);

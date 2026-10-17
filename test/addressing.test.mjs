@@ -19,7 +19,7 @@ const model = (text) => {
   return r.model;
 };
 
-const base = `netatlas: 1
+const base = `netatlas: 2
 devices:
   - id: r1
     type: router
@@ -51,7 +51,7 @@ devices:
   - id: laptop
     type: endpoint
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 links:
   - {id: l1, a: "r1:e0", b: "r2:e0"}
   - id: l2

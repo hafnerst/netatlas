@@ -38,7 +38,8 @@ export type SvcParamType =
   | 'interfaces'
   | 'secret'
   | 'portlist'
-  | 'duration';
+  | 'duration'
+  | 'topics';
 
 export interface SvcParam {
   key: string;
@@ -54,6 +55,8 @@ export interface SvcParam {
   max?: number;
   help: string;
   placeholder?: string;
+  /** shown in the collapsed Advanced section of its card (an infrequently changed setting, a modelling default) */
+  advanced?: boolean;
 }
 
 /** A list of entries of a service (a NAT's rules, a Wireless access's networks), each with its parameters. */
@@ -95,6 +98,8 @@ const PORT = { min: 1, max: 65535 };
 const routedFirewall = (c: Capabilities): string | null => (c.firewallPolicy && !c.l3Forward ? 'a transparent firewall forwards no IP of its own: make it routed' : null);
 const l3Switch = (c: Capabilities): string | null => (c.switchFeatures && !c.l3Forward ? 'a Layer 2 switch routes nothing: tick Supports Layer 3 first' : routedFirewall(c));
 const systemHost = (c: Capabilities, d: DeviceLike): string | null => (d.type === 'system' && !c.host ? 'only a System whose purpose is Host runs services' : null);
+/** an application runs on a device with an IP stack of its own that is an end system (a host): never on a passive or forwarding-only one */
+const hostOnly = (c: Capabilities, d: DeviceLike): string | null => (d.type === 'system' ? systemHost(c, d) : !c.host && !c.serviceHost ? 'it has no host IP stack of its own for applications' : null);
 
 export const SERVICES: ReadonlyArray<SvcDef> = [
   {
@@ -293,16 +298,14 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     ],
   },
   {
-    id: 'application',
-    label: 'Application',
+    id: 'applications',
+    label: 'Applications',
     badge: 'APP',
-    help: 'An application of its own, listening on its ports.',
-    types: [...SERVERS, 'storage', 'system'],
-    needs: systemHost,
-    params: [
-      { key: 'name', label: 'Name', type: 'text', required: true, help: 'The application’s name.', placeholder: 'ERP' },
-      { key: 'ports', label: 'Ports', type: 'portlist', required: true, help: 'Where it listens: tcp/443, udp/5060 …', placeholder: 'tcp/443' },
-    ],
+    help: 'Its applications: listeners, clients, periodic messages, MQTT clients.',
+    types: [...SERVERS, 'storage', 'system', 'endpoint'],
+    needs: hostOnly,
+    params: [],
+    custom: true,
   },
   {
     id: 'inspection',
@@ -381,6 +384,8 @@ interface HasServices {
   hypervisor?: unknown;
   containerEngine?: unknown;
   appServices?: Map<string, unknown>;
+  /** its application instances (services.applications) */
+  applications?: unknown[];
 }
 
 /** The services a device runs, in the registry's order (its built-in functions among them). */
@@ -401,6 +406,8 @@ export function deviceServices(d: HasServices): SvcDef[] {
         return !!d.hypervisor;
       case 'container_engine':
         return !!d.containerEngine;
+      case 'applications':
+        return !!d.applications && d.applications.length > 0;
     }
     return (!!d.appServices && d.appServices.has(s.id)) || (!!s.builtIn && s.builtIn.indexOf(d.type) >= 0 && !s.required);
   };
@@ -414,11 +421,15 @@ export const MAX_BADGES = 3;
 export function serviceBadgesText(d: HasServices): string {
   const all = deviceServices(d);
   if (!all.length) return '';
-  const shown = all.slice(0, MAX_BADGES).map((s) => s.badge).join(' · ');
+  const n = d.applications ? d.applications.length : 0;
+  // the applications are one badge, with their number ("APP×3"): never one per application
+  const badge = (s: SvcDef): string => (s.id === 'applications' && n > 1 ? `APP×${n}` : s.badge);
+  const shown = all.slice(0, MAX_BADGES).map(badge).join(' · ');
   return all.length > MAX_BADGES ? `${shown} +${all.length - MAX_BADGES}` : shown;
 }
 
 /** Every service of a device in words (the badges' tooltip, the details). */
 export function serviceListText(d: HasServices): string {
-  return deviceServices(d).map((s) => `${s.label} (${s.badge})`).join(', ');
+  const n = d.applications ? d.applications.length : 0;
+  return deviceServices(d).map((s) => (s.id === 'applications' ? `${n} application${n === 1 ? '' : 's'} (APP)` : `${s.label} (${s.badge})`)).join(', ');
 }

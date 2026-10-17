@@ -2,7 +2,7 @@
 
 This document is the contract of **NetAtlas YAML model format version 1**,
 the only model format NetAtlas supports. Every file declares it with
-`netatlas: 1`; a missing line or any other value is an error. The model
+`netatlas: 2`; a missing line or any other value is an error. The model
 format version is independent of the application version: NetAtlas 0.1.3 is
 an application release, and it reads and writes model format 1.
 
@@ -24,7 +24,7 @@ over two internet uplinks.
 The file must use the [supported YAML subset](YAML-SUBSET.md).
 
 ```yaml
-netatlas: 1            # required format version
+netatlas: 2            # required format version
 title: My network      # optional
 description: |         # optional
   Free text.
@@ -54,7 +54,7 @@ the YAML file**.
 
 | Fact | Configured in (authoritative) | Derived, read-only |
 |---|---|---|
-| Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `dhcp: true` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
+| Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `ipv4: dhcp` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
 | The VLAN of an IP network | `vlan` on the network | the VLAN shown for each interface address inside that network |
 | The VLANs a port carries | `vlans` and `native` on the port, or on its aggregate (one VLAN: access; several: trunk); `routed: true` on a Layer 3 switch's routed port | its mode (access / trunk / routed) and badge, the port's diagram tag, the networks a cable carries (the networks of its ports' VLANs), the "VLANs differ" mark, the cables listed with a network, the VLAN checks |
 | Speed and medium of a physical connection | `speed` and `medium` on the link | cable width, colour and label |
@@ -750,7 +750,7 @@ devices:
 | `id` | required, unique within the device across both lists. This is the stable identifier and the interface name used in references (`core1:Vlan10`). |
 | `label` | optional display name (defaults to the id) |
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
-| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
+| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `ipv4: dhcp` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `vlans`, `native`, `routed` | a port's (or an aggregate's) VLANs: see [Port VLANs](#port-vlans-access-trunk-routed). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
@@ -828,7 +828,7 @@ interfaces:
 | `routed` | `true`: a **routed port** of a Layer 3 switch (a Layer 3 interface: no VLANs, it may have addresses). |
 
 * A port with VLANs is a **bridge port** (a switch port). It has **no
-  address of its own**: an `ip` or `dhcp: true` on it is an error (the
+  address of its own**: an `ip` or `ipv4: dhcp` on it is an error (the
   address goes on the VLAN interface of its VLAN, or the port is made
   routed).
 * **Per device type:**
@@ -1054,7 +1054,7 @@ Every physical interface and every virtual or tunnel interface has an explicit D
 
 ```yaml
     interfaces:
-      - {id: wan1, dhcp: true, description: LTE modem}   # address assigned by DHCP
+      - {id: wan1, ipv4: dhcp, description: LTE modem}   # address assigned by DHCP
       - {id: lan0, ip: 10.30.0.1/24}                     # dhcp omitted: false
       - {id: eth3}                                       # no address, and not DHCP either
 ```
@@ -1062,8 +1062,8 @@ Every physical interface and every virtual or tunnel interface has an explicit D
 * `dhcp` is `true` or `false`, and an omitted `dhcp` is `false`. An
   interface without addresses is **not** assumed to use DHCP. The editor
   creates every interface with DHCP off and writes nothing for it; switching
-  DHCP on writes `dhcp: true`, switching it off removes the key again.
-* DHCP and manual addresses exclude each other. `dhcp: true` together with
+  DHCP on writes `ipv4: dhcp`, switching it off removes the key again.
+* DHCP and manual addresses exclude each other. `ipv4: dhcp` together with
   an `ip` is an **error** (attached to the addresses). Neither value is
   dropped or chosen: fix the file by deleting one of them.
 * DHCP is not an address. The address the interface will obtain is unknown,
@@ -1074,10 +1074,10 @@ Every physical interface and every virtual or tunnel interface has an explicit D
   is unchanged. Its DHCP server is modelled as well: see
   [Network services](#network-services-services-dhcp-and-dns-servers).
 * **A loopback can't use DHCP.** It is an address of the device itself and is
-  always configured, so `dhcp: true` on a loopback is an **error** (kept in
+  always configured, so `ipv4: dhcp` on a loopback is an **error** (kept in
   the file, not dropped), and the loopback still needs its address.
   `dhcp: false` on a loopback is accepted. The editor shows no DHCP switch on
-  a loopback card; if the file has `dhcp: true` there, the switch is shown
+  a loopback card; if the file has `ipv4: dhcp` there, the switch is shown
   only so that it can be turned off.
 * In the editor the **DHCP** switch sits next to the addresses (not on a loopback). While it is
   on, manual addresses can't be entered. Turning it on for an interface that
@@ -1132,7 +1132,7 @@ devices:
   derived from it: no A or AAAA record is created or implied, and no DNS
   server is consulted. Associating a name with one particular address would
   be a separate, future addition to the format.
-* An interface with `dhcp: true` can't be associated; that is an error.
+* An interface with `ipv4: dhcp` can't be associated; that is an error.
 * Errors: an invalid name; the same name twice on one device (names are
   compared without case and without a trailing dot); an unknown interface;
   an interface listed twice for a name; no interface. The same name on
@@ -1193,7 +1193,7 @@ boundary.
 | Hypervisor | `hypervisor` | HV |  | Server |  |
 | Container engine | `container_engine` | CTR |  | Server, Virtual machine |  |
 | Storage service | `storage` | STOR |  | Storage, Server, Virtual machine |  |
-| Application | `application` | APP |  | Server, Virtual machine, Container, Storage, System | only a System whose purpose is Host runs services |
+| Applications | `applications` | APP |  | Server, Virtual machine, Container, Storage, System, Endpoint | only a System whose purpose is Host runs services |
 | Inspection | `inspection` | IPS | IDS/IPS |  |  |
 | Domain separation | `separation` | SEP | Security gateway (its configuration required) |  |  |
 <!-- service-matrix:end -->
@@ -1349,7 +1349,7 @@ DNS name, a CNAME next to another record of the same name, and an A record
 whose value isn't an IPv4 address (AAAA: IPv6) are errors. A DNS server without a zone is an error; `listen` must be one
 of its own addresses; `forwarders` and `reverse_zones` are optional.
 
-**Clients.** A DHCP client is an interface with `dhcp: true`. Its segment
+**Clients.** A DHCP client is an interface with `ipv4: dhcp`. Its segment
 needs a DHCP server: one in its broadcast domain, or a relay on its gateway
 interface (`dhcp_relay`); else the consistency check `dhcp-no-server`
 reports it. A host's DNS servers come from its lease, else from
@@ -1757,7 +1757,7 @@ is assigned on [interfaces](#interfaces)) and **no `members` list**.
 
 A device is a member of a network when **at least one statically configured
 address of one of its interfaces (physical or logical) lies inside the
-network's prefix**. An interface with `dhcp: true` has no configured
+network's prefix**. An interface with `ipv4: dhcp` has no configured
 address, so it makes its device a member of nothing.
 The list is computed from the current model every time it is shown. It names
 the device once, with every matching interface (or loopback) and address.
@@ -2217,9 +2217,9 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `directed_broadcast` | Forward directed broadcasts | Off | `on`, `off` | RFC 2644 (off by default since 1999) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
 | `storm_control_broadcast` | Storm control: broadcast | off | 0 (off) – 100000000 | off unless configured (Cisco storm-control) | switch ports and their aggregates of switches |  |
 | `storm_control_multicast` | Storm control: multicast | off | 0 (off) – 100000000 | off unless configured (Cisco storm-control) | switch ports and their aggregates of switches |  |
-| `dhcp_retries` | DHCP retries | 4 | 1 – 20 | RFC 2131 §4.1 (4, 8, 16, 32 s: about a minute) | DHCP clients (`dhcp: true`) |  |
-| `dhcp_backoff` | DHCP retransmission delay (s) | 4 s | 100 ms – 64 s | RFC 2131 §4.1 (4 s, doubled each time up to 64 s) | DHCP clients (`dhcp: true`) |  |
-| `link_local_fallback` | Link-local fallback | Off | `on`, `off` | off unless set (RFC 3927: Windows and macOS use it) | DHCP clients (`dhcp: true`) |  |
+| `dhcp_retries` | DHCP retries | 4 | 1 – 20 | RFC 2131 §4.1 (4, 8, 16, 32 s: about a minute) | DHCP clients (`ipv4: dhcp`) |  |
+| `dhcp_backoff` | DHCP retransmission delay (s) | 4 s | 100 ms – 64 s | RFC 2131 §4.1 (4 s, doubled each time up to 64 s) | DHCP clients (`ipv4: dhcp`) |  |
+| `link_local_fallback` | Link-local fallback | Off | `on`, `off` | off unless set (RFC 3927: Windows and macOS use it) | DHCP clients (`ipv4: dhcp`) |  |
 | `igmp_version` | IGMP / MLD version | IGMPv3 / MLDv2 | `v3`, `v2` | Linux, Windows and current routers (RFC 3376, RFC 3810) | interfaces with an address | yes |
 | `unsolicited_report_interval` | Unsolicited report interval (s) | by version: v2 10 s, v3 1 s | 0 (by version: v2 10 s, v3 1 s) – 1 min | RFC 2236 §8.10 (10 s) and RFC 3376 §8.11 (1 s) | interfaces with an address | yes |
 | `igmp_querier` | IGMP / MLD querier | On | `on`, `off` | on where a router runs PIM or IGMP (Cisco IOS, Junos) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) | yes |
@@ -2827,10 +2827,10 @@ next to the object and field they concern.
   of the device; a tunnel destination that is neither an address nor a
   device or interface of the model; `members`, `vlan`, `source` or
   `destination` on an interface of another type;
-* `dhcp` that isn't `true` or `false`, `dhcp: true` on an interface
-  that also has addresses, and `dhcp: true` on a loopback;
+* `dhcp` that isn't `true` or `false`, `ipv4: dhcp` on an interface
+  that also has addresses, and `ipv4: dhcp` on a loopback;
 * a DNS name that isn't a valid host name, is listed twice on a device, has
-  no interface, names an unknown interface or one with `dhcp: true`, or
+  no interface, names an unknown interface or one with `ipv4: dhcp`, or
   lists an interface twice;
 * `over` cycles;
 * a relation `direction` other than `bidirectional` or `unidirectional`;

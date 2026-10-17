@@ -74,7 +74,7 @@ test('address math: host addresses, free ranges and the next free address (IPv4 
 
 // ------------------------------------------------------------ routing
 
-const net = `netatlas: 1
+const net = `netatlas: 2
 devices:
   - id: r1
     type: router

@@ -141,7 +141,7 @@ test('logical view: a guest names its host ("runs on"); bridge and overlay netwo
   // the physical view does not draw them as networks; the model itself is untouched
   assert.ok(!m.index.networks.has('ctr1/bridge'));
   // two Docker hosts with the default bridge: each its own network, its own members
-  const two = model(`netatlas: 1
+  const two = model(`netatlas: 2
 devices:
   - id: a
     type: server

@@ -152,7 +152,7 @@ function l3Lines(model: Model, i: Interface): Array<[string, LineField]> {
   const tagField = i.vlan !== undefined && i.type === 'virtual' ? 'vlan' : i.vrf ? 'vrf' : i.dhcp ? 'dhcp' : '';
   const out: Array<[string, LineField]> = tags.length ? [[tags.join(' · '), { field: tagField, value: '' }]] : [];
   // a DHCP client's address is leased at runtime: its line is reserved here (a simulation writes the lease into it)
-  const lease: Array<[string, LineField]> = i.dhcp && !i.addresses.length ? [[LEASE_PLACEHOLDER, { field: 'lease', value: '' }]] : [];
+  const lease: Array<[string, LineField]> = i.dhcp ? [[LEASE_PLACEHOLDER, { field: 'lease', value: '' }]] : [];
   const relay: Array<[string, LineField]> = i.dhcpRelay && i.dhcpRelay.length ? [[`DHCP relay → ${i.dhcpRelay.join(', ')}`, { field: 'dhcp_relay', value: '' }]] : [];
   return out.concat(
     lease,

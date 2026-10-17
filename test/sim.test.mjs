@@ -140,7 +140,7 @@ test('ARP tables: configured and default timers, the timer scale, ages and expir
   assert.ok(events(s, (e) => e.device === 'r1' && /10\.0\.12\.2: timeout reached while in use — refreshing/.test(e.detail)).length);
 });
 
-const L2 = `netatlas: 1
+const L2 = `netatlas: 2
 title: switching
 devices:
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.1/24}]}
@@ -202,7 +202,7 @@ test('MAC tables: aging (with the timer scale), flushing on a failed port, relea
   assert.equal(p.macTable('acc-sw').find((r) => r.mac === core1 && r.vlan === 10).port, 'up2');
 });
 
-const L3SW = (layer3) => `netatlas: 1
+const L3SW = (layer3) => `netatlas: 2
 title: inter-VLAN
 devices:
   - id: h10
@@ -386,7 +386,7 @@ function pair(protocol, opts = {}) {
       - {id: lo0, type: loopback, ip: 10.255.0.${n}/32}
     routes:
       - {prefix: 10.255.0.${3 - n}/32, via: 10.0.0.${3 - n}}`;
-  return `netatlas: 1
+  return `netatlas: 2
 title: ${protocol}
 devices:
 ${dev(1)}
@@ -494,7 +494,7 @@ test('LACP on the members of an aggregate; STP, LLDP and CDP where the model has
   // no STP relation: no BPDUs (loops are still broken)
   const r = sim(reroute);
   assert.ok(!flightsOf(r, 0, 10000).some((f) => f.protocol === 'stp'));
-  const ll = sim(`netatlas: 1
+  const ll = sim(`netatlas: 2
 title: lldp
 devices:
   - {id: a, type: switch, interfaces: [{id: p1, vlans: 1}]}

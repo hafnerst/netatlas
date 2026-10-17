@@ -123,7 +123,7 @@ test('deterministic and stable: the same model and strategy give the same positi
 });
 
 test('performance: a 300-device model with sites is arranged in a few seconds', () => {
-  let y = 'netatlas: 1\ngroups:\n';
+  let y = 'netatlas: 2\ngroups:\n';
   for (let s = 0; s < 20; s++) y += `  - {id: s${s}, label: Site ${s}, kind: site}\n`;
   y += 'devices:\n';
   const links = [];

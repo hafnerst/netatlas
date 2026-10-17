@@ -23,7 +23,7 @@ const findings = (text, id) => validate.loadModel(text).findings.filter((f) => !
 
 // a Layer 3 switch a (trunk with a native VLAN, access ports, a routed uplink, a LAG trunk, two VLAN interfaces),
 // a Layer 2 switch b (the same, and a trunk to the router), a router r (a routed port, and one with subinterfaces) and a server
-const base = `netatlas: 1
+const base = `netatlas: 2
 devices:
   - id: a
     type: switch

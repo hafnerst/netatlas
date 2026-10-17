@@ -43,6 +43,7 @@ import { containerNetworks, hostOf, portGroupAttachments, portGroupL2, portGroup
 import { scopeSuggestions } from '../analysis/helpers';
 import { purposeIcons } from '../diagram/icons';
 import { SERVICES, SvcDef, SvcParam, serviceDef, serviceEligibility, isBuiltIn, builtInServices } from '../model/service-registry';
+import { APP_PARAMS, APP_PROFILES, appProfile, appSummary } from '../model/applications';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 /**
@@ -2073,7 +2074,7 @@ export class Editor {
    * The addresses of an interface, with the DHCP switch next to them. While
    * DHCP is on, manual addresses can't be entered (a file that has both shows
    * them, with the error, so they can be removed). A loopback can't use
-   * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+   * DHCP, so it has no switch, unless its file says "ipv4: dhcp": then the
    * switch is shown so that it can be turned off.
    */
   private addressField(p: Path, loop: boolean, o: string): HTMLElement {
@@ -2106,7 +2107,7 @@ export class Editor {
     f.setAttribute('data-dhcp', on ? 'on' : 'off');
     // the switch sits beside the label (see .field[data-dhcp] in the styles)
     f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
-    for (const is of doc.issuesAt(p.concat('dhcp'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    for (const is of doc.issuesAt(p.concat('ipv4'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     return f;
   }
 
@@ -2430,6 +2431,8 @@ export class Editor {
       kids.push(box('container_engine', 'Container engine', 'Runs containers: its container networks'));
       if (doc.get(sp.concat('container_engine'))) kids.push(this.engineCard(sp.concat('container_engine'), dev, devIndex), this.guestsField(dev, devIndex, 'container'));
     }
+    // its applications: each a collapsed entry, with Add application
+    if (doc.get(sp.concat('applications'))) kids.push(this.applicationsCard(devIndex));
     // the other services of the registry it runs (a router's Wireless access among them), then Add service…
     const builtIn = builtInServices(like).map((x) => x.id);
     for (const def of SERVICES) {
@@ -2438,6 +2441,98 @@ export class Editor {
     }
     kids.push(this.addServiceField(sp, devIndex, like));
     return this.group(isContainer({ type: type }) ? 'Services (DHCP, DNS)' : 'Services', kids, 'netservices');
+  }
+
+  /**
+   * Applications (`services.applications`): each a collapsed entry with its
+   * one-line summary ("Management · TCP listener · 443"); opened: its id,
+   * name and profile, the profile's basic fields, and its other fields in
+   * a collapsed Advanced section; Duplicate and Remove. Add application
+   * appends one and focuses its profile (nothing is chosen for it).
+   */
+  private applicationsCard(devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const lp = doc.appsPath(devIndex);
+    const n = doc.get(lp);
+    const items = n && n.kind === 'seq' ? n.items : [];
+    const card = this.e('div', { class: 'svc-card', 'data-svc-card': 'applications', role: 'group', 'aria-label': 'Applications' }, [
+      this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [`Applications (${items.length})`])]),
+      this.e('p', { class: 'help' }, ['Generic TCP and UDP behaviour and MQTT clients. A name such as “Modbus TCP” labels an application: it does not simulate that protocol.']),
+    ]);
+    for (const is of doc.issuesAt(lp, true)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    items.forEach((_it, k) => card.appendChild(this.appEntry(devIndex, k)));
+    card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-app', 'data-index': String(devIndex) }, ['+ Add application'])]));
+    return card;
+  }
+
+  /** One application: its summary; opened, its fields (basic, then Advanced), Duplicate and Remove. */
+  private appEntry(devIndex: number, k: number): HTMLElement {
+    const doc = this.doc;
+    const p = doc.appsPath(devIndex).concat(k);
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const v = this.valuesAt(p);
+    const id = doc.text(p.concat('id')) || '';
+    const portText = doc.text(p.concat('port'));
+    const summary = appSummary({ id, name: doc.text(p.concat('name')), profile: doc.text(p.concat('profile')), port: portText !== undefined && /^[0-9]+$/.test(portText) ? Number(portText) : undefined, peer: doc.text(p.concat('peer')), broker: doc.text(p.concat('broker')), publish: this.listTexts(p.concat('publish')), subscribe: this.listTexts(p.concat('subscribe')) });
+    const iss = doc.issuesAt(p);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card app-card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-app': id });
+    if (this.open.has(J(p))) card.setAttribute('open', '');
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [summary]), iss.length ? this.badge(errs, iss.length - errs) : null]));
+    const o = 'application';
+    card.appendChild(this.field('Id *', this.input(p.concat('id'), 'app-id', id, { required: '' }), p.concat('id'), `Unique on ${dev || 'the device'}; others name it ${dev || 'device'}/${id || 'id'}. Renaming updates them.`));
+    const shown = APP_PARAMS.filter((x) => x.key !== 'id' && (!x.when || x.when(v)));
+    for (const prm of shown.filter((x) => !x.advanced)) card.appendChild(this.appParamField(p, prm, devIndex, o));
+    const adv = shown.filter((x) => x.advanced);
+    if (adv.length && v.profile) {
+      const ap = p.concat('#advanced');
+      const set = adv.filter((x) => doc.get(p.concat(x.key)) !== undefined).length;
+      const advErr = adv.some((x) => doc.issuesAt(p.concat(x.key)).some((i) => i.severity === 'error'));
+      const box = this.e('details', { class: 'adv-section', 'data-card': J(ap) });
+      if (this.open.has(J(ap)) || advErr) box.setAttribute('open', '');
+      box.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+      box.appendChild(this.e('p', { class: 'help' }, ['Sizes, timers and retries: empty fields take the profile’s modelling defaults (shown as their placeholders).']));
+      for (const prm of adv) box.appendChild(this.appParamField(p, prm, devIndex, o));
+      card.appendChild(box);
+    }
+    for (const is of iss.filter((x) => !x.key && doc.pathOf(x.node) !== null && J(doc.pathOf(x.node) as Path) === J(p))) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    card.appendChild(
+      this.e('div', { class: 'app-actions' }, [
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-app', 'data-index': String(devIndex), 'data-k': String(k), title: `Duplicate ${id}` }, ['Duplicate']),
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-app', 'data-index': String(devIndex), 'data-k': String(k), title: `Remove ${id}`, 'aria-label': `Remove the application ${id}` }, ['Remove']),
+      ]),
+    );
+    return card;
+  }
+
+  /** A field of an application: its peer and broker with what the model offers, its topic lists; the others as a service's. */
+  private appParamField(p: Path, prm: SvcParam, devIndex: number, o: string): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const fp = p.concat(prm.key);
+    const req = typeof prm.required === 'function' ? prm.required(this.valuesAt(p)) : !!prm.required;
+    const label = prm.label + (req ? ' *' : '');
+    if (prm.key === 'profile') {
+      const sel = this.labelledSelect(fp, o, APP_PROFILES.map((x) => [x.id, x.label] as [string, string]), 'Select a profile');
+      sel.setAttribute('data-t', 'app-profile');
+      return this.field(label, sel, fp, (appProfile(doc.text(fp)) || { help: prm.help }).help);
+    }
+    if (prm.key === 'peer') {
+      // the listeners of the other devices this profile can talk to, then the devices
+      const prof = appProfile(doc.text(p.concat('profile')));
+      const apps: string[] = [];
+      for (const d of model ? model.devices : []) for (const a of d.applications || []) if (d.id !== dev && prof && prof.peerProfiles.indexOf(a.profile) >= 0) apps.push(`${d.id}/${a.id}`);
+      return this.textField(fp, label, o, 'text', apps.concat(this.ids('device').filter((x) => x !== dev)), prm.help, apps[0] || prm.placeholder);
+    }
+    if (prm.key === 'broker') {
+      const brokers = model ? model.devices.filter((d) => !!d.appServices && d.appServices.has('mqtt_broker')).map((d) => d.id) : [];
+      return this.field(label, this.selectEl(fp, 'text', o, brokers, doc.text(fp) || '', brokers.length ? 'Select the broker' : 'No device runs an MQTT broker'), fp, prm.help);
+    }
+    if (prm.key === 'client_id') return this.textField(fp, label, o, 'text', undefined, prm.help, `${dev}-${doc.text(p.concat('id')) || 'app'}`);
+    if (prm.type === 'topics') return this.listField(fp, label, o, prm.placeholder || 'a/topic', prm.help);
+    if (prm.key === 'description') return this.textField(fp, label, o, 'textarea', undefined, prm.help);
+    return this.svcParamField(p, prm, o, devIndex);
   }
 
   /**
@@ -4603,6 +4698,12 @@ export class Editor {
         const di = Number(target.getAttribute('data-index'));
         const def = serviceDef(val);
         if (!def) return true;
+        if (val === 'applications') {
+          const k = doc.addApplication(di);
+          made = doc.appsPath(di).concat(k, 'profile');
+          note = `Application ${doc.text(doc.appsPath(di).concat(k, 'id')) || ''} added to ${this.devName(di)}: choose its profile.`;
+          break;
+        }
         if (val === 'dhcp' || val === 'dns' || val === 'hypervisor' || val === 'container_engine') doc.setNetService(di, val, true);
         else doc.addBlock(p.concat(val), def.label);
         made = p.concat(val);
@@ -4650,6 +4751,30 @@ export class Editor {
         }
         const n = doc.renameEntity(kind, p[1] as number, trimmed);
         note = n ? `Renamed; ${n} reference${n > 1 ? 's' : ''} updated.` : undefined;
+        break;
+      }
+      case 'app-profile': {
+        const gone = doc.setAppProfile(p.slice(0, -1), val);
+        note = val ? `Profile: ${(appProfile(val) || { label: val }).label}${gone.length ? ` (${gone.join(', ')} removed: not part of it)` : ''}.` : undefined;
+        break;
+      }
+      case 'app-id': {
+        const di = p[1] as number;
+        const k = p[4] as number;
+        const cur = doc.text(p) || '';
+        if (trimmed === cur) return true;
+        if (!ID_RE.test(trimmed)) {
+          this.host.toast('An application id is letters, digits, “_”, “.” and “-”.');
+          this.host.changed();
+          return true;
+        }
+        if (doc.appIds(di).some((x, j) => j !== k && x === trimmed)) {
+          this.host.toast(`${this.devName(di)} already has an application “${trimmed}”.`);
+          this.host.changed();
+          return true;
+        }
+        const n = doc.renameApplication(di, k, trimmed);
+        note = n ? `Renamed; ${n} peer${n > 1 ? 's' : ''} updated.` : undefined;
         break;
       }
       case 'ifid': {
@@ -4860,6 +4985,35 @@ export class Editor {
         }
         doc.remove(p, 'Delete Wi-Fi network');
         this.host.changed(`The Wi-Fi network ${net} was deleted${clients.length ? `; ${clients.length} connection${clients.length === 1 ? '' : 's'} now name${clients.length === 1 ? 's' : ''} a missing network` : ''}.`);
+        return true;
+      }
+      case 'add-app': {
+        const k = doc.addApplication(index);
+        this.didCreate(doc.appsPath(index).concat(k, 'profile'), `Application ${doc.text(doc.appsPath(index).concat(k, 'id')) || ''} added to ${this.devName(index)}: choose its profile.`, btn);
+        return true;
+      }
+      case 'dup-app': {
+        const k = Number(btn.getAttribute('data-k'));
+        const j = doc.duplicateApplication(index, k);
+        if (j < 0) return true;
+        this.didCreate(doc.appsPath(index).concat(j, 'id'), `Duplicated as ${doc.text(doc.appsPath(index).concat(j, 'id')) || ''}: give it its own port or peer where it needs one.`, btn);
+        return true;
+      }
+      case 'del-app': {
+        const k = Number(btn.getAttribute('data-k'));
+        const dev = doc.text(['devices', index, 'id']) || '';
+        const id = doc.text(doc.appsPath(index).concat(k, 'id')) || '';
+        const refs = doc.applicationRefTexts(dev, id);
+        if (refs.length) {
+          const a = await this.host.dialog({
+            title: `Remove the application ${dev}/${id}?`,
+            body: [`${refs.length === 1 ? 'This application names it as its peer' : `These ${refs.length} applications name it as their peer`}; ${refs.length === 1 ? 'its peer is' : 'their peers are'} removed with it and reported as missing until you choose another:`, this.e('ul', { class: 'removal-list' }, refs.map((x) => this.e('li', {}, [x]))) as unknown as string, 'You can undo this with Ctrl+Z.'],
+            buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Remove', value: 'go', kind: 'danger' }],
+          });
+          if (a !== 'go') return true;
+        }
+        doc.removeApplication(index, k);
+        this.host.changed(`The application ${id} was removed${refs.length ? `; ${refs.length} peer${refs.length === 1 ? '' : 's'} now missing` : ''}.`);
         return true;
       }
       case 'add-block': {
@@ -5240,4 +5394,4 @@ interface SimOwner {
 }
 
 /** The services whose fields this file draws in their own cards (not from their parameters' definitions). */
-const OWN_UI = ['dhcp', 'dns', 'hypervisor', 'container_engine', 'vpn', 'separation'];
+const OWN_UI = ['dhcp', 'dns', 'hypervisor', 'container_engine', 'vpn', 'separation', 'applications'];

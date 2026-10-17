@@ -897,7 +897,7 @@ export class Simulation {
   /** Is a DHCP client interface still waiting for its lease (a test from it waits too)? */
   private leaseWaits(dev: string, iface: string): boolean {
     const mi = this.model.index.interfaces.get(dev + ':' + iface);
-    return !!mi && !!mi.dhcp && !mi.addresses.length && !this.engine.leases.get(dev + ':' + iface);
+    return !!mi && !!mi.dhcp && !this.engine.leases.get(dev + ':' + iface);
   }
 
   /** The Send tests (each with its messages), newest first. */
@@ -941,7 +941,7 @@ export class Simulation {
       const options: TestDestOption[] = [];
       for (const l of Array.from(sd.l3.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
         const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
-        if (mi && mi.dhcp && !mi.addresses.length) {
+        if (mi && mi.dhcp) {
           const lease = e.leases.get(d.id + ':' + l.id);
           options.push({ value: `${l.id}|dhcp`, iface: l.id, addr: 'dhcp', label: lease ? `${l.id} - ${formatAddr(lease.addr.addr)} (${lease.kind === 'dhcp' ? 'DHCP' : 'link-local'})` : `${l.id} - No DHCP lease`, ok: !!lease });
           continue;
@@ -977,7 +977,7 @@ export class Simulation {
       const l3s = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       for (const l of l3s) {
         const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
-        const dhcp = !!mi && !!mi.dhcp && !mi.addresses.length;
+        const dhcp = !!mi && !!mi.dhcp;
         const at = this.attachment(d.id, l.id);
         if (!dhcp) {
           if (!l.addrs.length) {

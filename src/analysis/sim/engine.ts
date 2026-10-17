@@ -864,7 +864,8 @@ export class Engine {
     if (!sd || !l3) return;
     const had = this.leases.get(l.dev + ':' + l.iface);
     this.leases.set(l.dev + ':' + l.iface, l);
-    l3.addrs = [l.addr];
+    // (the IPv4 address it leased; its IPv6 addresses stay)
+    l3.addrs = l3.addrs.filter((a) => a.addr.version !== 4).concat([l.addr]);
     this.stateVersion++;
     this.routingChanged();
     if (!had || compareAddr(had.addr.addr, l.addr.addr) !== 0) {
@@ -881,7 +882,7 @@ export class Engine {
     this.leases.delete(k);
     const sd = this.net.devices.get(dev);
     const l3 = sd ? sd.l3.get(iface) : undefined;
-    if (l3) l3.addrs = [];
+    if (l3) l3.addrs = l3.addrs.filter((a) => a !== l.addr);
     this.flushIface(dev, iface, why);
     this.stateVersion++;
     this.routingChanged();
@@ -890,7 +891,7 @@ export class Engine {
   /** Does an interface have its address: a configured one, or (a DHCP client) a lease? */
   addressReady(dev: string, iface: string): boolean {
     const i = this.model.index.interfaces.get(dev + ':' + iface);
-    if (!i || !i.dhcp || i.addresses.length) return true;
+    if (!i || !i.dhcp) return true;
     return this.leases.has(dev + ':' + iface);
   }
 

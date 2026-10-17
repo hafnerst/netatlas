@@ -16,7 +16,7 @@
 # Analyze ▾ → Trace path… from eng-ws to plc notes the TAP's copy; Simulate ▾
 # → Start simulation… shows the copies arriving at the IDS while the
 # original frames go on to the PLC.
-netatlas: 1
+netatlas: 2
 title: OT cell — protocol gateway, TAP and passive IDS
 description: |
   A PLC and an HMI behind a protocol gateway (a System, Layer 3 forwarder),

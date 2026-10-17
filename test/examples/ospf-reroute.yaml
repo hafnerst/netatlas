@@ -10,7 +10,7 @@
 # (c3 - e1), the switches of both sites, and the single cables of the
 # camera, the user's PC, the server and the TAP feed. A cable of the core
 # ring cuts nothing off: it only takes its own OSPF adjacency down.
-netatlas: 1
+netatlas: 2
 title: OSPF reroute and VRRP failover
 description: |
   A ring of three core routers between two sites, with OSPF costs that make

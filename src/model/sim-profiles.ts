@@ -906,7 +906,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   { ...service('snmp', 'SNMP', 'UDP 161', 'GetRequest', 'GetResponse', 60, 'the manager (the last endpoint) polls each agent'), fromServer: true, transport: 'UDP 161, unicast from the manager (the last endpoint) to each agent' },
   service('radius', 'RADIUS / TACACS+', 'UDP 1812 (TACACS+ TCP 49)', 'Access-Request', 'Access-Accept', 60, 'authentication requests to the server'),
   {
-    // DHCP is simulated from the servers' scopes (services: dhcp) and the clients' dhcp: true (analysis/sim/netsvc.ts):
+    // DHCP is simulated from the servers' scopes (services: dhcp) and the clients' ipv4: dhcp (analysis/sim/netsvc.ts):
     // a relation of it is drawn, not run as a session of its own (its behaviour has no engine)
     id: 'dhcp',
     label: 'DHCP',

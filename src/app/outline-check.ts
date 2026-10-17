@@ -16,7 +16,7 @@ const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
  * cable with an error (a folded section shows its badge), no networks (empty),
  * a relation, a group and a protocol of the model.
  */
-export const OUTLINE_MODEL = `netatlas: 1
+export const OUTLINE_MODEL = `netatlas: 2
 title: Objects list check
 groups:
   - {id: site, label: Site}

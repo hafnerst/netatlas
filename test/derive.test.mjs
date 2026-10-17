@@ -26,7 +26,7 @@ const n1 = (cidr) => [{ id: 'n', label: 'n', cidr, attrs: [], line: 0 }];
 
 // ------------------------------------------------------------------ membership
 
-const net = `netatlas: 1
+const net = `netatlas: 2
 devices:
   - id: r1
     logical_interfaces:
@@ -66,7 +66,7 @@ test('membership: a device is a member when one of its addresses lies in the net
 });
 
 test('membership: an interface with DHCP on and no known address makes its device a member of nothing', () => {
-  const { model: m } = ok(net.replace('{id: eth2}', '{id: eth2, dhcp: true}').replace('interfaces: [p1, p2]', 'interfaces: [{id: p1, dhcp: true}, p2]'));
+  const { model: m } = ok(net.replace('{id: eth2}', '{id: eth2, ipv4: dhcp}').replace('interfaces: [p1, p2]', 'interfaces: [{id: p1, ipv4: dhcp}, p2]'));
   assert.deepEqual(derive.interfaceNetworks(m, 'r1', 'eth2'), []);
   assert.deepEqual(derive.deviceNetworks(m, 'sw'), []);
   for (const n of m.networks) assert.ok(!members(m, n.id).includes('sw'), n.id);
@@ -252,7 +252,7 @@ test('details and logical view use derived membership and derived interface VLAN
 // ------------------------------------- keys outside the format are errors
 
 test('keys that are not part of the format are unknown keys: reported where they are, never read or converted', () => {
-  const wrong = `netatlas: 1
+  const wrong = `netatlas: 2
 devices:
   - id: r1
     interfaces:
@@ -279,18 +279,18 @@ networks:
   assert.equal(doc(wrong).exportText(), wrong);
   // the same keys are reported when written in block style, and link "speed"/"medium" stay valid
   // (a port's speed is a setting of the link end, not of the interface)
-  assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /unknown key "speed"/);
-  assert.deepEqual(errorsOf('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
+  assert.match(errorsOf('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /unknown key "speed"/);
+  assert.deepEqual(errorsOf('netatlas: 2\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
 });
 
 test('the schema: each fact has one key, in one place', () => {
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'vlans', 'native', 'routed', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
   // what a device is comes first: its type, kind, role, mode, a System's purpose and icon; then a guest names its host
   assert.deepEqual(SCHEMA.device.slice(SCHEMA.device.indexOf('type'), SCHEMA.device.indexOf('host') + 1), ['type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host']);
   // the built-in functions of the appliances (a VPN gateway's VPN, a Security gateway's domain separation), then the services
-  assert.deepEqual(SCHEMA.netServices, ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'application']);
+  assert.deepEqual(SCHEMA.netServices, ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'applications']);
   assert.deepEqual(SCHEMA.route, ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
   // a link end only names its port and what the port is set to: its VLANs are the port's
@@ -309,7 +309,7 @@ test('the schema: each fact has one key, in one place', () => {
 });
 
 test('VRF is assigned on interfaces (loopbacks included), not on networks', () => {
-  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    logical_interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
+  const r = ok('netatlas: 2\ndevices:\n  - id: pe\n    logical_interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
   assert.deepEqual(r.model.devices[0].logical.concat(r.model.devices[0].interfaces).map((i) => i.vrf), ['red', 'red', undefined]);
   assert.match(JSON.stringify(panels.detailsFor(r.model, 'iface:pe:e0')), /"vrf"[^\]]*\]?[^\]]*red/);
   // membership is by prefix only; the VRF does not take part
@@ -317,12 +317,12 @@ test('VRF is assigned on interfaces (loopbacks included), not on networks', () =
 });
 
 test('a group kind is free text', () => {
-  const r = ok('netatlas: 1\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n  - {id: r3, kind: row, parent: f2}\n');
+  const r = ok('netatlas: 2\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n  - {id: r3, kind: row, parent: f2}\n');
   assert.deepEqual(r.model.groups.map((g) => g.kind), ['building', 'floor', 'row']);
 });
 
 test('loopbacks stay logical: no physical-link properties, no cable', () => {
-  const base = 'netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
+  const base = 'netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
   assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /unknown key "speed"/);
   assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /"a:lo0" is a loopback, not a physical interface/);
   assert.doesNotMatch(JSON.stringify(panels.detailsFor(ok(base.replace('SPEED', '')).model, 'iface:a:lo0')), /cable|speed|media/);

@@ -64,6 +64,7 @@ import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
 import { isContainer } from '../../model/virtual';
 import { profileAt } from '../separation';
+import { deviceListeners } from '../listeners';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** RFC 6298 §2.5 allows a maximum of at least 60 s; Linux TCP_RTO_MAX is 120 s. */
@@ -1699,30 +1700,9 @@ function svcOf(m: Model, dev: string, id: string): ServiceInstance | undefined {
   return d && d.appServices ? d.appServices.get(id) : undefined;
 }
 
-/** The ports a device's services listen on. */
+/** The ports a device's services and applications listen on (analysis/listeners.ts). */
 export function serviceListening(d: Device | undefined): PortRule[] {
   const out: PortRule[] = [];
-  if (!d || !d.appServices) return out;
-  const add = (proto: 'tcp' | 'udp', port: number): void => {
-    if (!out.some((x) => x.proto === proto && x.from === port)) out.push({ proto, from: port, to: port });
-  };
-  const s = d.appServices;
-  if (s.has('ntp')) add('udp', 123);
-  const aaa = s.get('aaa');
-  if (aaa) aaa.values.protocol === 'tacacs' ? add('tcp', 49) : add('udp', 1812);
-  const log = s.get('syslog');
-  if (log) add(log.values.transport === 'tcp' ? 'tcp' : 'udp', typeof log.values.port === 'number' ? (log.values.port as number) : 514);
-  const px = s.get('proxy');
-  if (px && typeof px.values.listener === 'number') add('tcp', px.values.listener as number);
-  const lb = s.get('load_balancing');
-  if (lb && typeof lb.values.port === 'number') add('tcp', lb.values.port as number);
-  if (s.has('wireless_controller')) add('udp', 5246);
-  const st = s.get('storage');
-  for (const p of st && Array.isArray(st.values.protocols) ? (st.values.protocols as string[]) : []) add('tcp', p === 'nfs' ? 2049 : p === 'smb' ? 445 : 3260);
-  const app = s.get('application');
-  for (const p of app && Array.isArray(app.values.ports) ? (app.values.ports as string[]) : []) {
-    const r = parsePorts(p);
-    if ('list' in r) for (const x of r.list) if (x.proto === 'tcp' || x.proto === 'udp') for (let k = x.from; k <= x.to && k - x.from < 64; k++) add(x.proto, k);
-  }
+  for (const x of deviceListeners(d)) if (!out.some((y) => y.proto === x.proto && y.from === x.port)) out.push({ proto: x.proto, from: x.port, to: x.port });
   return out;
 }

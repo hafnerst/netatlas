@@ -20,7 +20,7 @@ const warnings = (text) => validate.loadModel(text).warnings.map((e) => e.messag
 const ids = (xs) => xs.map((i) => i.id).join(',');
 const s = Y.strNode;
 
-const net = `netatlas: 1
+const net = `netatlas: 2
 devices:
   - id: sw1
     type: switch
@@ -74,7 +74,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.equal(r.model.index.interfaces.get('sw1:Po1').type, 'virtual');
   assert.equal(ids(T.deviceInterfaces(d)), 'Eth1,Eth2,Eth3,Eth4,lo0,Po1,Vlan10,Vlan20,nve1,tun0,tun1,tun2');
   // zero of either category is fine
-  const none = validate.loadModel('netatlas: 1\ndevices:\n  - {id: a}\n  - {id: b, interfaces: [e0]}\n  - {id: c, logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n');
+  const none = validate.loadModel('netatlas: 2\ndevices:\n  - {id: a}\n  - {id: b, interfaces: [e0]}\n  - {id: c, logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n');
   assert.deepEqual(none.errors, []);
   assert.deepEqual(none.model.devices.map((x) => [x.interfaces.length, x.logical.length]), [[0, 0], [1, 0], [0, 1]]);
   assert.deepEqual(SCHEMA.device.slice(-5), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes']);
@@ -84,11 +84,11 @@ test('a physical interface has no type; a logical interface has one of loopback,
   // (a VM's virtual NIC and a container's network attachment: see virtual.test.mjs)
   assert.deepEqual(T.LOGICAL_IFACE_TYPES, ['loopback', 'virtual', 'tunnel', 'vnic', 'veth']);
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
-    const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
+    const m = messages(`netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^unknown key "type" \(known: id, label, vlans, native, routed, dhcp, ip, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
+    assert.match(m[0], /^unknown key "type" \(known: id, label, vlans, native, routed, ipv4, ip, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
   }
-  const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
+  const logical = (body) => messages(`netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
   assert.deepEqual(logical(', type: tunnel'), []);
   assert.deepEqual(logical(', type: loopback, ip: 10.0.0.1/32'), []);
@@ -100,20 +100,20 @@ test('a physical interface has no type; a logical interface has one of loopback,
   }
   assert.match(logical(', type: physical')[0], /a physical interface belongs in the "interfaces:" list of the device/);
   // located at the key, for the editor
-  const r = validate.loadModel('netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0, type: svi}\n      - {id: x1}\n');
+  const r = validate.loadModel('netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0, type: svi}\n      - {id: x1}\n');
   assert.deepEqual([r.errors[0].path, r.errors[0].line], ['devices.a.logical_interfaces[0].type', 5]);
   assert.deepEqual([r.errors[1].path, r.errors[1].key], ['devices.a.logical_interfaces[1]', 'type']);
   // a draft without a valid type is still drawn, as the kind with the fewest rules
   assert.deepEqual(r.model.devices[0].logical.map((i) => i.type), ['virtual', 'virtual']);
   // a logical interface is written as a mapping (it needs its type)
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces: [lo0]\n')[0], /expected a mapping/);
+  assert.match(messages('netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces: [lo0]\n')[0], /expected a mapping/);
 });
 
 test('stable ids: physical and logical interfaces share one set of ids per device', () => {
-  const dup = (body) => messages('netatlas: 1\ndevices:\n  - id: a\n' + body);
+  const dup = (body) => messages('netatlas: 2\ndevices:\n  - id: a\n' + body);
   assert.match(dup('    interfaces: [e0]\n    logical_interfaces:\n      - {id: e0, type: virtual}\n')[0], /duplicate interface "e0" on device "a" \(already used by a physical interface; physical and logical interfaces share one set of ids per device\)/);
   assert.match(dup('    logical_interfaces:\n      - {id: x, type: tunnel}\n      - {id: x, type: virtual}\n')[0], /duplicate interface "x" on device "a" \(already used by a tunnel interface;/);
-  assert.deepEqual(messages('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\n'), []);
+  assert.deepEqual(messages('netatlas: 2\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\n'), []);
   // references use those ids: a cable ends on a physical interface only, a relation on any interface
   const r = validate.loadModel(net);
   assert.deepEqual(r.model.relations.map((x) => x.endpoints.map((e) => (e.iface ? r.model.index.interfaces.get(e.device + ':' + e.iface).type : 'device')).join('-')), ['virtual-device', 'loopback-loopback']);
@@ -135,7 +135,7 @@ test('loopbacks: logical interfaces with addresses and no physical parent', () =
   assert.deepEqual(derive.networkMembers(m, 'loops').map((x) => `${x.device}:${x.matches[0].iface}:${x.matches[0].loopback}`), ['sw1:lo0:true', 'sw2:lo0:true']);
   assert.equal(panels.associationText(m, lo), '', 'nothing to associate: no parent, members, VLAN or source');
   // the address rules of loopbacks are unchanged
-  const lb = (ip) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: lo0, type: loopback${ip}}\n`);
+  const lb = (ip) => messages(`netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: lo0, type: loopback${ip}}\n`);
   assert.match(lb('')[0], /loopback "lo0" needs at least one IPv4 or IPv6 address with prefix length/);
   assert.match(lb(', ip: 10.0.0.1')[0], /invalid loopback address: "10\.0\.0\.1" needs a prefix length/);
   assert.deepEqual(lb(', ip: [10.0.0.1/32, "2001:db8::1/128"]'), []);
@@ -174,13 +174,13 @@ test('aggregate: a virtual interface references several member ports, and the re
   // what failed is not taken into the model; the rest is kept
   assert.deepEqual(bad('[Eth1, Eth9, Eth2]').model.index.interfaces.get('sw1:Po1').members, ['Eth1', 'Eth2']);
   // a port of another device is not a member port
-  assert.match(messages('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - id: b\n    logical_interfaces:\n      - {id: bond0, type: virtual, members: [e0]}\n')[0], /device "b" has no physical interface "e0" \(the device declares no physical interfaces\)/);
+  assert.match(messages('netatlas: 2\ndevices:\n  - {id: a, interfaces: [e0]}\n  - id: b\n    logical_interfaces:\n      - {id: bond0, type: virtual, members: [e0]}\n')[0], /device "b" has no physical interface "e0" \(the device declares no physical interfaces\)/);
   // a port in two aggregates is reported, not refused
   const two = net.replace('      - {id: Vlan10,', '      - {id: Po2, type: virtual, members: [Eth2, Eth4], vlans: 10}\n      - {id: Vlan10,').replace('{id: Eth4, vlans: 10}', 'Eth4');
   assert.deepEqual(messages(two), []);
   assert.deepEqual(warnings(two), ['port "Eth2" is also a member of "Po1"; a port normally belongs to one aggregate']);
   // members on a physical interface: the aggregate is a logical interface
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, members: [e1]}\n')[0], /^unknown key "members"/);
+  assert.match(messages('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, members: [e1]}\n')[0], /^unknown key "members"/);
 });
 
 // -------------------------------------------------- VLAN-derived port association
@@ -227,7 +227,7 @@ test('VLAN interface: it names its VLAN (or takes it from its network); its brid
   // (VLAN 30 has no bridge port on sw1 either: a second warning)
   assert.deepEqual(warnings(net.replace('vlan: 10, ip: 10.10.0.2/24', 'vlan: 30, ip: 10.10.0.2/24')), ['"Vlan10" is the interface of VLAN 30, but its address 10.10.0.2/24 lies in a network of VLAN 10', 'VLAN 30 has no bridge port on "sw1": no port of the device carries it (in its "vlans"), so "Vlan10" reaches no one']);
   // a physical interface has VLANs ("vlans"), not "vlan" (the VLAN interface's)
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, vlan: 10}\n')[0], /^unknown key "vlan"/);
+  assert.match(messages('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, vlan: 10}\n')[0], /^unknown key "vlan"/);
 });
 
 // ---------------------------------------------------------- tunnel sources
@@ -249,7 +249,7 @@ test('tunnel: source is a physical or logical interface or an address; destinati
   assert.deepEqual(derive.associatedInterfaces(m, t('tun1')), ['lo0']);
   assert.deepEqual(derive.associatedInterfaces(m, m.index.interfaces.get('sw1:lo0')), ['tun1']);
   // both are optional
-  assert.deepEqual(messages('netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: t0, type: tunnel}\n      - {id: t1, type: tunnel, source: t0}\n'), []);
+  assert.deepEqual(messages('netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: t0, type: tunnel}\n      - {id: t1, type: tunnel, source: t0}\n'), []);
   const src = (v) => validate.loadModel(net.replace('source: Eth3', 'source: ' + v));
   assert.match(src('Eth9').errors[0].message, /^tunnel source "Eth9" is neither an IP address nor an interface of "sw1" — did you mean "Eth1"\?/);
   assert.equal(src('Eth9').errors[0].path, 'devices.sw1.logical_interfaces[5].source');
@@ -340,7 +340,7 @@ test('display order: alphabetical, case-insensitive, numbers by value, with a st
 });
 
 test('display order: both categories are listed alphabetically; the file order and the file stay as they are', () => {
-  const text = `netatlas: 1
+  const text = `netatlas: 2
 devices:
   - id: sw
     interfaces: [eth10, eth2, Eth1]
@@ -388,7 +388,7 @@ devices:
 // ------------------------------- structures outside the format are rejected
 
 test('nested child interfaces and a loopbacks list are rejected clearly, and nothing of them is dropped from the file', () => {
-  const old = `netatlas: 1
+  const old = `netatlas: 2
 devices:
   - id: r1
     loopbacks:
@@ -421,15 +421,15 @@ devices:
   assert.match(messages(old + 'relations:\n  - {id: x, protocol: gre, endpoints: ["r1:st0.10", r1]}\n')[2], /device "r1" has no interface "st0\.10"/);
   // they are not part of the schema
   assert.ok(!SCHEMA.interface.includes('children') && !SCHEMA.logical.includes('children') && !SCHEMA.device.includes('loopbacks') && !SCHEMA.logical.includes('parent'));
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x, type: virtual, children: [y]}\n')[0], /^unknown key "children"/);
+  assert.match(messages('netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x, type: virtual, children: [y]}\n')[0], /^unknown key "children"/);
   // "interfaces" as a mapping of categories is not the format either
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces: {physical: [e0]}\n')[0], /expected a list/);
+  assert.match(messages('netatlas: 2\ndevices:\n  - id: a\n    interfaces: {physical: [e0]}\n')[0], /expected a list/);
 });
 
 test('removed device fields stay removed', () => {
   // (a device's role is a field again: its role in the network, see device-types.test.mjs)
   for (const k of ['vendor', 'model', 'mgmt']) {
-    const r = validate.loadModel(`netatlas: 1\ndevices:\n  - id: r1\n    ${k}: x\n`);
+    const r = validate.loadModel(`netatlas: 2\ndevices:\n  - id: r1\n    ${k}: x\n`);
     assert.equal(r.errors.length, 1, k);
     assert.match(r.errors[0].message, new RegExp(`^unknown key "${k}"`), k);
   }
@@ -458,7 +458,7 @@ test('editing: interfaces are created in their category; members, VLAN, source a
   assert.ok(d.valid, d.errors.map((e) => e.message).join('\n'));
   assert.match(
     d.exportText(),
-    /^netatlas: 1\ntitle: New network\ndevices:\n  - id: r1\n    interfaces:\n      - \{id: eth0\}\n      - \{id: eth1\}\n    logical_interfaces:\n      - \{id: lo0, type: loopback, label: Router ID, ip: \[10\.255\.0\.1\/32\]\}\n      - \{id: virtual0, type: virtual\}\n      - \{id: Vlan10, type: virtual\}\n      - \{id: tun0, type: tunnel\}\n/,
+    /^netatlas: 2\ntitle: New network\ndevices:\n  - id: r1\n    interfaces:\n      - \{id: eth0\}\n      - \{id: eth1\}\n    logical_interfaces:\n      - \{id: lo0, type: loopback, label: Router ID, ip: \[10\.255\.0\.1\/32\]\}\n      - \{id: virtual0, type: virtual\}\n      - \{id: Vlan10, type: virtual\}\n      - \{id: tun0, type: tunnel\}\n/,
   );
   assert.deepEqual(d.interfaceEntries(i).map((e) => `${e.kind}:${e.id}:${e.type || ''}:${e.path.slice(2).join('.')}`), [
     'interface:eth0::interfaces.0',

@@ -1129,6 +1129,12 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .svc-name { font-weight: 600; }
 .svc-btns { display: inline-flex; gap: 4px; }
+.app-card > summary .card-title { overflow-wrap: anywhere; }
+details.card.app-card > .adv-section, details.card.app-card > .app-actions, details.card.app-card > .field-err, details.card.app-card > .field-warn { margin: 4px 10px; }
+.adv-section { border-top: 1px dashed var(--border); padding-top: 2px; }
+.adv-section > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 3px 0; }
+.adv-section > .field { margin: 4px 0; }
+.app-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .legend-badge { font-size: 11px; font-weight: 600; fill: var(--text); letter-spacing: 0.02em; }
 .sep-dirs { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .chips-ed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }

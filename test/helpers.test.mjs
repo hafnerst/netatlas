@@ -54,24 +54,24 @@ test('MAC: random, locally administered unicast (the bits), unique in the model,
     assert.match(m, /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/);
   }
   // unique: a draw that hits an existing address is drawn again
-  const one = model('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, mac: "02:00:00:00:00:01"}\n');
+  const one = model('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, mac: "02:00:00:00:00:01"}\n');
   assert.equal(H.generateMac(one, seq(0x02, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 2)), '02:00:00:00:00:02');
   // the model's style: Cisco dots, upper-case hyphens
-  const cisco = model('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, mac: 001c.73aa.0001}\n      - {id: e1, mac: 001c.73aa.0002}\n      - {id: e2, mac: "00:1c:73:aa:00:03"}\n');
+  const cisco = model('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, mac: 001c.73aa.0001}\n      - {id: e1, mac: 001c.73aa.0002}\n      - {id: e2, mac: "00:1c:73:aa:00:03"}\n');
   assert.equal(H.generateMac(cisco, seq(0x10, 0x20, 0x30, 0x40, 0x50, 0x60)), '1220.3040.5060');
-  const up = model('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, mac: 00-1C-73-AA-00-01}\n');
+  const up = model('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, mac: 00-1C-73-AA-00-01}\n');
   assert.equal(H.generateMac(up, seq(0xab, 0xcd, 0xef, 1, 2, 3)), 'AA-CD-EF-01-02-03');
   // a model without MAC addresses: colons, lower case
-  assert.equal(H.formatMac([2, 0, 0x5e, 0, 0x53, 0xaf], H.macStyleOf(model('netatlas: 1\n'))), '02:00:5e:00:53:af');
+  assert.equal(H.formatMac([2, 0, 0x5e, 0, 0x53, 0xaf], H.macStyleOf(model('netatlas: 2\n'))), '02:00:5e:00:53:af');
   // the generated address is valid in the model
-  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: a\n    interfaces: [e0]\n', 'a.yaml', 'file').doc;
+  const d = ModelDoc.fromText('netatlas: 2\ndevices:\n  - id: a\n    interfaces: [e0]\n', 'a.yaml', 'file').doc;
   d.setText(['devices', 0, 'interfaces', 0, 'mac'], H.generateMac(d.result.model, seq(1, 2, 3, 4, 5, 6)));
   assert.deepEqual(d.errors, []);
   assert.match(d.exportText(), /mac: "02:02:03:04:05:06"|mac: 02:02:03:04:05:06/);
 });
 
 test('VRF: the names in use, sorted with how often each is used; a name differing only in case is a probable typo (and a check)', () => {
-  const text = `netatlas: 1
+  const text = `netatlas: 2
 devices:
   - id: r
     type: router
@@ -114,7 +114,7 @@ test('VLANs, redundancy groups, AS numbers, router IDs: what the model already u
 });
 
 test('IS-IS NET from the router ID (or loopback); a BGP end’s peer AS from the other device', () => {
-  const m = model(`netatlas: 1
+  const m = model(`netatlas: 2
 devices:
   - id: r
     type: router
@@ -140,7 +140,7 @@ test('interface names follow the device’s pattern; route prefixes and distance
   assert.equal(H.nextInterfaceName(wan, 'hq-rtr1', 'loopback'), 'lo1');
   // no loopback on the device: the model's most used stem, from 0
   assert.equal(H.nextInterfaceName(wan, 'hq-fw', 'loopback'), 'lo0');
-  assert.equal(H.nextInterfaceName(model('netatlas: 1\ndevices:\n  - {id: a}\n'), 'a', 'tunnel'), 'tun0');
+  assert.equal(H.nextInterfaceName(model('netatlas: 2\ndevices:\n  - {id: a}\n'), 'a', 'tunnel'), 'tun0');
   const br = model(example('branch-routing.yaml'));
   assert.deepEqual(vals(H.routePrefixSuggestions(br, 'br-rtr')), ['0.0.0.0/0']);
   assert.deepEqual(vals(H.routePrefixSuggestions(model(example('addressing.yaml')), 'core')), ['0.0.0.0/0', '::/0']);

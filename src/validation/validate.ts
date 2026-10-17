@@ -20,6 +20,7 @@ import { VirtNodes, checkVirtual, isGuestType, readGuestFields, readVirtIface, r
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 import { isVm } from '../model/virtual';
 import { readServiceBlock, checkServices, ServiceNodes } from './services';
+import { AppNodes, checkApplications } from './applications';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -111,7 +112,16 @@ function build(root: YNode | null, c: Ctx): Model | null {
   if (isNull(verNode)) {
     c.error(top, 'netatlas', `missing format version — add "netatlas: ${FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
   } else if (!(verNode!.kind === 'scalar' && verNode!.value === FORMAT_VERSION)) {
-    c.error(verNode!, 'netatlas', `unsupported format version — the only supported model format is "netatlas: ${FORMAT_VERSION}"`);
+    // an older or unknown format is not read at all: its keys would be taken under this format's rules
+    const v = verNode!.kind === 'scalar' ? verNode!.value : undefined;
+    c.error(
+      verNode!,
+      'netatlas',
+      v === 1
+        ? `unsupported format version — this file is model format 1, which NetAtlas no longer reads; the only supported model format is "netatlas: ${FORMAT_VERSION}" (format 2 writes "ipv4: dhcp" instead of "dhcp: true" and an application list under "services.applications"; see docs/FORMAT.md, "Changes from format 1")`
+        : `unsupported format version — the only supported model format is "netatlas: ${FORMAT_VERSION}"`,
+    );
+    return null;
   }
   const title = r.field(top, 'title', '', L.maxLabel) || 'Untitled network';
   const description = r.field(top, 'description', '', L.maxDescription);
@@ -442,8 +452,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       const isLoop = type === 'loopback';
       const kind = isLoop ? 'loopback' : 'interface';
-      // DHCP is a flag, never an address: omitted means false
-      const dhcp = r.bool(get(im, 'dhcp'), ipath + '.dhcp') === true;
+      // how it gets its IPv4 address: written (static, the default) or by DHCP (`ipv4: dhcp`), never an address
+      const v4n = get(im, 'ipv4');
+      const v4 = isNull(v4n) ? undefined : r.str(v4n as YNode, ipath + '.ipv4', 20);
+      if (v4 !== undefined && v4 !== 'dhcp' && v4 !== 'static') c.error(v4n as YNode, ipath + '.ipv4', `"${v4}" is not an IPv4 method: use dhcp (it obtains its IPv4 address by DHCP) or static (its addresses are written under "ip:")`);
+      const dhcp = v4 === 'dhcp';
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
@@ -463,7 +476,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
             a.toLowerCase() === 'dhcp'
               ? isLoop
                 ? '"dhcp" is not an address, and a loopback cannot obtain its address by DHCP: write its address with prefix length'
-                : '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+                : '"dhcp" is not an address: to say that the interface obtains its IPv4 address by DHCP, delete it here and set "ipv4: dhcp"'
               : prefixProblem(a) || `"${a}" is not a valid address`;
           if (isLoop) c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
           else c.warn(an, `${ipath}.ip[${j}]`, `${why}; it is shown as written`);
@@ -483,16 +496,16 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (dhcp && isLoop) {
         // an address of the device itself is always configured; the flag is reported, not dropped
         c.error(
-          get(im, 'dhcp') as YNode,
-          ipath + '.dhcp',
-          `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "dhcp: true" and write its address under "ip:"`,
+          v4n as YNode,
+          ipath + '.ipv4',
+          `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "ipv4: dhcp" and write its address under "ip:"`,
         );
-      } else if (dhcp && addrNodes.length) {
-        // both are kept as written and reported: neither the flag nor the addresses are discarded
+      } else if (dhcp && addrs.some((a) => a.indexOf(':') < 0)) {
+        // both are kept as written and reported: neither the method nor the addresses are discarded
         c.error(
           ipNode as YNode,
           ipath + '.ip',
-          `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`,
+          `${kind} "${iid}" has "ipv4: dhcp" and manually configured IPv4 addresses; its IPv4 address either comes from DHCP or is written — delete the IPv4 addresses under "ip:" or delete "ipv4: dhcp"`,
         );
       }
       if (isLoop && !addrs.length) {
@@ -1189,6 +1202,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   checkNetServices(c, model, svcNodes);
   // the services' references, the Wi-Fi networks against the uplinks, the wireless connections, the controllers
   checkServices(c, model, svcBlocks, linkNodes);
+  checkApplications(c, model, svcBlocks.map((b) => b.apps).filter((x): x is AppNodes => !!x));
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
     assocs.forEach((a, j) => {
@@ -1401,8 +1415,8 @@ function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: s
       c.error(a.node, a.path + '.vlans', `"${i.id}" of switch "${dev.id}" needs its VLANs: one VLAN (an access port) or several (a trunk)${dev.layer3 ? ', or "routed: true" for a routed port' : ''}`, { key: 'vlans' });
     }
     if (cfg.vlans.length && (i.addresses.length || i.dhcp)) {
-      const ipN = get(a.node, i.dhcp ? 'dhcp' : 'ip') as YNode;
-      c.error(ipN, `${a.path}.${i.dhcp ? 'dhcp' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
+      const ipN = get(a.node, i.dhcp ? 'ipv4' : 'ip') as YNode;
+      c.error(ipN, `${a.path}.${i.dhcp ? 'ipv4' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
     }
   }
   for (const g of dev.logical) {
@@ -1410,7 +1424,7 @@ function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: s
     const a = at(g);
     if (!a) continue;
     if (capabilities(dev).switchFeatures && !configured(g)) c.error(a.node, a.path + '.vlans', `aggregate "${g.id}" of switch "${dev.id}" needs its VLANs (its members ${g.members.join(', ')} take them): one VLAN (access) or several (a trunk)${dev.layer3 ? ', or "routed: true"' : ''}`, { key: 'vlans' });
-    if (g.vlans.length && (g.addresses.length || g.dhcp)) c.error(get(a.node, g.dhcp ? 'dhcp' : 'ip') as YNode, `${a.path}.${g.dhcp ? 'dhcp' : 'ip'}`, `aggregate "${g.id}" is a switch port (VLANs ${vlanTextOf(g.vlans)}): it has no address of its own — put it on the VLAN interface of its VLAN`);
+    if (g.vlans.length && (g.addresses.length || g.dhcp)) c.error(get(a.node, g.dhcp ? 'ipv4' : 'ip') as YNode, `${a.path}.${g.dhcp ? 'ipv4' : 'ip'}`, `aggregate "${g.id}" is a switch port (VLANs ${vlanTextOf(g.vlans)}): it has no address of its own — put it on the VLAN interface of its VLAN`);
   }
 }
 
@@ -1543,7 +1557,7 @@ function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, ow
         const names = all.map((i) => i.id);
         c.error(x, ip, `device "${dev.id}" has no interface "${id}"` + (names.length ? suggest(id, names) : ' (the device declares no interfaces)'));
       } else if (target.dhcp) {
-        c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or set "dhcp: false" on "${id}"`);
+        c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or delete "ipv4: dhcp" on "${id}"`);
       } else if (ifaces.indexOf(id) >= 0) {
         c.error(x, ip, `interface "${id}" is listed twice for this DNS name`);
       } else {

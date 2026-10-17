@@ -1,6 +1,6 @@
 /**
  * DHCP and DNS in the protocol simulation: the servers' scopes and zones
- * (the model's `services:`), the clients (interfaces with `dhcp: true`, and
+ * (the model's `services:`), the clients (interfaces with `ipv4: dhcp`, and
  * every host's resolver), the relays (`dhcp_relay:` on a router's
  * interface).
  *
@@ -196,7 +196,7 @@ export class NetServicesSim {
   constructor(private P: ProtocolSim) {
     this.readScopes();
     for (const d of P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
-      for (const i of deviceInterfaces(d)) if (i.dhcp && !i.addresses.length && P.sd(d.id) && P.sd(d.id).l3.get(i.id)) this.clients.set(d.id + ':' + i.id, { dev: d.id, iface: i.id, mac: (P.sd(d.id).l3.get(i.id) as L3Iface).mac, state: 'INIT', xid: 0, attempt: 0, gen: 0 });
+      for (const i of deviceInterfaces(d)) if (i.dhcp && P.sd(d.id) && P.sd(d.id).l3.get(i.id)) this.clients.set(d.id + ':' + i.id, { dev: d.id, iface: i.id, mac: (P.sd(d.id).l3.get(i.id) as L3Iface).mac, state: 'INIT', xid: 0, attempt: 0, gen: 0 });
     }
     P.handlers.set('dhcp', (dev, l3, msg, pkt) => this.dhcpIn(dev, l3, msg, pkt));
     P.handlers.set('dns', (dev, l3, msg, pkt) => (msg.relation ? false : this.dnsIn(dev, l3, msg, pkt)));
