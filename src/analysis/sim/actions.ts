@@ -42,11 +42,13 @@ import { Flap } from './engine';
 import { LeaveWatch, Stream } from './multicast';
 import { DELIVERY_LABEL, KIND_LABEL, TestPlan } from './test-plan';
 import { Test } from './transport';
+import { AppRun, appCadence, appOutcome, appSummaryText } from './apps';
+import { appProfile } from '../../model/applications';
 
-export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap';
+export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap' | 'app';
 export type ActionStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'cancelled';
 
-export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping' };
+export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping', app: 'Application' };
 export const STATUS_LABEL: Record<ActionStatus, string> = { queued: 'Queued', running: 'In progress', paused: 'Paused', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
 /** An icon per state (beside its word: never the colour alone). */
 export const STATUS_ICON: Record<ActionStatus, string> = { queued: '◷', running: '▶', paused: '❚❚', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
@@ -88,6 +90,8 @@ export interface ActionRecord {
   stream?: Stream;
   shut?: { dev: string; iface: string; upAt?: number };
   flap?: { ref: string; obj: Flap };
+  /** Start application: its run (apps.ts), or an MQTT client's session (mqtt.ts) */
+  app?: AppRun;
 }
 
 /** A control of an event: Stop (a send, a stream, flapping), No shut, Leave group. */
@@ -235,15 +239,61 @@ export interface ActionContext {
   rtPaused?: boolean;
   /** is a device on (a stream's source) */
   deviceOn?(dev: string): boolean;
+  /** an MQTT client's session has a view of its own (mqtt.ts) */
+  appView?(a: ActionRecord): ActionView | null;
 }
 
 function failedView(a: ActionRecord, title: string): ActionView {
   return { id: a.id, kind: a.kind, title, target: a.target, status: 'failed', at: a.at, ended: a.at, summary: a.error as string, controls: [], details: [`Refused at ${at(a.at)}: ${a.error}`], tests: [] };
 }
 
+/** The view of a started application: its messages as one operation, with what each came to. */
+export function appView(a: ActionRecord, c: ActionContext): ActionView {
+  const r = a.app as AppRun;
+  if (c.appView) {
+    const v = c.appView(a);
+    if (v) return v;
+  }
+  const p = appProfile(r.app.profile);
+  const o = appOutcome(r);
+  const active = (!r.stopped && (r.count === null || r.sent < r.count)) || r.tests.some((t) => !t.done);
+  const realPaused = r.rt !== undefined && !!c.rtPaused;
+  const status: ActionStatus = active ? (realPaused ? 'paused' : 'running') : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
+  let ended: number | undefined;
+  if (!active) {
+    ended = r.stoppedAt !== undefined ? r.stoppedAt : r.t0;
+    for (const t of r.tests) ended = Math.max(ended, t.ended !== undefined ? t.ended : t.started);
+    for (const s of r.skipped) ended = Math.max(ended, s.t);
+  }
+  const details: string[] = [];
+  details.push(`${r.dev}/${r.app.id} (${r.app.name}): ${p ? p.label : r.app.profile} to ${r.target}, ${appCadence(r)}; started ${at(a.at)}.`);
+  details.push(p && !p.answered ? 'Success: the datagram reached its receiver (the simulation sees it; nothing comes back).' : 'Success: answered (a TCP connection with its answer, a UDP answer); a request that timed out is sent again up to its retries.');
+  const shown = r.tests.length <= 12 ? r.tests : r.tests.slice(0, 3).concat(r.tests.slice(-9));
+  for (const t of shown) details.push(`#${t.msg || 1}${t.retry ? ` (retry ${t.retry})` : ''} at ${at(t.started)}${t.resolved ? ` · ${t.resolved}` : ''}: ${t.done ? t.result : t.result === 'waiting' ? 'on its way' : t.result}`);
+  if (shown.length < r.tests.length) details.splice(details.length - 9, 0, `… ${r.tests.length - shown.length} more …`);
+  for (const s of r.skipped.slice(-3)) details.push(`#${s.n} at ${at(s.t)}: ${s.why}`);
+  if (r.stopped && r.stoppedAt !== undefined) details.push(`Stopped at ${at(r.stoppedAt)} after ${r.sent} message${r.sent === 1 ? '' : 's'}.`);
+  return {
+    id: a.id,
+    kind: 'app',
+    title: ACTION_TITLE.app,
+    target: `${r.dev}/${r.app.id} → ${r.target}`,
+    status,
+    at: a.at,
+    ended,
+    progress: { done: r.sent, total: r.count, unit: 'sent' },
+    outcome: { ok: o.ok, failed: o.failed, pending: o.pending, unknown: 0, cancelled: o.cancelled, rate: true, basis: details[1] },
+    summary: appSummaryText(r, o),
+    controls: active && !r.stopped && (r.count === null || r.sent < r.count) ? [{ op: 'stop', label: 'Stop' }] : [],
+    details,
+    tests: r.tests.map((t) => t.id),
+  };
+}
+
 /** The view of any operation. */
 export function actionView(a: ActionRecord, c: ActionContext): ActionView {
   if (a.kind === 'send' && a.run) return sendView(a, c.now);
+  if (a.kind === 'app' && a.app) return appView(a, c);
   const title = ACTION_TITLE[a.kind];
   if (a.error) return failedView(a, title);
   const base = { id: a.id, kind: a.kind, title, target: a.target, at: a.at, tests: a.traffic !== undefined ? [a.traffic] : ([] as number[]) };

@@ -47204,6 +47204,7 @@ class SimController {
         this.leaveForm = null;
         this.streamForm = null;
         this.ifaceForm = null;
+        this.appForm = null;
         this.domainKey = '';
         /** the status side shows the protocols' status, or a table of the selected device */
         this.statusView = null;
@@ -48234,6 +48235,26 @@ class SimController {
             return a.error;
         return `${a.target}: streaming from t = ${(0, engine_1.fmtSec)(this.t)}, one datagram every ${interval / 1000} s of real time; see Active events.`;
     }
+    /** Start application: an event of the list, its messages until they are done or Stop. */
+    startApp(dev, app) {
+        const a = this.sim.actApp(dev, app);
+        // its first message is on screen now (paused too: there it waits for Play)
+        this.pacer.take();
+        this.logKey = '';
+        this.actionsKey = '';
+        this.refresh(true);
+        if (a.error)
+            return a.error;
+        return `${a.target}: started at t = ${(0, engine_1.fmtSec)(this.t)}; see Active events.`;
+    }
+    /** Start application… from a device's menu: the form, open, with the device. */
+    appFrom(dev) {
+        if (!this.appForm)
+            return;
+        this.openSection('sim-ne-app');
+        this.appForm.setDevice(dev);
+        this.appForm.focus();
+    }
     stopStream(dev, iface, group) {
         return this.did(this.sim.stopStream(dev, iface, group), `${dev}:${iface} stops its stream to ${group}`);
     }
@@ -48514,6 +48535,8 @@ class SimController {
                 if (this.sim.multicast.joined(dev).length)
                     items.push({ label: 'Leave multicast group…', act: () => this.multicastFrom(dev, 'leave') });
                 items.push({ label: 'Start multicast stream…', act: () => this.multicastFrom(dev, 'stream') });
+                if (this.sim.apps.startable(dev).length)
+                    items.push({ label: 'Start application…', act: () => this.appFrom(dev) });
                 for (const st of this.sim.multicast.streamsOf(dev)) {
                     if (st.running)
                         items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
@@ -48812,18 +48835,21 @@ class SimController {
             stopFlap: (d, i) => (this.stopFlap(`iface:${d}:${i}`) ? `${d}:${i} stops flapping at t = ${(0, engine_1.fmtSec)(this.t)}.` : `${d}:${i} is not flapping.`),
             interfacesOf: (d) => this.interfaceChoices(d),
             flapTimes: () => this.flapTimes(),
+            startApp: (d, a) => this.startApp(d, a),
         };
         this.testForm = new sim_test_form_1.TestForm(doc, { sim: () => this.sim, send: (p, play) => this.sendPlan(p, play), playing: () => this.playing }, (d, id, title, body) => this.disclosure(d, id, title, body));
         this.joinForm = new sim_event_forms_1.JoinForm(doc, fh);
         this.leaveForm = new sim_event_forms_1.LeaveForm(doc, fh);
         this.streamForm = new sim_event_forms_1.StreamForm(doc, fh);
         this.ifaceForm = new sim_event_forms_1.IfaceForm(doc, fh);
+        this.appForm = new sim_event_forms_1.AppForm(doc, fh);
         const net = this.sec(doc, 'sim-act-net', 'Network events', [
             this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
             this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
             this.action(doc, 'sim-ne-leave', 'Leave multicast group', this.leaveForm.el),
             this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
             this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
+            this.action(doc, 'sim-ne-app', 'Start application', this.appForm.el),
         ]);
         this.bulkControls(doc, net);
         box.appendChild(net);
@@ -54457,6 +54483,7 @@ const params_1 = __req("analysis/sim/params");
 const multicast_1 = __req("analysis/sim/multicast");
 const netsvc_1 = __req("analysis/sim/netsvc");
 const transport_1 = __req("analysis/sim/transport");
+const apps_1 = __req("analysis/sim/apps");
 const actions_1 = __req("analysis/sim/actions");
 const test_plan_1 = __req("analysis/sim/test-plan");
 const ip_1 = __req("model/ip");
@@ -54539,6 +54566,8 @@ class Simulation {
         // a join of Network events is done when a multicast router records it
         this.multicast.onMember = (rdev, riface, group, reporter) => this.memberRecorded(rdev, riface, group, reporter);
         this.transport.install();
+        this.apps = new apps_1.AppSim(this.protocols, this.transport);
+        this.apps.realtime = this.realtime;
         this.protocols.start();
     }
     /** The simulated time (ms). */
@@ -54816,6 +54845,20 @@ class Simulation {
         this.engine.stateVersion++;
         return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, traffic, stream: st });
     }
+    /** Start application (Network events): a client application's messages, one event until they are done or Stop. */
+    actApp(dev, id) {
+        const r = this.apps.start(dev, id, 'event');
+        const a = this.apps.app(dev, id);
+        const target = `${dev}/${id}${a && a.peer ? ' → ' + a.peer : a && a.broker ? ' → ' + a.broker : ''}`;
+        if (typeof r === 'string')
+            return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, error: r });
+        this.engine.stateVersion++;
+        return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, app: r });
+    }
+    /** What stops a device's application from being started now (Start application's checks), or null. */
+    appProblem(dev, id) {
+        return this.apps.problem(dev, id);
+    }
     /** Shut interface (Network events): done at once; the interface stays down until No shut. */
     actShut(dev, iface) {
         const target = `${dev}:${iface}`;
@@ -54884,6 +54927,13 @@ class Simulation {
                 if (!a.flap.obj.ended)
                     return true;
             }
+            else if (a.app) {
+                // an application until its messages are sent and settled (one waiting for its source's DHCP lease does not count yet)
+                if (this.apps.pending(a.app))
+                    return true;
+                if (a.app.tests.some((t) => !t.done && t.result.indexOf('waiting for a DHCP lease') !== 0))
+                    return true;
+            }
         }
         return false;
     }
@@ -54904,6 +54954,8 @@ class Simulation {
             return this.stopStream(a.stream.dev, a.stream.iface, a.stream.group);
         if (op === 'stop' && a.flap)
             return this.stopFlap(a.flap.ref);
+        if (op === 'stop' && a.app)
+            return this.apps.stop(a.app);
         if (op === 'noshut' && a.shut)
             return this.noShut(a.shut.dev, a.shut.iface);
         if (op === 'leave' && a.join)
@@ -61359,6 +61411,7 @@ class Transport {
         this.multicast = null;
         /** DHCP and DNS (the resolver for host names) */
         this.netsvc = null;
+        this.relCache = new Map();
         this.probeState = new Map();
         this.P = P;
     }
@@ -61469,6 +61522,27 @@ class Transport {
         }
         let rules = this.listenCache.get(dev);
         if (!rules) {
+            rules = this.relationRules(dev).slice();
+            // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
+            for (const x of serviceListening(this.P.m.index.devices.get(dev)))
+                if (!rules.some((y) => y.proto === x.proto && y.from === x.from))
+                    rules.push(x);
+            // a container serves the ports it publishes
+            const md = this.P.m.index.devices.get(dev);
+            if (md && (0, virtual_1.isContainer)(md))
+                for (const i of md.logical)
+                    for (const p of i.publish || [])
+                        if (!rules.some((x) => x.proto === p.protocol && x.from === p.port))
+                            rules.push({ proto: p.protocol, from: p.port, to: p.port });
+            rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
+            this.listenCache.set(dev, rules);
+        }
+        return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${(0, virtual_1.isContainer)(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+    }
+    /** The ports of the relations a device serves (a load balancer: also those it passes requests on to). */
+    relationRules(dev) {
+        let rules = this.relCache.get(dev);
+        if (!rules) {
             rules = [];
             for (const r of this.P.m.relations) {
                 const devs = (0, types_1.relationDevices)(r);
@@ -61487,24 +61561,65 @@ class Transport {
                     if (!rules.some((x) => x.proto === t.proto && x.from === p))
                         rules.push({ proto: t.proto, from: p, to: p });
             }
-            // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
-            for (const x of serviceListening(this.P.m.index.devices.get(dev)))
-                if (!rules.some((y) => y.proto === x.proto && y.from === x.from))
-                    rules.push(x);
-            // a container serves the ports it publishes
-            const md = this.P.m.index.devices.get(dev);
-            if (md && (0, virtual_1.isContainer)(md))
-                for (const i of md.logical)
-                    for (const p of i.publish || [])
-                        if (!rules.some((x) => x.proto === p.protocol && x.from === p.port))
-                            rules.push({ proto: p.protocol, from: p.port, to: p.port });
-            rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
-            this.listenCache.set(dev, rules);
+            this.relCache.set(dev, rules);
         }
-        return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${(0, virtual_1.isContainer)(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+        return rules;
     }
-    open(dev, proto, port) {
-        return (0, params_1.portsMatch)(this.listening(dev).rules, proto, port);
+    /**
+     * Does the device take a segment or datagram to this port (and address)? Its listening ports; an
+     * application bound to an interface takes only what is addressed to that interface, unless something
+     * else listens on the port on all addresses (a service, a relation's server, an unbound application).
+     */
+    open(dev, proto, port, dst) {
+        const ls = this.listening(dev);
+        if (!(0, params_1.portsMatch)(ls.rules, proto, port))
+            return false;
+        if (!dst || ls.written)
+            return true;
+        const bound = this.boundOnly(dev, proto, port);
+        return !bound || bound.some((b) => this.addrOn(dev, b, dst));
+    }
+    /** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
+    boundOnly(dev, proto, port) {
+        const md = this.P.m.index.devices.get(dev);
+        const mine = (0, listeners_1.appListeners)(md).filter((x) => x.proto === proto && x.port === port);
+        if (!mine.length || mine.some((x) => x.bind === undefined))
+            return null;
+        if ((0, listeners_1.serviceListeners)(md).some((x) => x.proto === proto && x.port === port))
+            return null;
+        if ((0, params_1.portsMatch)(this.relationRules(dev), proto, port))
+            return null;
+        return mine.map((x) => x.bind);
+    }
+    /** Is the address one of an interface's (configured or leased) now? */
+    addrOn(dev, iface, a) {
+        const l = this.P.sd(dev).l3.get(iface);
+        return !!l && l.addrs.some((x) => (0, ipmath_1.compareAddr)(x.addr, a) === 0);
+    }
+    /** Why a port is closed, for the log: what listens, and where a bound application listens instead. */
+    listenText(dev, proto, port, dst) {
+        const ls = this.listening(dev);
+        const bound = (0, params_1.portsMatch)(ls.rules, proto, port) ? this.boundOnly(dev, proto, port) : null;
+        if (bound)
+            return `${proto}/${port} listens on ${bound.join(', ')} only, not on ${(0, ipmath_1.formatAddr)(dst)}`;
+        return ls.text;
+    }
+    /** The listener application of a device that takes this port and address, if one does. */
+    appAt(dev, proto, port, dst) {
+        const md = this.P.m.index.devices.get(dev);
+        const hit = (0, listeners_1.appListeners)(md).filter((x) => x.proto === proto && x.port === port && (x.bind === undefined || this.addrOn(dev, x.bind, dst)));
+        // (one bound to the address's own interface before one on all addresses)
+        hit.sort((a, b) => Number(a.bind === undefined) - Number(b.bind === undefined));
+        return hit.length && md && md.applications ? md.applications.find((a) => a.id === hit[0].app) : undefined;
+    }
+    /** The service response time at a port: the device attribute (or a relation's), with its source in words. */
+    serviceTime(dev, proto, port) {
+        const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, proto, port));
+        return { value: Number(rt.value), text: 'the service response time ' + (0, params_1.resolvedText)(rt) };
+    }
+    /** Run fn in the context of a test (a Send test's id, else none). */
+    withTestOf(t, fn) {
+        this.e.withTest(t.source === 'manual' ? t.id : null, fn);
     }
     /** A relation's message to a port the device does not listen on (its `listening` attribute leaves it out): refused like any other. */
     portOpen(dev, pkt, l3) {
@@ -61667,6 +61782,10 @@ class Transport {
             onDone: o.onDone,
             front: o.front,
             timeout: o.timeout || this.e.params.get('app-timeout', dev),
+            oneWay: o.oneWay,
+            qtype: o.qtype,
+            retry: o.retry,
+            app: o.app,
         };
         this.tests.push(t);
         if (this.tests.length > 400)
@@ -61730,10 +61849,11 @@ class Transport {
         }
         if (name && this.netsvc) {
             t.result = `resolving ${name}`;
-            if (!this.netsvc.cached(dev, name, 'A'))
-                this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name}`);
+            const qtype = t.qtype || 'A';
+            if (!this.netsvc.cached(dev, name, qtype))
+                this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name} (${qtype})`);
             const since = this.e.now;
-            this.netsvc.resolve(dev, name, 'A', (r) => {
+            this.netsvc.resolve(dev, name, qtype, (r) => {
                 if (t.done)
                     return;
                 if (!r.addr) {
@@ -61762,7 +61882,9 @@ class Transport {
         this.later(Number(t.timeout.value), () => {
             if (t.done)
                 return;
-            if (t.answers.length && (0, mac_1.isMulticastIp)(t.dst))
+            if (t.oneWay)
+                this.finish(t, false, `not received within ${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))}${this.lastDrop(t)}`);
+            else if (t.answers.length && (0, mac_1.isMulticastIp)(t.dst))
                 this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
             else if ((0, mac_1.isMulticastIp)(t.dst) && t.kind === 'udp')
                 this.finish(t, false, `no member received it within ${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))}`);
@@ -61788,7 +61910,7 @@ class Transport {
      * packets (a firewall's policy, no route, a VLAN a port doesn't carry …), so a timeout says where it ended.
      */
     lastDrop(t) {
-        if (t.source !== 'manual')
+        if (t.source !== 'manual' && !t.app)
             return '';
         for (let i = this.e.log.length - 1; i >= 0; i--) {
             const ev = this.e.log[i];
@@ -61952,10 +62074,23 @@ class Transport {
                 this.finish(t, true, `UDP answer from ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}`);
             return;
         }
-        if (!this.open(dev, 'udp', l4.dport)) {
-            this.refuse(dev, l3, pkt, this.listening(dev).text);
+        if (!this.open(dev, 'udp', l4.dport, pkt.dst)) {
+            this.refuse(dev, l3, pkt, this.listenText(dev, 'udp', l4.dport, pkt.dst));
             return;
         }
+        const app = this.appAt(dev, 'udp', l4.dport, pkt.dst);
+        const test = d.test !== undefined ? this.tests.find((x) => x.id === d.test) : undefined;
+        if (test && test.oneWay && !test.done) {
+            test.answers.push(`${dev}${app ? '/' + app.id : ''}`);
+            if (test.rtt === undefined)
+                test.rtt = this.e.now - test.started;
+            this.withTestOf(test, () => this.finish(test, true, `received by ${dev}${app ? '/' + app.id : ''} on UDP ${l4.dport} (nothing comes back)`));
+        }
+        if (app && app.profile === 'udp_receiver') {
+            this.e.note('message', 'udp', dev, this.e.ownerOf(pkt.src) || '', 'received', '', `${dev}/${app.id} (${app.name}) takes the datagram from ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}: a receiver answers nothing`);
+            return;
+        }
+        // a one-way message to a listener that answers requests: it answers it too (its profile's behaviour)
         if (breaks && this.breakUdp(dev, l3, pkt))
             return;
         // a protocol break's syslog leg 2 arrives at a collector: it answers nothing
@@ -61963,10 +62098,11 @@ class Transport {
             return;
         const own = this.e.isBroadcastAddr(pkt.dst) || (0, mac_1.isMulticastIp)(pkt.dst) ? l3.addrs.find((a) => a.addr.version === pkt.dst.version) : undefined;
         const src = own ? own.addr : pkt.dst;
-        const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, 'udp', l4.dport));
+        const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${(0, params_1.durationText)(app.responseDelay)} (${dev}/${app.id}'s response delay)` } : this.serviceTime(dev, 'udp', l4.dport);
+        const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
         const answer = () => {
-            const m = this.msg('udp', 'UDP answer', `UDP ← ${(0, ipmath_1.formatAddr)(src)}:${l4.dport}`, `UDP ${(0, ipmath_1.formatAddr)(src)}:${l4.dport} → ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}, ${UDP_RESPONSE} bytes: the answer${Number(rt.value) > 0 ? ' after the service response time ' + (0, params_1.resolvedText)(rt) : ''}`, { test: d.test, reply: true });
-            this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(pkt.src) || '');
+            const m = this.msg('udp', 'UDP answer', `UDP ← ${(0, ipmath_1.formatAddr)(src)}:${l4.dport}`, `UDP ${(0, ipmath_1.formatAddr)(src)}:${l4.dport} → ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
+            this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '');
         };
         if (Number(rt.value) > 0)
             this.later(Number(rt.value), answer);
@@ -62107,8 +62243,8 @@ class Transport {
             if (has('RST'))
                 return;
             if (has('SYN') && !has('ACK')) {
-                if (!this.open(dev, 'tcp', l4.dport)) {
-                    this.refuse(dev, l3, pkt, this.listening(dev).text);
+                if (!this.open(dev, 'tcp', l4.dport, pkt.dst)) {
+                    this.refuse(dev, l3, pkt, this.listenText(dev, 'tcp', l4.dport, pkt.dst));
                     return;
                 }
                 const sc = { key: this.connKey(pkt.dst, l4.dport, pkt.src, l4.sport), dev, proto: 'tcp', local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, vrf: pkt.vrf, state: 'SYN_RCVD', role: 'server', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what: `serves ${(0, ipmath_1.formatAddr)(pkt.src)}`, got: 0, unacked: [], keep: false, probes: 0 };
@@ -62272,11 +62408,12 @@ class Transport {
             this.breakTcp(c, pkt);
             return;
         }
-        const rt = this.e.params.get('service-response', c.dev, null, this.serviceRel(c.dev, 'tcp', c.lport));
+        const app = this.appAt(c.dev, 'tcp', c.lport, c.local);
+        const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${(0, params_1.durationText)(app.responseDelay)} (${c.dev}/${app.id}'s response delay)` } : this.serviceTime(c.dev, 'tcp', c.lport);
         const answer = () => {
             if (c.state !== 'ESTABLISHED')
                 return;
-            this.sendData(c, RESPONSE_BYTES, `the answer${Number(rt.value) > 0 ? ' after the service response time ' + (0, params_1.resolvedText)(rt) : ''}`);
+            this.sendData(c, app && app.responseSize !== undefined ? app.responseSize : RESPONSE_BYTES, `the answer${app ? ` of ${c.dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`);
         };
         if (Number(rt.value) > 0)
             this.later(Number(rt.value), answer);
@@ -62928,6 +63065,361 @@ function serviceListening(d) {
 }
 
 };
+__defs["analysis/sim/apps"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AppSim = void 0;
+exports.appOutcome = appOutcome;
+exports.appSummaryText = appSummaryText;
+exports.appCadence = appCadence;
+exports.lastDst = lastDst;
+/**
+ * The applications of the simulation (model/applications.ts): what a
+ * client application sends when it runs, built on the transport's tests
+ * (transport.ts: a TCP connection with its request and answer, a UDP
+ * request and its answer, a one-way datagram), so every message crosses
+ * the network with its addressing, routing, firewall policy and closed
+ * ports, and is drawn and inspected like any other.
+ *
+ * A listener application listens because it exists (the transport opens
+ * its port, on its bind interface only when it has one, and answers with
+ * its sizes and delay). A client sends only when it is started: from
+ * Network events (Start application: the foreground, its interval in real
+ * time like a stream's), or with the simulation when its `start` says so
+ * (the scenario's traffic, its interval in simulated time, from the chosen
+ * senders only). Nothing starts because an application was added.
+ *
+ * Each message finds its peer when it is sent: another device's
+ * application (its port, its bind interface's address), a device, an
+ * address, or a host name resolved by DNS (A, or AAAA for IPv6), in the
+ * address family the application uses (IPv4 unless its `ip_version` says
+ * 6; never a fallback to the other family). What is missing (no address
+ * of the family at either end, the peer gone from the model) ends that
+ * message with the reason. A request that times out is sent again up to
+ * its retries. A run is one operation with its counts and its messages'
+ * results (actions.ts); several run side by side.
+ */
+const ip_1 = __req("model/ip");
+const applications_1 = __req("model/applications");
+const ipmath_1 = __req("analysis/ipmath");
+const params_1 = __req("analysis/sim/params");
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+class AppSim {
+    constructor(P, T) {
+        this.P = P;
+        this.T = T;
+        this.seq = 0;
+        this.runs = [];
+        /** the real-time schedule of Network events (the runs started there repeat on it) */
+        this.realtime = null;
+        /** An MQTT client's start, by mqtt.ts (it keeps a session, not a series of tests). */
+        this.mqttProblem = null;
+        this.mqttStart = null;
+        P.bootHooks.push(() => this.startConfigured());
+        P.extraStatus.push(() => this.status());
+    }
+    get e() {
+        return this.P.e;
+    }
+    /** A device's application by id. */
+    app(dev, id) {
+        const d = this.P.m.index.devices.get(dev);
+        return d && d.applications ? d.applications.find((a) => a.id === id) : undefined;
+    }
+    /** The applications of a device that can be started (clients, senders; an MQTT client by mqtt.ts). */
+    startable(dev) {
+        const d = this.P.m.index.devices.get(dev);
+        return (d && d.applications ? d.applications : []).filter((a) => {
+            const p = (0, applications_1.appProfile)(a.profile);
+            return !!p && p.client;
+        });
+    }
+    /** The address family an application uses: its peer address's, else its ip_version, else IPv4. */
+    family(a) {
+        const pa = a.peer ? (0, ip_1.parseAddress)(a.peer) : null;
+        return pa ? pa.version : a.ipVersion || 4;
+    }
+    /**
+     * Where a message goes now, or why it can't go: the peer application's
+     * device and port (its bind interface's address), a device, an address,
+     * or a host name (with the port).
+     */
+    peerNow(dev, a) {
+        const v = this.family(a);
+        if (!a.peer)
+            return `${dev}/${a.id} has no peer`;
+        const pr = (0, applications_1.parsePeer)(a.peer);
+        if (pr.device !== undefined) {
+            const target = this.app(pr.device, pr.app || '');
+            if (!target || target.port === undefined)
+                return `${a.peer} is no application of the model`;
+            const addr = this.addrOf(pr.device, v, target.bind);
+            if (typeof addr === 'string')
+                return `${a.peer}: ${addr}`;
+            return { dst: addr, target: a.peer, port: target.port };
+        }
+        const port = a.port;
+        const ip = (0, ip_1.parseAddress)(a.peer);
+        if (ip)
+            return { dst: ip, target: `${a.peer}:${port}`, port };
+        if (this.P.m.index.devices.has(a.peer)) {
+            const addr = this.addrOf(a.peer, v);
+            if (typeof addr === 'string')
+                return addr;
+            return { dst: addr, target: `${a.peer}:${port}`, port };
+        }
+        // a host name: its DNS answer when the message is sent
+        return { dst: (0, ip_1.parseAddress)(v === 4 ? '0.0.0.0' : '::'), target: `${a.peer}:${port}`, port, name: a.peer };
+    }
+    /** A device's address of a family now (its bind interface's, when it has one): its first interface's that has one (loopbacks last). */
+    addrOf(dev, v, bind) {
+        const sd = this.P.sd(dev);
+        if (!sd)
+            return `${dev} is not in the simulation`;
+        if (bind !== undefined) {
+            const l = sd.l3.get(bind);
+            const x = l ? l.addrs.find((y) => y.addr.version === v) : undefined;
+            return x ? x.addr : `it listens on ${dev}:${bind} only, which has no IPv${v} address${this.e.waitsForLease(dev) ? ' yet (waiting for its DHCP lease)' : ''}`;
+        }
+        const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => Number(x.kind === 'loopback') - Number(y.kind === 'loopback') || cmp(x.id, y.id));
+        for (const l of ls)
+            for (const x of l.addrs)
+                if (x.addr.version === v)
+                    return x.addr;
+        return `${dev} has no IPv${v} address${this.e.waitsForLease(dev) && v === 4 ? ' yet (waiting for its DHCP lease)' : ''}`;
+    }
+    /** What stops an application from being started now (null: it can be). */
+    problem(dev, id) {
+        const a = this.app(dev, id);
+        if (!a)
+            return `${dev} has no application ${id}`;
+        const p = (0, applications_1.appProfile)(a.profile);
+        if (!p || !p.client)
+            return `${dev}/${id} is a listener: it answers, it is not started`;
+        if (p.id === 'mqtt_client')
+            return this.mqttProblem ? this.mqttProblem(dev, a) : 'MQTT clients are not part of this simulation';
+        if (!this.e.deviceOn(dev))
+            return `${dev} is powered off`;
+        if (this.runs.some((r) => r.dev === dev && r.app.id === id && this.active(r)))
+            return `${dev}/${id} is running already`;
+        const peer = this.peerNow(dev, a);
+        if (typeof peer === 'string' && !/waiting for its DHCP lease/.test(peer))
+            return peer;
+        return null;
+    }
+    /** Start a client application: its first message now, then one every interval (its count, or until stopped). */
+    start(dev, id, how) {
+        const why = this.problem(dev, id);
+        if (why)
+            return why;
+        const a = this.app(dev, id);
+        const p = (0, applications_1.appProfile)(a.profile);
+        if (p.id === 'mqtt_client')
+            return this.mqttStart(dev, a, how);
+        const peer = this.peerNow(dev, a);
+        const interval = a.interval || 0;
+        const count = interval ? (a.count !== undefined ? a.count : null) : 1;
+        const run = { id: ++this.seq, dev, app: a, how, target: typeof peer === 'string' ? a.peer || '?' : peer.target, t0: this.e.now, count, interval, sent: 0, tests: [], retried: 0, skipped: [], stopped: false };
+        this.runs.push(run);
+        if (this.runs.length > 200)
+            this.runs.splice(0, this.runs.length - 200);
+        const fire = (n) => {
+            if (run.stopped || (run.count !== null && n >= run.count))
+                return;
+            this.message(run, p, n + 1, 0);
+            if (run.count !== null && run.sent >= run.count)
+                this.unschedule(run);
+        };
+        if (interval && how === 'event' && this.realtime) {
+            // a run of Network events repeats in real time, as a stream does: its first message now
+            run.rt = this.realtime.add(interval, fire).id;
+        }
+        else {
+            fire(0);
+            const next = (n) => {
+                if (!interval || run.stopped || (run.count !== null && n >= run.count))
+                    return;
+                this.e.at(run.t0 + n * interval, () => {
+                    if (run.stopped)
+                        return;
+                    fire(n);
+                    next(n + 1);
+                });
+            };
+            next(1);
+        }
+        return run;
+    }
+    unschedule(run) {
+        if (run.rt !== undefined && this.realtime)
+            this.realtime.remove(run.rt);
+        run.rt = undefined;
+    }
+    /** Stop a run: no more messages (those on their way finish). */
+    stop(run) {
+        if (run.stopped || !this.pending(run))
+            return false;
+        run.stopped = true;
+        run.stoppedAt = this.e.now;
+        this.unschedule(run);
+        for (const t of run.tests)
+            this.T.cancel(t, 'not sent: cancelled (Stop)');
+        return true;
+    }
+    /** Are messages of a run still to be sent? */
+    pending(r) {
+        return !r.stopped && (r.count === null || r.sent < r.count);
+    }
+    /** Is a run going on: messages to send, or on their way? */
+    active(r) {
+        return this.pending(r) || r.tests.some((t) => !t.done);
+    }
+    /** Message n (try 0, or a retry): to its peer as it is now. */
+    message(run, p, n, retry) {
+        const a = run.app;
+        if (retry === 0)
+            run.sent = n;
+        if (!this.e.deviceOn(run.dev)) {
+            run.skipped.push({ n, t: this.e.now, why: `not sent: ${run.dev} is powered off` });
+            return;
+        }
+        const peer = this.peerNow(run.dev, a);
+        if (typeof peer === 'string') {
+            run.skipped.push({ n, t: this.e.now, why: `not sent: ${peer}` });
+            return;
+        }
+        const v = this.family(a);
+        const tcp = p.transport === 'tcp';
+        const size = a.requestSize !== undefined ? a.requestSize : tcp ? applications_1.APP_DEFAULTS.tcpRequest : applications_1.APP_DEFAULTS.udpRequest;
+        const name = `${run.dev}/${a.id}`;
+        const t = this.T.run({
+            from: run.dev,
+            target: peer.target,
+            dst: peer.dst,
+            name: peer.name,
+            qtype: v === 6 ? 'AAAA' : 'A',
+            kind: p.transport,
+            port: peer.port,
+            size,
+            source: run.how === 'event' ? 'manual' : 'traffic',
+            series: `${name} → ${peer.target} ${p.transport}/${peer.port}`,
+            run: run.id,
+            msg: n,
+            retry: retry || undefined,
+            app: name,
+            oneWay: !p.answered,
+            timeout: a.timeout !== undefined ? { value: a.timeout } : undefined,
+            onDone: (x) => {
+                // a request without an answer in time: again, up to its retries (an error or a refusal is no reason to retry)
+                if (x.ok || !p.answered || !/timed out/.test(x.result) || retry >= (a.retries || 0) || run.stopped)
+                    return;
+                run.retried++;
+                this.e.withTest(run.how === 'event' ? x.id : null, () => this.e.note('message', p.transport, run.dev, '', 'retry', '', `${name}: message ${n} got no answer within its timeout: retry ${retry + 1} of ${a.retries}`));
+                this.message(run, p, n, retry + 1);
+            },
+        });
+        if (typeof t === 'string')
+            run.skipped.push({ n, t: this.e.now, why: `not sent: ${t}` });
+        else
+            run.tests.push(t);
+    }
+    /** The applications that start with the simulation: from the chosen senders, once the network had time to come up. */
+    startConfigured() {
+        for (const d of this.P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
+            for (const a of d.applications || []) {
+                if (a.start !== 'simulation_start')
+                    continue;
+                const p = (0, applications_1.appProfile)(a.profile);
+                if (!p || !p.client)
+                    continue;
+                this.e.at(3000 + this.e.jitter(), () => {
+                    if (!this.e.isSender(d.id))
+                        return;
+                    const r = this.start(d.id, a.id, 'start');
+                    if (typeof r === 'string')
+                        this.e.note('note', p.transport, d.id, '', 'application not started', '', `${d.id}/${a.id} (${a.name}) does not start with the simulation: ${r}`);
+                });
+            }
+        }
+    }
+    /** The runs started with the simulation, as status rows (those of Network events are in Active events). */
+    status() {
+        const out = [];
+        for (const r of this.runs) {
+            if (r.how !== 'start' || r.app.profile === 'mqtt_client')
+                continue;
+            const o = appOutcome(r);
+            const p = (0, applications_1.appProfile)(r.app.profile);
+            out.push({
+                protocol: p.transport,
+                name: `${r.dev}/${r.app.id}: ${r.app.name}`,
+                device: r.dev,
+                peer: r.target.split('/')[0].split(':')[0],
+                state: this.active(r) ? 'Running' : 'Done',
+                up: o.failed === 0,
+                detail: `${p.label} to ${r.target}, ${appCadence(r)}: ${appSummaryText(r, o)}`,
+            });
+        }
+        return out;
+    }
+}
+exports.AppSim = AppSim;
+/** A run's messages as outcomes: answered (or, one-way, received), failed, pending, cancelled; retries not counted twice. */
+function appOutcome(r) {
+    // the last try of each message decides it
+    const last = new Map();
+    for (const t of r.tests) {
+        const k = t.msg || 1;
+        const was = last.get(k);
+        if (!was || (t.retry || 0) >= (was.retry || 0))
+            last.set(k, t);
+    }
+    let ok = 0;
+    let failed = r.skipped.length;
+    let pending = 0;
+    let cancelled = 0;
+    for (const t of last.values()) {
+        if (!t.done)
+            pending++;
+        else if (/cancelled \(Stop\)/.test(t.result))
+            cancelled++;
+        else if (t.ok)
+            ok++;
+        else
+            failed++;
+    }
+    return { ok, failed, pending, cancelled, retries: r.retried };
+}
+/** "12 answered · 1 failed · 2 retries". */
+function appSummaryText(r, o = appOutcome(r)) {
+    const p = (0, applications_1.appProfile)(r.app.profile);
+    const okWord = p && !p.answered ? 'received' : 'answered';
+    const parts = [];
+    if (o.ok)
+        parts.push(`${o.ok} ${okWord}`);
+    if (o.failed)
+        parts.push(`${o.failed} failed`);
+    if (o.pending)
+        parts.push(`${o.pending} pending`);
+    if (o.cancelled)
+        parts.push(`${o.cancelled} cancelled`);
+    if (o.retries)
+        parts.push(`${o.retries} retr${o.retries === 1 ? 'y' : 'ies'}`);
+    return parts.join(' · ') || 'nothing sent yet';
+}
+/** "every 5 s of real time", "every 2 s", "one message". */
+function appCadence(r) {
+    if (!r.interval)
+        return 'one message';
+    return `every ${(0, params_1.durationText)(r.interval)}${r.rt !== undefined || r.how === 'event' ? ' of real time' : ''}${r.count !== null ? `, ${r.count} message${r.count === 1 ? '' : 's'}` : ', until stopped'}`;
+}
+/** The address the run's last message went to, for the details. */
+function lastDst(r) {
+    const t = r.tests[r.tests.length - 1];
+    return t ? (0, ipmath_1.formatAddr)(t.dst) : '';
+}
+
+};
 __defs["analysis/sim/actions"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -62935,9 +63427,12 @@ exports.CANCELLED = exports.MAX_ACTIONS = exports.STATUS_ICON = exports.STATUS_L
 exports.sendOutcome = sendOutcome;
 exports.sendStatus = sendStatus;
 exports.sendView = sendView;
+exports.appView = appView;
 exports.actionView = actionView;
 const test_plan_1 = __req("analysis/sim/test-plan");
-exports.ACTION_TITLE = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping' };
+const apps_1 = __req("analysis/sim/apps");
+const applications_1 = __req("model/applications");
+exports.ACTION_TITLE = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping', app: 'Application' };
 exports.STATUS_LABEL = { queued: 'Queued', running: 'In progress', paused: 'Paused', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
 /** An icon per state (beside its word: never the colour alone). */
 exports.STATUS_ICON = { queued: '◷', running: '▶', paused: '❚❚', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
@@ -63069,10 +63564,61 @@ function sendView(a, now) {
 function failedView(a, title) {
     return { id: a.id, kind: a.kind, title, target: a.target, status: 'failed', at: a.at, ended: a.at, summary: a.error, controls: [], details: [`Refused at ${at(a.at)}: ${a.error}`], tests: [] };
 }
+/** The view of a started application: its messages as one operation, with what each came to. */
+function appView(a, c) {
+    const r = a.app;
+    if (c.appView) {
+        const v = c.appView(a);
+        if (v)
+            return v;
+    }
+    const p = (0, applications_1.appProfile)(r.app.profile);
+    const o = (0, apps_1.appOutcome)(r);
+    const active = (!r.stopped && (r.count === null || r.sent < r.count)) || r.tests.some((t) => !t.done);
+    const realPaused = r.rt !== undefined && !!c.rtPaused;
+    const status = active ? (realPaused ? 'paused' : 'running') : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
+    let ended;
+    if (!active) {
+        ended = r.stoppedAt !== undefined ? r.stoppedAt : r.t0;
+        for (const t of r.tests)
+            ended = Math.max(ended, t.ended !== undefined ? t.ended : t.started);
+        for (const s of r.skipped)
+            ended = Math.max(ended, s.t);
+    }
+    const details = [];
+    details.push(`${r.dev}/${r.app.id} (${r.app.name}): ${p ? p.label : r.app.profile} to ${r.target}, ${(0, apps_1.appCadence)(r)}; started ${at(a.at)}.`);
+    details.push(p && !p.answered ? 'Success: the datagram reached its receiver (the simulation sees it; nothing comes back).' : 'Success: answered (a TCP connection with its answer, a UDP answer); a request that timed out is sent again up to its retries.');
+    const shown = r.tests.length <= 12 ? r.tests : r.tests.slice(0, 3).concat(r.tests.slice(-9));
+    for (const t of shown)
+        details.push(`#${t.msg || 1}${t.retry ? ` (retry ${t.retry})` : ''} at ${at(t.started)}${t.resolved ? ` · ${t.resolved}` : ''}: ${t.done ? t.result : t.result === 'waiting' ? 'on its way' : t.result}`);
+    if (shown.length < r.tests.length)
+        details.splice(details.length - 9, 0, `… ${r.tests.length - shown.length} more …`);
+    for (const s of r.skipped.slice(-3))
+        details.push(`#${s.n} at ${at(s.t)}: ${s.why}`);
+    if (r.stopped && r.stoppedAt !== undefined)
+        details.push(`Stopped at ${at(r.stoppedAt)} after ${r.sent} message${r.sent === 1 ? '' : 's'}.`);
+    return {
+        id: a.id,
+        kind: 'app',
+        title: exports.ACTION_TITLE.app,
+        target: `${r.dev}/${r.app.id} → ${r.target}`,
+        status,
+        at: a.at,
+        ended,
+        progress: { done: r.sent, total: r.count, unit: 'sent' },
+        outcome: { ok: o.ok, failed: o.failed, pending: o.pending, unknown: 0, cancelled: o.cancelled, rate: true, basis: details[1] },
+        summary: (0, apps_1.appSummaryText)(r, o),
+        controls: active && !r.stopped && (r.count === null || r.sent < r.count) ? [{ op: 'stop', label: 'Stop' }] : [],
+        details,
+        tests: r.tests.map((t) => t.id),
+    };
+}
 /** The view of any operation. */
 function actionView(a, c) {
     if (a.kind === 'send' && a.run)
         return sendView(a, c.now);
+    if (a.kind === 'app' && a.app)
+        return appView(a, c);
     const title = exports.ACTION_TITLE[a.kind];
     if (a.error)
         return failedView(a, title);
@@ -63947,7 +64493,7 @@ exports.TestForm = TestForm;
 __defs["ui/sim-event-forms"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IfaceForm = exports.StreamForm = exports.LeaveForm = exports.JoinForm = void 0;
+exports.IfaceForm = exports.AppForm = exports.StreamForm = exports.LeaveForm = exports.JoinForm = void 0;
 /**
  * The forms of Network events besides Send network packets: Join multicast
  * group, Leave multicast group, Start multicast stream and Interface actions. Each chooses its own
@@ -63961,6 +64507,7 @@ exports.IfaceForm = exports.StreamForm = exports.LeaveForm = exports.JoinForm = 
 const ip_1 = __req("model/ip");
 const mac_1 = __req("analysis/sim/mac");
 const dom_1 = __req("ui/dom");
+const applications_1 = __req("model/applications");
 /** Fill a select's options again when they changed, keeping what is chosen while it is offered. */
 function fill(doc, s, opts) {
     const key = opts.map((o) => `${o.value}|${o.label}|${o.disabled ? 1 : 0}`).join('/');
@@ -64215,6 +64762,78 @@ class StreamForm {
     }
 }
 exports.StreamForm = StreamForm;
+/**
+ * Start application: one of a device's client applications (a TCP or UDP
+ * client, periodic messages, an MQTT client) runs as its profile says, its
+ * messages to its peer as one event of Active events. The devices offered
+ * are those with an application to start (the others listed disabled with
+ * the reason); the application's summary says what it will do. Its
+ * interval is real time, as a stream's is; nothing of its configuration is
+ * changed here (that is the Edit tab's).
+ */
+class AppForm {
+    constructor(doc, host) {
+        this.doc = doc;
+        this.host = host;
+        this.dev = (0, dom_1.el)(doc, 'select', { id: 'sim-a-dev' });
+        this.app = (0, dom_1.el)(doc, 'select', { id: 'sim-a-app' });
+        this.ctx = (0, dom_1.el)(doc, 'p', { id: 'sim-a-ctx', class: 'small muted sim-t-note' });
+        this.btn = (0, dom_1.el)(doc, 'button', { type: 'button', id: 'sim-a-go', class: 'sp-primary' }, ['Start application']);
+        this.f = footer(doc, 'sim-a', [this.btn]);
+        this.app.setAttribute('aria-describedby', 'sim-a-ctx');
+        this.el = (0, dom_1.el)(doc, 'div', { class: 'sim-ev-form' }, [grid(doc, [['sim-a-dev', 'Device', this.dev], ['sim-a-app', 'Application', this.app]]), this.ctx, this.f.el]);
+        this.dev.addEventListener('change', () => {
+            this.app.value = '';
+            this.app.removeAttribute('data-key');
+            this.sync();
+        });
+        this.app.addEventListener('change', () => this.sync());
+        this.btn.addEventListener('click', () => {
+            this.sync();
+            if (this.btn.disabled)
+                return;
+            this.f.msg.textContent = this.host.startApp(this.dev.value, this.app.value);
+            this.sync();
+        });
+        this.sync();
+    }
+    sync() {
+        const sim = this.host.sim();
+        const devs = [{ value: '', label: 'Select…' }];
+        for (const d of sim.model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
+            if (!d.applications || !d.applications.length)
+                continue;
+            const n = sim.apps.startable(d.id).length;
+            devs.push({ value: d.id, label: n ? d.id : `${d.id} — listeners only`, disabled: !n });
+        }
+        fill(this.doc, this.dev, devs);
+        const apps = this.dev.value ? sim.apps.startable(this.dev.value) : [];
+        fill(this.doc, this.app, [{ value: '', label: apps.length ? 'Select…' : this.dev.value ? 'No application to start' : 'Choose a device first' }].concat(apps.map((a) => ({ value: a.id, label: (0, applications_1.appSummary)(a) }))));
+        if (apps.length === 1 && !this.app.value)
+            this.app.value = apps[0].id;
+        this.app.disabled = !apps.length;
+        const a = this.app.value ? apps.find((x) => x.id === this.app.value) : undefined;
+        const p = a ? (0, applications_1.appProfile)(a.profile) : undefined;
+        const ctx = a && p ? `${p.help}${a.interval ? ` Every ${a.interval / 1000} s of real time${a.count ? `, ${a.count} message${a.count === 1 ? '' : 's'}` : ', until stopped'}.` : p.id === 'mqtt_client' ? '' : ' One message.'}` : devs.length === 1 ? 'No device of the model has an application to start (Edit tab → Services → Applications).' : '';
+        if (this.ctx.textContent !== ctx)
+            this.ctx.textContent = ctx;
+        this.ctx.hidden = !ctx;
+        const why = !this.dev.value ? 'Choose a device with an application.' : !this.app.value ? 'Choose the application.' : sim.appProblem(this.dev.value, this.app.value);
+        setNeed(this.f.need, [this.btn], why ? why.replace(/\.?$/, '.') : null);
+    }
+    setDevice(dev) {
+        if (this.dev.value !== dev) {
+            this.dev.value = dev;
+            this.app.value = '';
+            this.app.removeAttribute('data-key');
+        }
+        this.sync();
+    }
+    focus() {
+        (this.dev.value ? this.app : this.dev).focus();
+    }
+}
+exports.AppForm = AppForm;
 /**
  * Interface actions: Shut interface and Start flapping for a device's interface. The form follows the
  * chosen interface's state in the simulation, whatever changed it (these buttons, the diagram's menus,

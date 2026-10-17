@@ -59,7 +59,7 @@ import { textWidth } from '../layout/text';
 type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
-import { IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
+import { AppForm, IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
 import { Flight, Headers, McDecision, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
@@ -189,6 +189,7 @@ export class SimController implements SimulationMode {
   private leaveForm: LeaveForm | null = null;
   private streamForm: StreamForm | null = null;
   private ifaceForm: IfaceForm | null = null;
+  private appForm: AppForm | null = null;
   private domainKey = '';
   /** the status side shows the protocols' status, or a table of the selected device */
   private statusView: { kind: DevTable; dev: string } | null = null;
@@ -1207,6 +1208,26 @@ export class SimController implements SimulationMode {
     return `${a.target}: streaming from t = ${fmtSec(this.t)}, one datagram every ${interval / 1000} s of real time; see Active events.`;
   }
 
+  /** Start application: an event of the list, its messages until they are done or Stop. */
+  startApp(dev: string, app: string): string {
+    const a = this.sim.actApp(dev, app);
+    // its first message is on screen now (paused too: there it waits for Play)
+    this.pacer.take();
+    this.logKey = '';
+    this.actionsKey = '';
+    this.refresh(true);
+    if (a.error) return a.error;
+    return `${a.target}: started at t = ${fmtSec(this.t)}; see Active events.`;
+  }
+
+  /** Start application… from a device's menu: the form, open, with the device. */
+  appFrom(dev: string): void {
+    if (!this.appForm) return;
+    this.openSection('sim-ne-app');
+    this.appForm.setDevice(dev);
+    this.appForm.focus();
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
     return this.did(this.sim.stopStream(dev, iface, group), `${dev}:${iface} stops its stream to ${group}`);
   }
@@ -1460,6 +1481,7 @@ export class SimController implements SimulationMode {
         for (const j of this.sim.multicast.joined(dev)) items.push({ label: `Leave group ${j.group}`, act: () => void this.leaveGroup(dev, j.iface, j.group) });
         if (this.sim.multicast.joined(dev).length) items.push({ label: 'Leave multicast group…', act: () => this.multicastFrom(dev, 'leave') });
         items.push({ label: 'Start multicast stream…', act: () => this.multicastFrom(dev, 'stream') });
+        if (this.sim.apps.startable(dev).length) items.push({ label: 'Start application…', act: () => this.appFrom(dev) });
         for (const st of this.sim.multicast.streamsOf(dev)) {
           if (st.running) items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
           else items.push({ label: `Start stream ${st.group} again`, act: () => void this.did(this.sim.multicast.restartStream(dev, st.iface, st.group), `${dev} streams to ${st.group} again`) });
@@ -1740,18 +1762,21 @@ export class SimController implements SimulationMode {
       stopFlap: (d: string, i: string) => (this.stopFlap(`iface:${d}:${i}`) ? `${d}:${i} stops flapping at t = ${fmtSec(this.t)}.` : `${d}:${i} is not flapping.`),
       interfacesOf: (d: string) => this.interfaceChoices(d),
       flapTimes: () => this.flapTimes(),
+      startApp: (d: string, a: string) => this.startApp(d, a),
     };
     this.testForm = new TestForm(doc, { sim: () => this.sim, send: (p, play) => this.sendPlan(p, play), playing: () => this.playing }, (d, id, title, body) => this.disclosure(d, id, title, body));
     this.joinForm = new JoinForm(doc, fh);
     this.leaveForm = new LeaveForm(doc, fh);
     this.streamForm = new StreamForm(doc, fh);
     this.ifaceForm = new IfaceForm(doc, fh);
+    this.appForm = new AppForm(doc, fh);
     const net = this.sec(doc, 'sim-act-net', 'Network events', [
       this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
       this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
       this.action(doc, 'sim-ne-leave', 'Leave multicast group', this.leaveForm.el),
       this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
       this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
+      this.action(doc, 'sim-ne-app', 'Start application', this.appForm.el),
     ]);
     this.bulkControls(doc, net);
     box.appendChild(net);

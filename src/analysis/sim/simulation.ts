@@ -22,6 +22,7 @@ import { ParamChange, ParamValue, Resolved, SimParams, durationText, formatValue
 import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
+import { AppSim } from './apps';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
@@ -183,6 +184,8 @@ export class Simulation {
   readonly model: Model;
   /** the real-time schedule of Network events (a stream's datagrams); its clock injected for the tests */
   readonly realtime: RealTimeScheduler;
+  /** the applications: listeners answer, clients run when started (apps.ts) */
+  readonly apps: AppSim;
 
   constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
@@ -206,6 +209,8 @@ export class Simulation {
     // a join of Network events is done when a multicast router records it
     this.multicast.onMember = (rdev, riface, group, reporter) => this.memberRecorded(rdev, riface, group, reporter);
     this.transport.install();
+    this.apps = new AppSim(this.protocols, this.transport);
+    this.apps.realtime = this.realtime;
     this.protocols.start();
   }
 
@@ -490,6 +495,21 @@ export class Simulation {
     return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, traffic, stream: st });
   }
 
+  /** Start application (Network events): a client application's messages, one event until they are done or Stop. */
+  actApp(dev: string, id: string): ActionRecord {
+    const r = this.apps.start(dev, id, 'event');
+    const a = this.apps.app(dev, id);
+    const target = `${dev}/${id}${a && a.peer ? ' → ' + a.peer : a && a.broker ? ' → ' + a.broker : ''}`;
+    if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, error: r });
+    this.engine.stateVersion++;
+    return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, app: r });
+  }
+
+  /** What stops a device's application from being started now (Start application's checks), or null. */
+  appProblem(dev: string, id: string): string | null {
+    return this.apps.problem(dev, id);
+  }
+
   /** Shut interface (Network events): done at once; the interface stays down until No shut. */
   actShut(dev: string, iface: string): ActionRecord {
     const target = `${dev}:${iface}`;
@@ -542,6 +562,10 @@ export class Simulation {
       } else if (a.flap) {
         // flapping until its cycles are done or it is stopped
         if (!a.flap.obj.ended) return true;
+      } else if (a.app) {
+        // an application until its messages are sent and settled (one waiting for its source's DHCP lease does not count yet)
+        if (this.apps.pending(a.app)) return true;
+        if (a.app.tests.some((t) => !t.done && t.result.indexOf('waiting for a DHCP lease') !== 0)) return true;
       }
     }
     return false;
@@ -561,6 +585,7 @@ export class Simulation {
     if (op === 'stop' && a.run) return this.stopRun(a.run.id);
     if (op === 'stop' && a.stream) return this.stopStream(a.stream.dev, a.stream.iface, a.stream.group);
     if (op === 'stop' && a.flap) return this.stopFlap(a.flap.ref);
+    if (op === 'stop' && a.app) return this.apps.stop(a.app);
     if (op === 'noshut' && a.shut) return this.noShut(a.shut.dev, a.shut.iface);
     if (op === 'leave' && a.join) return this.leaveGroup(a.join.dev, a.join.iface, a.join.group);
     return false;

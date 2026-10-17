@@ -64,7 +64,8 @@ import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
 import { isContainer } from '../../model/virtual';
 import { profileAt } from '../separation';
-import { deviceListeners } from '../listeners';
+import { appListeners, deviceListeners, serviceListeners } from '../listeners';
+import type { AppInstance } from '../../model/applications';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** RFC 6298 §2.5 allows a maximum of at least 60 s; Linux TCP_RTO_MAX is 120 s. */
@@ -133,6 +134,14 @@ export interface Test {
   /** health check / probe: who to tell */
   onDone?: (t: Test) => void;
   timeout: Resolved | { value: number };
+  /** a one-way datagram (periodic UDP messages): done when it reaches its receiver, nothing answers it */
+  oneWay?: boolean;
+  /** a host name's record type: A (IPv4, the default) or AAAA (IPv6) */
+  qtype?: 'A' | 'AAAA';
+  /** the retry this message is (an application's request sent again after a timeout: 1, 2 …) */
+  retry?: number;
+  /** the application that sent it ("hmi/poll") */
+  app?: string;
 }
 
 /** A TCP connection end, or a UDP / ICMP socket waiting for an answer. */
@@ -331,6 +340,24 @@ export class Transport {
     }
     let rules = this.listenCache.get(dev);
     if (!rules) {
+      rules = this.relationRules(dev).slice();
+      // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
+      for (const x of serviceListening(this.P.m.index.devices.get(dev))) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
+      // a container serves the ports it publishes
+      const md = this.P.m.index.devices.get(dev);
+      if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
+      rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
+      this.listenCache.set(dev, rules);
+    }
+    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${isContainer(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+  }
+
+  private relCache = new Map<string, PortRule[]>();
+
+  /** The ports of the relations a device serves (a load balancer: also those it passes requests on to). */
+  private relationRules(dev: string): PortRule[] {
+    let rules = this.relCache.get(dev);
+    if (!rules) {
       rules = [];
       for (const r of this.P.m.relations) {
         const devs = relationDevices(r);
@@ -344,19 +371,66 @@ export class Transport {
         if (!server) continue;
         for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
       }
-      // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
-      for (const x of serviceListening(this.P.m.index.devices.get(dev))) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
-      // a container serves the ports it publishes
-      const md = this.P.m.index.devices.get(dev);
-      if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
-      rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
-      this.listenCache.set(dev, rules);
+      this.relCache.set(dev, rules);
     }
-    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${isContainer(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+    return rules;
   }
 
-  private open(dev: string, proto: 'tcp' | 'udp', port: number): boolean {
-    return portsMatch(this.listening(dev).rules, proto, port);
+  /**
+   * Does the device take a segment or datagram to this port (and address)? Its listening ports; an
+   * application bound to an interface takes only what is addressed to that interface, unless something
+   * else listens on the port on all addresses (a service, a relation's server, an unbound application).
+   */
+  private open(dev: string, proto: 'tcp' | 'udp', port: number, dst?: IpAddr): boolean {
+    const ls = this.listening(dev);
+    if (!portsMatch(ls.rules, proto, port)) return false;
+    if (!dst || ls.written) return true;
+    const bound = this.boundOnly(dev, proto, port);
+    return !bound || bound.some((b) => this.addrOn(dev, b, dst));
+  }
+
+  /** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
+  private boundOnly(dev: string, proto: 'tcp' | 'udp', port: number): string[] | null {
+    const md = this.P.m.index.devices.get(dev);
+    const mine = appListeners(md).filter((x) => x.proto === proto && x.port === port);
+    if (!mine.length || mine.some((x) => x.bind === undefined)) return null;
+    if (serviceListeners(md).some((x) => x.proto === proto && x.port === port)) return null;
+    if (portsMatch(this.relationRules(dev), proto, port)) return null;
+    return mine.map((x) => x.bind as string);
+  }
+
+  /** Is the address one of an interface's (configured or leased) now? */
+  private addrOn(dev: string, iface: string, a: IpAddr): boolean {
+    const l = this.P.sd(dev).l3.get(iface);
+    return !!l && l.addrs.some((x) => compareAddr(x.addr, a) === 0);
+  }
+
+  /** Why a port is closed, for the log: what listens, and where a bound application listens instead. */
+  private listenText(dev: string, proto: 'tcp' | 'udp', port: number, dst: IpAddr): string {
+    const ls = this.listening(dev);
+    const bound = portsMatch(ls.rules, proto, port) ? this.boundOnly(dev, proto, port) : null;
+    if (bound) return `${proto}/${port} listens on ${bound.join(', ')} only, not on ${formatAddr(dst)}`;
+    return ls.text;
+  }
+
+  /** The listener application of a device that takes this port and address, if one does. */
+  appAt(dev: string, proto: 'tcp' | 'udp', port: number, dst: IpAddr): AppInstance | undefined {
+    const md = this.P.m.index.devices.get(dev);
+    const hit = appListeners(md).filter((x) => x.proto === proto && x.port === port && (x.bind === undefined || this.addrOn(dev, x.bind, dst)));
+    // (one bound to the address's own interface before one on all addresses)
+    hit.sort((a, b) => Number(a.bind === undefined) - Number(b.bind === undefined));
+    return hit.length && md && md.applications ? md.applications.find((a) => a.id === hit[0].app) : undefined;
+  }
+
+  /** The service response time at a port: the device attribute (or a relation's), with its source in words. */
+  private serviceTime(dev: string, proto: 'tcp' | 'udp', port: number): { value: number; text: string } {
+    const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, proto, port));
+    return { value: Number(rt.value), text: 'the service response time ' + resolvedText(rt) };
+  }
+
+  /** Run fn in the context of a test (a Send test's id, else none). */
+  private withTestOf(t: Test, fn: () => void): void {
+    this.e.withTest(t.source === 'manual' ? t.id : null, fn);
   }
 
   /** A relation's message to a port the device does not listen on (its `listening` attribute leaves it out): refused like any other. */
@@ -478,7 +552,7 @@ export class Transport {
   }
 
   /** Run one test now (Send test…, test traffic, a health check, a probe); its result comes later. */
-  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number }; run?: number; msg?: number }): Test | string {
+  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number }; run?: number; msg?: number; oneWay?: boolean; qtype?: 'A' | 'AAAA'; retry?: number; app?: string }): Test | string {
     const dev = o.from;
     const sd = this.P.sd(dev);
     if (!sd) return `${dev} is not a device of the simulation`;
@@ -515,6 +589,10 @@ export class Transport {
       onDone: o.onDone,
       front: o.front,
       timeout: o.timeout || this.e.params.get('app-timeout', dev),
+      oneWay: o.oneWay,
+      qtype: o.qtype,
+      retry: o.retry,
+      app: o.app,
     };
     this.tests.push(t);
     if (this.tests.length > 400) this.tests.splice(0, this.tests.length - 400);
@@ -578,9 +656,10 @@ export class Transport {
     }
     if (name && this.netsvc) {
       t.result = `resolving ${name}`;
-      if (!this.netsvc.cached(dev, name, 'A')) this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name}`);
+      const qtype = t.qtype || 'A';
+      if (!this.netsvc.cached(dev, name, qtype)) this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name} (${qtype})`);
       const since = this.e.now;
-      this.netsvc.resolve(dev, name, 'A', (r) => {
+      this.netsvc.resolve(dev, name, qtype, (r) => {
         if (t.done) return;
         if (!r.addr) {
           this.finish(t, false, r.error || `${name} could not be resolved`);
@@ -607,7 +686,8 @@ export class Transport {
     // the application gives up after its response timeout (a broadcast ping collects the answers until then)
     this.later(Number(t.timeout.value), () => {
       if (t.done) return;
-      if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
+      if (t.oneWay) this.finish(t, false, `not received within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}${this.lastDrop(t)}`);
+      else if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
       else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
       else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
       else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
@@ -628,7 +708,7 @@ export class Transport {
    * packets (a firewall's policy, no route, a VLAN a port doesn't carry …), so a timeout says where it ended.
    */
   private lastDrop(t: Test): string {
-    if (t.source !== 'manual') return '';
+    if (t.source !== 'manual' && !t.app) return '';
     for (let i = this.e.log.length - 1; i >= 0; i--) {
       const ev = this.e.log[i];
       if (ev.t < t.started) break;
@@ -777,19 +857,32 @@ export class Transport {
       if (!this.e.isBroadcastAddr(t.dst) && !isMulticastIp(t.dst)) this.finish(t, true, `UDP answer from ${formatAddr(pkt.src)}:${l4.sport}`);
       return;
     }
-    if (!this.open(dev, 'udp', l4.dport as number)) {
-      this.refuse(dev, l3, pkt, this.listening(dev).text);
+    if (!this.open(dev, 'udp', l4.dport as number, pkt.dst)) {
+      this.refuse(dev, l3, pkt, this.listenText(dev, 'udp', l4.dport as number, pkt.dst));
       return;
     }
+    const app = this.appAt(dev, 'udp', l4.dport as number, pkt.dst);
+    const test = d.test !== undefined ? this.tests.find((x) => x.id === d.test) : undefined;
+    if (test && test.oneWay && !test.done) {
+      test.answers.push(`${dev}${app ? '/' + app.id : ''}`);
+      if (test.rtt === undefined) test.rtt = this.e.now - test.started;
+      this.withTestOf(test, () => this.finish(test, true, `received by ${dev}${app ? '/' + app.id : ''} on UDP ${l4.dport} (nothing comes back)`));
+    }
+    if (app && app.profile === 'udp_receiver') {
+      this.e.note('message', 'udp', dev, this.e.ownerOf(pkt.src) || '', 'received', '', `${dev}/${app.id} (${app.name}) takes the datagram from ${formatAddr(pkt.src)}:${l4.sport}: a receiver answers nothing`);
+      return;
+    }
+    // a one-way message to a listener that answers requests: it answers it too (its profile's behaviour)
     if (breaks && this.breakUdp(dev, l3, pkt)) return;
     // a protocol break's syslog leg 2 arrives at a collector: it answers nothing
     if ((pkt.msg.data as { breakLeg?: boolean } | undefined || {}).breakLeg && pkt.msg.type === 'Syslog message') return;
     const own = this.e.isBroadcastAddr(pkt.dst) || isMulticastIp(pkt.dst) ? l3.addrs.find((a) => a.addr.version === pkt.dst.version) : undefined;
     const src = own ? own.addr : pkt.dst;
-    const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, 'udp', l4.dport as number));
+    const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${durationText(app.responseDelay)} (${dev}/${app.id}'s response delay)` } : this.serviceTime(dev, 'udp', l4.dport as number);
+    const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
     const answer = (): void => {
-      const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${UDP_RESPONSE} bytes: the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`, { test: d.test, reply: true });
-      this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(pkt.src) || '');
+      const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
+      this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '');
     };
     if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
@@ -929,8 +1022,8 @@ export class Transport {
     if (!c) {
       if (has('RST')) return;
       if (has('SYN') && !has('ACK')) {
-        if (!this.open(dev, 'tcp', l4.dport as number)) {
-          this.refuse(dev, l3, pkt, this.listening(dev).text);
+        if (!this.open(dev, 'tcp', l4.dport as number, pkt.dst)) {
+          this.refuse(dev, l3, pkt, this.listenText(dev, 'tcp', l4.dport as number, pkt.dst));
           return;
         }
         const sc: Conn = { key: this.connKey(pkt.dst, l4.dport as number, pkt.src, l4.sport as number), dev, proto: 'tcp', local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, vrf: pkt.vrf, state: 'SYN_RCVD', role: 'server', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what: `serves ${formatAddr(pkt.src)}`, got: 0, unacked: [], keep: false, probes: 0 };
@@ -1083,10 +1176,11 @@ export class Transport {
       this.breakTcp(c, pkt);
       return;
     }
-    const rt = this.e.params.get('service-response', c.dev, null, this.serviceRel(c.dev, 'tcp', c.lport));
+    const app = this.appAt(c.dev, 'tcp', c.lport, c.local);
+    const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${durationText(app.responseDelay)} (${c.dev}/${app.id}'s response delay)` } : this.serviceTime(c.dev, 'tcp', c.lport);
     const answer = (): void => {
       if (c.state !== 'ESTABLISHED') return;
-      this.sendData(c, RESPONSE_BYTES, `the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`);
+      this.sendData(c, app && app.responseSize !== undefined ? app.responseSize : RESPONSE_BYTES, `the answer${app ? ` of ${c.dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`);
     };
     if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
