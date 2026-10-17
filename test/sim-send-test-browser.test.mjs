@@ -85,7 +85,7 @@ test('paused: Send sends at the current time and says it starts when the simulat
   }
 });
 
-test('at the dot limit, a test sent during the startup burst is drawn at once, and starts at the current simulated time', { skip, timeout: 240000 }, async () => {
+test('during the startup burst (more than is drawn), a test is drawn at once, and starts at the current simulated time', { skip, timeout: 240000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await load(page);
@@ -101,7 +101,8 @@ test('at the dot limit, a test sent during the startup burst is drawn at once, a
       c.advance(16); c.refresh(true);
       const mine = p.items.filter((it) => it.test);
       return { notDrawn: p.notDrawn, drawnBefore, now, started: t.started, first: mine.length ? Math.min(...mine.map((it) => it.f.t0)) : null, mineDrawn: mine.every((it) => it.drawn), mine: mine.length, dom: document.querySelectorAll('#canvas .layer-sim .sim-test').length, msg }; })()`);
-    assert.ok(r.notDrawn > 0 && r.drawnBefore >= 40, 'the dot limit is reached: ' + JSON.stringify(r));
+    // (the burst is more than is drawn: bundled, the rest is cable activity)
+    assert.ok(r.notDrawn > 0 && r.drawnBefore >= 1, 'the burst is bundled: ' + JSON.stringify(r));
     assert.equal(r.started, r.now, 'started at the current simulated time');
     assert.ok(r.mine > 0 && r.mineDrawn, 'drawn despite the limit');
     assert.equal(r.first, r.now, 'its first message is on its way now');
