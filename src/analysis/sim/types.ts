@@ -134,6 +134,13 @@ export interface Flight {
   origin?: string;
   /** the Send test its message belongs to (always shown, drawn first, marked Test) */
   test?: number;
+  /**
+   * the flight whose arrival caused it (a frame forwarded on, an answer, an
+   * ARP request for a packet, the packet released by the ARP reply …): the
+   * display starts it only after that one has arrived; none for what a
+   * timer or a Network event starts
+   */
+  cause?: number;
 }
 
 export type Cast = 'unicast' | 'broadcast' | 'multicast';

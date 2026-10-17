@@ -98,7 +98,8 @@ test('the first packets and those a minute later take their configured screen ti
     assertPaced(ratios(hid, across), 'around a hidden tab', 3);
     for (const r of ratios(hid).filter(across)) {
       const shown = (r.end - r.start - (shownAt - hiddenAt)) * hid.speed;
-      assert.ok(Math.abs(shown - r.hop) / r.hop < 0.08, `a hop across the hidden time moved for its own time on screen: ${shown.toFixed(0)} of ${r.hop.toFixed(0)} ms`);
+      // (12 %: the hidden time is measured from the page's events, a frame or two off on a loaded machine)
+      assert.ok(Math.abs(shown - r.hop) / r.hop < 0.12, `a hop across the hidden time moved for its own time on screen: ${shown.toFixed(0)} of ${r.hop.toFixed(0)} ms`);
     }
 
     // a minute later

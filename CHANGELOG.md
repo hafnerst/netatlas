@@ -258,6 +258,30 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Background dots: moving, grey, not clickable.** While one of your
+  Network events is active (a send with messages left, a stream, a join
+  until recorded, a leave until its cleanup settles, flapping) and until
+  its last dots arrived, the scenario's dots keep moving in the theme's
+  muted grey, without labels, without `data-flight`, with
+  `pointer-events: none` and out of the hit test: no outline and no
+  inspector from them. Before, the scenario showed as cable activity only.
+  Attribution is by causal ownership (the operation's id goes with all its
+  messages cause: copies, replies, the ARP it needs); several actions at
+  once are all in front; finished events and kept cards mute nothing.
+- **Querier marks for every role.** Grey *Standby · VLAN 10* for a
+  candidate that yields, dashed grey *No querier · VLAN 10* on a snooping
+  switch's VLAN with members and nobody querying; *Querier (startup)*
+  replaces *Querier?*. Each tooltip gives the next deadline (next query,
+  next startup query, takeover), and **Show querier election** has a
+  *Next* column (*query at t = 33.3 s (startup 2 of 2)*). The legend
+  explains them.
+- **Query diagnostics** for support: `netatlas.simController().queryDiagnostics()`
+  says per candidate whether its next query is scheduled (and when), not
+  scheduled, or overdue (the simulation behind), and for each hop of its
+  last query whether it is still to come on screen, on screen, arrived,
+  not drawn (its protocol not shown, or bundled as cable activity) or lost
+  on the way.
+
 - **The IGMP / MLD querier election, by the protocol.** It starts by itself
   with the simulation: every candidate (a multicast router's interface
   with its querier on; a switch's VLAN with the snooping querier on,
@@ -1155,6 +1179,24 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **The animation no longer holds the simulation.** The simulated clock
+  runs at its own rate (1 s per real second × the speed in Readable and
+  Real time pacing, 1/scale in Proportional), at most 25 ms of work a
+  frame (*· behind* when it can't keep up). Independent operations — timers,
+  startup queries, two sends, a stream and a send — run side by side; a
+  slow exchange on screen delays nothing else. The dots keep each
+  operation's causal order: a hop after the one before it, an answer after
+  its request, a packet released by ARP after the ARP reply (the engine
+  records the delivering flight as `Flight.cause`). A send's next message
+  no longer comes "as soon as the last was seen" but at its interval.
+  An exchange whose dots would lag more than 15 s is cable activity.
+  Idle time is skipped only in Readable and Proportional pacing.
+- **Bundling keeps every protocol visible:** besides the 6 exchanges, up
+  to 3 more of protocols with nothing on screen are drawn, so a startup
+  burst of DHCP / ARP / NDP never hides an IGMP query or a Hello.
+- **Follow message** keeps its conversation drawn; it no longer holds the
+  clock.
+
 - **Flapping is an interface action only.** A cable's menu no longer has
   Start / Stop flapping, and the simulation refuses a cable as a flapping
   target (*… is no interface: flapping is an interface action*); a port
@@ -1492,6 +1534,16 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **No IGMP traffic after starting the simulation in the private house.**
+  The core's first query was due at t = 2 s (its first port up after the
+  link-up delay), but the clock waited for the startup burst's dots (DHCP,
+  ARP, NDP of every host) to arrive, tens of seconds of real time, and the
+  query then often wasn't drawn because the 6-exchange limit was full.
+  Now it is sent at 2 s simulated, about 1 s real after Start, and drawn
+  within about a second; the second startup query follows at 33.3 s. IGMP
+  is also offered under the protocols to tick in the house (the core's
+  VLAN 20 snooping querier), so it can't be filtered out unseen.
 
 - **Multicast without a member reached the hosts in the private house.**
   The thermostat's VLAN 20 stream was flooded by the distribution switch

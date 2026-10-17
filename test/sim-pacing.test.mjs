@@ -1,11 +1,13 @@
-// Pacing of the protocol simulation (analysis/sim/pacing.ts): every hop is
-// shown for its paced time from its sender to its receiver, the simulated
-// clock never runs past a hop on screen, the readable pacing scales with
-// the link's latency within its clamps, the proportional mode follows the
-// scale, the speed applies on top, idle time is skipped (or not), Step
-// moves one message event at a time, a lost message stops where it was
-// lost, Follow message holds the clock for its conversation only, and no
-// setting changes what the simulation computes.
+// Pacing of the protocol simulation (analysis/sim/pacing.ts): the
+// simulated clock runs at its own rate (× the speed), held by no dot; every
+// hop is shown for its paced time from its sender to its receiver, in its
+// causal order (a hop after the one it continues, an answer after what it
+// answers); the readable pacing scales with the link's latency within its
+// clamps, the proportional mode follows the scale, the speed applies on
+// top, idle time is skipped (or not), Step moves one message event at a
+// time, a lost message stops where it was lost, Follow message keeps its
+// conversation drawn (holding nothing), and no setting changes what the
+// simulation computes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { load, model, example } from './helpers.mjs';
@@ -28,19 +30,24 @@ function paced(text = PS, view = 'physical', set = {}) {
   return { sim, p, view };
 }
 
-/** Run the display for `ms` of real time in frames of `dt`; check after every frame that no hop on its way has been passed by the simulation. */
+/**
+ * Run the display for `ms` of real time in frames of `dt`; check every hop
+ * taken in that it shows in its causal order: never before the hop it
+ * continues has arrived on screen, and (the first hop of an answer) never
+ * before the message of its conversation it answers has.
+ */
 function play(sim, p, ms, dt = 16, check = true, view = 'physical') {
   const seen = new Set();
   for (let t = 0; t < ms; t += dt) {
+    const before = new Set(p.items);
     p.frame(dt);
     for (const it of p.items) {
       seen.add(it);
-      if (!check || !it.drawn || it.f.hidden || it.f.view !== view) continue;
-      const st = p.state(it);
-      if (st.phase === 'moving' || st.phase === 'transit' || st.phase === 'waiting') {
-        const gate = it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat;
-        assert.ok(sim.now < gate, `t=${sim.now} passed ${it.f.label} (arrives at ${gate}) while its dot is on its way`);
-      }
+      if (!check || before.has(it) || !it.drawn || it.f.hidden || it.f.view !== view) continue;
+      if (it.parent) assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6, `${it.f.label} starts before the hop it continues arrived`);
+      for (const x of p.items)
+        if (!it.parent && x !== it && x.drawn && x.key === it.key && x.f.test === it.f.test && x.f.sender !== undefined && it.f.sender !== undefined && x.f.sender !== it.f.sender && before.has(x) && p.state(x, p.clock - dt).phase !== 'gone')
+          assert.ok(it.d0 >= Math.min(p.arrival(x), p.clock) - 1e-6 || p.arrival(x) <= p.clock - dt + 1e-6, `${it.f.label} (an answer) starts before ${x.f.label} arrived`);
     }
   }
   return seen;
@@ -130,7 +137,7 @@ test('a quiet screen with busy hidden traffic: a jump does a bounded amount of w
   assert.ok(sim.now > 1000, 'and it does move on');
 });
 
-test('every hop travels its whole way for its paced time; the clock never passes a hop on screen; a continuing hop starts when the one before it arrived', () => {
+test('every hop travels its whole way for its paced time, in its causal order (a continuing hop after the one before it, an answer after what it answers); the simulation is held by none', () => {
   const { sim, p } = paced();
   const seen = play(sim, p, 12000);
   const drawn = Array.from(seen).filter((it) => it.drawn);
@@ -141,8 +148,21 @@ test('every hop travels its whole way for its paced time; the clock never passes
   }
   // a frame through a switch: the second cable starts after the first, with the crossing of the switch first
   assert.ok(drawn.some((it) => it.parent && it.transit === P.TRANSIT_MS));
-  // something was sent, and the simulated time moved on
-  assert.ok(sim.now > 0);
+  // the simulation ran at its rate (1 s a second), held by no dot: 12 s of display, 12 s of simulated time (and more where idle time was skipped)
+  assert.ok(sim.now >= 12000 - 50, String(sim.now));
+});
+
+test('execution is not held by the display: an IGMP query, an OSPF Hello and the scenario’s exchanges are due on their own timers and in flight together; only the dots follow their causal order', () => {
+  const { sim, p } = paced();
+  play(sim, p, 6000);
+  // several conversations at once, of several protocols, on screen at the same moment
+  const live = p.items.filter((it) => it.drawn && p.state(it).phase === 'moving');
+  assert.ok(new Set(live.map((it) => it.key)).size >= 2, `${live.length} moving`);
+  // the simulation is where its rate says (a few frames' worth), never waiting for a dot
+  assert.ok(sim.now >= 6000 - 50, String(sim.now));
+  // the routers' startup queries went at their own time (when their interfaces came up), not when the screen allowed
+  const q = sim.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query');
+  assert.ok(q.length >= 1 && q.every((e) => e.t <= 4000), q.map((e) => e.t).join(','));
 });
 
 test('the speed applies on top of the pacing: twice the speed, twice the display time in the same real time, and further in the simulation', () => {
@@ -208,20 +228,19 @@ test('Step: to the next message event; a hop on its way arrives, else the next m
   const first = p.items.filter((it) => it.drawn);
   assert.ok(first.length > 0, 'a message appears');
   assert.ok(first.some((it) => it.f.view === 'physical' && p.state(it).phase === 'moving' && p.state(it).frac === 0), 'at its sender');
-  assert.ok(first.every((it) => p.state(it).phase === 'moving' && p.state(it).frac === 0 || p.state(it).phase === 'waiting' || p.state(it).phase === 'transit'));
   const before = sim.now;
   const clock = p.clock;
   p.step();
   assert.ok(p.clock > clock, 'the display moved to the first arrival');
   assert.ok(sim.now >= before);
-  // stepping on never passes a hop on screen
+  // stepping on: each step the display moves to the next arrival, never backwards, and the simulation never goes back
+  let c = p.clock;
+  let n = sim.now;
   for (let i = 0; i < 40; i++) {
     p.step();
-    for (const it of p.items) {
-      if (!it.drawn || it.f.hidden || it.f.view !== 'physical') continue;
-      const st = p.state(it);
-      if (st.phase === 'moving' || st.phase === 'waiting' || st.phase === 'transit') assert.ok(sim.now < (it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat));
-    }
+    assert.ok(p.clock >= c && sim.now >= n);
+    c = p.clock;
+    n = sim.now;
   }
 });
 
@@ -254,27 +273,28 @@ test('no pacing setting changes what the simulation computes: the same events in
 
 test('a message lost on a failed cable stops where it was lost and shows there for about a second', () => {
   const { sim, p } = paced();
-  // wait for a hop on a cable, then fail that cable while the dot is midway
+  // a frame in the air on a cable (in simulated time: t0 ≤ now < t1), its cable failed then: lost midway
   let it = null;
-  for (let i = 0; i < 2000 && !it; i++) {
-    p.frame(16);
-    it = p.items.find((x) => x.drawn && x.f.track.ref.indexOf('link:') === 0 && p.state(x).phase === 'moving' && p.state(x).frac > 0.4);
+  for (let i = 0; i < 200000 && !it; i++) {
+    p.frame(0.002);
+    it = p.items.find((x) => x.drawn && x.f.view === 'physical' && x.f.track.ref.indexOf('link:') === 0 && x.f.t0 < sim.now && sim.now < x.f.t1 - (x.f.t1 - x.f.t0) * 0.3 && x.f.dropped === undefined);
   }
-  assert.ok(it, 'a dot midway');
-  const frac = p.state(it).frac;
+  assert.ok(it, 'a frame in the air');
   assert.ok(sim.fail(it.f.track.ref));
-  p.frame(0);
   assert.notEqual(it.f.dropped, undefined, 'lost when the cable went down');
+  const frac = (it.f.dropped - it.f.t0) / it.lat;
+  // its dot goes as far as it got and stops there
+  p.frame(Math.max(0, p.arrival(it) - p.clock) + 1);
   const st = p.state(it);
   assert.equal(st.phase, 'lost');
-  assert.ok(Math.abs(st.frac - frac) < 0.1, `lost where it was: ${st.frac} ~ ${frac}`);
+  assert.ok(Math.abs(st.frac - frac) < 0.05, `lost where it was: ${st.frac} ~ ${frac}`);
   p.frame(P.LOST_MS - 50);
   assert.equal(p.state(it).phase, 'lost', 'still shown');
   p.frame(100);
   assert.equal(p.state(it).phase, 'gone');
 });
 
-test('Follow message: its conversation alone holds the clock; the key pairs a request with its reply', () => {
+test('Follow message: its conversation is always drawn (beyond the bundling and the dot limit), holding nothing; the key pairs a request with its reply', () => {
   const k1 = P.conversationKey('arp', { arp: { senderIp: '10.0.0.1', targetIp: '10.0.0.2' }, l2: { src: 'a', dst: 'b' }, l3: [] }, 'ARP Request');
   const k2 = P.conversationKey('arp', { arp: { senderIp: '10.0.0.2', targetIp: '10.0.0.1' }, l2: { src: 'b', dst: 'a' }, l3: [] }, 'ARP Reply');
   assert.equal(k1, k2);
@@ -286,18 +306,20 @@ test('Follow message: its conversation alone holds the clock; the key pairs a re
   const it = p.items.find((x) => x.drawn);
   assert.ok(p.followFlight(it.f.id));
   assert.equal(p.follow.key, it.key);
-  // only hops of that conversation hold the clock
-  for (let i = 0; i < 300; i++) {
-    p.frame(16);
-    const g = p.gate();
-    if (g.item) assert.equal(g.item.key, it.key);
-  }
+  // its later hops are drawn whatever else is on screen (no room for anything else here); the simulation goes on at its rate
+  p.limit = 0;
+  const t0 = sim.now;
+  for (let i = 0; i < 300; i++) p.frame(16);
+  const mine = p.items.filter((x) => x.key === it.key && x !== it);
+  assert.ok(mine.every((x) => x.drawn), 'the conversation followed is drawn');
+  assert.ok(p.items.filter((x) => x.key !== it.key && x.f.t0 > t0 && x.f.view === 'physical').every((x) => !x.drawn), 'others not (no room with limit 0)');
+  assert.ok(sim.now >= t0 + 4800 - 50, 'held by nothing');
   assert.ok(p.followFlight(null));
   assert.equal(p.follow, null);
   assert.ok(sim.now > 0);
 });
 
-test('the dot limit: a hop beyond it is not drawn and does not hold the clock; the count says how many', () => {
+test('the dot limit: a hop beyond it is not drawn; the count says how many', () => {
   const { sim, p } = paced(PS, 'physical', { limit: 2 });
   play(sim, p, 8000, 16, false);
   assert.ok(p.notDrawn > 0, String(p.notDrawn));

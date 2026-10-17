@@ -23,58 +23,58 @@
  * switch it first crosses the switch (0.6 s). The arrival pulse and a lost
  * message's ✕ stay 1.5 s.
  *
- * The simulated clock follows the display, never the other way round: it
- * may run up to (but not past) the moment the first message on screen
- * arrives, so that nothing it would cause happens before its dot gets
- * there; meanwhile it moves through that message's simulated time in step
- * with its dot. With nothing on screen it jumps to the next message that
- * will be shown ("skip idle time", on by default; the jump is reported),
- * or, with skipping off, runs at the speed (1 s of simulated time per
- * second at 1×). Only how far the simulation has got at a moment depends
- * on this, never what happens or in which order: the engine runs the same
- * events whatever the pacing (tests compare the results).
+ * Execution and display are apart. The simulated clock runs at its own
+ * rate, × the speed, whatever is on screen: 1 s of simulated time per
+ * second in Readable and Real time pacing, 1 ÷ the scale in Proportional
+ * (its slow motion: "1 ms = 1 s"). No dot holds it: every event happens
+ * when it is due — a protocol timer, an IGMP query, another connection's
+ * next message — so independent exchanges are in flight together and a
+ * slow one never delays an unrelated one. A frame does at most JUMP_BUDGET
+ * ms of simulation work; what it can't do in time is left behind (said:
+ * `behind`, never caught up in a burst), so heavy traffic never freezes the
+ * page. With nothing on screen (and skipping idle time on, the default) it
+ * jumps to the next message that will be shown; the jump is reported.
  *
- * Following a message: its conversation (the message and its replies: an
- * ARP request and its reply, a ping and its echo, a TCP connection's
- * segments; the same protocol between the same two ends) alone holds the
- * clock back; the others still show but no longer hold it.
+ * The display follows the events, in their causal order. A hop starts on
+ * screen when its frame is sent, or later when it must: a hop that
+ * continues another (the next cable after a switch) when that one has
+ * arrived; a hop sent because another one arrived (the engine's
+ * Flight.cause: a router forwarding it on, the answer to a request, the ARP
+ * request a packet needs and the packet its reply releases) when that one
+ * has arrived; and the first hop of a message that answers another of its
+ * conversation (the same protocol between the same two ends, from the other
+ * side) when that one has arrived. So each operation's steps show one after the other while
+ * different operations overlap. The tables and the log may be ahead of the
+ * dots (by the hops still to show); a hop that would start more than
+ * LAG_MAX after it happened is not drawn as a dot (cable activity) — except
+ * a Network event's and the conversation followed. Only how far the
+ * simulation has got at a moment depends on the pacing, never what happens
+ * or in which order: the engine runs the same events whatever the pacing
+ * (tests compare the results).
  *
- * Foreground and background. The traffic of Network events (a send's
- * messages, a join's reports, a stream's datagrams: their flights carry the
- * operation's id) is the foreground: always drawn, with labels and a trail.
- * While such an operation runs (messages still to send or on their way, a
- * stream, a join waiting for its router: `host.foreground`), only its hops
- * hold the clock, and the gaps between them are skipped: its next message
- * appears as soon as the last one has been seen, never behind the
- * scenario's dots. The scenario is then the background: its hops are not
- * drawn as dots but counted as cable activity (a cable lit, "OSPF ×3"),
- * and they never hold the clock. Its events still happen, in the log and
- * the tables, on the one clock: the network the foreground crosses is the
- * same.
+ * Following a message: its conversation is always drawn (beyond the
+ * bundling and the dot limit) and keeps its trail; it holds nothing.
  *
- * Bundling. With no operation running, the scenario is the foreground: at
- * most CONV_LIMIT conversations (an ARP request and its reply, a ping and
- * its echo …) are drawn as dots at once, each to its end; a hop of another
- * conversation is cable activity and holds nothing (the event log lists
- * it; `notDrawn` counts them for a note). So many exchanges in parallel
- * stay followable: a few at a time, the rest as activity. At most `limit`
- * hops are on screen at once whatever their conversations.
+ * Foreground and background. The traffic of Network events (its flights
+ * carry the operation's id: a send's messages and their answers, a join's
+ * reports, a leave, a stream's datagrams and every copy of them) is the
+ * foreground: always drawn, with labels and a trail, inspectable. While
+ * such an operation runs (`host.foreground`), or a hop of one is still on
+ * screen, the scenario is the background: its dots go on moving, drawn
+ * muted (grey) and not clickable (`background`); its events happen on the
+ * same clock, in the log and the tables.
  *
- * Real time: the simulated clock runs with the display clock (1 s = 1 s at
- * 1×), held by nothing; every hop shows briefly (RT_HOP) as a sign of its
- * traffic, bundled as above. When the simulation can't keep up (more work
- * than a frame allows), it falls behind and says so (`behind`), never
- * catching up in a burst.
+ * Bundling. At most CONV_LIMIT of the scenario's conversations are drawn as
+ * dots at once, each to its end — and up to CONV_DIVERSE more for protocols
+ * with nothing on screen, so a startup burst of one protocol (DHCP, ARP)
+ * never hides another's message (an IGMP query, a Hello); a hop of another
+ * conversation is cable activity (a cable lit, "OSPF ×3"; `notDrawn` counts them for a note). At
+ * most `limit` hops are on screen at once whatever their conversations.
  *
  * Streams of Network events in real time. A stream started from Network
  * events sends on the real-time schedule (realtime.ts), every interval of
- * real time, whatever the pacing. While one runs (`host.realtime`), the
- * simulated clock runs as in Real time pacing too, held by nothing, so its
- * datagrams are forwarded at once and the scenario goes on at its own pace
- * (× the speed) behind them; the dots keep the pacing's hop time (Readable:
- * about 3 s a hop), so several datagrams are on their way at once. A reply
- * is drawn after the message it answers has arrived on screen (a hop of the
- * same conversation and Network event from the other side), never before.
+ * real time, whatever the pacing; while one runs (`host.realtime`) the
+ * simulated clock runs at 1 s per second in Proportional pacing too.
  *
  * Next exchange (paused): on to the end of the exchange that is first on
  * screen (all its hops arrived), or of the next one to start.
@@ -101,6 +101,8 @@ export const PROP_MIN = 200;
 export const PROP_MAX = 30000;
 /** Bundling: at most this many conversations drawn as dots at once (the scenario's; a Network event's traffic always is). */
 export const CONV_LIMIT = 6;
+/** Beyond it, this many more for a protocol with nothing on screen (an IGMP query, a Hello, in a burst of DHCP and ARP: every protocol shows). */
+export const CONV_DIVERSE = 3;
 /** Cable activity: a hop not drawn as a dot lights its cable this long (display ms). */
 export const ACTIVITY_MS = 3000;
 /** Real time: each hop shows this long (display ms), a sign of its traffic. */
@@ -112,6 +114,8 @@ export const PULSE_MS = 1500;
 export const FADE_MS = 300;
 /** Through a switch between two cables. */
 export const TRANSIT_MS = 600;
+/** A hop that would start on screen more than this after it happened (display ms) is cable activity instead of a dot (not a Network event's, not the conversation followed). */
+export const LAG_MAX = 15000;
 /** A skipped idle stretch is reported when it is at least this long (simulated ms). */
 export const SKIP_REPORT = 500;
 /** The longest jump at once (simulated ms: 10 min); when it finds nothing to show, the next one waits IDLE_REST of display time. */
@@ -250,10 +254,10 @@ export class Pacer {
   fgNow = false;
   /** a stream of Network events runs on the real-time schedule: the clock runs in real time, held by nothing */
   rtNow = false;
-  /** real time: the simulation can't keep up (simulated ms behind, lately; 0: in step) */
+  /** the simulation can't keep up with its rate (simulated ms behind, lately; 0: in step) */
   behind = 0;
-  /** real time: the display clock and simulated time it counts from, and where it left the simulation (moved since by other means: a Step, a jump: counted from there) */
-  private rt: { clock: number; now: number; left: number } | null = null;
+  /** the display clock and simulated time the rate counts from, and where it left the simulation (moved since by other means: a Step, a jump: counted from there) */
+  private rt: { clock: number; now: number; left: number; rate: number } | null = null;
   /** the hops counted as cable activity, with when (display clock) */
   private act: Array<{ f: Flight; at: number }> = [];
   private byId = new Map<number, PaceItem>();
@@ -339,24 +343,20 @@ export class Pacer {
     return s;
   }
 
-  /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any; while a Send test runs, of a test)? */
-  private holds(it: PaceItem, tests = this.testHolds()): boolean {
-    if (!this.drawnShown(it) || this.mode === 'realtime' || this.rtNow) return false;
-    if (this.follow) return it.key === this.follow.key;
-    return !tests || it.test;
+  /**
+   * Is a hop the background now: the scenario's while a Network event runs
+   * or its traffic is still on screen. Drawn muted and not clickable; it
+   * goes on moving.
+   */
+  background(it: PaceItem): boolean {
+    return !it.test && this.fgActive();
   }
 
-  /**
-   * Does a Send test set the pace now? While one of its hops is on its way,
-   * or it waits for something of its own (an ARP retry, a DNS timeout, a
-   * retransmission), the others still show but no longer hold the clock,
-   * so that the test runs at once, in parallel with the traffic on screen,
-   * never behind it (as when following a message).
-   */
-  private testHolds(): boolean {
+  /** Does Network events' traffic hold the front now: an operation running, or a hop of one still on screen (on its way or about to start)? */
+  fgActive(): boolean {
     if (this.fgNow) return true;
-    for (const it of this.items) if (it.test && this.drawnShown(it) && this.onItsWay(it)) return true;
-    return !!this.host.testRunning && this.host.testRunning();
+    for (const it of this.items) if (it.test && this.drawnShown(it) && this.pending(it)) return true;
+    return false;
   }
 
   /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
@@ -374,25 +374,14 @@ export class Pacer {
     return this.clock < this.arrival(it) - EPS;
   }
 
-  /** The simulated time the clock must stay below: the earliest arrival of what is on its way on screen (Infinity: nothing). */
-  gate(): { t: number; item: PaceItem | null } {
-    let t = Infinity;
-    let item: PaceItem | null = null;
-    const tests = this.testHolds();
-    for (const it of this.items) {
-      if (!this.holds(it, tests) || !this.onItsWay(it)) continue;
-      const g = it.f.dropped !== undefined ? (it.f.dropped as number) : it.f.t0 + it.lat;
-      if (g < t) {
-        t = g;
-        item = it;
-      }
-    }
-    return { t, item };
+  /** Is a hop still to come or on its way on screen (not yet arrived)? */
+  private pending(it: PaceItem): boolean {
+    return this.onItsWay(it);
   }
 
-  /** Is anything on its way that holds the clock? */
+  /** Is anything drawn still to come or on its way on screen? */
   busy(): boolean {
-    return this.gate().item !== null;
+    return this.items.some((it) => this.drawnShown(it) && this.pending(it));
   }
 
   /** Take in the flights sent since the last look; returns the new hops. */
@@ -404,12 +393,17 @@ export class Pacer {
     // the hops on screen now, per view (only shown ones count against the limit), and their conversations
     const live = { physical: 0, logical: 0 };
     const convs = { physical: new Set<string>(), logical: new Set<string>() };
+    // the protocols with a conversation on screen, per view
+    const protos = { physical: new Set<string>(), logical: new Set<string>() };
     if (fresh.length)
       for (const x of this.items)
         if (x.drawn && this.clock < this.end(x) && this.host.shown(x.f)) {
           live[x.f.view]++;
           // (a conversation takes a place while a hop of it is on its way; its arrival's pulse doesn't)
-          if (!x.test && this.onItsWay(x)) convs[x.f.view].add(x.key);
+          if (!x.test && this.onItsWay(x)) {
+            convs[x.f.view].add(x.key);
+            protos[x.f.view].add(x.f.protocol);
+          }
         }
     for (const f of fresh) {
       if (this.byId.has(f.id)) continue;
@@ -419,26 +413,34 @@ export class Pacer {
       if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS) continue;
       const parent = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
       let after = parent ? this.arrival(parent) : -Infinity;
+      // what caused it (a frame it forwards, the request it answers, the ARP reply that released it) arrives first, in the same view
+      const cause = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
+      if (!parent && cause && cause.f.view === f.view) after = Math.max(after, this.arrival(cause));
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
       const key = conversationKey(f.protocol, h, f.label);
-      // a Network event's reply (its first hop) after the message it answers has arrived on screen: a hop of its conversation from the other side
-      if (!parent && test && f.sender !== undefined)
-        for (const x of this.items) if (x.f.test === f.test && x.key === key && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
+      // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side
+      if (!parent && f.sender !== undefined)
+        for (const x of this.items) if (x.key === key && x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
       // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Network event's is always drawn
       const shown = this.host.shown(f);
-      // the scenario's: in the background while a Network event runs (cable activity); else bundled, a few conversations at a time
+      // the scenario's: bundled, a few conversations at a time (muted while a Network event runs); one that would show long after it happened is cable activity
       const followed = !!this.follow && this.follow.key === key;
       const room = live[f.view] < this.limit;
-      const conv = convs[f.view].has(key) || convs[f.view].size < this.convLimit;
-      const drawn = !shown || test || (room && (followed || (!this.fgNow && conv)));
+      // (a protocol with nothing on screen gets a place beyond the limit, a few at most)
+      const conv = convs[f.view].has(key) || convs[f.view].size < this.convLimit || (!protos[f.view].has(f.protocol) && convs[f.view].size < this.convLimit + CONV_DIVERSE);
+      const late = d0 - this.clock > LAG_MAX;
+      const drawn = !shown || test || followed || (room && conv && !late);
       if (shown) {
         if (drawn) {
           live[f.view]++;
-          if (!test) convs[f.view].add(key);
+          if (!test) {
+            convs[f.view].add(key);
+            protos[f.view].add(f.protocol);
+          }
         } else {
           this.notDrawn++;
           this.act.push({ f, at: this.clock });
@@ -492,88 +494,54 @@ export class Pacer {
     this.prune();
   }
 
+  /** Simulated ms per display ms: 1 in Readable and Real time (and while a stream of Network events runs), 1 ÷ the scale in Proportional. */
+  rate(): number {
+    return this.mode === 'proportional' && !this.rtNow ? 1 / this.scale : 1;
+  }
+
   /**
-   * Run the simulation as far as the display allows: up to the first
-   * arrival on screen, through it in step with its dot; with nothing on
-   * screen to the next message shown (skipping) or at the speed.
+   * Run the simulation with the display clock at its rate, held by nothing.
+   * A frame does at most JUMP_BUDGET ms of simulation work; what it can't do
+   * in time is left behind (said, never caught up in a burst): the clock
+   * goes on from where it got. With nothing on screen and idle skipping on,
+   * on to the next message that will be shown (bounded per frame too).
    */
   pump(): void {
     const e = this.host.engine;
     this.refreshForeground();
     this.register();
-    if (this.mode === 'realtime' || this.rtNow) {
-      this.realTime();
-      return;
-    }
-    this.rt = null;
-    this.behind = 0;
-    for (let guard = 0; guard < 400; guard++) {
-      if (guard) this.refreshForeground();
-      const g = this.gate();
-      if (g.item) {
-        this.idleBudget = 0;
-        // the clock moves through the most urgent hop in step with its dot, never to its arrival
-        const it = g.item;
-        const st = this.state(it);
-        const p = st.phase === 'moving' ? st.frac : 0;
-        const target = Math.min(it.f.t0 + p * it.lat, g.t - EPS);
-        if (target <= e.now) return;
-        let moved = false;
-        e.runUntil(target, () => {
-          this.register();
-          // a hop sent meanwhile that arrives sooner sets the pace from now on
-          moved = this.gate().t < g.t;
-          return moved;
-        });
+    const rate = this.rate();
+    if (!this.rt || Math.abs(e.now - this.rt.left) > EPS || this.rt.rate !== rate) this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
+    const target = this.rt.now + (this.clock - this.rt.clock) * rate;
+    if (target > e.now + EPS) {
+      const until = Date.now() + JUMP_BUDGET;
+      e.runUntil(target, () => {
         this.register();
-        if (!moved) return;
-        continue;
-      }
-      // idle: nothing on screen holds the clock
-      const from = e.now;
-      if (this.skipIdle) {
-        if (this.clock < this.restUntil) return;
-        // a jump cut short by its budget goes on towards the same end next frame (a new jump would never rest)
-        const start = this.jumpStart !== null && this.jumpStart <= from && from < this.jumpStart + IDLE_HORIZON ? this.jumpStart : from;
-        this.advance(start + IDLE_HORIZON);
-        const shown = this.items.some((it) => this.drawnShown(it) && this.onItsWay(it));
-        this.jumpStart = !shown && e.now < start + IDLE_HORIZON - EPS ? start : null;
-        if (e.now - start >= SKIP_REPORT) this.skipped = { ms: e.now - start, at: this.clock };
-        // a whole horizon with nothing to show: rest a moment
-        if (e.now >= start + IDLE_HORIZON - EPS && !shown) this.restUntil = this.clock + IDLE_REST;
-        // (following: what shows now is not of the conversation; it is seen at its own pace)
+        return Date.now() > until;
+      });
+      this.register();
+      if (e.now < target - 1) {
+        this.behind = target - e.now;
+        this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
         return;
       }
-      if (this.idleBudget <= EPS) return;
-      this.advance(from + this.idleBudget);
-      this.idleBudget = Math.max(0, this.idleBudget - (e.now - from));
-      if (!this.busy()) return;
-    }
-  }
-
-  /**
-   * Real time: the simulated clock runs with the display clock (× the speed), held by nothing. A frame
-   * does at most JUMP_BUDGET ms of simulation work; what it can't do in time is left behind (said, never
-   * caught up in a burst): the clock goes on from where it got.
-   */
-  private realTime(): void {
-    const e = this.host.engine;
-    if (!this.rt || Math.abs(e.now - this.rt.left) > EPS) this.rt = { clock: this.clock, now: e.now, left: e.now };
-    const target = this.rt.now + (this.clock - this.rt.clock);
-    if (target <= e.now) return;
-    const until = Date.now() + JUMP_BUDGET;
-    e.runUntil(target, () => {
-      this.register();
-      return Date.now() > until;
-    });
-    this.register();
-    if (e.now < target - 1) {
-      this.behind = target - e.now;
-      this.rt = { clock: this.clock, now: e.now, left: e.now };
-    } else {
       this.behind = 0;
       this.rt.left = e.now;
     }
+    // idle: nothing on screen (nothing still to come on it): on to the next message that will be shown (never in Real time, nor while a stream keeps real time)
+    if (!this.skipIdle || this.mode === 'realtime' || this.rtNow || this.busy() || this.behind > 0) return;
+    if (this.clock < this.restUntil) return;
+    const from = e.now;
+    // a jump cut short by its budget goes on towards the same end next frame (a new jump would never rest)
+    const start = this.jumpStart !== null && this.jumpStart <= from && from < this.jumpStart + IDLE_HORIZON ? this.jumpStart : from;
+    this.advance(start + IDLE_HORIZON);
+    const shown = this.busy();
+    this.jumpStart = !shown && e.now < start + IDLE_HORIZON - EPS ? start : null;
+    if (e.now - start >= SKIP_REPORT) this.skipped = { ms: e.now - start, at: this.clock };
+    // a whole horizon with nothing to show: rest a moment
+    if (e.now >= start + IDLE_HORIZON - EPS && !shown) this.restUntil = this.clock + IDLE_REST;
+    // the clock counts on from where the jump left it
+    this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
   }
 
   /**
@@ -586,8 +554,7 @@ export class Pacer {
     this.register();
     const first = (): string | null => {
       let best: PaceItem | null = null;
-      const tests = this.testHolds();
-      for (const it of this.items) if (this.holds(it, tests) && this.onItsWay(it) && (!best || this.arrival(it) < this.arrival(best))) best = it;
+      for (const it of this.items) if (this.drawnShown(it) && this.onItsWay(it) && (!best || this.arrival(it) < this.arrival(best))) best = it;
       return best ? best.key : null;
     };
     let key = first();
@@ -626,8 +593,7 @@ export class Pacer {
     this.refreshForeground();
     this.register();
     let next = Infinity;
-    const tests = this.testHolds();
-    for (const it of this.items) if (this.holds(it, tests) && this.onItsWay(it)) next = Math.min(next, this.arrival(it));
+    for (const it of this.items) if (this.drawnShown(it) && this.onItsWay(it)) next = Math.min(next, this.arrival(it));
     if (next < Infinity) {
       this.clock = Math.max(this.clock, next);
       this.idleBudget = 0;
@@ -641,6 +607,7 @@ export class Pacer {
       this.advance(from + IDLE_HORIZON);
       const ms = this.host.engine.now - from;
       if (ms >= SKIP_REPORT) this.skipped = { ms, at: this.clock };
+      this.rt = null;
     }
     this.prune();
   }

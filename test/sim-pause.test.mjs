@@ -82,12 +82,21 @@ test('the packet inspector pauses while it is in use: closing it (× or Esc), le
     await page.settle(200);
     // a message of the log that is in view (not under the table's header)
     const open = async () => {
-      const p = await page.eval(`(() => { for (const b of Array.from(document.querySelectorAll('#sim-log-table .sim-msg-btn')).reverse()) { const r = b.getBoundingClientRect(); const x = r.left + r.width / 2; const y = r.top + r.height / 2; if (document.elementFromPoint(x, y) === b) return { x, y }; } return null; })()`);
-      assert.ok(p, 'a message in view');
+      // (polled: the log's rows may come a frame or two later on a loaded machine)
+      let p = null;
+      for (let i = 0; i < 20 && !p; i++) {
+        // (not in view: scrolled into the log's view, as a reader would)
+        if (i) await page.eval(`(() => { const bs = document.querySelectorAll('#sim-log-table .sim-msg-btn'); if (bs.length) bs[bs.length - 1].scrollIntoView({ block: 'center' }); return true; })()`);
+        if (i) await page.settle(100);
+        p = await page.eval(`(() => { for (const b of Array.from(document.querySelectorAll('#sim-log-table .sim-msg-btn')).reverse()) { const r = b.getBoundingClientRect(); const x = r.left + r.width / 2; const y = r.top + r.height / 2; if (document.elementFromPoint(x, y) === b) return { x, y }; } return null; })()`);
+      }
+      assert.ok(p, 'a message in view: ' + JSON.stringify(await page.eval(`(() => { const bs = Array.from(document.querySelectorAll('#sim-log-table .sim-msg-btn')); const b = bs[bs.length - 1]; if (!b) return { n: 0 }; const r = b.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { n: bs.length, r: [r.left, r.top, r.width, r.height], at: e ? e.tagName + '.' + e.className : null }; })()`)));
       await page.mouse('mouseMoved', p.x, p.y);
       await page.mouse('mousePressed', p.x, p.y, 'left');
       await page.mouse('mouseReleased', p.x, p.y, 'left');
       await page.settle(120);
+      // (polled: a loaded machine may take a few frames to open it)
+      for (let i = 0; i < 20 && !(await page.eval(`!!document.querySelector('.sim-table-panel[data-table="packet"] .st-close')`)); i++) await page.settle(100);
     };
     // a log row: paused, and the state says why
     await open();

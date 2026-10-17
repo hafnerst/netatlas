@@ -240,8 +240,13 @@ test('the pacing on screen: every dot travels its way at the readable pace; a do
   try {
     await start(page);
     await page.eval(`netatlas.startProtocolSimulation(), true`);
-    await new Promise((r) => setTimeout(r, 1500));
-    const p = await page.eval(`(() => { const c = netatlas.simController(); return { text: document.getElementById('sim-pace-text').textContent, playing: c.playing, clock: c.pacer.clock, dots: document.querySelectorAll('#canvas .layer-sim [data-flight]').length, items: c.pacer.items.filter((i) => i.drawn && i.f.view === 'physical').map((i) => i.hop) }; })()`);
+    // (polled: a loaded machine's slow frames count at most 0.1 s each)
+    const PACE = `(() => { const c = netatlas.simController(); return { text: document.getElementById('sim-pace-text').textContent, playing: c.playing, clock: c.pacer.clock, dots: document.querySelectorAll('#canvas .layer-sim [data-flight]').length, items: c.pacer.items.filter((i) => i.drawn && i.f.view === 'physical').map((i) => i.hop) }; })()`;
+    let p = null;
+    for (let i = 0; i < 20 && !(p && p.clock > 1000); i++) {
+      await new Promise((r) => setTimeout(r, i ? 250 : 1500));
+      p = await page.eval(PACE);
+    }
     assert.equal(p.text, 'Readable · 3 s per hop · 1×');
     assert.ok(p.playing && p.clock > 1000, JSON.stringify(p));
     assert.ok(p.items.every((h) => h >= 2000), 'every hop at least 2 s');

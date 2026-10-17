@@ -8,6 +8,7 @@
 import { SimGroup, simProfile } from '../../model/sim-profiles';
 import { Model } from '../../model/types';
 import { capabilities } from '../../model/capabilities';
+import { snoopingChoice, switchedVlans } from '../../model/snooping';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
@@ -497,12 +498,14 @@ export class Simulation {
   }
 
   /**
-   * Is a Network event running with traffic of its own: a send with messages still to send or on their
-   * way (one waiting for its source's DHCP lease does not count yet), a stream, a join waiting for its
-   * router? Its traffic is then the foreground of the display (pacing.ts). Flapping has none of its own:
-   * what it shows is the network's reaction, the scenario's.
+   * Is a Network event running: a send with messages still to send or on their way (one waiting for
+   * its source's DHCP lease does not count yet: nothing of it is in flight), a stream, a join waiting
+   * for its router, a leave whose cleanup is not settled, flapping until it ends? Its traffic is then
+   * the foreground of the display and the scenario the background (pacing.ts); a finished event, a
+   * membership a join left behind or an event card kept in the list count for nothing.
    */
   foregroundActive(): boolean {
+    this.updateLeaves();
     for (const a of this.acts) {
       if (a.run) {
         const r = a.run;
@@ -511,8 +514,15 @@ export class Simulation {
       } else if (a.stream) {
         if (a.stream.running) return true;
       } else if (a.join) {
+        // a join until its membership is recorded (or its reports are out): the membership itself is no running action
         const j = a.join;
         if (j.byAt === undefined && j.leftAt === undefined && this.now < j.until) return true;
+      } else if (a.leave) {
+        // a leave until the network's cleanup it follows is settled
+        if (a.leave.sent && a.leave.done === undefined) return true;
+      } else if (a.flap) {
+        // flapping until its cycles are done or it is stopped
+        if (!a.flap.obj.ended) return true;
       }
     }
     return false;
@@ -1162,6 +1172,11 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   for (const d of model.devices) {
     const joins = ifs(d).some((i) => !!i.multicast && i.multicast.joins.length > 0);
     if (joins || d.services.some((s) => s.id === 'pim')) add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
+    // a switch that is a snooping querier candidate (a VLAN of it with the snooping querier on and its snooping enabled): its queries are IGMP too
+    const querierVlans = model.networks.filter((n) => n.vlan !== undefined && !!n.simulation && n.simulation.get('snoop-querier') === 'on').map((n) => n.vlan as number);
+    // (and an IPv4 address on its VLAN interface there to query from)
+    const svi = (v: number): boolean => d.logical.some((i) => i.type === 'virtual' && i.vlan === v && i.addresses.some((a) => a.indexOf(':') < 0));
+    if (querierVlans.some((v) => snoopingChoice(d, v) === 'enabled' && switchedVlans(d).indexOf(v) >= 0 && svi(v))) add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
     for (const i of ifs(d)) for (const st of i.multicast ? i.multicast.streams : []) add('mcast', 'Multicast streams', 'Multicast', 'stream', `${d.id}:${i.id}:${st.group}`);
   }
   for (const e of seen.values()) e.uses = (users.get(e.id) as Set<string>).size;

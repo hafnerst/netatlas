@@ -93,7 +93,7 @@ test('marked as the test’s: its packets, their ARP, the replies, a RST, an ICM
   assert.ok(sim.engine.flights.filter((f) => f.test !== undefined).every((f) => ['icmp', 'tcp', 'udp', 'arp', 'ndp', 'dns'].includes(f.protocol)));
 });
 
-test('the pacing: a test’s hops are drawn beyond the dot limit, and while it runs it alone holds the clock; it is answered at once, not behind the traffic on screen', () => {
+test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered at once in simulated time (nothing on screen holds it); its hops show one after the other, never behind the traffic on screen', () => {
   const sim = new S.Simulation(model(PS));
   const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, testRunning: () => sim.tests().some((t) => !t.done) };
   const p = new P.Pacer(host, 6);
@@ -108,19 +108,20 @@ test('the pacing: a test’s hops are drawn beyond the dot limit, and while it r
   p.frame(16);
   const mine = p.items.filter((it) => it.test);
   assert.ok(mine.length > 0 && mine.every((it) => it.drawn), 'drawn at once, beyond the limit');
-  const busy = p.items.filter((it) => !it.test && it.drawn && p.state(it).phase === 'moving').length;
-  assert.ok(busy > 0, 'other dots are on their way');
-  // until it is done, only its hops hold the clock
+  // (the scenario's dots on screen meanwhile hold nothing: there is no clock to hold any more)
+  // answered in simulated time within a few frames: the dots on screen hold nothing
+  for (let i = 0; i < 10 && !t.done; i++) p.frame(16);
+  assert.ok(t.done, t.result);
+  // on screen: its hops one after the other, each at most HOP_MAX (and a switch's crossing): no wait behind the others
   let frames = 0;
-  while (!t.done && frames < 3000) {
-    const g = p.gate();
-    if (g.item) assert.ok(g.item.test, 'held by ' + g.item.f.label);
+  const seen = new Set();
+  while (p.items.some((it) => it.test && p.clock < p.arrival(it)) && frames < 3000) {
+    for (const it of p.items) if (it.test && it.f.view === 'physical') seen.add(it.f.track.ref + '|' + it.f.label);
     p.frame(16);
     frames++;
   }
-  assert.ok(t.done, t.result);
-  // its hops one after the other, each at most HOP_MAX (and a switch's crossing): no wait behind the others
-  const hops = new Set(sim.engine.flights.filter((f) => f.test === t.id).map((f) => f.track.ref)).size;
+  // (each message on each cable: the hops shown one after the other)
+  const hops = seen.size;
   assert.ok(frames * 16 <= (hops + 2) * (P.HOP_MAX + P.TRANSIT_MS) + 2000, `${frames * 16} ms for ${hops} cables`);
 });
 

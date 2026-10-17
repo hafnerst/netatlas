@@ -111,6 +111,8 @@ export interface DrawItem {
   followed?: boolean;
   /** of a Send test: its label says "Test", its label is placed first */
   test?: boolean;
+  /** the scenario's while Network events hold the front: drawn grey, moving, without a label, not a hit target */
+  bg?: boolean;
 }
 
 export interface DrawResult {
@@ -391,6 +393,17 @@ export class SimAnimator {
       }
       if (st.phase === 'moving' && st.frac < 0.25 && ends.from) senders.add(ends.from);
       if (st.phase === 'transit' && ends.from) senders.add(ends.from);
+      // the background: a grey dot on its way, nothing to point at or read (the log has it)
+      if (it.bg) {
+        if (lost) continue;
+        const shape = arrows ? arrow(this.doc, p, color, f.cast || 'unicast') : dot(this.doc, p.x, p.y, color, f.cast || 'unicast');
+        shape.classList.add('sim-bg');
+        shape.setAttribute('aria-hidden', 'true');
+        // (under the foreground's dots)
+        dots.insertBefore(shape, dots.firstChild);
+        drawn++;
+        continue;
+      }
       const name = (it.test ? 'Test · ' : '') + f.label;
       const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
       const w = textWidth(text, FONT) + 4;

@@ -1738,35 +1738,62 @@ the crossing of a switch (0.25 s) were too short to notice. Hence the
 slower readable time, the speed limit on screen, the 0.1× speed and the
 longer pulse.
 
-The simulated clock follows the screen: it moves through a message's
-time in step with its dot and never passes a message on screen before its
-dot has arrived, so nothing a message causes happens before it gets
-there. **Skip idle time** (on by default): with nothing on its way, the
+**Concurrency: the animation is no lock.** The simulated clock runs at its
+own rate, never held by a dot: 1 simulated second per real second × the
+speed in Readable and Real time pacing, 1/scale in Proportional (and real
+time while a stream of Network events runs). Each frame advances it by the
+real frame time, with at most 25 ms of engine work (a frame that can't
+keep up leaves the clock behind, says *· behind*, and goes on from there,
+never in a burst). So independent operations — protocol timers, startup
+queries, two sends, a stream and a send — run side by side in simulated
+time, and a slow exchange on screen delays nothing else. Before, the
+clock never passed a message on screen before its dot had arrived: with
+the private house's startup burst (DHCP, ARP, NDP from every host) on
+screen, the core's first IGMP query, due at t = 2 s, came only when those
+dots had arrived, tens of seconds of real time later, and then was often
+not drawn (the bundling limit was full).
+
+The causal order is the display's: a dot starts when what caused it has
+arrived on screen. A hop that continues another (the next cable) waits for
+that one; a message sent because a delivery was handled (the engine
+records the delivering flight as `Flight.cause`: a router forwarding a
+packet, an answer to a request, the ARP request a packet needs and the
+packet the ARP reply releases) waits for that delivery's dot; and the first
+hop of an answer of the same conversation from the other side waits for
+the request's last hop. Timers start nothing late: what a timer sends
+starts at its time. So the dots may run a few hops behind the tables and
+the log, never out of order. An exchange whose next hop would start more
+than 15 s after its simulated time is shown as cable activity instead of
+dots (the screen stays near the present). **Skip idle time** (on by
+default, Readable and Proportional only): with nothing on screen, the
 clock jumps to the next message that will be shown, and the panel says so
-briefly (*⏩ 9.8 s skipped*); a jump that finds nothing to show goes at most
-10 minutes at once, and does at most 25 ms of work per frame (with few
-senders most messages are hidden, and the next one shown may be thousands
-of events away: the page stays responsive and the jump goes on in the next
-frame). Off, idle time passes at the speed (1 s per second at 1×). The
-time shown is always the true simulated time (the log to the microsecond).
+briefly (*⏩ 9.8 s skipped*); a jump goes at most 10 minutes at once, with
+the same work budget. The time shown is always the true simulated time
+(the log to the microsecond).
 
 **Foreground and background.** Many exchanges at once can't all be
 followed, and a user's action should show at once. So the display has a
 foreground and a background (`src/analysis/sim/pacing.ts`):
 
-* **Your events in front.** While a Network event with traffic of its own
-  runs (a send's messages still to send or on their way, a stream, a join
-  waiting for its router), its traffic is the foreground: a send's and a
-  join's hops alone hold the clock, each readable, and the gaps between
-  its messages are skipped, so its next message appears as soon as the
-  last one has been seen, never after the scenario's dots. The scenario is the background:
-  its hops are not drawn as dots but as **cable activity** (the cable lit,
-  dashed, with a short count such as *OSPF ×3 · ARP ×1*, for 3 s), and
-  they hold nothing. The panel says *· your events in front*. Measured on
-  `test/examples/protocol-simulation.yaml`: a send's messages follow each
-  other as soon as the last was seen, never behind the scenario's dots.
-  Flapping has no traffic of its own (what it shows is the network's
-  reaction) and is no foreground.
+* **Your events in front.** While one of your Network events is active —
+  a send with messages still to send or on their way, a stream until it is
+  stopped, a join until it is recorded, a leave until its cleanup settles,
+  flapping until it ends — and until the last of its dots has arrived, its
+  traffic is the foreground. Attribution is by causal ownership: the
+  operation's id (`Flight.test`) goes with everything its messages cause —
+  forwarded copies, replies, the ARP a packet needs, a stream's
+  replication — and never with the scenario's timers, so an OSPF Hello on
+  the same cable stays the background. The foreground is drawn as always
+  (beyond the dot limit, labelled, clickable); the scenario's dots keep
+  moving underneath as the **background**: grey (`.sim-bg`, the theme's
+  muted colour), without labels, without `data-flight`, with
+  `pointer-events: none` and left out of the hit test, so they show no
+  outline and open no inspector. Several actions at once are all in front.
+  What has finished (an answered send, a recorded join's membership, a
+  card left in Active events) mutes nothing; the scenario comes back as
+  soon as the last active one's dots have arrived, and a reset or Exit
+  clears it all. An open inspector keeps its packet while the styling
+  changes. The panel says *· your events in front*.
 * **Streams in real time.** A stream started from Network events sends on
   the real-time schedule (`src/analysis/sim/realtime.ts`): its first
   datagram at once (the streams' convention), then one every interval of
@@ -1792,17 +1819,19 @@ foreground and a background (`src/analysis/sim/pacing.ts`):
   deadline and counts the others as skipped, never a burst. The streams of
   the model (its `multicast:` blocks and multicast demands) are the
   scenario's and stay on simulated time.
-* **Bundling.** With nothing of yours running, at most 6 of the
-  scenario's exchanges (conversations: an ARP request and its reply, a
-  ping and its echo, a hello) are drawn as dots at once, each to its end;
-  the others are cable activity and hold nothing. Followed messages are
-  always drawn.
+* **Bundling.** At most 6 of the scenario's exchanges (conversations: an
+  ARP request and its reply, a ping and its echo, a hello) are drawn as
+  dots at once, each to its end, and up to 3 more for protocols with
+  nothing on screen (so a startup burst of DHCP and ARP never hides the
+  first IGMP query or Hello); the others are **cable activity** (the cable
+  lit, dashed, with a short count such as *OSPF ×3 · ARP ×1*, for 3 s).
+  Followed messages and your events are always drawn.
 * **Next exchange** (beside Step): on to the end of the exchange first on
   screen, or of the next one to start.
 * **Real time** pacing (*1 s = 1 s*): the simulated clock runs with the
-  display clock (× the speed), held by nothing; every hop shows for 0.8 s
-  as a sign of its traffic, bundled. A send's interval is then a real
-  interval. A Step, Next exchange or jump while the clock runs in real time
+  display clock (× the speed), as in every pacing; every hop shows for
+  0.8 s as a sign of its traffic, bundled, and idle time is never skipped.
+  A send's interval is a real interval. A Step, Next exchange or jump while the clock runs in real time
   counts from where it left the simulation, never waiting for the display
   to catch up. When a frame's work budget (25 ms) can't keep up, the clock
   falls behind (*· behind*) and goes on from where it got, never catching
@@ -1856,10 +1885,10 @@ visible again only if it was running. The state shows beside Step and is
 announced politely to screen readers.
 
 **Following messages.** **Follow message** in the packet inspector keeps
-the pace for that message and its replies (its conversation: the same
-protocol between the same two ends, e.g. an ARP request and its reply, a
-ping and its echo, a TCP handshake): they alone hold the clock, their way
-is drawn as a trail, and the other messages are drawn faint; the
+that message and its replies (its conversation: the same protocol between
+the same two ends, e.g. an ARP request and its reply, a ping and its echo,
+a TCP handshake) always drawn, their way as a trail, and the other
+messages are drawn faint; the
 simulation plays on beside the open inspector. The panel says what is
 followed, with **Stop following**. **Step** moves to the next
 message event: a message on its way arrives (and what it causes starts at
@@ -1871,8 +1900,7 @@ text (an address, a name, a port label), no device box and no other label,
 with a frame in the protocol's colour and the theme's text colour (the text
 says what it is, not the colour); a dot whose label has no room for a
 moment goes on without it until it has. At most 48 messages are on screen
-at once; one beyond that is not drawn (it does not hold the clock), the
-panel says how many, and the event log lists every message. The animation
+at once; one beyond that is not drawn, the panel says how many, and the event log lists every message. The animation
 runs on `requestAnimationFrame` and stops while the page is hidden.
 
 **Determinism.** The pacing, the speed, skipping and following only change
@@ -2048,10 +2076,15 @@ time, side by side with any others (see
   interface and a non-querier on another). One schedule per candidate (a
   generation token ends an older one: no duplicate queries after a flap or
   a reboot). The diagram marks the active querier beside the status
-  (**Querier · VLAN 10**, dashed **Querier? · VLAN 10** while it is the
-  querier only for now); **Show querier election** lists every candidacy
-  with its role, the querier it yields to and how long until it would take
-  over.
+  (**Querier · VLAN 10**; dashed **Querier (startup) · VLAN 10** while it
+  sends its startup queries; grey **Standby · VLAN 10** for a candidate
+  that yields; dashed grey **No querier · VLAN 10** on a snooping switch's
+  VLAN with members and nobody querying it). The marks come from the
+  election's state, never the configuration; the tooltip gives the next
+  deadline (the next query, the next startup query, the takeover).
+  **Show querier election** lists every candidacy with its role, the
+  querier it yields to, how long until it would take over and its next
+  query (*query at t = 33.3 s (startup 2 of 2)*).
 * **Members and leaves.** A host's membership is its intent: it lasts until
   it leaves, and the host answers every query for it, so what the switches
   and routers learned stays (no second join). What they learned ages out if
@@ -2883,12 +2916,13 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Send test at once** | `test/sim-send-test.test.mjs` (5 tests), `test/sim-send-test-browser.test.mjs` (3 tests, through the DevTools protocol) | A test starts at the current simulated time while other traffic is in flight, its first message leaving at once; its waits are only ARP / NDP, DNS and a DHCP lease (a test by name from a client without its lease: the lease, then DNS, then the SYN). **Marked:** its packets, their ARP, the replies, a RST, an ICMP error, its state line; no routing protocol or other traffic. **Pacing:** at the dot limit its hops are drawn at once and, while it runs, it alone holds the clock, answered without waiting behind the dots on screen. **Deterministic** with tests at given times, however the time is advanced. **On screen:** drawn and listed despite the senders and the protocols, *Test ·* in the label and **Test** in the log, a trail; during the startup burst drawn at once; paused, *Sent at t = … It starts when the simulation plays.* (the time unchanged) and **Send and play**; a series of four 0.5 s apart: paused, nothing more sent; played at 1× and 4×, the same simulated times (fewer frames at 4×). |
 | **Send test's sources** | `test/send-test.test.mjs` (6 tests) | Every device a source (guest-phone among them), the others listed with the reason from the capability resolver (a Cloud, a TAP, a passive IDS: no IP stack; a switch without an address); a DHCP client before its lease (the test waits, nothing invented) and after it (lease, server, gateway, DNS, Wi-Fi network and VLAN; the test from the leased address); DHCP without an answer (the waiting test ends with the reason, the device stays a source); no stale lease after its link went down; an interface chosen as the source (its address and VRF, an unknown one refused); a policy-denied Guest test sent and ending where the DSL router dropped it, an unreachable one ending otherwise. |
 | **Send test's plan** | `test/send-test-plan.test.mjs` (12 tests) | **Shared rules:** the protocols of each delivery type (no TCP for multicast or broadcast), ports for TCP and UDP only (none while the protocol is unselected, an ICMP plan with a port refused), what is missing named in the form's order; counts (0, 1.5, 1001, NaN refused) and intervals (0, negative, NaN, ∞, above 3600, below 0.01 refused; none needed for one message). **Labels:** *name - address* per interface, a DHCP lease before and after, two addresses of one interface as two destinations, the ISP *Cannot send IP packets*. **Unicast:** the destination interface chosen is the target (a DHCP lease found when sent; the DSL router's *wan*); several need a choice; an address that interface lacks refused. **Ports:** an ICMP test's packets carry none. **100 messages at 1 s:** exactly 100 originating echo requests at t0 … t0 + 99 s, deterministic, under 5 s; a series not waiting for replies; **Stop** (nothing more sent, those on their way finish), stopping all; the clock run in small steps or at once giving the same times. **Multicast:** members receive it, a group without members nobody; IPv6 groups need an IPv6 address. **Local broadcast:** limited and subnet scope, never past the router, not into another VLAN of the house. **Directed broadcast:** a subnet of the model and not the source's own; dropped where off, answered where on. |
-| **Multicast drawn, interface states** | `test/mcast-actions.test.mjs` (4 tests), `test/mcast-iface-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **Multicast:** the house has no multicast protocol to tick; a join's two reports from tv's Wi-Fi interface carry its event's id (never a test's), no datagram among them; a stream's datagrams from nas, copies on the VLAN 10 path, none towards another VLAN or past the core; 3 datagrams sent counted apart from their copies; the event says it stops at core (no PIM); the first datagram in the log for the inspector. With a router and a member: the copies reach the member, not a host that is none; Stop: no datagram after it; the join recorded; the model's own reports not marked, the join's later answers not either, its leave report marked. The same times whether run in steps or at once, nothing while the clock stands. **Interfaces:** administrative and operational state apart; Shut interface during flapping stops it first and stays down 60 s later; a shut interface can't flap; one flapping per cable from either end; Bring interface up; Stop flapping in the down phase brings the cable up, no later transition; the peer off said so. **On screen:** the join's and the stream's dots drawn at once while paused, the clock still; their copies when playing; a stream dot opening the inspector (UDP to the group); Stop: nothing after; the form marked *↯ Flapping* with Stop flapping, a quick second press not stopping it, another interface unmarked, the flap's transition followed; Shut stopping the flapping (both events), *⏻ Shut* with Bring interface up, flapping disabled with the reason; Bring interface up by Enter, the focus kept, the link up later; changes from the diagram's menu and Active events followed; the peer off; a bar and bold words, not colour alone; a new simulation without any of it. |
+| **Multicast drawn, interface states** | `test/mcast-actions.test.mjs` (4 tests), `test/mcast-iface-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **Multicast:** the house offers only IGMP / MLD to tick (the core's VLAN 20 snooping querier), no streams; a join's two reports from tv's Wi-Fi interface carry its event's id (never a test's), no datagram among them; a stream's datagrams from nas, copies on the VLAN 10 path, none towards another VLAN or past the core; 3 datagrams sent counted apart from their copies; the event says it stops at core (no PIM); the first datagram in the log for the inspector. With a router and a member: the copies reach the member, not a host that is none; Stop: no datagram after it; the join recorded; the model's own reports not marked, the join's later answers not either, its leave report marked. The same times whether run in steps or at once, nothing while the clock stands. **Interfaces:** administrative and operational state apart; Shut interface during flapping stops it first and stays down 60 s later; a shut interface can't flap; one flapping per cable from either end; Bring interface up; Stop flapping in the down phase brings the cable up, no later transition; the peer off said so. **On screen:** the join's and the stream's dots drawn at once while paused, the clock still; their copies when playing; a stream dot opening the inspector (UDP to the group); Stop: nothing after; the form marked *↯ Flapping* with Stop flapping, a quick second press not stopping it, another interface unmarked, the flap's transition followed; Shut stopping the flapping (both events), *⏻ Shut* with Bring interface up, flapping disabled with the reason; Bring interface up by Enter, the focus kept, the link up later; changes from the diagram's menu and Active events followed; the peer off; a bar and bold words, not colour alone; a new simulation without any of it. |
+| **IGMP startup and concurrency** | `test/sim-concurrency.test.mjs` (7 tests, the fake clock), `test/concurrency-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom) | **Startup:** the private house's core queries VLAN 20 at t = 2000 ms and 33 250 ms, its table *query at t = 33.3 s (startup 2 of 2)*; every fresh simulation has the same deadlines; a model without a candidate has no query. **Concurrency:** two independent sends at once both on their way at the same time; the causal order on screen (a hop after the one before it, the reply after the request's last hop, the packet ARP released after the ARP reply); the same events whatever is drawn; each frame's work bounded. **Attribution:** a send's request, ARP and reply carry its id and are the foreground; the scenario the background while it runs, never an OSPF Hello in front; done and arrived, nothing muted. **On screen:** an IGMP dot within a few seconds of Start, the mark *Querier (startup) · VLAN 20* with its deadline, *scheduled* in the diagnostics; a stream and a series both in front; grey `.sim-bg` dots, no `data-flight`, `pointer-events: none`, no outline and no inspector from them; the inspector kept; nothing grey after both stopped. |
 | **Foreground and background** | `test/sim-foreground.test.mjs` (6 tests), `test/sim-foreground-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **On screen:** the scenario at most 6 exchanges as dots, lit cables with *protocol ×n* counts, the note; a stream from pc1 in front (*· streams in real time*, a datagram every real second in Readable pacing, its dots drawn, the scenario's hops since then not), a stream dot opening the inspector among the activity; Next exchange named, paused after it; Real time: simulated time with the real seconds (never ahead), a datagram a second; stopped, the scenario in front again. **Model** (a fake real clock): on `protocol-simulation.yaml`, a 1 s stream in Readable pacing sends 21 datagrams in 20 s, at least 3 on their way at once, each hop readable, the clock with real time and held by nothing, *· streams in real time*; while it runs the scenario's hops are cable activity (by cable and protocol); stopped, its sends cancelled and the scenario the foreground again. Bundling: never more than 6 of the scenario's conversations on their way as dots, several at once, the rest activity, no dot passed by the clock, no run-away. Real time: 5 s of display = 5 s simulated, a 1 s stream sends 11 datagrams in 10 s and still one a second at 2×, every hop 0.8 s, nothing holds the clock, a slow machine falls behind without a burst. Next exchange: the exchange first on screen ends. A Step, Next exchange or a jump while a stream runs: the clock goes on from there (1–2 s simulated in 2 s). |
 | **Streams in real time** | `test/sim-realtime.test.mjs` (11 tests, a fake clock), `test/realtime-streams-browser.test.mjs` (2 tests, through the DevTools protocol, both themes), `test/mcast-actions.test.mjs`, `test/network-events.test.mjs` | **The schedule:** the first send at once, then every 1 s, 2 s, 250 ms, never early and within a frame of its deadline; two entries of 1 s at 0, 1, 2, 3 s in the same frames, in the order added (*abababab*); other intervals and start times each on their own grid, the same deadline in the order added; 20 000 irregularly late frames leave the last send within 110 ms of its deadline (no drift); a 3.5 s stall sends once for the latest deadline and counts 2 skipped, then the grid goes on; paused, nothing sent and nothing caught up after; a removed entry never sends again, even from the pump under way; clear removes all. **Streams:** two 1 s streams (srv, pc2 to 239.1.1.1) send 4 each in 3 s at the same simulated moments, 11 each in 10 s, both reach pc1 and rx; a 1 s and a 2 s stream started 0.4 s apart keep their counts (7 and 3 in 6 s); 3 s of real time with the clock standing still send 3 datagrams at that moment (no waiting for forwarding); 2 minutes of simulated time alone send none; Stop one, the other goes on; paused: *Paused*, then on from there; a second Start is refused (no second schedule); closed: nothing more; the source off: nothing sent, *not sending: srv is off*, *3 while srv was off*, then on its grid again after booting; the model's streams stay on simulated time; Start again from the menu is one schedule. **On screen:** two streams from the form, each a datagram every real second within two (5 s measured), side by side within one, both with at least 2 datagrams on their way at once, both *Paused* and not counting while paused, a dot of the second opening the inspector with port 5012, Stop one and the other goes on. |
 | **Device state** | `test/device-state.test.mjs` (5 tests), `test/realtime-streams-browser.test.mjs` (both themes), `test/events-status-snooping-browser.test.mjs` | **Model:** operational, powered off, booting (until its boot time, not a millisecond before), operational again, each with its words, the same state as `deviceOn` (packet processing); powered off while booting and on again: the first boot never completes the second; a shut interface, a failed cable, the gateway off leave a device operational (only r3 marked); an external network *External*, a pass-through *Passive*, a device the simulation lacks *Unknown*; a guest *down with its host hv2*; a new simulation all operational. **On screen:** every device's indicator, *lab-h* *Operational*; powered off: *Powered off*, its tooltip and accessible name *Powered off at t = …*, the outline marked, the box neither moved nor resized, its label clear, the menu's state line and *Power on*; powered on: *Booting* with *up at t = …*, still booting a millisecond before, operational after; a shut interface of srv marks no device; *inet* *External*, no Power off; Exit clears every indicator and mark. |
 | **Every device's status, Expand all / Collapse all, snooping on screen** | `test/events-status-snooping-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom) | **Status:** all 14 devices of the private house with an indicator (13 *Operational* with the theme's green LED, *isp* *External*), its role and accessible name its tooltip, none over a text or port mark or another indicator (in the drawing's coordinates), every box where it was before the simulation, through Power off / on and after Exit; *Powered off*, *Booting*, *Operational* again after the boot time; a shut interface leaves the device *Operational*; the menu's state line equals the tooltip; the diagram's accessible name lists *powered off: ap-1*. **Bulk:** the accessible names and tooltips, mixed (both enabled), Expand all by Enter (all open, it disabled, the focus on Collapse all), Collapse all by Space (all closed, it disabled, the focus back), Active events and More options untouched, the heading and buttons not moving, a typed group kept, a running stream still counting, nothing wider than the panel. **Snooping:** dist's rows (10, 20, 30 enabled, 99 disabled), *Not configured* an error and gone from the YAML, chosen again; the thermostat's stream only to dist and core (*stops at core*), the core's snooping table empty with its notes, the TV's join in the open table without reopening it, *Show group memberships*, no table viewer among Network events. |
-| **Querier election, members, leaves, interface flapping** | `test/querier-election.test.mjs` (11 tests, the fake clock), `test/querier-leave-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450), the internal example `multicast-querier.yaml` | **Election:** down before the interfaces are up; every candidate queries at once (q1, q2), q2 hears q1 and stops, q1 *starting* then *querier* after its 2 startup queries 5 s apart, then one every 20 s, q2 none; the tables; the query's addresses. **Scope:** LAN B (the same VLAN 10) elects q3; the hosts say who queries them; one router on two LANs: querier on one, non-querier on the other; no candidate at all (snooping enabled is none): no query, the host says none heard. **Failover / recovery:** q1 off, q2 takes over exactly 45 s after q1's last query, then every 20 s; q1 back: two startup queries 5 s apart, then every 20 s (no duplicate schedule), q2 silent. **Flapping** q1's port: its candidacy down and up again, startup each time, q2 never queries. **Members:** still learned at 200 s (membership interval 50 s) through ≥ 8 answers; a cable down drops the switch's port, not the host's membership; learned again from its next answer. **Leave:** refused for a group or host without membership; the watch (sw port p4, q1:g0, q2:g0); *cleanup pending (3 of 3)* until removed at the switch's port and kept at the routers (rx2 answered the one group query); the leave report inspectable; delivery to rx1 stops, rx2 and the source go on; no later answer from rx1; rx3 leaving keeps the shared port (rx4 answers); a leave that can't be sent fails with its reason; MLD named as MLD. **Interfaces only:** a cable refused by the simulation, a port flaps (admin up, link down), the model's `flapping: "on"` on a port. **On screen:** the query dots of q1, q2, q3; dashed *Querier? · VLAN 10* on q1 and q3, then *Querier · VLAN 10*, no mark on q2; clear of texts, ports and statuses; boxes unmoved; Show querier election; the five actions in order, Leave in Expand all; no group chosen for you, the note; Enter on Leave group; the event's summaries; the packet inspector's TO_IN; q1 off: q2's mark; Exit clears all. |
+| **Querier election, members, leaves, interface flapping** | `test/querier-election.test.mjs` (11 tests, the fake clock), `test/querier-leave-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450), the internal example `multicast-querier.yaml` | **Election:** down before the interfaces are up; every candidate queries at once (q1, q2), q2 hears q1 and stops, q1 *starting* then *querier* after its 2 startup queries 5 s apart, then one every 20 s, q2 none; the tables; the query's addresses. **Scope:** LAN B (the same VLAN 10) elects q3; the hosts say who queries them; one router on two LANs: querier on one, non-querier on the other; no candidate at all (snooping enabled is none): no query, the host says none heard. **Failover / recovery:** q1 off, q2 takes over exactly 45 s after q1's last query, then every 20 s; q1 back: two startup queries 5 s apart, then every 20 s (no duplicate schedule), q2 silent. **Flapping** q1's port: its candidacy down and up again, startup each time, q2 never queries. **Members:** still learned at 200 s (membership interval 50 s) through ≥ 8 answers; a cable down drops the switch's port, not the host's membership; learned again from its next answer. **Leave:** refused for a group or host without membership; the watch (sw port p4, q1:g0, q2:g0); *cleanup pending (3 of 3)* until removed at the switch's port and kept at the routers (rx2 answered the one group query); the leave report inspectable; delivery to rx1 stops, rx2 and the source go on; no later answer from rx1; rx3 leaving keeps the shared port (rx4 answers); a leave that can't be sent fails with its reason; MLD named as MLD. **Interfaces only:** a cable refused by the simulation, a port flaps (admin up, link down), the model's `flapping: "on"` on a port. **On screen:** the query dots of q1, q2, q3; dashed *Querier (startup) · VLAN 10* on q1 and q3, then *Querier · VLAN 10*, *Standby · VLAN 10* on q2; clear of texts, ports and statuses; boxes unmoved; Show querier election; the five actions in order, Leave in Expand all; no group chosen for you, the note; Enter on Leave group; the event's summaries; the packet inspector's TO_IN; q1 off: q2's mark; Exit clears all. |
 | **IGMP / MLD snooping per VLAN** | `test/snooping.test.mjs` (8 tests), `test/sim-multicast.test.mjs` (snooping tests rewritten), `test/sim-levels.test.mjs`, `test/mcast-actions.test.mjs` | **Format:** enabled / disabled per VLAN or range, the model's ranges, `snoopingChoice`, the errors (a wrong value, a VLAN twice, not a mapping, not a switch) and the warning for a VLAN no port carries; the check `snooping-not-configured` (an error, its VLANs listed; a routed port and a VLAN interface alone need none; disabled counts as a choice); the removed attributes `igmp_snooping` / `unknown_multicast` as errors that say where snooping lives. **Forwarding:** nothing to any host before a join; a join opens its own port, its group, its VLAN only (not the same group from VLAN 20, not another group, not h2); never back to the source; the log's *forwards … to no port*; reports only to router ports, queries flooded; refresh by answers to queries (still there at 90 s with a 30 s membership interval), a leave (after the last member queries), a link down (at once, logged), learned again after the restore, expiry of a host powered off, a switch powered off, a new simulation empty; IPv6 (MLDv2 member, ff05::1 to its member only, the host's memberships); a Layer 3 switch without PIM routes nothing to VLAN 20, with PIM (dense) to its member only. **The private house:** the six scenarios (no join; the TV's join, only towards ap-b and the TV; leave; nothing into Internal or Guest; the TV moved to Internal gets nothing without multicast routing, its membership in VLAN 10); disabled floods, not configured floods and says so. |
 | **Network events** | `test/network-events.test.mjs` (10 tests), `test/network-events-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 px, light at 640 px) | **Lifecycle:** every operation one event with a stable id, refused ones *Failed* with the simulation's reason, the older programmatic send listed too; a series of 20 one event with *sent of requested*, pending never failed, completed with its last answer's time; a series with failures still *Completed*; a broadcast without answers *unknown* and no rate; a group's members apart from its messages; a DHCP client's send *Queued* until its lease, Stop then *Cancelled* with nothing on the wire; a join *In progress* until q1 records it, then *Completed* with its membership and Leave group (completed 2 min later too), without a router completed after its reports; a stream's datagrams and each member's count, stopped; a shut *Completed* at once with the interface down and No shut, not listed twice; flapping's cycles (3 by 35 s), stopped part way; a failed cable and a device off in the list; the same states whether run in steps or at once; at most 50 kept, those in progress never dropped, Clear finished. **On screen:** the four actions in order as headings with their forms (no object list, no Show …), Active events after them; the tables in the device's menu and the status side; each form's device and interface (Select…, disabled until a device), its reason; the diagram's selection not changing the join form; a join, a stream, flapping (not twice), a shut and a series listed newest first with their states (icon and word), a named progress bar, paused without moving on; details open and the focus kept over four updates; the inspector from the details; Stop keeping the focus in its event; No shut; the outcome bar named; a failed cable with Restore; Clear finished keeping the flapping, the cable and the membership, the focus on the heading; nothing wider than the panel, no sideways scrolling, every control named. |
 | **Send test's form** | `test/send-test-form-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | Nothing chosen: From and To disabled and greyed, Send disabled, the hint once; unicast: every device in From (the ISP disabled, *Cannot send IP packets*), the guest phone's one interface as text before and after its lease, the core's interfaces as options with *Chosen by routing*, the destination's interface (one shown, four a choice, cleared with another device); a port only for TCP and UDP and empty, cleared when ICMP is chosen; the interval greyed for one message; another delivery type clearing what doesn't fit (TCP and the destination for a group) and keeping what does (UDP and its port for a broadcast); the subnet scope's address; a directed broadcast to a subnet outside the model blocked; a Guest test dropped by the policy; a series as one event of Active events with its progress (*1/3 sent*, *1 pending*, then *3 answered* and its named outcome bar) and Stop, stopped where it was; every control named, nothing wider than the panel; Send network packets… from the ISP's menu. |
@@ -3430,12 +3464,31 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
+42. **IGMP at startup, concurrency, background dots.** Open
+    `private-house.yaml`, in both themes, at 200 % zoom and in a window
+    about 600 px wide.
+    * **Start**: within about 2 s of real time, IGMP dots leave the core
+      (its VLAN 20 query at t = 2 s), though DHCP and ARP of every host
+      are on their way too. The core says dashed *Querier (startup) ·
+      VLAN 20*; hover: *startup query 2 of 2 due at t = 33.3 s*. At about
+      33 s the second query; then *Querier · VLAN 20*. **Show querier
+      election** on core: *Next* *query at t = …*.
+    * Untick IGMP under the protocols: no IGMP dots; tick it again.
+    * Open `test/examples/protocol-simulation.yaml` in the test build:
+      **Start multicast stream** from pc1 and **Send network packets**
+      from pc2 to 10.10.10.21, 20 messages 1 s apart: both in colour,
+      their dots on their way at the same time; the scenario's dots go on
+      moving, grey. Point at a grey dot: no outline, a click opens
+      nothing. Click a dot of the stream: the inspector, which stays.
+      Stop both: once their dots arrived, the scenario is in colour again.
+    * Pacing Real time and Proportional: the same; the clock never stops
+      while dots are on their way.
 41. **Querier election, Leave multicast group, interface flapping.** Open the
     internal example `test/examples/multicast-querier.yaml` in the test
     build, start the simulation, in both themes, at 200 % zoom and in a
     window about 600 px wide.
     * At once: IGMP query dots from q1, q2 and q3; q1 and q3 marked dashed
-      *Querier? · VLAN 10*, q2 unmarked. After a few seconds q1 and q3 say
+      *Querier (startup) · VLAN 10*, q2 *Standby · VLAN 10*. After a few seconds q1 and q3 say
       *Querier · VLAN 10* (solid); hover: the LAN, g0 and the address.
       q2's menu, **Show querier election**: *Non-querier*, *10.5.0.1 (q1)*,
       the time until it would take over.
@@ -3452,8 +3505,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
     * rx3 and rx4 (behind edge) join, rx3 leaves: *kept at sw (VLAN 10,
       port p6)*: rx4 answered.
     * Power q1 off: about 45 s later q2 says *Querier · VLAN 10*. Power q1
-      on: after its boot it is *Querier?*, then *Querier* again; q2 loses
-      its mark. LAN B's q3 is never affected.
+      on: after its boot it is *Querier (startup)*, then *Querier* again; q2
+      is *Standby* again. LAN B's q3 is never affected.
     * A cable's menu has no flapping; Interface actions flaps rx2's eth0
       (*↯ Flapping*, the link down and up). Exit: no mark left.
 40. **Expand all / Collapse all, every device's status, snooping per VLAN.**
@@ -3513,9 +3566,11 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       lit and dashed with counts (*OSPF ×2 · ARP ×1*); the panel says how
       many more are cable activity.
     * Start multicast stream from *pc1* to *239.9.9.9*: its datagrams are
-      the dots now, one a second, several on their way; the scenario only
-      lights cables; *· streams in real time*. Click a dot of it: the
-      inspector. **Stop stream**: the scenario's dots come back.
+      the dots in colour, one a second, several on their way; the
+      scenario's dots go on moving, grey, and the pointer goes through
+      them; *· streams in real time*. Click a dot of the stream: the
+      inspector. **Stop stream**: once its dots arrived, the scenario's
+      dots are in colour again.
     * Pause, **Next exchange**: the exchange on screen runs to its end.
     * Pacing **Real time (1 s = 1 s)**: the time shown counts real seconds,
       a stream sends a datagram a second, the dots are brief.
@@ -4085,12 +4140,18 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   RPT prune acts at the next router up only; register suppression lasts
   while the source sends (no null registers); IGMPv3 / MLDv2 source lists
   are kept per group, not per filter-mode transition. The pacing shows
-  each hop for its paced time and holds the simulated clock back until a
-  message on screen has arrived; a busy model (BFD every 300 ms, streams,
-  storms) therefore runs slower than real time in the Readable pacing,
-  and skipping idle time only helps where there is idle time. Messages
-  beyond the 48 on screen are not drawn and do not hold the clock, so a
-  hop of a message that was not drawn may be followed by one that is.
+  each hop for its paced time while the simulated clock runs on: in
+  Readable pacing the dots of a long chain (a ping across several routers
+  with ARP on the way) run behind the tables and the log, up to 15 s,
+  beyond which the exchange shows as cable activity; a busy model (BFD
+  every 300 ms, streams, storms) can exceed the 25 ms of work a frame and
+  fall behind real time (*· behind*). The causal order on screen follows
+  the deliveries the engine records; a reply sent after a delay of its own
+  (a service's response time, an ARP retransmission) is ordered by its
+  conversation, not by a recorded cause. Messages beyond the 48 on screen
+  are not drawn, so a hop of a message that was not drawn may be followed
+  by one that is. Background dots are not inspectable on the diagram;
+  the event log opens any of them.
   Senders choose what is shown, not what runs: every device's protocols
   are computed, so a model with few senders still costs the whole
   simulation's work, and between two shown messages the clock may jump
@@ -4098,9 +4159,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   origin follows what a device handles at once: a reply sent after a
   delay of its own (a service response time, an ARP retransmission)
   counts as the replier's.
-  Following a message holds the clock for its conversation only (the same
-  protocol between the same two ends); the other messages go on at their
-  own pace, faint, and may arrive before their dots do. The time shown
+  Following a message keeps its conversation drawn (the same protocol
+  between the same two ends); the other messages go on, faint. The time shown
   is always the true simulated time; what happens is never affected.
   The spanning tree is converged at the start; its convergence after a
   change uses the mode's timer (RSTP at once at the change or after 3
