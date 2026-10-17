@@ -3,9 +3,9 @@
 // (200 % zoom):
 //   - the private house from a fresh start: the core's first IGMP query at
 //     simulated t = 2 s, its dots on screen within about a second of real
-//     time after it (not behind the startup burst); the mark "Querier
-//     (startup) · VLAN 20" with its next deadline in the tooltip, the same
-//     in Show querier election; the diagnostics say "scheduled";
+//     time after it (not behind the startup burst); the core's badge
+//     "VLAN 20 · Querier (startup)", the deadline in Show querier election;
+//     the diagnostics say "scheduled";
 //   - two of your actions at once (a stream and a send series): both in
 //     front; the scenario's dots go on moving behind them, grey, without a
 //     data-flight, not under the pointer: no outline, no inspector from
@@ -45,10 +45,11 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       assert.ok(seen, 'an IGMP query drawn');
       assert.equal(Math.round(seen.t), 2000, 'sent at its deadline (the core’s first port up after the link-up delay)');
       assert.ok(real < 6, `its dots on screen ${real.toFixed(1)} s after the start (its simulated time 2 s; the page’s first frames)`);
-      const mark = await page.eval(`(() => { const m = document.querySelector('#canvas .sim-querier[data-device="core"]'); return m ? { text: m.querySelector('text').textContent, role: m.getAttribute('data-role'), tip: m.querySelector('title').textContent } : null; })()`);
-      assert.deepEqual([mark.text, mark.role], ['Querier (startup) · VLAN 20', 'starting']);
-      assert.match(mark.tip, /^core: IGMP querier of VLAN 20 from 192\.168\.20\.1, in its startup: startup query 2 of 2 due at t = 33\.3 s/);
-      assert.equal((await page.eval(`netatlas.simController().queryDiagnostics()`))[0].next, 'scheduled');
+      // the core's snooping badges: one per VLAN with snooping enabled, each in its startup
+      const mark = await page.eval(`(() => { const m = document.querySelector('#canvas .sim-snoop[data-device="core"] .sim-snoop-vlan[data-vlan="20"]'); return m ? { text: m.querySelector('text:not(.sim-snoop-icon)').textContent, role: m.getAttribute('data-role'), tip: m.querySelector('title').textContent } : null; })()`);
+      assert.deepEqual([mark.text, mark.role], ['VLAN 20 · Querier (startup)', 'starting']);
+      assert.match(mark.tip, /^core: the IGMP querier of VLAN 20 for now, sending its startup queries from 192\.168\.20\.1/);
+      assert.ok((await page.eval(`netatlas.simController().queryDiagnostics()`)).every((d) => d.next === 'scheduled'));
       await page.eval(`netatlas.simController().showTable('querier', 'core'), true`);
       await page.settle(100);
       assert.equal(await page.eval(`document.querySelector('#sim-status-table tbody tr').cells[5].textContent`), 'query at t = 33.3 s (startup 2 of 2)');

@@ -258,6 +258,34 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Every snooping VLAN's role on the diagram.** During the simulation a
+  switch shows one badge per VLAN where its IGMP / MLD snooping is enabled,
+  stacked in VLAN order beside its box: its own part (★ Querier, ☆ Querier
+  (startup), ◇ Standby, ✕ Candidate down, ○ Snooping, ⏻ Off / Booting) and, apart
+  from it, whether the VLAN has a querier (*querier heard*, *no querier*) —
+  e.g. *VLAN 30 · Snooping · querier heard*. From the protocol's state per
+  switch and VLAN, updated live, kept while your events are in front, in
+  exports and in Fit; the tooltip and accessible name name the querier and
+  the router ports, the same as Show snooping table. A block keeps its
+  place and size while roles change. Replaces a switch's single querier
+  mark and the *No querier* mark (routers keep theirs). The legend explains
+  the badges.
+- **Forwarding decisions in the packet inspector.** A multicast hop shows
+  the switching decision of the switch that sent it and of the one it
+  arrived at, port by port (*→ up: sent — multicast router port (4 min 50 s
+  left)*, *✕ ap1: not sent — no member and no multicast router port*, the
+  ingress port), and a Layer 3 switch's routing decision apart.
+- **`unregistered_multicast`** (VLAN attribute, snooping enabled only):
+  `router-ports` (the default, RFC 4541 §2.1.2) or `flood`. The policy that
+  was implicit is now explicit, documented and applied alike at every
+  switch.
+- **Short grey labels on background traffic** while your events are in
+  front: *IGMP Query*, *IGMP Report*, *ARP*, *DHCP*, *DNS*, *UDP* … — one
+  per cable and kind, only where there is room, never clickable.
+- Internal example `snooping-roles.yaml` (test build): one switch, four
+  snooping VLANs, four different roles, and a separate LAN with the same
+  VLAN ID.
+
 - **Background dots: moving, grey, not clickable.** While one of your
   Network events is active (a send with messages left, a stream, a join
   until recorded, a leave until its cleanup settles, flapping) and until
@@ -1179,6 +1207,15 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **The private house: the core is the snooping querier of VLANs 10, 20
+  and 30** (it was of VLAN 20 only). Without a querier, VLANs 10 and 30
+  learned no multicast router port, so a stream stayed at the first switch
+  and a member's report never left the switch it reached.
+- **The snooping table tells router ports from member ports** (*multicast
+  router port: every group goes there … not a membership*, *member port:
+  IGMPv3 …*), lists each VLAN's role as the badges do, and says the
+  unregistered policy.
+
 - **The animation no longer holds the simulation.** The simulated clock
   runs at its own rate (1 s per real second × the speed in Readable and
   Real time pacing, 1/scale in Proportional), at most 25 ms of work a
@@ -1534,6 +1571,19 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **The NAS got nothing after joining the laptop's group in the private
+  house.** The laptop and the NAS are in the same VLAN 10, but VLAN 10 had
+  no querier: dist had no router port, so the laptop's stream ended at
+  dist, and the NAS's report, sent to router ports only, never left the
+  core — which showed the membership while the stream never came. With the
+  core querying VLAN 10, dist forwards to its router port up, and the
+  NAS's join is delivered from the next datagram, without a restart or an
+  extra query. The thermostat's stream going to the core without a receiver
+  was correct (the router port), and stays so.
+- A switch that is the VLAN's querier itself no longer says *no querier
+  there* when a group has no member (it says it is the querier and no
+  multicast router is there).
 
 - **No IGMP traffic after starting the simulation in the private house.**
   The core's first query was due at t = 2 s (its first port up after the

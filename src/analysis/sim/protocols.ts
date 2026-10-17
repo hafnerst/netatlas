@@ -23,7 +23,7 @@ import { relParam } from '../routing';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
-import { L4, Msg, Pkt, SessionStatus } from './types';
+import { L4, Msg, Pkt, SessionStatus, SnoopResult } from './types';
 import { serviceRelations } from './service-relations';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -159,7 +159,7 @@ export class ProtocolSim implements Protocols {
   portHook: ((dev: string, pkt: Pkt, l3: L3Iface) => boolean) | null = null;
   readonly sweepHooks: Array<() => void> = [];
   /** multicast (multicast.ts): a switch's snooping, a router's multicast routing, the RPF check after a route change */
-  snoopHook: ((sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number) => Set<string> | null) | null = null;
+  snoopHook: ((sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number) => SnoopResult | null) | null = null;
   mrouteHook: ((dev: string, l3: L3Iface, pkt: Pkt) => boolean) | null = null;
   readonly routesHooks: Array<(dev: string) => void> = [];
   /** PIM messages of a session that multicast.ts handles (Join/Prune, Graft): true when it did */
@@ -814,7 +814,7 @@ export class ProtocolSim implements Protocols {
     for (const h of this.sweepHooks) h();
   }
 
-  snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null {
+  snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): SnoopResult | null {
     return this.snoopHook ? this.snoopHook(sd, from, vlan, frame, t) : null;
   }
 

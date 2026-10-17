@@ -114,9 +114,9 @@ test('enabled: a group goes only to the ports where a member of that group repor
   assert.ok(!s.engine.flights.some((f) => f.track.ref === 'link:l4' && f.protocol === 'mcast' && f.sender !== 'src'));
   const rows = s.snoopTable('sw').rows;
   assert.deepEqual(rows.map((r) => r.slice(0, 3)), [['10', '239.1.1.1 (IGMP)', 'p1']]);
-  assert.match(rows[0][3], /^member: IGMPv3, any source, reported by 10\.10\.0\.11$/);
+  assert.match(rows[0][3], /^member port: IGMPv3, any source, reported by 10\.10\.0\.11$/);
   // the log says where a group goes to no host port
-  assert.ok(ev(s, (e) => e.device === 'sw' && e.kind === 'drop' && /^sw forwards 239\.1\.1\.2 to no port in VLAN 10: no member reported it there and it has no multicast router port \(IGMP \/ MLD snooping enabled\)$/.test(e.detail)).length >= 1);
+  assert.ok(ev(s, (e) => e.device === 'sw' && e.kind === 'drop' && /^sw forwards 239\.1\.1\.2 to no port in VLAN 10: no member reported it there and it has no multicast router port \((it is the VLAN's querier itself and no multicast router is there|no query or PIM Hello heard in VLAN 10: no querier there); unregistered multicast goes to the router ports only\)$/.test(e.detail)).length >= 1);
 });
 
 test('control traffic: reports go to the router ports only (no other host hears them), queries are flooded; a member learned without any router port', () => {
@@ -136,7 +136,7 @@ test('control traffic: reports go to the router ports only (no other host hears 
   assert.ok(ev(s, (e) => e.device === 'h1' && /answers the general query of 10\.10\.0\.1/.test(e.detail)).length >= 1);
   // h2 answers no query for a group it never joined
   assert.ok(!ev(s, (e) => e.device === 'h2' && e.what === 'Report').length);
-  assert.ok(s.snoopTable('sw').notes.includes('VLAN 10: the IGMP querier (10.10.0.1), elected.'), s.snoopTable('sw').notes.join(' | '));
+  assert.ok(s.snoopTable('sw').notes.includes('VLAN 10 · Querier: the elected IGMP querier of VLAN 10 (snooping querier, from 10.10.0.1); no multicast router port; unregistered multicast to the router ports only.'), s.snoopTable('sw').notes.join(' | '));
 });
 
 test('lifecycle: refreshed by the answers to queries, gone after a leave (group queries) or when nothing refreshes it; a link down takes its port at once; a new simulation starts empty', () => {
@@ -195,7 +195,7 @@ test('IPv6: MLD reports make member ports too; an IPv6 group goes to its member 
   assert.deepEqual(data(s, 'l2', 'ff05::1', t), []);
   const row = s.snoopTable('sw').rows.find((r) => r[1] === 'ff05::1 (MLD)');
   assert.deepEqual(row.slice(0, 3), ['10', 'ff05::1 (MLD)', 'p1']);
-  assert.match(row[3], /^member: MLDv2, any source, reported by 2001:db8:10::11$/);
+  assert.match(row[3], /^member port: MLDv2, any source, reported by 2001:db8:10::11$/);
   // the host's own memberships: its table
   const m = s.memberTable('h1');
   assert.deepEqual(m.rows.map((r) => r.slice(0, 4)), [['eth0', 'ff05::1', 'MLDv2', 'any source']]);
@@ -241,12 +241,14 @@ test('private house: the thermostat’s VLAN 20 stream reaches no host before a 
   s.play(5000);
   let l = links(t - 1);
   assert.deepEqual(Array.from(l).sort(), ['link:l-core-dist', 'link:l-dist-ap2', 'link:w-thermostat']);
-  assert.deepEqual(s.snoopTable('dist').rows.map((r) => r.slice(0, 4)), [['20', '—', 'up', 'multicast router port (a query or PIM Hello arrived there)']]);
+  // (the core queries VLANs 10, 20 and 30: dist's port up is a router port in each of them, never a membership)
+  assert.deepEqual(s.snoopTable('dist').rows.map((r) => r.slice(0, 3)), [['10', '—', 'up'], ['20', '—', 'up'], ['30', '—', 'up']]);
+  assert.match(s.snoopTable('dist').rows[1][3], /^multicast router port: every group goes there, members or not \(a query or PIM Hello arrived there; the querier core \(192\.168\.20\.1\) is behind it\); not a membership$/);
   assert.deepEqual(s.snoopTable('core').rows, []);
   assert.equal(st.stream.rx.size, 0);
   const v = s.actions().find((x) => x.id === st.id);
   assert.match(v.summary, /no member received any yet · stops at core$/);
-  assert.ok(v.details.includes('Last stopped at core: core forwards 239.20.0.1 to no port in VLAN 20: no member reported it there and it has no multicast router port (IGMP / MLD snooping enabled)'));
+  assert.ok(v.details.includes("Last stopped at core: core forwards 239.20.0.1 to no port in VLAN 20: no member reported it there and it has no multicast router port (it is the VLAN's querier itself and no multicast router is there; unregistered multicast goes to the router ports only)"), v.details.join(' | '));
   // 3: the TV joins: the core learns its port (towards ap-b); the stream goes that way only
   assert.equal(s.joinGroup('tv', 'wlan0', '239.20.0.1', []), null);
   s.play(3000);

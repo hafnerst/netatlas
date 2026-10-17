@@ -699,8 +699,9 @@ configured — choose*, *Enabled* or *Disabled*.
 
 Snooping is Layer 2 only. What crosses a VLAN interface of a Layer 3 switch
 is **multicast routing** (PIM, see [Multicast](#multicast)): snooping never
-routes, and routing never needs snooping. The snooping querier and fast
-leave are the VLAN's [simulation attributes](#vlan-attributes-2).
+routes, and routing never needs snooping. The snooping querier, fast
+leave and where unregistered multicast goes are the VLAN's [simulation
+attributes](#vlan-attributes-3).
 
 Making a switch a Layer 2 switch (unticking **Supports Layer 3**)
 asks first and lists what goes with it, in one undo step: its protocols
@@ -1746,7 +1747,7 @@ link end are unknown keys; the error says where the VLANs go.
 | `label` | |
 | `cidr` | required: **exactly one** IPv4 or IPv6 prefix **with a prefix length**, written as one value: `10.10.10.0/24` or `2001:db8::/64`. The prefix decides who is a member. A list is an error, even a one-element list; use one network per prefix (e.g. an IPv4 and an IPv6 network for one segment, both with the same `vlan`). |
 | `vlan` | the VLAN ID (1–4094) this IP network lives in, if any |
-| `simulation` | the VLAN's **simulation attributes** (the snooping querier, fast leave), for every switch carrying the VLAN (IGMP / MLD snooping itself is each switch's `igmp_mld_snooping`); only on a network with a `vlan`. See [Levels](#levels-where-an-attribute-is-written). |
+| `simulation` | the VLAN's **simulation attributes** (the snooping querier, unregistered multicast, fast leave), for every switch carrying the VLAN (IGMP / MLD snooping itself is each switch's `igmp_mld_snooping`); only on a network with a `vlan`. See [Levels](#levels-where-an-attribute-is-written). |
 | `description`, `attrs` | |
 
 A network is always an IP network: there is no `kind`. It has no `vrf` (a VRF
@@ -2065,7 +2066,7 @@ at, and is written in that object's `simulation:` block:
 |---|---|---|
 | device | the device's `simulation:` | boot time, ECMP paths, the spanning-tree mode and bridge priority, a firewall's policy |
 | interface | a port's, an aggregate's or a logical interface's `simulation:` | ARP timers, link-up delay, a port's spanning-tree cost, edge port and BPDU guard, IGMP, a DHCP client's retries |
-| VLAN | the `simulation:` of a network with a `vlan` | the snooping querier, fast leave |
+| VLAN | the `simulation:` of a network with a `vlan` | the snooping querier, unregistered multicast, fast leave |
 | relation | a relation's `simulation:` | a VRRP group's advertisement interval, an IPsec tunnel's lifetimes, a load balancer pool's health checks |
 | service | a DHCP scope's or a DNS zone's `simulation:`; a Hypervisor service's, a virtual switch's or a Container engine's | the offer delay and ping check of a scope, a zone's record TTL; the VM restart time, the teaming failover detection, the container start time |
 
@@ -2229,17 +2230,23 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `multicast_passthrough` | Multicast passthrough | Off | `on`, `off` | firewalls drop multicast unless configured (PAN-OS, Cisco ASA) | interfaces with an address of firewalls |  |
 | `multicast_to_unicast` | Multicast to unicast | Off | `on`, `off` | off unless configured (Cisco VideoStream, Aruba) | access-point radios of access points |  |
 
-#### VLAN attributes (2)
+#### VLAN attributes (3)
 
 IGMP / MLD snooping itself is no simulation attribute: it is each switch's
 own configuration, [`igmp_mld_snooping`](#igmp--mld-snooping-per-vlan). The
 former attributes `igmp_snooping` and `unknown_multicast` are unknown
-attributes now (the error says where snooping is configured); with snooping
-enabled a group without members is never flooded.
+attributes now (the error says where snooping is configured). Where a group
+without members goes with snooping enabled is the VLAN's own explicit
+policy, `unregistered_multicast` (it applies only where snooping is enabled:
+disabled or not configured floods anyway): `router-ports` (the default) —
+to the multicast router ports only, as RFC 4541 §2.1.2 requires, and
+nowhere where the VLAN has none — or `flood` — to every port of the VLAN,
+which the RFC allows.
 
 | Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
 |---|---|---|---|---|---|---|
 | `snooping_querier` | Snooping querier | Off | `on`, `off` | off unless configured (Cisco ip igmp snooping querier) | every switch carrying the VLAN |  |
+| `unregistered_multicast` | Unregistered multicast | To the router ports only | `router-ports`, `flood` | RFC 4541 §2.1.2: unregistered packets must reach the router ports; flooding them is allowed | every switch carrying the VLAN |  |
 | `fast_leave` | Fast leave | Off | `on`, `off` | off unless configured (Cisco immediate-leave) | every switch carrying the VLAN |  |
 
 #### Relation attributes (13)
@@ -2430,11 +2437,27 @@ What the simulation does with them:
   answers to queries; with fast leave a leave removes the port at once,
   else after the last member queries; a port whose link goes down loses
   its entries at once; a switch powered off forgets them; a new simulation
-  starts with none). Reports and leaves go to the router ports only; a
-  group's data to its member ports in that VLAN and the router ports, never
-  back out of its ingress port; **a group without members goes to the
-  router ports only, never to the hosts** (the log says where it ends);
-  link-local groups (queries, routing protocols) are always flooded.
+  starts with none). Each port of the VLAN has an explicit role for a
+  group's packet: a **member port** (a report of that group arrived there),
+  a **multicast router port** (a query or a PIM Hello arrived there: a
+  multicast router or the VLAN's querier is behind it — a port is never one
+  because the device behind it is a Layer 3 device or an uplink; it gets
+  every group, members or not, and is no membership), the **ingress port**
+  (never sent back), or neither. Reports and leaves go to the router ports
+  only (RFC 4541 §2.1.1), so a member's report reaches the switches on the
+  way to the querier and the routers, each learning the port it arrived on
+  — nothing is copied between switches; a group's data goes to its member
+  ports in that VLAN and the router ports (§2.1.2); a group without members
+  (unregistered) goes by the VLAN's `unregistered_multicast`: the router
+  ports only (the default; none there, nowhere — the log says where it
+  ends) or flooded; link-local groups (queries, routing protocols) are
+  always flooded. A port must also carry the VLAN, be up and not blocked by
+  the spanning tree. A membership learned from a report applies to the
+  very next packet: there is no forwarding cache to refresh, and no query
+  is needed first. Without a querier in a snooping VLAN the switches learn
+  no router port: a stream stays at the first switch, and a member's report
+  never leaves the switch it reached (the diagram's badge says *no
+  querier*; configure a multicast router or the snooping querier).
   Forwarding is by group: the sources an IGMPv3 / MLDv2 member names are
   shown in the snooping table but not filtered at the switch. Disabled, or
   not configured (an error of the checks): everything is flooded in the
@@ -2447,7 +2470,22 @@ What the simulation does with them:
 - **Snooping is not routing.** On a Layer 3 switch snooping decides what
   goes out of the ports of each VLAN; what crosses its VLAN interfaces to
   other VLANs is multicast routing, which needs PIM (and a member there).
-  A Layer 3 switch without PIM routes no multicast, whatever its snooping.
+  A Layer 3 switch without PIM routes no multicast, whatever its snooping:
+  a membership in another VLAN is learned there, but nothing is routed to
+  it.
+- **Each snooping VLAN's role** (the simulation's badges beside the switch,
+  one per VLAN with snooping enabled, in VLAN order): its own part —
+  *Querier*, *Querier (startup)*, *Standby* (a candidate that yields),
+  *Candidate down*, *Snooping* (no candidate), *Off* / *Booting* (powered off, still booting) — and,
+  apart from it, whether the VLAN has a querier (*querier heard*, *no
+  querier*). From the protocol's state per switch and VLAN (the queries
+  that reached it), never from the configuration alone; a router port is
+  where a querier or router is, not the switch being one.
+- **Forwarding decisions.** For a multicast packet, each switch records
+  its decision per port (sent as member port or router port, with the time
+  left; or not, with a short reason) and each router its Layer 3 decision
+  (its outgoing interfaces, or why none): the packet inspector shows them
+  for a hop.
 - **PIM sparse mode**: the designated router of a segment (the highest
   `pim_dr_priority`, then address) joins (*, G) towards the RP for its
   members, hop by hop along the unicast route (each RPF neighbour must be

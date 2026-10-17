@@ -1039,7 +1039,21 @@ export class App {
     const banner = this.doc.getElementById('mode-banner');
     const top = banner && !banner.hidden ? banner.getBoundingClientRect().height : 0;
     const H = Math.max(40, (this.svg.clientHeight || 700) - top);
-    const b = this.bounds;
+    let b = this.bounds;
+    // the simulation's indicators beside the boxes (statuses, querier marks, snooping badges) are in view too
+    const marks = this.svg.querySelector('.layer-sim-power') as SVGGraphicsElement | null;
+    if (marks && typeof marks.getBBox === 'function') {
+      try {
+        const e = marks.getBBox();
+        if (e.width > 0 && e.height > 0) {
+          const x0 = Math.min(b.x, e.x);
+          const y0 = Math.min(b.y, e.y);
+          b = { x: x0, y: y0, w: Math.max(b.x + b.w, e.x + e.width) - x0, h: Math.max(b.y + b.h, e.y + e.height) - y0 };
+        }
+      } catch (err) {
+        /* not rendered */
+      }
+    }
     const k = Math.max(0.05, Math.min(1.5, Math.min(W / Math.max(1, b.w), H / Math.max(1, b.h)) * 0.96));
     this.zoom = { k, tx: W / 2 - (b.x + b.w / 2) * k, ty: top + H / 2 - (b.y + b.h / 2) * k };
     this.applyZoom();
@@ -4777,6 +4791,20 @@ export class App {
       const layer = this.simCtl.anim.exportLayer();
       const scene = clone.querySelector('.scene');
       if (layer && scene) scene.appendChild(layer);
+      // the indicators beside the boxes (statuses, querier marks, every snooping VLAN's badge) as on screen: all of them in the picture
+      const marks = this.svg.querySelector('.layer-sim-power') as SVGGraphicsElement | null;
+      if (marks && typeof marks.getBBox === 'function') {
+        try {
+          const e = marks.getBBox();
+          if (e.width > 0 && e.height > 0) {
+            const x0 = Math.min(b.x, e.x - 8);
+            const y0 = Math.min(b.y, e.y - 8);
+            b = { x: x0, y: y0, w: Math.max(b.x + b.w, e.x + e.width + 8) - x0, h: Math.max(b.y + b.h, e.y + e.height + 8) - y0 };
+          }
+        } catch (err) {
+          /* not rendered */
+        }
+      }
     }
     // an analysis mode (focus, path trace) says so in the picture, above the diagram: a line each
     const notes = this.modeNotes();

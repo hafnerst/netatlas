@@ -118,8 +118,11 @@ test('multicast parameters: the query interval (Layer 3) completes its section; 
   assert.ok(!byType.get('router').includes('pim-dr-priority') && Pm.paramDef('pim-dr-priority').level === 'interface');
   // snooping's timers: the switch's; the querier and fast leave per VLAN (snooping itself: igmp_mld_snooping, the switch's configuration)
   for (const k of ['mrouter-aging', 'igmp-query']) assert.ok(byType.get('switch').includes(k), k);
-  for (const k of ['snoop-querier', 'fast-leave']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'vlan', k);
-  assert.deepEqual(Pm.vlanParams().map((p) => p.key), ['snoop-querier', 'fast-leave']);
+  // (unregistered multicast: an explicit policy per VLAN, only with snooping enabled — not the old global unknown-mc)
+  for (const k of ['snoop-querier', 'unregistered-mc', 'fast-leave']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'vlan', k);
+  assert.deepEqual(Pm.vlanParams().map((p) => p.key), ['snoop-querier', 'unregistered-mc', 'fast-leave']);
+  assert.equal(Pm.paramDef('unregistered-mc').dflt, 'router-ports');
+  assert.match(Pm.paramDef('unregistered-mc').source, /RFC 4541/);
   assert.ok(!byType.get('firewall').includes('mc-passthrough') && Pm.paramDef('mc-passthrough').level === 'interface');
   assert.ok(byType.get('vpn_gateway').includes('mc-tunnel'), 'a VPN gateway’s default for its tunnels');
   assert.ok(!byType.get('ap').includes('mc-to-unicast') && Pm.paramDef('mc-to-unicast').level === 'interface');
@@ -221,7 +224,7 @@ test('snooping: router ports from queries and PIM Hellos, member ports from repo
   s.runTo(20000);
   const rows = s.snoopTable('sw').rows;
   // the router port (r2's queries and Hellos), then each group's member port: VLAN, group with its family, port, what it is
-  assert.deepEqual(rows.map((r) => [r[0], r[1], r[2], r[3].split(',')[0]]), [['1', '—', 'p1', 'multicast router port (a query or PIM Hello arrived there)'], ['1', '232.1.1.1 (IGMP)', 'p3', 'member: IGMPv3'], ['1', '239.1.1.1 (IGMP)', 'p2', 'member: IGMPv3']]);
+  assert.deepEqual(rows.map((r) => [r[0], r[1], r[2], r[3].split(',')[0]]), [['1', '—', 'p1', 'multicast router port: every group goes there'], ['1', '232.1.1.1 (IGMP)', 'p3', 'member port: IGMPv3'], ['1', '239.1.1.1 (IGMP)', 'p2', 'member port: IGMPv3']]);
   assert.match(rows[1][3], /sources 10\.1\.0\.10, reported by 10\.2\.0\.22$/);
   assert.match(rows[2][3], /any source, reported by 10\.2\.0\.21$/);
   // idle (no member) gets no stream; rxa gets 239.1.1.1 only, rxb 232.1.1.1 only
@@ -233,7 +236,7 @@ test('snooping: router ports from queries and PIM Hellos, member ports from repo
   // a report never reaches another host
   assert.ok(!s.engine.flights.some((f) => (f.track.ref === 'link:f' || f.track.ref === 'link:e') && f.protocol === 'igmp' && /Report 239/.test(f.label)));
   assert.match(s.snoopTable('sw').timers.map((t) => `${t.label}: ${t.value}`).join(', '), /^Fast leave: Off, Router port aging: 5 min, Snooping querier: Off$/);
-  assert.match(s.snoopTable('sw').notes[0], /^Snooping enabled in VLAN 1: a group goes to its member ports and the router ports only; a group without members to the router ports only \(never flooded to the hosts\)\.$/);
+  assert.match(s.snoopTable('sw').notes[0], /^Snooping enabled in VLAN 1: a group goes to its member ports and the router ports; a group without members \(unregistered\) to the router ports only — none there, nowhere \(unregistered_multicast: router-ports, RFC 4541 §2\.1\.2\)\.$/);
 });
 
 test('snooping disabled floods every group; not configured floods too and says so; enabled never floods a group without members; fast leave removes a port at once', () => {
@@ -291,7 +294,7 @@ links:
   assert.ok(q.length >= 2);
   assert.match(q[0].detail, /General Query from sw \(snooping querier, 10\.9\.0\.2\) in VLAN 1: which groups have members\?/);
   assert.ok(ev(on, (e) => e.device === 'h1' && /answers the general query of 10\.9\.0\.2/.test(e.detail)).length >= 1);
-  assert.ok(on.snoopTable('sw').notes.some((n) => n === 'VLAN 1: the IGMP querier (10.9.0.2), elected.'), on.snoopTable('sw').notes.join(' | '));
+  assert.ok(on.snoopTable('sw').notes.some((n) => /^VLAN 1 · Querier: the elected IGMP querier of VLAN 1 \(snooping querier, from 10\.9\.0\.2\)/.test(n)), on.snoopTable('sw').notes.join(' | '));
   // the querier needs snooping enabled on the switch, and an address of its own in the VLAN
   const net = 'networks:\n  - {id: v1, cidr: 10.9.0.0/24, vlan: 1, simulation: {snooping_querier: "on"}}\n';
   const dis = sim(Y(', simulation: {igmp_query_interval: 5}', 'disabled') + net);

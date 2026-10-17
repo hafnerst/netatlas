@@ -111,7 +111,7 @@ export interface DrawItem {
   followed?: boolean;
   /** of a Send test: its label says "Test", its label is placed first */
   test?: boolean;
-  /** the scenario's while Network events hold the front: drawn grey, moving, without a label, not a hit target */
+  /** the scenario's while Network events hold the front: drawn grey, moving, with a short grey label of its kind where there is room, not a hit target */
   bg?: boolean;
 }
 
@@ -220,6 +220,29 @@ export class SimAnimator {
     this.dots = this.labels = null;
     this.scene = null;
     this.last = null;
+  }
+
+  /** the indicators' boxes, read again only when their layer is redrawn */
+  private markCache: { layer: Element | null; boxes: BoxIndex } = { layer: null, boxes: new BoxIndex() };
+
+  /** The boxes of the simulation's indicators on the diagram (statuses, querier marks, snooping badges): labels keep clear of them. */
+  private markBoxes(): BoxIndex {
+    const layer = this.scene ? this.scene.querySelector(':scope > .layer-sim-power') : null;
+    if (layer === this.markCache.layer) return this.markCache.boxes;
+    const boxes = new BoxIndex();
+    if (layer) {
+      const rs = layer.querySelectorAll('rect');
+      for (let i = 0; i < rs.length; i++) {
+        try {
+          const b = (rs[i] as SVGGraphicsElement).getBBox();
+          if (b.width > 0 && b.height > 0) boxes.add({ x: b.x, y: b.y, w: b.width, h: b.height });
+        } catch (err) {
+          /* not rendered */
+        }
+      }
+    }
+    this.markCache = { layer, boxes };
+    return boxes;
   }
 
   /** Draw the hops as the pacing places them now. */
@@ -360,7 +383,11 @@ export class SimAnimator {
     // cable activity: the traffic not drawn as dots (bundled, or the background while a Network event runs), lit under the dots
     if (live && opts.activity) this.paintActivity(dots, labels, opts, placed);
     // a Send test's hops first (their labels always find room), then the earliest: what started first keeps its place
-    const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+    // (the background's short labels after every label of the foreground: they take only the room left)
+    const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!a.bg) - Number(!!b.bg) || Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+    // the indicators drawn on the diagram during the simulation (statuses, querier marks, snooping badges): no label over them
+    const marks = this.markBoxes();
+    const bgLabelled = new Set<string>();
     for (const it of list) {
       const f = it.f;
       const st = it.st;
@@ -393,7 +420,8 @@ export class SimAnimator {
       }
       if (st.phase === 'moving' && st.frac < 0.25 && ends.from) senders.add(ends.from);
       if (st.phase === 'transit' && ends.from) senders.add(ends.from);
-      // the background: a grey dot on its way, nothing to point at or read (the log has it)
+      // the background: a grey dot on its way, nothing to point at (the log has it), with a short grey label of its kind —
+      // one per cable and kind (the earliest), and only where it touches no other label, text, box or indicator
       if (it.bg) {
         if (lost) continue;
         const shape = arrows ? arrow(this.doc, p, color, f.cast || 'unicast') : dot(this.doc, p.x, p.y, color, f.cast || 'unicast');
@@ -402,16 +430,31 @@ export class SimAnimator {
         // (under the foreground's dots)
         dots.insertBefore(shape, dots.firstChild);
         drawn++;
+        const kind = bgKind(f.protocol, f.label);
+        const k = f.track.ref + '|' + kind;
+        if (!bgLabelled.has(k) && st.phase === 'moving') {
+          bgLabelled.add(k);
+          const bw = textWidth(kind, BG_FONT) + 4;
+          const bh = BG_FONT + 4;
+          const bbox = placeLabel(candidates(p.x, p.y, p.ux, p.uy, bw, bh, 1), this.obstacles, placed, marks);
+          if (bbox) {
+            placed.add(bbox);
+            const lab = label(this.doc, kind, bbox, false, 'none');
+            lab.setAttribute('class', 'sim-bg-label');
+            lab.setAttribute('aria-hidden', 'true');
+            labels.insertBefore(lab, labels.firstChild);
+          }
+        }
         continue;
       }
       const name = (it.test ? 'Test · ' : '') + f.label;
       const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
       const w = textWidth(text, FONT) + 4;
       const h = FONT + 4;
-      let box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed);
+      let box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed, marks);
       for (let k = 1; !box && k < fracs.length; k++) {
         const q = at(geo, fracs[k]);
-        box = placeLabel(candidates(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed);
+        box = placeLabel(candidates(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed, marks);
         if (box) p = q;
       }
       // a moving dot stays on its way even where its label has no room for a moment (the label comes back with room)
@@ -444,6 +487,25 @@ export class SimAnimator {
     return { drawn, left, senders: Array.from(senders), receivers: Array.from(receivers) };
   }
 }
+
+/** a background label's font size */
+const BG_FONT = 8.5;
+
+/**
+ * A background message's kind in a word or two, for its short grey label:
+ * the protocol, with the message type where it tells the kind apart (IGMP
+ * Query / Report / Leave, OSPF Hello …); a multicast stream's datagrams are
+ * UDP. Never addresses or interfaces (the inspector and the log have them).
+ */
+export function bgKind(protocol: string, label: string): string {
+  const name = BG_NAMES[protocol] || protocol.toUpperCase().slice(0, 10);
+  const m = /\b(Query|Report|Leave|Hello|Join|Prune|Register|Request|Reply|Discover|Offer|Ack|Update|Keepalive|BPDU)\b/.exec(label);
+  const type = m ? m[1] : '';
+  if (protocol === 'igmp' || protocol === 'mld' || protocol === 'pim' || protocol === 'ospf' || protocol === 'bgp' || protocol === 'stp' || protocol === 'bfd') return type ? `${name} ${type}` : name;
+  return name;
+}
+
+const BG_NAMES: { [p: string]: string } = { mcast: 'UDP', igmp: 'IGMP', mld: 'MLD', arp: 'ARP', garp: 'ARP', ndp: 'NDP', dhcp: 'DHCP', dhcpv6: 'DHCPv6', dns: 'DNS', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', ospf: 'OSPF', bgp: 'BGP', pim: 'PIM', stp: 'STP', lacp: 'LACP', lldp: 'LLDP', bfd: 'BFD', vrrp: 'VRRP', demand: 'Traffic', https: 'HTTPS', http: 'HTTP' };
 
 /** The way a followed message has come along a track so far. */
 

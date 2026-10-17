@@ -44,12 +44,19 @@
 # Basement, and the provider's line coming in below it.
 #
 # Multicast: both switches snoop IGMP / MLD in VLANs 10, 20 and 30 (their
-# igmp_mld_snooping; not in management and transit), and the core is the
-# snooping querier of the IoT VLAN, which has no multicast router. A stream
-# the thermostat sends to a group (Network events → Start multicast stream)
-# goes nowhere until a device of VLAN 20 joins it (Join multicast group, e.g.
-# the TV): then only towards that member. The core routes no multicast (no
-# PIM), so nothing reaches the other VLANs.
+# igmp_mld_snooping; not in management and transit). None of these VLANs has
+# a multicast router, so the core is the snooping querier of all three: its
+# queries let the switches learn where the members are (their reports) and
+# where the querier is (dist's port up: a multicast router port). Without a
+# querier a snooping VLAN learns no router port, a member's report never
+# leaves the switch it reached, and a stream stays at the first switch.
+# A stream sent to a group (Network events → Start multicast stream), e.g.
+# from the thermostat (VLAN 20) or the laptop (VLAN 10), goes to the router
+# port up to the core (RFC 4541: unregistered multicast must reach the
+# router ports) and stops there until a device of the same VLAN joins it
+# (Join multicast group: the TV for VLAN 20, the NAS for VLAN 10): then on
+# to that member. The core routes no multicast (no PIM), so nothing reaches
+# the other VLANs.
 #
 # Simulate ▾ → Start simulation…: the leases (each client in its network's
 # VLAN), the laptop's NAS session by name, HTTPS to the web server from every
@@ -85,9 +92,9 @@ groups:
     kind: provider
 
 networks:
-  - {id: internal, label: Internal, cidr: 192.168.10.0/24, vlan: 10}
+  - {id: internal, label: Internal, cidr: 192.168.10.0/24, vlan: 10, simulation: {snooping_querier: "on"}}
   - {id: iot, label: IoT, cidr: 192.168.20.0/24, vlan: 20, simulation: {snooping_querier: "on"}}
-  - {id: guest, label: Guest, cidr: 192.168.30.0/24, vlan: 30}
+  - {id: guest, label: Guest, cidr: 192.168.30.0/24, vlan: 30, simulation: {snooping_querier: "on"}}
   - {id: mgmt, label: Management, cidr: 192.168.99.0/24, vlan: 99}
 
 devices:
@@ -147,8 +154,9 @@ devices:
     layer3: true
     role: core
     group: basement
-    # IGMP / MLD snooping per VLAN: the IoT VLAN's multicast reaches only the ports whose
-    # devices joined the group (the core is its snooping querier: VLAN 20 has no multicast router)
+    # IGMP / MLD snooping per VLAN: a VLAN's multicast reaches only the ports whose devices
+    # joined the group, and the router ports (the core is the snooping querier of VLANs 10, 20
+    # and 30: they have no multicast router)
     igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled, 110-130: disabled}
     services:
       dhcp:

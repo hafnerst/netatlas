@@ -5,6 +5,7 @@
  * drawn. Every element grows to fit its full text; nothing is shortened.
  */
 import { TextBlock, labelWithAddresses, lineHeight, monoWidth, textBlock, textWidth } from './text';
+import { SNOOP_ROLE_TEXTS } from '../model/snooping';
 
 export const HUB_R = 12;
 export const CHIP_H = 16;
@@ -44,6 +45,28 @@ export function deviceBody(label: string, sub: string, minW: number, minH: numbe
     w: Math.max(minW, Math.ceil(DEVICE_TEXT_X + Math.max(l.w, s.w) + DEVICE_PAD_R)),
     h: Math.max(minH, textH + 2 * DEVICE_PAD_Y),
   };
+}
+
+// ------------------------------------------------------------------ snooping badges (the simulation)
+
+/** a snooping VLAN's badge: its height with the gap below it, its font */
+export const SNOOP_ROW = 15;
+export const SNOOP_FONT = 9.5;
+/** the gap between a device's box and its block of badges */
+export const SNOOP_GAP = 4;
+
+/**
+ * The block of a snooping switch's per-VLAN badges (simulation), one row per
+ * VLAN with snooping enabled: as wide as the longest text any of them can
+ * have (the sign, "VLAN n · ", the longest role), so it never changes while
+ * the roles do. The physical view reserves it to the right of the box (null:
+ * no VLAN with snooping enabled).
+ */
+export function snoopBlock(vlans: number[]): { w: number; h: number } | null {
+  if (!vlans.length) return null;
+  let w = 0;
+  for (const v of vlans) for (const t of SNOOP_ROLE_TEXTS) w = Math.max(w, textWidth(`VLAN ${v} · ${t}`, SNOOP_FONT) * 1.06);
+  return { w: Math.ceil(w + 20), h: vlans.length * SNOOP_ROW - 1 };
 }
 
 export const LOGICAL_DEVICE_MIN_W = 140;

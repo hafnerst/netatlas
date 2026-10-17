@@ -70,9 +70,9 @@ export function candidates(x: number, y: number, ux: number, uy: number, w: numb
 }
 
 /** The first candidate that hits nothing (null: none). */
-export function placeLabel(cands: Box[], obstacles: BoxIndex, placed: BoxIndex): Box | null {
+export function placeLabel(cands: Box[], obstacles: BoxIndex, placed: BoxIndex, more?: BoxIndex): Box | null {
   for (const c of cands) {
-    if (obstacles.hits(c) || placed.hits(c, 2)) continue;
+    if (obstacles.hits(c) || placed.hits(c, 2) || (more && more.hits(c, 1))) continue;
     return c;
   }
   return null;

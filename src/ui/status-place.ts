@@ -31,12 +31,16 @@ const VGAP = 1;
 
 /** The drawing's obstacles, read once per drawn scene (its nodes layer is new whenever the diagram is drawn again). */
 const BASES = new WeakMap<Element, Map<string, Box[]>>();
+/** The groups' frames (their edges), per drawn scene: avoided where possible, crossed when nothing else is free. */
+const FRAMES = new WeakMap<Element, Map<string, Box[]>>();
 
 export class StatusPlacer {
   /** the drawing's obstacles (shared by every placer of the same drawn scene) */
   private grid: Map<string, Box[]>;
   /** what this placer placed */
   private placed = new Map<string, Box[]>();
+  /** the groups' frame edges (soft: see findBeside) */
+  private frames: Map<string, Box[]>;
 
   /** A placer for a drawn scene: its obstacles read once and kept while the drawing stays the same. */
   static for(scene: Element): StatusPlacer {
@@ -46,11 +50,50 @@ export class StatusPlacer {
       base = StatusPlacer.read(scene);
       BASES.set(key, base);
     }
-    return new StatusPlacer(base);
+    let frames = FRAMES.get(key);
+    if (!frames) {
+      frames = StatusPlacer.readFrames(scene);
+      FRAMES.set(key, frames);
+    }
+    return new StatusPlacer(base, frames);
   }
 
-  private constructor(base: Map<string, Box[]>) {
+  private constructor(base: Map<string, Box[]>, frames: Map<string, Box[]>) {
     this.grid = base;
+    this.frames = frames;
+  }
+
+  /** The groups' frames: their four edges each. */
+  private static readFrames(scene: Element): Map<string, Box[]> {
+    const grid = new Map<string, Box[]>();
+    const frames = scene.querySelectorAll('.layer-groups rect');
+    for (let i = 0; i < frames.length; i++) {
+      let r: DOMRect;
+      try {
+        r = (frames[i] as SVGGraphicsElement).getBBox();
+      } catch (err) {
+        continue;
+      }
+      if (!(r.width > 0 && r.height > 0)) continue;
+      for (const b of [
+        { x: r.x - 1, y: r.y - 1, w: r.width + 2, h: 2 },
+        { x: r.x - 1, y: r.y + r.height - 1, w: r.width + 2, h: 2 },
+        { x: r.x - 1, y: r.y - 1, w: 2, h: r.height + 2 },
+        { x: r.x + r.width - 1, y: r.y - 1, w: 2, h: r.height + 2 },
+      ])
+        StatusPlacer.into(grid, b);
+    }
+    return grid;
+  }
+
+  /** Does a place cross a group's frame? */
+  private onFrame(r: Box): boolean {
+    for (let cx = Math.floor(r.x / CELL); cx <= Math.floor((r.x + r.w) / CELL); cx++) {
+      for (let cy = Math.floor(r.y / CELL); cy <= Math.floor((r.y + r.h) / CELL); cy++) {
+        for (const b of this.frames.get(cx + ',' + cy) || []) if (r.x < b.x + b.w && b.x < r.x + r.w && r.y < b.y + b.h && b.y < r.y + r.h) return true;
+      }
+    }
+    return false;
   }
 
   private static read(scene: Element): Map<string, Box[]> {
@@ -155,5 +198,54 @@ export class StatusPlacer {
     const r = { x: right, y: own.y - h / 2, w, h };
     this.add(r);
     return { x: right, y: r.y, edge: 'none' };
+  }
+
+  /** Take a given place for an indicator of a box when nothing is there (true: taken). */
+  take(r: { x: number; y: number; w: number; h: number }, own: DOMRect): boolean {
+    const pad = { x: r.x - GAP, y: r.y - VGAP, w: r.w + 2 * GAP, h: r.h + 2 * VGAP };
+    if (!this.free(pad, own) || this.onFrame(pad)) return false;
+    this.add(r);
+    return true;
+  }
+
+  /**
+   * A place for a block w × h beside a box (a stack of badges, too tall for
+   * its edge): to its right, its left, below or above it, as close as
+   * nothing is in the way (taken: nothing else goes there afterwards). The
+   * same drawing gives the same place, so a block whose size stays the same
+   * never moves.
+   */
+  findBeside(own: DOMRect, w: number, h: number): { x: number; y: number; side: 'right' | 'left' | 'below' | 'above' | 'none' } {
+    const tries: Array<['right' | 'left' | 'below' | 'above', Array<{ x: number; y: number }>]> = [];
+    const ys: number[] = [];
+    for (let y = own.y; y <= own.y + Math.max(0, own.height - h) + 0.01; y += STEP) ys.push(y);
+    for (let y = own.y - STEP; y >= own.y - h + 0.01; y -= STEP) ys.push(y);
+    const xs = (lo: number, hi: number): number[] => {
+      const out: number[] = [];
+      for (let x = lo; x <= hi + 0.01; x += STEP) out.push(x);
+      return out;
+    };
+    tries.push(['right', ys.map((y) => ({ x: own.x + own.width + 4, y }))]);
+    tries.push(['left', ys.map((y) => ({ x: own.x - w - 4, y }))]);
+    // below or above: under its own box (from its left edge to its right one), never reaching under a neighbour's
+    const lo = Math.min(own.x, own.x + own.width - w);
+    const hi = Math.max(own.x, own.x + own.width - w);
+    tries.push(['below', xs(lo, hi).map((x) => ({ x, y: own.y + own.height + 4 }))]);
+    tries.push(['above', xs(lo, hi).map((x) => ({ x, y: own.y - h - 4 }))]);
+    // clear of the groups' frames first; else across one (its badges are opaque), still clear of everything else
+    for (const soft of [true, false]) {
+      for (const [side, at] of tries) {
+        for (const { x, y } of at) {
+          const pad = { x: x - GAP, y: y - VGAP, w: w + 2 * GAP, h: h + 2 * VGAP };
+          if (this.free(pad, own) && !(soft && this.onFrame(pad))) {
+            this.add({ x, y, w, h });
+            return { x, y, side };
+          }
+        }
+      }
+    }
+    const r = { x: own.x + own.width + 4, y: own.y, w, h };
+    this.add(r);
+    return { x: r.x, y: r.y, side: 'none' };
   }
 }

@@ -143,6 +143,56 @@ export interface Flight {
   cause?: number;
 }
 
+/**
+ * What a snooping switch makes of a multicast frame in a VLAN (RFC 4541
+ * §2.1): the ports it goes to (null: every port of the VLAN, flooded) and
+ * why — its member ports and its multicast router ports (each until when),
+ * the kind of frame and the policy that applied.
+ */
+export interface SnoopResult {
+  ports: Set<string> | null;
+  /** the group's member ports, until when */
+  members: Map<string, number>;
+  /** the VLAN's multicast router ports (a query or PIM Hello arrived there), until when */
+  routers: Map<string, number>;
+  /** data: a group's packets; control: a report or leave (to router ports only); linklocal: 224.0.0.0/24, ff02::/16 (flooded); off: snooping disabled or not configured (flooded) */
+  kind: 'data' | 'control' | 'linklocal' | 'off';
+  /** the VLAN's IGMP / MLD snooping */
+  mode: 'enabled' | 'disabled' | 'unset';
+  /** unregistered multicast (a group without members): 'router-ports' or 'flood' */
+  unregistered: string;
+}
+
+/** One port of a multicast forwarding decision: sent there, or not and why (short). */
+export interface McPort {
+  port: string;
+  sent: boolean;
+  /** "member port (3 min 20 s left)", "multicast router port", "no member and no router port", "not in VLAN 20", "ingress port" … */
+  why: string;
+}
+
+/**
+ * A device's multicast forwarding decision for one packet: a switch's
+ * (Layer 2, per VLAN, by snooping) or a router's (Layer 3, multicast
+ * routing). The packet inspector shows it for the hop that arrived there
+ * and the hops it sent.
+ */
+export interface McDecision {
+  dev: string;
+  t: number;
+  layer: 'l2' | 'l3';
+  /** the VLAN (0: Layer 3) */
+  vlan: number;
+  group: string;
+  /** the port or interface it came in on (null: the device sent it itself) */
+  ingress: string | null;
+  /** the rule in a few words: "IGMP snooping enabled, unregistered multicast to router ports" */
+  mode: string;
+  ports: McPort[];
+  /** the outcome in one sentence */
+  text: string;
+}
+
 export type Cast = 'unicast' | 'broadcast' | 'multicast';
 
 /** A frame's headers, layer by layer, as the packet inspector shows them. */

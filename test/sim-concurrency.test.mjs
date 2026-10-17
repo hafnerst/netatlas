@@ -35,7 +35,7 @@ const run = (frame, ms, dt = 50) => {
 
 // ------------------------------------------------------------------ IGMP startup
 
-test('private house from a fresh start: the core (VLAN 20’s snooping querier) sends its first startup query when its first port is up (t = 2 s, the link-up delay), drawn at once; the second a quarter of the query interval later (t = 33.25 s); the table says so', () => {
+test('private house from a fresh start: the core (the snooping querier of VLANs 10, 20, 30) sends its first startup queries when its first port is up (t = 2 s, the link-up delay), drawn at once; the second a quarter of the query interval later (t = 33.25 s); the table says so', () => {
   const { sim, p, frame: frame0 } = paced('private-house.yaml');
   // (the frames' work budget never runs out here, however loaded the machine: the budget's own test is below)
   const frame = (ms) => {
@@ -50,23 +50,23 @@ test('private house from a fresh start: the core (VLAN 20’s snooping querier) 
   };
   // the startup burst (DHCP, ARP …) is on screen meanwhile: it holds nothing
   run(frame, 2500);
+  // (the core is the snooping querier of VLANs 10, 20 and 30: one query each)
   const q = sim.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query');
-  assert.equal(q.length, 1);
-  assert.equal(Math.round(q[0].t), 2000, 'at its deadline, not behind the scenario');
-  assert.match(q[0].detail, /^IGMPv3 General Query from core \(snooping querier, 192\.168\.20\.1\) in VLAN 20/);
+  assert.equal(q.length, 3);
+  assert.deepEqual(q.map((e) => Math.round(e.t)), [2000, 2000, 2000], 'at its deadline, not behind the scenario');
+  assert.ok(q.some((e) => /^IGMPv3 General Query from core \(snooping querier, 192\.168\.20\.1\) in VLAN 20/.test(e.detail)));
   // its hops are taken in for the screen (drawn: a protocol with nothing else on screen gets a place)
   const hops = p.items.filter((it) => it.f.protocol === 'igmp');
   assert.ok(hops.length >= 2 && hops.some((it) => it.drawn), hops.map((it) => `${it.f.track.ref}:${it.drawn}`).join(', '));
   // the role and the timers, as the table has them
-  const role = sim.multicast.querierRoles('core')[0];
+  const role = sim.multicast.querierRoles('core').find((r) => r.vlan === 20);
   assert.deepEqual([role.role, role.startup, Math.round(role.nextAt)], ['starting', '2 of 2', 33250]);
-  assert.equal(sim.multicast.querierTable('core').rows[0][5], 'query at t = 33.3 s (startup 2 of 2)');
+  assert.ok(sim.multicast.querierTable('core').rows.every((r) => r[5] === 'query at t = 33.3 s (startup 2 of 2)'));
   // on, past it: the second query at its deadline, then the querier elected, the next a query interval on
   run(frame, 32000);
   const q2 = sim.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query');
-  assert.deepEqual(q2.map((e) => Math.round(e.t)), [2000, 33250]);
-  assert.equal(sim.multicast.querierRoles('core')[0].role, 'querier');
-  assert.equal(Math.round(sim.multicast.querierRoles('core')[0].nextAt), 33250 + 125000);
+  assert.deepEqual(q2.map((e) => Math.round(e.t)), [2000, 2000, 2000, 33250, 33250, 33250]);
+  assert.ok(sim.multicast.querierRoles('core').every((r) => r.role === 'querier' && Math.round(r.nextAt) === 33250 + 125000));
   // the simulation ran with real time all along (34.5 s), whatever was on screen
   assert.ok(sim.now >= 34500 - 100, String(sim.now));
 });
@@ -77,10 +77,10 @@ test('a new simulation starts its schedule afresh: the same deadlines, no second
   run(a.frame, 40000);
   run(b.frame, 40000);
   const times = (s) => s.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query').map((e) => Math.round(e.t));
-  assert.deepEqual(times(a.sim), [2000, 33250]);
+  assert.deepEqual(times(a.sim), [2000, 2000, 2000, 33250, 33250, 33250]);
   assert.deepEqual(times(b.sim), times(a.sim));
   // without the snooping querier: no candidate, nothing queried, nothing marked
-  const none = withClock(new S.Simulation(model(example('private-house.yaml').replace('vlan: 20, simulation: {snooping_querier: "on"}}', 'vlan: 20}'))));
+  const none = withClock(new S.Simulation(model(example('private-house.yaml').split(', simulation: {snooping_querier: "on"}}').join('}'))));
   none.runTo(60000);
   assert.deepEqual(none.multicast.querierRoles(), []);
   assert.equal(none.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query').length, 0);
