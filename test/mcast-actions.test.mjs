@@ -23,7 +23,7 @@ const MC = `netatlas: 1
 title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.5.0.1/24}]}
-  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]}
+  - {id: sw, type: switch, igmp_mld_snooping: {1: enabled}, interfaces: [{id: p1, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]}
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.5.0.11/24, multicast: {join: [239.2.2.2]}}]}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.5.0.12/24}]}
   - {id: h3, type: endpoint, interfaces: [{id: eth0, ip: 10.5.0.13/24}]}
@@ -55,19 +55,16 @@ test('the private house has no multicast protocol to tick: a join’s reports an
   assert.equal(reports.length, 2, 'the unsolicited report and its repetition');
   assert.match(reports[0].detail, /^IGMPv3 Report from tv \(192\.168\.20\.\d+\) to 224\.0\.0\.22: IS_EX \(239\.1\.1\.1, \{\}\)/);
   assert.ok(!flightsOf(s, j.traffic).some((f) => f.protocol === 'mcast'));
-  // the stream: from the NAS, replicated through VLAN 10 by the switches; the core routes no multicast: it stops there
+  // the stream: from the NAS into VLAN 10, where nobody joined it: the core snoops (enabled), so it goes to no port; it routes no multicast either
   const sf = flightsOf(s, st.traffic, 9000);
   assert.ok(sf.every((f) => f.protocol === 'mcast'));
   assert.ok(sf.some((f) => f.track.ref === 'link:l-core-nas' && f.sender === 'nas'), 'it leaves the NAS');
   const links = new Set(sf.map((f) => f.track.ref));
-  assert.ok(links.has('link:l-core-dist') && links.has('link:l-dist-ap2'), 'copies on the VLAN 10 path');
-  for (const no of ['link:w-tv', 'link:w-guest-phone', 'link:w-thermostat', 'link:l-router-core']) assert.ok(!links.has(no), `no copy towards ${no}: another VLAN, or past the core`);
-  // originating datagrams counted apart from their copies
+  for (const no of ['link:l-core-dist', 'link:l-dist-ap2', 'link:l-core-apb', 'link:w-tv', 'link:w-guest-phone', 'link:w-thermostat', 'link:l-router-core']) assert.ok(!links.has(no), `no copy towards ${no}: no member in VLAN 10, another VLAN, or past the core`);
   assert.equal(st.stream.sent, 3);
-  assert.ok(sf.length > 3 * 3, `${sf.length} flights for 3 datagrams`);
   const v = view(s, st.id);
   assert.match(v.summary, /^3 datagrams sent, every 1 s of real time · no member received any yet · stops at core$/);
-  assert.ok(v.details.some((d) => /^Last stopped at core: core routes no multicast \(it runs no PIM\)/.test(d)), v.details.join(' | '));
+  assert.ok(v.details.some((d) => d === 'Last stopped at core: core forwards 239.1.1.1 to no port in VLAN 10: no member reported it there and it has no multicast router port (IGMP / MLD snooping enabled)'), v.details.join(' | '));
   assert.deepEqual(v.tests, [st.traffic]);
   // in the log, found by the event's id: the first datagram (a message with its headers: the packet inspector)
   const first = s.events().find((e) => e.test === st.traffic && e.kind === 'message' && e.hdr);

@@ -24,7 +24,8 @@ const status = (s, name) => s.status().find((r) => r.name === name);
 
 /**
  * src — r1 (RP) — r2 — sw (snooping) — rxa (239.1.1.1), rxb (232.1.1.1 from src), idle;
- * x: extra YAML per device (sw, r1, r2, src, rxa), and links.
+ * x: extra YAML per device (sw, r1, r2, src, rxa), and links; x.snoop: sw's
+ * igmp_mld_snooping (default: enabled in VLAN 1; '' : not configured).
  */
 const NET = (x = {}) => `netatlas: 1
 title: mc
@@ -54,7 +55,7 @@ devices:
     protocols: {ospf: {}, pim: {${x.r2pim || ''}}}
     interfaces: [{id: g0, ip: 10.0.13.2/30}, {id: g1, ip: 10.0.23.1/30}]
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
-  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
+  - {id: sw, type: switch, ${x.snoop !== undefined ? x.snoop : 'igmp_mld_snooping: {1: enabled}, '}interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
   - id: rxa
     type: endpoint
     interfaces: [{id: eth0, ip: 10.2.0.21/24, multicast: {join: [239.1.1.1]}}]
@@ -88,7 +89,7 @@ title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.1/24, "2001:db8:5::1/64"]}]${x.q1 || ''}}
   - {id: q2, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.2/24, "2001:db8:5::2/64"]}]${x.q2 || ''}}
-  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
+  - {id: sw, type: switch, ${x.snoop !== undefined ? x.snoop : 'igmp_mld_snooping: {1: enabled}, '}interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: [10.5.0.11/24, "2001:db8:5::11/64"]${x.h1j || ', multicast: {join: [239.2.2.2]}'}}]${x.h1 || ''}}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: [10.5.0.12/24, "2001:db8:5::12/64"]${x.h2j || ', multicast: {join: [239.2.2.2]}'}}]${x.h2 || ''}}
   - {id: h3, type: endpoint, interfaces: [{id: eth0, ip: 10.5.0.13/24}]}
@@ -102,10 +103,10 @@ links:
 
 // ------------------------------------------------------------------ the registry and the format
 
-test('multicast parameters: IGMP snooping (Layer 2) and the query interval (Layer 3) complete their sections; the attributes by device type', () => {
-  assert.deepEqual(Pm.layerRows(2).length, 8);
+test('multicast parameters: the query interval (Layer 3) completes its section; snooping itself is the switch’s configuration, no parameter; the attributes by device type', () => {
+  assert.deepEqual(Pm.layerRows(2).length, 7);
   assert.deepEqual(Pm.layerRows(3).length, 8);
-  assert.equal(Pm.paramDef('igmp-snooping').dflt, 'on');
+  for (const k of ['igmp-snooping', 'unknown-mc']) assert.throws(() => Pm.paramDef(k), /unknown simulation parameter/);
   assert.equal(Pm.formatValue(Pm.paramDef('igmp-query'), Pm.paramDef('igmp-query').dflt), '125 s');
   assert.match(Pm.paramDef('igmp-query').source, /RFC 3376/);
   assert.ok(Pm.paramDef('test-type').options.some((o) => o.value === 'multicast'));
@@ -115,10 +116,10 @@ test('multicast parameters: IGMP snooping (Layer 2) and the query interval (Laye
   // the querier's settings are an interface's, with a device-wide default; the DR priority an interface's only
   for (const k of ['igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'spt-switchover']) assert.ok(byType.get('router').includes(k), k);
   assert.ok(!byType.get('router').includes('pim-dr-priority') && Pm.paramDef('pim-dr-priority').level === 'interface');
-  // snooping: per VLAN (a global default for snooping itself)
-  for (const k of ['igmp-snooping', 'mrouter-aging', 'igmp-query']) assert.ok(byType.get('switch').includes(k), k);
-  for (const k of ['snoop-querier', 'fast-leave', 'unknown-mc']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'vlan', k);
-  assert.deepEqual(Pm.vlanParams().map((p) => p.key), ['igmp-snooping', 'snoop-querier', 'fast-leave', 'unknown-mc']);
+  // snooping's timers: the switch's; the querier and fast leave per VLAN (snooping itself: igmp_mld_snooping, the switch's configuration)
+  for (const k of ['mrouter-aging', 'igmp-query']) assert.ok(byType.get('switch').includes(k), k);
+  for (const k of ['snoop-querier', 'fast-leave']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'vlan', k);
+  assert.deepEqual(Pm.vlanParams().map((p) => p.key), ['snoop-querier', 'fast-leave']);
   assert.ok(!byType.get('firewall').includes('mc-passthrough') && Pm.paramDef('mc-passthrough').level === 'interface');
   assert.ok(byType.get('vpn_gateway').includes('mc-tunnel'), 'a VPN gateway’s default for its tunnels');
   assert.ok(!byType.get('ap').includes('mc-to-unicast') && Pm.paramDef('mc-to-unicast').level === 'interface');
@@ -160,7 +161,7 @@ test('IGMP: the lowest address is the querier; the other stops and takes over wh
 });
 
 test('IGMP: members answer a general query after a random delay up to the response interval; IGMPv2 hosts suppress their report when another member answered (snooping off)', () => {
-  const s = sim(LAN({ sw: ', simulation: {igmp_snooping: "off"}', h1: ', simulation: {igmp_version: v2}', h2: ', simulation: {igmp_version: v2}' }));
+  const s = sim(LAN({ snoop: 'igmp_mld_snooping: {1: disabled}, ', h1: ', simulation: {igmp_version: v2}', h2: ', simulation: {igmp_version: v2}' }));
   s.runTo(130000);
   const answers = ev(s, (e) => e.kind === 'message' && e.what === 'Report' && /answers the general query of 10\.5\.0\.1 after/.test(e.detail));
   assert.ok(answers.length >= 1);
@@ -219,7 +220,10 @@ test('snooping: router ports from queries and PIM Hellos, member ports from repo
   const s = sim(NET());
   s.runTo(20000);
   const rows = s.snoopTable('sw').rows;
-  assert.deepEqual(rows.map((r) => [r[1], r[2].split(' ')[0], r[3].split(' ')[0]]), [['232.1.1.1', 'p3', 'p1'], ['239.1.1.1', 'p2', 'p1']]);
+  // the router port (r2's queries and Hellos), then each group's member port: VLAN, group with its family, port, what it is
+  assert.deepEqual(rows.map((r) => [r[0], r[1], r[2], r[3].split(',')[0]]), [['1', '—', 'p1', 'multicast router port (a query or PIM Hello arrived there)'], ['1', '232.1.1.1 (IGMP)', 'p3', 'member: IGMPv3'], ['1', '239.1.1.1 (IGMP)', 'p2', 'member: IGMPv3']]);
+  assert.match(rows[1][3], /sources 10\.1\.0\.10, reported by 10\.2\.0\.22$/);
+  assert.match(rows[2][3], /any source, reported by 10\.2\.0\.21$/);
   // idle (no member) gets no stream; rxa gets 239.1.1.1 only, rxb 232.1.1.1 only
   const on = (link) => s.engine.flights.filter((f) => f.track.ref === 'link:' + link && f.hdr && f.hdr.l3.length && /^23[29]\./.test(f.hdr.l3[0].dst) && f.protocol === 'mcast').map((f) => f.hdr.l3[0].dst);
   s.runTo(24000);
@@ -228,38 +232,49 @@ test('snooping: router ports from queries and PIM Hellos, member ports from repo
   assert.ok(on('e').length && on('e').every((g) => g === '232.1.1.1'));
   // a report never reaches another host
   assert.ok(!s.engine.flights.some((f) => (f.track.ref === 'link:f' || f.track.ref === 'link:e') && f.protocol === 'igmp' && /Report 239/.test(f.label)));
-  assert.match(s.snoopTable('sw').timers.map((t) => `${t.label}: ${t.value}`).join(', '), /IGMP \/ MLD snooping: On, Fast leave: Off, Unknown multicast: Flood in the VLAN/);
+  assert.match(s.snoopTable('sw').timers.map((t) => `${t.label}: ${t.value}`).join(', '), /^Fast leave: Off, Router port aging: 5 min, Snooping querier: Off$/);
+  assert.match(s.snoopTable('sw').notes[0], /^Snooping enabled in VLAN 1: a group goes to its member ports and the router ports only; a group without members to the router ports only \(never flooded to the hosts\)\.$/);
 });
 
-test('snooping: off floods every group; unknown multicast dropped goes to router ports only; fast leave removes a port at once', () => {
-  // (the switch's untagged frames are VLAN 1: its settings are the network's of VLAN 1)
+test('snooping disabled floods every group; not configured floods too and says so; enabled never floods a group without members; fast leave removes a port at once', () => {
+  // (the switch's untagged frames are VLAN 1: its VLAN settings are the network's of VLAN 1)
   const lan = (b) => `  - {id: lan, cidr: 10.2.0.0/24, vlan: 1, simulation: ${b}}`;
-  const off = sim(NET({ nets: lan('{igmp_snooping: "off"}') }));
+  const mc = (s, link, after = -1) => s.engine.flights.filter((f) => f.t0 > after && f.track.ref === 'link:' + link && f.protocol === 'mcast');
+  const off = sim(NET({ snoop: 'igmp_mld_snooping: {1: disabled}, ' }));
   off.runTo(24000);
-  assert.ok(off.engine.flights.some((f) => f.track.ref === 'link:f' && f.protocol === 'mcast'), 'idle gets the streams');
-  // a group nobody joined: flooded by default, dropped when unknown multicast is drop
-  const Y = (sw) => NET({ sw, idle: ', simulation: {igmp_version: v3}' }).replace('{group: 232.1.1.1, port: 5006, interval: 1s}]', '{group: 232.1.1.1, port: 5006, interval: 1s}]}\n    simulation: {test_traffic: "off"').replace('multicast: {streams: [{group: 239.1.1.1, interval: 1s}, {group: 232.1.1.1, port: 5006, interval: 1s}]}\n    simulation: {test_traffic: "off"', 'multicast: {streams: [{group: 239.1.1.1, interval: 1s}, {group: 232.1.1.1, port: 5006, interval: 1s}]}');
-  void Y;
+  assert.ok(mc(off, 'f').length, 'disabled: idle gets the streams');
+  assert.ok(!ev(off, (e) => /not configured/.test(e.detail)).length);
+  assert.match(off.snoopTable('sw').notes[0], /^Snooping disabled in VLAN 1: multicast is flooded to every port of the VLAN\.$/);
+  assert.deepEqual(off.snoopTable('sw').rows, [], 'nothing learned');
+  // not configured: an error of the checks, flooded meanwhile, said in the log (once per 10 s)
+  const unset = sim(NET({ snoop: '' }));
+  assert.deepEqual(C.runChecks(unset.model).filter((f) => f.check === 'snooping-not-configured').map((f) => [f.severity, f.message]), [['error', 'sw carries VLAN 1 without an IGMP / MLD snooping choice: set igmp_mld_snooping to enabled or disabled for it (until then the simulation floods its multicast, as a switch without snooping)']]);
+  unset.runTo(24000);
+  assert.ok(mc(unset, 'f').length, 'not configured: flooded');
+  assert.ok(ev(unset, (e) => e.device === 'sw' && /^sw floods .* in VLAN 1: its IGMP \/ MLD snooping is not configured there \(a configuration error: choose enabled or disabled\)$/.test(e.detail)).length >= 1);
+  assert.match(unset.snoopTable('sw').notes[0], /^Not configured in VLAN 1: a configuration error/);
+  // enabled: idle never gets a group's data, from the start (before any member reported) to the end
+  const on = sim(NET());
+  on.runTo(24000);
+  assert.deepEqual(mc(on, 'f'), [], 'enabled: nothing to a host port without a member');
   const s = sim(NET({ nets: lan('{fast_leave: "on"}') }));
   s.runTo(10000);
   s.leaveGroup('rxa', 'eth0', '239.1.1.1');
   s.runTo(s.now + 100);
-  assert.ok(ev(s, (e) => e.device === 'sw' && /port p2 leaves 239\.1\.1\.1 at once \(fast leave\)/.test(e.detail)).length === 1);
-  const unknown = sim(NET({ nets: lan('{unknown_multicast: drop}') }));
-  unknown.runTo(5000);
-  unknown.leaveGroup('rxa', 'eth0', '239.1.1.1');
-  unknown.runTo(unknown.now + 300000);
-  // no member left on the switch: the group goes to the router port only, never to idle or rxa
-  const t = unknown.now;
-  unknown.runTo(t + 5000);
-  assert.ok(!unknown.engine.flights.some((f) => f.t0 > t && (f.track.ref === 'link:d' || f.track.ref === 'link:f') && f.protocol === 'mcast' && f.hdr.l3[0].dst === '239.1.1.1'));
+  assert.ok(ev(s, (e) => e.device === 'sw' && /port p2 leaves 239\.1\.1\.1 in VLAN 1 at once \(fast leave\)/.test(e.detail)).length === 1);
+  // the last member gone (expired after the group queries): the group goes to the router port only, never to idle or rxa
+  on.leaveGroup('rxa', 'eth0', '239.1.1.1');
+  on.runTo(on.now + 300000);
+  const t = on.now;
+  on.runTo(t + 5000);
+  assert.ok(!on.engine.flights.some((f) => f.t0 > t && (f.track.ref === 'link:d' || f.track.ref === 'link:f') && f.protocol === 'mcast' && f.hdr.l3[0].dst === '239.1.1.1'));
 });
 
 test('snooping querier: a VLAN without a multicast router is queried by the switch (when on), so that its members are learned', () => {
-  const Y = (sim) => `netatlas: 1
+  const Y = (sim, snoop = 'enabled', svi = true) => `netatlas: 1
 title: q
 devices:
-  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.9.0.2/24}]${sim}}
+  - {id: sw, type: switch, igmp_mld_snooping: {1: ${snoop}}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1${svi ? ', ip: 10.9.0.2/24' : ''}}]${sim}}
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.11/24, multicast: {join: [239.3.3.3]}}]}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.12/24}]}
 links:
@@ -276,6 +291,16 @@ links:
   assert.ok(q.length >= 2);
   assert.match(q[0].detail, /General Query from sw \(snooping querier, 10\.9\.0\.2\) in VLAN 1: no multicast router there/);
   assert.ok(ev(on, (e) => e.device === 'h1' && /answers the general query of 10\.9\.0\.2/.test(e.detail)).length >= 1);
+  assert.ok(on.snoopTable('sw').notes.some((n) => n === 'Snooping querier of VLAN 1 (10.9.0.2) while no multicast router queries there.'));
+  // the querier needs snooping enabled on the switch, and an address of its own in the VLAN
+  const net = 'networks:\n  - {id: v1, cidr: 10.9.0.0/24, vlan: 1, simulation: {snooping_querier: "on"}}\n';
+  const dis = sim(Y(', simulation: {igmp_query_interval: 5}', 'disabled') + net);
+  dis.runTo(18000);
+  assert.ok(!ev(dis, (e) => e.device === 'sw' && e.what === 'Query').length, 'snooping disabled: no querier');
+  const noAddr = sim(Y(', simulation: {igmp_query_interval: 5}', 'enabled', false) + net);
+  noAddr.runTo(18000);
+  assert.ok(!ev(noAddr, (e) => e.device === 'sw' && e.what === 'Query').length, 'no address in the VLAN: no querier');
+  assert.ok(ev(noAddr, (e) => e.device === 'sw' && /^sw is no snooping querier in VLAN 1: it has no IPv4 address there \(a VLAN interface\) to query from$/.test(e.detail)).length >= 1);
 });
 
 // ------------------------------------------------------------------ PIM

@@ -981,6 +981,29 @@ export class ModelDoc {
     });
   }
 
+  /**
+   * A switch's IGMP / MLD snooping choice for a VLAN or range (its key in
+   * igmp_mld_snooping): enabled, disabled, or '' to remove it (not
+   * configured). One undo step; the mapping is written in flow style, its
+   * entries by VLAN, and goes when its last entry does.
+   */
+  setSnooping(devIndex: number, key: string, value: '' | 'enabled' | 'disabled'): void {
+    const p: Path = ['devices', devIndex, 'igmp_mld_snooping'];
+    this.change(`${value ? 'Set' : 'Clear'} IGMP / MLD snooping of VLAN ${key}`, () => {
+      const cur = this.get(p);
+      const entries: Array<[string, YNode]> = cur && cur.kind === 'map' ? Array.from(cur.entries.values()).map((e) => [e.key, e.value] as [string, YNode]) : [];
+      const kept = entries.filter(([k]) => k !== key);
+      if (value) kept.push([key, strNode(value)]);
+      if (!kept.length) {
+        this.removeAt(p);
+        return;
+      }
+      const first = (k: string): number => Number(k.split('-')[0]) || 0;
+      kept.sort((a, b) => first(a[0]) - first(b[0]));
+      this.setAt(p, mapNode(kept, true), this.orderFor(p.slice(0, -1)));
+    });
+  }
+
   /** Set an integer field (text that isn't an integer is kept as text and reported by validation). */
   setInteger(path: Path, text: string): void {
     this.change('Edit ' + this.label(path), () => {

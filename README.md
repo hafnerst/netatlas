@@ -1328,7 +1328,7 @@ modified*, are part of its name):
 | Layer | Parameters (default) |
 |---|---|
 | 1 Physical | link latency (0.1 ms, about 20 km of fibre); packet loss (0 %); loss-of-signal detection (0 ms, Junos hold-time down); link-up delay after a restore (2 s, autonegotiation); default speed for cables without one (1 Gbit/s); flapping down time (5 s), up time (10 s) and cycles (3; 0: until stopped) |
-| 2 Data link | ARP timeout (4 h, Cisco IOS); ARP retransmit interval (1 s) and retries (3), RFC 4861; NDP reachable time (30 s, RFC 4861); MAC aging (300 s, IEEE 802.1D); spanning tree (RSTP; STP converges in 30–50 s; off: a loop is not blocked); IGMP / MLD snooping (on, RFC 4541); default MTU (1500 bytes, RFC 894) |
+| 2 Data link | ARP timeout (4 h, Cisco IOS); ARP retransmit interval (1 s) and retries (3), RFC 4861; NDP reachable time (30 s, RFC 4861); MAC aging (300 s, IEEE 802.1D); spanning tree (RSTP; STP converges in 30–50 s; off: a loop is not blocked); default MTU (1500 bytes, RFC 894) |
 | 3 Network | default TTL / hop limit (64); send ICMP errors (on, RFC 1812 / RFC 4443); OSPF hello (10 s, dead 4×, RFC 2328); BGP keepalive (60 s, hold 3×, Cisco IOS; RFC 4271 suggests 30 / 90 s); BFD interval × multiplier (300 ms × 3); VRRP advertisement (1 s, RFC 5798); IGMP / MLD query interval (125 s, RFC 3376); route recomputation delay (200 ms, Junos SPF delay) |
 | 4 Transport | TCP SYN retries (6, Linux); TCP initial retransmission timeout (1 s, doubling, RFC 6298); TCP keepalive time (2 h, RFC 1122); reply to closed ports (on: TCP RST, ICMP port unreachable); endpoint test traffic (off), its interval (5 s) and type (ICMP echo, a TCP connection, a UDP request, or multicast: UDP to the groups joined in the model); application response timeout (5 s, dig) |
 
@@ -1358,7 +1358,7 @@ and bridge priority, a firewall's policy …), an **interface** (ARP timers,
 link-up delay, a port's spanning-tree cost, port priority, edge port, BPDU
 guard, root guard and link type, IGMP, PIM DR priority, a DHCP client's
 retries, backoff and link-local fallback …), a **VLAN** (its network:
-IGMP snooping, the snooping querier, fast leave, unknown multicast), a
+the snooping querier, fast leave), a
 **relation** (a VRRP group's advertisement interval, an IPsec tunnel's
 lifetimes and DPD, a load balancer pool's health checks, a server's
 response time) or a **service** (a DHCP scope's offer delay and ping
@@ -1406,9 +1406,9 @@ interval and client idle timeout. For multicast: every device with an
 address its IGMP / MLD version (v3 / MLDv2, or v2 / MLDv1) and unsolicited
 report interval; a router its querier (on), query and response
 intervals, robustness, last member query interval, PIM DR priority and
-SPT switchover (immediately or never); a switch IGMP snooping, the
-snooping querier, fast leave, unknown multicast (flood or drop) and the
-router port aging; a firewall multicast passthrough (off); a VPN gateway
+SPT switchover (immediately or never); a switch the snooping querier,
+fast leave and the router port aging (IGMP / MLD snooping itself is the
+switch's configuration, `igmp_mld_snooping`, chosen per VLAN); a firewall multicast passthrough (off); a VPN gateway
 multicast over tunnels; an access point multicast to unicast; a cloud
 whether it carries multicast (off). Each field shows the value
 in effect: its own, or *Inherited: 4 h (default — Cisco IOS …)* or
@@ -1476,8 +1476,9 @@ spot (with the keyboard in it; `Esc` closes it):
 * a **relation**: **Fail link** / **Restore link**;
 * a **device**: **Show ARP table**, **Show MAC table**, **Show
   connections**, **Show sessions** (a firewall), **Send network
-  packets…**, **Show IGMP groups** and **Show multicast routes** (a
-  multicast router), **Show multicast table** (a switch), **Join multicast
+  packets…**, **Show IGMP / MLD groups** and **Show multicast routes** (a
+  multicast router), **Show snooping table** (a switch), **Show group
+  memberships** (a host), **Join multicast
   group…**, **Leave group …**, **Start multicast stream…**, **Stop stream
   …** (a host), **Highlight broadcast
   domain** (of an interface of it), **Power off** / **Power on**, **Shut
@@ -1521,17 +1522,23 @@ marks what is down.
   (*always*; *unless stopped*, unless stopped by hand; not *no* or *on
   failure*), each after the engine's container start time. A VM or a
   container is powered off and on like any device.
-* **A device's state in the diagram.** The simulation's own lifecycle
+* **Every device's status in the diagram.** The simulation's own lifecycle
   state (`Engine.powerState`, the `off` and `booting` state that packet
-  processing reads, so the diagram can never disagree with it): a device
-  powered off has a badge **⏻ Off** at its box's top right corner (red
-  frame) and its dotted red outline; one booting after Power on has
-  **↻ Booting** (blue, dashed frame and outline) until its boot time is
-  over, never earlier (a boot cut short by Power off never completes a
-  later one); operational, no badge, so the diagram stays quiet. Symbol,
-  word and frame, never the colour alone, in both themes; the badge lies
-  over the box, so nothing moves or resizes, and the **Legend** tab
-  explains it while a simulation runs. Its tooltip (and its accessible
+  processing reads, so the diagram can never disagree with it), on every
+  device while a simulation runs: a small indicator on its box's edge, an
+  LED and a word. **Operational** (green LED); **Powered off** (red LED and
+  frame, the box's dotted red outline); **Booting** after Power on (blue,
+  dashed) until its boot time is over, never earlier (a boot cut short by
+  Power off never completes a later one); **External** (an external
+  network) and **Passive** (a patch panel, a TAP, a pass-through) with a
+  hollow grey LED: no power state of their own; **Unknown** if the
+  simulation has no state for it. LED, word and frame, never the colour
+  alone, in both themes. It sits on the box's top edge where nothing is
+  drawn (else its bottom edge): no text, port, cable, relation or other
+  indicator under it (`src/ui/status-place.ts` reads the drawing once per
+  redraw); the box never moves or resizes. The **Legend** tab explains it
+  while a simulation runs; the diagram's accessible name lists the devices
+  powered off or booting. Its tooltip (and its accessible
   name) and the device's menu say the state with its time: *Powered off
   at t = 12 s (down with its host esx-02)*, *Booting: powered on, up at
   t = 45 s; it takes no part until then*, *Operational: powered on and
@@ -1540,10 +1547,11 @@ marks what is down.
   blocked packet or an unreachable destination never mark a device off,
   and *Operational* doesn't promise that its interfaces, services or
   destinations are reachable. An external network, a patch panel or a TAP
-  has no power state of its own: no badge and no Power off in its menu.
-  The marks follow every change (Power off, Power on, a boot completing, a
-  guest down with its host or its container engine); exiting the
-  simulation or another model clears them.
+  has no Power off in its menu. The indicators follow every change (Power
+  off, Power on, a boot completing, a guest down with its host or its
+  container engine; a callback of an older state never draws it again: they
+  are redrawn from the state version); exiting the simulation removes them,
+  another model clears them.
 * **Stop container engine / Start container engine** (the menu of a server
   or VM with the Container engine): its containers stop, and its container
   networks with them; started again, the containers come back as their
@@ -2016,13 +2024,23 @@ time, side by side with any others (see
   join, and answer a query after a random delay (v2 hosts that heard
   another member's report keep quiet); after a leave the querier asks with
   group-specific queries and drops the group when nobody answers;
-  memberships not reported in time expire. **Show IGMP groups** lists a
-  router's groups with their last reporter, version, sources and expiry.
-* **Snooping**: switches learn router ports (queries, PIM Hellos) and
-  member ports (reports) per VLAN, send a group's data to those ports only,
-  and reports to the router ports only; fast leave, the snooping querier
-  for a VLAN without a router, flooding of unknown groups (or not), and
-  everything flooded when snooping is off. **Show multicast table**.
+  memberships not reported in time expire. **Show IGMP / MLD groups**
+  lists a router's groups with their last reporter, version, sources and
+  expiry; **Show group memberships** a host's own.
+* **Snooping** is each switch's configuration, an explicit choice per VLAN
+  its ports carry (`igmp_mld_snooping: {10: enabled, 99: disabled}`, the
+  switch's **IGMP / MLD snooping** section in the Edit tab; a VLAN without
+  a choice is the check error `snooping-not-configured`). Enabled: switches
+  learn router ports (queries, PIM Hellos) and member ports (reports) per
+  VLAN and group, send a group's data to those ports only (never back to
+  its ingress port), a group without members to the router ports only —
+  never flooded to the hosts — and reports to the router ports only; fast
+  leave; the snooping querier (from the switch's VLAN interface) for a
+  VLAN without a router; a link down drops what was learned on its port.
+  Disabled, or not configured: everything flooded in the VLAN. Snooping
+  never routes: on a Layer 3 switch multicast crosses VLANs only with PIM.
+  **Show snooping table** (per VLAN the router ports and member ports, and
+  each VLAN's setting).
 * **PIM**: the designated router joins the shared tree to the rendezvous
   point (sparse mode) or the source's tree (SSM, 232.0.0.0/8) hop by hop;
   the source's first router registers with the RP until a Register-Stop;
@@ -2834,7 +2852,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Multicast drawn, interface states** | `test/mcast-actions.test.mjs` (4 tests), `test/mcast-iface-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **Multicast:** the house has no multicast protocol to tick; a join's two reports from tv's Wi-Fi interface carry its event's id (never a test's), no datagram among them; a stream's datagrams from nas, copies on the VLAN 10 path, none towards another VLAN or past the core; 3 datagrams sent counted apart from their copies; the event says it stops at core (no PIM); the first datagram in the log for the inspector. With a router and a member: the copies reach the member, not a host that is none; Stop: no datagram after it; the join recorded; the model's own reports not marked, the join's later answers not either, its leave report marked. The same times whether run in steps or at once, nothing while the clock stands. **Interfaces:** administrative and operational state apart; Shut interface during flapping stops it first and stays down 60 s later; a shut interface can't flap; one flapping per cable from either end; Bring interface up; Stop flapping in the down phase brings the cable up, no later transition; the peer off said so. **On screen:** the join's and the stream's dots drawn at once while paused, the clock still; their copies when playing; a stream dot opening the inspector (UDP to the group); Stop: nothing after; the form marked *↯ Flapping* with Stop flapping, a quick second press not stopping it, another interface unmarked, the flap's transition followed; Shut stopping the flapping (both events), *⏻ Shut* with Bring interface up, flapping disabled with the reason; Bring interface up by Enter, the focus kept, the link up later; changes from the diagram's menu and Active events followed; the peer off; a bar and bold words, not colour alone; a new simulation without any of it. |
 | **Foreground and background** | `test/sim-foreground.test.mjs` (6 tests), `test/sim-foreground-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **On screen:** the scenario at most 6 exchanges as dots, lit cables with *protocol ×n* counts, the note; a stream from pc1 in front (*· streams in real time*, a datagram every real second in Readable pacing, its dots drawn, the scenario's hops since then not), a stream dot opening the inspector among the activity; Next exchange named, paused after it; Real time: simulated time with the real seconds (never ahead), a datagram a second; stopped, the scenario in front again. **Model** (a fake real clock): on `protocol-simulation.yaml`, a 1 s stream in Readable pacing sends 21 datagrams in 20 s, at least 3 on their way at once, each hop readable, the clock with real time and held by nothing, *· streams in real time*; while it runs the scenario's hops are cable activity (by cable and protocol); stopped, its sends cancelled and the scenario the foreground again. Bundling: never more than 6 of the scenario's conversations on their way as dots, several at once, the rest activity, no dot passed by the clock, no run-away. Real time: 5 s of display = 5 s simulated, a 1 s stream sends 11 datagrams in 10 s and still one a second at 2×, every hop 0.8 s, nothing holds the clock, a slow machine falls behind without a burst. Next exchange: the exchange first on screen ends. A Step, Next exchange or a jump while a stream runs: the clock goes on from there (1–2 s simulated in 2 s). |
 | **Streams in real time** | `test/sim-realtime.test.mjs` (11 tests, a fake clock), `test/realtime-streams-browser.test.mjs` (2 tests, through the DevTools protocol, both themes), `test/mcast-actions.test.mjs`, `test/network-events.test.mjs` | **The schedule:** the first send at once, then every 1 s, 2 s, 250 ms, never early and within a frame of its deadline; two entries of 1 s at 0, 1, 2, 3 s in the same frames, in the order added (*abababab*); other intervals and start times each on their own grid, the same deadline in the order added; 20 000 irregularly late frames leave the last send within 110 ms of its deadline (no drift); a 3.5 s stall sends once for the latest deadline and counts 2 skipped, then the grid goes on; paused, nothing sent and nothing caught up after; a removed entry never sends again, even from the pump under way; clear removes all. **Streams:** two 1 s streams (srv, pc2 to 239.1.1.1) send 4 each in 3 s at the same simulated moments, 11 each in 10 s, both reach pc1 and rx; a 1 s and a 2 s stream started 0.4 s apart keep their counts (7 and 3 in 6 s); 3 s of real time with the clock standing still send 3 datagrams at that moment (no waiting for forwarding); 2 minutes of simulated time alone send none; Stop one, the other goes on; paused: *Paused*, then on from there; a second Start is refused (no second schedule); closed: nothing more; the source off: nothing sent, *not sending: srv is off*, *3 while srv was off*, then on its grid again after booting; the model's streams stay on simulated time; Start again from the menu is one schedule. **On screen:** two streams from the form, each a datagram every real second within two (5 s measured), side by side within one, both with at least 2 datagrams on their way at once, both *Paused* and not counting while paused, a dot of the second opening the inspector with port 5012, Stop one and the other goes on. |
-| **Device state** | `test/device-state.test.mjs` (5 tests), `test/realtime-streams-browser.test.mjs` (both themes) | **Model:** operational, powered off, booting (until its boot time, not a millisecond before), operational again, each with its words, the same state as `deviceOn` (packet processing); powered off while booting and on again: the first boot never completes the second; a shut interface, a failed cable, the gateway off leave a device operational (only r3 marked); an external network neutral; a guest *down with its host hv2*; a new simulation all operational. **On screen:** *lab-h* operational without a badge; powered off: *⏻ Off*, its tooltip and accessible name *Powered off at t = …*, the outline marked, the box neither moved nor resized, its label clear, the menu's state line and *Power on*; powered on: *↻ Booting* with *up at t = …*, still booting a millisecond before, operational after; a shut interface of srv marks no device; *inet* has no Power off; Exit clears every badge and mark. |
+| **Device state** | `test/device-state.test.mjs` (5 tests), `test/realtime-streams-browser.test.mjs` (both themes), `test/events-status-snooping-browser.test.mjs` | **Model:** operational, powered off, booting (until its boot time, not a millisecond before), operational again, each with its words, the same state as `deviceOn` (packet processing); powered off while booting and on again: the first boot never completes the second; a shut interface, a failed cable, the gateway off leave a device operational (only r3 marked); an external network *External*, a pass-through *Passive*, a device the simulation lacks *Unknown*; a guest *down with its host hv2*; a new simulation all operational. **On screen:** every device's indicator, *lab-h* *Operational*; powered off: *Powered off*, its tooltip and accessible name *Powered off at t = …*, the outline marked, the box neither moved nor resized, its label clear, the menu's state line and *Power on*; powered on: *Booting* with *up at t = …*, still booting a millisecond before, operational after; a shut interface of srv marks no device; *inet* *External*, no Power off; Exit clears every indicator and mark. |
+| **Every device's status, Expand all / Collapse all, snooping on screen** | `test/events-status-snooping-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom) | **Status:** all 14 devices of the private house with an indicator (13 *Operational* with the theme's green LED, *isp* *External*), its role and accessible name its tooltip, none over a text or port mark or another indicator (in the drawing's coordinates), every box where it was before the simulation, through Power off / on and after Exit; *Powered off*, *Booting*, *Operational* again after the boot time; a shut interface leaves the device *Operational*; the menu's state line equals the tooltip; the diagram's accessible name lists *powered off: ap-1*. **Bulk:** the accessible names and tooltips, mixed (both enabled), Expand all by Enter (all open, it disabled, the focus on Collapse all), Collapse all by Space (all closed, it disabled, the focus back), Active events and More options untouched, the heading and buttons not moving, a typed group kept, a running stream still counting, nothing wider than the panel. **Snooping:** dist's rows (10, 20, 30 enabled, 99 disabled), *Not configured* an error and gone from the YAML, chosen again; the thermostat's stream only to dist and core (*stops at core*), the core's snooping table empty with its notes, the TV's join in the open table without reopening it, *Show group memberships*, no table viewer among Network events. |
+| **IGMP / MLD snooping per VLAN** | `test/snooping.test.mjs` (8 tests), `test/sim-multicast.test.mjs` (snooping tests rewritten), `test/sim-levels.test.mjs`, `test/mcast-actions.test.mjs` | **Format:** enabled / disabled per VLAN or range, the model's ranges, `snoopingChoice`, the errors (a wrong value, a VLAN twice, not a mapping, not a switch) and the warning for a VLAN no port carries; the check `snooping-not-configured` (an error, its VLANs listed; a routed port and a VLAN interface alone need none; disabled counts as a choice); the removed attributes `igmp_snooping` / `unknown_multicast` as errors that say where snooping lives. **Forwarding:** nothing to any host before a join; a join opens its own port, its group, its VLAN only (not the same group from VLAN 20, not another group, not h2); never back to the source; the log's *forwards … to no port*; reports only to router ports, queries flooded; refresh by answers to queries (still there at 90 s with a 30 s membership interval), a leave (after the last member queries), a link down (at once, logged), learned again after the restore, expiry of a host powered off, a switch powered off, a new simulation empty; IPv6 (MLDv2 member, ff05::1 to its member only, the host's memberships); a Layer 3 switch without PIM routes nothing to VLAN 20, with PIM (dense) to its member only. **The private house:** the six scenarios (no join; the TV's join, only towards ap-b and the TV; leave; nothing into Internal or Guest; the TV moved to Internal gets nothing without multicast routing, its membership in VLAN 10); disabled floods, not configured floods and says so. |
 | **Network events** | `test/network-events.test.mjs` (10 tests), `test/network-events-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 px, light at 640 px) | **Lifecycle:** every operation one event with a stable id, refused ones *Failed* with the simulation's reason, the older programmatic send listed too; a series of 20 one event with *sent of requested*, pending never failed, completed with its last answer's time; a series with failures still *Completed*; a broadcast without answers *unknown* and no rate; a group's members apart from its messages; a DHCP client's send *Queued* until its lease, Stop then *Cancelled* with nothing on the wire; a join *In progress* until q1 records it, then *Completed* with its membership and Leave group (completed 2 min later too), without a router completed after its reports; a stream's datagrams and each member's count, stopped; a shut *Completed* at once with the interface down and No shut, not listed twice; flapping's cycles (3 by 35 s), stopped part way; a failed cable and a device off in the list; the same states whether run in steps or at once; at most 50 kept, those in progress never dropped, Clear finished. **On screen:** the four actions in order as headings with their forms (no object list, no Show …), Active events after them; the tables in the device's menu and the status side; each form's device and interface (Select…, disabled until a device), its reason; the diagram's selection not changing the join form; a join, a stream, flapping (not twice), a shut and a series listed newest first with their states (icon and word), a named progress bar, paused without moving on; details open and the focus kept over four updates; the inspector from the details; Stop keeping the focus in its event; No shut; the outcome bar named; a failed cable with Restore; Clear finished keeping the flapping, the cable and the membership, the focus on the heading; nothing wider than the panel, no sideways scrolling, every control named. |
 | **Send test's form** | `test/send-test-form-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | Nothing chosen: From and To disabled and greyed, Send disabled, the hint once; unicast: every device in From (the ISP disabled, *Cannot send IP packets*), the guest phone's one interface as text before and after its lease, the core's interfaces as options with *Chosen by routing*, the destination's interface (one shown, four a choice, cleared with another device); a port only for TCP and UDP and empty, cleared when ICMP is chosen; the interval greyed for one message; another delivery type clearing what doesn't fit (TCP and the destination for a group) and keeping what does (UDP and its port for a broadcast); the subnet scope's address; a directed broadcast to a subnet outside the model blocked; a Guest test dropped by the policy; a series as one event of Active events with its progress (*1/3 sent*, *1 pending*, then *3 answered* and its named outcome bar) and Stop, stopped where it was; every control named, nothing wider than the panel; Send network packets… from the ISP's menu. |
 | **Packet hit area** | `test/sim-packet-hit.test.mjs` (1 test), `test/sim-packet-hit-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | The nearest dot within 12 screen pixels at 50 %, 100 % and 200 % zoom, ties to the earlier message, none beyond. **On screen:** 9 px beside a dot it is outlined (a ring of the same size at every zoom, the hand) and a click opens that packet; 20 px away neither; the inspector keeps its packet while the simulation moves on; the outline gone when the pointer leaves; a device clicked away from the dots selected; the event log opening a packet by the keyboard. |
@@ -3375,6 +3395,37 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
+40. **Expand all / Collapse all, every device's status, snooping per VLAN.**
+    Open `private-house.yaml`, in both themes, at 200 % zoom and in a window
+    about 600 px wide.
+    * Select *dist*, Edit tab: **IGMP / MLD snooping** lists VLAN 10, 20,
+      30 *Enabled* and 99 *Disabled*. Set 99 to *Not configured — choose*:
+      the row and the Problems tab say *snooping-not-configured*; the YAML
+      tab no longer has `99:`. Choose *Disabled* again: the error is gone.
+      In a network's Simulation subsection there is no snooping setting
+      (only the snooping querier and fast leave).
+    * Start the simulation. Every device has an indicator on its box's
+      edge — *Operational* with a green LED, *External* (hollow) on *isp* —
+      none over a name, an address, a port or a cable; zoom in and out:
+      the boxes never move.
+    * Beside **Network events**: **Collapse all** closes the four forms
+      (Expand all enabled, Collapse all disabled, the keyboard moves to
+      Expand all); **Expand all** opens them all. Type a group in Start
+      multicast stream, collapse and expand: it is still there. Active
+      events and More options are untouched. Tab to the buttons: a visible
+      focus ring, the tooltips *Expand all / Collapse all Network events
+      sections*; the heading doesn't move.
+    * Start multicast stream from *thermostat* to `239.20.0.1`: its dots go
+      to dist and the core and stop there; its event says *stops at core*,
+      its Details *no member reported it there*. Click *core*, **Show
+      snooping table**: *No memberships and no router port learned in
+      VLAN 10, 20, 30*, the notes say each VLAN's setting, that core is the
+      snooping querier of VLAN 20 and routes no multicast. **Join multicast
+      group** *tv* on `239.20.0.1`: the open table gets *20 · 239.20.0.1
+      (IGMP) · ap · member: IGMPv3 …* without reopening it; the dots now go
+      on to ap-b and the TV, nowhere else (not ap-1, not the NAS). *tv*'s
+      **Show group memberships** lists the group. **Leave group**: after a
+      few seconds the core's row is gone and the stream stops at core again.
 39. **Streams in real time, device states.** Open
     `test/examples/protocol-simulation.yaml`, start the simulation, in both
     themes, at 200 % zoom and in a window about 600 px wide.
@@ -3387,12 +3438,13 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       with its own port.
     * Pause: both say *Paused* and stop counting; Play: they go on, nothing
       caught up. **Stop stream** on one: the other goes on.
-    * Click *lab-h*, **Power off**: *⏻ Off* at its box's top right, the box
-      where it was, its label readable; hover it: *Powered off at t = …*.
-      **Power on**: *↻ Booting* until its boot time is over (the menu says
-      *up at t = …*), then no badge. Shut an interface of *srv*: no badge
-      on *srv*. *inet*'s menu has no Power off. The **Legend** tab explains
-      the badges. Exit: every badge is gone.
+    * Every device says *Operational* with a green LED. Click *lab-h*,
+      **Power off**: *Powered off* (red) on its box's edge, the box where it
+      was, its label readable; hover it: *Powered off at t = …*. **Power
+      on**: *Booting* until its boot time is over (the menu says *up at t =
+      …*), then *Operational*. Shut an interface of *srv*: *srv* stays
+      *Operational*. *inet* says *External*, its menu has no Power off. The
+      **Legend** tab explains the indicator. Exit: every indicator is gone.
 38. **Foreground and background.** Open `test/examples/protocol-simulation.yaml`,
     start the simulation, in both themes, at 200 % zoom and in a window about
     600 px wide.
@@ -3822,7 +3874,26 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   on, off and booting (Power off, Power on); there is no reboot or
   shutdown of its own (Power off, then Power on, is a reboot: off, then
   booting, then operational). A failed-open IDS / IPS is *Powered off
-  (failed open)*: it passes frames unchecked.
+  (failed open)*: it passes frames unchecked. The status indicator is
+  placed once per redraw, where nothing is drawn on the box's top or bottom
+  edge; on a box crowded with ports on both edges it takes the top right
+  corner anyway (it never moves the box). The simulation's own virtual
+  switches have no indicator (they are not devices of the model).
+* **IGMP / MLD snooping's limits.** One choice per VLAN covers IGMP and
+  MLD together (no separate MLD setting). Forwarding is by group: an
+  IGMPv3 / MLDv2 member's sources are shown, not filtered at the switch.
+  A switch's snooping querier sends IGMP (IPv4) queries only, from its
+  VLAN interface's IPv4 address (none: no querier); IPv6 members are
+  learned from their own reports and from multicast routers' queries.
+  There is no querier election among switches (one with a live router port
+  stays silent). Memberships and router ports age in simulated time (the
+  membership interval, the router port aging), never in real time; a
+  stream of Network events is sent at the simulated time it is due, so its
+  datagrams follow the same tables. Access points and virtual switches
+  don't snoop (they flood a VLAN's multicast to their ports, an access
+  point to the clients of that Wi-Fi network only). A change of a switch's
+  VLANs or snooping needs the simulation started again (the model is
+  locked meanwhile).
 * **Network events' limits.** Fail link and Power off have no form of
   their own (the diagram's menus start them; they are listed). Flapping
   uses the Layer 1 parameters for every flap (no per-flap timing); a

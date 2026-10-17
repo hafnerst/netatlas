@@ -1320,6 +1320,10 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .sp-sec { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
 .sp-sec:last-child { border-bottom: 0; }
 .sp-h { margin: 2px 0 0; font-size: 13px; }
+.sp-h-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
+.sp-bulk-group { display: inline-flex; gap: 4px; flex: none; }
+button.sp-bulk { padding: 0; width: 28px; height: 28px; justify-content: center; color: var(--text); }
+button.sp-bulk:disabled { opacity: .38; cursor: default; }
 .sp-field { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; align-items: center; }
 .sp-field > label { font-size: 12.5px; font-weight: 600; }
 .sp-field > p { grid-column: 1 / -1; margin: 0; }
@@ -1454,10 +1458,16 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 /* a sender's badge in the diagram: a framed ▶ on its box's top left corner (shape, not colour, says it), never over a text */
 .layer-sim-senders, .layer-sim-senders * { pointer-events: none; }
 /* a device's lifecycle: powered off, booting (symbol and word, never the colour alone) */
-.sim-power rect { fill: var(--panel); stroke-width: 1.6; }
-.sim-power text { font-size: 10.5px; font-weight: 700; fill: var(--text); }
-.sim-power[data-power="off"] rect { stroke: var(--error); }
-.sim-power[data-power="booting"] rect { stroke: var(--accent); stroke-dasharray: 4 2; }
+.sim-power rect { fill: var(--panel); stroke: var(--muted); stroke-width: 1; }
+.sim-power text { font-size: 9.5px; font-weight: 600; fill: var(--text); }
+/* the LED: green operational, red powered off, blue booting; hollow grey without a power state */
+.sim-power .sim-led { fill: var(--ok); stroke: var(--panel); stroke-width: 1; }
+.sim-power[data-power="off"] rect { stroke: var(--error); stroke-width: 1.4; }
+.sim-power[data-power="off"] .sim-led { fill: var(--error); }
+.sim-power[data-power="booting"] rect { stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 4 2; }
+.sim-power[data-power="booting"] .sim-led { fill: var(--accent); }
+.sim-power[data-power="passive"] .sim-led, .sim-power[data-power="external"] .sim-led, .sim-power[data-power="unknown"] .sim-led { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+.sim-power[data-power="passive"] text, .sim-power[data-power="external"] text, .sim-power[data-power="unknown"] text { fill: var(--muted); }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
@@ -1519,6 +1529,7 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-menu-state[data-power="off"]::before { content: "\23FB\00A0"; color: var(--error); }
 .sim-menu-state[data-power="booting"]::before { content: "\21BB\00A0"; color: var(--accent); }
 .sim-menu-state[data-power="operational"]::before { content: "\25CF\00A0"; color: var(--ok); }
+.sim-menu-state[data-power="passive"]::before, .sim-menu-state[data-power="external"]::before, .sim-menu-state[data-power="unknown"]::before { content: "\25CB\00A0"; color: var(--muted); }
 .sim-menu-item { text-align: left; border: none; background: transparent; padding: 5px 10px; border-radius: 5px; color: var(--text); }
 .sim-menu-item:hover, .sim-menu-item:focus-visible { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
 /* the ARP and MAC tables */

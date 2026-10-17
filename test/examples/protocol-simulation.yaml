@@ -94,6 +94,7 @@ devices:
     label: acc-sw
     type: switch
     group: campus
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: enabled}
     interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 20}, {id: p3, vlans: 30}, {id: up1, vlans: [10, 20, 99]}, {id: up2, vlans: 10}]
     logical_interfaces:
       - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.10/24, description: management}
@@ -105,6 +106,7 @@ devices:
     layer3: true
     group: campus
     router_id: lo0
+    igmp_mld_snooping: {10: enabled, 20: enabled, 99: enabled}
     simulation: {arp_timeout: 300}
     protocols:
       ospf: {}
@@ -138,6 +140,7 @@ devices:
       ospf: {}
       vrrp: {}
       pim: {mode: sparse}
+    igmp_mld_snooping: {10: enabled}
     interfaces:
       - {id: down1, vlans: 10}
       - {id: peer, vlans: 10}
@@ -202,6 +205,7 @@ devices:
     label: carrier switch
     type: switch
     group: ring
+    igmp_mld_snooping: {1: enabled}
     interfaces: [{id: c1, vlans: 1}, {id: c2, vlans: 1}]
 
   # ---------------------------------------------------------------- site B
@@ -245,6 +249,7 @@ devices:
     label: b-sw
     type: switch
     group: siteb
+    igmp_mld_snooping: {1: enabled}
     interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]
   - id: fw1
     label: DMZ firewall
@@ -271,11 +276,13 @@ devices:
   - id: lab-sw1
     type: switch
     group: lab
+    igmp_mld_snooping: {1: enabled}
     simulation: {stp_mode: "off"}
     interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
   - id: lab-sw2
     type: switch
     group: lab
+    igmp_mld_snooping: {1: enabled}
     simulation: {stp_mode: "off"}
     interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]
   - id: lab-h

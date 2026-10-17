@@ -111,6 +111,7 @@ devices:
     type: switch
     role: core
     group: campus
+    igmp_mld_snooping: {1: enabled}
     interfaces:
       - {id: Et1, vlans: 1}
       - {id: Et2, vlans: 1}
@@ -122,6 +123,7 @@ devices:
     type: switch
     role: access
     group: office
+    igmp_mld_snooping: {1: enabled}
     interfaces:
       - {id: Et49, vlans: 1}
       - {id: Et1, vlans: 1}

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { load, model, example } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
+const SM = S;
 const PS = example('protocol-simulation.yaml');
 const sim = (text) => new S.Simulation(model(text));
 const st = (s, d) => s.deviceState(d).state;
@@ -71,14 +72,19 @@ test('nothing but the device itself: a shut interface, a cable failed, a peer po
   assert.equal(st(s, 'r3'), 'off');
   assert.equal(st(s, 'srv'), 'operational', 'its gateway off');
   // the diagram's marks: only r3 is powered off
-  const off = Array.from(s.deviceStates()).filter((x) => x[1].state !== 'operational' && x[1].state !== 'none');
+  const off = Array.from(s.deviceStates()).filter((x) => x[1].state !== 'operational' && x[1].state !== 'external');
   assert.deepEqual(off.map((x) => x[0]), ['r3']);
 });
 
-test('an external network has no lifecycle of its own: neutral (no badge, no Power off) unless it was powered off all the same', () => {
+test('an external network has no lifecycle of its own: External, no Power off, unless it was powered off all the same; a patch panel is Passive', () => {
   const s = sim(PS);
   s.runTo(5000);
-  assert.deepEqual(s.deviceState('inet'), { state: 'none', label: '', detail: 'No power state of its own (passive or an external network)' });
+  assert.deepEqual(s.deviceState('inet'), { state: 'external', label: 'External', detail: 'External: a network outside the model (one hop); it has no power state of its own' });
+  assert.equal(SM.hasLifecycle(s.deviceState('inet')), false);
+  assert.equal(SM.hasLifecycle(s.deviceState('srv')), true);
+  // a device the simulation doesn't have: Unknown, never left out
+  assert.deepEqual(SM.deviceStateView(null, 'unknown'), { state: 'unknown', label: 'Unknown', detail: 'Unknown: the simulation has no state for it' });
+  assert.equal(SM.deviceStateView(null).label, 'Passive');
   // (the simulation's API still can: then it says so, as packet processing has it)
   s.powerOff('inet');
   assert.equal(st(s, 'inet'), 'off');
@@ -91,5 +97,5 @@ test('a guest down with its host says so; a new simulation (another model, Exit 
   assert.equal(st(s, 'hv2'), 'off');
   assert.match(s.deviceState('app1').detail, /^Powered off at t = 5 s \(down with its host hv2\)$/);
   const fresh = sim(example('virtualization.yaml'));
-  assert.ok(Array.from(fresh.deviceStates().values()).every((v) => v.state === 'operational' || v.state === 'none'));
+  assert.ok(Array.from(fresh.deviceStates().values()).every((v) => v.state === 'operational' || v.state === 'external' || v.state === 'passive'));
 });

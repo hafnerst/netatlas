@@ -68,7 +68,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.equal(d.logical.map((i) => i.id + ':' + i.type).join(), 'lo0:loopback,Po1:virtual,Vlan10:virtual,Vlan20:virtual,nve1:virtual,tun0:tunnel,tun1:tunnel,tun2:tunnel');
   // no nesting and no generic parent anywhere in the model
   for (const i of T.deviceInterfaces(d)) assert.ok(!('parent' in i) && !('children' in i), i.id);
-  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'management', 'portPairs', 'routes', 'services', 'simulation', 'tier', 'type']);
+  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'management', 'portPairs', 'routes', 'services', 'simulation', 'snooping', 'tier', 'type']);
   // each interface exists once: one flat index, stable "device:interface" ids
   assert.equal(r.model.index.interfaces.size, 12 + 3);
   assert.equal(r.model.index.interfaces.get('sw1:Po1').type, 'virtual');

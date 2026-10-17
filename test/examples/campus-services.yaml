@@ -29,6 +29,7 @@ devices:
     type: switch
     role: core
     layer3: true
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled}
     simulation: {stp_mode: rstp, bridge_priority: 4096}
     interfaces: [{id: g1, vlans: [10, 20]}, {id: g2, vlans: [10, 20]}, {id: g3, vlans: 10}, {id: g4, vlans: 30}]
     logical_interfaces:
@@ -39,6 +40,7 @@ devices:
   - id: acc
     type: switch
     role: access
+    igmp_mld_snooping: {10: enabled, 20: enabled}
     simulation: {stp_mode: rstp}
     interfaces:
       - {id: u1, vlans: [10, 20]}

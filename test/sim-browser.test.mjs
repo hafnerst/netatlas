@@ -58,7 +58,7 @@ test('the Start dialog with the keyboard: protocols first (groups, counts, Selec
     assert.equal(d0.boxes, true, 'all selected by default');
     assert.match(d0.uses, /^OSPF\d+ relations$/);
     assert.equal(d0.count, '(18 of 18)');
-    assert.deepEqual(d0.heads, ['▸Layer 1 – Physical (8)|false', '▸Layer 2 – Data link (8)|false', '▸Layer 3 – Network (8)|false', '▸Layer 4 – Transport (8)|false']);
+    assert.deepEqual(d0.heads, ['▸Layer 1 – Physical (8)|false', '▸Layer 2 – Data link (7)|false', '▸Layer 3 – Network (8)|false', '▸Layer 4 – Transport (8)|false']);
     assert.ok(d0.scroll[0] <= d0.scroll[1] + 1, `the dialog does not scroll at 1366×768 with the parameters collapsed: ${d0.scroll}`);
     assert.equal(d0.start, 'primary');
     assert.equal(d0.last, 'start', 'Start, the primary action, last');
@@ -206,7 +206,7 @@ test('the in-diagram menu with the mouse and the keyboard; the device tables in 
     await page.key('Enter', 'Enter', 13);
     await page.settle(120);
     const st = await page.eval(`({ tabs: Array.from(document.querySelectorAll('#sd-sttabs [data-st]')).map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')), heads: Array.from(document.querySelectorAll('#sim-status-table thead th')).slice(0, 8).map((h) => h.textContent), rows: document.querySelectorAll('#sim-status-table tbody tr[data-ip]').length, panels: document.querySelectorAll('.sim-table-panel').length })`);
-    assert.deepEqual(st.tabs, ['Protocols', 'ARP*', 'MAC', 'Connections', 'IGMP', 'Multicast routes', 'Multicast table']);
+    assert.deepEqual(st.tabs, ['Protocols', 'ARP*', 'MAC', 'Connections', 'IGMP / MLD', 'Multicast routes', 'Snooping']);
     assert.deepEqual(st.heads, ['IP address', 'MAC address', 'Interface', 'VLAN', 'Type', 'State', 'Age', 'Expires in']);
     assert.ok(st.rows > 0);
     assert.equal(st.panels, 0, 'no floating table');
@@ -359,7 +359,7 @@ test('a device’s Simulation settings in the Actions panel: collapsed, editable
     await page.settle(80);
     assert.ok(await page.eval(`netatlas.simController().sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time 5 min → 1 min (simulation)')`));
     assert.equal(await page.eval(`JSON.parse(sessionStorage.getItem('netatlas.sim.params'))['mac-aging']`), 60000);
-    assert.equal(await page.eval(`document.getElementById('sim-pw-l2-btn').textContent`), '▸Layer 2 – Data link (8) · 1 modified');
+    assert.equal(await page.eval(`document.getElementById('sim-pw-l2-btn').textContent`), '▸Layer 2 – Data link (7) · 1 modified');
   } finally {
     await page.close();
   }
@@ -468,7 +468,7 @@ test('multicast on screen: Join multicast group… from a device’s menu (the A
     assert.match(await page.eval(`document.getElementById('sim-status-table').textContent`), /RP 10\.255\.0\.1 \(r1\)/);
     await page.eval(`netatlas.simController().showTable('igmp', 'core1'), true`);
     await page.settle(100);
-    assert.equal(await page.eval(`document.querySelector('#sd-sttabs [aria-pressed="true"]').textContent`), 'IGMP');
+    assert.equal(await page.eval(`document.querySelector('#sd-sttabs [aria-pressed="true"]').textContent`), 'IGMP / MLD');
     // an IGMP report in the inspector, from the log
     const seq = await page.eval(`netatlas.simController().sim.events().find((e) => e.protocol === 'igmp' && e.what === 'Report' && e.hdr).seq`);
     await page.eval(`netatlas.simController().inspectEvent(${seq}), true`);

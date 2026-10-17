@@ -43,6 +43,14 @@
 # of each device): the Second floor at the top, the First floor, the
 # Basement, and the provider's line coming in below it.
 #
+# Multicast: both switches snoop IGMP / MLD in VLANs 10, 20 and 30 (their
+# igmp_mld_snooping; not in management and transit), and the core is the
+# snooping querier of the IoT VLAN, which has no multicast router. A stream
+# the thermostat sends to a group (Network events → Start multicast stream)
+# goes nowhere until a device of VLAN 20 joins it (Join multicast group, e.g.
+# the TV): then only towards that member. The core routes no multicast (no
+# PIM), so nothing reaches the other VLANs.
+#
 # Simulate ▾ → Start simulation…: the leases (each client in its network's
 # VLAN), the laptop's NAS session by name, HTTPS to the web server from every
 # zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by
@@ -78,7 +86,7 @@ groups:
 
 networks:
   - {id: internal, label: Internal, cidr: 192.168.10.0/24, vlan: 10}
-  - {id: iot, label: IoT, cidr: 192.168.20.0/24, vlan: 20}
+  - {id: iot, label: IoT, cidr: 192.168.20.0/24, vlan: 20, simulation: {snooping_querier: "on"}}
   - {id: guest, label: Guest, cidr: 192.168.30.0/24, vlan: 30}
   - {id: mgmt, label: Management, cidr: 192.168.99.0/24, vlan: 99}
 
@@ -139,6 +147,9 @@ devices:
     layer3: true
     role: core
     group: basement
+    # IGMP / MLD snooping per VLAN: the IoT VLAN's multicast reaches only the ports whose
+    # devices joined the group (the core is its snooping querier: VLAN 20 has no multicast router)
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled, 110-130: disabled}
     services:
       dhcp:
         scopes:
@@ -206,6 +217,7 @@ devices:
     tier: 0
     role: distribution
     group: floor2
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled}
     interfaces:
       - {id: up, vlans: [10, 20, 30, 99], description: to the core in the Basement}
       - {id: ap1, vlans: [10, 20, 30, 99], description: the First-floor access point}

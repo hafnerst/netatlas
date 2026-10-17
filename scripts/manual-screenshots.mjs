@@ -321,7 +321,7 @@ async function main() {
       await page.settle(250);
       const lab = [];
       for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) lab.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
-      await save('bc-domain', around(lab, 70), { quality: 55 });
+      await save('bc-domain', around(lab, 70), { quality: 45 });
       // r1's multicast routes
       await page.eval(`netatlas.simController().clearDomain(), netatlas.simController().runTo(45000), netatlas.simController().showTable('mroute', 'r1'), document.getElementById('toast').hidden = true, true`);
       await page.settle(200);
@@ -354,11 +354,11 @@ async function main() {
       await page.settle(200);
       const sa = await page.rect('#sim-actions');
       await save('sim-device', { x: sa.x + 2, y: sa.y, w: sa.w - 4, h: Math.min(sa.h, 460) }, { quality: 38 });
-      // the devices' state in the diagram: lab-h powered off, lab-sw2 booting, lab-sw1 operational (no badge)
-      await page.eval(`(() => { const c = netatlas.simController(); c.powerOff('lab-h'); c.powerOff('lab-sw2'); c.powerOn('lab-sw2'); netatlas.select('device:lab-h', true); netatlas.select(null); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
+      // every device's status in the diagram: lab-h powered off, lab-sw2 booting, lab-sw1 operational
+      await page.eval(`(() => { const c = netatlas.simController(); c.powerOff('lab-h'); c.powerOff('lab-sw2'); c.powerOn('lab-sw2'); netatlas.select('link:l-lab-h', true); netatlas.select(null); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await page.settle(250);
       const labs = [];
-      for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) labs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
+      for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) labs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`), await page.rect(`#canvas .sim-power[data-device="${d}"]`));
       await save('device-state', around(labs, 16), { quality: 30 });
       await page.eval(`netatlas.exitSimulation(), true`);
       await page.settle(100);
@@ -408,7 +408,7 @@ async function main() {
       await page.eval(`netatlas.fit(), document.getElementById('toast').hidden = true, true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 29 });
+      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 27 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }
@@ -531,7 +531,7 @@ async function main() {
         const banner = await page.rect('#mode-banner');
         const r = await frame('device:hv1', banner.h);
         const y = Math.min(r.y, banner.y);
-        await save('sim-ha', { x: r.x, y, w: r.w, h: r.y + r.h - y }, { quality: 50 });
+        await save('sim-ha', { x: r.x, y, w: r.w, h: r.y + r.h - y }, { quality: 40 });
       }
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);

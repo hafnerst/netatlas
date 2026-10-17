@@ -237,8 +237,49 @@ there is no conversion of files written for the earlier drafts.
   roles replace `tier` workarounds and role words in labels in
   `datacenter-evpn.yaml`, `enterprise-wan.yaml`, `long-labels.yaml` and
   `campus-services.yaml`.
+- **IGMP / MLD snooping is a switch's configuration, per VLAN:**
+  `igmp_mld_snooping: {10: enabled, 20: enabled, 30-39: disabled}` on a
+  switch (Layer 2, and the switched VLANs of a Layer 3 switch), one
+  explicit choice for every VLAN its ports carry, for IGMP and MLD
+  together. A VLAN without a choice is not configured: an error of the new
+  check `snooping-not-configured`, never read as either value. A wrong
+  value, a VLAN twice and the key on another type are errors; a choice for
+  a VLAN no port carries is a warning. The simulation attributes
+  `igmp_snooping` and `unknown_multicast` (and their precedence) are gone:
+  in a `simulation:` block they are unknown attributes whose error says
+  where snooping is configured now. Every switch of the repository's
+  examples has its choice (`private-house.yaml`: VLAN 10, 20 and 30
+  enabled, management and transit disabled; the IoT network has the
+  snooping querier).
 
 ### Added
+
+- **Expand all / Collapse all for Network events.** Two icon buttons beside
+  the heading open or close the four actions' forms at once (not Active
+  events, not a form's More options). Each is disabled when it would change
+  nothing, so the heading never moves; a button that disables itself hands
+  the keyboard to the other. Hiding a form keeps its values and stops
+  nothing. Accessible names and tooltips *Expand all / Collapse all Network
+  events sections*.
+- **Every device's status in the diagram while a simulation runs.** A small
+  indicator on each device's box edge, an LED and a word: **Operational**
+  (green), **Powered off** (red), **Booting** (blue, dashed), **External**
+  or **Passive** (hollow grey: no power state of its own), **Unknown**.
+  From the simulation's own state (the one packet processing uses), with
+  the tooltip and the device menu's state line; placed where no text,
+  port, cable, relation or other indicator is drawn, the box never moved or
+  resized; the diagram's accessible name lists the devices powered off or
+  booting; the Legend explains it; gone at Exit.
+- **IGMP / MLD snooping in the switch's Edit tab:** a row per VLAN (or
+  range) its ports carry with *Not configured — choose*, *Enabled* or
+  *Disabled* (one undo step each; written in flow style, by VLAN).
+- **Show group memberships** (a host's own groups: interface, group,
+  version, filter, when and how it joined, what it received) and a new
+  **Show snooping table** (a switch: per VLAN its router ports and each
+  group's member ports with version, sources, reporter and time left; the
+  notes say each VLAN's setting and what it means, the switch's querier
+  role, and whether it routes multicast besides). The tables update while
+  open.
 
 - **Multicast streams of Network events in real time, side by side.** A
   stream started under Network events sends its first datagram at once,
@@ -1071,6 +1112,26 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Snooping enabled never floods a group without members.** A switch with
+  snooping enabled sends a group only to the ports where a member of that
+  group reported it in that VLAN, and to its multicast router ports; a
+  group nobody joined goes to the router ports only (before: flooded by
+  default, the *unknown multicast* setting). Reports and leaves go to the
+  router ports only, queries and other link-local groups are flooded.
+  Disabled (or not configured) floods the VLAN. Where a stream ends at a
+  switch for want of members its event says so (*forwards 239.20.0.1 to no
+  port in VLAN 20: no member reported it there …*).
+- A switch's snooping querier queries from its VLAN interface's address
+  only (before: 0.0.0.0 without one) and only where its snooping is
+  enabled; the log says when it can't.
+- The device menus' tables: **Show IGMP / MLD groups**, **Show snooping
+  table** (was *Show multicast table*), **Show group memberships**; the
+  status side's tabs *IGMP / MLD*, *Snooping*, *Memberships*. Only switches
+  have a snooping table (not access points).
+- **Simulation parameters, Layer 2:** 7 rows (IGMP / MLD snooping left it).
+- The device lifecycle badges (*⏻ Off*, *↻ Booting*) are the status
+  indicator now, on every device; an external network says *External*,
+  a passive object *Passive* (before: no badge).
 - **A stream of Network events' interval is real time** (before:
   simulated time, so in Readable pacing a 1 s stream showed a datagram
   about every 10 s, and a second stream took turns with the first). Its
@@ -1374,6 +1435,17 @@ live protocol simulation replaces them.
 
 ### Fixed
 
+- **Multicast without a member reached the hosts in the private house.**
+  The thermostat's VLAN 20 stream was flooded by the distribution switch
+  to the first-floor access point and by the core's switching to ap-b and
+  the TV, with nobody joined: snooping was on by default but *unknown
+  multicast* defaulted to *flood*, so a group without members went to
+  every port of the VLAN. The core never routed it (it runs no PIM); its
+  flooding was Layer 2. Now both switches snoop VLAN 20 explicitly, the
+  core is the VLAN's snooping querier, and the stream goes to the core and
+  stops there until a device of VLAN 20 joins; then only towards it.
+- **A port whose link went down kept its snooping entries** until they
+  aged out; it now loses its member and router ports at once (logged).
 - **Real time pacing stood still after a Step.** A Step or Next exchange
   (or a jump) moved the simulation ahead of the real-time clock's
   reference, and the clock waited until the display caught up with it;

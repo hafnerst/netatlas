@@ -252,6 +252,13 @@ export interface Device {
    * switches have it.
    */
   layer3?: boolean;
+  /**
+   * A switch's IGMP / MLD snooping per VLAN (`igmp_mld_snooping:`), as
+   * written: a VLAN or range each, enabled or disabled (model/snooping.ts).
+   * A switched VLAN without an entry is not configured (an error of the
+   * checks), never taken as either.
+   */
+  snooping?: Array<{ from: number; to: number; enabled: boolean }>;
   group?: string;
   tier?: number;
   /**

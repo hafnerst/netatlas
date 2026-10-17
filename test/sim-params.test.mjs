@@ -51,7 +51,7 @@ demands:
 test('the parameters: four layers, at most 8 rows each; every one with a default in its range, a unit, a short help and a source', () => {
   assert.deepEqual(Pm.paramLayers(), [1, 2, 3, 4]);
   const rows = Pm.paramLayers().map((l) => Pm.layerRows(l).length);
-  assert.deepEqual(rows, [8, 8, 8, 8]);
+  assert.deepEqual(rows, [8, 7, 8, 8]);
   assert.ok(rows.every((n) => n <= 8));
   // BFD interval and multiplier share a row
   assert.deepEqual(Pm.layerRows(3).find((r) => r[0].key === 'bfd-interval').map((d) => d.key), ['bfd-interval', 'bfd-multiplier']);
@@ -141,8 +141,8 @@ test('every device type has its simulation attributes (boot time at least); whic
   for (const t of DT.DEVICE_TYPE_IDS) assert.ok(byType[t].indexOf('boot-time') >= 0, t);
   assert.ok(['mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'bridge-priority', 'bridge-priority-vlans', 'arp-timeout', 'spf-delay'].every((k) => byType.switch.indexOf(k) >= 0), 'a (Layer 3) switch');
   // what is set per port, per VLAN or per relation is no device attribute (a device-wide default only where devices have one)
-  assert.ok(['lacp-rate', 'stp-cost', 'stp-root-guard', 'storm-bc', 'fast-leave', 'link-up-delay'].every((k) => byType.switch.indexOf(k) < 0), 'per port or per VLAN');
-  assert.ok(['stp-edge', 'stp-bpdu-guard', 'igmp-snooping'].every((k) => byType.switch.indexOf(k) >= 0), 'their device-wide defaults');
+  assert.ok(['lacp-rate', 'stp-cost', 'stp-root-guard', 'storm-bc', 'fast-leave', 'link-up-delay', 'igmp-snooping'].every((k) => byType.switch.indexOf(k) < 0), 'per port or per VLAN (snooping: the switch’s configuration)');
+  assert.ok(['stp-edge', 'stp-bpdu-guard'].every((k) => byType.switch.indexOf(k) >= 0), 'their device-wide defaults');
   assert.ok(['spf-delay', 'ecmp-max', 'ttl', 'arp-timeout'].every((k) => byType.router.indexOf(k) >= 0));
   assert.ok(byType.firewall.indexOf('ha-failover') >= 0);
   assert.deepEqual(byType.ids_ips.filter((k) => /^ips-/.test(k)), ['ips-fail', 'ips-latency']);

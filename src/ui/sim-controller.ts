@@ -49,7 +49,8 @@ import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
 import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
-import { DeviceStateView, SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
+import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
+import { StatusPlacer } from './status-place';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
 import { IfaceForm, JoinForm, StreamForm } from './sim-event-forms';
@@ -140,7 +141,7 @@ export type MenuItem = { label: string; act: () => void };
 
 /** The tables of a device the simulation panel can show (the status side's tabs). */
 type DevTable = Exclude<TableKind, 'packet'>;
-const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP', snoop: 'Multicast table', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
 
 /** An interval in seconds as the form has it: "1 s", "0.25 s". */
 function secText(sec: number): string {
@@ -237,7 +238,14 @@ export class SimController implements SimulationMode {
   note(): string {
     const n = this.sim.netEvents().length;
     const storms = this.sim.storms();
-    return `Protocol simulation, t = ${fmtSec(this.t)}${n ? ` · ${n} network event${n === 1 ? '' : 's'}` : ''}${storms.length ? ` · ⚠ broadcast storm in ${storms.map((s) => (s.vlan ? 'VLAN ' + s.vlan : 'the untagged frames')).join(', ')}` : ''}${this.domain ? ` · broadcast domain of ${this.domain.what} highlighted` : ''}`;
+    // the devices out of operation (the diagram's indicators say it for every device)
+    const names = (st: string): string => {
+      const ids = Array.from(this.deviceStates()).filter((x) => x[1].state === st).map((x) => x[0]).sort();
+      return ids.length ? `${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ` and ${ids.length - 3} more` : ''}` : '';
+    };
+    const off = names('off');
+    const boot = names('booting');
+    return `Protocol simulation, t = ${fmtSec(this.t)}${n ? ` · ${n} network event${n === 1 ? '' : 's'}` : ''}${off ? ` · powered off: ${off}` : ''}${boot ? ` · booting: ${boot}` : ''}${storms.length ? ` · ⚠ broadcast storm in ${storms.map((s) => (s.vlan ? 'VLAN ' + s.vlan : 'the untagged frames')).join(', ')}` : ''}${this.domain ? ` · broadcast domain of ${this.domain.what} highlighted` : ''}`;
   }
 
   /** The broadcast domain highlighted in the diagram (null: none). */
@@ -683,26 +691,38 @@ export class SimController implements SimulationMode {
   }
 
   /**
-   * The devices' lifecycle in the diagram, as the simulation has it now: a device powered off or
-   * booting has a badge at its box's top right corner, a symbol and a word ("⏻ Off", "↻ Booting")
-   * with its state in a tooltip; an operational device has none (the legend says so). Drawn over the
-   * box, so nothing moves; redrawn when a device's state changes.
+   * Every device's status in the diagram while the simulation runs, as the
+   * simulation has it now (the state packet processing uses): a small pill
+   * with an LED and a word — green Operational, red Powered off, blue
+   * Booting, a hollow grey LED for Passive, External or Unknown — with the
+   * state's line as its tooltip and accessible name. It straddles the box's
+   * top edge (else its bottom edge) where nothing else is drawn: no port,
+   * cable, relation, label or other indicator under it; the box never moves
+   * or resizes. Redrawn when a device's state, the view or the drawing
+   * changes; gone when the simulation ends.
    */
   private drawPower(): void {
     const scene = this.host.scene();
     const states = this.deviceStates();
-    const marked = Array.from(states).filter((x) => x[1].state === 'off' || x[1].state === 'booting').sort((a, b) => (a[0] < b[0] ? -1 : 1));
-    const key = `${marked.map((x) => x[0] + '=' + x[1].detail).join('|')}|${this.host.view()}`;
+    const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
     this.powerKey = key;
-    if (!scene || !marked.length) return;
+    if (!scene || !all.length) return;
     const doc = this.host.doc;
     const NS = 'http://www.w3.org/2000/svg';
     const g = doc.createElementNS(NS, 'g') as SVGGElement;
     g.setAttribute('class', 'layer-sim-power');
-    for (const [dev, st] of marked) {
+    // above the boxes, below the dots' labels
+    const labels = scene.querySelector(':scope > .layer-sim-labels');
+    if (labels) scene.insertBefore(g, labels);
+    else scene.appendChild(g);
+    this.power = g;
+    const place = new StatusPlacer(scene);
+    const H = 14;
+    for (const [dev, st] of all) {
       const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
       if (!box || typeof box.getBBox !== 'function') continue;
       let b: DOMRect;
@@ -711,11 +731,6 @@ export class SimController implements SimulationMode {
       } catch (e) {
         continue;
       }
-      const off = st.state === 'off';
-      const text = off ? '⏻ Off' : '↻ Booting';
-      const w = off ? 38 : 60;
-      const x = b.x + b.width - w - 6;
-      const y = b.y - 8;
       const s = doc.createElementNS(NS, 'g');
       s.setAttribute('class', 'sim-power');
       s.setAttribute('data-power', st.state);
@@ -725,26 +740,36 @@ export class SimController implements SimulationMode {
       const t = doc.createElementNS(NS, 'title');
       t.textContent = `${dev}: ${st.detail}`;
       const r = doc.createElementNS(NS, 'rect');
-      r.setAttribute('x', x.toFixed(1));
-      r.setAttribute('y', y.toFixed(1));
-      r.setAttribute('width', String(w));
-      r.setAttribute('height', '16');
-      r.setAttribute('rx', '8');
+      const led = doc.createElementNS(NS, 'circle');
+      led.setAttribute('class', 'sim-led');
+      led.setAttribute('r', '3.5');
       const tx = doc.createElementNS(NS, 'text');
-      tx.setAttribute('x', (x + w / 2).toFixed(1));
-      tx.setAttribute('y', (y + 11.5).toFixed(1));
-      tx.setAttribute('text-anchor', 'middle');
-      tx.textContent = text;
+      tx.textContent = st.label;
       s.appendChild(t);
       s.appendChild(r);
+      s.appendChild(led);
       s.appendChild(tx);
       g.appendChild(s);
+      // its width from its word, then a free place on the box's edge
+      let tw = st.label.length * 5.6;
+      try {
+        tw = (tx as SVGTextContentElement).getComputedTextLength() || tw;
+      } catch (e) {
+        /* not laid out: the estimate */
+      }
+      const w = Math.ceil(tw + 22);
+      const at = place.find(b, w, H);
+      r.setAttribute('x', at.x.toFixed(1));
+      r.setAttribute('y', at.y.toFixed(1));
+      r.setAttribute('width', String(w));
+      r.setAttribute('height', String(H));
+      r.setAttribute('rx', String(H / 2));
+      led.setAttribute('cx', (at.x + 9).toFixed(1));
+      led.setAttribute('cy', (at.y + H / 2).toFixed(1));
+      tx.setAttribute('x', (at.x + 16).toFixed(1));
+      tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
+      s.setAttribute('data-edge', at.edge);
     }
-    // above the boxes, below the dots' labels
-    const labels = scene.querySelector(':scope > .layer-sim-labels');
-    if (labels) scene.insertBefore(g, labels);
-    else scene.appendChild(g);
-    this.power = g;
   }
 
   /** The devices' lifecycle for the diagram's marks, by ref (those powered off or booting). */
@@ -1011,7 +1036,8 @@ export class SimController implements SimulationMode {
     if (this.isFirewall(dev)) out.push('fw');
     if (this.sim.multicast.igmpDevice(dev)) out.push('igmp');
     if (this.sim.multicast.mcRouter(dev)) out.push('mroute');
-    if (d.mac) out.push('snoop');
+    if (this.sim.multicast.snoopDevice(dev)) out.push('snoop');
+    if (this.sim.multicast.memberDevice(dev)) out.push('members');
     // DHCP and DNS: a server's leases and zones, a host's resolver cache
     if (this.sim.netsvc.hasLeases(dev)) out.push('dhcp');
     if (this.sim.netsvc.hasZones(dev)) out.push('dnszone');
@@ -1047,6 +1073,7 @@ export class SimController implements SimulationMode {
   private tableData(kind: DevTable, dev: string): () => ReturnType<Parameters<TablePanels['inline']>[3]> {
     if (kind === 'igmp') return () => this.sim.igmpTable(dev);
     if (kind === 'snoop') return () => this.sim.snoopTable(dev);
+    if (kind === 'members') return () => this.sim.memberTable(dev);
     if (kind === 'mroute') return () => this.sim.mrouteTable(dev);
     if (kind === 'dhcp') return () => this.sim.leaseGrid(dev);
     if (kind === 'dnscache') return () => this.sim.dnsCacheGrid(dev);
@@ -1184,11 +1211,11 @@ export class SimController implements SimulationMode {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       const tabs = this.deviceTables(dev);
-      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP groups', mroute: 'Show multicast routes', snoop: 'Show multicast table', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
+      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
-      // multicast: its groups and streams, a router's IGMP groups and multicast routes, a switch's multicast table
-      for (const k of ['igmp', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      // multicast: a host's memberships, a router's IGMP / MLD groups and multicast routes, a switch's snooping table
+      for (const k of ['members', 'igmp', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
       for (const k of ['dhcp', 'dnszone', 'dnscache'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
@@ -1205,7 +1232,7 @@ export class SimController implements SimulationMode {
       }
       this.domainItems(dev, items, x, y);
       // (an external network, a patch panel or TAP has no power of its own: no Power off)
-      const lifecycle = this.sim.deviceState(dev).state !== 'none';
+      const lifecycle = hasLifecycle(this.sim.deviceState(dev));
       if (lifecycle && this.sim.engine.off.has(dev)) items.push({ label: this.sim.engine.booting.has(dev) ? 'Power off (stop booting)' : 'Power on', act: () => (this.sim.engine.booting.has(dev) ? this.powerOff(dev) : this.powerOn(dev)) });
       else if (lifecycle) items.push({ label: 'Power off', act: () => this.powerOff(dev) });
       // a container host: its engine
@@ -1235,9 +1262,9 @@ export class SimController implements SimulationMode {
     const items = this.itemsFor(ref, x, y);
     if (!items.length) return false;
     const r = ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref;
-    // a device's menu says its state first ("Operational", "Booting: …", "Powered off at …")
+    // a device's menu says its state first ("Operational", "Booting: …", "Powered off at …", "Passive: …"), as its indicator in the diagram does
     const st = r.indexOf('device:') === 0 ? this.sim.deviceState(r.slice(7)) : null;
-    this.openMenu(this.label(r), items, x, y, st && st.state !== 'none' ? st : null);
+    this.openMenu(this.label(r), items, x, y, st);
     return true;
   }
 
@@ -1482,14 +1509,15 @@ export class SimController implements SimulationMode {
     this.joinForm = new JoinForm(doc, fh);
     this.streamForm = new StreamForm(doc, fh);
     this.ifaceForm = new IfaceForm(doc, fh);
-    box.appendChild(
-      this.sec(doc, 'sim-act-net', 'Network events', [
-        this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
-        this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
-        this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
-        this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
-      ]),
-    );
+    const net = this.sec(doc, 'sim-act-net', 'Network events', [
+      this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
+      this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
+      this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
+      this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
+    ]);
+    this.bulkControls(doc, net);
+    box.appendChild(net);
+    this.syncBulk();
     // Active events: everything the actions started (kept when done, up to a limit), and the other state changes in effect
     const clear = el(doc, 'button', { type: 'button', id: 'sim-ev-clear', class: 'mini' }, ['Clear finished']) as HTMLButtonElement;
     clear.addEventListener('click', () => {
@@ -1507,6 +1535,87 @@ export class SimController implements SimulationMode {
     this.eventsKey = '';
   }
 
+  /**
+   * Expand all and Collapse all beside the Network events heading: they open
+   * or close the four actions' forms (their headings' buttons) — not the
+   * panel, not Active events (its own section, with its own Details), not a
+   * form's own More options. Only hidden: the forms keep their values, what
+   * runs keeps running. Each is disabled (in its place: the heading never
+   * moves) when it would change nothing.
+   */
+  private bulkControls(doc: Document, sec: HTMLElement): void {
+    const h = sec.querySelector('#sim-act-net-h') as HTMLElement;
+    const icon = (up: boolean): SVGSVGElement => {
+      const NS = 'http://www.w3.org/2000/svg';
+      const s = doc.createElementNS(NS, 'svg') as SVGSVGElement;
+      s.setAttribute('width', '14');
+      s.setAttribute('height', '14');
+      s.setAttribute('viewBox', '0 0 14 14');
+      s.setAttribute('aria-hidden', 'true');
+      s.setAttribute('focusable', 'false');
+      const p = doc.createElementNS(NS, 'path');
+      // two chevrons: down (expand) or up (collapse)
+      p.setAttribute('d', up ? 'M3 7.5 7 3.5l4 4M3 11.5l4-4 4 4' : 'M3 2.5l4 4 4-4M3 6.5l4 4 4-4');
+      p.setAttribute('fill', 'none');
+      p.setAttribute('stroke', 'currentColor');
+      p.setAttribute('stroke-width', '1.6');
+      p.setAttribute('stroke-linecap', 'round');
+      p.setAttribute('stroke-linejoin', 'round');
+      s.appendChild(p);
+      return s;
+    };
+    const btn = (id: string, label: string, up: boolean): HTMLButtonElement => {
+      const b = el(doc, 'button', { type: 'button', id, class: 'icon-btn sp-bulk', 'aria-label': label, title: label, 'aria-controls': 'sim-ne-send sim-ne-join sim-ne-stream sim-ne-iface' }) as HTMLButtonElement;
+      b.appendChild(icon(up));
+      b.addEventListener('click', () => this.setAllActions(!up));
+      return b;
+    };
+    const row = el(doc, 'div', { class: 'sp-h-row' });
+    h.parentNode!.insertBefore(row, h);
+    row.appendChild(h);
+    row.appendChild(el(doc, 'span', { class: 'sp-bulk-group', role: 'group', 'aria-label': 'Network events sections' }, [btn('sim-ne-expand', 'Expand all Network events sections', false), btn('sim-ne-collapse', 'Collapse all Network events sections', true)]));
+  }
+
+  /** The actions' heading buttons of Network events (the scope of Expand all and Collapse all). */
+  private actionToggles(): HTMLButtonElement[] {
+    const box = this.host.actionsBox ? this.host.actionsBox() : null;
+    return box ? (Array.from(box.querySelectorAll('#sim-act-net .sim-ne > .sim-ne-h > .sp-toggle')) as HTMLButtonElement[]) : [];
+  }
+
+  /** Open (or close) every action of Network events; nothing else changes (their forms keep their values, nothing starts or stops). */
+  setAllActions(open: boolean): void {
+    const all = this.actionToggles();
+    for (const t of all) {
+      const body = this.host.doc.getElementById(t.getAttribute('aria-controls') as string);
+      t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (body) body.hidden = !open;
+    }
+    this.syncBulk(open ? 'sim-ne-collapse' : 'sim-ne-expand');
+    if (this.host.panelChanged) this.host.panelChanged();
+  }
+
+  /**
+   * Expand all only while one is closed, Collapse all only while one is open
+   * (disabled otherwise; none at all: both). A button that just disabled
+   * itself hands the focus to the other one.
+   */
+  private syncBulk(focusTo?: string): void {
+    const box = this.host.actionsBox ? this.host.actionsBox() : null;
+    if (!box) return;
+    const all = this.actionToggles();
+    const open = all.filter((t) => t.getAttribute('aria-expanded') === 'true').length;
+    const ex = box.querySelector('#sim-ne-expand') as HTMLButtonElement | null;
+    const co = box.querySelector('#sim-ne-collapse') as HTMLButtonElement | null;
+    if (!ex || !co) return;
+    const had = this.host.doc.activeElement;
+    ex.disabled = !all.length || open === all.length;
+    co.disabled = !all.length || open === 0;
+    if (focusTo && (had === ex || had === co) && (had as HTMLButtonElement).disabled) {
+      const to = box.querySelector('#' + focusTo) as HTMLButtonElement | null;
+      if (to && !to.disabled) to.focus();
+    }
+  }
+
   /** An action of Network events: a heading whose button opens its form (all four always listed). */
   private action(doc: Document, id: string, title: string, body: HTMLElement, open = false): HTMLElement {
     const btn = el(doc, 'button', { type: 'button', class: 'sp-toggle', id: id + '-toggle', 'aria-expanded': open ? 'true' : 'false', 'aria-controls': id }, [el(doc, 'span', { class: 'psec-caret', 'aria-hidden': 'true' }, ['▸']), el(doc, 'span', {}, [title])]);
@@ -1516,6 +1625,7 @@ export class SimController implements SimulationMode {
       const o = btn.getAttribute('aria-expanded') !== 'true';
       btn.setAttribute('aria-expanded', o ? 'true' : 'false');
       body.hidden = !o;
+      this.syncBulk();
       if (this.host.panelChanged) this.host.panelChanged();
     });
     return el(doc, 'div', { class: 'sp-disc sim-ne', 'data-action': id.slice(7) }, [el(doc, 'h4', { class: 'sim-ne-h' }, [btn]), body]);

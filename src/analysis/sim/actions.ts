@@ -285,7 +285,7 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
         ...(real ? ['The interval is real time: the first datagram at the start, then one every interval of playing time (a pause shifts the schedule; the playback speed and the scenario don’t change it). Each datagram goes at the simulated time it is due.'] : []),
         `Generated: ${st.sent} datagram${st.sent === 1 ? '' : 's'} at the source (the copies multicast replicates are not counted). Received: ${got} in all, counted at the members (a member's copy is one).`,
         ...(left ? [`Not sent: ${left}${st.offMissed ? ` (${st.offMissed} while ${st.dev} was off)` : ''}${st.skipped ? ` (${st.skipped} the page was too late for: the browser was busy or suspended)` : ''}.`] : []),
-        'Who receives it: the members of the group that multicast routing reaches (Join multicast group).',
+        'Who receives it: the members of the group (Join multicast group) in its VLAN — a switch with IGMP / MLD snooping enabled sends it only to ports where a member reported it, and to its multicast router ports — and in other subnets those multicast routing (PIM) reaches.',
         ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : []),
       ],
     };

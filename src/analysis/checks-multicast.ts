@@ -4,7 +4,8 @@
  * querier serves, sparse-mode groups without a rendezvous point, and a
  * router whose unicast route towards a source (or the RP) leaves through an
  * interface without a PIM neighbour, so that the source's traffic fails
- * its RPF check there. Pure: read from the model only.
+ * its RPF check there; a switch VLAN without an IGMP / MLD snooping choice
+ * (model/snooping.ts). Pure: read from the model only.
  */
 import { IpAddr, parseAddress } from '../model/ip';
 import { protocolBase } from '../model/protocols';
@@ -12,6 +13,8 @@ import { Device, Interface, Model, deviceInterfaces, relationDevices } from '../
 import { compareAddr, formatAddr } from './ipmath';
 import { lookup } from './routing';
 import { capabilities } from '../model/capabilities';
+import { SNOOPING_KEY, unsetSnoopingVlans } from '../model/snooping';
+import { vlanRangesShown } from '../model/derive';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
 
@@ -88,6 +91,20 @@ function rpOf(model: Model): string | null {
 }
 
 export const MULTICAST_CHECKS: McCheck[] = [
+  {
+    id: 'snooping-not-configured',
+    severity: 'error',
+    title: 'A switch VLAN without an IGMP / MLD snooping choice',
+    reads: 'switches: igmp_mld_snooping; the VLANs of their ports and aggregates',
+    run(model, emit) {
+      for (const d of model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
+        const unset = unsetSnoopingVlans(d);
+        if (!unset.length) continue;
+        const list = vlanRangesShown(unset, true);
+        emit({ message: `${d.id} carries VLAN${unset.length > 1 ? 's' : ''} ${list} without an IGMP / MLD snooping choice: set ${SNOOPING_KEY} to enabled or disabled for ${unset.length > 1 ? 'each' : 'it'} (until then the simulation floods ${unset.length > 1 ? 'their' : 'its'} multicast, as a switch without snooping)`, refs: ['device:' + d.id], at: { ref: 'device:' + d.id, field: SNOOPING_KEY } });
+      }
+    },
+  },
   {
     id: 'multicast-no-querier',
     severity: 'warning',

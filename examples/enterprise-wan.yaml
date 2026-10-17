@@ -130,6 +130,7 @@ devices:
     protocols:
       ospf: {}
       vrrp: {}
+    igmp_mld_snooping: {10: enabled, 20: enabled}
     interfaces:
       - {id: Ethernet49, routed: true, ip: 10.0.1.2/30}
       - {id: Ethernet51}
@@ -157,6 +158,7 @@ devices:
     protocols:
       ospf: {}
       vrrp: {}
+    igmp_mld_snooping: {10: enabled, 20: enabled}
     interfaces:
       - {id: Ethernet49, routed: true, ip: 10.0.1.6/30}
       - {id: Ethernet51}
@@ -178,6 +180,7 @@ devices:
     label: hq-acc1
     type: switch
     group: hq-core
+    igmp_mld_snooping: {10: enabled, 20: enabled}
     interfaces:
       - {id: Gi1/0/49, vlans: [10, 20]}
       - {id: Gi1/0/50, vlans: [10, 20]}
@@ -211,6 +214,7 @@ devices:
     label: muc-sw
     type: switch
     group: branch-muc
+    igmp_mld_snooping: {1: enabled}
     interfaces: [{id: gi1, vlans: 1}, {id: gi8, vlans: 1}]
   - id: muc-ap
     label: muc-ap
@@ -245,6 +249,7 @@ devices:
     label: ham-sw
     type: switch
     group: branch-ham
+    igmp_mld_snooping: {1: enabled}
     interfaces: [{id: gi1, vlans: 1}, {id: gi2, vlans: 1}]
 
 links:

@@ -706,15 +706,17 @@ function row(item: LegendItem): VNode {
 
 /** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them). */
 function simStateSection(): LegendSection {
-  const pill = (state: string, text: string): VNode[] => [h('g', { class: 'sim-power', 'data-power': state }, [h('rect', { x: 3, y: 1, width: 38, height: 16, rx: 8 }), h('text', { x: 22, y: 12.5, 'text-anchor': 'middle' }, text)])];
+  // (the swatch: the indicator's LED only; its word is the row's label)
+  const led = (state: string): VNode[] => [h('g', { class: 'sim-power', 'data-power': state }, [h('rect', { x: 3, y: 2, width: 18, height: 14, rx: 7 }), h('circle', { class: 'sim-led', cx: 12, cy: 9, r: 3.5 })])];
   return {
-    title: 'Simulation: device state',
+    title: 'Simulation: device status',
     items: [
-      { swatch: pill('off', '⏻ Off'), label: '⏻ Off: powered off (or down with its host or its container engine); it takes no part' },
-      { swatch: pill('booting', '↻'), label: '↻ Booting: powered on, it takes part when its boot time is over' },
-      { swatch: [], label: 'No badge: operational (powered on and booted)' },
+      { swatch: led('operational'), label: 'Operational (green): powered on and booted' },
+      { swatch: led('off'), label: 'Powered off (red): or down with its host or its container engine; it takes no part' },
+      { swatch: led('booting'), label: 'Booting (blue): powered on, it takes part when its boot time is over' },
+      { swatch: led('passive'), label: 'Passive or External (hollow grey): a patch panel, a TAP, an external network — no power state of its own' },
     ],
-    note: 'Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. An external network, a patch panel or a TAP has no power state of its own. The badge’s tooltip and the device’s menu say the state with its time.',
+    note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
   };
 }
 
