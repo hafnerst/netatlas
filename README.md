@@ -60,13 +60,13 @@ file, then:
 There's nothing to install, no server, and no network access. YAML remains
 the model: the page reads it, edits it and writes it back.
 
-**NetAtlas 0.1.2**, a usable initial version; see the
+**NetAtlas 0.1.3**, a usable initial version; see the
 [changelog](CHANGELOG.md) for what it covers, and
 [Limitations](#limitations-honest-list) for what it doesn't.
 
 Two version numbers are involved, and they are independent:
 
-* **0.1.2** is the version of the application, shown next to the logo.
+* **0.1.3** is the version of the application, shown next to the logo.
 * **1** is the version of the YAML model format. Every model file starts
   with `netatlas: 1`, and model format 1, described in
   [docs/FORMAT.md](docs/FORMAT.md), is the only format NetAtlas reads and
@@ -142,7 +142,7 @@ do); after manual changes none is selected and all three can be used.
 
 | Control | What it does |
 |---|---|
-| **netatlas** logo and version | the application version (v0.1.2), not the model format version |
+| **netatlas** logo and version | the application version (v0.1.3), not the model format version |
 | **File ▾** | one menu for everything about models and their files: **New model**, **Open model…**, **Save model** (Ctrl+S), **Save model as…** (Ctrl+Shift+S), **Close model** and, under **Examples**, the built-in files. Every entry says *model*; an entry ends in “…” exactly when it asks for something before it acts (a file to open, a name and place to save to), and acts at once otherwise. *Save model* is available while the model is linked to a file it may write (see [Saving](#saving)); *Save model as…* and *Close model* whenever a model is open. *Save model* shows a small dot while there are unsaved changes. The example that is open is marked (*open*, or *open · modified*) until it is saved as a file of yours. The menu closes after a choice, with Esc, or when you click elsewhere; the arrow keys move through it. |
 | **Export ▾** | One entry, **Export view as…**, which opens a submenu with **PNG** and **SVG**. Either saves the selected view (Physical or Logical) as a picture; see [Exporting pictures](#exporting-pictures). Greyed out until a model is open. The submenu opens when the entry is clicked or tapped, or with Enter, Space or the right arrow key; the left arrow key or Esc closes it. The menu works like **File**; the left and right arrow keys move between the two. |
 | ↶ ↷ | undo and redo |
