@@ -31947,14 +31947,14 @@ const MANUAL = [
             'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself as soon as you no longer use the inspector: you close it (**×**, `Esc`), click or tab elsewhere, or it is out of sight. If you paused it yourself, it stays paused. **Follow message** keeps that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) always drawn, plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
             '**Step** moves to the next message event: a message arrives, or the next one starts at its sender. **Next exchange** moves on to the end of the exchange first on screen (an ARP request and its reply, a ping and its echo, a hello), or of the next one to start.',
             '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join until it is recorded, a leave until its cleanup settles, flapping), and until its last dots have arrived, its traffic is the foreground: everything it causes — its messages, their copies, the answers, the ARP it needs — is drawn normally, labelled and clickable. The scenario goes on underneath as the background: its dots keep moving, but **grey**, each kind with a short grey label (*IGMP Query*, *ARP*, *DHCP*, *UDP* — one per cable and kind, only where there is room), and the pointer goes through them and their labels (no outline, no inspector; the event log and the tables have them all). Several of your actions at once are all in front. A finished event, the membership a join leaves behind, or a card kept in Active events mutes nothing. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
-            '**Streams in real time.** A stream you start under **Network events** sends one datagram at once and then one every interval of **real time** (1 s: every second, 2 s: every two seconds), whatever the pacing, the speed, the size of the model or the scenario. Several streams run side by side, each on its own schedule from its own start: two 1 s streams each send every second, never taking turns, and starting or stopping one never changes another. While one runs, the simulated clock runs with real time too (as in **Real time** pacing, times the speed), so its datagrams are forwarded at once and the scenario goes on at its own pace behind them; the dots keep the pacing’s hop time, so in Readable pacing several datagrams of a stream are on their way at once. The panel says *· streams in real time*. Paused (or with the tab hidden), the streams stand too and go on from there; nothing is caught up. A reply of a send is drawn after the message it answers has arrived on screen.',
+            '**Streams in real time.** A stream you start under **Network events** sends one datagram at once and then one every interval of **real time** (1 s: every second, 2 s: every two seconds), whatever the pacing, the speed, the size of the model or the scenario. Several streams run side by side, each on its own schedule from its own start: two 1 s streams each send every second, never taking turns, and starting or stopping one never changes another. While one runs, the simulated clock runs with real time too (as in **Real time** pacing, times the speed), so its datagrams are forwarded at once and the scenario goes on at its own pace behind them; the dots keep the pacing’s hop time, so in Readable pacing several datagrams of a stream are on their way at once. Multicast data is shown as a **flow**: each copy is on its cable from the moment it is forwarded, on every cable of its way at once — so a join or a leave shows with the next datagram, not after the earlier ones have crawled along the whole way. The panel says *· streams in real time*. Paused (or with the tab hidden), the streams stand too and go on from there; nothing is caught up. A reply of a send is drawn after the message it answers has arrived on screen.',
             'The scenario is **bundled**: at most 6 of its exchanges are drawn as dots at once, each to its end — and a few more for protocols with nothing else on screen, so a burst of DHCP and ARP never hides an IGMP query or a Hello — the others as **cable activity** (a cable lit with a short count, *OSPF ×3 · ARP ×1*). An exchange whose next hop would show more than 15 s after it happened is cable activity too, so the dots stay close to what is happening. So many things at once stay followable, a few at a time.',
             '**Pacing: Real time (1 s = 1 s)** runs the simulated clock with the real one (times the speed): a 1 s interval of a send is a real second. Every hop shows briefly as a sign of its traffic, bundled as above, and idle time is never skipped. In every pacing, when the simulation has more work than a frame allows, it falls behind and says so (*· behind*), and goes on from there instead of catching up in a burst: the page stays responsive.',
         ],
         notes: [
             'The pacing, the speed and skipping only change how the simulation is shown: what happens, and in which order, is the same with every setting.',
             'Every hop gets the same time on screen from the very first one: the clock starts with the first frame drawn, a slow frame counts at most 0.1 s (the dots slow down for a moment instead of jumping), and a hidden tab stops it.',
-            'At most 48 messages are drawn at once, each with room for its label, and at most 6 of the scenario’s exchanges; the panel says how many more are shown as cable activity, and the event log lists every message.',
+            'A moving dot’s label is placed when the dot appears, where it touches nothing, and keeps that place beside its dot all the way: it moves with the dot and may pass over a name or another label for a moment instead of jumping away. At most 48 messages are drawn at once, and at most 6 of the scenario’s exchanges; the panel says how many more are shown as cable activity, and the event log lists every message.',
             'Intervals of a send’s messages and of flapping are simulated time: results such as round trips, timeouts and aging stay right and the same every time; in Readable and Real time pacing a simulated second takes a real second. A stream of Network events is the exception: its interval is real time (see above), so its datagrams’ simulated times depend on how the simulation was played. The streams of the model (its `multicast:` blocks and multicast demands) belong to the scenario and keep to simulated time.',
             'The streams’ schedule counts the page’s own clock, computed from each stream’s start, so a late frame never adds up to drift. Browsers aren’t hard real time: a datagram goes in the first frame at or after its moment (within about a frame, 1/60 s), a busy page can be later, and a stall longer than the interval (the browser suspended) sends one datagram, not a burst; the stream’s **Details** count the ones left out.',
             'With reduced motion set in your system, each message is a still arrow with its label, shown for the same paced time; **Step** moves one message at a time.',
@@ -32143,9 +32143,9 @@ const MANUAL = [
             'The routers elect an IGMP querier per subnet, the hosts report their groups, the switches learn the member ports, and the PIM routers build the tree from the source (through the rendezvous point for any-source groups). The stream’s dots are diamonds and split where it is replicated.',
             '**IGMP / MLD snooping is each switch’s own setting**, chosen per VLAN in its **Edit** tab (**IGMP / MLD snooping**: *Enabled*, *Disabled*, or *Not configured* — an error until you choose; in the file `igmp_mld_snooping`). Enabled, each port of the VLAN has a role for a group: a **member port** (a member of that group reported there), a **multicast router port** (a query or PIM Hello came in there: a multicast router or the VLAN’s querier is behind it — it gets every group, members or not, and is no membership; an uplink or a Layer 3 device behind a port does not make it one), the **ingress port** (never sent back), or none. A group goes to its member ports and the router ports. A group nobody joined (unregistered) goes by the VLAN’s **Unregistered multicast** setting (in the file `unregistered_multicast`): **To the router ports only** (the default, as RFC 4541 requires: nothing to the hosts, and nowhere if the VLAN has no router port) or **Flooded to every port** (which the RFC allows). Disabled (or not configured), multicast is flooded in the VLAN. Reports go to the router ports only, so each switch on the way to the querier learns the port its member’s report came in on — nothing is copied between switches; queries and routing protocols’ link-local groups are always flooded. A membership applies to the very next packet. **Without a querier**, a snooping VLAN learns no router port: a stream stays at the first switch and a member’s report never leaves the switch it reached — give the VLAN a querier (a multicast router, or a switch’s snooping querier). Snooping never routes: on a Layer 3 switch, multicast crosses into another VLAN only with PIM and a member there.',
             '**The querier election** starts by itself with the simulation. Every querier candidate — a router’s interface with IGMP / MLD (its `igmp_querier` on, the default), a switch’s VLAN with the snooping querier on, snooping enabled and an address there — queries at once, taking itself for the querier for now, and sends its **startup queries** (robustness of them, a quarter of the query interval apart). Whoever hears a query from a **lower address** stops: the lowest address of each LAN wins and, once its startup queries are sent, queries every query interval. A non-querier takes over when it hears nothing from the querier for the other querier present interval (robustness × query interval + response interval ÷ 2); a querier powered on again (or its interface back) starts afresh and wins again if its address is lower. Only the queries that reach a candidate count: two LANs with the same VLAN ID elect apart, and a router can be the querier on one interface and not on another. Enabling snooping makes no candidate.',
-            '**Every snooping switch shows its role in each VLAN** where its snooping is enabled, always, beside its box: one badge per VLAN, in VLAN order — four VLANs, four badges. Each says the switch’s own part and, apart from it, whether the VLAN has a querier: **★ VLAN 10 · Querier** (it is the elected querier), dashed **☆ VLAN 10 · Querier (startup)** (its startup queries), **◇ VLAN 20 · Standby** (a candidate that yields to another querier), **✕ Candidate down**, **○ VLAN 30 · Snooping · querier heard** (no candidate; a querier queries there) and dashed grey **○ VLAN 40 · Snooping · no querier**, **⏻ Off** or **⏻ Booting** while the switch is powered off or still booting. They follow the protocol — the queries that reach that switch in that VLAN — never the configuration alone, and stay while your events are in front. The tooltip (and a screen reader) gives the details: who the querier is and behind which port, the router ports, where unregistered multicast goes; the switch’s **Show snooping table** lists the same lines. A block keeps its place and size while the roles change; it sits beside the box where nothing else is drawn. A router marks the **active querier** of each of its LANs beside its status: **Querier · VLAN 10** (several LANs: *VLAN 10, 20*, more: *3 LANs*), dashed **Querier (startup) · VLAN 10** while it sends its startup queries, **Standby · VLAN 10** (grey) for a candidate that yields. The marks follow the election’s state, and the tooltip names the LAN, the interface, the address and the next deadline (*startup query 2 of 2 due at t = 33.3 s*, *it takes over at t = …*). A router candidate configured off or one that is down has no mark; **Show querier election** (a router’s or a switch’s menu) lists every candidacy with its role, the querier it yields to and how long until it would take over. A host’s **Show group memberships** says who queries its LAN (the last query it heard), or that it heard none.',
+            '**Every snooping switch shows its role in each VLAN** where its snooping is enabled, always, beside its box: one badge per VLAN, in VLAN order — four VLANs, four badges. Each says the switch’s own part and, apart from it, whether the VLAN has a querier: **★ VLAN 10 · Querier** (it is the elected querier), dashed **☆ VLAN 10 · Querier (startup)** (its startup queries), **◇ VLAN 20 · Standby** (a candidate that yields to another querier), **✕ Candidate down**, **○ VLAN 30 · Snooping · querier heard** (no candidate; a querier queries there) and dashed grey **○ VLAN 40 · Snooping · no querier**, **⏻ Off** or **⏻ Booting** while the switch is powered off or still booting. They follow the protocol — the queries that reach that switch in that VLAN — never the configuration alone, and stay while your events are in front. The tooltip (and a screen reader) gives the details: who the querier is and behind which port, the router ports, where unregistered multicast goes; the switch’s **Show snooping table** lists the same lines. Each badge’s border fits its words; a block keeps its place while the roles change; it sits beside the box where nothing else is drawn. A router marks the **active querier** of each of its LANs beside its status: **Querier · VLAN 10** (several LANs: *VLAN 10, 20*, more: *3 LANs*), dashed **Querier (startup) · VLAN 10** while it sends its startup queries, **Standby · VLAN 10** (grey) for a candidate that yields. The marks follow the election’s state, and the tooltip names the LAN, the interface, the address and the next deadline (*startup query 2 of 2 due at t = 33.3 s*, *it takes over at t = …*). A router candidate configured off or one that is down has no mark; **Show querier election** (a router’s or a switch’s menu) lists every candidacy with its role, the querier it yields to and how long until it would take over. A host’s **Show group memberships** says who queries its LAN (the last query it heard), or that it heard none.',
             '**Members stay members** until they leave: a host that joined answers every query (after a random delay up to the response interval; an IGMPv2 host stays quiet when another member answered first), and its answers keep what the switches and routers learned alive; no second Join is needed. If its answers can’t get through (its cable down), the network forgets it after the membership interval while the host still wants the group, and learns it again from its next answer.',
-            '**Leave multicast group** (right below Join multicast group, also in a host’s menu, and the **Leave group** button of its join): choose the host, its interface and one of that interface’s groups (IGMP or MLD by its family; none is chosen for you). Its membership ends at once — no later answer for the group, whatever queries come — and its leave goes out like any report (an IGMPv2 Leave, an IGMPv3 / MLDv2 report that blocks the group), drawn and inspectable. Its event follows what the network had learned on the host’s way: *leave sent · cleanup pending*, then *removed at sw (VLAN 10, port p4)* once the querier’s group-specific queries went unanswered there, or *kept … another member there answered* where another member still wants it (one behind the same port, another on the router’s LAN). The stream goes on for the others; only the way to this host closes.',
+            '**Leave multicast group** (right below Join multicast group, also in a host’s menu, and the **Leave group** button of its join): choose the host, its interface and one of that interface’s groups (IGMP or MLD by its family; none is chosen for you). Its membership ends at once — no later answer for the group, whatever queries come — and its leave goes out like any report (an IGMPv2 Leave, an IGMPv3 / MLDv2 report that blocks the group), drawn and inspectable. Its event follows what the network had learned on the host’s way: *leave sent · cleanup pending*, then *removed at sw (VLAN 10, port p4)* once the querier’s group-specific queries went unanswered there — exactly robustness × the last member query interval after the leave (2 × 1 s by default); until then the port still gets the group, and a dot’s inspector says *member port, leave pending: it goes in 1.2 s …*; the next datagram after that finds it gone, or *kept … another member there answered* where another member still wants it (one behind the same port, another on the router’s LAN). The stream goes on for the others; only the way to this host closes.',
             'In the private house, start a stream from the **thermostat** (VLAN 20) to 239.20.0.1: dist sends it up to the core (its router port: the core is the snooping querier of VLANs 10, 20 and 30) and the core sends it nowhere, its event says *stops at core*. **Join multicast group** with the **tv** on the same group: now the core sends it towards ap-b and the TV, and nowhere else; leave, and after the last member queries it stops again. The same in VLAN 10: a stream from the **laptop**, then the **nas** joins its group: its report is learned at the core’s port nas and the next datagram reaches it. The TV in VLAN 20 joining the laptop’s group gets nothing: the core routes no multicast between VLANs.',
             '**Why a packet went where it went:** open a multicast dot in the packet inspector. *Switching at dist (sent this hop)* and *Switching at core (where it arrived)* list each port: **→ up: sent — multicast router port (4 min 50 s left)**, **✕ ap1: not sent — no member and no multicast router port**, **✕ ap2: not sent — ingress port**; a Layer 3 switch adds *Routing at core* (its outgoing interfaces, or why none, e.g. it runs no PIM). The snooping table tells router ports (*every group goes there … not a membership*) from member ports (*member port: IGMPv3 …*).',
             'The tables, from a device’s menu, in the simulation panel (they update while they are open): a host’s **Show group memberships** (its own groups, version, filter and what it received; who queries its LAN), a router’s or a switch’s **Show querier election**, a switch’s **Show snooping table** (per VLAN its router ports and each group’s member ports with version, sources, reporter and time left; under it each VLAN’s setting and what it means), a router’s **Show IGMP / MLD groups** (its interfaces’ members, the querier) and **Show multicast routes**. The Status table shows each stream and each member (*Receiving* or *Lost*).',
@@ -32390,7 +32390,7 @@ exports.MANUAL_IMAGES = {
         "height": 436
     },
     "device-state": {
-        "src": "data:image/webp;base64,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",
+        "src": "data:image/webp;base64,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",
         "width": 428,
         "height": 339
     },
@@ -46145,6 +46145,7 @@ const params_1 = __req("analysis/sim/params");
 const simulation_1 = __req("analysis/sim/simulation");
 const status_place_1 = __req("ui/status-place");
 const sizes_1 = __req("layout/sizes");
+const text_1 = __req("layout/text");
 const sim_test_form_1 = __req("ui/sim-test-form");
 const sim_event_forms_1 = __req("ui/sim-event-forms");
 const sim_event_list_1 = __req("ui/sim-event-list");
@@ -46887,8 +46888,8 @@ class SimController {
             blk.setAttribute('role', 'list');
             blk.setAttribute('aria-label', `${dev}: IGMP / MLD snooping, ${roles.length} VLAN${roles.length === 1 ? '' : 's'}`);
             g.appendChild(blk);
-            // the block's room (reserved by the layout to the right of its box: as wide as the longest text any of its VLANs can have,
-            // so a role that changes never resizes or moves it); taken elsewhere beside the box only when something is there
+            // the block's place: found for the longest text any of its VLANs can have, so a role that changes never moves it
+            // (beside the box, to its right first, where nothing else is drawn); each badge itself only as wide as its own text
             const size = (0, sizes_1.snoopBlock)(roles.map((r) => r.vlan));
             const w = size.w;
             const ROW = sizes_1.SNOOP_ROW;
@@ -46906,9 +46907,7 @@ class SimController {
                 t.textContent = r.detail;
                 const y = at.y + i * ROW;
                 const rect = doc.createElementNS(NS, 'rect');
-                rect.setAttribute('x', at.x.toFixed(1));
                 rect.setAttribute('y', y.toFixed(1));
-                rect.setAttribute('width', String(w));
                 rect.setAttribute('height', String(ROW - 1));
                 rect.setAttribute('rx', '3');
                 // the role's sign besides its words and colour: ★ querier, ☆ startup, ◇ standby, ✕ down, ○ snooping only, ⏻ off or booting
@@ -46916,17 +46915,29 @@ class SimController {
                 icon.setAttribute('class', 'sim-snoop-icon');
                 icon.setAttribute('aria-hidden', 'true');
                 icon.textContent = r.role === 'querier' ? '★' : r.role === 'starting' ? '☆' : r.role === 'standby' ? '◇' : r.role === 'down' ? '✕' : r.role === 'off' || r.role === 'booting' ? '⏻' : '○';
-                icon.setAttribute('x', (at.x + 4).toFixed(1));
                 icon.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
                 const tx = doc.createElementNS(NS, 'text');
                 tx.textContent = r.text;
-                tx.setAttribute('x', (at.x + 15).toFixed(1));
                 tx.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
                 s.appendChild(t);
                 s.appendChild(rect);
                 s.appendChild(icon);
                 s.appendChild(tx);
                 blk.appendChild(s);
+                // its border fits its sign and words (4 px before the sign, 5 px after the text); on the box's left it ends at the block's right edge
+                let len = (0, text_1.textWidth)(r.text, sizes_1.SNOOP_FONT) * 1.06;
+                try {
+                    len = tx.getComputedTextLength() || len;
+                }
+                catch (e) {
+                    /* not laid out: the estimate */
+                }
+                const bw = Math.min(w, Math.ceil(15 + len + 5));
+                const x = at.side === 'left' ? at.x + w - bw : at.x;
+                rect.setAttribute('x', x.toFixed(1));
+                rect.setAttribute('width', String(bw));
+                icon.setAttribute('x', (x + 4).toFixed(1));
+                tx.setAttribute('x', (x + 15).toFixed(1));
             });
         }
     }
@@ -50208,7 +50219,9 @@ class Engine {
                 continue;
             const member = r.members.get(bp.id);
             const router = r.routers.get(bp.id);
-            const role = member !== undefined && router !== undefined ? `member port${left(member)} and multicast router port` : member !== undefined ? `member port${left(member)}` : router !== undefined ? `multicast router port${left(router)}` : '';
+            // (a leave heard there: the member port stays until its last member queries are over, unless a member answers)
+            const mp = member === undefined ? '' : r.leaving && r.leaving.has(bp.id) ? `member port, leave pending: it goes in ${((member - t) / 1000).toFixed(1)} s unless a member answers the group-specific queries` : `member port${left(member)}`;
+            const role = mp && router !== undefined ? `${mp}; multicast router port` : mp || (router !== undefined ? `multicast router port${left(router)}` : '');
             if (to.indexOf(bp) < 0) {
                 ports.push({ port: bp.id, sent: false, why: r.kind === 'control' ? 'no multicast router port (reports go to router ports only)' : 'no member and no multicast router port' });
                 continue;
@@ -53169,11 +53182,15 @@ class Pacer {
             // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
             if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS)
                 continue;
+            // multicast data (a stream's datagrams and their copies): each copy on its cable from the moment it is forwarded, not after
+            // the copy before it has arrived on screen — a stream is a flow on every cable of its tree at once, and a change of the tree
+            // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones
+            const flow = f.protocol === 'mcast';
             const parent = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
-            let after = parent ? this.arrival(parent) : -Infinity;
+            let after = parent && !flow ? this.arrival(parent) : -Infinity;
             // what caused it (a frame it forwards, the request it answers, the ARP reply that released it) arrives first, in the same view
             const cause = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
-            if (!parent && cause && cause.f.view === f.view)
+            if (!parent && !flow && cause && cause.f.view === f.view)
                 after = Math.max(after, this.arrival(cause));
             const test = f.test !== undefined;
             const h = this.host.headers ? this.host.headers(f) : undefined;
@@ -53185,7 +53202,7 @@ class Pacer {
                         after = Math.max(after, this.arrival(x));
             const d0 = Math.max(this.clock, after);
             // between two cables: across the switch that forwarded it
-            const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? exports.TRANSIT_MS : 0;
+            const transit = parent && !flow && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? exports.TRANSIT_MS : 0;
             // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Network event's is always drawn
             const shown = this.host.shown(f);
             // the scenario's: bundled, a few conversations at a time (muted while a Network event runs); one that would show long after it happened is cable activity
@@ -57297,6 +57314,8 @@ class Multicast {
         this.onTestReceived = null;
         /** Called when a multicast router's interface records a member's report (Network events follow joins by it). */
         this.onMember = null;
+        /** the moments an exact expiry is scheduled for (one sweep each) */
+        this.expiring = new Set();
         this.P = P;
     }
     get e() {
@@ -57982,6 +58001,7 @@ class Multicast {
                     const g = ri.groups.get(d.group);
                     g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev, null, this.at(ri)) * this.e.params.num('igmp-lmqi', dev, null, this.at(ri)));
                     g.leaving = true;
+                    this.expireAt(g.expires);
                 }
                 return;
             }
@@ -58053,6 +58073,7 @@ class Multicast {
         const rob = this.e.params.num('igmp-robustness', ri.dev, null, this.at(ri));
         g.expires = Math.min(g.expires, this.e.now + rob * lmqi);
         g.leaving = true;
+        this.expireAt(g.expires);
         if (!ri.querier)
             return;
         // the querier asks: group-specific queries, robustness times, one last member query interval apart
@@ -58142,6 +58163,8 @@ class Multicast {
                     }
                     else if (cur) {
                         cur.until = Math.min(cur.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
+                        cur.leaving = true;
+                        this.expireAt(cur.until);
                         // the VLAN's querier itself: it asks whether a member is left (another member behind that port keeps it)
                         const sq = this.sqs.get(sd.id + '|' + vlan);
                         if (sq && sq.querier && sq.running && p.src.version === 4)
@@ -58166,8 +58189,11 @@ class Multicast {
         if (msg.protocol === 'igmp' && msg.type === 'Query' && d.group) {
             const ports = st.groups.get(d.group);
             if (ports)
-                for (const e of ports.values())
+                for (const e of ports.values()) {
                     e.until = Math.min(e.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
+                    e.leaving = true;
+                    this.expireAt(e.until);
+                }
         }
         const routers = routerMap();
         // reports and leaves go to the router ports only: other hosts never hear them
@@ -58179,15 +58205,19 @@ class Multicast {
         // a group's data: its member ports and the router ports
         const g = (0, ipmath_1.formatAddr)(p.dst);
         const members = new Map();
+        const leaving = new Set();
         const mine = st.groups.get(g);
         if (mine)
             for (const [port, e] of mine)
-                if (e.until > t)
+                if (e.until > t) {
                     members.set(port, e.until);
+                    if (e.leaving)
+                        leaving.add(port);
+                }
         // unregistered (no member): its VLAN's policy — the router ports only, or flooded
         if (!members.size && unregistered === 'flood') {
             this.snoopNote(`snoopflood|${sd.id}|${vlan}|${g}|${msg.test}`, 'note', sd.id, `${sd.id} floods ${g} in ${vlanName(vlan)}: no member reported it there, and its unregistered multicast is flooded (unregistered_multicast: flood)`, t, msg);
-            return { ports: null, members, routers, kind: 'data', mode, unregistered };
+            return { ports: null, members, leaving, routers, kind: 'data', mode, unregistered };
         }
         const keep = new Set([...routers.keys(), ...members.keys()]);
         // (nowhere at all: where the group's way ends, as a drop of its traffic; to router ports only: a note)
@@ -58195,7 +58225,7 @@ class Multicast {
         const why = own && own.running && own.querier ? `it is the VLAN's querier itself and no multicast router is there` : `no query or PIM Hello heard in ${vlanName(vlan)}: no querier there`;
         if (!members.size)
             this.snoopNote(`snoopnone|${sd.id}|${vlan}|${g}|${msg.test}`, keep.size ? 'note' : 'drop', sd.id, keep.size ? `${sd.id} sends ${g} to no host port in ${vlanName(vlan)}: no member reported it there (IGMP / MLD snooping enabled); only to its multicast router port${keep.size > 1 ? 's' : ''} ${Array.from(keep).sort(cmp).join(', ')}` : `${sd.id} forwards ${g} to no port in ${vlanName(vlan)}: no member reported it there and it has no multicast router port (${why}; unregistered multicast goes to the router ports only)`, t, msg);
-        return { ports: keep, members, routers, kind: 'data', mode, unregistered };
+        return { ports: keep, members, leaving, routers, kind: 'data', mode, unregistered };
     }
     /** A switch's policy for unregistered multicast in a VLAN (a group without members): 'router-ports' or 'flood'. */
     unregisteredPolicy(dev, vlan) {
@@ -59020,6 +59050,20 @@ class Multicast {
         return true;
     }
     // ------------------------------------------------------------ timers, failures, power
+    /**
+     * A membership a leave shortened goes exactly when its last member queries
+     * are over (not at the next second's sweep): the sweep then too, at that
+     * moment. The next packet after it finds the entry gone.
+     */
+    expireAt(t) {
+        if (this.expiring.has(t))
+            return;
+        this.expiring.add(t);
+        this.e.at(t, () => {
+            this.expiring.delete(t);
+            this.sweep();
+        });
+    }
     /** Once a second: memberships, snooping entries and joins past their time. */
     sweep() {
         const now = this.e.now;
@@ -59042,7 +59086,7 @@ class Multicast {
                     if (e.until > now)
                         continue;
                     ports.delete(p);
-                    this.e.note('table', 'igmp', dev, '', 'member port expired', '', `${dev}: port ${p} is no member port of ${g} in ${vlanName(Number(key.slice(key.indexOf('|') + 1)))} any more (no report within the membership interval)`);
+                    this.e.note('table', 'igmp', dev, '', 'member port expired', '', `${dev}: port ${p} is no member port of ${g} in ${vlanName(Number(key.slice(key.indexOf('|') + 1)))} any more (${e.leaving ? 'nobody answered the group-specific queries after the leave' : 'no report within the membership interval'})`);
                 }
                 if (!ports.size)
                     st.groups.delete(g);
@@ -59252,7 +59296,7 @@ class Multicast {
                 for (const [port, e] of Array.from(ports).sort((a, b) => cmp(a[0], b[0]))) {
                     if (e.until <= now)
                         continue;
-                    rows.push([vn, `${g} (${fam})`, port, `member port: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}`, (0, engine_1.fmtDur)(e.until - now)]);
+                    rows.push([vn, `${g} (${fam})`, port, `member port: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}${e.leaving ? '; leave pending (it goes unless a member answers the group-specific queries)' : ''}`, (0, engine_1.fmtDur)(e.until - now)]);
                     learned.add(vlan);
                 }
             }
@@ -63579,6 +63623,13 @@ class SimAnimator {
         this.last = null;
         /** the device nodes marked as sending or receiving */
         this.marked = [];
+        /**
+         * A moving dot's label place, by flight: the candidate (side and distance
+         * from its dot) it got when it appeared, kept for the rest of its way.
+         */
+        this.slots = new Map();
+        /** the background dot that carries the short label of its cable and kind, while it is on its way */
+        this.bgOwners = new Map();
         /** the indicators' boxes, read again only when their layer is redrawn */
         this.markCache = { layer: null, boxes: new sim_labels_1.BoxIndex() };
     }
@@ -63633,6 +63684,15 @@ class SimAnimator {
         this.dots = this.labels = null;
         this.scene = null;
         this.last = null;
+    }
+    /** The label place of a moving dot: the one it got when it appeared (the first free one then, else the first), kept since. */
+    slotOf(id, cands, placed, marks) {
+        let s = this.slots.get(id);
+        if (s === undefined) {
+            s = Math.max(0, (0, sim_labels_1.placeIndex)(cands, this.obstacles, placed, marks));
+            this.slots.set(id, s);
+        }
+        return s;
     }
     /** The boxes of the simulation's indicators on the diagram (statuses, querier marks, snooping badges): labels keep clear of them. */
     markBoxes() {
@@ -63809,6 +63869,19 @@ class SimAnimator {
         // the indicators drawn on the diagram during the simulation (statuses, querier marks, snooping badges): no label over them
         const marks = this.markBoxes();
         const bgLabelled = new Set();
+        // the dots on their way now (a label place is kept for these; the others' are forgotten)
+        const moving = new Set();
+        for (const it of list)
+            if (it.st.phase === 'moving' || it.st.phase === 'transit')
+                moving.add(it.f.id);
+        if (live && !arrows) {
+            for (const id of Array.from(this.slots.keys()))
+                if (!moving.has(id))
+                    this.slots.delete(id);
+            for (const [k, id] of Array.from(this.bgOwners))
+                if (!moving.has(id))
+                    this.bgOwners.delete(k);
+        }
         for (const it of list) {
             const f = it.f;
             const st = it.st;
@@ -63859,14 +63932,25 @@ class SimAnimator {
                 drawn++;
                 const kind = bgKind(f.protocol, f.label);
                 const k = f.track.ref + '|' + kind;
-                if (!bgLabelled.has(k) && st.phase === 'moving') {
+                // one dot of a cable and kind carries the label while it is on its way (then the next one): it never hops between dots
+                const owner = this.bgOwners.get(k);
+                if (live && (owner === undefined || !moving.has(owner)))
+                    this.bgOwners.set(k, f.id);
+                const mine = live ? this.bgOwners.get(k) === f.id : !bgLabelled.has(k);
+                if (mine && !bgLabelled.has(k) && st.phase === 'moving') {
                     bgLabelled.add(k);
                     const bw = (0, geometry_1.textWidth)(kind, BG_FONT) + 4;
                     const bh = BG_FONT + 4;
-                    const bbox = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, bw, bh, 1), this.obstacles, placed, marks);
+                    const cands = (0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, bw, bh, 1);
+                    // moving: the place it got when it appeared, kept (it may pass over something for a moment); still: where it touches nothing
+                    const bbox = live && !arrows ? cands[this.slotOf(f.id, cands, placed, marks)] : (0, sim_labels_1.placeLabel)(cands, this.obstacles, placed, marks);
                     if (bbox) {
                         placed.add(bbox);
                         const lab = label(this.doc, kind, bbox, false, 'none');
+                        if (live && !arrows) {
+                            lab.setAttribute('data-for', String(f.id));
+                            lab.setAttribute('data-slot', String(this.slots.get(f.id)));
+                        }
                         lab.setAttribute('class', 'sim-bg-label');
                         lab.setAttribute('aria-hidden', 'true');
                         labels.insertBefore(lab, labels.firstChild);
@@ -63878,12 +63962,21 @@ class SimAnimator {
             const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
             const w = (0, geometry_1.textWidth)(text, FONT) + 4;
             const h = FONT + 4;
-            let box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed, marks);
-            for (let k = 1; !box && k < fracs.length; k++) {
-                const q = at(geo, fracs[k]);
-                box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed, marks);
-                if (box)
-                    p = q;
+            let box;
+            if (live && !arrows && !lost) {
+                // a moving dot: its label where it got its place when it appeared, at the same side and distance all the way —
+                // it moves with the dot and may pass over a text, a box or another label for a moment, never jumping away from it
+                const cands = (0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, w, h, 1);
+                box = cands[this.slotOf(f.id, cands, placed, marks)];
+            }
+            else {
+                box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed, marks);
+                for (let k = 1; !box && k < fracs.length; k++) {
+                    const q = at(geo, fracs[k]);
+                    box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed, marks);
+                    if (box)
+                        p = q;
+                }
             }
             // a moving dot stays on its way even where its label has no room for a moment (the label comes back with room)
             if (!box && (arrows || lost)) {
@@ -63906,6 +63999,11 @@ class SimAnimator {
                 shape.setAttribute('data-cast', cast);
             }
             const lab = box ? label(this.doc, text, box, lost, color) : null;
+            // (whose label it is and the place it keeps: for the tests and the reader of the SVG; no hit target)
+            if (lab && live && !arrows && !lost) {
+                lab.setAttribute('data-for', String(f.id));
+                lab.setAttribute('data-slot', String(this.slots.get(f.id)));
+            }
             for (const e of lab ? [shape, lab] : [shape]) {
                 if (it.faded)
                     e.classList.add('faded');
@@ -64047,13 +64145,17 @@ __defs["ui/sim-labels"] = function (module, exports) {
  * (on its lane's side first, then further out, then the other side); the
  * first place that touches neither a text of the diagram (addresses,
  * names, port labels), nor a device box, nor a label already placed wins.
- * A dot whose label finds no place is not drawn (the event log has it),
- * so labels never overlap anything.
+ * A moving dot's label keeps the place it got when it appeared (the same
+ * side and distance from its dot) for the rest of its way: it moves with
+ * the dot and never jumps away from what it passes, overlapping it for a
+ * moment instead (sim-anim.ts). Still arrows (reduced motion, exports) are
+ * placed where they touch nothing.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BoxIndex = void 0;
 exports.overlaps = overlaps;
 exports.candidates = candidates;
+exports.placeIndex = placeIndex;
 exports.placeLabel = placeLabel;
 /** A grid of boxes for fast overlap tests. */
 class BoxIndex {
@@ -64112,6 +64214,16 @@ function candidates(x, y, ux, uy, w, h, side) {
         out.push({ x: bx, y: by, w, h });
     }
     return out;
+}
+/** The index of the first candidate that hits nothing (-1: none). */
+function placeIndex(cands, obstacles, placed, more) {
+    for (let i = 0; i < cands.length; i++) {
+        const c = cands[i];
+        if (obstacles.hits(c) || placed.hits(c, 2) || (more && more.hits(c, 1)))
+            continue;
+        return i;
+    }
+    return -1;
 }
 /** The first candidate that hits nothing (null: none). */
 function placeLabel(cands, obstacles, placed, more) {

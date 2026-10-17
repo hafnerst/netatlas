@@ -1817,7 +1817,14 @@ foreground and a background (`src/analysis/sim/pacing.ts`):
   pacing (× the speed), held by nothing, so the datagrams are forwarded at
   once and the scenario goes on at its own pace; the dots keep the
   pacing's hop time (Readable: about 3 s a hop), so several datagrams are
-  on their way at once. The panel says *· streams in real time*. A reply
+  on their way at once. **Multicast data is shown as a flow:** each copy
+  is on its cable from the moment it is forwarded, on every cable of the
+  tree at once, not after the copy before it has arrived on screen (that
+  chaining made a 5-hop path show each datagram 13 s after it was
+  forwarded, so after a leave dots kept arriving at the receiver for
+  ~18 s). A change of the tree — a join, a leave taking effect — shows
+  with the next datagram; the copies already forwarded complete their
+  cable (at most a hop's time). The panel says *· streams in real time*. A reply
   of a send is drawn after the message it answers has arrived on screen.
   Paused (or the tab hidden), the schedule stands: every deadline shifts
   by the pause, nothing is caught up; Stop cancels a stream's later
@@ -1902,11 +1909,17 @@ message event: a message on its way arrives (and what it causes starts at
 its sender), or, with none on its way, the next one appears at its sender.
 
 **Readable labels.** Each direction of a line has its own lane; frames on a
-cable are spaced out in time; a label is placed only where it touches no
-text (an address, a name, a port label), no device box and no other label,
-with a frame in the protocol's colour and the theme's text colour (the text
-says what it is, not the colour); a dot whose label has no room for a
-moment goes on without it until it has. At most 48 messages are on screen
+cable are spaced out in time. A moving dot's label is placed when the dot
+appears, where it touches no text (an address, a name, a port label), no
+device box, indicator or other label — the first free of a few places
+around the dot, else the first — and **keeps that place** (the same side
+and distance from its dot) all the way: it moves with its dot and passes
+over what is in its way for a moment instead of jumping elsewhere
+(`data-slot`, `data-for`). A background dot's short label likewise stays
+with one dot. The frame is in the protocol's colour, the text in the
+theme's (the text says what it is, not the colour). Still arrows (reduced
+motion, exports) are placed where they touch nothing, as are the
+diagram's own labels, addresses, badges and indicators. At most 48 messages are on screen
 at once; one beyond that is not drawn, the panel says how many, and the event log lists every message. The animation
 runs on `requestAnimationFrame` and stops while the page is hidden.
 
@@ -2103,12 +2116,13 @@ time, side by side with any others (see
   and its router ports), updated as they change (election, failover,
   power, a querier lost), cleared on Exit. The tooltip and accessible name
   give the detail (the querier, behind which port; the router ports; the
-  unregistered policy), the same lines as **Show snooping table**. A block
-  is as wide as the longest text any of its VLANs can have, so a role that
-  changes never resizes or moves it; it is placed beside the box where no
-  text, box, port mark, cable or indicator is (clear of group frames where
-  possible), stays visible while your events are in front, and is in the
-  exported picture and in **Fit**.
+  unregistered policy), the same lines as **Show snooping table**. Each
+  badge's border fits its sign and words (4 px before, 5 px after); the
+  block's place is found for the longest text any of its VLANs can have,
+  so a role that changes refits its badge but never moves the block; it is
+  placed beside the box where no text, box, port mark, cable or indicator
+  is (clear of group frames where possible), stays visible while your
+  events are in front, and is in the exported picture and in **Fit**.
   **Show querier election** lists every candidacy with its role, the
   querier it yields to, how long until it would take over and its next
   query (*query at t = 33.3 s (startup 2 of 2)*).
@@ -2982,6 +2996,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Device state** | `test/device-state.test.mjs` (5 tests), `test/realtime-streams-browser.test.mjs` (both themes), `test/events-status-snooping-browser.test.mjs` | **Model:** operational, powered off, booting (until its boot time, not a millisecond before), operational again, each with its words, the same state as `deviceOn` (packet processing); powered off while booting and on again: the first boot never completes the second; a shut interface, a failed cable, the gateway off leave a device operational (only r3 marked); an external network *External*, a pass-through *Passive*, a device the simulation lacks *Unknown*; a guest *down with its host hv2*; a new simulation all operational. **On screen:** every device's indicator, *lab-h* *Operational*; powered off: *Powered off*, its tooltip and accessible name *Powered off at t = …*, the outline marked, the box neither moved nor resized, its label clear, the menu's state line and *Power on*; powered on: *Booting* with *up at t = …*, still booting a millisecond before, operational after; a shut interface of srv marks no device; *inet* *External*, no Power off; Exit clears every indicator and mark. |
 | **Every device's status, Expand all / Collapse all, snooping on screen** | `test/events-status-snooping-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom) | **Status:** all 14 devices of the private house with an indicator (13 *Operational* with the theme's green LED, *isp* *External*), its role and accessible name its tooltip, none over a text or port mark or another indicator (in the drawing's coordinates), every box where it was before the simulation, through Power off / on and after Exit; *Powered off*, *Booting*, *Operational* again after the boot time; a shut interface leaves the device *Operational*; the menu's state line equals the tooltip; the diagram's accessible name lists *powered off: ap-1*. **Bulk:** the accessible names and tooltips, mixed (both enabled), Expand all by Enter (all open, it disabled, the focus on Collapse all), Collapse all by Space (all closed, it disabled, the focus back), Active events and More options untouched, the heading and buttons not moving, a typed group kept, a running stream still counting, nothing wider than the panel. **Snooping:** dist's rows (10, 20, 30 enabled, 99 disabled), *Not configured* an error and gone from the YAML, chosen again; the thermostat's stream only to dist and core (*stops at core*), the core's snooping table empty with its notes, the TV's join in the open table without reopening it, *Show group memberships*, no table viewer among Network events. |
 | **Querier election, members, leaves, interface flapping** | `test/querier-election.test.mjs` (11 tests, the fake clock), `test/querier-leave-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450), the internal example `multicast-querier.yaml` | **Election:** down before the interfaces are up; every candidate queries at once (q1, q2), q2 hears q1 and stops, q1 *starting* then *querier* after its 2 startup queries 5 s apart, then one every 20 s, q2 none; the tables; the query's addresses. **Scope:** LAN B (the same VLAN 10) elects q3; the hosts say who queries them; one router on two LANs: querier on one, non-querier on the other; no candidate at all (snooping enabled is none): no query, the host says none heard. **Failover / recovery:** q1 off, q2 takes over exactly 45 s after q1's last query, then every 20 s; q1 back: two startup queries 5 s apart, then every 20 s (no duplicate schedule), q2 silent. **Flapping** q1's port: its candidacy down and up again, startup each time, q2 never queries. **Members:** still learned at 200 s (membership interval 50 s) through ≥ 8 answers; a cable down drops the switch's port, not the host's membership; learned again from its next answer. **Leave:** refused for a group or host without membership; the watch (sw port p4, q1:g0, q2:g0); *cleanup pending (3 of 3)* until removed at the switch's port and kept at the routers (rx2 answered the one group query); the leave report inspectable; delivery to rx1 stops, rx2 and the source go on; no later answer from rx1; rx3 leaving keeps the shared port (rx4 answers); a leave that can't be sent fails with its reason; MLD named as MLD. **Interfaces only:** a cable refused by the simulation, a port flaps (admin up, link down), the model's `flapping: "on"` on a port. **On screen:** the query dots of q1, q2, q3; dashed *Querier (startup) · VLAN 10* on q1 and q3, then *Querier · VLAN 10*, *Standby · VLAN 10* on q2; clear of texts, ports and statuses; boxes unmoved; Show querier election; the five actions in order, Leave in Expand all; no group chosen for you, the note; Enter on Leave group; the event's summaries; the packet inspector's TO_IN; q1 off: q2's mark; Exit clears all. |
+| **Join and leave timing, stable packet labels, fitted badges** | `test/mcast-timing.test.mjs` (5 tests, the fake clock), `test/labels-badges-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom), the internal example `multicast-querier.yaml` (shared port) | **Join:** every core decision before the report's processing leaves the TV out, every one after sends it (*member port*), no query in between, the same stream. **Leave:** *cleanup pending*; the core's port expires exactly 2000 ms after the leave (no sweep delay), *nobody answered the group-specific queries after the leave*; meanwhile the decisions say *member port, leave pending: it goes in n s*; none after it sends to the TV, no copy on l-core-apb after it; *removed at core*; the stream keeps running. **Shared port:** rx3 leaves, rx4 behind the same port answers: p6 kept, p5 (rx2) and the router port p1 still sent, p4 never; *kept at sw (VLAN 10, port p6)*. **Same moment:** a packet, a report, a packet at one instant: before and after; at the expiry moment the entry is gone. **On screen:** every copy within 1 s of being forwarded (no backlog); no TV copy after the removal; the pending ones drawn to their end, at most a hop's time later. **Labels:** the same slot from appearance to arrival for every foreground and background label, never more than 40 px from its dot, every moving foreground dot labelled, the inspector still opens. **Badges:** 2–6 px before the sign, 2–8 px after the text, short ones shorter, one column, clear of texts and indicators, one VLAN fitted, a role change refits in place. |
 | **Multicast forwarding by port roles, snooping roles per VLAN, background labels** | `test/mcast-forwarding.test.mjs` (10 tests, the fake clock), `test/mcast-roles-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom), the internal example `snooping-roles.yaml` | **Private house:** the thermostat's VLAN 20 stream to dist's router port up only (*multicast router port (n min left)*), not to ap1 (*no member and no multicast router port*), never back to ap2; the core's Layer 2 decision (no port) and Layer 3 (*routes no multicast*); as the house was (no querier in VLAN 10): no router port at dist although the core is Layer 3, the laptop's stream ends at dist, the NAS's report reaches the core only, the core shows the member, nothing arrives; now: the stream to the core, the NAS's join learned at the core's port nas only (none at dist), the next datagram delivered, no extra query, no other group, no leak to other VLANs; leave, cable failure (port gone at once, learned again from the next answer), a new simulation empty; the TV in VLAN 20 joining the VLAN 10 group gets nothing (no PIM, said); `unregistered_multicast: flood` floods at dist and core alike, VLAN 20 unaffected. **Roles:** sw-a's four VLANs Querier / Standby / Snooping · querier heard / Snooping · no querier, with the querier's identity and router ports apart; LAN B's querier in the same VLAN ID never lent; failover, a querier lost, Off and back, reset; the snooping table's lines equal the badges; queries agree with the roles. **On screen:** four badges in VLAN order, one width, clear of every text and indicator, tooltip = accessible name = the model's detail, the same place and size after a role change, kept while an action is in front, all in the SVG export, gone on Exit; the inspector's *Switching at dist (sent this hop)* port by port; background labels grey, short, `pointer-events: none`, not under the pointer, gone when your actions end. |
 | **IGMP / MLD snooping per VLAN** | `test/snooping.test.mjs` (8 tests), `test/sim-multicast.test.mjs` (snooping tests rewritten), `test/sim-levels.test.mjs`, `test/mcast-actions.test.mjs` | **Format:** enabled / disabled per VLAN or range, the model's ranges, `snoopingChoice`, the errors (a wrong value, a VLAN twice, not a mapping, not a switch) and the warning for a VLAN no port carries; the check `snooping-not-configured` (an error, its VLANs listed; a routed port and a VLAN interface alone need none; disabled counts as a choice); the removed attributes `igmp_snooping` / `unknown_multicast` as errors that say where snooping lives. **Forwarding:** nothing to any host before a join; a join opens its own port, its group, its VLAN only (not the same group from VLAN 20, not another group, not h2); never back to the source; the log's *forwards … to no port*; reports only to router ports, queries flooded; refresh by answers to queries (still there at 90 s with a 30 s membership interval), a leave (after the last member queries), a link down (at once, logged), learned again after the restore, expiry of a host powered off, a switch powered off, a new simulation empty; IPv6 (MLDv2 member, ff05::1 to its member only, the host's memberships); a Layer 3 switch without PIM routes nothing to VLAN 20, with PIM (dense) to its member only. **The private house:** the six scenarios (no join; the TV's join, only towards ap-b and the TV; leave; nothing into Internal or Guest; the TV moved to Internal gets nothing without multicast routing, its membership in VLAN 10); disabled floods, not configured floods and says so. |
 | **Network events** | `test/network-events.test.mjs` (10 tests), `test/network-events-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 px, light at 640 px) | **Lifecycle:** every operation one event with a stable id, refused ones *Failed* with the simulation's reason, the older programmatic send listed too; a series of 20 one event with *sent of requested*, pending never failed, completed with its last answer's time; a series with failures still *Completed*; a broadcast without answers *unknown* and no rate; a group's members apart from its messages; a DHCP client's send *Queued* until its lease, Stop then *Cancelled* with nothing on the wire; a join *In progress* until q1 records it, then *Completed* with its membership and Leave group (completed 2 min later too), without a router completed after its reports; a stream's datagrams and each member's count, stopped; a shut *Completed* at once with the interface down and No shut, not listed twice; flapping's cycles (3 by 35 s), stopped part way; a failed cable and a device off in the list; the same states whether run in steps or at once; at most 50 kept, those in progress never dropped, Clear finished. **On screen:** the four actions in order as headings with their forms (no object list, no Show …), Active events after them; the tables in the device's menu and the status side; each form's device and interface (Select…, disabled until a device), its reason; the diagram's selection not changing the join form; a join, a stream, flapping (not twice), a shut and a series listed newest first with their states (icon and word), a named progress bar, paused without moving on; details open and the focus kept over four updates; the inspector from the details; Stop keeping the focus in its event; No shut; the outcome bar named; a failed cable with Restore; Clear finished keeping the flapping, the cable and the membership, the focus on the heading; nothing wider than the panel, no sideways scrolling, every control named. |
@@ -3524,6 +3539,25 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
+44. **Join and leave take effect at once; labels stay with their dots;
+    badges fit.** Open `private-house.yaml`, start the simulation, in both
+    themes, at 200 % zoom and in a window about 600 px wide.
+    * **Start multicast stream** from the thermostat to 239.20.0.1: dots on
+      w-thermostat, ap-2–dist and the riser cable at once, none to the TV.
+    * **Join multicast group** with the tv: within about a second dots on
+      core–ap-b and w-tv too (the next datagram); the core's snooping table
+      lists port ap.
+    * **Leave multicast group** (tv): for 2 s the TV still gets datagrams —
+      open one on core–ap-b: *member port, leave pending: it goes in 1.x s*;
+      then the event says *removed at core*, and no new dot starts towards
+      the TV; the last ones finish their cable (about 3 s).
+    * Watch a send's labels pass a device: each stays on the same side of
+      its dot, moving with it, overlapping the name for a moment.
+    * Each badge's border ends just after its words (*VLAN 10 · Querier* is
+      short, *VLAN 10 · Snooping · querier heard* longer).
+    * In the test build, `multicast-querier.yaml`: rx3 and rx4 (behind
+      edge) and rx2 join, a stream from src; rx3 leaves: *kept at sw (VLAN
+      10, port p6)*, rx4 and rx2 go on receiving.
 43. **Multicast port roles, snooping roles per VLAN, background labels.**
     Open `private-house.yaml`, start the simulation, in both themes, at
     200 % zoom and in a window about 600 px wide.
@@ -3994,8 +4028,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   picture shown only while simulating. A block is placed beside its box
   where nothing is drawn, clear of group frames where possible (where a
   frame is in the way, as at the private house's core, the opaque badges
-  cross its line); it keeps its place and size while roles change, and
-  devices never move. In the logical view the same applies. Very many
+  cross its line); it keeps its place while roles change, and devices
+  never move. In the logical view the same applies. Very many
   snooping VLANs (beyond about 20) make a tall block that may have to sit
   below or above the box.
 * **Unregistered multicast** is a per-VLAN policy (`router-ports`,

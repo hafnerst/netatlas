@@ -4,8 +4,11 @@
  * (on its lane's side first, then further out, then the other side); the
  * first place that touches neither a text of the diagram (addresses,
  * names, port labels), nor a device box, nor a label already placed wins.
- * A dot whose label finds no place is not drawn (the event log has it),
- * so labels never overlap anything.
+ * A moving dot's label keeps the place it got when it appeared (the same
+ * side and distance from its dot) for the rest of its way: it moves with
+ * the dot and never jumps away from what it passes, overlapping it for a
+ * moment instead (sim-anim.ts). Still arrows (reduced motion, exports) are
+ * placed where they touch nothing.
  */
 
 export interface Box {
@@ -67,6 +70,16 @@ export function candidates(x: number, y: number, ux: number, uy: number, w: numb
     out.push({ x: bx, y: by, w, h });
   }
   return out;
+}
+
+/** The index of the first candidate that hits nothing (-1: none). */
+export function placeIndex(cands: Box[], obstacles: BoxIndex, placed: BoxIndex, more?: BoxIndex): number {
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i];
+    if (obstacles.hits(c) || placed.hits(c, 2) || (more && more.hits(c, 1))) continue;
+    return i;
+  }
+  return -1;
 }
 
 /** The first candidate that hits nothing (null: none). */

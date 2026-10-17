@@ -5,7 +5,7 @@
 //     four badges in VLAN order, always visible, each with its own role, its
 //     accessible description and tooltip (the same as the snooping table's
 //     line); clear of every text, the status pills and each other; the block
-//     keeps its place and size while a role changes (sw-b off: VLAN 20
+//     keeps its place while a role changes, each badge fitted to its text (sw-b off: VLAN 20
 //     Standby → Querier); still there while an action of yours is in front;
 //     the exported picture has them all;
 //   - the private house: the thermostat's stream, a hop out of dist opened
@@ -55,9 +55,10 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       for (const x of a) assert.ok(notes.some((n) => n.indexOf(x.text + ': ') === 0), x.text);
       // readable: no smaller than 9 px in the drawing, a role's colour plus a sign and words
       assert.ok(a.every((x) => parseFloat(x.size) >= 9), a.map((x) => x.size).join());
-      // in VLAN order, stacked, one width; clear of every text and indicator, of each other
+      // in VLAN order, stacked in one column, each as wide as its text; clear of every text and indicator, of each other
       assert.ok(a.every((x, i) => i === 0 || x.box.y > a[i - 1].box.y + a[i - 1].box.h - 0.5));
-      assert.equal(new Set(a.map((x) => Math.round(x.box.w))).size, 1);
+      assert.equal(new Set(a.map((x) => Math.round(x.box.x))).size, 1);
+      assert.ok(a[0].box.w < a[2].box.w, 'fitted to their text');
       const obs = await page.eval(OBSTACLES);
       for (const dev of ['sw-a', 'sw-b', 'swb2']) {
         const bs = await page.eval(BADGES(dev));
@@ -74,7 +75,8 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.settle(150);
       a = await page.eval(BADGES('sw-a'));
       assert.equal(a[1].text, 'VLAN 20 · Querier');
-      assert.deepEqual(a.map((x) => x.box), before, 'no jitter: the same place and size');
+      assert.deepEqual(a.map((x) => [x.box.x, x.box.y, x.box.h]), before.map((x) => [x.x, x.y, x.h]), 'no jitter: the same place');
+      assert.ok(Math.abs(a[1].box.w - before[1].w) < 20, 'VLAN 20 · Querier is about as long as VLAN 20 · Standby');
       assert.deepEqual((await page.eval(BADGES('sw-b'))).map((x) => x.text), ['VLAN 10 · Off', 'VLAN 20 · Off']);
       // an action of yours in front: the badges stay
       await page.eval(`(() => { const c = netatlas.simController(); c.startStream('h10', 'eth0', '239.10.0.1', 5004, 1000, 500); c.refresh(true); return true; })()`);

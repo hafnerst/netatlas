@@ -44,7 +44,8 @@ function play(sim, p, ms, dt = 16, check = true, view = 'physical') {
     for (const it of p.items) {
       seen.add(it);
       if (!check || before.has(it) || !it.drawn || it.f.hidden || it.f.view !== view) continue;
-      if (it.parent) assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6, `${it.f.label} starts before the hop it continues arrived`);
+      // (multicast data is a flow: each copy from the moment it is forwarded, on every cable of its way at once)
+      if (it.parent && it.f.protocol !== 'mcast') assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6, `${it.f.label} starts before the hop it continues arrived`);
       for (const x of p.items)
         if (!it.parent && x !== it && x.drawn && x.key === it.key && x.f.test === it.f.test && x.f.sender !== undefined && it.f.sender !== undefined && x.f.sender !== it.f.sender && before.has(x) && p.state(x, p.clock - dt).phase !== 'gone')
           assert.ok(it.d0 >= Math.min(p.arrival(x), p.clock) - 1e-6 || p.arrival(x) <= p.clock - dt + 1e-6, `${it.f.label} (an answer) starts before ${x.f.label} arrived`);
@@ -144,7 +145,7 @@ test('every hop travels its whole way for its paced time, in its causal order (a
   assert.ok(drawn.length > 10, String(drawn.length));
   for (const it of drawn) {
     assert.ok(it.hop >= P.HOP_MIN && it.hop <= P.HOP_MAX, `${it.f.label}: ${it.hop}`);
-    if (it.parent) assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6, `${it.f.label} starts after its previous hop arrived`);
+    if (it.parent && it.f.protocol !== 'mcast') assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6, `${it.f.label} starts after its previous hop arrived`);
   }
   // a frame through a switch: the second cable starts after the first, with the crossing of the switch first
   assert.ok(drawn.some((it) => it.parent && it.transit === P.TRANSIT_MS));
@@ -335,7 +336,7 @@ test('the logical view: hops along relations and network lines, paced against th
   const drawn = Array.from(seen).filter((it) => it.drawn && it.f.view === 'logical');
   assert.ok(drawn.some((it) => it.f.track.ref.indexOf('relation:') === 0), 'along relations');
   assert.ok(drawn.some((it) => it.f.track.ref.indexOf('network:') === 0 && it.parent), 'a network line: to the network, then on to the receiver');
-  for (const it of drawn) if (it.parent) assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6);
+  for (const it of drawn) if (it.parent && it.f.protocol !== 'mcast') assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6);
 });
 
 test('a jump of the simulation (runTo): what it passed leaves the screen; what is still on its way stays', () => {

@@ -28,7 +28,7 @@
 import { textWidth } from '../layout/geometry';
 import { Flight, Track } from '../analysis/sim/types';
 import type { PaceState } from '../analysis/sim/pacing';
-import { Box, BoxIndex, candidates, placeLabel } from './sim-labels';
+import { Box, BoxIndex, candidates, placeIndex, placeLabel } from './sim-labels';
 import { Activity } from '../analysis/sim/pacing';
 
 /** At most this many dots (with their labels) are drawn at once. */
@@ -222,6 +222,24 @@ export class SimAnimator {
     this.last = null;
   }
 
+  /**
+   * A moving dot's label place, by flight: the candidate (side and distance
+   * from its dot) it got when it appeared, kept for the rest of its way.
+   */
+  private slots = new Map<number, number>();
+  /** the background dot that carries the short label of its cable and kind, while it is on its way */
+  private bgOwners = new Map<string, number>();
+
+  /** The label place of a moving dot: the one it got when it appeared (the first free one then, else the first), kept since. */
+  private slotOf(id: number, cands: Box[], placed: BoxIndex, marks: BoxIndex): number {
+    let s = this.slots.get(id);
+    if (s === undefined) {
+      s = Math.max(0, placeIndex(cands, this.obstacles, placed, marks));
+      this.slots.set(id, s);
+    }
+    return s;
+  }
+
   /** the indicators' boxes, read again only when their layer is redrawn */
   private markCache: { layer: Element | null; boxes: BoxIndex } = { layer: null, boxes: new BoxIndex() };
 
@@ -388,6 +406,13 @@ export class SimAnimator {
     // the indicators drawn on the diagram during the simulation (statuses, querier marks, snooping badges): no label over them
     const marks = this.markBoxes();
     const bgLabelled = new Set<string>();
+    // the dots on their way now (a label place is kept for these; the others' are forgotten)
+    const moving = new Set<number>();
+    for (const it of list) if (it.st.phase === 'moving' || it.st.phase === 'transit') moving.add(it.f.id);
+    if (live && !arrows) {
+      for (const id of Array.from(this.slots.keys())) if (!moving.has(id)) this.slots.delete(id);
+      for (const [k, id] of Array.from(this.bgOwners)) if (!moving.has(id)) this.bgOwners.delete(k);
+    }
     for (const it of list) {
       const f = it.f;
       const st = it.st;
@@ -432,14 +457,24 @@ export class SimAnimator {
         drawn++;
         const kind = bgKind(f.protocol, f.label);
         const k = f.track.ref + '|' + kind;
-        if (!bgLabelled.has(k) && st.phase === 'moving') {
+        // one dot of a cable and kind carries the label while it is on its way (then the next one): it never hops between dots
+        const owner = this.bgOwners.get(k);
+        if (live && (owner === undefined || !moving.has(owner))) this.bgOwners.set(k, f.id);
+        const mine = live ? this.bgOwners.get(k) === f.id : !bgLabelled.has(k);
+        if (mine && !bgLabelled.has(k) && st.phase === 'moving') {
           bgLabelled.add(k);
           const bw = textWidth(kind, BG_FONT) + 4;
           const bh = BG_FONT + 4;
-          const bbox = placeLabel(candidates(p.x, p.y, p.ux, p.uy, bw, bh, 1), this.obstacles, placed, marks);
+          const cands = candidates(p.x, p.y, p.ux, p.uy, bw, bh, 1);
+          // moving: the place it got when it appeared, kept (it may pass over something for a moment); still: where it touches nothing
+          const bbox = live && !arrows ? cands[this.slotOf(f.id, cands, placed, marks)] : placeLabel(cands, this.obstacles, placed, marks);
           if (bbox) {
             placed.add(bbox);
             const lab = label(this.doc, kind, bbox, false, 'none');
+            if (live && !arrows) {
+              lab.setAttribute('data-for', String(f.id));
+              lab.setAttribute('data-slot', String(this.slots.get(f.id)));
+            }
             lab.setAttribute('class', 'sim-bg-label');
             lab.setAttribute('aria-hidden', 'true');
             labels.insertBefore(lab, labels.firstChild);
@@ -451,11 +486,19 @@ export class SimAnimator {
       const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
       const w = textWidth(text, FONT) + 4;
       const h = FONT + 4;
-      let box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed, marks);
-      for (let k = 1; !box && k < fracs.length; k++) {
-        const q = at(geo, fracs[k]);
-        box = placeLabel(candidates(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed, marks);
-        if (box) p = q;
+      let box: Box | null;
+      if (live && !arrows && !lost) {
+        // a moving dot: its label where it got its place when it appeared, at the same side and distance all the way —
+        // it moves with the dot and may pass over a text, a box or another label for a moment, never jumping away from it
+        const cands = candidates(p.x, p.y, p.ux, p.uy, w, h, 1);
+        box = cands[this.slotOf(f.id, cands, placed, marks)];
+      } else {
+        box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed, marks);
+        for (let k = 1; !box && k < fracs.length; k++) {
+          const q = at(geo, fracs[k]);
+          box = placeLabel(candidates(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed, marks);
+          if (box) p = q;
+        }
       }
       // a moving dot stays on its way even where its label has no room for a moment (the label comes back with room)
       if (!box && (arrows || lost)) {
@@ -475,6 +518,11 @@ export class SimAnimator {
         shape.setAttribute('data-cast', cast);
       }
       const lab = box ? label(this.doc, text, box, lost, color) : null;
+      // (whose label it is and the place it keeps: for the tests and the reader of the SVG; no hit target)
+      if (lab && live && !arrows && !lost) {
+        lab.setAttribute('data-for', String(f.id));
+        lab.setAttribute('data-slot', String(this.slots.get(f.id)));
+      }
       for (const e of lab ? [shape, lab] : [shape]) {
         if (it.faded) e.classList.add('faded');
         if (it.followed) e.classList.add('followed');
