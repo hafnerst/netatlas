@@ -707,6 +707,8 @@ function row(item: LegendItem): VNode {
 /** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them). */
 function simStateSection(): LegendSection {
   // (the swatch: the indicator's LED only; its word is the row's label)
+  // a snooping badge: its sign and a word, in the role's style
+  const snoopSwatch = (role: string, sign: string, word: string, none = false): VNode[] => [h('g', { class: 'sim-snoop-vlan', 'data-role': role, 'data-querier': none ? 'none' : 'heard' }, [h('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), h('text', { class: 'sim-snoop-icon', x: 4, y: 12.5 }, sign), h('text', { x: 14, y: 12.5 }, word)])];
   const led = (state: string): VNode[] => [h('g', { class: 'sim-power', 'data-power': state }, [h('rect', { x: 3, y: 2, width: 18, height: 14, rx: 7 }), h('circle', { class: 'sim-led', cx: 12, cy: 9, r: 3.5 })])];
   return {
     title: 'Simulation: device status',
@@ -715,9 +717,11 @@ function simStateSection(): LegendSection {
       { swatch: led('off'), label: 'Powered off (red): or down with its host or its container engine; it takes no part' },
       { swatch: led('booting'), label: 'Booting (blue): powered on, it takes part when its boot time is over' },
       { swatch: led('passive'), label: 'Passive or External (hollow grey): a patch panel, a TAP, an external network — no power state of its own' },
-      { swatch: [h('g', { class: 'sim-querier', 'data-role': 'querier' }, [h('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'Querier · VLAN 10: the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier (startup)”: still sending its startup queries' },
-      { swatch: [h('g', { class: 'sim-querier', 'data-role': 'standby' }, [h('rect', { x: 1, y: 2, width: 44, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, 'Standby')])], label: 'Standby · VLAN 10 (grey): a candidate that yields to another querier; its tooltip says when it would take over' },
-      { swatch: [h('g', { class: 'sim-querier', 'data-role': 'none' }, [h('rect', { x: 1, y: 2, width: 44, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, 'None')])], label: 'No querier · VLAN 10 (grey, dashed): a snooping switch’s VLAN with members but no querier anywhere' },
+      { swatch: [h('g', { class: 'sim-querier', 'data-role': 'querier' }, [h('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'A router: Querier · VLAN 10 — the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier (startup)”: still sending its startup queries; grey “Standby”: a candidate that yields to another querier' },
+      { swatch: snoopSwatch('querier', '★', 'Querier'), label: 'A snooping switch: one badge per VLAN with snooping enabled, in VLAN order. ★ VLAN 10 · Querier: it is that VLAN’s elected querier (dashed ☆ Querier (startup): its startup queries)' },
+      { swatch: snoopSwatch('standby', '◇', 'Standby'), label: '◇ VLAN 20 · Standby: a querier candidate that yields to another querier there' },
+      { swatch: snoopSwatch('snooping', '○', 'Snooping'), label: '○ VLAN 30 · Snooping · querier heard: no candidate itself, a querier queries the VLAN (behind a multicast router port)' },
+      { swatch: snoopSwatch('snooping', '○', 'No querier', true), label: '○ VLAN 40 · Snooping · no querier (grey, dashed): nobody queries the VLAN, so no router port is learned there and a member’s report stays at the switch it reached; ✕ Candidate down, ⏻ Off or Booting: the switch is powered off or still booting' },
     ],
     note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
   };

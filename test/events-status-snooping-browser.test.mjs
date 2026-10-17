@@ -184,7 +184,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       let t = await tbl();
       assert.match(t.text, /No memberships and no router port learned in VLAN 10, 20, 30\./);
       assert.match(t.text, /Snooping enabled in VLAN 10, 20, 30/);
-      assert.match(t.text, /VLAN 20: the IGMP querier \(192\.168\.20\.1\), elected\./);
+      assert.match(t.text, /VLAN 20 · Querier: the elected IGMP querier of VLAN 20 \(snooping querier, from 192\.168\.20\.1\)/);
       assert.match(t.text, /core routes no multicast \(it runs no PIM\)/);
       // the TV joins (the form): the open table shows its port without being opened again
       await page.eval(`document.getElementById('sim-ne-join-toggle').click(), true`);
@@ -194,7 +194,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await run(3000);
       await page.settle(150);
       t = await tbl();
-      assert.ok(t.rows.some((r) => r[0] === '20' && r[1] === '239.20.0.1 (IGMP)' && r[2] === 'ap' && /^member: IGMPv3, any source, reported by 192\.168\.20\.\d+$/.test(r[3])), JSON.stringify(t.rows));
+      assert.ok(t.rows.some((r) => r[0] === '20' && r[1] === '239.20.0.1 (IGMP)' && r[2] === 'ap' && /^member port: IGMPv3, any source, reported by 192\.168\.20\.\d+$/.test(r[3])), JSON.stringify(t.rows));
       assert.equal(await page.eval(`netatlas.simController().itemsFor('device:tv').map((i) => i.label).indexOf('Show group memberships') >= 0`), true);
       await page.eval(`netatlas.simController().showTable('members', 'tv'), true`);
       await page.settle(100);

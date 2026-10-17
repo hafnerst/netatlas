@@ -1252,6 +1252,10 @@ svg.sim-dot-hover, svg.sim-dot-hover * { cursor: pointer !important; }
 .layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
 /* the scenario behind Network events: grey dots that go on moving; nothing to point at */
 .layer-sim .sim-bg { fill: var(--muted) !important; stroke: var(--panel); opacity: 0.6; pointer-events: none; }
+/* the background's short labels: its kind in grey, nothing to point at */
+.layer-sim-labels .sim-bg-label { pointer-events: none; }
+.layer-sim-labels .sim-bg-label rect { fill: var(--panel); stroke: var(--border); stroke-width: 0.8; opacity: 0.85; }
+.layer-sim-labels .sim-bg-label text { font-size: 8.5px; fill: var(--muted); }
 .sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
 .sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
@@ -1476,6 +1480,17 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-querier[data-role="standby"] rect, .sim-querier[data-role="none"] rect { stroke: var(--muted); }
 .sim-querier[data-role="standby"] text, .sim-querier[data-role="none"] text { fill: var(--muted); font-weight: 500; }
 .sim-querier[data-role="none"] rect { stroke-dasharray: 2 2; }
+/* a snooping switch's role per VLAN: one badge per VLAN with snooping enabled, a sign and words besides the colour */
+.sim-snoop-vlan rect { fill: var(--panel); stroke: var(--control-border); stroke-width: 1; }
+.sim-snoop-vlan text { font-size: 9.5px; font-weight: 500; fill: var(--text); }
+.sim-snoop-probe { font-size: 9.5px; font-weight: 600; }
+.sim-snoop-vlan .sim-snoop-icon { font-size: 9px; fill: var(--muted); }
+.sim-snoop-vlan[data-role="querier"] rect, .sim-snoop-vlan[data-role="starting"] rect { stroke: var(--accent); stroke-width: 1.2; }
+.sim-snoop-vlan[data-role="querier"] text, .sim-snoop-vlan[data-role="starting"] text { fill: var(--accent); font-weight: 600; }
+.sim-snoop-vlan[data-role="starting"] rect { stroke-dasharray: 3 2; }
+.sim-snoop-vlan[data-querier="none"] rect { stroke: var(--muted); stroke-dasharray: 2 2; }
+.sim-snoop-vlan[data-querier="none"] text:not(.sim-snoop-icon) { fill: var(--muted); }
+.sim-snoop-vlan[data-role="off"] rect, .sim-snoop-vlan[data-role="booting"] rect { stroke: var(--muted); stroke-dasharray: none; }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */

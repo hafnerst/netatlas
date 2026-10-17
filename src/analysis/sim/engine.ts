@@ -89,7 +89,7 @@ import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trac
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
-import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
+import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 import { capabilities } from '../../model/capabilities';
 import { SeparationSim } from './separation';
@@ -179,8 +179,8 @@ export interface Protocols {
   localError?(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void;
   /** the table sweep (once a second): the transport's timers and the firewalls' sessions */
   sweep?(): void;
-  /** a switch forwards a frame to a group MAC: the ports that get it (snooping), null: all */
-  snoop?(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null;
+  /** a switch forwards a frame to a group MAC: the ports that get it and why (snooping); null: no multicast IP, all ports */
+  snoop?(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): SnoopResult | null;
   /** a routed multicast packet at a router: true when multicast routing took it */
   mroute?(dev: string, l3: L3Iface, pkt: Pkt): boolean;
   /** a router recomputed its routes (multicast checks its RPF interfaces) */
@@ -1745,10 +1745,13 @@ export class Engine {
     }
     // IGMP / MLD snooping: a group's frames to its member ports and the router ports only
     let to = sd.virt ? this.virtOut(sd, from, frame, out, !!fresh) : out;
+    let snooped: SnoopResult | null = null;
     if (!wire && isGroupMac(frame.dst) && frame.dst !== BROADCAST && this.protocols && this.protocols.snoop) {
-      const keep = this.protocols.snoop(sd, from, vlan, frame, t);
+      snooped = this.protocols.snoop(sd, from, vlan, frame, t);
+      const keep = snooped ? snooped.ports : null;
       if (keep) to = out.filter((bp) => keep.has(bp.id));
     }
+    if (snooped && snooped.kind !== 'linklocal' && flight !== undefined && flight >= 0) this.mcDecide(sd, from, vlan, frame, t, flight, snooped, to);
     if (cross && cross.only) to = to.filter((bp) => (cross.only as string[]).indexOf(bp.id) >= 0);
     // a TAP's copy: the same frame out of its monitor ports as well (the original goes on)
     if (cross && cross.copy) {
@@ -1765,6 +1768,66 @@ export class Engine {
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
       this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);
     }
+  }
+
+  /**
+   * The multicast forwarding decisions, by the flight that brought the
+   * packet (the packet inspector: what the device it arrived at did with
+   * it, and why each hop out of it was sent). The newest 20 000.
+   */
+  readonly mcDecisions = new Map<number, McDecision[]>();
+
+  /** Record a decision (one per device and layer for a flight: a Layer 3 switch both switches and routes it; bounded: the oldest flights go first). */
+  recordMc(flight: number, d: McDecision): void {
+    const list = (this.mcDecisions.get(flight) || []).filter((x) => x.dev !== d.dev || x.layer !== d.layer);
+    list.push(d);
+    this.mcDecisions.set(flight, list);
+    if (this.mcDecisions.size > 20000) this.mcDecisions.delete(this.mcDecisions.keys().next().value as number);
+  }
+
+  /** The flight whose delivery is being handled now (-1: none: a timer, a user's event). */
+  currentFlight(): number {
+    return this.causeFlight === null ? -1 : this.causeFlight;
+  }
+
+  /**
+   * A switch's multicast forwarding decision for a frame, port by port: the
+   * ingress port (never back), each port the snooping keeps (member port,
+   * router port, flooded) and whether it can carry it (its VLAN, the
+   * spanning tree, its link), each port it leaves out and why.
+   */
+  private mcDecide(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number, flight: number, r: SnoopResult, to: BridgePort[]): void {
+    if (!frame.ip) return;
+    const left = (u: number): string => (u === Infinity ? '' : ` (${fmtDur(u - t)} left)`);
+    const ports: McPort[] = [];
+    for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
+      const c = carries(bp.vlans, vlan);
+      if (bp.id === from) {
+        ports.push({ port: bp.id, sent: false, why: 'ingress port (never sent back)' });
+        continue;
+      }
+      if (!c) continue;
+      const member = r.members.get(bp.id);
+      const router = r.routers.get(bp.id);
+      const role = member !== undefined && router !== undefined ? `member port${left(member)} and multicast router port` : member !== undefined ? `member port${left(member)}` : router !== undefined ? `multicast router port${left(router)}` : '';
+      if (to.indexOf(bp) < 0) {
+        ports.push({ port: bp.id, sent: false, why: r.kind === 'control' ? 'no multicast router port (reports go to router ports only)' : 'no member and no multicast router port' });
+        continue;
+      }
+      const why = role || (r.kind === 'off' ? `flooded (snooping ${r.mode === 'unset' ? 'not configured' : 'disabled'} in VLAN ${vlan})` : 'flooded (unregistered multicast flooded)');
+      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
+      if (this.blocked(sd.id, bp.id, vlan)) ports.push({ port: bp.id, sent: false, why: `${why}, but blocked by the spanning tree` });
+      else if (this.tunneledNet(sd, bp.id)) ports.push({ port: bp.id, sent: false, why: `${why}, but tunneled to its controller` });
+      else if (!up.length) ports.push({ port: bp.id, sent: false, why: `${why}, but its link is down` });
+      else ports.push({ port: bp.id, sent: true, why });
+    }
+    const g = formatAddr(frame.ip.dst);
+    const fam = frame.ip.dst.version === 4 ? 'IGMP' : 'MLD';
+    const mode = r.mode === 'enabled' ? `${fam} snooping enabled in VLAN ${vlan}; unregistered multicast ${r.unregistered === 'flood' ? 'flooded' : 'to the router ports only'}` : `${fam} snooping ${r.mode === 'unset' ? 'not configured' : 'disabled'} in VLAN ${vlan}: flooded`;
+    const sent = ports.filter((p) => p.sent).map((p) => p.port);
+    const what = r.kind === 'control' ? `the ${fam} report or leave` : g;
+    const text = sent.length ? `${sd.id} switches ${what} in VLAN ${vlan} to ${sent.join(', ')}` : `${sd.id} sends ${what} to no port in VLAN ${vlan}`;
+    this.recordMc(flight, { dev: sd.id, t, layer: 'l2', vlan, group: g, ingress: from, mode, ports, text });
   }
 
   /**
@@ -4092,6 +4155,15 @@ function frameEncap(frame: Frame): string[] {
 }
 
 /** Seconds as the log writes them ("12.4 s", "4 h"). */
+/** A time left, rounded to the second: "45 s", "4 min 53 s", "1 h 5 min" ("—": never). */
+export function fmtDur(ms: number): string {
+  if (!isFinite(ms)) return '—';
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min${s % 60 ? ' ' + (s % 60) + ' s' : ''}`;
+  return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ' ' + Math.floor((s % 3600) / 60) + ' min' : ''}`;
+}
+
 export function fmtSec(ms: number): string {
   const s = ms / 1000;
   if (s >= 3600 && s % 3600 === 0) return `${s / 3600} h`;

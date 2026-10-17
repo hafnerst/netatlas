@@ -359,7 +359,7 @@ async function main() {
       await page.settle(250);
       const labs = [];
       for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) labs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`), await page.rect(`#canvas .sim-power[data-device="${d}"]`));
-      await save('device-state', around(labs, 16), { quality: 30 });
+      await save('device-state', around(labs, 16), { quality: 26 });
       await page.eval(`netatlas.exitSimulation(), true`);
       await page.settle(100);
       // the start dialog: the protocols first; a modified value in Layer 3, collapsed again

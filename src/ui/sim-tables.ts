@@ -11,7 +11,7 @@
  * changes are announced politely, at most every few seconds. Opening a
  * table changes nothing in the simulation; the panels close when it ends.
  */
-import { ArpRow, ConnRow, GridTable, Headers, MacRow, SessionRow, TableTimer } from '../analysis/sim/types';
+import { ArpRow, ConnRow, GridTable, Headers, MacRow, McDecision, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
 
 export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone';
@@ -33,6 +33,8 @@ export interface PacketData {
   where: string;
   /** Follow message: whether its conversation is followed, and the button's action */
   follow?: { on: boolean; act: () => void };
+  /** the multicast forwarding decisions about this hop: the one that sent it, the one where it arrived */
+  forwarding?: Array<{ title: string; d: McDecision }>;
 }
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
@@ -390,6 +392,17 @@ export class TablePanels {
       const act = d.follow.act;
       fb.addEventListener('click', () => act());
       box.appendChild(el(this.doc, 'p', { class: 'pi-tools' }, [fb, el(this.doc, 'span', { class: 'muted small' }, [' Its replies too; it alone sets the pace, with a trail.'])]));
+    }
+    // a multicast hop: what the device that sent it decided, and the one it arrived at (port by port, short reasons)
+    for (const x of d.forwarding || []) {
+      const sec = el(this.doc, 'section', { class: 'pi-layer pi-fwd', 'data-device': x.d.dev, 'data-layer': x.d.layer });
+      sec.appendChild(el(this.doc, 'h4', {}, [x.title]));
+      sec.appendChild(el(this.doc, 'p', { class: 'small' }, [x.d.text + '.']));
+      sec.appendChild(el(this.doc, 'p', { class: 'small muted' }, [`${x.d.layer === 'l2' ? 'Layer 2 switching' : 'Layer 3 routing'} · ${x.d.mode} · group ${x.d.group} · in on ${x.d.ingress || '—'}`]));
+      const ul = el(this.doc, 'ul', { class: 'pi-ports' });
+      for (const p of x.d.ports) ul.appendChild(el(this.doc, 'li', { 'data-port': p.port, 'data-sent': p.sent ? 'yes' : 'no' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, [p.sent ? '→ ' : '✕ ']), el(this.doc, 'span', { class: 'mono' }, [p.port]), `: ${p.sent ? 'sent' : 'not sent'} — ${p.why}`]));
+      sec.appendChild(ul);
+      box.appendChild(sec);
     }
     const layer = (title: string, rows: Array<[string, string]>): void => {
       const dl = el(this.doc, 'dl');

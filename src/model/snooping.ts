@@ -47,6 +47,18 @@ export function snoopingChoice(d: Device | undefined, vlan: number): SnoopingCho
   return r ? (r.enabled ? 'enabled' : 'disabled') : 'unset';
 }
 
+/** The VLANs where a switch's snooping is enabled, ascending (none: no switch, or enabled nowhere). */
+export function snoopingEnabledVlans(d: Device): number[] {
+  return switchedVlans(d).filter((v) => snoopingChoice(d, v) === 'enabled');
+}
+
+/**
+ * The words of a snooping VLAN's badge in the simulation, after "VLAN n · ":
+ * every text a badge can have is one of these (its width is reserved for the
+ * longest, so a role that changes never moves or resizes it).
+ */
+export const SNOOP_ROLE_TEXTS = ['Querier', 'Querier (startup)', 'Standby', 'Candidate down · querier heard', 'Candidate down · no querier', 'Snooping · querier heard', 'Snooping · no querier', 'Off', 'Booting'];
+
 /** The switched VLANs of a switch without a choice (a configuration error each). */
 export function unsetSnoopingVlans(d: Device): number[] {
   return switchedVlans(d).filter((v) => snoopingChoice(d, v) === 'unset');

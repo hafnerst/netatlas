@@ -51,7 +51,8 @@ import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conve
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
-import { QuerierInfo } from '../analysis/sim/multicast';
+import { QuerierInfo, SnoopRole } from '../analysis/sim/multicast';
+import { SNOOP_GAP, SNOOP_ROW, snoopBlock } from '../layout/sizes';
 
 /** A querier mark's state: the elected querier, in its startup, a standby (non-querier), a snooping VLAN without any. */
 type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
@@ -60,7 +61,7 @@ import { TestForm } from './sim-test-form';
 import { IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
-import { Flight, Headers, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
+import { Flight, Headers, McDecision, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces } from '../model/types';
 import { el } from './dom';
@@ -711,7 +712,8 @@ export class SimController implements SimulationMode {
     const states = this.deviceStates();
     const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const marks = this.querierMarks();
-    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${this.host.view()}`;
+    const snoops = this.snoopBadges();
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
@@ -818,6 +820,79 @@ export class SimController implements SimulationMode {
       tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
       s.setAttribute('data-edge', at.edge);
     }
+    // every snooping switch: one badge per VLAN with snooping enabled, stacked in VLAN order beside its box
+    for (const [dev, roles] of snoops) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const blk = doc.createElementNS(NS, 'g');
+      blk.setAttribute('class', 'sim-snoop');
+      blk.setAttribute('data-device', dev);
+      blk.setAttribute('role', 'list');
+      blk.setAttribute('aria-label', `${dev}: IGMP / MLD snooping, ${roles.length} VLAN${roles.length === 1 ? '' : 's'}`);
+      g.appendChild(blk);
+      // the block's room (reserved by the layout to the right of its box: as wide as the longest text any of its VLANs can have,
+      // so a role that changes never resizes or moves it); taken elsewhere beside the box only when something is there
+      const size = snoopBlock(roles.map((r) => r.vlan)) as { w: number; h: number };
+      const w = size.w;
+      const ROW = SNOOP_ROW;
+      const at = place.take({ x: b.x + b.width + SNOOP_GAP, y: b.y, w, h: size.h }, b) ? { x: b.x + b.width + SNOOP_GAP, y: b.y, side: 'right' } : place.findBeside(b, w, size.h);
+      blk.setAttribute('data-side', at.side);
+      roles.forEach((r, i) => {
+        const s = doc.createElementNS(NS, 'g');
+        s.setAttribute('class', 'sim-snoop-vlan');
+        s.setAttribute('data-vlan', String(r.vlan));
+        s.setAttribute('data-role', r.role);
+        s.setAttribute('data-querier', r.querier ? (r.querier.self ? 'self' : 'heard') : 'none');
+        s.setAttribute('role', 'listitem');
+        s.setAttribute('aria-label', r.detail);
+        const t = doc.createElementNS(NS, 'title');
+        t.textContent = r.detail;
+        const y = at.y + i * ROW;
+        const rect = doc.createElementNS(NS, 'rect');
+        rect.setAttribute('x', at.x.toFixed(1));
+        rect.setAttribute('y', y.toFixed(1));
+        rect.setAttribute('width', String(w));
+        rect.setAttribute('height', String(ROW - 1));
+        rect.setAttribute('rx', '3');
+        // the role's sign besides its words and colour: ★ querier, ☆ startup, ◇ standby, ✕ down, ○ snooping only, ⏻ off or booting
+        const icon = doc.createElementNS(NS, 'text');
+        icon.setAttribute('class', 'sim-snoop-icon');
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = r.role === 'querier' ? '★' : r.role === 'starting' ? '☆' : r.role === 'standby' ? '◇' : r.role === 'down' ? '✕' : r.role === 'off' || r.role === 'booting' ? '⏻' : '○';
+        icon.setAttribute('x', (at.x + 4).toFixed(1));
+        icon.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
+        const tx = doc.createElementNS(NS, 'text');
+        tx.textContent = r.text;
+        tx.setAttribute('x', (at.x + 15).toFixed(1));
+        tx.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
+        s.appendChild(t);
+        s.appendChild(rect);
+        s.appendChild(icon);
+        s.appendChild(tx);
+        blk.appendChild(s);
+      });
+    }
+  }
+
+  /**
+   * Every snooping switch's role in each VLAN where its snooping is enabled
+   * (the model's snoopRoles: its own part — querier, startup, standby,
+   * candidate down, snooping only — and whether the VLAN has a querier), by
+   * device; switches with snooping enabled nowhere have none.
+   */
+  snoopBadges(): Map<string, SnoopRole[]> {
+    const out = new Map<string, SnoopRole[]>();
+    for (const id of Array.from(this.sim.engine.net.devices.keys()).sort()) {
+      const rs = this.sim.multicast.snoopRoles(id);
+      if (rs.length) out.set(id, rs);
+    }
+    return out;
   }
 
   /**
@@ -836,6 +911,8 @@ export class SimController implements SimulationMode {
     const out = new Map<string, { text: string; state: QuerierMark; detail: string }>();
     const by = new Map<string, QuerierInfo[]>();
     for (const q of this.sim.multicast.querierRoles()) {
+      // (a switch's candidacy is in its per-VLAN snooping badges)
+      if (q.kind === 'switch') continue;
       if (q.role !== 'querier' && q.role !== 'starting' && q.role !== 'non-querier') continue;
       by.set(q.dev, (by.get(q.dev) || []).concat([q]));
     }
@@ -858,13 +935,6 @@ export class SimController implements SimulationMode {
       const state: QuerierMark = active.length ? 'querier' : starting.length ? 'starting' : 'standby';
       const word = state === 'querier' ? 'Querier' : state === 'starting' ? 'Querier (startup)' : 'Standby';
       out.set(dev, { text: `${word} · ${where(main.map((q) => q.lan))}`, state, detail: qs.map(line).join('; ') });
-    }
-    // a snooping switch's VLANs with members but nobody querying them
-    for (const sd of Array.from(this.sim.engine.net.devices.values())) {
-      if (out.has(sd.id) || !sd.bridge || !sd.caps.switchFeatures) continue;
-      const vlans = this.sim.multicast.noQuerierVlans(sd.id);
-      if (!vlans.length) continue;
-      out.set(sd.id, { text: `No querier · ${where(vlans.map((v) => 'VLAN ' + v))}`, state: 'none', detail: `no IGMP querier heard in VLAN ${vlans.join(', ')}, and it is none itself: its members are learned from their own reports only and age out after the membership interval (configure a querier: a multicast router, or the snooping querier with an address there)` });
     }
     return out;
   }
@@ -1257,8 +1327,23 @@ export class SimController implements SimulationMode {
       if (l) where += `, on cable ${l.id} (${f.track.from === 'a' ? l.a.device + ' → ' + l.b.device : l.b.device + ' → ' + l.a.device})`;
     }
     const key = it ? it.key : conversationKey(f.protocol, f.hdr, f.label);
-    this.inspect(f.hdr, where, near, key, f.label);
+    this.inspect(f.hdr, where, near, key, f.label, this.forwardingOf(f));
     return true;
+  }
+
+  /**
+   * The multicast forwarding decisions about a hop (the packet inspector):
+   * the one of the device that sent it on (it decided where the packet it
+   * received went: this hop among them) and the one of the device it arrived
+   * at (where it goes from there, or why nowhere).
+   */
+  forwardingOf(f: Flight): Array<{ title: string; d: McDecision }> {
+    const out: Array<{ title: string; d: McDecision }> = [];
+    const dec = this.sim.engine.mcDecisions;
+    // (the decision that sent it: the one of the device at this hop's start)
+    for (const d of f.parent !== undefined ? dec.get(f.parent) || [] : []) if (d.ports.some((p) => p.sent)) out.push({ title: `${d.layer === 'l2' ? 'Switching' : 'Routing'} at ${d.dev} (sent this hop)`, d });
+    for (const d of dec.get(f.id) || []) out.push({ title: `${d.layer === 'l2' ? 'Switching' : 'Routing'} at ${d.dev} (where it arrived)`, d });
+    return out;
   }
 
   /** The packet inspector for a message of the event log (its frame as sent). */
@@ -1270,10 +1355,11 @@ export class SimController implements SimulationMode {
     return true;
   }
 
-  private inspect(h: Headers, where: string, near: { x: number; y: number; w: number; h: number } | null | undefined, key: string, label: string): void {
-    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void } } => ({
+  private inspect(h: Headers, where: string, near: { x: number; y: number; w: number; h: number } | null | undefined, key: string, label: string, forwarding: Array<{ title: string; d: McDecision }> = []): void {
+    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }> } => ({
       hdr: h,
       where,
+      forwarding,
       follow: {
         on: !!this.pacer.follow && this.pacer.follow.key === key,
         act: () => {
@@ -1283,7 +1369,7 @@ export class SimController implements SimulationMode {
             // following: the inspector stays open beside the running simulation
             this.resumeFromInspector();
           }
-          this.inspect(h, where, null, key, label);
+          this.inspect(h, where, null, key, label, forwarding);
         },
       },
     });

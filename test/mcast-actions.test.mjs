@@ -34,7 +34,7 @@ links:
   - {id: l5, a: "h3:eth0", b: "sw:p5"}
 `;
 
-test('the private house: IGMP / MLD to tick (the core is the IoT VLAN’s snooping querier), no streams of its own; a join’s reports and a stream’s datagrams carry their event’s id, so they are drawn whatever is ticked', () => {
+test('the private house: IGMP / MLD to tick (the core is the snooping querier of VLANs 10, 20 and 30), no streams of its own; a join’s reports and a stream’s datagrams carry their event’s id, so they are drawn whatever is ticked', () => {
   const s = sim(example('private-house.yaml'), { params: {} });
   const ids = s.protocolEntries().map((e) => e.id);
   assert.ok(ids.indexOf('igmp') >= 0, 'its querier’s queries are shown (before: no entry, so never drawn)');
@@ -66,7 +66,7 @@ test('the private house: IGMP / MLD to tick (the core is the IoT VLAN’s snoopi
   assert.equal(st.stream.sent, 3);
   const v = view(s, st.id);
   assert.match(v.summary, /^3 datagrams sent, every 1 s of real time · no member received any yet · stops at core$/);
-  assert.ok(v.details.some((d) => d === 'Last stopped at core: core forwards 239.1.1.1 to no port in VLAN 10: no member reported it there and it has no multicast router port (IGMP / MLD snooping enabled)'), v.details.join(' | '));
+  assert.ok(v.details.some((d) => d === "Last stopped at core: core forwards 239.1.1.1 to no port in VLAN 10: no member reported it there and it has no multicast router port (it is the VLAN's querier itself and no multicast router is there; unregistered multicast goes to the router ports only)"), v.details.join(' | '));
   assert.deepEqual(v.tests, [st.traffic]);
   // in the log, found by the event's id: the first datagram (a message with its headers: the packet inspector)
   const first = s.events().find((e) => e.test === st.traffic && e.kind === 'message' && e.hdr);

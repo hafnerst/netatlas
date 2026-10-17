@@ -66,7 +66,7 @@ import { relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
 import { tunnelRelation } from '../trace';
-import { Frame, fmtSec } from './engine';
+import { Frame, fmtDur as dur, fmtSec } from './engine';
 import { isLinkLocalGroup, isMulticastIp, isSsmGroup, multicastMac } from './mac';
 import { L3Iface, SimDevice } from './net';
 import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, vlanRef } from './params';
@@ -75,7 +75,7 @@ import { ProtocolSim, Sess } from './protocols';
 import { RealTimeScheduler } from './realtime';
 import { SnoopingChoice, snoopingChoice, switchedVlans } from '../../model/snooping';
 import { vlanRangesShown } from '../../model/derive';
-import { GridTable, L4, Msg, NetEvent, Pkt, SessionStatus, TableTimer } from './types';
+import { GridTable, L4, McPort, Msg, NetEvent, Pkt, SessionStatus, SnoopResult, TableTimer } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** A VLAN in words ("VLAN 20"; 0: a port's untagged frames without a VLAN). */
@@ -119,6 +119,30 @@ interface RGroup {
 export type QuerierRole = 'starting' | 'querier' | 'non-querier' | 'off' | 'down';
 
 /** A querier candidate and its role as the tables and the diagram show it. */
+/**
+ * A snooping switch's state in one of its VLANs with snooping enabled: its
+ * own part (an elected querier, one in its startup, a standby candidate, a
+ * candidate that is down, or snooping only — no candidate) and, apart from
+ * that, whether the VLAN has a querier (itself, or one it hears, with who).
+ * From the protocol's state, never from the configuration alone.
+ */
+export interface SnoopRole {
+  dev: string;
+  vlan: number;
+  /** querier: elected; starting: its startup queries; standby: a candidate that yields; down: a candidate not running (not yet up); snooping: no candidate; off: the switch is powered off (it snoops nothing) */
+  role: 'querier' | 'starting' | 'standby' | 'down' | 'snooping' | 'off' | 'booting';
+  /** the VLAN's querier: itself, one heard (address, device, the port it is behind), or none */
+  querier: { self: true } | { self: false; addr: string; dev: string; port: string; until: number } | null;
+  /** its multicast router ports there now (a query or PIM Hello arrived: a router or the querier behind it), until when */
+  routerPorts: Array<{ port: string; until: number }>;
+  /** where a group without members goes there */
+  unregistered: string;
+  /** the badge: "VLAN 20 · Querier", "VLAN 10 · Snooping · no querier" */
+  text: string;
+  /** the same in a sentence (the tooltip, the accessible name, the table) */
+  detail: string;
+}
+
 export interface QuerierInfo {
   dev: string;
   kind: 'router' | 'switch';
@@ -207,6 +231,8 @@ interface SnoopPort {
 interface Snoop {
   routerPorts: Map<string, number>;
   groups: Map<string, Map<string, SnoopPort>>;
+  /** the querier it last heard (a general query) and on which port, until the other querier present interval is over */
+  querier?: { addr: string; dev: string; port: string; until: number };
 }
 
 /** An entry of a router's multicast routing table: (*, G) or (S, G). */
@@ -849,6 +875,46 @@ export class Multicast {
   }
 
   /**
+   * A switch's role in each VLAN where its snooping is enabled, in VLAN
+   * order (none: no snooping switch, or snooping enabled nowhere). Every
+   * such VLAN has one, whatever happens in it.
+   */
+  snoopRoles(dev: string): SnoopRole[] {
+    const sd = this.P.m.index.devices.get(dev);
+    const sim = this.e.net.devices.get(dev);
+    if (!sd || !sim || !sim.bridge || !sim.caps.switchFeatures) return [];
+    const now = this.e.now;
+    const cands = new Map<number, QuerierInfo>();
+    for (const q of this.querierRoles(dev)) if (q.kind === 'switch' && q.vlan !== undefined && q.family === 'IGMP') cands.set(q.vlan, q);
+    const out: SnoopRole[] = [];
+    const ps = this.e.powerState(dev);
+    const down = ps && ps.state !== 'on' ? ps.state : null;
+    for (const vlan of switchedVlans(sd).slice().sort((a, b) => a - b)) {
+      if (this.snoopMode(dev, vlan) !== 'enabled') continue;
+      // powered off or still booting: it snoops nothing yet (its tables empty, learned again once it is up)
+      if (down) {
+        out.push({ dev, vlan, role: down === 'booting' ? 'booting' : 'off', querier: null, routerPorts: [], unregistered: this.unregisteredPolicy(dev, vlan), text: `VLAN ${vlan} · ${down === 'booting' ? 'Booting' : 'Off'}`, detail: `${dev}: ${down === 'booting' ? 'booting' : 'powered off'}: it snoops nothing in VLAN ${vlan} (its tables are empty; learned again once it is up)` });
+        continue;
+      }
+      const st = this.snoops.get(dev + '|' + vlan);
+      const c = cands.get(vlan);
+      const role: SnoopRole['role'] = !c || c.role === 'off' ? 'snooping' : c.role === 'non-querier' ? 'standby' : c.role === 'down' ? 'down' : c.role;
+      const heard = st && st.querier && st.querier.until > now ? st.querier : null;
+      const querier: SnoopRole['querier'] = role === 'querier' || role === 'starting' ? { self: true } : heard ? { self: false, ...heard } : null;
+      const routerPorts = st ? Array.from(st.routerPorts).filter(([, u]) => u > now).sort((a, b) => cmp(a[0], b[0])).map(([port, until]) => ({ port, until })) : [];
+      const presence = querier ? 'querier heard' : 'no querier';
+      const word = role === 'querier' ? 'Querier' : role === 'starting' ? 'Querier (startup)' : role === 'standby' ? 'Standby' : role === 'down' ? `Candidate down · ${presence}` : `Snooping · ${presence}`;
+      const who = querier && !querier.self ? `${querier.dev || querier.addr} (${querier.addr}, behind port ${querier.port})` : '';
+      const own = role === 'querier' ? `the elected IGMP querier of VLAN ${vlan} (snooping querier${c ? `, from ${c.addr}` : ''})` : role === 'starting' ? `the IGMP querier of VLAN ${vlan} for now, sending its startup queries${c ? ` from ${c.addr}` : ''}` : role === 'standby' ? `a standby querier candidate in VLAN ${vlan}: ${who || 'another querier'} queries` : role === 'down' ? `a querier candidate in VLAN ${vlan} that is down (its VLAN interface or ports)` : `snooping only in VLAN ${vlan} (no querier candidate)`;
+      const q = querier ? (querier.self ? '' : role === 'standby' ? '' : `; the querier there is ${who}`) : `; no querier heard there: members are learned from their own reports only, and a group without members reaches no host`;
+      const rp = routerPorts.length ? `; multicast router port${routerPorts.length > 1 ? 's' : ''} ${routerPorts.map((r) => r.port).join(', ')}` : '; no multicast router port';
+      const un = `; unregistered multicast ${this.unregisteredPolicy(dev, vlan) === 'flood' ? 'flooded' : 'to the router ports only'}`;
+      out.push({ dev, vlan, role, querier, routerPorts, unregistered: this.unregisteredPolicy(dev, vlan), text: `VLAN ${vlan} · ${word}`, detail: `${dev}: ${own}${q}${rp}${un}` });
+    }
+    return out;
+  }
+
+  /**
    * The VLANs where a snooping switch has members (someone joined) but no
    * querier: no query heard there (no router port) and it is no querier of
    * its own. Its memberships are then only learned from the members' own
@@ -1019,37 +1085,44 @@ export class Multicast {
   }
 
   /**
-   * A switch forwards a frame to a group MAC in a VLAN: the ports that get it
-   * (null: every port of the VLAN). Snooping enabled: it learns router ports
-   * (queries, PIM Hellos) and member ports (reports, per group); reports and
-   * leaves go to the router ports only; link-local groups (224.0.0.0/24,
-   * ff02::/16: queries, routing protocols) are flooded; a group's data goes
-   * to its member ports and the router ports, and a group without members
-   * to the router ports only — never flooded. Disabled or not configured:
-   * flooded in the VLAN (not configured is a configuration error, said once).
+   * A switch forwards a frame to a group MAC in a VLAN (RFC 4541 §2.1): the
+   * ports that get it and why. Snooping enabled: it learns router ports
+   * (queries, PIM Hellos: a multicast router or a querier there) and member
+   * ports (reports, per group); reports and leaves go to the router ports
+   * only (§2.1.1); link-local groups (224.0.0.0/24, ff02::/16: queries, the
+   * routing protocols) are flooded; a group's data goes to its member ports
+   * and the router ports (§2.1.2). A group without members (unregistered)
+   * goes by the VLAN's own policy, `unregistered_multicast`: to the router
+   * ports only (the default: what the RFC requires; none there, nowhere), or
+   * flooded to every port (what it allows). Snooping disabled or not
+   * configured: flooded in the VLAN (not configured is a configuration
+   * error, said once). Never back out of the ingress port (the caller).
    */
-  snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null {
+  snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): SnoopResult | null {
     if (!sd.caps.switchFeatures || !frame.ip || !isMulticastIp(frame.ip.dst)) return null;
     const p = frame.ip;
     const mode = this.snoopMode(sd.id, vlan);
+    const unregistered = this.unregisteredPolicy(sd.id, vlan);
     if (mode !== 'enabled') {
       if (mode === 'unset' && !isLinkLocalGroup(p.dst)) this.snoopNote(`snoopunset|${sd.id}|${vlan}`, 'note', sd.id, `${sd.id} floods ${frame.msg.label} to ${formatAddr(p.dst)} in ${vlanName(vlan)}: its IGMP / MLD snooping is not configured there (a configuration error: choose enabled or disabled)`, t, frame.msg);
-      return null;
+      return { ports: null, members: new Map(), routers: new Map(), kind: isLinkLocalGroup(p.dst) ? 'linklocal' : 'off', mode, unregistered };
     }
     const st = this.snoopState(sd.id, vlan);
     const msg = p.msg;
     const d = (msg.data || {}) as { group?: string; leave?: boolean; sources?: string[]; from?: string };
-    const routers = (): Set<string> => {
-      const out = new Set<string>();
-      for (const [port, until] of st.routerPorts) if (until > t) out.add(port);
+    const routerMap = (): Map<string, number> => {
+      const out = new Map<string, number>();
+      for (const [port, until] of st.routerPorts) if (until > t) out.set(port, until);
       return out;
     };
     const fam = p.dst.version === 4 ? 'IGMP' : 'MLD';
     if (from !== null) {
-      // a query or a PIM Hello: a multicast router there
+      // a query or a PIM Hello: a multicast router (or the VLAN's querier) there
       if ((msg.protocol === 'igmp' && msg.type === 'Query') || (msg.protocol === 'pim' && msg.type === 'Hello')) {
         if (!st.routerPorts.has(from) || (st.routerPorts.get(from) as number) <= t) this.noteAt(t, 'table', sd.id, `${sd.id}: port ${from} is a multicast router port in ${vlanName(vlan)} (${msg.protocol === 'pim' ? 'PIM Hello' : fam + ' query'} from ${formatAddr(p.src)})`);
         st.routerPorts.set(from, t + this.e.params.num('mrouter-aging', sd.id));
+        // the querier this VLAN hears (its general queries), until the other querier present interval is over
+        if (msg.protocol === 'igmp' && !d.group) st.querier = { addr: formatAddr(p.src), dev: d.from || '', port: from, until: t + this.otherPresent(sd.id) };
         // its own snooping querier of the VLAN hears it: the querier election
         const sq = this.sqs.get(sd.id + '|' + vlan);
         if (sq && msg.protocol === 'igmp' && p.src.version === 4) this.heardQuery(sq, p.src, d.from || '', t);
@@ -1084,22 +1157,32 @@ export class Multicast {
       const ports = st.groups.get(d.group);
       if (ports) for (const e of ports.values()) e.until = Math.min(e.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
     }
+    const routers = routerMap();
     // reports and leaves go to the router ports only: other hosts never hear them
-    if (msg.protocol === 'igmp' && msg.type !== 'Query') return routers();
+    if (msg.protocol === 'igmp' && msg.type !== 'Query') return { ports: new Set(routers.keys()), members: new Map(), routers, kind: 'control', mode, unregistered };
     // link-local groups (queries, PIM, OSPF …: the protocols' own control traffic) are flooded
-    if (isLinkLocalGroup(p.dst)) return null;
-    // a group's data: its member ports and the router ports; without members the router ports only (nothing to the hosts)
+    if (isLinkLocalGroup(p.dst)) return { ports: null, members: new Map(), routers, kind: 'linklocal', mode, unregistered };
+    // a group's data: its member ports and the router ports
     const g = formatAddr(p.dst);
-    const members = st.groups.get(g);
-    const keep = routers();
-    let any = false;
-    if (members) for (const [port, e] of members) if (e.until > t) {
-      keep.add(port);
-      any = true;
+    const members = new Map<string, number>();
+    const mine = st.groups.get(g);
+    if (mine) for (const [port, e] of mine) if (e.until > t) members.set(port, e.until);
+    // unregistered (no member): its VLAN's policy — the router ports only, or flooded
+    if (!members.size && unregistered === 'flood') {
+      this.snoopNote(`snoopflood|${sd.id}|${vlan}|${g}|${msg.test}`, 'note', sd.id, `${sd.id} floods ${g} in ${vlanName(vlan)}: no member reported it there, and its unregistered multicast is flooded (unregistered_multicast: flood)`, t, msg);
+      return { ports: null, members, routers, kind: 'data', mode, unregistered };
     }
+    const keep = new Set<string>([...routers.keys(), ...members.keys()]);
     // (nowhere at all: where the group's way ends, as a drop of its traffic; to router ports only: a note)
-    if (!any) this.snoopNote(`snoopnone|${sd.id}|${vlan}|${g}|${msg.test}`, keep.size ? 'note' : 'drop', sd.id, keep.size ? `${sd.id} sends ${g} to no host port in ${vlanName(vlan)}: no member reported it there (IGMP / MLD snooping enabled); only to its multicast router port${keep.size > 1 ? 's' : ''} ${Array.from(keep).sort(cmp).join(', ')}` : `${sd.id} forwards ${g} to no port in ${vlanName(vlan)}: no member reported it there and it has no multicast router port (IGMP / MLD snooping enabled)`, t, msg);
-    return keep;
+    const own = this.sqs.get(sd.id + '|' + vlan);
+    const why = own && own.running && own.querier ? `it is the VLAN's querier itself and no multicast router is there` : `no query or PIM Hello heard in ${vlanName(vlan)}: no querier there`;
+    if (!members.size) this.snoopNote(`snoopnone|${sd.id}|${vlan}|${g}|${msg.test}`, keep.size ? 'note' : 'drop', sd.id, keep.size ? `${sd.id} sends ${g} to no host port in ${vlanName(vlan)}: no member reported it there (IGMP / MLD snooping enabled); only to its multicast router port${keep.size > 1 ? 's' : ''} ${Array.from(keep).sort(cmp).join(', ')}` : `${sd.id} forwards ${g} to no port in ${vlanName(vlan)}: no member reported it there and it has no multicast router port (${why}; unregistered multicast goes to the router ports only)`, t, msg);
+    return { ports: keep, members, routers, kind: 'data', mode, unregistered };
+  }
+
+  /** A switch's policy for unregistered multicast in a VLAN (a group without members): 'router-ports' or 'flood'. */
+  unregisteredPolicy(dev: string, vlan: number): string {
+    return this.e.params.str('unregistered-mc', dev, vlanRef(vlan));
   }
 
   /** A line of a switch's snooping about a frame, at the moment it passes, at most every 10 s per key (its traffic's: a stream's events find it). */
@@ -1443,6 +1526,21 @@ export class Multicast {
    * first-hop router's register, the switch to the source's tree, and the
    * copies out of the outgoing interfaces. True: handled here.
    */
+  /** A router drops a multicast packet: its log line and its decision for the packet inspector. */
+  private dropL3(key: string, dev: string, l3: L3Iface, pkt: Pkt, text: string): void {
+    this.note(key, 'drop', dev, text);
+    this.l3Decide(dev, l3, pkt, text, []);
+  }
+
+  /** A router's multicast routing decision for the packet being delivered now (Layer 3: by its multicast routes, not by snooping). */
+  private l3Decide(dev: string, l3: L3Iface, pkt: Pkt, text: string, oifs: string[]): void {
+    const f = this.e.currentFlight();
+    if (f < 0) return;
+    const ports: McPort[] = [{ port: l3.id, sent: false, why: 'incoming interface (never sent back)' }];
+    for (const o of oifs) ports.push({ port: o, sent: true, why: 'outgoing interface of its multicast route' });
+    this.e.recordMc(f, { dev, t: this.e.now, layer: 'l3', vlan: 0, group: formatAddr(pkt.dst), ingress: l3.id, mode: this.mcRouter(dev) ? 'Layer 3 multicast routing (PIM)' : 'Layer 3: it routes no multicast', ports, text });
+  }
+
   mroute(dev: string, l3: L3Iface, pkt: Pkt): boolean {
     if (!isMulticastIp(pkt.dst) || isLinkLocalGroup(pkt.dst)) return false;
     if (pkt.msg.protocol === 'igmp' || pkt.msg.protocol === 'pim') return false;
@@ -1450,16 +1548,16 @@ export class Multicast {
     const g = formatAddr(pkt.dst);
     const s = formatAddr(pkt.src);
     if (!this.mcRouter(dev)) {
-      if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
-      else this.note(`nopim|${dev}|${g}`, 'drop', dev, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
+      if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.dropL3(`fwmc|${dev}|${g}`, dev, l3, pkt, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
+      else this.dropL3(`nopim|${dev}|${g}`, dev, l3, pkt, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
       return true;
     }
     if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') {
-      this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
+      this.dropL3(`fwmc|${dev}|${g}`, dev, l3, pkt, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       return true;
     }
     if (pkt.ttl <= 1) {
-      this.note(`ttl1|${dev}|${s}|${g}`, 'drop', dev, `${dev} does not route ${pkt.msg.label} from ${s}: its TTL is 1`);
+      this.dropL3(`ttl1|${dev}|${s}|${g}`, dev, l3, pkt, `${dev} does not route ${pkt.msg.label} from ${s}: its TTL is 1`);
       return true;
     }
     const t = this.table(dev);
@@ -1484,7 +1582,7 @@ export class Multicast {
     } else if (mode === 'dense' && !sg) {
       const r = this.rpf(dev, pkt.src);
       if (r.iif === null) {
-        this.note(`dnoroute|${dev}|${s}|${g}`, 'drop', dev, `${dev} drops (${s}, ${g}): ${r.why} yet, so no RPF interface towards the source`);
+        this.dropL3(`dnoroute|${dev}|${s}|${g}`, dev, l3, pkt, `${dev} drops (${s}, ${g}): ${r.why} yet, so no RPF interface towards the source`);
         return true;
       }
       sg = this.entry(dev, s, g, 'dense mode data', false);
@@ -1510,8 +1608,8 @@ export class Multicast {
           this.joinPrune(dev, nb, s, g, true);
         }
       }
-      if (!sg && !star) this.note(`nostate|${dev}|${s}|${g}`, 'drop', dev, `${dev} has no state for (${s}, ${g}): nobody downstream joined it${mode === 'sparse' ? ' (and it is no first-hop router of the source)' : ''}; dropped`);
-      else this.note(`rpf|${dev}|${s}|${g}|${l3.id}`, 'drop', dev, `${dev}: RPF check failed for (${s}, ${g}): it arrived on ${l3.id}, the RPF interface ${sg && sg.iif ? 'towards the source' : 'towards the RP'} is ${expect || 'none'}; dropped`);
+      if (!sg && !star) this.dropL3(`nostate|${dev}|${s}|${g}`, dev, l3, pkt, `${dev} has no state for (${s}, ${g}): nobody downstream joined it${mode === 'sparse' ? ' (and it is no first-hop router of the source)' : ''}; dropped`);
+      else this.dropL3(`rpf|${dev}|${s}|${g}|${l3.id}`, dev, l3, pkt, `${dev}: RPF check failed for (${s}, ${g}): it arrived on ${l3.id}, the RPF interface ${sg && sg.iif ? 'towards the source' : 'towards the RP'} is ${expect || 'none'}; dropped`);
       return true;
     }
     // the RP receives it natively: the first-hop router may stop registering
@@ -1551,6 +1649,7 @@ export class Multicast {
     if (via === 'star') add(star, true);
     const list = Array.from(out).sort(cmp);
     const sig = via + ':' + list.join(',');
+    this.l3Decide(dev, l3, pkt, list.length ? `${dev} routes (${s}, ${g}) from ${l3.id} out of ${list.join(', ')} (${via === 'sg' ? 'the source’s tree' : 'the shared tree'})` : `${dev} routes (${s}, ${g}) nowhere: no outgoing interface`, list);
     const logE = (via === 'sg' ? sg : star) as MRoute;
     if (logE.logged !== sig) {
       logE.logged = sig;
@@ -2034,14 +2133,15 @@ export class Multicast {
       const vn = vlan ? String(vlan) : 'untagged';
       for (const [port, until] of Array.from(st.routerPorts).sort((a, b) => cmp(a[0], b[0]))) {
         if (until <= now) continue;
-        rows.push([vn, '—', port, 'multicast router port (a query or PIM Hello arrived there)', dur(until - now)]);
+        const q = st.querier && st.querier.port === port && st.querier.until > now ? `; the querier ${st.querier.dev || st.querier.addr} (${st.querier.addr}) is behind it` : '';
+        rows.push([vn, '—', port, `multicast router port: every group goes there, members or not (a query or PIM Hello arrived there${q}); not a membership`, dur(until - now)]);
         learned.add(vlan);
       }
       for (const [g, ports] of Array.from(st.groups).sort((a, b) => cmp(a[0], b[0]))) {
         const fam = (parseAddress(g) as IpAddr).version === 4 ? 'IGMP' : 'MLD';
         for (const [port, e] of Array.from(ports).sort((a, b) => cmp(a[0], b[0]))) {
           if (e.until <= now) continue;
-          rows.push([vn, `${g} (${fam})`, port, `member: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}`, dur(e.until - now)]);
+          rows.push([vn, `${g} (${fam})`, port, `member port: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}`, dur(e.until - now)]);
           learned.add(vlan);
         }
       }
@@ -2052,16 +2152,16 @@ export class Multicast {
     const en = by('enabled');
     const dis = by('disabled');
     const unset = by('unset');
-    if (en.length) notes.push(`Snooping enabled in VLAN ${vlanRangesShown(en, true)}: a group goes to its member ports and the router ports only; a group without members to the router ports only (never flooded to the hosts).`);
+    const fl = en.filter((v) => this.unregisteredPolicy(dev, v) === 'flood');
+    const rp = en.filter((v) => this.unregisteredPolicy(dev, v) !== 'flood');
+    if (rp.length) notes.push(`Snooping enabled in VLAN ${vlanRangesShown(rp, true)}: a group goes to its member ports and the router ports; a group without members (unregistered) to the router ports only — none there, nowhere (unregistered_multicast: router-ports, RFC 4541 §2.1.2).`);
+    if (fl.length) notes.push(`Snooping enabled in VLAN ${vlanRangesShown(fl, true)}: a group goes to its member ports and the router ports; a group without members is flooded to every port (unregistered_multicast: flood).`);
     if (dis.length) notes.push(`Snooping disabled in VLAN ${vlanRangesShown(dis, true)}: multicast is flooded to every port of the VLAN.`);
     if (unset.length) notes.push(`Not configured in VLAN ${vlanRangesShown(unset, true)}: a configuration error (choose enabled or disabled); flooded meanwhile.`);
     notes.push('Reports and leaves go to the router ports only; link-local groups (224.0.0.0/24, ff02::/16: queries, routing protocols) are flooded.');
     const sd = this.P.sd(dev);
-    // its snooping querier candidacies and their roles (Show querier election has the timers)
-    for (const q of this.querierRoles(dev)) {
-      if (q.kind !== 'switch') continue;
-      notes.push(`${q.lan}: ${q.role === 'querier' ? `the IGMP querier (${q.addr}), elected` : q.role === 'starting' ? `the IGMP querier for now (${q.addr}, starting: its startup queries)` : q.role === 'non-querier' ? `a querier candidate (${q.addr}); ${q.other} queries` : q.role === 'off' ? 'no querier candidate' : 'its querier is down'}.`);
-    }
+    // its role in each VLAN with snooping enabled, as its badges on the diagram say (Show querier election has the timers)
+    for (const r of this.snoopRoles(dev)) notes.push(`${r.text}: ${r.detail.slice(dev.length + 2)}.`);
     for (const v of en) {
       if (!sd || this.e.params.str('snoop-querier', dev, vlanRef(v)) !== 'on' || this.sqs.has(dev + '|' + v)) continue;
       notes.push(`The snooping querier is on for VLAN ${v}, but ${dev} has no IPv4 address there to query from: no candidate.`);
@@ -2225,11 +2325,4 @@ function inNet(a: { net: IpAddr & { prefix: number } }, ip: IpAddr): boolean {
 const ROLE_WORD: { [k in QuerierRole]: string } = { starting: 'Querier (startup)', querier: 'Querier', 'non-querier': 'Standby (non-querier)', off: 'Not a candidate', down: 'Down' };
 
 /** A remaining time as the tables write it. */
-function dur(ms: number): string {
-  if (!isFinite(ms)) return '—';
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s} s`;
-  if (s < 3600) return `${Math.floor(s / 60)} min${s % 60 ? ' ' + (s % 60) + ' s' : ''}`;
-  return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ' ' + Math.floor((s % 3600) / 60) + ' min' : ''}`;
-}
 

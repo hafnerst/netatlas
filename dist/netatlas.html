@@ -1263,6 +1263,10 @@ svg.sim-dot-hover, svg.sim-dot-hover * { cursor: pointer !important; }
 .layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
 /* the scenario behind Network events: grey dots that go on moving; nothing to point at */
 .layer-sim .sim-bg { fill: var(--muted) !important; stroke: var(--panel); opacity: 0.6; pointer-events: none; }
+/* the background's short labels: its kind in grey, nothing to point at */
+.layer-sim-labels .sim-bg-label { pointer-events: none; }
+.layer-sim-labels .sim-bg-label rect { fill: var(--panel); stroke: var(--border); stroke-width: 0.8; opacity: 0.85; }
+.layer-sim-labels .sim-bg-label text { font-size: 8.5px; fill: var(--muted); }
 .sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
 .sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
@@ -1487,6 +1491,17 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-querier[data-role="standby"] rect, .sim-querier[data-role="none"] rect { stroke: var(--muted); }
 .sim-querier[data-role="standby"] text, .sim-querier[data-role="none"] text { fill: var(--muted); font-weight: 500; }
 .sim-querier[data-role="none"] rect { stroke-dasharray: 2 2; }
+/* a snooping switch's role per VLAN: one badge per VLAN with snooping enabled, a sign and words besides the colour */
+.sim-snoop-vlan rect { fill: var(--panel); stroke: var(--control-border); stroke-width: 1; }
+.sim-snoop-vlan text { font-size: 9.5px; font-weight: 500; fill: var(--text); }
+.sim-snoop-probe { font-size: 9.5px; font-weight: 600; }
+.sim-snoop-vlan .sim-snoop-icon { font-size: 9px; fill: var(--muted); }
+.sim-snoop-vlan[data-role="querier"] rect, .sim-snoop-vlan[data-role="starting"] rect { stroke: var(--accent); stroke-width: 1.2; }
+.sim-snoop-vlan[data-role="querier"] text, .sim-snoop-vlan[data-role="starting"] text { fill: var(--accent); font-weight: 600; }
+.sim-snoop-vlan[data-role="starting"] rect { stroke-dasharray: 3 2; }
+.sim-snoop-vlan[data-querier="none"] rect { stroke: var(--muted); stroke-dasharray: 2 2; }
+.sim-snoop-vlan[data-querier="none"] text:not(.sim-snoop-icon) { fill: var(--muted); }
+.sim-snoop-vlan[data-role="off"] rect, .sim-snoop-vlan[data-role="booting"] rect { stroke: var(--muted); stroke-dasharray: none; }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
@@ -2861,7 +2876,22 @@ class App {
         const banner = this.doc.getElementById('mode-banner');
         const top = banner && !banner.hidden ? banner.getBoundingClientRect().height : 0;
         const H = Math.max(40, (this.svg.clientHeight || 700) - top);
-        const b = this.bounds;
+        let b = this.bounds;
+        // the simulation's indicators beside the boxes (statuses, querier marks, snooping badges) are in view too
+        const marks = this.svg.querySelector('.layer-sim-power');
+        if (marks && typeof marks.getBBox === 'function') {
+            try {
+                const e = marks.getBBox();
+                if (e.width > 0 && e.height > 0) {
+                    const x0 = Math.min(b.x, e.x);
+                    const y0 = Math.min(b.y, e.y);
+                    b = { x: x0, y: y0, w: Math.max(b.x + b.w, e.x + e.width) - x0, h: Math.max(b.y + b.h, e.y + e.height) - y0 };
+                }
+            }
+            catch (err) {
+                /* not rendered */
+            }
+        }
         const k = Math.max(0.05, Math.min(1.5, Math.min(W / Math.max(1, b.w), H / Math.max(1, b.h)) * 0.96));
         this.zoom = { k, tx: W / 2 - (b.x + b.w / 2) * k, ty: top + H / 2 - (b.y + b.h / 2) * k };
         this.applyZoom();
@@ -6699,6 +6729,21 @@ class App {
             const scene = clone.querySelector('.scene');
             if (layer && scene)
                 scene.appendChild(layer);
+            // the indicators beside the boxes (statuses, querier marks, every snooping VLAN's badge) as on screen: all of them in the picture
+            const marks = this.svg.querySelector('.layer-sim-power');
+            if (marks && typeof marks.getBBox === 'function') {
+                try {
+                    const e = marks.getBBox();
+                    if (e.width > 0 && e.height > 0) {
+                        const x0 = Math.min(b.x, e.x - 8);
+                        const y0 = Math.min(b.y, e.y - 8);
+                        b = { x: x0, y: y0, w: Math.max(b.x + b.w, e.x + e.width + 8) - x0, h: Math.max(b.y + b.h, e.y + e.height + 8) - y0 };
+                    }
+                }
+                catch (err) {
+                    /* not rendered */
+                }
+            }
         }
         // an analysis mode (focus, path trace) says so in the picture, above the diagram: a line each
         const notes = this.modeNotes();
@@ -12585,8 +12630,9 @@ function interiorSize(model, hostId) {
 __defs["layout/sizes"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IFCHIP_PAD = exports.IFCHIP_GAP = exports.IFCHIP_H = exports.IFCHIP_FONT = exports.lineHeight = exports.MEMBER_LABEL_SIZE = exports.LINK_LABEL_MAX_W = exports.LINK_LABEL_SIZE = exports.PILL_MAX_W = exports.PILL_SIZE = exports.GROUP_KIND_SIZE = exports.GROUP_TITLE_SIZE = exports.GROUP_PAD = exports.NET_TEXT_MAX_W = exports.NET_SUB_SIZE = exports.NET_LABEL_SIZE = exports.PORT_STUB = exports.END_LABEL_GAP = exports.END_LABEL_SIZE = exports.PORT_INSET = exports.ENTRY_MARGIN = exports.ENTRY_GAP = exports.ENTRY_PAD_Y = exports.ENTRY_PAD_X = exports.ENTRY_LH = exports.ENTRY_FONT = exports.DNS_LINE_CHARS = exports.CHIP_FONT = exports.LOGICAL_DEVICE_MIN_H = exports.LOGICAL_DEVICE_MIN_W = exports.DEVICE_TEXT_X = exports.DEVICE_ICON = exports.DEVICE_TEXT_MAX_W = exports.DEVICE_SUB_SIZE = exports.DEVICE_LABEL_SIZE = exports.CHIP_H = exports.HUB_R = void 0;
+exports.IFCHIP_PAD = exports.IFCHIP_GAP = exports.IFCHIP_H = exports.IFCHIP_FONT = exports.lineHeight = exports.MEMBER_LABEL_SIZE = exports.LINK_LABEL_MAX_W = exports.LINK_LABEL_SIZE = exports.PILL_MAX_W = exports.PILL_SIZE = exports.GROUP_KIND_SIZE = exports.GROUP_TITLE_SIZE = exports.GROUP_PAD = exports.NET_TEXT_MAX_W = exports.NET_SUB_SIZE = exports.NET_LABEL_SIZE = exports.PORT_STUB = exports.END_LABEL_GAP = exports.END_LABEL_SIZE = exports.PORT_INSET = exports.ENTRY_MARGIN = exports.ENTRY_GAP = exports.ENTRY_PAD_Y = exports.ENTRY_PAD_X = exports.ENTRY_LH = exports.ENTRY_FONT = exports.DNS_LINE_CHARS = exports.CHIP_FONT = exports.LOGICAL_DEVICE_MIN_H = exports.LOGICAL_DEVICE_MIN_W = exports.SNOOP_GAP = exports.SNOOP_FONT = exports.SNOOP_ROW = exports.DEVICE_TEXT_X = exports.DEVICE_ICON = exports.DEVICE_TEXT_MAX_W = exports.DEVICE_SUB_SIZE = exports.DEVICE_LABEL_SIZE = exports.CHIP_H = exports.HUB_R = void 0;
 exports.deviceBody = deviceBody;
+exports.snoopBlock = snoopBlock;
 exports.chipTextWidth = chipTextWidth;
 exports.dnsNameLines = dnsNameLines;
 exports.dnsShown = dnsShown;
@@ -12613,6 +12659,7 @@ exports.chipStripH = chipStripH;
  */
 const text_1 = __req("layout/text");
 Object.defineProperty(exports, "lineHeight", { enumerable: true, get: function () { return text_1.lineHeight; } });
+const snooping_1 = __req("model/snooping");
 exports.HUB_R = 12;
 exports.CHIP_H = 16;
 // ------------------------------------------------------------------ devices
@@ -12639,6 +12686,28 @@ function deviceBody(label, sub, minW, minH) {
         w: Math.max(minW, Math.ceil(exports.DEVICE_TEXT_X + Math.max(l.w, s.w) + DEVICE_PAD_R)),
         h: Math.max(minH, textH + 2 * DEVICE_PAD_Y),
     };
+}
+// ------------------------------------------------------------------ snooping badges (the simulation)
+/** a snooping VLAN's badge: its height with the gap below it, its font */
+exports.SNOOP_ROW = 15;
+exports.SNOOP_FONT = 9.5;
+/** the gap between a device's box and its block of badges */
+exports.SNOOP_GAP = 4;
+/**
+ * The block of a snooping switch's per-VLAN badges (simulation), one row per
+ * VLAN with snooping enabled: as wide as the longest text any of them can
+ * have (the sign, "VLAN n · ", the longest role), so it never changes while
+ * the roles do. The physical view reserves it to the right of the box (null:
+ * no VLAN with snooping enabled).
+ */
+function snoopBlock(vlans) {
+    if (!vlans.length)
+        return null;
+    let w = 0;
+    for (const v of vlans)
+        for (const t of snooping_1.SNOOP_ROLE_TEXTS)
+            w = Math.max(w, (0, text_1.textWidth)(`VLAN ${v} · ${t}`, exports.SNOOP_FONT) * 1.06);
+    return { w: Math.ceil(w + 20), h: vlans.length * exports.SNOOP_ROW - 1 };
 }
 exports.LOGICAL_DEVICE_MIN_W = 140;
 exports.LOGICAL_DEVICE_MIN_H = 50;
@@ -13013,6 +13082,73 @@ function labelWithAddresses(label, addresses, size, maxW) {
     const all = lines.concat(addresses);
     const w = all.reduce((m, l, i) => Math.max(m, i >= mono ? monoWidth(l, size) : textWidth(l, size)), 0);
     return addresses.length ? { lines: all, size, w, h: all.length * lineHeight(size), mono } : { lines: all, size, w, h: all.length * lineHeight(size) };
+}
+
+};
+__defs["model/snooping"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SNOOP_ROLE_TEXTS = exports.SNOOPING_VALUES = exports.SNOOPING_KEY = void 0;
+exports.hasSnooping = hasSnooping;
+exports.switchedVlans = switchedVlans;
+exports.snoopingChoice = snoopingChoice;
+exports.snoopingEnabledVlans = snoopingEnabledVlans;
+exports.unsetSnoopingVlans = unsetSnoopingVlans;
+/**
+ * IGMP / MLD snooping, a switch's own configuration (`igmp_mld_snooping:`):
+ * one explicit choice per VLAN the switch carries on its ports, `enabled` or
+ * `disabled`, for IPv4 (IGMP) and IPv6 (MLD) together. A VLAN without a
+ * choice is not configured: a configuration error (the consistency check
+ * `snooping-not-configured`), never read as either value. Different
+ * switches may choose differently for the same VLAN.
+ *
+ *   igmp_mld_snooping: {10: enabled, 20: enabled, 30-39: disabled}
+ *
+ * What the choice does in the simulation (analysis/sim/multicast.ts):
+ * enabled, a group's data goes to the ports where a member reported it and
+ * to the multicast router ports only (no member: to the router ports only,
+ * never flooded); disabled, multicast is flooded to every port of the VLAN.
+ */
+const capabilities_1 = __req("model/capabilities");
+const types_1 = __req("model/types");
+const derive_1 = __req("model/derive");
+exports.SNOOPING_KEY = 'igmp_mld_snooping';
+exports.SNOOPING_VALUES = ['enabled', 'disabled'];
+/** Does a device take the setting: a switch (Layer 2 or Layer 3; its switched VLANs)? */
+function hasSnooping(d) {
+    return (0, capabilities_1.capabilities)(d).switchFeatures;
+}
+/** The VLANs a switch carries on its switch ports (ports and aggregates with VLANs; not its routed ports, not a VLAN interface's alone), ascending. */
+function switchedVlans(d) {
+    if (!hasSnooping(d))
+        return [];
+    const out = new Set();
+    for (const i of (0, types_1.deviceInterfaces)(d))
+        if (!i.routed)
+            for (const v of (0, derive_1.vlanIds)(i.vlans))
+                out.add(v);
+    return Array.from(out).sort((a, b) => a - b);
+}
+/** A switch's choice for a VLAN: enabled, disabled, or not configured. */
+function snoopingChoice(d, vlan) {
+    if (!d || !d.snooping)
+        return 'unset';
+    const r = d.snooping.find((x) => vlan >= x.from && vlan <= x.to);
+    return r ? (r.enabled ? 'enabled' : 'disabled') : 'unset';
+}
+/** The VLANs where a switch's snooping is enabled, ascending (none: no switch, or enabled nowhere). */
+function snoopingEnabledVlans(d) {
+    return switchedVlans(d).filter((v) => snoopingChoice(d, v) === 'enabled');
+}
+/**
+ * The words of a snooping VLAN's badge in the simulation, after "VLAN n · ":
+ * every text a badge can have is one of these (its width is reserved for the
+ * longest, so a role that changes never moves or resizes it).
+ */
+exports.SNOOP_ROLE_TEXTS = ['Querier', 'Querier (startup)', 'Standby', 'Candidate down · querier heard', 'Candidate down · no querier', 'Snooping · querier heard', 'Snooping · no querier', 'Off', 'Booting'];
+/** The switched VLANs of a switch without a choice (a configuration error each). */
+function unsetSnoopingVlans(d) {
+    return switchedVlans(d).filter((v) => snoopingChoice(d, v) === 'unset');
 }
 
 };
@@ -16823,6 +16959,22 @@ exports.PARAMS = [
         device: ['router'],
     }),
     P({ key: 'snoop-querier', level: 'vlan', yaml: 'snooping_querier', label: 'Snooping querier', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off unless configured (Cisco ip igmp snooping querier)', help: 'Queries a VLAN that has no multicast router, so that members are learned.', device: ['switch'] }),
+    P({
+        key: 'unregistered-mc',
+        level: 'vlan',
+        yaml: 'unregistered_multicast',
+        label: 'Unregistered multicast',
+        layer: 0,
+        kind: 'enum',
+        dflt: 'router-ports',
+        options: [
+            { value: 'router-ports', label: 'To the router ports only' },
+            { value: 'flood', label: 'Flooded to every port' },
+        ],
+        source: 'RFC 4541 §2.1.2: unregistered packets must reach the router ports; flooding them is allowed',
+        help: 'Snooping on: where a group without members goes (no router port there: nowhere).',
+        device: ['switch'],
+    }),
     P({ key: 'fast-leave', level: 'vlan', yaml: 'fast_leave', label: 'Fast leave', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off unless configured (Cisco immediate-leave)', help: 'A port that leaves a group stops getting it at once, without group queries.', device: ['switch'] }),
     P({ key: 'mrouter-aging', yaml: 'router_port_aging', label: 'Router port aging', layer: 0, kind: 'duration', base: 's', dflt: 300 * S, min: 10 * S, max: 3600 * S, source: 'Cisco IOS multicast router port (5 min)', help: 'A port that heard no query or PIM Hello for this long is no router port.', device: ['switch'] }),
     P({ key: 'mc-passthrough', level: 'interface', ifaces: ['ip'], yaml: 'multicast_passthrough', label: 'Multicast passthrough', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'firewalls drop multicast unless configured (PAN-OS, Cisco ASA)', help: 'On: it routes multicast like a router; off: multicast data is dropped.', device: ['firewall'] }),
@@ -22015,62 +22167,6 @@ function snoopingQuerier(model, d, own = []) {
         frontier = next;
     }
     return false;
-}
-
-};
-__defs["model/snooping"] = function (module, exports) {
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.SNOOPING_VALUES = exports.SNOOPING_KEY = void 0;
-exports.hasSnooping = hasSnooping;
-exports.switchedVlans = switchedVlans;
-exports.snoopingChoice = snoopingChoice;
-exports.unsetSnoopingVlans = unsetSnoopingVlans;
-/**
- * IGMP / MLD snooping, a switch's own configuration (`igmp_mld_snooping:`):
- * one explicit choice per VLAN the switch carries on its ports, `enabled` or
- * `disabled`, for IPv4 (IGMP) and IPv6 (MLD) together. A VLAN without a
- * choice is not configured: a configuration error (the consistency check
- * `snooping-not-configured`), never read as either value. Different
- * switches may choose differently for the same VLAN.
- *
- *   igmp_mld_snooping: {10: enabled, 20: enabled, 30-39: disabled}
- *
- * What the choice does in the simulation (analysis/sim/multicast.ts):
- * enabled, a group's data goes to the ports where a member reported it and
- * to the multicast router ports only (no member: to the router ports only,
- * never flooded); disabled, multicast is flooded to every port of the VLAN.
- */
-const capabilities_1 = __req("model/capabilities");
-const types_1 = __req("model/types");
-const derive_1 = __req("model/derive");
-exports.SNOOPING_KEY = 'igmp_mld_snooping';
-exports.SNOOPING_VALUES = ['enabled', 'disabled'];
-/** Does a device take the setting: a switch (Layer 2 or Layer 3; its switched VLANs)? */
-function hasSnooping(d) {
-    return (0, capabilities_1.capabilities)(d).switchFeatures;
-}
-/** The VLANs a switch carries on its switch ports (ports and aggregates with VLANs; not its routed ports, not a VLAN interface's alone), ascending. */
-function switchedVlans(d) {
-    if (!hasSnooping(d))
-        return [];
-    const out = new Set();
-    for (const i of (0, types_1.deviceInterfaces)(d))
-        if (!i.routed)
-            for (const v of (0, derive_1.vlanIds)(i.vlans))
-                out.add(v);
-    return Array.from(out).sort((a, b) => a - b);
-}
-/** A switch's choice for a VLAN: enabled, disabled, or not configured. */
-function snoopingChoice(d, vlan) {
-    if (!d || !d.snooping)
-        return 'unset';
-    const r = d.snooping.find((x) => vlan >= x.from && vlan <= x.to);
-    return r ? (r.enabled ? 'enabled' : 'disabled') : 'unset';
-}
-/** The switched VLANs of a switch without a choice (a configuration error each). */
-function unsetSnoopingVlans(d) {
-    return switchedVlans(d).filter((v) => snoopingChoice(d, v) === 'unset');
 }
 
 };
@@ -31850,7 +31946,7 @@ const MANUAL = [
             '**Everything runs at once.** The simulated clock runs at its own rate whatever is on screen: one simulated second per second (times the speed) in Readable and Real time pacing, slowed by the scale in Proportional. Nothing waits for a dot: a protocol timer, an IGMP query, another connection’s next message happen when they are due, so independent exchanges are on their way together and a slow one never delays another. The dots follow each operation’s own order: a message continues on the next cable when it has arrived at the switch or router, an answer starts when its request has arrived, a packet that waited for ARP goes on when the ARP reply has arrived. So the tables and the log may be a few hops ahead of the dots. With **Skip idle time** on (the default), when nothing is on screen the clock jumps to the next message that will be shown (*⏩ 9.8 s skipped*). The time shown is always the real simulated time.',
             'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself as soon as you no longer use the inspector: you close it (**×**, `Esc`), click or tab elsewhere, or it is out of sight. If you paused it yourself, it stays paused. **Follow message** keeps that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) always drawn, plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
             '**Step** moves to the next message event: a message arrives, or the next one starts at its sender. **Next exchange** moves on to the end of the exchange first on screen (an ARP request and its reply, a ping and its echo, a hello), or of the next one to start.',
-            '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join until it is recorded, a leave until its cleanup settles, flapping), and until its last dots have arrived, its traffic is the foreground: everything it causes — its messages, their copies, the answers, the ARP it needs — is drawn normally, labelled and clickable. The scenario goes on underneath as the background: its dots keep moving, but **grey**, without labels, and the pointer goes through them (no outline, no inspector; the event log and the tables have them all). Several of your actions at once are all in front. A finished event, the membership a join leaves behind, or a card kept in Active events mutes nothing. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
+            '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join until it is recorded, a leave until its cleanup settles, flapping), and until its last dots have arrived, its traffic is the foreground: everything it causes — its messages, their copies, the answers, the ARP it needs — is drawn normally, labelled and clickable. The scenario goes on underneath as the background: its dots keep moving, but **grey**, each kind with a short grey label (*IGMP Query*, *ARP*, *DHCP*, *UDP* — one per cable and kind, only where there is room), and the pointer goes through them and their labels (no outline, no inspector; the event log and the tables have them all). Several of your actions at once are all in front. A finished event, the membership a join leaves behind, or a card kept in Active events mutes nothing. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
             '**Streams in real time.** A stream you start under **Network events** sends one datagram at once and then one every interval of **real time** (1 s: every second, 2 s: every two seconds), whatever the pacing, the speed, the size of the model or the scenario. Several streams run side by side, each on its own schedule from its own start: two 1 s streams each send every second, never taking turns, and starting or stopping one never changes another. While one runs, the simulated clock runs with real time too (as in **Real time** pacing, times the speed), so its datagrams are forwarded at once and the scenario goes on at its own pace behind them; the dots keep the pacing’s hop time, so in Readable pacing several datagrams of a stream are on their way at once. The panel says *· streams in real time*. Paused (or with the tab hidden), the streams stand too and go on from there; nothing is caught up. A reply of a send is drawn after the message it answers has arrived on screen.',
             'The scenario is **bundled**: at most 6 of its exchanges are drawn as dots at once, each to its end — and a few more for protocols with nothing else on screen, so a burst of DHCP and ARP never hides an IGMP query or a Hello — the others as **cable activity** (a cable lit with a short count, *OSPF ×3 · ARP ×1*). An exchange whose next hop would show more than 15 s after it happened is cable activity too, so the dots stay close to what is happening. So many things at once stay followable, a few at a time.',
             '**Pacing: Real time (1 s = 1 s)** runs the simulated clock with the real one (times the speed): a 1 s interval of a send is a real second. Every hop shows briefly as a sign of its traffic, bundled as above, and idle time is never skipped. In every pacing, when the simulation has more work than a frame allows, it falls behind and says so (*· behind*), and goes on from there instead of catching up in a burst: the page stays responsive.',
@@ -32045,19 +32141,20 @@ const MANUAL = [
         steps: [
             'Groups and streams belong to an interface: in the model (its `multicast:` block, with `join` and `streams`), or during a simulation from **Join multicast group** and **Start multicast stream** under **Network events** (a host’s menu opens them with the host filled in). Choose the host and its interface (each as *name - address*), write the group (and, for a source-specific group in 232.0.0.0/8, its **Sources**, which appear only then) and, for a stream, its **UDP port**, interval and size; then **Join group** or **Start stream**. The button stays disabled, with the reason under it, until the simulation can carry it out. A stream’s **Interval** is real time: its first datagram goes at once, then one every interval of playing time (see *Follow the messages: pacing and speed*). Start several: each has its own schedule, its own event and its own traffic (its UDP port, its id in the packet inspector and the event’s details).',
             'The routers elect an IGMP querier per subnet, the hosts report their groups, the switches learn the member ports, and the PIM routers build the tree from the source (through the rendezvous point for any-source groups). The stream’s dots are diamonds and split where it is replicated.',
-            '**IGMP / MLD snooping is each switch’s own setting**, chosen per VLAN in its **Edit** tab (**IGMP / MLD snooping**: *Enabled*, *Disabled*, or *Not configured* — an error until you choose; in the file `igmp_mld_snooping`). Enabled, a switch sends a group only to the ports where a member of that group reported it in that VLAN, and to its multicast router ports (where queries or PIM Hellos come from): a group nobody joined goes to no host at all, never flooded. Disabled (or not configured), multicast is flooded in the VLAN. Reports go to the router ports only; queries and routing protocols’ link-local groups are always flooded. Snooping never routes: on a Layer 3 switch, multicast crosses into another VLAN only with PIM and a member there.',
+            '**IGMP / MLD snooping is each switch’s own setting**, chosen per VLAN in its **Edit** tab (**IGMP / MLD snooping**: *Enabled*, *Disabled*, or *Not configured* — an error until you choose; in the file `igmp_mld_snooping`). Enabled, each port of the VLAN has a role for a group: a **member port** (a member of that group reported there), a **multicast router port** (a query or PIM Hello came in there: a multicast router or the VLAN’s querier is behind it — it gets every group, members or not, and is no membership; an uplink or a Layer 3 device behind a port does not make it one), the **ingress port** (never sent back), or none. A group goes to its member ports and the router ports. A group nobody joined (unregistered) goes by the VLAN’s **Unregistered multicast** setting (in the file `unregistered_multicast`): **To the router ports only** (the default, as RFC 4541 requires: nothing to the hosts, and nowhere if the VLAN has no router port) or **Flooded to every port** (which the RFC allows). Disabled (or not configured), multicast is flooded in the VLAN. Reports go to the router ports only, so each switch on the way to the querier learns the port its member’s report came in on — nothing is copied between switches; queries and routing protocols’ link-local groups are always flooded. A membership applies to the very next packet. **Without a querier**, a snooping VLAN learns no router port: a stream stays at the first switch and a member’s report never leaves the switch it reached — give the VLAN a querier (a multicast router, or a switch’s snooping querier). Snooping never routes: on a Layer 3 switch, multicast crosses into another VLAN only with PIM and a member there.',
             '**The querier election** starts by itself with the simulation. Every querier candidate — a router’s interface with IGMP / MLD (its `igmp_querier` on, the default), a switch’s VLAN with the snooping querier on, snooping enabled and an address there — queries at once, taking itself for the querier for now, and sends its **startup queries** (robustness of them, a quarter of the query interval apart). Whoever hears a query from a **lower address** stops: the lowest address of each LAN wins and, once its startup queries are sent, queries every query interval. A non-querier takes over when it hears nothing from the querier for the other querier present interval (robustness × query interval + response interval ÷ 2); a querier powered on again (or its interface back) starts afresh and wins again if its address is lower. Only the queries that reach a candidate count: two LANs with the same VLAN ID elect apart, and a router can be the querier on one interface and not on another. Enabling snooping makes no candidate.',
-            'The diagram marks the **active querier** of each LAN beside its status: **Querier · VLAN 10** (several LANs: *VLAN 10, 20*, more: *3 LANs*), dashed **Querier (startup) · VLAN 10** while it sends its startup queries, **Standby · VLAN 10** (grey) for a candidate that yields to another querier, and dashed **No querier · VLAN 10** on a snooping switch whose VLAN has members but no querier at all. The marks follow the election’s state, never the configuration, and the tooltip names the LAN, the interface, the address and the next deadline (*startup query 2 of 2 due at t = 33.3 s*, *it takes over at t = …*). A candidate configured off or one that is down has no mark; **Show querier election** (a router’s or a switch’s menu) lists every candidacy with its role, the querier it yields to and how long until it would take over. A host’s **Show group memberships** says who queries its LAN (the last query it heard), or that it heard none.',
+            '**Every snooping switch shows its role in each VLAN** where its snooping is enabled, always, beside its box: one badge per VLAN, in VLAN order — four VLANs, four badges. Each says the switch’s own part and, apart from it, whether the VLAN has a querier: **★ VLAN 10 · Querier** (it is the elected querier), dashed **☆ VLAN 10 · Querier (startup)** (its startup queries), **◇ VLAN 20 · Standby** (a candidate that yields to another querier), **✕ Candidate down**, **○ VLAN 30 · Snooping · querier heard** (no candidate; a querier queries there) and dashed grey **○ VLAN 40 · Snooping · no querier**, **⏻ Off** or **⏻ Booting** while the switch is powered off or still booting. They follow the protocol — the queries that reach that switch in that VLAN — never the configuration alone, and stay while your events are in front. The tooltip (and a screen reader) gives the details: who the querier is and behind which port, the router ports, where unregistered multicast goes; the switch’s **Show snooping table** lists the same lines. A block keeps its place and size while the roles change; it sits beside the box where nothing else is drawn. A router marks the **active querier** of each of its LANs beside its status: **Querier · VLAN 10** (several LANs: *VLAN 10, 20*, more: *3 LANs*), dashed **Querier (startup) · VLAN 10** while it sends its startup queries, **Standby · VLAN 10** (grey) for a candidate that yields. The marks follow the election’s state, and the tooltip names the LAN, the interface, the address and the next deadline (*startup query 2 of 2 due at t = 33.3 s*, *it takes over at t = …*). A router candidate configured off or one that is down has no mark; **Show querier election** (a router’s or a switch’s menu) lists every candidacy with its role, the querier it yields to and how long until it would take over. A host’s **Show group memberships** says who queries its LAN (the last query it heard), or that it heard none.',
             '**Members stay members** until they leave: a host that joined answers every query (after a random delay up to the response interval; an IGMPv2 host stays quiet when another member answered first), and its answers keep what the switches and routers learned alive; no second Join is needed. If its answers can’t get through (its cable down), the network forgets it after the membership interval while the host still wants the group, and learns it again from its next answer.',
             '**Leave multicast group** (right below Join multicast group, also in a host’s menu, and the **Leave group** button of its join): choose the host, its interface and one of that interface’s groups (IGMP or MLD by its family; none is chosen for you). Its membership ends at once — no later answer for the group, whatever queries come — and its leave goes out like any report (an IGMPv2 Leave, an IGMPv3 / MLDv2 report that blocks the group), drawn and inspectable. Its event follows what the network had learned on the host’s way: *leave sent · cleanup pending*, then *removed at sw (VLAN 10, port p4)* once the querier’s group-specific queries went unanswered there, or *kept … another member there answered* where another member still wants it (one behind the same port, another on the router’s LAN). The stream goes on for the others; only the way to this host closes.',
-            'In the private house, start a stream from the **thermostat** (VLAN 20) to 239.20.0.1: it goes to the core (the IoT VLAN’s snooping querier) and stops there, its event says *stops at core*. **Join multicast group** with the **tv** on the same group: now the core sends it towards ap-b and the TV, and nowhere else; leave, and after the last member queries it stops again.',
+            'In the private house, start a stream from the **thermostat** (VLAN 20) to 239.20.0.1: dist sends it up to the core (its router port: the core is the snooping querier of VLANs 10, 20 and 30) and the core sends it nowhere, its event says *stops at core*. **Join multicast group** with the **tv** on the same group: now the core sends it towards ap-b and the TV, and nowhere else; leave, and after the last member queries it stops again. The same in VLAN 10: a stream from the **laptop**, then the **nas** joins its group: its report is learned at the core’s port nas and the next datagram reaches it. The TV in VLAN 20 joining the laptop’s group gets nothing: the core routes no multicast between VLANs.',
+            '**Why a packet went where it went:** open a multicast dot in the packet inspector. *Switching at dist (sent this hop)* and *Switching at core (where it arrived)* list each port: **→ up: sent — multicast router port (4 min 50 s left)**, **✕ ap1: not sent — no member and no multicast router port**, **✕ ap2: not sent — ingress port**; a Layer 3 switch adds *Routing at core* (its outgoing interfaces, or why none, e.g. it runs no PIM). The snooping table tells router ports (*every group goes there … not a membership*) from member ports (*member port: IGMPv3 …*).',
             'The tables, from a device’s menu, in the simulation panel (they update while they are open): a host’s **Show group memberships** (its own groups, version, filter and what it received; who queries its LAN), a router’s or a switch’s **Show querier election**, a switch’s **Show snooping table** (per VLAN its router ports and each group’s member ports with version, sources, reporter and time left; under it each VLAN’s setting and what it means), a router’s **Show IGMP / MLD groups** (its interfaces’ members, the querier) and **Show multicast routes**. The Status table shows each stream and each member (*Receiving* or *Lost*).',
             'Their packets are drawn like those of **Send network packets**, whatever protocols and senders are ticked (a model without multicast has none to tick): the join’s IGMP / MLD reports from the host’s interface (and what they cause at once: a multicast router’s PIM Join towards the source or RP, its group-specific query after a leave), the stream’s datagrams from its source and each copy the switches and routers make, as far as the simulation forwards them. Where they stop (a router that runs no PIM, a switch whose snooping knows no member and no router port, a VLAN’s end), the stream’s event says so. A dot opens the packet inspector; the event’s **Details** open its first message; the event log marks them **Test**.',
             'Both are listed under **Active events**. A join is *In progress* until a multicast router records the membership (*membership recorded by core1:Vlan10*), or until its reports are sent without any router recording it (*a member on its own segment only*); then it is *Completed*, and the membership stays, with **Leave group**. A stream is *In progress* (*Paused* while the simulation is) until **Stop stream**, which cancels its later datagrams; its line says its interval (*every 1 s of real time*), counts the datagrams its source sent (the copies multicast makes are not counted) and, apart from them, those each member received. Its source powered off, it sends nothing (*not sending: srv is off*) until it is up again. A host’s menu also leaves its groups and stops its streams, those of the model too. Fail a link on the tree: the routers’ RPF interfaces change, they join the new way and prune the old, and the members receive again.',
         ],
         notes: ['The election follows RFC 3376 / RFC 3810 (IGMPv2 / v3, MLDv1 / v2): the lowest address wins, the startup queries and the other querier present interval as specified; IGMPv1 is not simulated. All IGMP / MLD timers run on the simulated clock (in Real time pacing, or while a stream of Network events runs, it follows real time).', 'The consistency checks report a switch VLAN without a snooping choice (an error), receivers without a querier in their subnet, sparse-mode groups without a rendezvous point, and a router whose route towards a source has no PIM neighbour.', 'Snooping forwards by group: an IGMPv3 / MLDv2 member’s sources are shown in the snooping table but not filtered at the switch. A switch’s snooping querier sends IGMP queries only; IPv6 members are learned from their own reports. Memberships age in simulated time (robustness × query interval + response interval).'],
         figures: [
-            ['querier', 'The querier election in the internal example multicast-querier.yaml: q1 (10.5.0.1) is the elected querier of VLAN 10 (its mark beside its status); q2, a candidate with a higher address, is a non-querier and has no mark.'],
+            ['querier', 'The querier election in the internal example multicast-querier.yaml: q1 (10.5.0.1) is the elected querier of VLAN 10 (its mark beside its status); q2, a candidate with a higher address, is on standby.'],
             ['mroutes', 'r1’s multicast routes in the simulation panel: the RP, the shared tree (*, 239.1.1.1) and the sources’ trees, each with its incoming and outgoing interfaces.'],
         ],
     },
@@ -32293,7 +32390,7 @@ exports.MANUAL_IMAGES = {
         "height": 436
     },
     "device-state": {
-        "src": "data:image/webp;base64,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",
+        "src": "data:image/webp;base64,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",
         "width": 428,
         "height": 339
     },
@@ -38516,6 +38613,8 @@ function row(item) {
 /** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them). */
 function simStateSection() {
     // (the swatch: the indicator's LED only; its word is the row's label)
+    // a snooping badge: its sign and a word, in the role's style
+    const snoopSwatch = (role, sign, word, none = false) => [(0, scene_1.h)('g', { class: 'sim-snoop-vlan', 'data-role': role, 'data-querier': none ? 'none' : 'heard' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), (0, scene_1.h)('text', { class: 'sim-snoop-icon', x: 4, y: 12.5 }, sign), (0, scene_1.h)('text', { x: 14, y: 12.5 }, word)])];
     const led = (state) => [(0, scene_1.h)('g', { class: 'sim-power', 'data-power': state }, [(0, scene_1.h)('rect', { x: 3, y: 2, width: 18, height: 14, rx: 7 }), (0, scene_1.h)('circle', { class: 'sim-led', cx: 12, cy: 9, r: 3.5 })])];
     return {
         title: 'Simulation: device status',
@@ -38524,9 +38623,11 @@ function simStateSection() {
             { swatch: led('off'), label: 'Powered off (red): or down with its host or its container engine; it takes no part' },
             { swatch: led('booting'), label: 'Booting (blue): powered on, it takes part when its boot time is over' },
             { swatch: led('passive'), label: 'Passive or External (hollow grey): a patch panel, a TAP, an external network — no power state of its own' },
-            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'querier' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'Querier · VLAN 10: the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier (startup)”: still sending its startup queries' },
-            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'standby' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 44, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'Standby')])], label: 'Standby · VLAN 10 (grey): a candidate that yields to another querier; its tooltip says when it would take over' },
-            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'none' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 44, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'None')])], label: 'No querier · VLAN 10 (grey, dashed): a snooping switch’s VLAN with members but no querier anywhere' },
+            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'querier' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'A router: Querier · VLAN 10 — the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier (startup)”: still sending its startup queries; grey “Standby”: a candidate that yields to another querier' },
+            { swatch: snoopSwatch('querier', '★', 'Querier'), label: 'A snooping switch: one badge per VLAN with snooping enabled, in VLAN order. ★ VLAN 10 · Querier: it is that VLAN’s elected querier (dashed ☆ Querier (startup): its startup queries)' },
+            { swatch: snoopSwatch('standby', '◇', 'Standby'), label: '◇ VLAN 20 · Standby: a querier candidate that yields to another querier there' },
+            { swatch: snoopSwatch('snooping', '○', 'Snooping'), label: '○ VLAN 30 · Snooping · querier heard: no candidate itself, a querier queries the VLAN (behind a multicast router port)' },
+            { swatch: snoopSwatch('snooping', '○', 'No querier', true), label: '○ VLAN 40 · Snooping · no querier (grey, dashed): nobody queries the VLAN, so no router port is learned there and a member’s report stays at the switch it reached; ✕ Candidate down, ⏻ Off or Booting: the switch is powered off or still booting' },
         ],
         note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
     };
@@ -41023,7 +41124,7 @@ exports.EXAMPLES = [
     },
     {
         "name": "private-house.yaml",
-        "text": "# netatlas example: a private house on three floors with Wi-Fi on every floor.\n#\n# The floors are groups inside the house: the Basement, the First floor\n# (above the basement) and the Second floor (above the basement, the top).\n# Every device sits in the floor where it stands, also when its cable runs to\n# a switch on another floor.\n#\n# WAN edge — a combined DSL modem/router (dsl-router, Basement). It\n# terminates the VDSL line towards the provider (PPPoE: the cable's label;\n# NetAtlas has no DSL or PPPoE model, the provider is one Layer 3 hop, the\n# Cloud \"isp\"), translates the house's addresses to its public one (its NAT\n# service, PAT) and filters (its firewall policy). Its type is Firewall\n# because that is the type whose policy NetAtlas enforces; its kind says what\n# it is. It also answers DNS for the house (home.arpa, the rest forwarded to\n# the provider).\n#\n# Inside — the Layer 3 switch core (Basement) is the gateway of every VLAN\n# and the DHCP server of all three Wi-Fi networks. Each network is a VLAN\n# (the same mapping on every access point and switch) in its own VRF:\n#\n#   Wi-Fi network  SSID         VLAN  subnet            VRF\n#   Internal       Home         10    192.168.10.0/24   default\n#   IoT            Home-IoT     20    192.168.20.0/24   iot\n#   Guest          Home-Guest   30    192.168.30.0/24   guest\n#   (management)   –            99    192.168.99.0/24   default\n#\n# The core routes inside each VRF only: traffic between the zones, and to\n# the Internet, leaves it through the zone's transit VLAN (110, 120, 130) on\n# the one trunk to the DSL router, whose policy decides. The policy is the\n# relations through it: each zone's devices may open HTTPS to the Internet\n# (the web server), nothing else crosses between zones (default action:\n# drop). So Guest and IoT reach the Internet but neither Internal nor each\n# other, and IoT can't open anything in Internal (the NAS). Management\n# (VLAN 99: the access points, the distribution switch) is routed with\n# Internal only.\n#\n# Wiring: the Basement access point on the core; the Second-floor switch\n# dist on the core; the First- and Second-floor access points on dist. Each\n# access point has one wired uplink, a trunk with VLANs 10, 20, 30 and 99\n# (all tagged), and one radio that carries all three networks.\n#\n# The physical view is drawn as a cross-section of the house (tier: the row\n# of each device): the Second floor at the top, the First floor, the\n# Basement, and the provider's line coming in below it.\n#\n# Multicast: both switches snoop IGMP / MLD in VLANs 10, 20 and 30 (their\n# igmp_mld_snooping; not in management and transit), and the core is the\n# snooping querier of the IoT VLAN, which has no multicast router. A stream\n# the thermostat sends to a group (Network events → Start multicast stream)\n# goes nowhere until a device of VLAN 20 joins it (Join multicast group, e.g.\n# the TV): then only towards that member. The core routes no multicast (no\n# PIM), so nothing reaches the other VLANs.\n#\n# Simulate ▾ → Start simulation…: the leases (each client in its network's\n# VLAN), the laptop's NAS session by name, HTTPS to the web server from every\n# zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by\n# the DSL router. Fail l-core-dist: both upper-floor access points lose\n# their uplink.\nnetatlas: 1\ntitle: Private house — three floors, Wi-Fi on VLANs\ndescription: |\n  A DSL modem/router with NAT and a firewall, a Layer 3 switch in the\n  basement as the core, a distribution switch on the second floor and an\n  access point on every floor, each with Internal, IoT and Guest on\n  VLANs 10, 20 and 30 over one uplink.\n\ngroups:\n  - id: house\n    label: House\n    kind: building\n  - id: basement\n    label: Basement\n    kind: floor\n    parent: house\n  - id: floor1\n    label: First floor (above the basement)\n    kind: floor\n    parent: house\n  - id: floor2\n    label: Second floor (top)\n    kind: floor\n    parent: house\n  - id: provider\n    label: Provider and Internet\n    kind: provider\n\nnetworks:\n  - {id: internal, label: Internal, cidr: 192.168.10.0/24, vlan: 10}\n  - {id: iot, label: IoT, cidr: 192.168.20.0/24, vlan: 20, simulation: {snooping_querier: \"on\"}}\n  - {id: guest, label: Guest, cidr: 192.168.30.0/24, vlan: 30}\n  - {id: mgmt, label: Management, cidr: 192.168.99.0/24, vlan: 99}\n\ndevices:\n  - id: isp\n    label: Provider (DSL)\n    type: cloud\n    tier: 8\n    kind: carrier\n    group: provider\n    interfaces: [house, web]\n  - id: web\n    label: web server (on the Internet)\n    type: server\n    tier: 9\n    group: provider\n    services:\n      application:\n        name: Web\n        ports: [tcp/443]\n    interfaces:\n      - {id: eth0, ip: 203.0.113.80/24}\n  - id: dsl-router\n    label: DSL modem/router\n    type: firewall\n    tier: 7\n    kind: other\n    kind_label: DSL modem/router\n    role: edge\n    group: basement\n    services:\n      nat:\n        inside: [lan.110, lan.120, lan.130]\n        outside: [wan]\n        rules:\n          - {type: pat, source: 192.168.0.0/16}\n      dns:\n        zones:\n          - {name: home.arpa}\n        forwarders: [203.0.113.53]\n    interfaces:\n      - {id: wan, ip: 203.0.113.10/24, description: VDSL2 line (PPPoE session to the provider)}\n      - {id: lan}\n    logical_interfaces:\n      - {id: lan.110, type: virtual, vlan: 110, ip: 10.0.10.1/30, description: \"transit to the core, Internal\"}\n      - {id: lan.120, type: virtual, vlan: 120, ip: 10.0.20.1/30, description: \"transit to the core, IoT\"}\n      - {id: lan.130, type: virtual, vlan: 130, ip: 10.0.30.1/30, description: \"transit to the core, Guest\"}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 203.0.113.1, name: the provider}\n      - {prefix: 192.168.10.0/24, via: 10.0.10.2, name: Internal}\n      - {prefix: 192.168.99.0/24, via: 10.0.10.2, name: management}\n      - {prefix: 192.168.20.0/24, via: 10.0.20.2, name: IoT}\n      - {prefix: 192.168.30.0/24, via: 10.0.30.2, name: Guest}\n  - id: core\n    label: core (Layer 3 switch)\n    type: switch\n    tier: 5\n    layer3: true\n    role: core\n    group: basement\n    # IGMP / MLD snooping per VLAN: the IoT VLAN's multicast reaches only the ports whose\n    # devices joined the group (the core is its snooping querier: VLAN 20 has no multicast router)\n    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled, 110-130: disabled}\n    services:\n      dhcp:\n        scopes:\n          - {network: internal, range: 192.168.10.100-192.168.10.199, gateway: 192.168.10.1, dns: [10.0.10.1], domain: home.arpa}\n          - {network: iot, range: 192.168.20.100-192.168.20.199, gateway: 192.168.20.1, dns: [10.0.20.1]}\n          - {network: guest, range: 192.168.30.100-192.168.30.199, gateway: 192.168.30.1, dns: [10.0.30.1]}\n    interfaces:\n      - {id: wan, vlans: [110, 120, 130], description: \"trunk to the DSL router (transit VLANs, all tagged)\"}\n      - {id: ap, vlans: [10, 20, 30, 99], description: the Basement access point}\n      - {id: up2, vlans: [10, 20, 30, 99], description: to the Second-floor switch}\n      - {id: nas, vlans: 10}\n    logical_interfaces:\n      - {id: Vlan10, type: virtual, vlan: 10, ip: 192.168.10.1/24}\n      - {id: Vlan20, type: virtual, vlan: 20, ip: 192.168.20.1/24, vrf: iot}\n      - {id: Vlan30, type: virtual, vlan: 30, ip: 192.168.30.1/24, vrf: guest}\n      - {id: Vlan99, type: virtual, vlan: 99, ip: 192.168.99.1/24}\n      - {id: Vlan110, type: virtual, vlan: 110, ip: 10.0.10.2/30}\n      - {id: Vlan120, type: virtual, vlan: 120, ip: 10.0.20.2/30, vrf: iot}\n      - {id: Vlan130, type: virtual, vlan: 130, ip: 10.0.30.2/30, vrf: guest}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.10.1, name: Internal to the DSL router}\n      - {prefix: 0.0.0.0/0, via: 10.0.20.1, vrf: iot, name: IoT to the DSL router}\n      - {prefix: 0.0.0.0/0, via: 10.0.30.1, vrf: guest, name: Guest to the DSL router}\n  - id: ap-b\n    label: ap-b (Basement)\n    type: ap\n    tier: 6\n    kind: indoor\n    group: basement\n    services:\n      wireless:\n        networks:\n          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: \"<home-passphrase>\"}\n          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<iot-passphrase>\"}\n          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: \"<guest-passphrase>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 30, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.10/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: ap-1\n    label: ap-1 (First floor)\n    type: ap\n    tier: 3\n    kind: indoor\n    group: floor1\n    services:\n      wireless:\n        networks:\n          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: \"<home-passphrase>\"}\n          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<iot-passphrase>\"}\n          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: \"<guest-passphrase>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 30, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.11/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: dist\n    label: dist (Layer 2 switch)\n    type: switch\n    tier: 0\n    role: distribution\n    group: floor2\n    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled}\n    interfaces:\n      - {id: up, vlans: [10, 20, 30, 99], description: to the core in the Basement}\n      - {id: ap1, vlans: [10, 20, 30, 99], description: the First-floor access point}\n      - {id: ap2, vlans: [10, 20, 30, 99], description: the Second-floor access point}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.2/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: ap-2\n    label: ap-2 (Second floor)\n    type: ap\n    tier: 1\n    kind: indoor\n    group: floor2\n    services:\n      wireless:\n        networks:\n          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: \"<home-passphrase>\"}\n          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<iot-passphrase>\"}\n          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: \"<guest-passphrase>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 30, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.12/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: nas\n    label: nas (file server)\n    type: storage\n    tier: 6\n    kind: nas\n    group: basement\n    services:\n      storage:\n        protocols: [smb]\n    interfaces:\n      - {id: eth0, ip: 192.168.10.20/24}\n    dns_names:\n      - {name: nas.home.arpa, interfaces: [eth0]}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.10.1, name: default gateway}\n  - id: tv\n    label: tv (smart TV)\n    type: endpoint\n    tier: 7\n    kind: other\n    kind_label: Smart TV\n    group: basement\n    simulation: {test_traffic: \"on\", test_targets: \"203.0.113.80 tcp/443, 192.168.10.20 tcp/445\", test_interval: 10}\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: phone\n    type: endpoint\n    tier: 4\n    kind: mobile\n    group: floor1\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: guest-phone\n    type: endpoint\n    tier: 4\n    kind: mobile\n    group: floor1\n    simulation: {test_traffic: \"on\", test_targets: \"203.0.113.80 tcp/443, 192.168.10.20 tcp/445\", test_interval: 10}\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: laptop\n    type: endpoint\n    tier: 2\n    kind: pc\n    group: floor2\n    simulation: {test_traffic: \"on\", test_targets: \"nas.home.arpa tcp/445, 203.0.113.80 tcp/443\", test_interval: 10}\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: thermostat\n    type: endpoint\n    tier: 2\n    kind: other\n    kind_label: Thermostat\n    group: floor2\n    interfaces:\n      - {id: wlan0, dhcp: true}\n\nlinks:\n  - {id: l-dsl, a: \"dsl-router:wan\", b: \"isp:house\", medium: dsl, speed: 100M, label: VDSL2 (PPPoE)}\n  - {id: l-web, a: \"isp:web\", b: \"web:eth0\", medium: fiber, speed: 10G}\n  - {id: l-router-core, a: \"dsl-router:lan\", b: \"core:wan\", speed: 1G}\n  - {id: l-core-apb, a: \"core:ap\", b: \"ap-b:eth0\", speed: 1G}\n  - {id: l-core-dist, a: \"core:up2\", b: \"dist:up\", speed: 1G, label: riser cable}\n  - {id: l-dist-ap1, a: \"dist:ap1\", b: \"ap-1:eth0\", speed: 1G}\n  - {id: l-dist-ap2, a: \"dist:ap2\", b: \"ap-2:eth0\", speed: 1G}\n  - {id: l-core-nas, a: \"core:nas\", b: \"nas:eth0\", speed: 1G}\n  - {id: w-tv, a: \"ap-b:radio0\", b: \"tv:wlan0\", medium: wireless, wireless_network: iot}\n  - {id: w-phone, a: \"ap-1:radio0\", b: \"phone:wlan0\", medium: wireless, wireless_network: internal}\n  - {id: w-guest-phone, a: \"ap-1:radio0\", b: \"guest-phone:wlan0\", medium: wireless, wireless_network: guest}\n  - {id: w-laptop, a: \"ap-2:radio0\", b: \"laptop:wlan0\", medium: wireless, wireless_network: internal}\n  - {id: w-thermostat, a: \"ap-2:radio0\", b: \"thermostat:wlan0\", medium: wireless, wireless_network: iot}\n\nrelations:\n  # the DSL router's policy: each zone may open HTTPS to the Internet, one relation per zone (nothing between zones)\n  - {id: web-internal, protocol: https, label: Internet (Internal), endpoints: [laptop, phone, web]}\n  - {id: web-iot, protocol: https, label: Internet (IoT), endpoints: [tv, thermostat, web]}\n  - {id: web-guest, protocol: https, label: Internet (Guest), endpoints: [guest-phone, web]}\n"
+        "text": "# netatlas example: a private house on three floors with Wi-Fi on every floor.\n#\n# The floors are groups inside the house: the Basement, the First floor\n# (above the basement) and the Second floor (above the basement, the top).\n# Every device sits in the floor where it stands, also when its cable runs to\n# a switch on another floor.\n#\n# WAN edge — a combined DSL modem/router (dsl-router, Basement). It\n# terminates the VDSL line towards the provider (PPPoE: the cable's label;\n# NetAtlas has no DSL or PPPoE model, the provider is one Layer 3 hop, the\n# Cloud \"isp\"), translates the house's addresses to its public one (its NAT\n# service, PAT) and filters (its firewall policy). Its type is Firewall\n# because that is the type whose policy NetAtlas enforces; its kind says what\n# it is. It also answers DNS for the house (home.arpa, the rest forwarded to\n# the provider).\n#\n# Inside — the Layer 3 switch core (Basement) is the gateway of every VLAN\n# and the DHCP server of all three Wi-Fi networks. Each network is a VLAN\n# (the same mapping on every access point and switch) in its own VRF:\n#\n#   Wi-Fi network  SSID         VLAN  subnet            VRF\n#   Internal       Home         10    192.168.10.0/24   default\n#   IoT            Home-IoT     20    192.168.20.0/24   iot\n#   Guest          Home-Guest   30    192.168.30.0/24   guest\n#   (management)   –            99    192.168.99.0/24   default\n#\n# The core routes inside each VRF only: traffic between the zones, and to\n# the Internet, leaves it through the zone's transit VLAN (110, 120, 130) on\n# the one trunk to the DSL router, whose policy decides. The policy is the\n# relations through it: each zone's devices may open HTTPS to the Internet\n# (the web server), nothing else crosses between zones (default action:\n# drop). So Guest and IoT reach the Internet but neither Internal nor each\n# other, and IoT can't open anything in Internal (the NAS). Management\n# (VLAN 99: the access points, the distribution switch) is routed with\n# Internal only.\n#\n# Wiring: the Basement access point on the core; the Second-floor switch\n# dist on the core; the First- and Second-floor access points on dist. Each\n# access point has one wired uplink, a trunk with VLANs 10, 20, 30 and 99\n# (all tagged), and one radio that carries all three networks.\n#\n# The physical view is drawn as a cross-section of the house (tier: the row\n# of each device): the Second floor at the top, the First floor, the\n# Basement, and the provider's line coming in below it.\n#\n# Multicast: both switches snoop IGMP / MLD in VLANs 10, 20 and 30 (their\n# igmp_mld_snooping; not in management and transit). None of these VLANs has\n# a multicast router, so the core is the snooping querier of all three: its\n# queries let the switches learn where the members are (their reports) and\n# where the querier is (dist's port up: a multicast router port). Without a\n# querier a snooping VLAN learns no router port, a member's report never\n# leaves the switch it reached, and a stream stays at the first switch.\n# A stream sent to a group (Network events → Start multicast stream), e.g.\n# from the thermostat (VLAN 20) or the laptop (VLAN 10), goes to the router\n# port up to the core (RFC 4541: unregistered multicast must reach the\n# router ports) and stops there until a device of the same VLAN joins it\n# (Join multicast group: the TV for VLAN 20, the NAS for VLAN 10): then on\n# to that member. The core routes no multicast (no PIM), so nothing reaches\n# the other VLANs.\n#\n# Simulate ▾ → Start simulation…: the leases (each client in its network's\n# VLAN), the laptop's NAS session by name, HTTPS to the web server from every\n# zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by\n# the DSL router. Fail l-core-dist: both upper-floor access points lose\n# their uplink.\nnetatlas: 1\ntitle: Private house — three floors, Wi-Fi on VLANs\ndescription: |\n  A DSL modem/router with NAT and a firewall, a Layer 3 switch in the\n  basement as the core, a distribution switch on the second floor and an\n  access point on every floor, each with Internal, IoT and Guest on\n  VLANs 10, 20 and 30 over one uplink.\n\ngroups:\n  - id: house\n    label: House\n    kind: building\n  - id: basement\n    label: Basement\n    kind: floor\n    parent: house\n  - id: floor1\n    label: First floor (above the basement)\n    kind: floor\n    parent: house\n  - id: floor2\n    label: Second floor (top)\n    kind: floor\n    parent: house\n  - id: provider\n    label: Provider and Internet\n    kind: provider\n\nnetworks:\n  - {id: internal, label: Internal, cidr: 192.168.10.0/24, vlan: 10, simulation: {snooping_querier: \"on\"}}\n  - {id: iot, label: IoT, cidr: 192.168.20.0/24, vlan: 20, simulation: {snooping_querier: \"on\"}}\n  - {id: guest, label: Guest, cidr: 192.168.30.0/24, vlan: 30, simulation: {snooping_querier: \"on\"}}\n  - {id: mgmt, label: Management, cidr: 192.168.99.0/24, vlan: 99}\n\ndevices:\n  - id: isp\n    label: Provider (DSL)\n    type: cloud\n    tier: 8\n    kind: carrier\n    group: provider\n    interfaces: [house, web]\n  - id: web\n    label: web server (on the Internet)\n    type: server\n    tier: 9\n    group: provider\n    services:\n      application:\n        name: Web\n        ports: [tcp/443]\n    interfaces:\n      - {id: eth0, ip: 203.0.113.80/24}\n  - id: dsl-router\n    label: DSL modem/router\n    type: firewall\n    tier: 7\n    kind: other\n    kind_label: DSL modem/router\n    role: edge\n    group: basement\n    services:\n      nat:\n        inside: [lan.110, lan.120, lan.130]\n        outside: [wan]\n        rules:\n          - {type: pat, source: 192.168.0.0/16}\n      dns:\n        zones:\n          - {name: home.arpa}\n        forwarders: [203.0.113.53]\n    interfaces:\n      - {id: wan, ip: 203.0.113.10/24, description: VDSL2 line (PPPoE session to the provider)}\n      - {id: lan}\n    logical_interfaces:\n      - {id: lan.110, type: virtual, vlan: 110, ip: 10.0.10.1/30, description: \"transit to the core, Internal\"}\n      - {id: lan.120, type: virtual, vlan: 120, ip: 10.0.20.1/30, description: \"transit to the core, IoT\"}\n      - {id: lan.130, type: virtual, vlan: 130, ip: 10.0.30.1/30, description: \"transit to the core, Guest\"}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 203.0.113.1, name: the provider}\n      - {prefix: 192.168.10.0/24, via: 10.0.10.2, name: Internal}\n      - {prefix: 192.168.99.0/24, via: 10.0.10.2, name: management}\n      - {prefix: 192.168.20.0/24, via: 10.0.20.2, name: IoT}\n      - {prefix: 192.168.30.0/24, via: 10.0.30.2, name: Guest}\n  - id: core\n    label: core (Layer 3 switch)\n    type: switch\n    tier: 5\n    layer3: true\n    role: core\n    group: basement\n    # IGMP / MLD snooping per VLAN: a VLAN's multicast reaches only the ports whose devices\n    # joined the group, and the router ports (the core is the snooping querier of VLANs 10, 20\n    # and 30: they have no multicast router)\n    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled, 110-130: disabled}\n    services:\n      dhcp:\n        scopes:\n          - {network: internal, range: 192.168.10.100-192.168.10.199, gateway: 192.168.10.1, dns: [10.0.10.1], domain: home.arpa}\n          - {network: iot, range: 192.168.20.100-192.168.20.199, gateway: 192.168.20.1, dns: [10.0.20.1]}\n          - {network: guest, range: 192.168.30.100-192.168.30.199, gateway: 192.168.30.1, dns: [10.0.30.1]}\n    interfaces:\n      - {id: wan, vlans: [110, 120, 130], description: \"trunk to the DSL router (transit VLANs, all tagged)\"}\n      - {id: ap, vlans: [10, 20, 30, 99], description: the Basement access point}\n      - {id: up2, vlans: [10, 20, 30, 99], description: to the Second-floor switch}\n      - {id: nas, vlans: 10}\n    logical_interfaces:\n      - {id: Vlan10, type: virtual, vlan: 10, ip: 192.168.10.1/24}\n      - {id: Vlan20, type: virtual, vlan: 20, ip: 192.168.20.1/24, vrf: iot}\n      - {id: Vlan30, type: virtual, vlan: 30, ip: 192.168.30.1/24, vrf: guest}\n      - {id: Vlan99, type: virtual, vlan: 99, ip: 192.168.99.1/24}\n      - {id: Vlan110, type: virtual, vlan: 110, ip: 10.0.10.2/30}\n      - {id: Vlan120, type: virtual, vlan: 120, ip: 10.0.20.2/30, vrf: iot}\n      - {id: Vlan130, type: virtual, vlan: 130, ip: 10.0.30.2/30, vrf: guest}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.10.1, name: Internal to the DSL router}\n      - {prefix: 0.0.0.0/0, via: 10.0.20.1, vrf: iot, name: IoT to the DSL router}\n      - {prefix: 0.0.0.0/0, via: 10.0.30.1, vrf: guest, name: Guest to the DSL router}\n  - id: ap-b\n    label: ap-b (Basement)\n    type: ap\n    tier: 6\n    kind: indoor\n    group: basement\n    services:\n      wireless:\n        networks:\n          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: \"<home-passphrase>\"}\n          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<iot-passphrase>\"}\n          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: \"<guest-passphrase>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 30, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.10/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: ap-1\n    label: ap-1 (First floor)\n    type: ap\n    tier: 3\n    kind: indoor\n    group: floor1\n    services:\n      wireless:\n        networks:\n          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: \"<home-passphrase>\"}\n          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<iot-passphrase>\"}\n          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: \"<guest-passphrase>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 30, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.11/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: dist\n    label: dist (Layer 2 switch)\n    type: switch\n    tier: 0\n    role: distribution\n    group: floor2\n    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 99: disabled}\n    interfaces:\n      - {id: up, vlans: [10, 20, 30, 99], description: to the core in the Basement}\n      - {id: ap1, vlans: [10, 20, 30, 99], description: the First-floor access point}\n      - {id: ap2, vlans: [10, 20, 30, 99], description: the Second-floor access point}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.2/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: ap-2\n    label: ap-2 (Second floor)\n    type: ap\n    tier: 1\n    kind: indoor\n    group: floor2\n    services:\n      wireless:\n        networks:\n          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: \"<home-passphrase>\"}\n          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<iot-passphrase>\"}\n          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: \"<guest-passphrase>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 30, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.12/24}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}\n  - id: nas\n    label: nas (file server)\n    type: storage\n    tier: 6\n    kind: nas\n    group: basement\n    services:\n      storage:\n        protocols: [smb]\n    interfaces:\n      - {id: eth0, ip: 192.168.10.20/24}\n    dns_names:\n      - {name: nas.home.arpa, interfaces: [eth0]}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 192.168.10.1, name: default gateway}\n  - id: tv\n    label: tv (smart TV)\n    type: endpoint\n    tier: 7\n    kind: other\n    kind_label: Smart TV\n    group: basement\n    simulation: {test_traffic: \"on\", test_targets: \"203.0.113.80 tcp/443, 192.168.10.20 tcp/445\", test_interval: 10}\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: phone\n    type: endpoint\n    tier: 4\n    kind: mobile\n    group: floor1\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: guest-phone\n    type: endpoint\n    tier: 4\n    kind: mobile\n    group: floor1\n    simulation: {test_traffic: \"on\", test_targets: \"203.0.113.80 tcp/443, 192.168.10.20 tcp/445\", test_interval: 10}\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: laptop\n    type: endpoint\n    tier: 2\n    kind: pc\n    group: floor2\n    simulation: {test_traffic: \"on\", test_targets: \"nas.home.arpa tcp/445, 203.0.113.80 tcp/443\", test_interval: 10}\n    interfaces:\n      - {id: wlan0, dhcp: true}\n  - id: thermostat\n    type: endpoint\n    tier: 2\n    kind: other\n    kind_label: Thermostat\n    group: floor2\n    interfaces:\n      - {id: wlan0, dhcp: true}\n\nlinks:\n  - {id: l-dsl, a: \"dsl-router:wan\", b: \"isp:house\", medium: dsl, speed: 100M, label: VDSL2 (PPPoE)}\n  - {id: l-web, a: \"isp:web\", b: \"web:eth0\", medium: fiber, speed: 10G}\n  - {id: l-router-core, a: \"dsl-router:lan\", b: \"core:wan\", speed: 1G}\n  - {id: l-core-apb, a: \"core:ap\", b: \"ap-b:eth0\", speed: 1G}\n  - {id: l-core-dist, a: \"core:up2\", b: \"dist:up\", speed: 1G, label: riser cable}\n  - {id: l-dist-ap1, a: \"dist:ap1\", b: \"ap-1:eth0\", speed: 1G}\n  - {id: l-dist-ap2, a: \"dist:ap2\", b: \"ap-2:eth0\", speed: 1G}\n  - {id: l-core-nas, a: \"core:nas\", b: \"nas:eth0\", speed: 1G}\n  - {id: w-tv, a: \"ap-b:radio0\", b: \"tv:wlan0\", medium: wireless, wireless_network: iot}\n  - {id: w-phone, a: \"ap-1:radio0\", b: \"phone:wlan0\", medium: wireless, wireless_network: internal}\n  - {id: w-guest-phone, a: \"ap-1:radio0\", b: \"guest-phone:wlan0\", medium: wireless, wireless_network: guest}\n  - {id: w-laptop, a: \"ap-2:radio0\", b: \"laptop:wlan0\", medium: wireless, wireless_network: internal}\n  - {id: w-thermostat, a: \"ap-2:radio0\", b: \"thermostat:wlan0\", medium: wireless, wireless_network: iot}\n\nrelations:\n  # the DSL router's policy: each zone may open HTTPS to the Internet, one relation per zone (nothing between zones)\n  - {id: web-internal, protocol: https, label: Internet (Internal), endpoints: [laptop, phone, web]}\n  - {id: web-iot, protocol: https, label: Internet (IoT), endpoints: [tv, thermostat, web]}\n  - {id: web-guest, protocol: https, label: Internet (Guest), endpoints: [guest-phone, web]}\n"
     },
     {
         "name": "dmz-services.yaml",
@@ -46043,6 +46144,7 @@ const pacing_1 = __req("analysis/sim/pacing");
 const params_1 = __req("analysis/sim/params");
 const simulation_1 = __req("analysis/sim/simulation");
 const status_place_1 = __req("ui/status-place");
+const sizes_1 = __req("layout/sizes");
 const sim_test_form_1 = __req("ui/sim-test-form");
 const sim_event_forms_1 = __req("ui/sim-event-forms");
 const sim_event_list_1 = __req("ui/sim-event-list");
@@ -46648,7 +46750,8 @@ class SimController {
         const states = this.deviceStates();
         const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
         const marks = this.querierMarks();
-        const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${this.host.view()}`;
+        const snoops = this.snoopBadges();
+        const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
         if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey)
             return;
         if (this.power && this.power.parentNode)
@@ -46766,6 +46869,81 @@ class SimController {
             tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
             s.setAttribute('data-edge', at.edge);
         }
+        // every snooping switch: one badge per VLAN with snooping enabled, stacked in VLAN order beside its box
+        for (const [dev, roles] of snoops) {
+            const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`);
+            if (!box || typeof box.getBBox !== 'function')
+                continue;
+            let b;
+            try {
+                b = box.getBBox();
+            }
+            catch (e) {
+                continue;
+            }
+            const blk = doc.createElementNS(NS, 'g');
+            blk.setAttribute('class', 'sim-snoop');
+            blk.setAttribute('data-device', dev);
+            blk.setAttribute('role', 'list');
+            blk.setAttribute('aria-label', `${dev}: IGMP / MLD snooping, ${roles.length} VLAN${roles.length === 1 ? '' : 's'}`);
+            g.appendChild(blk);
+            // the block's room (reserved by the layout to the right of its box: as wide as the longest text any of its VLANs can have,
+            // so a role that changes never resizes or moves it); taken elsewhere beside the box only when something is there
+            const size = (0, sizes_1.snoopBlock)(roles.map((r) => r.vlan));
+            const w = size.w;
+            const ROW = sizes_1.SNOOP_ROW;
+            const at = place.take({ x: b.x + b.width + sizes_1.SNOOP_GAP, y: b.y, w, h: size.h }, b) ? { x: b.x + b.width + sizes_1.SNOOP_GAP, y: b.y, side: 'right' } : place.findBeside(b, w, size.h);
+            blk.setAttribute('data-side', at.side);
+            roles.forEach((r, i) => {
+                const s = doc.createElementNS(NS, 'g');
+                s.setAttribute('class', 'sim-snoop-vlan');
+                s.setAttribute('data-vlan', String(r.vlan));
+                s.setAttribute('data-role', r.role);
+                s.setAttribute('data-querier', r.querier ? (r.querier.self ? 'self' : 'heard') : 'none');
+                s.setAttribute('role', 'listitem');
+                s.setAttribute('aria-label', r.detail);
+                const t = doc.createElementNS(NS, 'title');
+                t.textContent = r.detail;
+                const y = at.y + i * ROW;
+                const rect = doc.createElementNS(NS, 'rect');
+                rect.setAttribute('x', at.x.toFixed(1));
+                rect.setAttribute('y', y.toFixed(1));
+                rect.setAttribute('width', String(w));
+                rect.setAttribute('height', String(ROW - 1));
+                rect.setAttribute('rx', '3');
+                // the role's sign besides its words and colour: ★ querier, ☆ startup, ◇ standby, ✕ down, ○ snooping only, ⏻ off or booting
+                const icon = doc.createElementNS(NS, 'text');
+                icon.setAttribute('class', 'sim-snoop-icon');
+                icon.setAttribute('aria-hidden', 'true');
+                icon.textContent = r.role === 'querier' ? '★' : r.role === 'starting' ? '☆' : r.role === 'standby' ? '◇' : r.role === 'down' ? '✕' : r.role === 'off' || r.role === 'booting' ? '⏻' : '○';
+                icon.setAttribute('x', (at.x + 4).toFixed(1));
+                icon.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
+                const tx = doc.createElementNS(NS, 'text');
+                tx.textContent = r.text;
+                tx.setAttribute('x', (at.x + 15).toFixed(1));
+                tx.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
+                s.appendChild(t);
+                s.appendChild(rect);
+                s.appendChild(icon);
+                s.appendChild(tx);
+                blk.appendChild(s);
+            });
+        }
+    }
+    /**
+     * Every snooping switch's role in each VLAN where its snooping is enabled
+     * (the model's snoopRoles: its own part — querier, startup, standby,
+     * candidate down, snooping only — and whether the VLAN has a querier), by
+     * device; switches with snooping enabled nowhere have none.
+     */
+    snoopBadges() {
+        const out = new Map();
+        for (const id of Array.from(this.sim.engine.net.devices.keys()).sort()) {
+            const rs = this.sim.multicast.snoopRoles(id);
+            if (rs.length)
+                out.set(id, rs);
+        }
+        return out;
     }
     /**
      * Each device's querier role as the election has it now (never the
@@ -46783,6 +46961,9 @@ class SimController {
         const out = new Map();
         const by = new Map();
         for (const q of this.sim.multicast.querierRoles()) {
+            // (a switch's candidacy is in its per-VLAN snooping badges)
+            if (q.kind === 'switch')
+                continue;
             if (q.role !== 'querier' && q.role !== 'starting' && q.role !== 'non-querier')
                 continue;
             by.set(q.dev, (by.get(q.dev) || []).concat([q]));
@@ -46808,15 +46989,6 @@ class SimController {
             const state = active.length ? 'querier' : starting.length ? 'starting' : 'standby';
             const word = state === 'querier' ? 'Querier' : state === 'starting' ? 'Querier (startup)' : 'Standby';
             out.set(dev, { text: `${word} · ${where(main.map((q) => q.lan))}`, state, detail: qs.map(line).join('; ') });
-        }
-        // a snooping switch's VLANs with members but nobody querying them
-        for (const sd of Array.from(this.sim.engine.net.devices.values())) {
-            if (out.has(sd.id) || !sd.bridge || !sd.caps.switchFeatures)
-                continue;
-            const vlans = this.sim.multicast.noQuerierVlans(sd.id);
-            if (!vlans.length)
-                continue;
-            out.set(sd.id, { text: `No querier · ${where(vlans.map((v) => 'VLAN ' + v))}`, state: 'none', detail: `no IGMP querier heard in VLAN ${vlans.join(', ')}, and it is none itself: its members are learned from their own reports only and age out after the membership interval (configure a querier: a multicast router, or the snooping querier with an address there)` });
         }
         return out;
     }
@@ -47209,8 +47381,25 @@ class SimController {
                 where += `, on cable ${l.id} (${f.track.from === 'a' ? l.a.device + ' → ' + l.b.device : l.b.device + ' → ' + l.a.device})`;
         }
         const key = it ? it.key : (0, pacing_1.conversationKey)(f.protocol, f.hdr, f.label);
-        this.inspect(f.hdr, where, near, key, f.label);
+        this.inspect(f.hdr, where, near, key, f.label, this.forwardingOf(f));
         return true;
+    }
+    /**
+     * The multicast forwarding decisions about a hop (the packet inspector):
+     * the one of the device that sent it on (it decided where the packet it
+     * received went: this hop among them) and the one of the device it arrived
+     * at (where it goes from there, or why nowhere).
+     */
+    forwardingOf(f) {
+        const out = [];
+        const dec = this.sim.engine.mcDecisions;
+        // (the decision that sent it: the one of the device at this hop's start)
+        for (const d of f.parent !== undefined ? dec.get(f.parent) || [] : [])
+            if (d.ports.some((p) => p.sent))
+                out.push({ title: `${d.layer === 'l2' ? 'Switching' : 'Routing'} at ${d.dev} (sent this hop)`, d });
+        for (const d of dec.get(f.id) || [])
+            out.push({ title: `${d.layer === 'l2' ? 'Switching' : 'Routing'} at ${d.dev} (where it arrived)`, d });
+        return out;
     }
     /** The packet inspector for a message of the event log (its frame as sent). */
     inspectEvent(seq) {
@@ -47221,10 +47410,11 @@ class SimController {
         this.inspect(e.hdr, `as ${e.device || 'it'} sent it at t = ${(0, engine_1.fmtSec)(e.t)}`, null, (0, pacing_1.conversationKey)(e.protocol, e.hdr, e.hdr.label), e.hdr.label);
         return true;
     }
-    inspect(h, where, near, key, label) {
+    inspect(h, where, near, key, label, forwarding = []) {
         const data = () => ({
             hdr: h,
             where,
+            forwarding,
             follow: {
                 on: !!this.pacer.follow && this.pacer.follow.key === key,
                 act: () => {
@@ -47235,7 +47425,7 @@ class SimController {
                         // following: the inspector stays open beside the running simulation
                         this.resumeFromInspector();
                     }
-                    this.inspect(h, where, null, key, label);
+                    this.inspect(h, where, null, key, label, forwarding);
                 },
             },
         });
@@ -48265,6 +48455,7 @@ exports.subnetBroadcast = subnetBroadcast;
 exports.isLimitedBroadcast = isLimitedBroadcast;
 exports.hashIndex = hashIndex;
 exports.isVirtual = isVirtual;
+exports.fmtDur = fmtDur;
 exports.fmtSec = fmtSec;
 /**
  * The protocol simulation's engine: a discrete-event simulation of the
@@ -48482,6 +48673,12 @@ class Engine {
         // ------------------------------------------------------------ layer 2: sending and forwarding frames
         /** the emission being planned: its sender and time (for the logical view's dots of messages without a relation) */
         this.emitting = null;
+        /**
+         * The multicast forwarding decisions, by the flight that brought the
+         * packet (the packet inspector: what the device it arrived at did with
+         * it, and why each hop out of it was sent). The newest 20 000.
+         */
+        this.mcDecisions = new Map();
         // ------------------------------------------------------------ virtual switches and container networks
         /** a virtual switch's uplink that went down: until when its failover detection runs (by port key of the bridge port) */
         this.uplinkDownAt = new Map();
@@ -49948,11 +50145,15 @@ class Engine {
         }
         // IGMP / MLD snooping: a group's frames to its member ports and the router ports only
         let to = sd.virt ? this.virtOut(sd, from, frame, out, !!fresh) : out;
+        let snooped = null;
         if (!wire && (0, mac_1.isGroupMac)(frame.dst) && frame.dst !== mac_1.BROADCAST && this.protocols && this.protocols.snoop) {
-            const keep = this.protocols.snoop(sd, from, vlan, frame, t);
+            snooped = this.protocols.snoop(sd, from, vlan, frame, t);
+            const keep = snooped ? snooped.ports : null;
             if (keep)
                 to = out.filter((bp) => keep.has(bp.id));
         }
+        if (snooped && snooped.kind !== 'linklocal' && flight !== undefined && flight >= 0)
+            this.mcDecide(sd, from, vlan, frame, t, flight, snooped, to);
         if (cross && cross.only)
             to = to.filter((bp) => cross.only.indexOf(bp.id) >= 0);
         // a TAP's copy: the same frame out of its monitor ports as well (the original goes on)
@@ -49973,6 +50174,63 @@ class Engine {
             const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
             this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);
         }
+    }
+    /** Record a decision (one per device and layer for a flight: a Layer 3 switch both switches and routes it; bounded: the oldest flights go first). */
+    recordMc(flight, d) {
+        const list = (this.mcDecisions.get(flight) || []).filter((x) => x.dev !== d.dev || x.layer !== d.layer);
+        list.push(d);
+        this.mcDecisions.set(flight, list);
+        if (this.mcDecisions.size > 20000)
+            this.mcDecisions.delete(this.mcDecisions.keys().next().value);
+    }
+    /** The flight whose delivery is being handled now (-1: none: a timer, a user's event). */
+    currentFlight() {
+        return this.causeFlight === null ? -1 : this.causeFlight;
+    }
+    /**
+     * A switch's multicast forwarding decision for a frame, port by port: the
+     * ingress port (never back), each port the snooping keeps (member port,
+     * router port, flooded) and whether it can carry it (its VLAN, the
+     * spanning tree, its link), each port it leaves out and why.
+     */
+    mcDecide(sd, from, vlan, frame, t, flight, r, to) {
+        if (!frame.ip)
+            return;
+        const left = (u) => (u === Infinity ? '' : ` (${fmtDur(u - t)} left)`);
+        const ports = [];
+        for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
+            const c = (0, net_1.carries)(bp.vlans, vlan);
+            if (bp.id === from) {
+                ports.push({ port: bp.id, sent: false, why: 'ingress port (never sent back)' });
+                continue;
+            }
+            if (!c)
+                continue;
+            const member = r.members.get(bp.id);
+            const router = r.routers.get(bp.id);
+            const role = member !== undefined && router !== undefined ? `member port${left(member)} and multicast router port` : member !== undefined ? `member port${left(member)}` : router !== undefined ? `multicast router port${left(router)}` : '';
+            if (to.indexOf(bp) < 0) {
+                ports.push({ port: bp.id, sent: false, why: r.kind === 'control' ? 'no multicast router port (reports go to router ports only)' : 'no member and no multicast router port' });
+                continue;
+            }
+            const why = role || (r.kind === 'off' ? `flooded (snooping ${r.mode === 'unset' ? 'not configured' : 'disabled'} in VLAN ${vlan})` : 'flooded (unregistered multicast flooded)');
+            const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has((0, net_1.portKey)(sd.id, m)));
+            if (this.blocked(sd.id, bp.id, vlan))
+                ports.push({ port: bp.id, sent: false, why: `${why}, but blocked by the spanning tree` });
+            else if (this.tunneledNet(sd, bp.id))
+                ports.push({ port: bp.id, sent: false, why: `${why}, but tunneled to its controller` });
+            else if (!up.length)
+                ports.push({ port: bp.id, sent: false, why: `${why}, but its link is down` });
+            else
+                ports.push({ port: bp.id, sent: true, why });
+        }
+        const g = (0, ipmath_1.formatAddr)(frame.ip.dst);
+        const fam = frame.ip.dst.version === 4 ? 'IGMP' : 'MLD';
+        const mode = r.mode === 'enabled' ? `${fam} snooping enabled in VLAN ${vlan}; unregistered multicast ${r.unregistered === 'flood' ? 'flooded' : 'to the router ports only'}` : `${fam} snooping ${r.mode === 'unset' ? 'not configured' : 'disabled'} in VLAN ${vlan}: flooded`;
+        const sent = ports.filter((p) => p.sent).map((p) => p.port);
+        const what = r.kind === 'control' ? `the ${fam} report or leave` : g;
+        const text = sent.length ? `${sd.id} switches ${what} in VLAN ${vlan} to ${sent.join(', ')}` : `${sd.id} sends ${what} to no port in VLAN ${vlan}`;
+        this.recordMc(flight, { dev: sd.id, t, layer: 'l2', vlan, group: g, ingress: from, mode, ports, text });
     }
     /**
      * What may cross a bridging device from a port (null: anything, as on a
@@ -52471,6 +52729,17 @@ function frameEncap(frame) {
     return out;
 }
 /** Seconds as the log writes them ("12.4 s", "4 h"). */
+/** A time left, rounded to the second: "45 s", "4 min 53 s", "1 h 5 min" ("—": never). */
+function fmtDur(ms) {
+    if (!isFinite(ms))
+        return '—';
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60)
+        return `${s} s`;
+    if (s < 3600)
+        return `${Math.floor(s / 60)} min${s % 60 ? ' ' + (s % 60) + ' s' : ''}`;
+    return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ' ' + Math.floor((s % 3600) / 60) + ' min' : ''}`;
+}
 function fmtSec(ms) {
     const s = ms / 1000;
     if (s >= 3600 && s % 3600 === 0)
@@ -57592,6 +57861,49 @@ class Multicast {
         return out.sort((a, b) => cmp(a.dev, b.dev) || cmp(a.lan, b.lan) || cmp(a.family, b.family));
     }
     /**
+     * A switch's role in each VLAN where its snooping is enabled, in VLAN
+     * order (none: no snooping switch, or snooping enabled nowhere). Every
+     * such VLAN has one, whatever happens in it.
+     */
+    snoopRoles(dev) {
+        const sd = this.P.m.index.devices.get(dev);
+        const sim = this.e.net.devices.get(dev);
+        if (!sd || !sim || !sim.bridge || !sim.caps.switchFeatures)
+            return [];
+        const now = this.e.now;
+        const cands = new Map();
+        for (const q of this.querierRoles(dev))
+            if (q.kind === 'switch' && q.vlan !== undefined && q.family === 'IGMP')
+                cands.set(q.vlan, q);
+        const out = [];
+        const ps = this.e.powerState(dev);
+        const down = ps && ps.state !== 'on' ? ps.state : null;
+        for (const vlan of (0, snooping_1.switchedVlans)(sd).slice().sort((a, b) => a - b)) {
+            if (this.snoopMode(dev, vlan) !== 'enabled')
+                continue;
+            // powered off or still booting: it snoops nothing yet (its tables empty, learned again once it is up)
+            if (down) {
+                out.push({ dev, vlan, role: down === 'booting' ? 'booting' : 'off', querier: null, routerPorts: [], unregistered: this.unregisteredPolicy(dev, vlan), text: `VLAN ${vlan} · ${down === 'booting' ? 'Booting' : 'Off'}`, detail: `${dev}: ${down === 'booting' ? 'booting' : 'powered off'}: it snoops nothing in VLAN ${vlan} (its tables are empty; learned again once it is up)` });
+                continue;
+            }
+            const st = this.snoops.get(dev + '|' + vlan);
+            const c = cands.get(vlan);
+            const role = !c || c.role === 'off' ? 'snooping' : c.role === 'non-querier' ? 'standby' : c.role === 'down' ? 'down' : c.role;
+            const heard = st && st.querier && st.querier.until > now ? st.querier : null;
+            const querier = role === 'querier' || role === 'starting' ? { self: true } : heard ? { self: false, ...heard } : null;
+            const routerPorts = st ? Array.from(st.routerPorts).filter(([, u]) => u > now).sort((a, b) => cmp(a[0], b[0])).map(([port, until]) => ({ port, until })) : [];
+            const presence = querier ? 'querier heard' : 'no querier';
+            const word = role === 'querier' ? 'Querier' : role === 'starting' ? 'Querier (startup)' : role === 'standby' ? 'Standby' : role === 'down' ? `Candidate down · ${presence}` : `Snooping · ${presence}`;
+            const who = querier && !querier.self ? `${querier.dev || querier.addr} (${querier.addr}, behind port ${querier.port})` : '';
+            const own = role === 'querier' ? `the elected IGMP querier of VLAN ${vlan} (snooping querier${c ? `, from ${c.addr}` : ''})` : role === 'starting' ? `the IGMP querier of VLAN ${vlan} for now, sending its startup queries${c ? ` from ${c.addr}` : ''}` : role === 'standby' ? `a standby querier candidate in VLAN ${vlan}: ${who || 'another querier'} queries` : role === 'down' ? `a querier candidate in VLAN ${vlan} that is down (its VLAN interface or ports)` : `snooping only in VLAN ${vlan} (no querier candidate)`;
+            const q = querier ? (querier.self ? '' : role === 'standby' ? '' : `; the querier there is ${who}`) : `; no querier heard there: members are learned from their own reports only, and a group without members reaches no host`;
+            const rp = routerPorts.length ? `; multicast router port${routerPorts.length > 1 ? 's' : ''} ${routerPorts.map((r) => r.port).join(', ')}` : '; no multicast router port';
+            const un = `; unregistered multicast ${this.unregisteredPolicy(dev, vlan) === 'flood' ? 'flooded' : 'to the router ports only'}`;
+            out.push({ dev, vlan, role, querier, routerPorts, unregistered: this.unregisteredPolicy(dev, vlan), text: `VLAN ${vlan} · ${word}`, detail: `${dev}: ${own}${q}${rp}${un}` });
+        }
+        return out;
+    }
+    /**
      * The VLANs where a snooping switch has members (someone joined) but no
      * querier: no query heard there (no router port) and it is no querier of
      * its own. Its memberships are then only learned from the members' own
@@ -57769,42 +58081,50 @@ class Multicast {
         return s;
     }
     /**
-     * A switch forwards a frame to a group MAC in a VLAN: the ports that get it
-     * (null: every port of the VLAN). Snooping enabled: it learns router ports
-     * (queries, PIM Hellos) and member ports (reports, per group); reports and
-     * leaves go to the router ports only; link-local groups (224.0.0.0/24,
-     * ff02::/16: queries, routing protocols) are flooded; a group's data goes
-     * to its member ports and the router ports, and a group without members
-     * to the router ports only — never flooded. Disabled or not configured:
-     * flooded in the VLAN (not configured is a configuration error, said once).
+     * A switch forwards a frame to a group MAC in a VLAN (RFC 4541 §2.1): the
+     * ports that get it and why. Snooping enabled: it learns router ports
+     * (queries, PIM Hellos: a multicast router or a querier there) and member
+     * ports (reports, per group); reports and leaves go to the router ports
+     * only (§2.1.1); link-local groups (224.0.0.0/24, ff02::/16: queries, the
+     * routing protocols) are flooded; a group's data goes to its member ports
+     * and the router ports (§2.1.2). A group without members (unregistered)
+     * goes by the VLAN's own policy, `unregistered_multicast`: to the router
+     * ports only (the default: what the RFC requires; none there, nowhere), or
+     * flooded to every port (what it allows). Snooping disabled or not
+     * configured: flooded in the VLAN (not configured is a configuration
+     * error, said once). Never back out of the ingress port (the caller).
      */
     snoop(sd, from, vlan, frame, t) {
         if (!sd.caps.switchFeatures || !frame.ip || !(0, mac_1.isMulticastIp)(frame.ip.dst))
             return null;
         const p = frame.ip;
         const mode = this.snoopMode(sd.id, vlan);
+        const unregistered = this.unregisteredPolicy(sd.id, vlan);
         if (mode !== 'enabled') {
             if (mode === 'unset' && !(0, mac_1.isLinkLocalGroup)(p.dst))
                 this.snoopNote(`snoopunset|${sd.id}|${vlan}`, 'note', sd.id, `${sd.id} floods ${frame.msg.label} to ${(0, ipmath_1.formatAddr)(p.dst)} in ${vlanName(vlan)}: its IGMP / MLD snooping is not configured there (a configuration error: choose enabled or disabled)`, t, frame.msg);
-            return null;
+            return { ports: null, members: new Map(), routers: new Map(), kind: (0, mac_1.isLinkLocalGroup)(p.dst) ? 'linklocal' : 'off', mode, unregistered };
         }
         const st = this.snoopState(sd.id, vlan);
         const msg = p.msg;
         const d = (msg.data || {});
-        const routers = () => {
-            const out = new Set();
+        const routerMap = () => {
+            const out = new Map();
             for (const [port, until] of st.routerPorts)
                 if (until > t)
-                    out.add(port);
+                    out.set(port, until);
             return out;
         };
         const fam = p.dst.version === 4 ? 'IGMP' : 'MLD';
         if (from !== null) {
-            // a query or a PIM Hello: a multicast router there
+            // a query or a PIM Hello: a multicast router (or the VLAN's querier) there
             if ((msg.protocol === 'igmp' && msg.type === 'Query') || (msg.protocol === 'pim' && msg.type === 'Hello')) {
                 if (!st.routerPorts.has(from) || st.routerPorts.get(from) <= t)
                     this.noteAt(t, 'table', sd.id, `${sd.id}: port ${from} is a multicast router port in ${vlanName(vlan)} (${msg.protocol === 'pim' ? 'PIM Hello' : fam + ' query'} from ${(0, ipmath_1.formatAddr)(p.src)})`);
                 st.routerPorts.set(from, t + this.e.params.num('mrouter-aging', sd.id));
+                // the querier this VLAN hears (its general queries), until the other querier present interval is over
+                if (msg.protocol === 'igmp' && !d.group)
+                    st.querier = { addr: (0, ipmath_1.formatAddr)(p.src), dev: d.from || '', port: from, until: t + this.otherPresent(sd.id) };
                 // its own snooping querier of the VLAN hears it: the querier election
                 const sq = this.sqs.get(sd.id + '|' + vlan);
                 if (sq && msg.protocol === 'igmp' && p.src.version === 4)
@@ -57849,27 +58169,37 @@ class Multicast {
                 for (const e of ports.values())
                     e.until = Math.min(e.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
         }
+        const routers = routerMap();
         // reports and leaves go to the router ports only: other hosts never hear them
         if (msg.protocol === 'igmp' && msg.type !== 'Query')
-            return routers();
+            return { ports: new Set(routers.keys()), members: new Map(), routers, kind: 'control', mode, unregistered };
         // link-local groups (queries, PIM, OSPF …: the protocols' own control traffic) are flooded
         if ((0, mac_1.isLinkLocalGroup)(p.dst))
-            return null;
-        // a group's data: its member ports and the router ports; without members the router ports only (nothing to the hosts)
+            return { ports: null, members: new Map(), routers, kind: 'linklocal', mode, unregistered };
+        // a group's data: its member ports and the router ports
         const g = (0, ipmath_1.formatAddr)(p.dst);
-        const members = st.groups.get(g);
-        const keep = routers();
-        let any = false;
-        if (members)
-            for (const [port, e] of members)
-                if (e.until > t) {
-                    keep.add(port);
-                    any = true;
-                }
+        const members = new Map();
+        const mine = st.groups.get(g);
+        if (mine)
+            for (const [port, e] of mine)
+                if (e.until > t)
+                    members.set(port, e.until);
+        // unregistered (no member): its VLAN's policy — the router ports only, or flooded
+        if (!members.size && unregistered === 'flood') {
+            this.snoopNote(`snoopflood|${sd.id}|${vlan}|${g}|${msg.test}`, 'note', sd.id, `${sd.id} floods ${g} in ${vlanName(vlan)}: no member reported it there, and its unregistered multicast is flooded (unregistered_multicast: flood)`, t, msg);
+            return { ports: null, members, routers, kind: 'data', mode, unregistered };
+        }
+        const keep = new Set([...routers.keys(), ...members.keys()]);
         // (nowhere at all: where the group's way ends, as a drop of its traffic; to router ports only: a note)
-        if (!any)
-            this.snoopNote(`snoopnone|${sd.id}|${vlan}|${g}|${msg.test}`, keep.size ? 'note' : 'drop', sd.id, keep.size ? `${sd.id} sends ${g} to no host port in ${vlanName(vlan)}: no member reported it there (IGMP / MLD snooping enabled); only to its multicast router port${keep.size > 1 ? 's' : ''} ${Array.from(keep).sort(cmp).join(', ')}` : `${sd.id} forwards ${g} to no port in ${vlanName(vlan)}: no member reported it there and it has no multicast router port (IGMP / MLD snooping enabled)`, t, msg);
-        return keep;
+        const own = this.sqs.get(sd.id + '|' + vlan);
+        const why = own && own.running && own.querier ? `it is the VLAN's querier itself and no multicast router is there` : `no query or PIM Hello heard in ${vlanName(vlan)}: no querier there`;
+        if (!members.size)
+            this.snoopNote(`snoopnone|${sd.id}|${vlan}|${g}|${msg.test}`, keep.size ? 'note' : 'drop', sd.id, keep.size ? `${sd.id} sends ${g} to no host port in ${vlanName(vlan)}: no member reported it there (IGMP / MLD snooping enabled); only to its multicast router port${keep.size > 1 ? 's' : ''} ${Array.from(keep).sort(cmp).join(', ')}` : `${sd.id} forwards ${g} to no port in ${vlanName(vlan)}: no member reported it there and it has no multicast router port (${why}; unregistered multicast goes to the router ports only)`, t, msg);
+        return { ports: keep, members, routers, kind: 'data', mode, unregistered };
+    }
+    /** A switch's policy for unregistered multicast in a VLAN (a group without members): 'router-ports' or 'flood'. */
+    unregisteredPolicy(dev, vlan) {
+        return this.e.params.str('unregistered-mc', dev, (0, params_1.vlanRef)(vlan));
     }
     /** A line of a switch's snooping about a frame, at the moment it passes, at most every 10 s per key (its traffic's: a stream's events find it). */
     snoopNote(key, kind, dev, text, t, msg) {
@@ -58231,6 +58561,21 @@ class Multicast {
      * first-hop router's register, the switch to the source's tree, and the
      * copies out of the outgoing interfaces. True: handled here.
      */
+    /** A router drops a multicast packet: its log line and its decision for the packet inspector. */
+    dropL3(key, dev, l3, pkt, text) {
+        this.note(key, 'drop', dev, text);
+        this.l3Decide(dev, l3, pkt, text, []);
+    }
+    /** A router's multicast routing decision for the packet being delivered now (Layer 3: by its multicast routes, not by snooping). */
+    l3Decide(dev, l3, pkt, text, oifs) {
+        const f = this.e.currentFlight();
+        if (f < 0)
+            return;
+        const ports = [{ port: l3.id, sent: false, why: 'incoming interface (never sent back)' }];
+        for (const o of oifs)
+            ports.push({ port: o, sent: true, why: 'outgoing interface of its multicast route' });
+        this.e.recordMc(f, { dev, t: this.e.now, layer: 'l3', vlan: 0, group: (0, ipmath_1.formatAddr)(pkt.dst), ingress: l3.id, mode: this.mcRouter(dev) ? 'Layer 3 multicast routing (PIM)' : 'Layer 3: it routes no multicast', ports, text });
+    }
     mroute(dev, l3, pkt) {
         if (!(0, mac_1.isMulticastIp)(pkt.dst) || (0, mac_1.isLinkLocalGroup)(pkt.dst))
             return false;
@@ -58241,17 +58586,17 @@ class Multicast {
         const s = (0, ipmath_1.formatAddr)(pkt.src);
         if (!this.mcRouter(dev)) {
             if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, (0, params_1.ifaceRef)(dev, l3.id)) !== 'on')
-                this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${(0, params_1.resolvedText)(this.e.params.get('mc-passthrough', dev, null, (0, params_1.ifaceRef)(dev, l3.id)))}`);
+                this.dropL3(`fwmc|${dev}|${g}`, dev, l3, pkt, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${(0, params_1.resolvedText)(this.e.params.get('mc-passthrough', dev, null, (0, params_1.ifaceRef)(dev, l3.id)))}`);
             else
-                this.note(`nopim|${dev}|${g}`, 'drop', dev, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
+                this.dropL3(`nopim|${dev}|${g}`, dev, l3, pkt, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
             return true;
         }
         if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, (0, params_1.ifaceRef)(dev, l3.id)) !== 'on') {
-            this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${(0, params_1.resolvedText)(this.e.params.get('mc-passthrough', dev, null, (0, params_1.ifaceRef)(dev, l3.id)))}`);
+            this.dropL3(`fwmc|${dev}|${g}`, dev, l3, pkt, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${(0, params_1.resolvedText)(this.e.params.get('mc-passthrough', dev, null, (0, params_1.ifaceRef)(dev, l3.id)))}`);
             return true;
         }
         if (pkt.ttl <= 1) {
-            this.note(`ttl1|${dev}|${s}|${g}`, 'drop', dev, `${dev} does not route ${pkt.msg.label} from ${s}: its TTL is 1`);
+            this.dropL3(`ttl1|${dev}|${s}|${g}`, dev, l3, pkt, `${dev} does not route ${pkt.msg.label} from ${s}: its TTL is 1`);
             return true;
         }
         const t = this.table(dev);
@@ -58281,7 +58626,7 @@ class Multicast {
         else if (mode === 'dense' && !sg) {
             const r = this.rpf(dev, pkt.src);
             if (r.iif === null) {
-                this.note(`dnoroute|${dev}|${s}|${g}`, 'drop', dev, `${dev} drops (${s}, ${g}): ${r.why} yet, so no RPF interface towards the source`);
+                this.dropL3(`dnoroute|${dev}|${s}|${g}`, dev, l3, pkt, `${dev} drops (${s}, ${g}): ${r.why} yet, so no RPF interface towards the source`);
                 return true;
             }
             sg = this.entry(dev, s, g, 'dense mode data', false);
@@ -58310,9 +58655,9 @@ class Multicast {
                 }
             }
             if (!sg && !star)
-                this.note(`nostate|${dev}|${s}|${g}`, 'drop', dev, `${dev} has no state for (${s}, ${g}): nobody downstream joined it${mode === 'sparse' ? ' (and it is no first-hop router of the source)' : ''}; dropped`);
+                this.dropL3(`nostate|${dev}|${s}|${g}`, dev, l3, pkt, `${dev} has no state for (${s}, ${g}): nobody downstream joined it${mode === 'sparse' ? ' (and it is no first-hop router of the source)' : ''}; dropped`);
             else
-                this.note(`rpf|${dev}|${s}|${g}|${l3.id}`, 'drop', dev, `${dev}: RPF check failed for (${s}, ${g}): it arrived on ${l3.id}, the RPF interface ${sg && sg.iif ? 'towards the source' : 'towards the RP'} is ${expect || 'none'}; dropped`);
+                this.dropL3(`rpf|${dev}|${s}|${g}|${l3.id}`, dev, l3, pkt, `${dev}: RPF check failed for (${s}, ${g}): it arrived on ${l3.id}, the RPF interface ${sg && sg.iif ? 'towards the source' : 'towards the RP'} is ${expect || 'none'}; dropped`);
             return true;
         }
         // the RP receives it natively: the first-hop router may stop registering
@@ -58365,6 +58710,7 @@ class Multicast {
             add(star, true);
         const list = Array.from(out).sort(cmp);
         const sig = via + ':' + list.join(',');
+        this.l3Decide(dev, l3, pkt, list.length ? `${dev} routes (${s}, ${g}) from ${l3.id} out of ${list.join(', ')} (${via === 'sg' ? 'the source’s tree' : 'the shared tree'})` : `${dev} routes (${s}, ${g}) nowhere: no outgoing interface`, list);
         const logE = (via === 'sg' ? sg : star);
         if (logE.logged !== sig) {
             logE.logged = sig;
@@ -58872,7 +59218,7 @@ class Multicast {
             const role = this.roleOf(ri);
             notes.push(`${ri.l3.id} (${(0, ipmath_1.formatAddr)(ri.addr)}, ${ri.lan}): ${role === 'querier' ? 'the querier' : role === 'starting' ? 'the querier for now (starting: its startup queries)' : role === 'non-querier' ? 'not the querier (' + (ri.otherAddr || '?') + ' queries)' : role === 'off' ? 'no querier candidate (its querier is off)' : 'down'}`);
             for (const g of Array.from(ri.groups.values()).sort((a, b) => cmp(a.group, b.group)))
-                rows.push([ri.l3.id, g.group, g.reporter, g.version, g.sources.join(', ') || 'any', dur(g.expires - this.e.now)]);
+                rows.push([ri.l3.id, g.group, g.reporter, g.version, g.sources.join(', ') || 'any', (0, engine_1.fmtDur)(g.expires - this.e.now)]);
         }
         return { caption: `IGMP / MLD groups of ${dev}`, cols: ['Interface', 'Group', 'Last reporter', 'Version', 'Sources', 'Expires in'], rows, empty: 'No group has members on its interfaces.', timers: ['igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'igmp-version'].map((k) => this.timer(k, dev)), notes };
     }
@@ -58897,7 +59243,8 @@ class Multicast {
             for (const [port, until] of Array.from(st.routerPorts).sort((a, b) => cmp(a[0], b[0]))) {
                 if (until <= now)
                     continue;
-                rows.push([vn, '—', port, 'multicast router port (a query or PIM Hello arrived there)', dur(until - now)]);
+                const q = st.querier && st.querier.port === port && st.querier.until > now ? `; the querier ${st.querier.dev || st.querier.addr} (${st.querier.addr}) is behind it` : '';
+                rows.push([vn, '—', port, `multicast router port: every group goes there, members or not (a query or PIM Hello arrived there${q}); not a membership`, (0, engine_1.fmtDur)(until - now)]);
                 learned.add(vlan);
             }
             for (const [g, ports] of Array.from(st.groups).sort((a, b) => cmp(a[0], b[0]))) {
@@ -58905,7 +59252,7 @@ class Multicast {
                 for (const [port, e] of Array.from(ports).sort((a, b) => cmp(a[0], b[0]))) {
                     if (e.until <= now)
                         continue;
-                    rows.push([vn, `${g} (${fam})`, port, `member: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}`, dur(e.until - now)]);
+                    rows.push([vn, `${g} (${fam})`, port, `member port: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}`, (0, engine_1.fmtDur)(e.until - now)]);
                     learned.add(vlan);
                 }
             }
@@ -58916,20 +59263,21 @@ class Multicast {
         const en = by('enabled');
         const dis = by('disabled');
         const unset = by('unset');
-        if (en.length)
-            notes.push(`Snooping enabled in VLAN ${(0, derive_1.vlanRangesShown)(en, true)}: a group goes to its member ports and the router ports only; a group without members to the router ports only (never flooded to the hosts).`);
+        const fl = en.filter((v) => this.unregisteredPolicy(dev, v) === 'flood');
+        const rp = en.filter((v) => this.unregisteredPolicy(dev, v) !== 'flood');
+        if (rp.length)
+            notes.push(`Snooping enabled in VLAN ${(0, derive_1.vlanRangesShown)(rp, true)}: a group goes to its member ports and the router ports; a group without members (unregistered) to the router ports only — none there, nowhere (unregistered_multicast: router-ports, RFC 4541 §2.1.2).`);
+        if (fl.length)
+            notes.push(`Snooping enabled in VLAN ${(0, derive_1.vlanRangesShown)(fl, true)}: a group goes to its member ports and the router ports; a group without members is flooded to every port (unregistered_multicast: flood).`);
         if (dis.length)
             notes.push(`Snooping disabled in VLAN ${(0, derive_1.vlanRangesShown)(dis, true)}: multicast is flooded to every port of the VLAN.`);
         if (unset.length)
             notes.push(`Not configured in VLAN ${(0, derive_1.vlanRangesShown)(unset, true)}: a configuration error (choose enabled or disabled); flooded meanwhile.`);
         notes.push('Reports and leaves go to the router ports only; link-local groups (224.0.0.0/24, ff02::/16: queries, routing protocols) are flooded.');
         const sd = this.P.sd(dev);
-        // its snooping querier candidacies and their roles (Show querier election has the timers)
-        for (const q of this.querierRoles(dev)) {
-            if (q.kind !== 'switch')
-                continue;
-            notes.push(`${q.lan}: ${q.role === 'querier' ? `the IGMP querier (${q.addr}), elected` : q.role === 'starting' ? `the IGMP querier for now (${q.addr}, starting: its startup queries)` : q.role === 'non-querier' ? `a querier candidate (${q.addr}); ${q.other} queries` : q.role === 'off' ? 'no querier candidate' : 'its querier is down'}.`);
-        }
+        // its role in each VLAN with snooping enabled, as its badges on the diagram say (Show querier election has the timers)
+        for (const r of this.snoopRoles(dev))
+            notes.push(`${r.text}: ${r.detail.slice(dev.length + 2)}.`);
         for (const v of en) {
             if (!sd || this.e.params.str('snoop-querier', dev, (0, params_1.vlanRef)(v)) !== 'on' || this.sqs.has(dev + '|' + v))
                 continue;
@@ -59050,9 +59398,9 @@ class Multicast {
         const t = this.mroutes.get(dev);
         if (t) {
             for (const e of Array.from(t.values()).sort((a, b) => cmp(a.g, b.g) || (a.s === '*' ? -1 : b.s === '*' ? 1 : cmp(a.s, b.s)))) {
-                const oil = Array.from(e.oil).filter(([, u]) => u > now).sort((a, b) => cmp(a[0], b[0])).map(([o, u]) => `${o} (${u === Infinity ? 'members' : u === FLOOD ? 'flooded' : dur(u - now)})`);
+                const oil = Array.from(e.oil).filter(([, u]) => u > now).sort((a, b) => cmp(a[0], b[0])).map(([o, u]) => `${o} (${u === Infinity ? 'members' : u === FLOOD ? 'flooded' : (0, engine_1.fmtDur)(u - now)})`);
                 const flags = [e.mode === 'dense' ? 'dense' : e.mode === 'ssm' ? 'SSM' : 'sparse', e.s === '*' && this.isRp(dev) ? 'RP' : '', e.spt ? 'SPT' : '', e.registering ? 'registering' : '', e.local ? 'source connected' : '', e.rptPruned.size ? 'RPT pruned: ' + Array.from(e.rptPruned).join(', ') : '', e.pruned.size ? 'pruned: ' + Array.from(e.pruned.keys()).join(', ') : ''].filter((x) => x);
-                rows.push([this.entryName(e), e.iif ? `${e.iif}${e.nbr ? ' (' + e.nbr + ')' : ''}` : e.local ? 'source' : 'none', oil.join(', ') || 'none', flags.join(', '), dur(now - e.created)]);
+                rows.push([this.entryName(e), e.iif ? `${e.iif}${e.nbr ? ' (' + e.nbr + ')' : ''}` : e.local ? 'source' : 'none', oil.join(', ') || 'none', flags.join(', '), (0, engine_1.fmtDur)(now - e.created)]);
             }
         }
         const rp = this.rp();
@@ -59095,16 +59443,6 @@ function inNet(a, ip) {
 /** A querier role in words. */
 const ROLE_WORD = { starting: 'Querier (startup)', querier: 'Querier', 'non-querier': 'Standby (non-querier)', off: 'Not a candidate', down: 'Down' };
 /** A remaining time as the tables write it. */
-function dur(ms) {
-    if (!isFinite(ms))
-        return '—';
-    const s = Math.max(0, Math.round(ms / 1000));
-    if (s < 60)
-        return `${s} s`;
-    if (s < 3600)
-        return `${Math.floor(s / 60)} min${s % 60 ? ' ' + (s % 60) + ' s' : ''}`;
-    return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ' ' + Math.floor((s % 3600) / 60) + ' min' : ''}`;
-}
 
 };
 __defs["analysis/sim/netsvc"] = function (module, exports) {
@@ -62014,6 +62352,8 @@ const GAP = 3;
 const VGAP = 1;
 /** The drawing's obstacles, read once per drawn scene (its nodes layer is new whenever the diagram is drawn again). */
 const BASES = new WeakMap();
+/** The groups' frames (their edges), per drawn scene: avoided where possible, crossed when nothing else is free. */
+const FRAMES = new WeakMap();
 class StatusPlacer {
     /** A placer for a drawn scene: its obstacles read once and kept while the drawing stays the same. */
     static for(scene) {
@@ -62023,12 +62363,53 @@ class StatusPlacer {
             base = StatusPlacer.read(scene);
             BASES.set(key, base);
         }
-        return new StatusPlacer(base);
+        let frames = FRAMES.get(key);
+        if (!frames) {
+            frames = StatusPlacer.readFrames(scene);
+            FRAMES.set(key, frames);
+        }
+        return new StatusPlacer(base, frames);
     }
-    constructor(base) {
+    constructor(base, frames) {
         /** what this placer placed */
         this.placed = new Map();
         this.grid = base;
+        this.frames = frames;
+    }
+    /** The groups' frames: their four edges each. */
+    static readFrames(scene) {
+        const grid = new Map();
+        const frames = scene.querySelectorAll('.layer-groups rect');
+        for (let i = 0; i < frames.length; i++) {
+            let r;
+            try {
+                r = frames[i].getBBox();
+            }
+            catch (err) {
+                continue;
+            }
+            if (!(r.width > 0 && r.height > 0))
+                continue;
+            for (const b of [
+                { x: r.x - 1, y: r.y - 1, w: r.width + 2, h: 2 },
+                { x: r.x - 1, y: r.y + r.height - 1, w: r.width + 2, h: 2 },
+                { x: r.x - 1, y: r.y - 1, w: 2, h: r.height + 2 },
+                { x: r.x + r.width - 1, y: r.y - 1, w: 2, h: r.height + 2 },
+            ])
+                StatusPlacer.into(grid, b);
+        }
+        return grid;
+    }
+    /** Does a place cross a group's frame? */
+    onFrame(r) {
+        for (let cx = Math.floor(r.x / CELL); cx <= Math.floor((r.x + r.w) / CELL); cx++) {
+            for (let cy = Math.floor(r.y / CELL); cy <= Math.floor((r.y + r.h) / CELL); cy++) {
+                for (const b of this.frames.get(cx + ',' + cy) || [])
+                    if (r.x < b.x + b.w && b.x < r.x + r.w && r.y < b.y + b.h && b.y < r.y + r.h)
+                        return true;
+            }
+        }
+        return false;
     }
     static read(scene) {
         const grid = new Map();
@@ -62138,6 +62519,57 @@ class StatusPlacer {
         const r = { x: right, y: own.y - h / 2, w, h };
         this.add(r);
         return { x: right, y: r.y, edge: 'none' };
+    }
+    /** Take a given place for an indicator of a box when nothing is there (true: taken). */
+    take(r, own) {
+        const pad = { x: r.x - GAP, y: r.y - VGAP, w: r.w + 2 * GAP, h: r.h + 2 * VGAP };
+        if (!this.free(pad, own) || this.onFrame(pad))
+            return false;
+        this.add(r);
+        return true;
+    }
+    /**
+     * A place for a block w × h beside a box (a stack of badges, too tall for
+     * its edge): to its right, its left, below or above it, as close as
+     * nothing is in the way (taken: nothing else goes there afterwards). The
+     * same drawing gives the same place, so a block whose size stays the same
+     * never moves.
+     */
+    findBeside(own, w, h) {
+        const tries = [];
+        const ys = [];
+        for (let y = own.y; y <= own.y + Math.max(0, own.height - h) + 0.01; y += STEP)
+            ys.push(y);
+        for (let y = own.y - STEP; y >= own.y - h + 0.01; y -= STEP)
+            ys.push(y);
+        const xs = (lo, hi) => {
+            const out = [];
+            for (let x = lo; x <= hi + 0.01; x += STEP)
+                out.push(x);
+            return out;
+        };
+        tries.push(['right', ys.map((y) => ({ x: own.x + own.width + 4, y }))]);
+        tries.push(['left', ys.map((y) => ({ x: own.x - w - 4, y }))]);
+        // below or above: under its own box (from its left edge to its right one), never reaching under a neighbour's
+        const lo = Math.min(own.x, own.x + own.width - w);
+        const hi = Math.max(own.x, own.x + own.width - w);
+        tries.push(['below', xs(lo, hi).map((x) => ({ x, y: own.y + own.height + 4 }))]);
+        tries.push(['above', xs(lo, hi).map((x) => ({ x, y: own.y - h - 4 }))]);
+        // clear of the groups' frames first; else across one (its badges are opaque), still clear of everything else
+        for (const soft of [true, false]) {
+            for (const [side, at] of tries) {
+                for (const { x, y } of at) {
+                    const pad = { x: x - GAP, y: y - VGAP, w: w + 2 * GAP, h: h + 2 * VGAP };
+                    if (this.free(pad, own) && !(soft && this.onFrame(pad))) {
+                        this.add({ x, y, w, h });
+                        return { x, y, side };
+                    }
+                }
+            }
+        }
+        const r = { x: own.x + own.width + 4, y: own.y, w, h };
+        this.add(r);
+        return { x: r.x, y: r.y, side: 'none' };
     }
 }
 exports.StatusPlacer = StatusPlacer;
@@ -63023,6 +63455,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SimAnimator = exports.HIT_PX = exports.MAX_DOTS = void 0;
 exports.findTrack = findTrack;
 exports.nearestDot = nearestDot;
+exports.bgKind = bgKind;
 exports.dot = dot;
 /**
  * The protocol simulation in the diagram: a dot per message hop on screen
@@ -63146,6 +63579,8 @@ class SimAnimator {
         this.last = null;
         /** the device nodes marked as sending or receiving */
         this.marked = [];
+        /** the indicators' boxes, read again only when their layer is redrawn */
+        this.markCache = { layer: null, boxes: new sim_labels_1.BoxIndex() };
     }
     /** A new scene (after every render): the layers again, and what labels must avoid. */
     setScene(scene) {
@@ -63198,6 +63633,28 @@ class SimAnimator {
         this.dots = this.labels = null;
         this.scene = null;
         this.last = null;
+    }
+    /** The boxes of the simulation's indicators on the diagram (statuses, querier marks, snooping badges): labels keep clear of them. */
+    markBoxes() {
+        const layer = this.scene ? this.scene.querySelector(':scope > .layer-sim-power') : null;
+        if (layer === this.markCache.layer)
+            return this.markCache.boxes;
+        const boxes = new sim_labels_1.BoxIndex();
+        if (layer) {
+            const rs = layer.querySelectorAll('rect');
+            for (let i = 0; i < rs.length; i++) {
+                try {
+                    const b = rs[i].getBBox();
+                    if (b.width > 0 && b.height > 0)
+                        boxes.add({ x: b.x, y: b.y, w: b.width, h: b.height });
+                }
+                catch (err) {
+                    /* not rendered */
+                }
+            }
+        }
+        this.markCache = { layer, boxes };
+        return boxes;
     }
     /** Draw the hops as the pacing places them now. */
     draw(items, opts) {
@@ -63347,7 +63804,11 @@ class SimAnimator {
         if (live && opts.activity)
             this.paintActivity(dots, labels, opts, placed);
         // a Send test's hops first (their labels always find room), then the earliest: what started first keeps its place
-        const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+        // (the background's short labels after every label of the foreground: they take only the room left)
+        const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!a.bg) - Number(!!b.bg) || Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+        // the indicators drawn on the diagram during the simulation (statuses, querier marks, snooping badges): no label over them
+        const marks = this.markBoxes();
+        const bgLabelled = new Set();
         for (const it of list) {
             const f = it.f;
             const st = it.st;
@@ -63385,7 +63846,8 @@ class SimAnimator {
                 senders.add(ends.from);
             if (st.phase === 'transit' && ends.from)
                 senders.add(ends.from);
-            // the background: a grey dot on its way, nothing to point at or read (the log has it)
+            // the background: a grey dot on its way, nothing to point at (the log has it), with a short grey label of its kind —
+            // one per cable and kind (the earliest), and only where it touches no other label, text, box or indicator
             if (it.bg) {
                 if (lost)
                     continue;
@@ -63395,16 +63857,31 @@ class SimAnimator {
                 // (under the foreground's dots)
                 dots.insertBefore(shape, dots.firstChild);
                 drawn++;
+                const kind = bgKind(f.protocol, f.label);
+                const k = f.track.ref + '|' + kind;
+                if (!bgLabelled.has(k) && st.phase === 'moving') {
+                    bgLabelled.add(k);
+                    const bw = (0, geometry_1.textWidth)(kind, BG_FONT) + 4;
+                    const bh = BG_FONT + 4;
+                    const bbox = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, bw, bh, 1), this.obstacles, placed, marks);
+                    if (bbox) {
+                        placed.add(bbox);
+                        const lab = label(this.doc, kind, bbox, false, 'none');
+                        lab.setAttribute('class', 'sim-bg-label');
+                        lab.setAttribute('aria-hidden', 'true');
+                        labels.insertBefore(lab, labels.firstChild);
+                    }
+                }
                 continue;
             }
             const name = (it.test ? 'Test · ' : '') + f.label;
             const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
             const w = (0, geometry_1.textWidth)(text, FONT) + 4;
             const h = FONT + 4;
-            let box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed);
+            let box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed, marks);
             for (let k = 1; !box && k < fracs.length; k++) {
                 const q = at(geo, fracs[k]);
-                box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed);
+                box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed, marks);
                 if (box)
                     p = q;
             }
@@ -63447,6 +63924,23 @@ class SimAnimator {
     }
 }
 exports.SimAnimator = SimAnimator;
+/** a background label's font size */
+const BG_FONT = 8.5;
+/**
+ * A background message's kind in a word or two, for its short grey label:
+ * the protocol, with the message type where it tells the kind apart (IGMP
+ * Query / Report / Leave, OSPF Hello …); a multicast stream's datagrams are
+ * UDP. Never addresses or interfaces (the inspector and the log have them).
+ */
+function bgKind(protocol, label) {
+    const name = BG_NAMES[protocol] || protocol.toUpperCase().slice(0, 10);
+    const m = /\b(Query|Report|Leave|Hello|Join|Prune|Register|Request|Reply|Discover|Offer|Ack|Update|Keepalive|BPDU)\b/.exec(label);
+    const type = m ? m[1] : '';
+    if (protocol === 'igmp' || protocol === 'mld' || protocol === 'pim' || protocol === 'ospf' || protocol === 'bgp' || protocol === 'stp' || protocol === 'bfd')
+        return type ? `${name} ${type}` : name;
+    return name;
+}
+const BG_NAMES = { mcast: 'UDP', igmp: 'IGMP', mld: 'MLD', arp: 'ARP', garp: 'ARP', ndp: 'NDP', dhcp: 'DHCP', dhcpv6: 'DHCPv6', dns: 'DNS', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', ospf: 'OSPF', bgp: 'BGP', pim: 'PIM', stp: 'STP', lacp: 'LACP', lldp: 'LLDP', bfd: 'BFD', vrrp: 'VRRP', demand: 'Traffic', https: 'HTTPS', http: 'HTTP' };
 /** The way a followed message has come along a track so far. */
 function trail(doc, g, frac, color) {
     const n = Math.max(2, Math.ceil(g.len / 12));
@@ -63620,9 +64114,9 @@ function candidates(x, y, ux, uy, w, h, side) {
     return out;
 }
 /** The first candidate that hits nothing (null: none). */
-function placeLabel(cands, obstacles, placed) {
+function placeLabel(cands, obstacles, placed, more) {
     for (const c of cands) {
-        if (obstacles.hits(c) || placed.hits(c, 2))
+        if (obstacles.hits(c) || placed.hits(c, 2) || (more && more.hits(c, 1)))
             continue;
         return c;
     }
@@ -64561,6 +65055,18 @@ class TablePanels {
             const act = d.follow.act;
             fb.addEventListener('click', () => act());
             box.appendChild((0, dom_1.el)(this.doc, 'p', { class: 'pi-tools' }, [fb, (0, dom_1.el)(this.doc, 'span', { class: 'muted small' }, [' Its replies too; it alone sets the pace, with a trail.'])]));
+        }
+        // a multicast hop: what the device that sent it decided, and the one it arrived at (port by port, short reasons)
+        for (const x of d.forwarding || []) {
+            const sec = (0, dom_1.el)(this.doc, 'section', { class: 'pi-layer pi-fwd', 'data-device': x.d.dev, 'data-layer': x.d.layer });
+            sec.appendChild((0, dom_1.el)(this.doc, 'h4', {}, [x.title]));
+            sec.appendChild((0, dom_1.el)(this.doc, 'p', { class: 'small' }, [x.d.text + '.']));
+            sec.appendChild((0, dom_1.el)(this.doc, 'p', { class: 'small muted' }, [`${x.d.layer === 'l2' ? 'Layer 2 switching' : 'Layer 3 routing'} · ${x.d.mode} · group ${x.d.group} · in on ${x.d.ingress || '—'}`]));
+            const ul = (0, dom_1.el)(this.doc, 'ul', { class: 'pi-ports' });
+            for (const p of x.d.ports)
+                ul.appendChild((0, dom_1.el)(this.doc, 'li', { 'data-port': p.port, 'data-sent': p.sent ? 'yes' : 'no' }, [(0, dom_1.el)(this.doc, 'span', { 'aria-hidden': 'true' }, [p.sent ? '→ ' : '✕ ']), (0, dom_1.el)(this.doc, 'span', { class: 'mono' }, [p.port]), `: ${p.sent ? 'sent' : 'not sent'} — ${p.why}`]));
+            sec.appendChild(ul);
+            box.appendChild(sec);
         }
         const layer = (title, rows) => {
             const dl = (0, dom_1.el)(this.doc, 'dl');

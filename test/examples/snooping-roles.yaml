@@ -1,0 +1,98 @@
+# netatlas example (internal, for the tests): a snooping switch's role in
+# each of its four VLANs, all different.
+#
+# sw-a snoops IGMP / MLD in VLANs 10, 20, 30 and 40:
+#   VLAN 10: its own snooping querier (10.10.0.2), alone there: Querier;
+#   VLAN 20: a snooping querier candidate (10.20.0.3), but sw-b (10.20.0.2,
+#            the lower address) wins: Standby;
+#   VLAN 30: no candidate of its own; the multicast router r30 queries there:
+#            Snooping, querier heard (port p30 a multicast router port);
+#   VLAN 40: no candidate and no querier: Snooping, no querier.
+# sw-b snoops VLANs 10 and 20: snooping only in 10 (sw-a's queries heard over
+# the trunk), the querier of 20.
+#
+# LAN B (also VLAN 40, 10.41.0.0/24, not cabled to the rest): its own
+# multicast router rb queries there, for swb2 only — sw-a's VLAN 40 stays
+# without a querier (the same VLAN ID, a separate LAN).
+netatlas: 1
+title: Snooping roles per VLAN
+description: |
+  A switch snooping four VLANs with four different roles (querier, standby,
+  snooping with a querier, snooping without one), its neighbour, and a
+  separate LAN with the same VLAN ID.
+
+groups:
+  - {id: lan-a, label: LAN A, kind: site}
+  - {id: lan-b, label: LAN B (VLAN 40), kind: site}
+
+networks:
+  - {id: n10, label: VLAN 10, cidr: 10.10.0.0/24, vlan: 10, simulation: {snooping_querier: "on"}}
+  - {id: n20, label: VLAN 20, cidr: 10.20.0.0/24, vlan: 20, simulation: {snooping_querier: "on"}}
+  - {id: n30, label: VLAN 30, cidr: 10.30.0.0/24, vlan: 30}
+  - {id: n40, label: VLAN 40, cidr: 10.40.0.0/24, vlan: 40}
+  - {id: nb, label: LAN B, cidr: 10.41.0.0/24, vlan: 40}
+
+devices:
+  - id: sw-a
+    type: switch
+    layer3: true
+    group: lan-a
+    igmp_mld_snooping: {10: enabled, 20: enabled, 30: enabled, 40: enabled}
+    interfaces:
+      - {id: tr, vlans: [10, 20], description: trunk to sw-b}
+      - {id: p10, vlans: 10}
+      - {id: p30, vlans: 30}
+      - {id: p31, vlans: 30}
+      - {id: p40, vlans: 40}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.0.2/24}
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.0.3/24}
+  - id: sw-b
+    type: switch
+    layer3: true
+    group: lan-a
+    igmp_mld_snooping: {10: enabled, 20: enabled}
+    interfaces:
+      - {id: tr, vlans: [10, 20], description: trunk to sw-a}
+      - {id: p10, vlans: 10}
+      - {id: p20, vlans: 20}
+    logical_interfaces:
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.0.2/24}
+  - id: r30
+    type: router
+    group: lan-a
+    protocols: {pim: {mode: dense}}
+    simulation: {igmp_query_interval: 20}
+    interfaces: [{id: g0, ip: 10.30.0.1/24}]
+  - {id: h10, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.10.0.11/24}]}
+  - {id: h11, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.10.0.12/24}]}
+  - {id: h20, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.20.0.11/24}]}
+  - {id: h30, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.30.0.11/24}]}
+  - {id: h40, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.40.0.11/24}]}
+  - id: rb
+    type: router
+    group: lan-b
+    protocols: {pim: {mode: dense}}
+    simulation: {igmp_query_interval: 20}
+    interfaces: [{id: g0, ip: 10.41.0.1/24}]
+  - id: swb2
+    type: switch
+    group: lan-b
+    igmp_mld_snooping: {40: enabled}
+    interfaces: [{id: p1, vlans: 40}, {id: p2, vlans: 40}]
+  - {id: hb, type: endpoint, group: lan-b, interfaces: [{id: eth0, ip: 10.41.0.11/24}]}
+
+# (PIM runs without relations here: only its querier role matters on these LANs)
+checks:
+  protocol-unused: "off"
+
+links:
+  - {id: l-trunk, a: "sw-a:tr", b: "sw-b:tr"}
+  - {id: l-h10, a: "h10:eth0", b: "sw-a:p10"}
+  - {id: l-h11, a: "h11:eth0", b: "sw-b:p10"}
+  - {id: l-h20, a: "h20:eth0", b: "sw-b:p20"}
+  - {id: l-r30, a: "r30:g0", b: "sw-a:p30"}
+  - {id: l-h30, a: "h30:eth0", b: "sw-a:p31"}
+  - {id: l-h40, a: "h40:eth0", b: "sw-a:p40"}
+  - {id: l-rb, a: "rb:g0", b: "swb2:p1"}
+  - {id: l-hb, a: "hb:eth0", b: "swb2:p2"}
