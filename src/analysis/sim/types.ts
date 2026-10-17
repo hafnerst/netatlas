@@ -153,6 +153,8 @@ export interface SnoopResult {
   ports: Set<string> | null;
   /** the group's member ports, until when */
   members: Map<string, number>;
+  /** those of them where a leave was heard: they go at their time unless a member answers the group-specific queries */
+  leaving?: Set<string>;
   /** the VLAN's multicast router ports (a query or PIM Hello arrived there), until when */
   routers: Map<string, number>;
   /** data: a group's packets; control: a report or leave (to router ports only); linklocal: 224.0.0.0/24, ff02::/16 (flooded); off: snooping disabled or not configured (flooded) */

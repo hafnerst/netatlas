@@ -2435,7 +2435,13 @@ What the simulation does with them:
   ports per VLAN and group from reports (for the membership interval:
   robustness × query interval + response interval; refreshed by the
   answers to queries; with fast leave a leave removes the port at once,
-  else after the last member queries; a port whose link goes down loses
+  else the port is *leave pending* for robustness × last member query
+  interval — the querier's group-specific queries, 2 × 1 s by default —
+  and goes exactly then unless a member answers (still forwarded
+  meanwhile, and the forwarding decision says so); a join applies to the
+  next packet after its report was processed (in the order the events
+  happen: a report and a packet at the same moment go as they come); a
+  port whose link goes down loses
   its entries at once; a switch powered off forgets them; a new simulation
   starts with none). Each port of the VLAN has an explicit role for a
   group's packet: a **member port** (a report of that group arrived there),

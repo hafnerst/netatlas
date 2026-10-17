@@ -167,7 +167,9 @@ test('lifecycle: refreshed by the answers to queries, gone after a leave (group 
   s.powerOff('h1');
   s.runTo(s.now + 32000);
   assert.deepEqual(s.snoopTable('sw').rows, []);
-  assert.ok(ev(s, (e) => e.device === 'sw' && e.what === 'member port expired' && /no report within the membership interval/.test(e.detail)).length >= 1);
+  // (h2's port went exactly when the last member queries after its leave were over — 2 × 1 s — and says why; h1's with its link when it was powered off)
+  assert.deepEqual(ev(s, (e) => e.device === 'sw' && e.what === 'member port expired').map((e) => [Math.round(e.t), e.detail]), [[92000, 'sw: port p2 is no member port of 239.1.1.1 in VLAN 10 any more (nobody answered the group-specific queries after the leave)']]);
+  assert.ok(ev(s, (e) => e.device === 'sw' && e.what === 'member port removed' && e.t > 120000 && /its link went down/.test(e.detail)).length >= 1);
   t = s.now;
   s.runTo(t + 3000);
   assert.deepEqual(data(s, 'l1', '239.1.1.1', t), []);

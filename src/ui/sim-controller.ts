@@ -52,7 +52,8 @@ import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/p
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
 import { QuerierInfo, SnoopRole } from '../analysis/sim/multicast';
-import { SNOOP_GAP, SNOOP_ROW, snoopBlock } from '../layout/sizes';
+import { SNOOP_FONT, SNOOP_GAP, SNOOP_ROW, snoopBlock } from '../layout/sizes';
+import { textWidth } from '../layout/text';
 
 /** A querier mark's state: the elected querier, in its startup, a standby (non-querier), a snooping VLAN without any. */
 type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
@@ -836,8 +837,8 @@ export class SimController implements SimulationMode {
       blk.setAttribute('role', 'list');
       blk.setAttribute('aria-label', `${dev}: IGMP / MLD snooping, ${roles.length} VLAN${roles.length === 1 ? '' : 's'}`);
       g.appendChild(blk);
-      // the block's room (reserved by the layout to the right of its box: as wide as the longest text any of its VLANs can have,
-      // so a role that changes never resizes or moves it); taken elsewhere beside the box only when something is there
+      // the block's place: found for the longest text any of its VLANs can have, so a role that changes never moves it
+      // (beside the box, to its right first, where nothing else is drawn); each badge itself only as wide as its own text
       const size = snoopBlock(roles.map((r) => r.vlan)) as { w: number; h: number };
       const w = size.w;
       const ROW = SNOOP_ROW;
@@ -855,9 +856,7 @@ export class SimController implements SimulationMode {
         t.textContent = r.detail;
         const y = at.y + i * ROW;
         const rect = doc.createElementNS(NS, 'rect');
-        rect.setAttribute('x', at.x.toFixed(1));
         rect.setAttribute('y', y.toFixed(1));
-        rect.setAttribute('width', String(w));
         rect.setAttribute('height', String(ROW - 1));
         rect.setAttribute('rx', '3');
         // the role's sign besides its words and colour: ★ querier, ☆ startup, ◇ standby, ✕ down, ○ snooping only, ⏻ off or booting
@@ -865,17 +864,28 @@ export class SimController implements SimulationMode {
         icon.setAttribute('class', 'sim-snoop-icon');
         icon.setAttribute('aria-hidden', 'true');
         icon.textContent = r.role === 'querier' ? '★' : r.role === 'starting' ? '☆' : r.role === 'standby' ? '◇' : r.role === 'down' ? '✕' : r.role === 'off' || r.role === 'booting' ? '⏻' : '○';
-        icon.setAttribute('x', (at.x + 4).toFixed(1));
         icon.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
         const tx = doc.createElementNS(NS, 'text');
         tx.textContent = r.text;
-        tx.setAttribute('x', (at.x + 15).toFixed(1));
         tx.setAttribute('y', (y + ROW / 2 + 3).toFixed(1));
         s.appendChild(t);
         s.appendChild(rect);
         s.appendChild(icon);
         s.appendChild(tx);
         blk.appendChild(s);
+        // its border fits its sign and words (4 px before the sign, 5 px after the text); on the box's left it ends at the block's right edge
+        let len = textWidth(r.text, SNOOP_FONT) * 1.06;
+        try {
+          len = (tx as SVGTextContentElement).getComputedTextLength() || len;
+        } catch (e) {
+          /* not laid out: the estimate */
+        }
+        const bw = Math.min(w, Math.ceil(15 + len + 5));
+        const x = at.side === 'left' ? at.x + w - bw : at.x;
+        rect.setAttribute('x', x.toFixed(1));
+        rect.setAttribute('width', String(bw));
+        icon.setAttribute('x', (x + 4).toFixed(1));
+        tx.setAttribute('x', (x + 15).toFixed(1));
       });
     }
   }

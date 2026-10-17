@@ -1809,7 +1809,9 @@ export class Engine {
       if (!c) continue;
       const member = r.members.get(bp.id);
       const router = r.routers.get(bp.id);
-      const role = member !== undefined && router !== undefined ? `member port${left(member)} and multicast router port` : member !== undefined ? `member port${left(member)}` : router !== undefined ? `multicast router port${left(router)}` : '';
+      // (a leave heard there: the member port stays until its last member queries are over, unless a member answers)
+      const mp = member === undefined ? '' : r.leaving && r.leaving.has(bp.id) ? `member port, leave pending: it goes in ${((member - t) / 1000).toFixed(1)} s unless a member answers the group-specific queries` : `member port${left(member)}`;
+      const role = mp && router !== undefined ? `${mp}; multicast router port` : mp || (router !== undefined ? `multicast router port${left(router)}` : '');
       if (to.indexOf(bp) < 0) {
         ports.push({ port: bp.id, sent: false, why: r.kind === 'control' ? 'no multicast router port (reports go to router ports only)' : 'no member and no multicast router port' });
         continue;

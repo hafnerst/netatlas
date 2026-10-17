@@ -225,6 +225,8 @@ interface SnoopPort {
   reporter: string;
   version: string;
   sources: string[];
+  /** a leave was heard there: it goes at `until` (after the last member queries) unless a member answers */
+  leaving?: boolean;
 }
 
 /** A switch's snooping state in one VLAN: its multicast router ports (until when), the member ports of each group. */
@@ -995,6 +997,7 @@ export class Multicast {
           const g = ri.groups.get(d.group) as RGroup;
           g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev, null, this.at(ri)) * this.e.params.num('igmp-lmqi', dev, null, this.at(ri)));
           g.leaving = true;
+          this.expireAt(g.expires);
         }
         return;
       }
@@ -1057,6 +1060,7 @@ export class Multicast {
     const rob = this.e.params.num('igmp-robustness', ri.dev, null, this.at(ri));
     g.expires = Math.min(g.expires, this.e.now + rob * lmqi);
     g.leaving = true;
+    this.expireAt(g.expires);
     if (!ri.querier) return;
     // the querier asks: group-specific queries, robustness times, one last member query interval apart
     g.gsq = rob;
@@ -1136,6 +1140,8 @@ export class Multicast {
             if (ports.delete(from)) this.noteAt(t, 'table', sd.id, `${sd.id}: port ${from} leaves ${d.group} in ${vlanName(vlan)} at once (fast leave)`);
           } else if (cur) {
             cur.until = Math.min(cur.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
+            cur.leaving = true;
+            this.expireAt(cur.until);
             // the VLAN's querier itself: it asks whether a member is left (another member behind that port keeps it)
             const sq = this.sqs.get(sd.id + '|' + vlan);
             if (sq && sq.querier && sq.running && p.src.version === 4) this.snoopLeave(sd, sq, d.group, formatAddr(p.src), t);
@@ -1155,7 +1161,12 @@ export class Multicast {
     // a group-specific query: the members of that group time out after the last member queries
     if (msg.protocol === 'igmp' && msg.type === 'Query' && d.group) {
       const ports = st.groups.get(d.group);
-      if (ports) for (const e of ports.values()) e.until = Math.min(e.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
+      if (ports)
+        for (const e of ports.values()) {
+          e.until = Math.min(e.until, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id));
+          e.leaving = true;
+          this.expireAt(e.until);
+        }
     }
     const routers = routerMap();
     // reports and leaves go to the router ports only: other hosts never hear them
@@ -1165,19 +1176,25 @@ export class Multicast {
     // a group's data: its member ports and the router ports
     const g = formatAddr(p.dst);
     const members = new Map<string, number>();
+    const leaving = new Set<string>();
     const mine = st.groups.get(g);
-    if (mine) for (const [port, e] of mine) if (e.until > t) members.set(port, e.until);
+    if (mine)
+      for (const [port, e] of mine)
+        if (e.until > t) {
+          members.set(port, e.until);
+          if (e.leaving) leaving.add(port);
+        }
     // unregistered (no member): its VLAN's policy — the router ports only, or flooded
     if (!members.size && unregistered === 'flood') {
       this.snoopNote(`snoopflood|${sd.id}|${vlan}|${g}|${msg.test}`, 'note', sd.id, `${sd.id} floods ${g} in ${vlanName(vlan)}: no member reported it there, and its unregistered multicast is flooded (unregistered_multicast: flood)`, t, msg);
-      return { ports: null, members, routers, kind: 'data', mode, unregistered };
+      return { ports: null, members, leaving, routers, kind: 'data', mode, unregistered };
     }
     const keep = new Set<string>([...routers.keys(), ...members.keys()]);
     // (nowhere at all: where the group's way ends, as a drop of its traffic; to router ports only: a note)
     const own = this.sqs.get(sd.id + '|' + vlan);
     const why = own && own.running && own.querier ? `it is the VLAN's querier itself and no multicast router is there` : `no query or PIM Hello heard in ${vlanName(vlan)}: no querier there`;
     if (!members.size) this.snoopNote(`snoopnone|${sd.id}|${vlan}|${g}|${msg.test}`, keep.size ? 'note' : 'drop', sd.id, keep.size ? `${sd.id} sends ${g} to no host port in ${vlanName(vlan)}: no member reported it there (IGMP / MLD snooping enabled); only to its multicast router port${keep.size > 1 ? 's' : ''} ${Array.from(keep).sort(cmp).join(', ')}` : `${sd.id} forwards ${g} to no port in ${vlanName(vlan)}: no member reported it there and it has no multicast router port (${why}; unregistered multicast goes to the router ports only)`, t, msg);
-    return { ports: keep, members, routers, kind: 'data', mode, unregistered };
+    return { ports: keep, members, leaving, routers, kind: 'data', mode, unregistered };
   }
 
   /** A switch's policy for unregistered multicast in a VLAN (a group without members): 'router-ports' or 'flood'. */
@@ -1937,6 +1954,23 @@ export class Multicast {
 
   // ------------------------------------------------------------ timers, failures, power
 
+  /**
+   * A membership a leave shortened goes exactly when its last member queries
+   * are over (not at the next second's sweep): the sweep then too, at that
+   * moment. The next packet after it finds the entry gone.
+   */
+  private expireAt(t: number): void {
+    if (this.expiring.has(t)) return;
+    this.expiring.add(t);
+    this.e.at(t, () => {
+      this.expiring.delete(t);
+      this.sweep();
+    });
+  }
+
+  /** the moments an exact expiry is scheduled for (one sweep each) */
+  private expiring = new Set<number>();
+
   /** Once a second: memberships, snooping entries and joins past their time. */
   private sweep(): void {
     const now = this.e.now;
@@ -1955,7 +1989,7 @@ export class Multicast {
         for (const [p, e] of Array.from(ports)) {
           if (e.until > now) continue;
           ports.delete(p);
-          this.e.note('table', 'igmp', dev, '', 'member port expired', '', `${dev}: port ${p} is no member port of ${g} in ${vlanName(Number(key.slice(key.indexOf('|') + 1)))} any more (no report within the membership interval)`);
+          this.e.note('table', 'igmp', dev, '', 'member port expired', '', `${dev}: port ${p} is no member port of ${g} in ${vlanName(Number(key.slice(key.indexOf('|') + 1)))} any more (${e.leaving ? 'nobody answered the group-specific queries after the leave' : 'no report within the membership interval'})`);
         }
         if (!ports.size) st.groups.delete(g);
       }
@@ -2141,7 +2175,7 @@ export class Multicast {
         const fam = (parseAddress(g) as IpAddr).version === 4 ? 'IGMP' : 'MLD';
         for (const [port, e] of Array.from(ports).sort((a, b) => cmp(a[0], b[0]))) {
           if (e.until <= now) continue;
-          rows.push([vn, `${g} (${fam})`, port, `member port: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}`, dur(e.until - now)]);
+          rows.push([vn, `${g} (${fam})`, port, `member port: ${e.version}, ${e.sources.length ? 'sources ' + e.sources.join(', ') : 'any source'}, reported by ${e.reporter}${e.leaving ? '; leave pending (it goes unless a member answers the group-specific queries)' : ''}`, dur(e.until - now)]);
           learned.add(vlan);
         }
       }

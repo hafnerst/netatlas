@@ -411,11 +411,15 @@ export class Pacer {
       const lat = f.dropped !== undefined && f.dropped > f.t0 ? 2 * (f.dropped - f.t0) : Math.max(0, f.t1 - f.t0);
       // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
       if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS) continue;
+      // multicast data (a stream's datagrams and their copies): each copy on its cable from the moment it is forwarded, not after
+      // the copy before it has arrived on screen — a stream is a flow on every cable of its tree at once, and a change of the tree
+      // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones
+      const flow = f.protocol === 'mcast';
       const parent = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
-      let after = parent ? this.arrival(parent) : -Infinity;
+      let after = parent && !flow ? this.arrival(parent) : -Infinity;
       // what caused it (a frame it forwards, the request it answers, the ARP reply that released it) arrives first, in the same view
       const cause = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
-      if (!parent && cause && cause.f.view === f.view) after = Math.max(after, this.arrival(cause));
+      if (!parent && !flow && cause && cause.f.view === f.view) after = Math.max(after, this.arrival(cause));
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
       const key = conversationKey(f.protocol, h, f.label);
@@ -424,7 +428,7 @@ export class Pacer {
         for (const x of this.items) if (x.key === key && x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
-      const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
+      const transit = parent && !flow && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
       // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Network event's is always drawn
       const shown = this.host.shown(f);
       // the scenario's: bundled, a few conversations at a time (muted while a Network event runs); one that would show long after it happened is cable activity

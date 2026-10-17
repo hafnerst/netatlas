@@ -258,6 +258,11 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **A pending leave is visible.** While a leave waits for its last member
+  queries, a switch's member port is *leave pending* in the snooping table
+  and in the forwarding decision of each datagram it still gets (*member
+  port, leave pending: it goes in 1.2 s unless a member answers*).
+
 - **Every snooping VLAN's role on the diagram.** During the simulation a
   switch shows one badge per VLAN where its IGMP / MLD snooping is enabled,
   stacked in VLAN order beside its box: its own part (★ Querier, ☆ Querier
@@ -1207,6 +1212,18 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Multicast data is shown as a flow.** Each copy of a datagram is on its
+  cable from the moment it is forwarded, on every cable of the tree at once,
+  instead of waiting for the copy before it to arrive on screen. A join or a
+  leave now shows with the next datagram.
+- **Moving packet labels stay with their dots.** A label keeps the place
+  (side and distance) it got when its dot appeared and moves with it,
+  passing over a name or another label for a moment instead of jumping
+  away; every moving dot keeps its label. Background labels stay with one
+  dot. Static labels, addresses, badges and indicators keep their rules.
+- **Snooping badges fit their text**: each border ends just after its
+  words; the block still keeps its place while roles change.
+
 - **The private house: the core is the snooping querier of VLANs 10, 20
   and 30** (it was of VLAN 20 only). Without a querier, VLANs 10 and 30
   learned no multicast router port, so a stream stayed at the first switch
@@ -1571,6 +1588,18 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **Multicast seemed to go on for about 10 s after a leave.** Forwarding
+  stopped when the protocol said (the leave's last member queries, 2 × 1 s),
+  but the display chained each copy after the one before it, so a 5-hop
+  path showed every datagram about 13 s after it was forwarded: dots kept
+  reaching the receiver for ~18 s after the leave. Now at most the 2 s of
+  the pending leave plus one hop's display time.
+- A membership a leave shortened went at the next second's sweep, up to
+  1 s late; switches and routers now drop it exactly when the last member
+  queries are over, and the log says why (*nobody answered the
+  group-specific queries after the leave*, no longer *no report within the
+  membership interval*).
 
 - **The NAS got nothing after joining the laptop's group in the private
   house.** The laptop and the NAS are in the same VLAN 10, but VLAN 10 had
