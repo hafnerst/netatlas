@@ -52,6 +52,9 @@ import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/p
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
 import { QuerierInfo } from '../analysis/sim/multicast';
+
+/** A querier mark's state: the elected querier, in its startup, a standby (non-querier), a snooping VLAN without any. */
+type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
 import { IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
@@ -708,7 +711,7 @@ export class SimController implements SimulationMode {
     const states = this.deviceStates();
     const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const marks = this.querierMarks();
-    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state).join('|')}|${this.host.view()}`;
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
@@ -818,28 +821,77 @@ export class SimController implements SimulationMode {
   }
 
   /**
-   * The devices that query a LAN now, as the election has it (never from the
-   * configuration): "Querier · VLAN 10" (several: "Querier · VLAN 10, 20",
-   * more than two: "Querier · 3 LANs"), or "Querier? · VLAN 10" while it is
-   * the querier only for now (its startup queries). Non-queriers, devices
-   * configured off and those down have no mark (the table lists them).
+   * Each device's querier role as the election has it now (never the
+   * configuration's), in one mark: "Querier · VLAN 10" (several LANs:
+   * "VLAN 10, 20", more than two: "3 LANs"); "Querier (startup) · VLAN 10"
+   * while it sends its startup queries (its tooltip says which one is next,
+   * and when); "Standby · VLAN 10" for a non-querier (another queries; the
+   * tooltip says when it would take over); "No querier · VLAN 10" on a
+   * snooping switch whose VLAN has members but hears no query and has no
+   * querier of its own. A candidate configured off or down has no mark (the
+   * querier election table lists it). The role shown first: querier, then
+   * startup, standby, no querier.
    */
-  querierMarks(): Map<string, { text: string; state: 'querier' | 'starting'; detail: string }> {
-    const out = new Map<string, { text: string; state: 'querier' | 'starting'; detail: string }>();
+  querierMarks(): Map<string, { text: string; state: QuerierMark; detail: string }> {
+    const out = new Map<string, { text: string; state: QuerierMark; detail: string }>();
     const by = new Map<string, QuerierInfo[]>();
     for (const q of this.sim.multicast.querierRoles()) {
-      if (q.role !== 'querier' && q.role !== 'starting') continue;
+      if (q.role !== 'querier' && q.role !== 'starting' && q.role !== 'non-querier') continue;
       by.set(q.dev, (by.get(q.dev) || []).concat([q]));
     }
+    const where = (lans: string[]): string => {
+      const vlansOnly = lans.every((l) => /^VLAN /.test(l));
+      const xs = Array.from(new Set(lans.map((l) => (vlansOnly ? l.replace(/^VLAN /, '') : l))));
+      return xs.length > 2 ? `${xs.length} LANs` : (vlansOnly ? 'VLAN ' : '') + xs.join(', ');
+    };
+    const line = (q: QuerierInfo): string => {
+      const lan = `${q.lan}${q.iface && q.kind === 'router' ? ' (' + q.iface + ')' : ''}`;
+      if (q.role === 'querier') return `${q.family} querier of ${lan} from ${q.addr}${q.nextAt >= 0 ? `; its next query at t = ${fmtSec(q.nextAt)}` : ''}`;
+      if (q.role === 'starting') return `${q.family} querier of ${lan} from ${q.addr}, in its startup: startup query ${q.startup} due at t = ${fmtSec(q.nextAt)} (a quarter of the query interval after the last); a lower address heard meanwhile would take over`;
+      return `${q.family} standby on ${lan} (${q.addr}): ${q.other || 'another'} queries${q.takeoverAt >= 0 ? `; it takes over at t = ${fmtSec(q.takeoverAt)} if that one falls silent` : ''}`;
+    };
     for (const [dev, qs] of by) {
-      const lans = Array.from(new Set(qs.map((q) => q.lan.replace(/^VLAN /, ''))));
-      const vlansOnly = qs.every((q) => /^VLAN /.test(q.lan));
-      const starting = qs.every((q) => q.role === 'starting');
-      const where = lans.length > 2 ? `${lans.length} LANs` : (vlansOnly ? 'VLAN ' : '') + lans.join(', ');
-      const detail = qs.map((q) => `${q.family} querier of ${q.lan}${q.iface && q.kind === 'router' ? ' (' + q.iface + ')' : ''} from ${q.addr}${q.role === 'starting' ? ' — for now: its startup queries, the election not settled' : ', elected'}`).join('; ');
-      out.set(dev, { text: `${starting ? 'Querier?' : 'Querier'} · ${where}`, state: starting ? 'starting' : 'querier', detail });
+      const active = qs.filter((q) => q.role === 'querier');
+      const starting = qs.filter((q) => q.role === 'starting');
+      const standby = qs.filter((q) => q.role === 'non-querier');
+      const main = active.length ? active : starting.length ? starting : standby;
+      const state: QuerierMark = active.length ? 'querier' : starting.length ? 'starting' : 'standby';
+      const word = state === 'querier' ? 'Querier' : state === 'starting' ? 'Querier (startup)' : 'Standby';
+      out.set(dev, { text: `${word} · ${where(main.map((q) => q.lan))}`, state, detail: qs.map(line).join('; ') });
+    }
+    // a snooping switch's VLANs with members but nobody querying them
+    for (const sd of Array.from(this.sim.engine.net.devices.values())) {
+      if (out.has(sd.id) || !sd.bridge || !sd.caps.switchFeatures) continue;
+      const vlans = this.sim.multicast.noQuerierVlans(sd.id);
+      if (!vlans.length) continue;
+      out.set(sd.id, { text: `No querier · ${where(vlans.map((v) => 'VLAN ' + v))}`, state: 'none', detail: `no IGMP querier heard in VLAN ${vlans.join(', ')}, and it is none itself: its members are learned from their own reports only and age out after the membership interval (configure a querier: a multicast router, or the snooping querier with an address there)` });
     }
     return out;
+  }
+
+  /**
+   * The IGMP / MLD queries' way from the election to the screen, for
+   * diagnosis (`netatlas.simController().queryDiagnostics()`; nothing on the
+   * page shows it): per candidate its role and its next query — none
+   * scheduled, scheduled for a later time, or overdue (its time has come on
+   * the clock, but the simulation is behind: a frame's work ran out) — and
+   * what became of its last query's hops: still to come on screen, on
+   * screen, arrived, not drawn (cable activity, its protocol not shown), or
+   * lost on the way (a cable down, a filter).
+   */
+  queryDiagnostics(): Array<{ dev: string; lan: string; role: string; next: 'none' | 'scheduled' | 'overdue'; nextAt: number; overdueBy: number; lastQuery: number; hops: Array<{ flight: number; on: string; display: string }> }> {
+    const now = this.sim.now;
+    const target = now + this.pacer.behind;
+    return this.sim.multicast.querierRoles().map((q) => {
+      const next: 'none' | 'scheduled' | 'overdue' = q.nextAt < 0 ? 'none' : q.nextAt <= target && q.nextAt > now ? 'overdue' : 'scheduled';
+      const hops = q.lastQuery < 0 ? [] : this.sim.engine.flights.filter((f) => f.protocol === 'igmp' && f.sender === q.dev && /Query/.test(f.label) && f.t0 >= q.lastQuery - 1 && f.view === this.host.view()).map((f) => {
+        const it = this.pacer.find(f.id);
+        const st = it ? this.pacer.state(it) : null;
+        const display = f.dropped !== undefined ? 'lost on the way' : !this.flightShown(f) ? 'not drawn: its protocol is not shown' : !it ? 'gone from the screen (or before the display took it in)' : !it.drawn ? 'not drawn: cable activity (bundled)' : st && st.phase === 'waiting' ? 'still to come on screen' : st && (st.phase === 'moving' || st.phase === 'transit') ? 'on screen' : 'arrived';
+        return { flight: f.id, on: f.track.ref, display };
+      });
+      return { dev: q.dev, lan: q.lan, role: q.role, next, nextAt: q.nextAt, overdueBy: next === 'overdue' ? target - q.nextAt : 0, lastQuery: q.lastQuery, hops };
+    });
   }
 
   /** The devices' lifecycle for the diagram's marks, by ref (those powered off or booting). */
@@ -890,7 +942,9 @@ export class SimController implements SimulationMode {
       const st = this.pacer.state(it);
       // a Send test's hops: never faded, with their trail (as a message followed)
       const test = it.f.test !== undefined;
-      out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key && !test, followed: (!!follow && it.key === follow.key) || test, test });
+      // the scenario's while Network events hold the front: the background (grey, not clickable); the conversation followed stays itself
+      const bg = this.pacer.background(it) && !(follow && it.key === follow.key);
+      out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key && !test, followed: (!!follow && it.key === follow.key) || test, test, bg });
     }
     return out;
   }

@@ -2394,6 +2394,16 @@ What the simulation does with them:
   A candidate whose interface or device goes down stops (its schedule with
   it); up again, it starts afresh (startup queries; a lower one silences it
   again). One schedule per candidate: a newer start ends the older one.
+  **Timing**: a candidate's first query goes when its interface is up (a
+  port comes up after the link-up delay: in the private house the core's
+  VLAN 20 query is at t = 2 s), the next startup query a quarter of the
+  query interval later (125 s ÷ 4 = 31.25 s: t = 33.25 s), then one every
+  query interval; a non-querier takes over at its last-heard query plus
+  the other querier present interval. These are deadlines of the
+  simulated clock, which runs on its own whatever is on screen: the query
+  is sent at its time and drawn as it is sent (see the README's
+  *Concurrency*). Every candidate's next deadline is recorded and shown
+  (the mark's tooltip, **Show querier election**'s *Next*).
 - **Members** (`igmp_version` of the host): a host reports a join at once
   and again after the unsolicited report interval, and keeps its
   membership (its intent) until it leaves: it answers every query after a
@@ -2487,9 +2497,9 @@ member ports with version, sources, reporter and time left, and each VLAN's
 setting), **Show group memberships** (a host: its own groups, version,
 filter and what it received, and who queries its LAN), **Show querier
 election** (a router or a switch candidate: per LAN its address, its
-role — *Querier (starting)*, *Querier*, *Non-querier*, *Not a candidate*,
-*Down* — the querier it yields to and how long until it would take over,
-its general queries) and **Show multicast routes** (a router: (*, G) and (S, G) with their
+role — *Querier (startup)*, *Querier*, *Standby (non-querier)*, *Not a
+candidate*, *Down* — the querier it yields to and how long until it would
+take over, its next query or takeover, its general queries) and **Show multicast routes** (a router: (*, G) and (S, G) with their
 RPF interface and neighbour, outgoing interfaces and flags, and the RP)
 show the state, with the timers in effect.
 

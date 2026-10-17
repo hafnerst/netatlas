@@ -34,10 +34,12 @@ links:
   - {id: l5, a: "h3:eth0", b: "sw:p5"}
 `;
 
-test('the private house has no multicast protocol to tick: a join’s reports and a stream’s datagrams carry their event’s id, so they are drawn whatever is ticked', () => {
+test('the private house: IGMP / MLD to tick (the core is the IoT VLAN’s snooping querier), no streams of its own; a join’s reports and a stream’s datagrams carry their event’s id, so they are drawn whatever is ticked', () => {
   const s = sim(example('private-house.yaml'), { params: {} });
   const ids = s.protocolEntries().map((e) => e.id);
-  assert.ok(ids.indexOf('igmp') < 0 && ids.indexOf('mcast') < 0, 'nothing to tick: why they were not drawn before');
+  assert.ok(ids.indexOf('igmp') >= 0, 'its querier’s queries are shown (before: no entry, so never drawn)');
+  assert.equal(s.protocolEntries().find((e) => e.id === 'igmp').uses, 1);
+  assert.ok(ids.indexOf('mcast') < 0);
   s.runTo(9000);
   const j = s.actJoin('tv', 'wlan0', '239.1.1.1', []);
   const st = s.actStream('nas', 'eth0', '239.1.1.1', 5004, 1000, 1316);

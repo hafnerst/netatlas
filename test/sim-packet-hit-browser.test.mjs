@@ -89,8 +89,10 @@ for (const theme of ['light', 'dark']) {
         assert.equal((await page.eval(HOVER)).id, null);
       }
       // a device's click away from any dot: the device is selected, no inspector
-      await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(false); return true; })()`);
-      const dev = await page.eval(`(() => { const dots = Array.from(document.querySelectorAll('#canvas .layer-sim [data-flight]')).map((d) => { const r = d.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }); for (const n of document.querySelectorAll('#canvas .node[data-ref^="device:"]')) { const r = n.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; if (x < 40 || y < 40 || x > innerWidth - 420 || y > innerHeight - 260) continue; if (dots.every((d) => Math.hypot(d.x - x, d.y - y) > 40) && document.elementFromPoint(x, y) && document.elementFromPoint(x, y).closest('.node') === n) return { x, y, ref: n.getAttribute('data-ref') }; } return null; })()`);
+      // (the whole diagram in view: every device a candidate)
+      await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(false); netatlas.fit(); return true; })()`);
+      await page.settle(60);
+      const dev = await page.eval(`(() => { const dots = Array.from(document.querySelectorAll('#canvas .layer-sim [data-flight]')).map((d) => { const r = d.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }); for (const n of document.querySelectorAll('#canvas .node[data-ref^="device:"]')) { const r = n.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; if (x < 40 || y < 40 || x > innerWidth - 420 || y > innerHeight - 260) continue; if (dots.every((d) => Math.hypot(d.x - x, d.y - y) > 25) && document.elementFromPoint(x, y) && document.elementFromPoint(x, y).closest('.node') === n) return { x, y, ref: n.getAttribute('data-ref') }; } return null; })()`);
       assert.ok(dev, 'a device clear of the dots');
       await page.mouse('mouseMoved', dev.x, dev.y);
       await page.mouse('mousePressed', dev.x, dev.y, 'left');

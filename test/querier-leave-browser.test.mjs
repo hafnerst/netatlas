@@ -2,8 +2,8 @@
 // skipped without one), the internal example multicast-querier.yaml, light
 // and dark at 1440 × 900 and light at 720 × 450 (200 % zoom):
 //   - the querier election from the start: the queries drawn as dots, the
-//     mark "Querier? · VLAN 10" (dashed: for now) on q1 and q3, then
-//     "Querier · VLAN 10" once settled; q2 (a non-querier) unmarked; the
+//     mark "Querier (startup) · VLAN 10" (dashed) on q1 and q3, then
+//     "Querier · VLAN 10" once settled; q2 "Standby · VLAN 10"; the
 //     marks clear of every text, port and status, the boxes unmoved;
 //   - Leave multicast group right below Join multicast group, in Expand
 //     all; its groups the interface's memberships, none chosen; its note;
@@ -47,14 +47,16 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       assert.deepEqual(q.senders, ['q1', 'q2', 'q3']);
       // provisional: q1 and q3 marked for now (dashed), q2 heard q1 and has no mark
       let m = await page.eval(MARKS);
-      assert.deepEqual(m.map((x) => [x.dev, x.role, x.text]), [['q1', 'starting', 'Querier? · VLAN 10'], ['q3', 'starting', 'Querier? · VLAN 10']]);
+      assert.deepEqual(m.map((x) => [x.dev, x.role, x.text]), [['q1', 'starting', 'Querier (startup) · VLAN 10'], ['q2', 'standby', 'Standby · VLAN 10'], ['q3', 'starting', 'Querier (startup) · VLAN 10']]);
       assert.notEqual(m[0].dash, 'none');
-      assert.match(m[0].tip, /^q1: IGMP querier of VLAN 10 \(g0\) from 10\.5\.0\.1 — for now: its startup queries, the election not settled$/);
+      // the reason it is still in its startup, and what comes next, in its tooltip
+      assert.match(m[0].tip, /^q1: IGMP querier of VLAN 10 \(g0\) from 10\.5\.0\.1, in its startup: startup query 2 of 2 due at t = [\d.]+ s \(a quarter of the query interval after the last\); a lower address heard meanwhile would take over$/);
+      assert.match(m[1].tip, /^q2: IGMP standby on VLAN 10 \(g0\) \(10\.5\.0\.2\): 10\.5\.0\.1 \(q1\) queries; it takes over at t = [\d.]+ s if that one falls silent$/);
       // settled after its startup queries
       await run(10000);
       await page.settle(150);
       m = await page.eval(MARKS);
-      assert.deepEqual(m.map((x) => [x.dev, x.role, x.text]), [['q1', 'querier', 'Querier · VLAN 10'], ['q3', 'querier', 'Querier · VLAN 10']]);
+      assert.deepEqual(m.map((x) => [x.dev, x.role, x.text]), [['q1', 'querier', 'Querier · VLAN 10'], ['q2', 'standby', 'Standby · VLAN 10'], ['q3', 'querier', 'Querier · VLAN 10']]);
       for (const x of m) {
         assert.equal(x.aria, x.tip);
         assert.equal(x.overlaps, false, `${x.dev}: clear of texts, ports and its status`);
@@ -65,7 +67,8 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.eval(`netatlas.simController().showTable('querier', 'q2'), true`);
       await page.settle(100);
       const qt = await page.eval(`Array.from(document.querySelectorAll('#sim-status-table tbody tr')).map((r) => Array.from(r.cells).map((c) => c.textContent))`);
-      assert.deepEqual(qt.map((r) => r.slice(0, 5)), [['VLAN 10 (g0)', 'IGMP', '10.5.0.2', 'Non-querier', '10.5.0.1 (q1)']]);
+      assert.deepEqual(qt.map((r) => r.slice(0, 5)), [['VLAN 10 (g0)', 'IGMP', '10.5.0.2', 'Standby (non-querier)', '10.5.0.1 (q1)']]);
+      assert.match(qt[0][5], /^takes over at t = [\d.]+ s unless it hears 10\.5\.0\.1 \(q1\)$/);
 
       // ------------------------------------------------------------ Leave multicast group
       const order = await page.eval(`Array.from(document.querySelectorAll('#sim-act-net .sim-ne-h .sp-toggle')).map((b) => b.querySelector('span:last-child').textContent)`);

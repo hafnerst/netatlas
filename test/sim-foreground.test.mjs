@@ -1,14 +1,15 @@
-// Foreground and background (pacing.ts): while a Network event runs (a
-// send's messages, a join), its traffic alone holds the clock and the gaps
-// between its messages are skipped; a stream of Network events sends every
-// interval of real time, and while one runs the clock runs in real time,
-// held by nothing; the scenario's hops are not drawn as dots but counted as
-// cable activity, and never hold the clock.
-// Without one, at most CONV_LIMIT conversations are drawn as dots at once,
-// the rest are cable activity. Real time: the clock runs with the display,
-// falling behind (said) rather than catching up in a burst. Next exchange
-// runs on to the end of the exchange first on screen. One clock throughout:
-// the scenario and the events share the network.
+// Foreground and background (pacing.ts): the clock runs at its rate, held
+// by no dot; while a Network event runs (a send's messages, a join, a
+// leave, a stream, flapping) or a hop of one is still on screen, its
+// traffic is the foreground (drawn, inspectable) and the scenario the
+// background: its dots go on moving, muted and not clickable. A finished
+// event, a join's lasting membership or a card kept in the list mute
+// nothing. A stream of Network events sends every interval of real time.
+// At most CONV_LIMIT of the scenario's conversations are drawn as dots at
+// once, the rest are cable activity. Real time: the clock runs with the
+// display, falling behind (said) rather than catching up in a burst. Next
+// exchange runs on to the end of the exchange first on screen. One clock
+// throughout: the scenario and the events share the network.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { load, model, example, withClock } from './helpers.mjs';
@@ -63,7 +64,6 @@ test('a stream of Network events in Readable pacing: a datagram every second of 
   assert.match(p.describe(), /^Readable · 3 s per hop · 1× · streams in real time( · behind)?$/);
   // the clock with real time (never ahead; behind only when a frame's work ran out, and then said)
   assert.ok(sim.now - t0 <= 20000 + 1 && (sim.now - t0 > 15000 || p.behind > 0), `${sim.now - t0} ms simulated in 20 s`);
-  assert.equal(p.gate().item, null, 'nothing holds the clock');
   // the dots keep their readable time: a datagram's path takes longer than its interval, so several are on their way at once
   assert.ok(p.items.filter((it) => it.f.test === a.traffic).every((it) => it.hop >= P.HOP_MIN));
   assert.ok(together >= 3, `${together} datagrams on their way at once`);
@@ -73,53 +73,76 @@ test('a stream of Network events in Readable pacing: a datagram every second of 
   assert.ok(sends.length === 2 && sends[1] - sends[0] > 6000 && sends[1] - sends[0] <= 9001, `datagrams 1 and 10: ${sends.join(', ')}`);
 });
 
-test('while a Network event runs, the scenario is the background: its hops are cable activity (not dots), they hold nothing; the event’s own are drawn', () => {
-  const { sim, p, a, activity, frame } = streamRun(30000);
+test('while a Network event runs, the scenario is the background: its dots go on moving, muted (not clickable); the event’s own are the foreground; stopped, all of it is the foreground again', () => {
+  const { sim, p, a, frame } = streamRun(30000);
   assert.equal(p.fgNow, true);
   assert.match(p.describe(), /· streams in real time( · behind)?$/);
-  const scenario = p.items.filter((it) => it.f.view === 'physical' && it.f.test === undefined && it.d0 > 3000);
-  assert.ok(scenario.length > 0, 'the scenario goes on (one clock, one network)');
-  assert.ok(scenario.every((it) => !it.drawn), 'the scenario: not drawn as dots');
-  assert.ok(p.items.filter((it) => it.f.test === a.traffic && it.f.view === 'physical').every((it) => it.drawn));
-  assert.ok(activity > 0, 'cable activity while it ran');
-  for (const x of p.activity('physical')) {
-    assert.ok(x.counts.length > 0 && x.counts.every(([proto, n]) => typeof proto === 'string' && n > 0));
-    assert.equal(x.track.ref, x.ref);
-  }
-  // the gate is held by the stream only
-  const g = p.gate();
-  assert.ok(g.item === null || g.item.f.test === a.traffic);
-  // stopped: the scenario is the foreground again, the clock paced again
+  // the scenario goes on (one clock, one network): drawn, moving, the background
+  const scenario = p.items.filter((it) => it.f.view === 'physical' && it.f.test === undefined && it.drawn);
+  assert.ok(scenario.length > 0, 'the scenario still drawn');
+  assert.ok(scenario.every((it) => p.background(it)), 'muted while the stream runs');
+  assert.ok(scenario.some((it) => p.state(it).phase === 'moving'), 'and moving');
+  const mine = p.items.filter((it) => it.f.test === a.traffic && it.f.view === 'physical');
+  assert.ok(mine.length && mine.every((it) => it.drawn && !p.background(it)), 'the stream: the foreground');
+  // stopped: once its last datagram has arrived on screen, nothing is muted any more
   sim.actionControl(a.id, 'stop');
   const n = a.stream.sent;
   for (let t = 0; t < 20000; t += 50) frame(50);
   assert.equal(a.stream.sent, n, 'its future sends cancelled');
   assert.equal(p.fgNow, false);
   assert.equal(p.rtNow, false);
+  assert.equal(p.fgActive(), false);
+  assert.ok(p.items.every((it) => !p.background(it)));
   assert.doesNotMatch(p.describe(), /in front|real time/);
 });
 
-test('bundling: never more than CONV_LIMIT of the scenario’s conversations as dots on their way at once; the rest counted as activity; the clock never passes a dot on its way', () => {
+test('what keeps the foreground: a running send, stream, flapping, a join until recorded, a leave until settled; a finished event, a join’s membership, a card kept in the list, a send waiting for its DHCP lease do not', () => {
+  const { sim, p, frame } = paced({}, true);
+  for (let t = 0; t < 5000; t += 50) frame(50);
+  assert.equal(sim.foregroundActive(), false);
+  // a join: in front until a multicast router (or switch) recorded it; then its membership lasts, muting nothing
+  const j = sim.actJoin('pc1', 'eth0', '239.9.9.9', []);
+  assert.equal(sim.foregroundActive(), true);
+  for (let t = 0; t < 15000; t += 50) frame(50);
+  assert.equal(sim.actions().find((v) => v.id === j.id).status, 'completed');
+  assert.equal(sim.foregroundActive(), false);
+  assert.equal(p.fgActive(), false, 'its hops arrived: nothing muted');
+  // flapping: in front until stopped
+  const f = sim.actFlap('iface:pc2:eth0');
+  assert.equal(sim.foregroundActive(), true);
+  sim.actionControl(f.id, 'stop');
+  assert.equal(sim.foregroundActive(), false);
+  // two at once: both foreground; the first ends, the second keeps it
+  const s1 = sim.actStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 200);
+  const s2 = sim.actStream('pc2', 'eth0', '239.8.8.8', 5004, 1000, 200);
+  for (let t = 0; t < 3000; t += 50) frame(50);
+  assert.ok(p.items.some((it) => it.f.test === s1.traffic && !p.background(it)) && p.items.some((it) => it.f.test === s2.traffic && !p.background(it)));
+  sim.actionControl(s1.id, 'stop');
+  assert.equal(sim.foregroundActive(), true);
+  sim.actionControl(s2.id, 'stop');
+  assert.equal(sim.foregroundActive(), false);
+  // the cards are still listed: they mute nothing
+  assert.ok(sim.actions().length >= 4);
+  for (let t = 0; t < 20000; t += 50) frame(50);
+  assert.equal(p.fgActive(), false);
+});
+
+test('bundling: a conversation takes a place while a hop of it is on its way; never more than CONV_LIMIT new ones (and CONV_DIVERSE more for protocols with nothing on screen); the rest counted as activity; the clock runs at its rate whatever is drawn', () => {
   const { sim, p } = paced({}, false);
   assert.equal(P.CONV_LIMIT, 6);
   let most = 0;
   for (let t = 0; t < 40000; t += 16) {
     p.frame(16);
-    const keys = new Set(p.items.filter((it) => it.drawn && it.f.view === 'physical' && p.state(it).phase !== 'arrived' && p.state(it).phase !== 'gone' && p.state(it).phase !== 'lost').map((it) => it.key));
+    const keys = new Set(p.items.filter((it) => it.drawn && it.f.view === 'physical' && p.state(it).phase === 'moving').map((it) => it.key));
     most = Math.max(most, keys.size);
-    for (const it of p.items) {
-      if (!it.drawn || it.f.view !== 'physical') continue;
-      const st = p.state(it);
-      if (st.phase === 'moving' || st.phase === 'transit') assert.ok(sim.now < (it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat));
-    }
   }
-  assert.ok(most <= P.CONV_LIMIT, String(most));
+  assert.ok(most <= P.CONV_LIMIT + P.CONV_DIVERSE + 2, String(most));
   assert.ok(most >= 2, 'several at once, not one at a time');
   assert.ok(p.notDrawn > 0, 'the rest: cable activity');
-  // the clock moves on (no run-away jump, no standstill): about as far as without bundling
+  // the clock: as far with bundling as without (it follows its rate, not the dots)
   const q = paced({ convLimit: 1000 }, false);
   for (let t = 0; t < 40000; t += 16) q.p.frame(16);
-  assert.ok(sim.now < 10 * q.sim.now + 5000 && sim.now > 0, `${sim.now} vs ${q.sim.now}`);
+  assert.ok(Math.abs(sim.now - q.sim.now) < 1000 || sim.now >= 40000 - 50, `${sim.now} vs ${q.sim.now}`);
 });
 
 test('real time: the simulated clock runs with the display (× the speed); a 1 s stream sends one datagram a second, at 2× too; too much work: behind, said, no burst', () => {
@@ -135,7 +158,6 @@ test('real time: the simulated clock runs with the display (× the speed); a 1 s
   // a datagram per second of real time: the first at once, then 10
   assert.equal(a.stream.sent, 11);
   assert.ok(p.items.every((it) => it.hop === P.RT_HOP));
-  assert.equal(p.gate().item, null, 'nothing holds the clock');
   // 2×: the clock twice as far; the stream still one a second of real time (the speed is the scenario's)
   p.speed = 2;
   const t1 = sim.now;

@@ -1250,6 +1250,8 @@ svg.sim-dot-hover, svg.sim-dot-hover * { cursor: pointer !important; }
 .layer-sim-labels .sim-test text { font-weight: 700; }
 .sim-test-tag { display: inline-block; padding: 0 4px; border: 1px solid var(--sim); border-radius: 3px; font-size: 0.85em; font-weight: 700; line-height: 1.3; color: var(--text); }
 .layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
+/* the scenario behind Network events: grey dots that go on moving; nothing to point at */
+.layer-sim .sim-bg { fill: var(--muted) !important; stroke: var(--panel); opacity: 0.6; pointer-events: none; }
 .sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
 .sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
@@ -1471,6 +1473,9 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-querier rect { fill: var(--panel); stroke: var(--accent); stroke-width: 1.2; }
 .sim-querier text { font-size: 9.5px; font-weight: 600; fill: var(--accent); }
 .sim-querier[data-role="starting"] rect { stroke-dasharray: 3 2; }
+.sim-querier[data-role="standby"] rect, .sim-querier[data-role="none"] rect { stroke: var(--muted); }
+.sim-querier[data-role="standby"] text, .sim-querier[data-role="none"] text { fill: var(--muted); font-weight: 500; }
+.sim-querier[data-role="none"] rect { stroke-dasharray: 2 2; }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */

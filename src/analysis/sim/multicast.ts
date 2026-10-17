@@ -136,6 +136,10 @@ export interface QuerierInfo {
   queries: number;
   lastQuery: number;
   since: number;
+  /** its next General Query is due at (-1: none), the startup query it is at ("1 of 2"; '' when past its startup), when it would take over (non-querier) */
+  nextAt: number;
+  startup: string;
+  takeoverAt: number;
 }
 
 /**
@@ -168,6 +172,11 @@ interface Cand {
   lastQuery: number;
   /** when it started or took over */
   since: number;
+  /** its next General Query is due at (simulated ms; -1: none scheduled), and when it would take over (-1: not waiting) */
+  nextAt: number;
+  takeoverAt: number;
+  /** startup queries in all (robustness) */
+  startupOf: number;
   /** configured to take part, up, and how it sends a General Query */
   enabled: () => boolean;
   up: () => boolean;
@@ -378,7 +387,7 @@ export class Multicast {
           const dev = sd.id;
           const ri: RIface = {
             dev, name: `${dev}:${l3.id}`, lan: this.lanOf(l3, a.addr), iface: l3.id, at, addr: a.addr, l3, groups: new Map(),
-            querier: false, otherAt: -1, otherAddr: '', startup: 0, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
+            querier: false, otherAt: -1, otherAddr: '', startup: 0, startupOf: 0, nextAt: -1, takeoverAt: -1, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
             enabled: () => this.e.params.str('igmp-querier', dev, at) === 'on',
             up: () => this.e.deviceOn(dev) && this.e.isL3Up(dev, l3.id),
             send: () => this.generalQuery(ri),
@@ -736,7 +745,9 @@ export class Multicast {
     c.otherAddr = '';
     c.querier = c.enabled();
     c.startup = c.querier ? Math.max(1, this.e.params.num('igmp-robustness', c.dev, null, c.at)) : 0;
+    c.startupOf = c.startup;
     c.since = this.e.now;
+    c.takeoverAt = -1;
     if (c.querier) this.e.note('state', 'igmp', c.dev, '', 'querier (starting)', 'querier', `${c.name} starts as ${this.name(c.addr.version)} querier candidate (${formatAddr(c.addr)}): it queries until it hears a lower address (startup: ${c.startup} queries ${durationText(this.e.params.num('igmp-query', c.dev, null, c.at) / 4)} apart)`);
     const gen = c.gen;
     const tick = (): void => {
@@ -748,7 +759,9 @@ export class Multicast {
         if (c.startup > 0 && --c.startup === 0) this.e.note('state', 'igmp', c.dev, '', 'querier', 'querier', `${c.name} is the ${this.name(c.addr.version)} querier: its startup queries are sent and no lower address was heard`);
       }
       const q = this.e.params.num('igmp-query', c.dev, null, c.at);
-      this.e.after(c.querier && c.startup > 0 ? Math.max(250, Math.round(q / 4)) : q, tick);
+      const wait = c.querier && c.startup > 0 ? Math.max(250, Math.round(q / 4)) : q;
+      c.nextAt = c.querier ? this.e.now + wait : -1;
+      this.e.after(wait, tick);
     };
     tick();
   }
@@ -761,6 +774,8 @@ export class Multicast {
     c.querier = false;
     c.startup = 0;
     c.otherAt = -1;
+    c.nextAt = -1;
+    c.takeoverAt = -1;
   }
 
   /**
@@ -775,15 +790,18 @@ export class Multicast {
     const was = c.querier;
     c.querier = false;
     c.startup = 0;
+    c.nextAt = -1;
     c.otherAt = t;
     c.otherAddr = formatAddr(src) + (from ? ` (${from})` : '');
     if (was) this.e.at(t, () => this.e.note('state', 'igmp', c.dev, from, 'not querier', '', `${c.name} hears a query from ${formatAddr(src)} (lower than its ${formatAddr(c.addr)}): it stops querying (querier election)`));
     const tok = ++c.otherTok;
     const wait = this.otherPresent(c.dev, c.iface, c.at);
+    c.takeoverAt = t + wait;
     this.e.at(t + wait, () => {
       if (c.otherTok !== tok || !c.running || !c.enabled() || c.querier) return;
       c.querier = true;
       c.since = this.e.now;
+      c.takeoverAt = -1;
       this.e.note('state', 'igmp', c.dev, '', 'querier', 'querier', `${c.name} takes over as ${this.name(c.addr.version)} querier: no query from ${c.otherAddr} for ${durationText(wait)} (other querier present interval)`);
       // its regular schedule from now: a General Query at once, then every query interval
       c.gen++;
@@ -795,7 +813,9 @@ export class Multicast {
           c.queries++;
           c.lastQuery = this.e.now;
         }
-        this.e.after(this.e.params.num('igmp-query', c.dev, null, c.at), tick);
+        const q = this.e.params.num('igmp-query', c.dev, null, c.at);
+        c.nextAt = c.querier ? this.e.now + q : -1;
+        this.e.after(q, tick);
       };
       tick();
     });
@@ -823,9 +843,30 @@ export class Multicast {
       if (dev !== undefined && c.dev !== dev) continue;
       const role = this.roleOf(c);
       const left = role === 'non-querier' && c.otherAt >= 0 ? Math.max(0, c.otherAt + this.otherPresent(c.dev, c.iface, c.at) - now) : undefined;
-      out.push({ dev: c.dev, kind: c.vlan !== undefined ? 'switch' : 'router', iface: c.iface, vlan: c.vlan, lan: c.lan, family: this.name(c.addr.version), addr: formatAddr(c.addr), role, other: role === 'non-querier' ? c.otherAddr || undefined : undefined, otherLeft: left, queries: c.queries, lastQuery: c.lastQuery, since: c.since });
+      out.push({ dev: c.dev, kind: c.vlan !== undefined ? 'switch' : 'router', iface: c.iface, vlan: c.vlan, lan: c.lan, family: this.name(c.addr.version), addr: formatAddr(c.addr), role, other: role === 'non-querier' ? c.otherAddr || undefined : undefined, otherLeft: left, queries: c.queries, lastQuery: c.lastQuery, since: c.since, nextAt: role === 'starting' || role === 'querier' ? c.nextAt : -1, startup: role === 'starting' ? `${c.startupOf - c.startup + 1} of ${c.startupOf}` : '', takeoverAt: role === 'non-querier' ? c.takeoverAt : -1 });
     }
     return out.sort((a, b) => cmp(a.dev, b.dev) || cmp(a.lan, b.lan) || cmp(a.family, b.family));
+  }
+
+  /**
+   * The VLANs where a snooping switch has members (someone joined) but no
+   * querier: no query heard there (no router port) and it is no querier of
+   * its own. Its memberships are then only learned from the members' own
+   * reports, and age out after the membership interval.
+   */
+  noQuerierVlans(dev: string): number[] {
+    const out: number[] = [];
+    const now = this.e.now;
+    for (const [k, st] of Array.from(this.snoops).sort((a, b) => cmp(a[0], b[0]))) {
+      if (k.slice(0, k.indexOf('|')) !== dev) continue;
+      const vlan = Number(k.slice(k.indexOf('|') + 1));
+      if (!vlan || this.snoopMode(dev, vlan) !== 'enabled') continue;
+      const members = Array.from(st.groups.values()).some((ports) => Array.from(ports.values()).some((e) => e.until > now));
+      const routers = Array.from(st.routerPorts.values()).some((u) => u > now);
+      const own = this.sqs.get(dev + '|' + vlan);
+      if (members && !routers && !(own && own.running && own.querier)) out.push(vlan);
+    }
+    return out;
   }
 
   /** The candidates, routers' interfaces and switches' VLANs, in a fixed order. */
@@ -1128,7 +1169,7 @@ export class Multicast {
       const addr = (svi.addrs.find((a) => a.addr.version === 4) as { addr: IpAddr }).addr;
       const c: SQ = {
         dev, name: `${dev} (VLAN ${vlan})`, lan: `VLAN ${vlan}`, vlan, svi, at: null, addr,
-        querier: false, otherAt: -1, otherAddr: '', startup: 0, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
+        querier: false, otherAt: -1, otherAddr: '', startup: 0, startupOf: 0, nextAt: -1, takeoverAt: -1, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
         enabled: () => this.e.params.str('snoop-querier', dev, vlanRef(vlan)) === 'on' && this.snoopMode(dev, vlan) === 'enabled',
         up: () => this.e.deviceOn(dev),
         send: () => this.snoopQuery(sd, c),
@@ -2099,10 +2140,19 @@ export class Multicast {
    * queries; under it the timers.
    */
   querierTable(dev: string): GridTable {
-    const rows = this.querierRoles(dev).map((q): string[] => [q.lan + (q.kind === 'router' && q.iface ? ` (${q.iface})` : ''), q.family, q.addr, ROLE_WORD[q.role], q.role === 'non-querier' ? q.other || '?' : q.role === 'querier' || q.role === 'starting' ? 'itself' : '—', q.otherLeft !== undefined ? dur(q.otherLeft) : '—', q.queries ? `${q.queries}, the last at t = ${fmtSec(q.lastQuery)}` : 'none']);
+    const rows = this.querierRoles(dev).map((q): string[] => [
+      q.lan + (q.kind === 'router' && q.iface ? ` (${q.iface})` : ''),
+      q.family,
+      q.addr,
+      ROLE_WORD[q.role],
+      q.role === 'non-querier' ? q.other || '?' : q.role === 'querier' || q.role === 'starting' ? 'itself' : '—',
+      // the timer it waits for: its next query (in its startup: which one), or its takeover
+      q.nextAt >= 0 ? `query at t = ${fmtSec(q.nextAt)}${q.startup ? ` (startup ${q.startup})` : ''}` : q.takeoverAt >= 0 ? `takes over at t = ${fmtSec(q.takeoverAt)} unless it hears ${q.other || 'the querier'}` : q.role === 'down' ? 'none (down)' : q.role === 'off' ? 'none (not a candidate)' : '—',
+      q.queries ? `${q.queries}, the last at t = ${fmtSec(q.lastQuery)}` : 'none yet',
+    ]);
     return {
       caption: `Querier election of ${dev}`,
-      cols: ['LAN', 'Family', 'Address', 'Role', 'Querier', 'Takes over in', 'General queries'],
+      cols: ['LAN', 'Family', 'Address', 'Role', 'Querier', 'Next', 'General queries'],
       rows,
       empty: 'No querier candidacy: it is configured as no querier on any of its LANs.',
       timers: ['igmp-query', 'igmp-max-resp', 'igmp-robustness'].map((k) => this.timer(k, dev)),
@@ -2172,7 +2222,7 @@ function inNet(a: { net: IpAddr & { prefix: number } }, ip: IpAddr): boolean {
 }
 
 /** A querier role in words. */
-const ROLE_WORD: { [k in QuerierRole]: string } = { starting: 'Querier (starting)', querier: 'Querier', 'non-querier': 'Non-querier', off: 'Not a candidate', down: 'Down' };
+const ROLE_WORD: { [k in QuerierRole]: string } = { starting: 'Querier (startup)', querier: 'Querier', 'non-querier': 'Standby (non-querier)', off: 'Not a candidate', down: 'Down' };
 
 /** A remaining time as the tables write it. */
 function dur(ms: number): string {

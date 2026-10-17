@@ -45,7 +45,8 @@ for (const theme of ['light', 'dark']) {
       await page.settle(150);
       await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {} }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(9000); c.refresh(true); return true; })()`);
       await page.settle(150);
-      assert.deepEqual(await page.eval(`netatlas.simController().protocolEntries().filter((e) => e.id === 'igmp' || e.id === 'mcast')`), [], 'no multicast protocol to tick in this model');
+      // IGMP / MLD to tick (the core's queries as the IoT VLAN's snooping querier); no streams of the model's
+      assert.deepEqual(await page.eval(`netatlas.simController().protocolEntries().filter((e) => e.id === 'igmp' || e.id === 'mcast').map((e) => e.id)`), ['igmp']);
       // the forms: the TV joins 239.1.1.1, the NAS streams to it
       await page.eval(`document.getElementById('sim-ne-join-toggle').click(), document.getElementById('sim-ne-stream-toggle').click(), true`);
       await set('sim-j-dev', 'tv');

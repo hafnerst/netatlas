@@ -1261,6 +1261,8 @@ svg.sim-dot-hover, svg.sim-dot-hover * { cursor: pointer !important; }
 .layer-sim-labels .sim-test text { font-weight: 700; }
 .sim-test-tag { display: inline-block; padding: 0 4px; border: 1px solid var(--sim); border-radius: 3px; font-size: 0.85em; font-weight: 700; line-height: 1.3; color: var(--text); }
 .layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
+/* the scenario behind Network events: grey dots that go on moving; nothing to point at */
+.layer-sim .sim-bg { fill: var(--muted) !important; stroke: var(--panel); opacity: 0.6; pointer-events: none; }
 .sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
 .sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
@@ -1482,6 +1484,9 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-querier rect { fill: var(--panel); stroke: var(--accent); stroke-width: 1.2; }
 .sim-querier text { font-size: 9.5px; font-weight: 600; fill: var(--accent); }
 .sim-querier[data-role="starting"] rect { stroke-dasharray: 3 2; }
+.sim-querier[data-role="standby"] rect, .sim-querier[data-role="none"] rect { stroke: var(--muted); }
+.sim-querier[data-role="standby"] text, .sim-querier[data-role="none"] text { fill: var(--muted); font-weight: 500; }
+.sim-querier[data-role="none"] rect { stroke-dasharray: 2 2; }
 .sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
@@ -31842,19 +31847,19 @@ const MANUAL = [
         steps: [
             'Every message travels its whole way: in the **Physical** view hop by hop along every cable and through the switches, in the **Logical** view along the whole relation (inside its tunnel). It fades in at its sender, its label stays with it, and it ends with a pulse at the receiver; the devices sending and receiving are marked for that moment. A lost message stops where it was lost and shows ✕ for about 1.5 seconds.',
             '**Pacing: Readable** (the default) gives each hop about 3 seconds on screen, longer over a slow link and shorter over a fast one compared with the model’s other links, between 2 and 6 seconds; a dot never moves faster than 70 pixels a second at 100 % zoom, so a long cable takes longer. **Proportional to latency** shows each hop for its real time times a scale (*1 ms = 1 s*), with the same speed limit. The **Speed** (0.1× to 4×; 1× is the default) applies on top; the panel shows the pacing in use, e.g. *Readable · 3 s per hop · 1×*.',
-            'With **Skip idle time** on (the default), when nothing is on its way the clock jumps to the next message (*⏩ 9.8 s skipped*); while messages are on their way it moves at their pace. The time shown is always the real simulated time.',
-            'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself as soon as you no longer use the inspector: you close it (**×**, `Esc`), click or tab elsewhere, or it is out of sight. If you paused it yourself, it stays paused. **Follow message** keeps the pace for that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake), plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
+            '**Everything runs at once.** The simulated clock runs at its own rate whatever is on screen: one simulated second per second (times the speed) in Readable and Real time pacing, slowed by the scale in Proportional. Nothing waits for a dot: a protocol timer, an IGMP query, another connection’s next message happen when they are due, so independent exchanges are on their way together and a slow one never delays another. The dots follow each operation’s own order: a message continues on the next cable when it has arrived at the switch or router, an answer starts when its request has arrived, a packet that waited for ARP goes on when the ARP reply has arrived. So the tables and the log may be a few hops ahead of the dots. With **Skip idle time** on (the default), when nothing is on screen the clock jumps to the next message that will be shown (*⏩ 9.8 s skipped*). The time shown is always the real simulated time.',
+            'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself as soon as you no longer use the inspector: you close it (**×**, `Esc`), click or tab elsewhere, or it is out of sight. If you paused it yourself, it stays paused. **Follow message** keeps that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) always drawn, plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
             '**Step** moves to the next message event: a message arrives, or the next one starts at its sender. **Next exchange** moves on to the end of the exchange first on screen (an ARP request and its reply, a ping and its echo, a hello), or of the next one to start.',
-            '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join), its traffic is the foreground: a send’s and a join’s dots alone hold the clock, each hop readable, and the next message appears as soon as you have seen the last one, never behind the scenario’s dots. The scenario goes on underneath as the background: its traffic shows as **cable activity** (a cable lit with a short count, *OSPF ×3 · ARP ×1*), not as dots; it is all in the event log and the tables. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
+            '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join until it is recorded, a leave until its cleanup settles, flapping), and until its last dots have arrived, its traffic is the foreground: everything it causes — its messages, their copies, the answers, the ARP it needs — is drawn normally, labelled and clickable. The scenario goes on underneath as the background: its dots keep moving, but **grey**, without labels, and the pointer goes through them (no outline, no inspector; the event log and the tables have them all). Several of your actions at once are all in front. A finished event, the membership a join leaves behind, or a card kept in Active events mutes nothing. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
             '**Streams in real time.** A stream you start under **Network events** sends one datagram at once and then one every interval of **real time** (1 s: every second, 2 s: every two seconds), whatever the pacing, the speed, the size of the model or the scenario. Several streams run side by side, each on its own schedule from its own start: two 1 s streams each send every second, never taking turns, and starting or stopping one never changes another. While one runs, the simulated clock runs with real time too (as in **Real time** pacing, times the speed), so its datagrams are forwarded at once and the scenario goes on at its own pace behind them; the dots keep the pacing’s hop time, so in Readable pacing several datagrams of a stream are on their way at once. The panel says *· streams in real time*. Paused (or with the tab hidden), the streams stand too and go on from there; nothing is caught up. A reply of a send is drawn after the message it answers has arrived on screen.',
-            'With nothing of yours running, the scenario is the foreground, **bundled**: at most 6 exchanges are drawn as dots at once, each to its end, the others as cable activity. So many things at once stay followable, a few at a time.',
-            '**Pacing: Real time (1 s = 1 s)** runs the simulated clock with the real one (times the speed): a 1 s interval of a send is a real second. Every hop shows briefly as a sign of its traffic, bundled as above; nothing holds the clock. When the simulation has more work than a frame allows, it falls behind and says so (*Real time · 1× · behind*), and goes on from there instead of catching up in a burst.',
+            'The scenario is **bundled**: at most 6 of its exchanges are drawn as dots at once, each to its end — and a few more for protocols with nothing else on screen, so a burst of DHCP and ARP never hides an IGMP query or a Hello — the others as **cable activity** (a cable lit with a short count, *OSPF ×3 · ARP ×1*). An exchange whose next hop would show more than 15 s after it happened is cable activity too, so the dots stay close to what is happening. So many things at once stay followable, a few at a time.',
+            '**Pacing: Real time (1 s = 1 s)** runs the simulated clock with the real one (times the speed): a 1 s interval of a send is a real second. Every hop shows briefly as a sign of its traffic, bundled as above, and idle time is never skipped. In every pacing, when the simulation has more work than a frame allows, it falls behind and says so (*· behind*), and goes on from there instead of catching up in a burst: the page stays responsive.',
         ],
         notes: [
             'The pacing, the speed and skipping only change how the simulation is shown: what happens, and in which order, is the same with every setting.',
             'Every hop gets the same time on screen from the very first one: the clock starts with the first frame drawn, a slow frame counts at most 0.1 s (the dots slow down for a moment instead of jumping), and a hidden tab stops it.',
             'At most 48 messages are drawn at once, each with room for its label, and at most 6 of the scenario’s exchanges; the panel says how many more are shown as cable activity, and the event log lists every message.',
-            'Intervals of a send’s messages and of flapping are simulated time: results such as round trips, timeouts and aging stay right and the same every time. In Readable pacing a send’s next message comes as soon as the last one has been seen; in Real time pacing it comes after the real interval. A stream of Network events is the exception: its interval is real time (see above), so its datagrams’ simulated times depend on how the simulation was played. The streams of the model (its `multicast:` blocks and multicast demands) belong to the scenario and keep to simulated time.',
+            'Intervals of a send’s messages and of flapping are simulated time: results such as round trips, timeouts and aging stay right and the same every time; in Readable and Real time pacing a simulated second takes a real second. A stream of Network events is the exception: its interval is real time (see above), so its datagrams’ simulated times depend on how the simulation was played. The streams of the model (its `multicast:` blocks and multicast demands) belong to the scenario and keep to simulated time.',
             'The streams’ schedule counts the page’s own clock, computed from each stream’s start, so a late frame never adds up to drift. Browsers aren’t hard real time: a datagram goes in the first frame at or after its moment (within about a frame, 1/60 s), a busy page can be later, and a stall longer than the interval (the browser suspended) sends one datagram, not a burst; the stream’s **Details** count the ones left out.',
             'With reduced motion set in your system, each message is a still arrow with its label, shown for the same paced time; **Step** moves one message at a time.',
         ],
@@ -32042,7 +32047,7 @@ const MANUAL = [
             'The routers elect an IGMP querier per subnet, the hosts report their groups, the switches learn the member ports, and the PIM routers build the tree from the source (through the rendezvous point for any-source groups). The stream’s dots are diamonds and split where it is replicated.',
             '**IGMP / MLD snooping is each switch’s own setting**, chosen per VLAN in its **Edit** tab (**IGMP / MLD snooping**: *Enabled*, *Disabled*, or *Not configured* — an error until you choose; in the file `igmp_mld_snooping`). Enabled, a switch sends a group only to the ports where a member of that group reported it in that VLAN, and to its multicast router ports (where queries or PIM Hellos come from): a group nobody joined goes to no host at all, never flooded. Disabled (or not configured), multicast is flooded in the VLAN. Reports go to the router ports only; queries and routing protocols’ link-local groups are always flooded. Snooping never routes: on a Layer 3 switch, multicast crosses into another VLAN only with PIM and a member there.',
             '**The querier election** starts by itself with the simulation. Every querier candidate — a router’s interface with IGMP / MLD (its `igmp_querier` on, the default), a switch’s VLAN with the snooping querier on, snooping enabled and an address there — queries at once, taking itself for the querier for now, and sends its **startup queries** (robustness of them, a quarter of the query interval apart). Whoever hears a query from a **lower address** stops: the lowest address of each LAN wins and, once its startup queries are sent, queries every query interval. A non-querier takes over when it hears nothing from the querier for the other querier present interval (robustness × query interval + response interval ÷ 2); a querier powered on again (or its interface back) starts afresh and wins again if its address is lower. Only the queries that reach a candidate count: two LANs with the same VLAN ID elect apart, and a router can be the querier on one interface and not on another. Enabling snooping makes no candidate.',
-            'The diagram marks the **active querier** of each LAN beside its status: **Querier · VLAN 10** (several LANs: *VLAN 10, 20*, more: *3 LANs*), dashed **Querier? · VLAN 10** while it is the querier only for now (its startup queries); its tooltip names the LAN, the interface and the address. A non-querier, a candidate configured off or one that is down has no mark; **Show querier election** (a router’s or a switch’s menu) lists every candidacy with its role, the querier it yields to and how long until it would take over. A host’s **Show group memberships** says who queries its LAN (the last query it heard), or that it heard none.',
+            'The diagram marks the **active querier** of each LAN beside its status: **Querier · VLAN 10** (several LANs: *VLAN 10, 20*, more: *3 LANs*), dashed **Querier (startup) · VLAN 10** while it sends its startup queries, **Standby · VLAN 10** (grey) for a candidate that yields to another querier, and dashed **No querier · VLAN 10** on a snooping switch whose VLAN has members but no querier at all. The marks follow the election’s state, never the configuration, and the tooltip names the LAN, the interface, the address and the next deadline (*startup query 2 of 2 due at t = 33.3 s*, *it takes over at t = …*). A candidate configured off or one that is down has no mark; **Show querier election** (a router’s or a switch’s menu) lists every candidacy with its role, the querier it yields to and how long until it would take over. A host’s **Show group memberships** says who queries its LAN (the last query it heard), or that it heard none.',
             '**Members stay members** until they leave: a host that joined answers every query (after a random delay up to the response interval; an IGMPv2 host stays quiet when another member answered first), and its answers keep what the switches and routers learned alive; no second Join is needed. If its answers can’t get through (its cable down), the network forgets it after the membership interval while the host still wants the group, and learns it again from its next answer.',
             '**Leave multicast group** (right below Join multicast group, also in a host’s menu, and the **Leave group** button of its join): choose the host, its interface and one of that interface’s groups (IGMP or MLD by its family; none is chosen for you). Its membership ends at once — no later answer for the group, whatever queries come — and its leave goes out like any report (an IGMPv2 Leave, an IGMPv3 / MLDv2 report that blocks the group), drawn and inspectable. Its event follows what the network had learned on the host’s way: *leave sent · cleanup pending*, then *removed at sw (VLAN 10, port p4)* once the querier’s group-specific queries went unanswered there, or *kept … another member there answered* where another member still wants it (one behind the same port, another on the router’s LAN). The stream goes on for the others; only the way to this host closes.',
             'In the private house, start a stream from the **thermostat** (VLAN 20) to 239.20.0.1: it goes to the core (the IoT VLAN’s snooping querier) and stops there, its event says *stops at core*. **Join multicast group** with the **tv** on the same group: now the core sends it towards ap-b and the TV, and nowhere else; leave, and after the last member queries it stops again.',
@@ -32388,9 +32393,9 @@ exports.MANUAL_IMAGES = {
         "height": 330
     },
     "querier": {
-        "src": "data:image/webp;base64,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",
-        "width": 321,
-        "height": 246
+        "src": "data:image/webp;base64,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",
+        "width": 302,
+        "height": 229
     },
     "quick-actions": {
         "src": "data:image/webp;base64,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",
@@ -38519,7 +38524,9 @@ function simStateSection() {
             { swatch: led('off'), label: 'Powered off (red): or down with its host or its container engine; it takes no part' },
             { swatch: led('booting'), label: 'Booting (blue): powered on, it takes part when its boot time is over' },
             { swatch: led('passive'), label: 'Passive or External (hollow grey): a patch panel, a TAP, an external network — no power state of its own' },
-            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'querier' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'Querier · VLAN 10: the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier?”: only for now, its startup queries not yet sent' },
+            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'querier' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'Querier · VLAN 10: the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier (startup)”: still sending its startup queries' },
+            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'standby' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 44, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'Standby')])], label: 'Standby · VLAN 10 (grey): a candidate that yields to another querier; its tooltip says when it would take over' },
+            { swatch: [(0, scene_1.h)('g', { class: 'sim-querier', 'data-role': 'none' }, [(0, scene_1.h)('rect', { x: 1, y: 2, width: 44, height: 14, rx: 3 }), (0, scene_1.h)('text', { x: 5, y: 12.5 }, 'None')])], label: 'No querier · VLAN 10 (grey, dashed): a snooping switch’s VLAN with members but no querier anywhere' },
         ],
         note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
     };
@@ -46641,7 +46648,7 @@ class SimController {
         const states = this.deviceStates();
         const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
         const marks = this.querierMarks();
-        const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state).join('|')}|${this.host.view()}`;
+        const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${this.host.view()}`;
         if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey)
             return;
         if (this.power && this.power.parentNode)
@@ -46761,29 +46768,81 @@ class SimController {
         }
     }
     /**
-     * The devices that query a LAN now, as the election has it (never from the
-     * configuration): "Querier · VLAN 10" (several: "Querier · VLAN 10, 20",
-     * more than two: "Querier · 3 LANs"), or "Querier? · VLAN 10" while it is
-     * the querier only for now (its startup queries). Non-queriers, devices
-     * configured off and those down have no mark (the table lists them).
+     * Each device's querier role as the election has it now (never the
+     * configuration's), in one mark: "Querier · VLAN 10" (several LANs:
+     * "VLAN 10, 20", more than two: "3 LANs"); "Querier (startup) · VLAN 10"
+     * while it sends its startup queries (its tooltip says which one is next,
+     * and when); "Standby · VLAN 10" for a non-querier (another queries; the
+     * tooltip says when it would take over); "No querier · VLAN 10" on a
+     * snooping switch whose VLAN has members but hears no query and has no
+     * querier of its own. A candidate configured off or down has no mark (the
+     * querier election table lists it). The role shown first: querier, then
+     * startup, standby, no querier.
      */
     querierMarks() {
         const out = new Map();
         const by = new Map();
         for (const q of this.sim.multicast.querierRoles()) {
-            if (q.role !== 'querier' && q.role !== 'starting')
+            if (q.role !== 'querier' && q.role !== 'starting' && q.role !== 'non-querier')
                 continue;
             by.set(q.dev, (by.get(q.dev) || []).concat([q]));
         }
+        const where = (lans) => {
+            const vlansOnly = lans.every((l) => /^VLAN /.test(l));
+            const xs = Array.from(new Set(lans.map((l) => (vlansOnly ? l.replace(/^VLAN /, '') : l))));
+            return xs.length > 2 ? `${xs.length} LANs` : (vlansOnly ? 'VLAN ' : '') + xs.join(', ');
+        };
+        const line = (q) => {
+            const lan = `${q.lan}${q.iface && q.kind === 'router' ? ' (' + q.iface + ')' : ''}`;
+            if (q.role === 'querier')
+                return `${q.family} querier of ${lan} from ${q.addr}${q.nextAt >= 0 ? `; its next query at t = ${(0, engine_1.fmtSec)(q.nextAt)}` : ''}`;
+            if (q.role === 'starting')
+                return `${q.family} querier of ${lan} from ${q.addr}, in its startup: startup query ${q.startup} due at t = ${(0, engine_1.fmtSec)(q.nextAt)} (a quarter of the query interval after the last); a lower address heard meanwhile would take over`;
+            return `${q.family} standby on ${lan} (${q.addr}): ${q.other || 'another'} queries${q.takeoverAt >= 0 ? `; it takes over at t = ${(0, engine_1.fmtSec)(q.takeoverAt)} if that one falls silent` : ''}`;
+        };
         for (const [dev, qs] of by) {
-            const lans = Array.from(new Set(qs.map((q) => q.lan.replace(/^VLAN /, ''))));
-            const vlansOnly = qs.every((q) => /^VLAN /.test(q.lan));
-            const starting = qs.every((q) => q.role === 'starting');
-            const where = lans.length > 2 ? `${lans.length} LANs` : (vlansOnly ? 'VLAN ' : '') + lans.join(', ');
-            const detail = qs.map((q) => `${q.family} querier of ${q.lan}${q.iface && q.kind === 'router' ? ' (' + q.iface + ')' : ''} from ${q.addr}${q.role === 'starting' ? ' — for now: its startup queries, the election not settled' : ', elected'}`).join('; ');
-            out.set(dev, { text: `${starting ? 'Querier?' : 'Querier'} · ${where}`, state: starting ? 'starting' : 'querier', detail });
+            const active = qs.filter((q) => q.role === 'querier');
+            const starting = qs.filter((q) => q.role === 'starting');
+            const standby = qs.filter((q) => q.role === 'non-querier');
+            const main = active.length ? active : starting.length ? starting : standby;
+            const state = active.length ? 'querier' : starting.length ? 'starting' : 'standby';
+            const word = state === 'querier' ? 'Querier' : state === 'starting' ? 'Querier (startup)' : 'Standby';
+            out.set(dev, { text: `${word} · ${where(main.map((q) => q.lan))}`, state, detail: qs.map(line).join('; ') });
+        }
+        // a snooping switch's VLANs with members but nobody querying them
+        for (const sd of Array.from(this.sim.engine.net.devices.values())) {
+            if (out.has(sd.id) || !sd.bridge || !sd.caps.switchFeatures)
+                continue;
+            const vlans = this.sim.multicast.noQuerierVlans(sd.id);
+            if (!vlans.length)
+                continue;
+            out.set(sd.id, { text: `No querier · ${where(vlans.map((v) => 'VLAN ' + v))}`, state: 'none', detail: `no IGMP querier heard in VLAN ${vlans.join(', ')}, and it is none itself: its members are learned from their own reports only and age out after the membership interval (configure a querier: a multicast router, or the snooping querier with an address there)` });
         }
         return out;
+    }
+    /**
+     * The IGMP / MLD queries' way from the election to the screen, for
+     * diagnosis (`netatlas.simController().queryDiagnostics()`; nothing on the
+     * page shows it): per candidate its role and its next query — none
+     * scheduled, scheduled for a later time, or overdue (its time has come on
+     * the clock, but the simulation is behind: a frame's work ran out) — and
+     * what became of its last query's hops: still to come on screen, on
+     * screen, arrived, not drawn (cable activity, its protocol not shown), or
+     * lost on the way (a cable down, a filter).
+     */
+    queryDiagnostics() {
+        const now = this.sim.now;
+        const target = now + this.pacer.behind;
+        return this.sim.multicast.querierRoles().map((q) => {
+            const next = q.nextAt < 0 ? 'none' : q.nextAt <= target && q.nextAt > now ? 'overdue' : 'scheduled';
+            const hops = q.lastQuery < 0 ? [] : this.sim.engine.flights.filter((f) => f.protocol === 'igmp' && f.sender === q.dev && /Query/.test(f.label) && f.t0 >= q.lastQuery - 1 && f.view === this.host.view()).map((f) => {
+                const it = this.pacer.find(f.id);
+                const st = it ? this.pacer.state(it) : null;
+                const display = f.dropped !== undefined ? 'lost on the way' : !this.flightShown(f) ? 'not drawn: its protocol is not shown' : !it ? 'gone from the screen (or before the display took it in)' : !it.drawn ? 'not drawn: cable activity (bundled)' : st && st.phase === 'waiting' ? 'still to come on screen' : st && (st.phase === 'moving' || st.phase === 'transit') ? 'on screen' : 'arrived';
+                return { flight: f.id, on: f.track.ref, display };
+            });
+            return { dev: q.dev, lan: q.lan, role: q.role, next, nextAt: q.nextAt, overdueBy: next === 'overdue' ? target - q.nextAt : 0, lastQuery: q.lastQuery, hops };
+        });
     }
     /** The devices' lifecycle for the diagram's marks, by ref (those powered off or booting). */
     powerMarks() {
@@ -46834,7 +46893,9 @@ class SimController {
             const st = this.pacer.state(it);
             // a Send test's hops: never faded, with their trail (as a message followed)
             const test = it.f.test !== undefined;
-            out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key && !test, followed: (!!follow && it.key === follow.key) || test, test });
+            // the scenario's while Network events hold the front: the background (grey, not clickable); the conversation followed stays itself
+            const bg = this.pacer.background(it) && !(follow && it.key === follow.key);
+            out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key && !test, followed: (!!follow && it.key === follow.key) || test, test, bg });
         }
         return out;
     }
@@ -48329,6 +48390,8 @@ class Engine {
         this.pktSeq = 0;
         this.cableFree = new Map();
         this.pending = [];
+        /** the flight whose arrival is being handled now (what is sent meanwhile is caused by it: Flight.cause) */
+        this.causeFlight = null;
         /** failed cables and relations, by id, with when they failed */
         this.failedLinks = new Map();
         this.failedRels = new Map();
@@ -48624,17 +48687,20 @@ class Engine {
             msg.causedBy = `${this.causeMsg.label}${this.causeMsg.sender ? ` (sent by ${this.causeMsg.sender})` : ''}, received at t = ${(this.now / 1000).toFixed(6)} s`;
     }
     /** Handle a received frame in the context of its message's origin (and the message itself: what it causes says so). */
-    caused(msg, fn) {
+    caused(msg, fn, flight) {
         const was = this.cause;
         const wasMsg = this.causeMsg;
         const wasTest = this.testCtx;
+        const wasFlight = this.causeFlight;
         this.cause = msg.origin !== undefined ? msg.origin : null;
         this.causeMsg = msg;
         this.testCtx = msg.test !== undefined ? msg.test : null;
+        this.causeFlight = flight !== undefined && flight >= 0 ? flight : null;
         try {
             fn();
         }
         finally {
+            this.causeFlight = wasFlight;
             this.cause = was;
             this.causeMsg = wasMsg;
             this.testCtx = wasTest;
@@ -50207,7 +50273,7 @@ class Engine {
             if (d.cancelled || !this.protocols || this.off.has(dev))
                 return;
             const p = this.protocols;
-            this.caused(frame.msg, () => p.l2(dev, port, frame));
+            this.caused(frame.msg, () => p.l2(dev, port, frame), d.flight);
         });
     }
     deliverL3(dev, l3, frame, t, flight) {
@@ -50227,7 +50293,7 @@ class Engine {
                 this.pending.splice(i, 1);
             if (d.cancelled || this.off.has(dev))
                 return;
-            this.caused(frame.msg, () => this.receive(dev, l3, frame));
+            this.caused(frame.msg, () => this.receive(dev, l3, frame), d.flight);
         });
     }
     // ------------------------------------------------------------ flights (the dots)
@@ -50235,6 +50301,9 @@ class Engine {
         const f = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent };
         if (encap && encap.length)
             f.encap = encap;
+        // sent while a delivery is handled: caused by the flight that delivered it (the display keeps that order)
+        if (parent === undefined && this.causeFlight !== null && this.causeFlight !== f.id)
+            f.cause = this.causeFlight;
         // (a relation's dot drawn before its message is sent: its sending device)
         if (msg.sender === undefined && this.net.devices.has(track.from))
             this.mark(msg, track.from);
@@ -52583,7 +52652,7 @@ function what(p) {
 __defs["analysis/sim/pacing"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Pacer = exports.JUMP_BUDGET = exports.FRAME_MAX = exports.IDLE_REST = exports.IDLE_HORIZON = exports.SKIP_REPORT = exports.TRANSIT_MS = exports.FADE_MS = exports.PULSE_MS = exports.LOST_MS = exports.RT_HOP = exports.ACTIVITY_MS = exports.CONV_LIMIT = exports.PROP_MAX = exports.PROP_MIN = exports.MAX_SPEED = exports.HOP_MAX = exports.HOP_MIN = exports.HOP_MS = exports.PACE_SCALES = exports.PACE_SPEEDS = void 0;
+exports.Pacer = exports.JUMP_BUDGET = exports.FRAME_MAX = exports.IDLE_REST = exports.IDLE_HORIZON = exports.SKIP_REPORT = exports.LAG_MAX = exports.TRANSIT_MS = exports.FADE_MS = exports.PULSE_MS = exports.LOST_MS = exports.RT_HOP = exports.ACTIVITY_MS = exports.CONV_DIVERSE = exports.CONV_LIMIT = exports.PROP_MAX = exports.PROP_MIN = exports.MAX_SPEED = exports.HOP_MAX = exports.HOP_MIN = exports.HOP_MS = exports.PACE_SCALES = exports.PACE_SPEEDS = void 0;
 exports.readableHop = readableHop;
 exports.proportionalHop = proportionalHop;
 exports.scaleText = scaleText;
@@ -52602,6 +52671,8 @@ exports.PROP_MIN = 200;
 exports.PROP_MAX = 30000;
 /** Bundling: at most this many conversations drawn as dots at once (the scenario's; a Network event's traffic always is). */
 exports.CONV_LIMIT = 6;
+/** Beyond it, this many more for a protocol with nothing on screen (an IGMP query, a Hello, in a burst of DHCP and ARP: every protocol shows). */
+exports.CONV_DIVERSE = 3;
 /** Cable activity: a hop not drawn as a dot lights its cable this long (display ms). */
 exports.ACTIVITY_MS = 3000;
 /** Real time: each hop shows this long (display ms), a sign of its traffic. */
@@ -52613,6 +52684,8 @@ exports.PULSE_MS = 1500;
 exports.FADE_MS = 300;
 /** Through a switch between two cables. */
 exports.TRANSIT_MS = 600;
+/** A hop that would start on screen more than this after it happened (display ms) is cable activity instead of a dot (not a Network event's, not the conversation followed). */
+exports.LAG_MAX = 15000;
 /** A skipped idle stretch is reported when it is at least this long (simulated ms). */
 exports.SKIP_REPORT = 500;
 /** The longest jump at once (simulated ms: 10 min); when it finds nothing to show, the next one waits IDLE_REST of display time. */
@@ -52683,9 +52756,9 @@ class Pacer {
         this.fgNow = false;
         /** a stream of Network events runs on the real-time schedule: the clock runs in real time, held by nothing */
         this.rtNow = false;
-        /** real time: the simulation can't keep up (simulated ms behind, lately; 0: in step) */
+        /** the simulation can't keep up with its rate (simulated ms behind, lately; 0: in step) */
         this.behind = 0;
-        /** real time: the display clock and simulated time it counts from, and where it left the simulation (moved since by other means: a Step, a jump: counted from there) */
+        /** the display clock and simulated time the rate counts from, and where it left the simulation (moved since by other means: a Step, a jump: counted from there) */
         this.rt = null;
         /** the hops counted as cable activity, with when (display clock) */
         this.act = [];
@@ -52761,28 +52834,22 @@ class Pacer {
         s.pulse = Math.min(1, p);
         return s;
     }
-    /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any; while a Send test runs, of a test)? */
-    holds(it, tests = this.testHolds()) {
-        if (!this.drawnShown(it) || this.mode === 'realtime' || this.rtNow)
-            return false;
-        if (this.follow)
-            return it.key === this.follow.key;
-        return !tests || it.test;
-    }
     /**
-     * Does a Send test set the pace now? While one of its hops is on its way,
-     * or it waits for something of its own (an ARP retry, a DNS timeout, a
-     * retransmission), the others still show but no longer hold the clock,
-     * so that the test runs at once, in parallel with the traffic on screen,
-     * never behind it (as when following a message).
+     * Is a hop the background now: the scenario's while a Network event runs
+     * or its traffic is still on screen. Drawn muted and not clickable; it
+     * goes on moving.
      */
-    testHolds() {
+    background(it) {
+        return !it.test && this.fgActive();
+    }
+    /** Does Network events' traffic hold the front now: an operation running, or a hop of one still on screen (on its way or about to start)? */
+    fgActive() {
         if (this.fgNow)
             return true;
         for (const it of this.items)
-            if (it.test && this.drawnShown(it) && this.onItsWay(it))
+            if (it.test && this.drawnShown(it) && this.pending(it))
                 return true;
-        return !!this.host.testRunning && this.host.testRunning();
+        return false;
     }
     /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
     refreshForeground() {
@@ -52796,25 +52863,13 @@ class Pacer {
     onItsWay(it) {
         return this.clock < this.arrival(it) - EPS;
     }
-    /** The simulated time the clock must stay below: the earliest arrival of what is on its way on screen (Infinity: nothing). */
-    gate() {
-        let t = Infinity;
-        let item = null;
-        const tests = this.testHolds();
-        for (const it of this.items) {
-            if (!this.holds(it, tests) || !this.onItsWay(it))
-                continue;
-            const g = it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat;
-            if (g < t) {
-                t = g;
-                item = it;
-            }
-        }
-        return { t, item };
+    /** Is a hop still to come or on its way on screen (not yet arrived)? */
+    pending(it) {
+        return this.onItsWay(it);
     }
-    /** Is anything on its way that holds the clock? */
+    /** Is anything drawn still to come or on its way on screen? */
     busy() {
-        return this.gate().item !== null;
+        return this.items.some((it) => this.drawnShown(it) && this.pending(it));
     }
     /** Take in the flights sent since the last look; returns the new hops. */
     register() {
@@ -52825,13 +52880,17 @@ class Pacer {
         // the hops on screen now, per view (only shown ones count against the limit), and their conversations
         const live = { physical: 0, logical: 0 };
         const convs = { physical: new Set(), logical: new Set() };
+        // the protocols with a conversation on screen, per view
+        const protos = { physical: new Set(), logical: new Set() };
         if (fresh.length)
             for (const x of this.items)
                 if (x.drawn && this.clock < this.end(x) && this.host.shown(x.f)) {
                     live[x.f.view]++;
                     // (a conversation takes a place while a hop of it is on its way; its arrival's pulse doesn't)
-                    if (!x.test && this.onItsWay(x))
+                    if (!x.test && this.onItsWay(x)) {
                         convs[x.f.view].add(x.key);
+                        protos[x.f.view].add(x.f.protocol);
+                    }
                 }
         for (const f of fresh) {
             if (this.byId.has(f.id))
@@ -52843,29 +52902,37 @@ class Pacer {
                 continue;
             const parent = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
             let after = parent ? this.arrival(parent) : -Infinity;
+            // what caused it (a frame it forwards, the request it answers, the ARP reply that released it) arrives first, in the same view
+            const cause = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
+            if (!parent && cause && cause.f.view === f.view)
+                after = Math.max(after, this.arrival(cause));
             const test = f.test !== undefined;
             const h = this.host.headers ? this.host.headers(f) : undefined;
             const key = conversationKey(f.protocol, h, f.label);
-            // a Network event's reply (its first hop) after the message it answers has arrived on screen: a hop of its conversation from the other side
-            if (!parent && test && f.sender !== undefined)
+            // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side
+            if (!parent && f.sender !== undefined)
                 for (const x of this.items)
-                    if (x.f.test === f.test && x.key === key && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x))
+                    if (x.key === key && x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x))
                         after = Math.max(after, this.arrival(x));
             const d0 = Math.max(this.clock, after);
             // between two cables: across the switch that forwarded it
             const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? exports.TRANSIT_MS : 0;
             // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Network event's is always drawn
             const shown = this.host.shown(f);
-            // the scenario's: in the background while a Network event runs (cable activity); else bundled, a few conversations at a time
+            // the scenario's: bundled, a few conversations at a time (muted while a Network event runs); one that would show long after it happened is cable activity
             const followed = !!this.follow && this.follow.key === key;
             const room = live[f.view] < this.limit;
-            const conv = convs[f.view].has(key) || convs[f.view].size < this.convLimit;
-            const drawn = !shown || test || (room && (followed || (!this.fgNow && conv)));
+            // (a protocol with nothing on screen gets a place beyond the limit, a few at most)
+            const conv = convs[f.view].has(key) || convs[f.view].size < this.convLimit || (!protos[f.view].has(f.protocol) && convs[f.view].size < this.convLimit + exports.CONV_DIVERSE);
+            const late = d0 - this.clock > exports.LAG_MAX;
+            const drawn = !shown || test || followed || (room && conv && !late);
             if (shown) {
                 if (drawn) {
                     live[f.view]++;
-                    if (!test)
+                    if (!test) {
                         convs[f.view].add(key);
+                        protos[f.view].add(f.protocol);
+                    }
                 }
                 else {
                     this.notDrawn++;
@@ -52920,98 +52987,58 @@ class Pacer {
         this.pump();
         this.prune();
     }
+    /** Simulated ms per display ms: 1 in Readable and Real time (and while a stream of Network events runs), 1 ÷ the scale in Proportional. */
+    rate() {
+        return this.mode === 'proportional' && !this.rtNow ? 1 / this.scale : 1;
+    }
     /**
-     * Run the simulation as far as the display allows: up to the first
-     * arrival on screen, through it in step with its dot; with nothing on
-     * screen to the next message shown (skipping) or at the speed.
+     * Run the simulation with the display clock at its rate, held by nothing.
+     * A frame does at most JUMP_BUDGET ms of simulation work; what it can't do
+     * in time is left behind (said, never caught up in a burst): the clock
+     * goes on from where it got. With nothing on screen and idle skipping on,
+     * on to the next message that will be shown (bounded per frame too).
      */
     pump() {
         const e = this.host.engine;
         this.refreshForeground();
         this.register();
-        if (this.mode === 'realtime' || this.rtNow) {
-            this.realTime();
-            return;
-        }
-        this.rt = null;
-        this.behind = 0;
-        for (let guard = 0; guard < 400; guard++) {
-            if (guard)
-                this.refreshForeground();
-            const g = this.gate();
-            if (g.item) {
-                this.idleBudget = 0;
-                // the clock moves through the most urgent hop in step with its dot, never to its arrival
-                const it = g.item;
-                const st = this.state(it);
-                const p = st.phase === 'moving' ? st.frac : 0;
-                const target = Math.min(it.f.t0 + p * it.lat, g.t - EPS);
-                if (target <= e.now)
-                    return;
-                let moved = false;
-                e.runUntil(target, () => {
-                    this.register();
-                    // a hop sent meanwhile that arrives sooner sets the pace from now on
-                    moved = this.gate().t < g.t;
-                    return moved;
-                });
+        const rate = this.rate();
+        if (!this.rt || Math.abs(e.now - this.rt.left) > EPS || this.rt.rate !== rate)
+            this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
+        const target = this.rt.now + (this.clock - this.rt.clock) * rate;
+        if (target > e.now + EPS) {
+            const until = Date.now() + exports.JUMP_BUDGET;
+            e.runUntil(target, () => {
                 this.register();
-                if (!moved)
-                    return;
-                continue;
-            }
-            // idle: nothing on screen holds the clock
-            const from = e.now;
-            if (this.skipIdle) {
-                if (this.clock < this.restUntil)
-                    return;
-                // a jump cut short by its budget goes on towards the same end next frame (a new jump would never rest)
-                const start = this.jumpStart !== null && this.jumpStart <= from && from < this.jumpStart + exports.IDLE_HORIZON ? this.jumpStart : from;
-                this.advance(start + exports.IDLE_HORIZON);
-                const shown = this.items.some((it) => this.drawnShown(it) && this.onItsWay(it));
-                this.jumpStart = !shown && e.now < start + exports.IDLE_HORIZON - EPS ? start : null;
-                if (e.now - start >= exports.SKIP_REPORT)
-                    this.skipped = { ms: e.now - start, at: this.clock };
-                // a whole horizon with nothing to show: rest a moment
-                if (e.now >= start + exports.IDLE_HORIZON - EPS && !shown)
-                    this.restUntil = this.clock + exports.IDLE_REST;
-                // (following: what shows now is not of the conversation; it is seen at its own pace)
-                return;
-            }
-            if (this.idleBudget <= EPS)
-                return;
-            this.advance(from + this.idleBudget);
-            this.idleBudget = Math.max(0, this.idleBudget - (e.now - from));
-            if (!this.busy())
-                return;
-        }
-    }
-    /**
-     * Real time: the simulated clock runs with the display clock (× the speed), held by nothing. A frame
-     * does at most JUMP_BUDGET ms of simulation work; what it can't do in time is left behind (said, never
-     * caught up in a burst): the clock goes on from where it got.
-     */
-    realTime() {
-        const e = this.host.engine;
-        if (!this.rt || Math.abs(e.now - this.rt.left) > EPS)
-            this.rt = { clock: this.clock, now: e.now, left: e.now };
-        const target = this.rt.now + (this.clock - this.rt.clock);
-        if (target <= e.now)
-            return;
-        const until = Date.now() + exports.JUMP_BUDGET;
-        e.runUntil(target, () => {
+                return Date.now() > until;
+            });
             this.register();
-            return Date.now() > until;
-        });
-        this.register();
-        if (e.now < target - 1) {
-            this.behind = target - e.now;
-            this.rt = { clock: this.clock, now: e.now, left: e.now };
-        }
-        else {
+            if (e.now < target - 1) {
+                this.behind = target - e.now;
+                this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
+                return;
+            }
             this.behind = 0;
             this.rt.left = e.now;
         }
+        // idle: nothing on screen (nothing still to come on it): on to the next message that will be shown (never in Real time, nor while a stream keeps real time)
+        if (!this.skipIdle || this.mode === 'realtime' || this.rtNow || this.busy() || this.behind > 0)
+            return;
+        if (this.clock < this.restUntil)
+            return;
+        const from = e.now;
+        // a jump cut short by its budget goes on towards the same end next frame (a new jump would never rest)
+        const start = this.jumpStart !== null && this.jumpStart <= from && from < this.jumpStart + exports.IDLE_HORIZON ? this.jumpStart : from;
+        this.advance(start + exports.IDLE_HORIZON);
+        const shown = this.busy();
+        this.jumpStart = !shown && e.now < start + exports.IDLE_HORIZON - EPS ? start : null;
+        if (e.now - start >= exports.SKIP_REPORT)
+            this.skipped = { ms: e.now - start, at: this.clock };
+        // a whole horizon with nothing to show: rest a moment
+        if (e.now >= start + exports.IDLE_HORIZON - EPS && !shown)
+            this.restUntil = this.clock + exports.IDLE_REST;
+        // the clock counts on from where the jump left it
+        this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
     }
     /**
      * Next exchange (paused): on until the exchange first on screen is over (every hop of its
@@ -53023,9 +53050,8 @@ class Pacer {
         this.register();
         const first = () => {
             let best = null;
-            const tests = this.testHolds();
             for (const it of this.items)
-                if (this.holds(it, tests) && this.onItsWay(it) && (!best || this.arrival(it) < this.arrival(best)))
+                if (this.drawnShown(it) && this.onItsWay(it) && (!best || this.arrival(it) < this.arrival(best)))
                     best = it;
             return best ? best.key : null;
         };
@@ -53067,9 +53093,8 @@ class Pacer {
         this.refreshForeground();
         this.register();
         let next = Infinity;
-        const tests = this.testHolds();
         for (const it of this.items)
-            if (this.holds(it, tests) && this.onItsWay(it))
+            if (this.drawnShown(it) && this.onItsWay(it))
                 next = Math.min(next, this.arrival(it));
         if (next < Infinity) {
             this.clock = Math.max(this.clock, next);
@@ -53086,6 +53111,7 @@ class Pacer {
             const ms = this.host.engine.now - from;
             if (ms >= exports.SKIP_REPORT)
                 this.skipped = { ms, at: this.clock };
+            this.rt = null;
         }
         this.prune();
     }
@@ -53142,6 +53168,7 @@ exports.protocolEntriesOf = protocolEntriesOf;
  */
 const sim_profiles_1 = __req("model/sim-profiles");
 const capabilities_1 = __req("model/capabilities");
+const snooping_1 = __req("model/snooping");
 const device_types_1 = __req("model/device-types");
 const failure_1 = __req("analysis/failure");
 const ipmath_1 = __req("analysis/ipmath");
@@ -53530,12 +53557,14 @@ class Simulation {
         return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, flap: { ref, obj: this.engine.flapOf(ref) } });
     }
     /**
-     * Is a Network event running with traffic of its own: a send with messages still to send or on their
-     * way (one waiting for its source's DHCP lease does not count yet), a stream, a join waiting for its
-     * router? Its traffic is then the foreground of the display (pacing.ts). Flapping has none of its own:
-     * what it shows is the network's reaction, the scenario's.
+     * Is a Network event running: a send with messages still to send or on their way (one waiting for
+     * its source's DHCP lease does not count yet: nothing of it is in flight), a stream, a join waiting
+     * for its router, a leave whose cleanup is not settled, flapping until it ends? Its traffic is then
+     * the foreground of the display and the scenario the background (pacing.ts); a finished event, a
+     * membership a join left behind or an event card kept in the list count for nothing.
      */
     foregroundActive() {
+        this.updateLeaves();
         for (const a of this.acts) {
             if (a.run) {
                 const r = a.run;
@@ -53549,8 +53578,19 @@ class Simulation {
                     return true;
             }
             else if (a.join) {
+                // a join until its membership is recorded (or its reports are out): the membership itself is no running action
                 const j = a.join;
                 if (j.byAt === undefined && j.leftAt === undefined && this.now < j.until)
+                    return true;
+            }
+            else if (a.leave) {
+                // a leave until the network's cleanup it follows is settled
+                if (a.leave.sent && a.leave.done === undefined)
+                    return true;
+            }
+            else if (a.flap) {
+                // flapping until its cycles are done or it is stopped
+                if (!a.flap.obj.ended)
                     return true;
             }
         }
@@ -54213,6 +54253,12 @@ function protocolEntriesOf(model) {
     for (const d of model.devices) {
         const joins = ifs(d).some((i) => !!i.multicast && i.multicast.joins.length > 0);
         if (joins || d.services.some((s) => s.id === 'pim'))
+            add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
+        // a switch that is a snooping querier candidate (a VLAN of it with the snooping querier on and its snooping enabled): its queries are IGMP too
+        const querierVlans = model.networks.filter((n) => n.vlan !== undefined && !!n.simulation && n.simulation.get('snoop-querier') === 'on').map((n) => n.vlan);
+        // (and an IPv4 address on its VLAN interface there to query from)
+        const svi = (v) => d.logical.some((i) => i.type === 'virtual' && i.vlan === v && i.addresses.some((a) => a.indexOf(':') < 0));
+        if (querierVlans.some((v) => (0, snooping_1.snoopingChoice)(d, v) === 'enabled' && (0, snooping_1.switchedVlans)(d).indexOf(v) >= 0 && svi(v)))
             add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
         for (const i of ifs(d))
             for (const st of i.multicast ? i.multicast.streams : [])
@@ -57062,7 +57108,7 @@ class Multicast {
                     const dev = sd.id;
                     const ri = {
                         dev, name: `${dev}:${l3.id}`, lan: this.lanOf(l3, a.addr), iface: l3.id, at, addr: a.addr, l3, groups: new Map(),
-                        querier: false, otherAt: -1, otherAddr: '', startup: 0, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
+                        querier: false, otherAt: -1, otherAddr: '', startup: 0, startupOf: 0, nextAt: -1, takeoverAt: -1, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
                         enabled: () => this.e.params.str('igmp-querier', dev, at) === 'on',
                         up: () => this.e.deviceOn(dev) && this.e.isL3Up(dev, l3.id),
                         send: () => this.generalQuery(ri),
@@ -57436,7 +57482,9 @@ class Multicast {
         c.otherAddr = '';
         c.querier = c.enabled();
         c.startup = c.querier ? Math.max(1, this.e.params.num('igmp-robustness', c.dev, null, c.at)) : 0;
+        c.startupOf = c.startup;
         c.since = this.e.now;
+        c.takeoverAt = -1;
         if (c.querier)
             this.e.note('state', 'igmp', c.dev, '', 'querier (starting)', 'querier', `${c.name} starts as ${this.name(c.addr.version)} querier candidate (${(0, ipmath_1.formatAddr)(c.addr)}): it queries until it hears a lower address (startup: ${c.startup} queries ${(0, params_1.durationText)(this.e.params.num('igmp-query', c.dev, null, c.at) / 4)} apart)`);
         const gen = c.gen;
@@ -57451,7 +57499,9 @@ class Multicast {
                     this.e.note('state', 'igmp', c.dev, '', 'querier', 'querier', `${c.name} is the ${this.name(c.addr.version)} querier: its startup queries are sent and no lower address was heard`);
             }
             const q = this.e.params.num('igmp-query', c.dev, null, c.at);
-            this.e.after(c.querier && c.startup > 0 ? Math.max(250, Math.round(q / 4)) : q, tick);
+            const wait = c.querier && c.startup > 0 ? Math.max(250, Math.round(q / 4)) : q;
+            c.nextAt = c.querier ? this.e.now + wait : -1;
+            this.e.after(wait, tick);
         };
         tick();
     }
@@ -57463,6 +57513,8 @@ class Multicast {
         c.querier = false;
         c.startup = 0;
         c.otherAt = -1;
+        c.nextAt = -1;
+        c.takeoverAt = -1;
     }
     /**
      * A candidate hears another's query. A lower address wins (IGMPv2 / v3 and
@@ -57477,17 +57529,20 @@ class Multicast {
         const was = c.querier;
         c.querier = false;
         c.startup = 0;
+        c.nextAt = -1;
         c.otherAt = t;
         c.otherAddr = (0, ipmath_1.formatAddr)(src) + (from ? ` (${from})` : '');
         if (was)
             this.e.at(t, () => this.e.note('state', 'igmp', c.dev, from, 'not querier', '', `${c.name} hears a query from ${(0, ipmath_1.formatAddr)(src)} (lower than its ${(0, ipmath_1.formatAddr)(c.addr)}): it stops querying (querier election)`));
         const tok = ++c.otherTok;
         const wait = this.otherPresent(c.dev, c.iface, c.at);
+        c.takeoverAt = t + wait;
         this.e.at(t + wait, () => {
             if (c.otherTok !== tok || !c.running || !c.enabled() || c.querier)
                 return;
             c.querier = true;
             c.since = this.e.now;
+            c.takeoverAt = -1;
             this.e.note('state', 'igmp', c.dev, '', 'querier', 'querier', `${c.name} takes over as ${this.name(c.addr.version)} querier: no query from ${c.otherAddr} for ${(0, params_1.durationText)(wait)} (other querier present interval)`);
             // its regular schedule from now: a General Query at once, then every query interval
             c.gen++;
@@ -57500,7 +57555,9 @@ class Multicast {
                     c.queries++;
                     c.lastQuery = this.e.now;
                 }
-                this.e.after(this.e.params.num('igmp-query', c.dev, null, c.at), tick);
+                const q = this.e.params.num('igmp-query', c.dev, null, c.at);
+                c.nextAt = c.querier ? this.e.now + q : -1;
+                this.e.after(q, tick);
             };
             tick();
         });
@@ -57530,9 +57587,32 @@ class Multicast {
                 continue;
             const role = this.roleOf(c);
             const left = role === 'non-querier' && c.otherAt >= 0 ? Math.max(0, c.otherAt + this.otherPresent(c.dev, c.iface, c.at) - now) : undefined;
-            out.push({ dev: c.dev, kind: c.vlan !== undefined ? 'switch' : 'router', iface: c.iface, vlan: c.vlan, lan: c.lan, family: this.name(c.addr.version), addr: (0, ipmath_1.formatAddr)(c.addr), role, other: role === 'non-querier' ? c.otherAddr || undefined : undefined, otherLeft: left, queries: c.queries, lastQuery: c.lastQuery, since: c.since });
+            out.push({ dev: c.dev, kind: c.vlan !== undefined ? 'switch' : 'router', iface: c.iface, vlan: c.vlan, lan: c.lan, family: this.name(c.addr.version), addr: (0, ipmath_1.formatAddr)(c.addr), role, other: role === 'non-querier' ? c.otherAddr || undefined : undefined, otherLeft: left, queries: c.queries, lastQuery: c.lastQuery, since: c.since, nextAt: role === 'starting' || role === 'querier' ? c.nextAt : -1, startup: role === 'starting' ? `${c.startupOf - c.startup + 1} of ${c.startupOf}` : '', takeoverAt: role === 'non-querier' ? c.takeoverAt : -1 });
         }
         return out.sort((a, b) => cmp(a.dev, b.dev) || cmp(a.lan, b.lan) || cmp(a.family, b.family));
+    }
+    /**
+     * The VLANs where a snooping switch has members (someone joined) but no
+     * querier: no query heard there (no router port) and it is no querier of
+     * its own. Its memberships are then only learned from the members' own
+     * reports, and age out after the membership interval.
+     */
+    noQuerierVlans(dev) {
+        const out = [];
+        const now = this.e.now;
+        for (const [k, st] of Array.from(this.snoops).sort((a, b) => cmp(a[0], b[0]))) {
+            if (k.slice(0, k.indexOf('|')) !== dev)
+                continue;
+            const vlan = Number(k.slice(k.indexOf('|') + 1));
+            if (!vlan || this.snoopMode(dev, vlan) !== 'enabled')
+                continue;
+            const members = Array.from(st.groups.values()).some((ports) => Array.from(ports.values()).some((e) => e.until > now));
+            const routers = Array.from(st.routerPorts.values()).some((u) => u > now);
+            const own = this.sqs.get(dev + '|' + vlan);
+            if (members && !routers && !(own && own.running && own.querier))
+                out.push(vlan);
+        }
+        return out;
     }
     /** The candidates, routers' interfaces and switches' VLANs, in a fixed order. */
     candidates() {
@@ -57866,7 +57946,7 @@ class Multicast {
             const addr = svi.addrs.find((a) => a.addr.version === 4).addr;
             const c = {
                 dev, name: `${dev} (VLAN ${vlan})`, lan: `VLAN ${vlan}`, vlan, svi, at: null, addr,
-                querier: false, otherAt: -1, otherAddr: '', startup: 0, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
+                querier: false, otherAt: -1, otherAddr: '', startup: 0, startupOf: 0, nextAt: -1, takeoverAt: -1, running: false, gen: 0, otherTok: 0, queries: 0, lastQuery: -1, since: -1,
                 enabled: () => this.e.params.str('snoop-querier', dev, (0, params_1.vlanRef)(vlan)) === 'on' && this.snoopMode(dev, vlan) === 'enabled',
                 up: () => this.e.deviceOn(dev),
                 send: () => this.snoopQuery(sd, c),
@@ -58930,10 +59010,19 @@ class Multicast {
      * queries; under it the timers.
      */
     querierTable(dev) {
-        const rows = this.querierRoles(dev).map((q) => [q.lan + (q.kind === 'router' && q.iface ? ` (${q.iface})` : ''), q.family, q.addr, ROLE_WORD[q.role], q.role === 'non-querier' ? q.other || '?' : q.role === 'querier' || q.role === 'starting' ? 'itself' : '—', q.otherLeft !== undefined ? dur(q.otherLeft) : '—', q.queries ? `${q.queries}, the last at t = ${(0, engine_1.fmtSec)(q.lastQuery)}` : 'none']);
+        const rows = this.querierRoles(dev).map((q) => [
+            q.lan + (q.kind === 'router' && q.iface ? ` (${q.iface})` : ''),
+            q.family,
+            q.addr,
+            ROLE_WORD[q.role],
+            q.role === 'non-querier' ? q.other || '?' : q.role === 'querier' || q.role === 'starting' ? 'itself' : '—',
+            // the timer it waits for: its next query (in its startup: which one), or its takeover
+            q.nextAt >= 0 ? `query at t = ${(0, engine_1.fmtSec)(q.nextAt)}${q.startup ? ` (startup ${q.startup})` : ''}` : q.takeoverAt >= 0 ? `takes over at t = ${(0, engine_1.fmtSec)(q.takeoverAt)} unless it hears ${q.other || 'the querier'}` : q.role === 'down' ? 'none (down)' : q.role === 'off' ? 'none (not a candidate)' : '—',
+            q.queries ? `${q.queries}, the last at t = ${(0, engine_1.fmtSec)(q.lastQuery)}` : 'none yet',
+        ]);
         return {
             caption: `Querier election of ${dev}`,
-            cols: ['LAN', 'Family', 'Address', 'Role', 'Querier', 'Takes over in', 'General queries'],
+            cols: ['LAN', 'Family', 'Address', 'Role', 'Querier', 'Next', 'General queries'],
             rows,
             empty: 'No querier candidacy: it is configured as no querier on any of its LANs.',
             timers: ['igmp-query', 'igmp-max-resp', 'igmp-robustness'].map((k) => this.timer(k, dev)),
@@ -59004,7 +59093,7 @@ function inNet(a, ip) {
     return true;
 }
 /** A querier role in words. */
-const ROLE_WORD = { starting: 'Querier (starting)', querier: 'Querier', 'non-querier': 'Non-querier', off: 'Not a candidate', down: 'Down' };
+const ROLE_WORD = { starting: 'Querier (startup)', querier: 'Querier', 'non-querier': 'Standby (non-querier)', off: 'Not a candidate', down: 'Down' };
 /** A remaining time as the tables write it. */
 function dur(ms) {
     if (!isFinite(ms))
@@ -63296,6 +63385,18 @@ class SimAnimator {
                 senders.add(ends.from);
             if (st.phase === 'transit' && ends.from)
                 senders.add(ends.from);
+            // the background: a grey dot on its way, nothing to point at or read (the log has it)
+            if (it.bg) {
+                if (lost)
+                    continue;
+                const shape = arrows ? arrow(this.doc, p, color, f.cast || 'unicast') : dot(this.doc, p.x, p.y, color, f.cast || 'unicast');
+                shape.classList.add('sim-bg');
+                shape.setAttribute('aria-hidden', 'true');
+                // (under the foreground's dots)
+                dots.insertBefore(shape, dots.firstChild);
+                drawn++;
+                continue;
+            }
             const name = (it.test ? 'Test · ' : '') + f.label;
             const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
             const w = (0, geometry_1.textWidth)(text, FONT) + 4;

@@ -283,6 +283,8 @@ export class Engine {
   private pktSeq = 0;
   private cableFree = new Map<string, number>();
   private pending: Delivery[] = [];
+  /** the flight whose arrival is being handled now (what is sent meanwhile is caused by it: Flight.cause) */
+  private causeFlight: number | null = null;
   /** the parameters in effect (params.ts): simulation-wide, and each device's own */
   readonly params: SimParams;
   /** the loss of frames: its own seeded sequence (the start-up jitter stays the same whatever the loss) */
@@ -539,16 +541,19 @@ export class Engine {
   }
 
   /** Handle a received frame in the context of its message's origin (and the message itself: what it causes says so). */
-  private caused(msg: Msg, fn: () => void): void {
+  private caused(msg: Msg, fn: () => void, flight?: number): void {
     const was = this.cause;
     const wasMsg = this.causeMsg;
     const wasTest = this.testCtx;
+    const wasFlight = this.causeFlight;
     this.cause = msg.origin !== undefined ? msg.origin : null;
     this.causeMsg = msg;
     this.testCtx = msg.test !== undefined ? msg.test : null;
+    this.causeFlight = flight !== undefined && flight >= 0 ? flight : null;
     try {
       fn();
     } finally {
+      this.causeFlight = wasFlight;
       this.cause = was;
       this.causeMsg = wasMsg;
       this.testCtx = wasTest;
@@ -2054,7 +2059,7 @@ export class Engine {
       this.pending.splice(this.pending.indexOf(d), 1);
       if (d.cancelled || !this.protocols || this.off.has(dev)) return;
       const p = this.protocols;
-      this.caused(frame.msg, () => p.l2(dev, port, frame));
+      this.caused(frame.msg, () => p.l2(dev, port, frame), d.flight);
     });
   }
 
@@ -2072,7 +2077,7 @@ export class Engine {
       const i = this.pending.indexOf(d);
       if (i >= 0) this.pending.splice(i, 1);
       if (d.cancelled || this.off.has(dev)) return;
-      this.caused(frame.msg, () => this.receive(dev, l3, frame));
+      this.caused(frame.msg, () => this.receive(dev, l3, frame), d.flight);
     });
   }
 
@@ -2081,6 +2086,8 @@ export class Engine {
   flight(t0: number, t1: number, msg: Msg, view: Flight['view'], track: Track, parent?: number, encap?: string[]): Flight {
     const f: Flight = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent };
     if (encap && encap.length) f.encap = encap;
+    // sent while a delivery is handled: caused by the flight that delivered it (the display keeps that order)
+    if (parent === undefined && this.causeFlight !== null && this.causeFlight !== f.id) f.cause = this.causeFlight;
     // (a relation's dot drawn before its message is sent: its sending device)
     if (msg.sender === undefined && this.net.devices.has(track.from)) this.mark(msg, track.from);
     if (msg.sender !== undefined) f.sender = msg.sender;

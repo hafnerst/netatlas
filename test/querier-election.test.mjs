@@ -57,8 +57,13 @@ test('the election starts by itself: every candidate queries at once (provisiona
   const t1 = s.multicast.querierTable('q1').rows[0];
   assert.deepEqual(t1.slice(0, 5), ['VLAN 10 (g0)', 'IGMP', '10.5.0.1', 'Querier', 'itself']);
   const t2 = s.multicast.querierTable('q2').rows[0];
-  assert.deepEqual(t2.slice(0, 5), ['VLAN 10 (g0)', 'IGMP', '10.5.0.2', 'Non-querier', '10.5.0.1 (q1)']);
-  assert.match(t2[5], /^\d+ s$/, 'how long until it would take over');
+  assert.deepEqual(t2.slice(0, 5), ['VLAN 10 (g0)', 'IGMP', '10.5.0.2', 'Standby (non-querier)', '10.5.0.1 (q1)']);
+  // the timers it waits for: q1 its next query, q2 its takeover (q1's last query + the other querier present interval)
+  assert.match(t1[5], /^query at t = \d+(\.\d+)? s$/);
+  const lastQ1 = queries(s, 'q1').pop().t;
+  const m = /^takes over at t = ([\d.]+) s unless it hears 10\.5\.0\.1 \(q1\)$/.exec(t2[5]);
+  assert.ok(m, t2[5]);
+  assert.ok(Math.abs(Number(m[1]) * 1000 - (lastQ1 + 45000)) < 10, `${m[1]} s vs ${lastQ1 + 45000} ms`);
   // the queries are real messages on the cables: drawn and inspectable, from q1:g0 to 224.0.0.1
   const msg = queries(s, 'q1')[0];
   assert.equal(msg.hdr.l3[0].dst, '224.0.0.1');

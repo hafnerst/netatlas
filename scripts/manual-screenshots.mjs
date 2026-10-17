@@ -537,7 +537,7 @@ async function main() {
       await page.settle(100);
     }
 
-    // the querier election (the internal example): q1 the elected querier of LAN A, q2 a candidate without a mark
+    // the querier election (the internal example): q1 the elected querier of LAN A, q2 on standby
     {
       await page.eval(`netatlas.loadExampleNamed('multicast-querier.yaml'), netatlas.setView('physical'), netatlas.select(null), true`);
       await page.settle(150);
@@ -546,7 +546,7 @@ async function main() {
       const qs = [];
       for (const d of ['q1', 'q2', 'sw']) qs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
       qs.push(await page.rect('#canvas .sim-querier[data-device="q1"]'));
-      await save('querier', around(qs, 10), { quality: 30 });
+      await save('querier', around(qs, 10), { scale: 0.88, quality: 20 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }
