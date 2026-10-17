@@ -14,7 +14,7 @@
 import { ArpRow, ConnRow, GridTable, Headers, MacRow, McDecision, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
 
-export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone' | 'mqtt' | 'mqttc' | 'ipv6';
+export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone' | 'mqtt' | 'mqttc' | 'ipv6' | 'ptp' | 'ntp';
 
 export interface ConnData {
   rows: ConnRow[];
@@ -39,7 +39,7 @@ export interface PacketData {
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
 
-const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6 configuration' };
+const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6 configuration', ptp: 'PTP clock', ntp: 'NTP status' };
 
 export interface ArpData {
   v4: ArpRow[];
@@ -270,7 +270,7 @@ export class TablePanels {
       this.announce(p, n);
       return;
     }
-    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone' || p.kind === 'mqtt' || p.kind === 'mqttc' || p.kind === 'ipv6') {
+    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone' || p.kind === 'mqtt' || p.kind === 'mqttc' || p.kind === 'ipv6' || p.kind === 'ptp' || p.kind === 'ntp') {
       this.announce(p, this.gridPanel(p));
       return;
     }

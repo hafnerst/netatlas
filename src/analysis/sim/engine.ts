@@ -185,6 +185,8 @@ export interface Protocols {
   snoop?(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): SnoopResult | null;
   /** a routed multicast packet at a router: true when multicast routing took it */
   mroute?(dev: string, l3: L3Iface, pkt: Pkt): boolean;
+  /** has a device's own interface joined a group (a router listening as a host: a PTP clock's port)? */
+  joined?(dev: string, iface: string, group: IpAddr): boolean;
   /** a router recomputed its routes (multicast checks its RPF interfaces) */
   routesChanged?(dev: string): void;
 }
@@ -354,6 +356,17 @@ export class Engine {
     advert(dev: string, l3: L3Iface, target: IpAddr, lladdr: string): void;
     connected(dev: string): Connected[];
     routes(dev: string, vrf: string): RibEntry[];
+  } | null = null;
+  /**
+   * PTP (ptp.ts): what a transparent clock sees of the event messages it
+   * forwards (their arrival at its port, their start on the wire of each
+   * port they leave by: the residence time), and the moment a clock's own
+   * message starts on the wire (its hardware timestamp). `egress` may give
+   * back the frame with its correction field updated (a copy).
+   */
+  ptpHook: {
+    ingress(dev: string, port: string, frame: Frame, t: number): void;
+    egress(dev: string, port: string, frame: Frame, tIn: number, tOut: number): Frame;
   } | null = null;
   /** the IPv6 addresses ipv6.ts gave each interface ("dev:iface"): the simulation's, never the model's */
   private dyn6 = new Map<string, SimAddr[]>();
@@ -1558,6 +1571,7 @@ export class Engine {
       frame = this.toUnicast(e.link, dev, frame, t);
     }
     const w = this.wire(e.link, e.end, frame, t);
+    if (this.ptpHook && frame.msg.protocol === 'ptp') frame = this.ptpHook.egress(dev, port, frame, t, w.start);
     const o = otherEnd(this.net, e);
     const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + e.link, from: e.end, to: o.end }, parent, frameEncap(frame));
     this.inspectable(f, frame, tag);
@@ -1756,6 +1770,7 @@ export class Engine {
     const fromUplink = !!sd.virt && sd.virt.kind === 'vswitch' && from !== null && sd.virt.uplinks.indexOf(from) >= 0;
     if (fromUplink && isGroupMac(frame.dst) && this.standbyUplink(sd, from as string)) return;
     if (from !== null && !wire && !fromUplink) this.learn(sd, vlan, frame.src, from, t);
+    if (from !== null && this.ptpHook && frame.msg.protocol === 'ptp') this.ptpHook.ingress(sd.id, from, frame, t);
     if (sd.caps.inspection && !wire) t += this.params.num('ips-latency', sd.id);
     // to its own VLAN interface (the switch's management or routing interface)
     if (from !== null && !wire) {
@@ -2266,7 +2281,11 @@ export class Engine {
     // its own broadcast or multicast, back over a loop: ignored
     if ((bcast || isMulticastIp(pkt.dst)) && (frame.loops || 0) > 0 && this.ownsAddress(dev, pkt.src)) return;
     // a routed group at a router: multicast routing (the RPF check, the outgoing interfaces); link-local groups and IGMP are its own
-    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) return;
+    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) {
+      // (a group its own interface joined, as a host: it takes it too, besides routing it)
+      if (this.protocols.joined && this.protocols.joined(dev, l3.id, pkt.dst)) this.deliverLocal(dev, l3, pkt.vrf === l3.vrf ? pkt : { ...pkt, vrf: l3.vrf });
+      return;
+    }
     // to a container host's address: a reply to a translated packet, or to a published port, goes on to its container
     if (own && !bcast && !isMulticastIp(pkt.dst) && !pkt.encap) {
       const back = this.dnat(dev, pkt);

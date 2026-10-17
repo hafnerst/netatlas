@@ -677,6 +677,7 @@ export class ModelDoc {
         storage: 'storage',
         'applications/#': 'application',
         mqtt_broker: 'mqtt_broker',
+        ptp: 'ptp',
         inspection: 'inspection',
         'separation/domains/#': 'sepDomain',
         'separation/directions/#': 'sepDirection',

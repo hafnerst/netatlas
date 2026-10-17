@@ -27,6 +27,8 @@ import { Test, TestKind, Transport } from './transport';
 import { AppSim } from './apps';
 import { MqttSim } from './mqtt';
 import { Ipv6Sim } from './ipv6';
+import { NtpSim } from './ntp';
+import { PtpSim } from './ptp';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
@@ -64,6 +66,7 @@ const ENTRY_SUPPORT: { [id: string]: Support } = {
 function entrySupport(id: string): Support {
   if (ENTRY_SUPPORT[id]) return ENTRY_SUPPORT[id];
   if (id === 'mqtt') return (serviceDef('mqtt_broker') as { support: Support }).support;
+  if (id === 'ptp') return (serviceDef('ptp') as { support: Support }).support;
   const p = simProfile(id);
   return p && p.support ? p.support : CUSTOM_SUPPORT;
 }
@@ -196,6 +199,9 @@ export class Simulation {
   readonly mqtt: MqttSim;
   /** IPv6 host configuration: link-local addresses, router discovery, SLAAC, DAD, DHCPv6 (ipv6.ts) */
   readonly ipv6: Ipv6Sim;
+  /** NTP's synchronization state (ntp.ts) and PTP (ptp.ts): kept apart, neither disciplines the other */
+  readonly ntp: NtpSim;
+  readonly ptp: PtpSim;
 
   constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
@@ -225,6 +231,9 @@ export class Simulation {
     this.apps.realtime = this.realtime;
     this.mqtt = new MqttSim(this.protocols, this.transport, this.apps);
     this.mqtt.realtime = this.realtime;
+    this.ntp = new NtpSim(this.protocols);
+    this.ntp.install();
+    this.ptp = new PtpSim(this.protocols, this.multicast);
     this.protocols.start();
   }
 
@@ -1244,6 +1253,10 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
       return !!n && !!n.cidr && n.cidr.indexOf(':') >= 0;
     });
     if (v6scope || ifs(d).some((i) => i.ipv6 === 'dhcpv6' || i.ipv6 === 'slaac_dhcpv6' || (i.ipv6 === 'slaac' && model.devices.some((r) => ifs(r).some((x) => !!x.ra && x.ra.other))))) add('dhcpv6', 'DHCPv6', 'Services', 'device', d.id);
+  }
+  // PTP: its clocks (and NTP, the service's own state, beside its relations)
+  for (const d of model.devices) {
+    if (d.appServices && d.appServices.has('ptp')) add('ptp', 'PTP', 'Services', 'device', d.id);
   }
   // MQTT: its brokers and clients
   for (const d of model.devices) {

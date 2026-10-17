@@ -18,7 +18,7 @@ export const SCHEMA = {
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
   device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
   /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN gateway's VPN gateway, a Security gateway's Domain separation */
-  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'mqtt_broker', 'applications'],
+  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'ptp', 'mqtt_broker', 'applications'],
   wireless: ['controller', 'networks'],
   wirelessNetwork: ['id', 'ssid', 'vlan', 'untagged', 'radio', 'security', 'passphrase', 'forwarding'],
   ntp: ['stratum', 'upstreams'],
@@ -32,6 +32,7 @@ export const SCHEMA = {
   wireless_controller: ['aps'],
   storage: ['protocols'],
   mqtt_broker: ['port', 'retry_interval'],
+  ptp: ['clock', 'profile', 'domain', 'interfaces', 'role', 'priority1', 'clock_class', 'clock_accuracy', 'variance', 'priority2', 'announce_interval', 'sync_interval', 'delay_req_interval', 'announce_receipt_timeout', 'clock_offset', 'drift', 'timestamping'],
   /** an application instance: an entry of `services.applications` (the order of model/applications.ts APP_PARAMS) */
   application: ['id', 'name', 'profile', 'port', 'peer', 'broker', 'client_id', 'publish', 'subscribe', 'qos', 'interval', 'count', 'start', 'payload_size', 'request_size', 'response_size', 'response_delay', 'timeout', 'retries', 'ip_version', 'keepalive', 'retry_interval', 'bind', 'description'],
   inspection: ['block'],

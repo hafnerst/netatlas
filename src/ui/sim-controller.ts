@@ -147,7 +147,7 @@ export type MenuItem = { label: string; act: () => void };
 
 /** The tables of a device the simulation panel can show (the status side's tabs). */
 type DevTable = Exclude<TableKind, 'packet'>;
-const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6' };
+const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6', ptp: 'PTP', ntp: 'NTP' };
 
 /** An interval in seconds as the form has it: "1 s", "0.25 s". */
 function secText(sec: number): string {
@@ -715,7 +715,8 @@ export class SimController implements SimulationMode {
     const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const marks = this.querierMarks();
     const snoops = this.snoopBadges();
-    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
+    const ptps = this.ptpMarks();
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(ptps).map(([d, m]) => d + '=' + m.text + m.state).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
@@ -777,6 +778,48 @@ export class SimController implements SimulationMode {
       led.setAttribute('cx', (at.x + 9).toFixed(1));
       led.setAttribute('cy', (at.y + H / 2).toFixed(1));
       tx.setAttribute('x', (at.x + 16).toFixed(1));
+      tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
+      s.setAttribute('data-edge', at.edge);
+    }
+    // each PTP clock's role (★ the grandmaster), beside its status: the same compact mark as a querier's
+    for (const [dev, m] of ptps) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const s = doc.createElementNS(NS, 'g');
+      s.setAttribute('class', 'sim-ptp');
+      s.setAttribute('data-device', dev);
+      s.setAttribute('data-state', m.state);
+      s.setAttribute('role', 'img');
+      s.setAttribute('aria-label', m.detail);
+      const t = doc.createElementNS(NS, 'title');
+      t.textContent = m.detail;
+      const r = doc.createElementNS(NS, 'rect');
+      const tx = doc.createElementNS(NS, 'text');
+      tx.textContent = (m.state === 'grandmaster' ? '★ ' : m.state === 'synchronized' ? '✓ ' : m.state === 'holdover' || m.state === 'unsynchronized' ? '✕ ' : '') + m.text;
+      s.appendChild(t);
+      s.appendChild(r);
+      s.appendChild(tx);
+      g.appendChild(s);
+      let tw = (tx.textContent || '').length * 5.4;
+      try {
+        tw = (tx as SVGTextContentElement).getComputedTextLength() || tw;
+      } catch (e) {
+        /* not laid out: the estimate */
+      }
+      const w = Math.ceil(tw + 12);
+      const at = place.find(b, w, H);
+      r.setAttribute('x', at.x.toFixed(1));
+      r.setAttribute('y', at.y.toFixed(1));
+      r.setAttribute('width', String(w));
+      r.setAttribute('height', String(H));
+      r.setAttribute('rx', '3');
+      tx.setAttribute('x', (at.x + 6).toFixed(1));
       tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
       s.setAttribute('data-edge', at.edge);
     }
@@ -897,6 +940,16 @@ export class SimController implements SimulationMode {
    * candidate down, snooping only — and whether the VLAN has a querier), by
    * device; switches with snooping enabled nowhere have none.
    */
+  /** Each PTP clock's role now (the clocks' own view, never the configuration's): grandmaster, synchronized, acquiring, holdover … */
+  ptpMarks(): Map<string, { text: string; state: string; detail: string }> {
+    const out = new Map<string, { text: string; state: string; detail: string }>();
+    for (const dev of Array.from(this.sim.ptp.clocks.keys()).sort()) {
+      const m = this.sim.ptp.mark(dev);
+      if (m) out.set(dev, m);
+    }
+    return out;
+  }
+
   snoopBadges(): Map<string, SnoopRole[]> {
     const out = new Map<string, SnoopRole[]>();
     for (const id of Array.from(this.sim.engine.net.devices.keys()).sort()) {
@@ -1286,6 +1339,8 @@ export class SimController implements SimulationMode {
     if (this.sim.mqtt.brokers.has(dev)) out.push('mqtt');
     if (this.sim.mqtt.clients.some((c) => c.run.dev === dev)) out.push('mqttc');
     if (this.sim.ipv6.hasTable(dev)) out.push('ipv6');
+    if (this.sim.ptp.clocks.has(dev)) out.push('ptp');
+    if (this.sim.ntp.has(dev)) out.push('ntp');
     return out;
   }
 
@@ -1336,6 +1391,8 @@ export class SimController implements SimulationMode {
     if (kind === 'mqtt') return () => this.sim.mqttBrokerTable(dev);
     if (kind === 'mqttc') return () => this.sim.mqttClientTable(dev);
     if (kind === 'ipv6') return () => this.sim.ipv6.table(dev);
+    if (kind === 'ptp') return () => this.sim.ptp.table(dev);
+    if (kind === 'ntp') return () => this.sim.ntp.table(dev);
     if (kind === 'arp') return () => ({ v4: this.sim.arpTable(dev), v6: this.sim.ndTable(dev), timers: this.sim.arpTimers(dev), scale: this.sim.timerScale });
     if (kind === 'mac') return () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale });
     if (kind === 'conn') return () => ({ rows: this.sim.connTable(dev), listening: this.sim.transport.listening(dev).text });
@@ -1483,13 +1540,13 @@ export class SimController implements SimulationMode {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       const tabs = this.deviceTables(dev);
-      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone', mqtt: 'Show MQTT sessions', mqttc: 'Show MQTT clients', ipv6: 'Show IPv6 configuration' };
+      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone', mqtt: 'Show MQTT sessions', mqttc: 'Show MQTT clients', ipv6: 'Show IPv6 configuration', ptp: 'Show PTP clock', ntp: 'Show NTP status' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
       // multicast: a host's memberships, a router's IGMP / MLD groups and multicast routes, a switch's snooping table
       for (const k of ['members', 'igmp', 'querier', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
-      for (const k of ['ipv6', 'dhcp', 'dnszone', 'dnscache', 'mqtt', 'mqttc'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      for (const k of ['ipv6', 'dhcp', 'dnszone', 'dnscache', 'mqtt', 'mqttc', 'ptp', 'ntp'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
       else items.push({ label: 'Use as sender', act: () => void this.setSender(dev, true) });
       const sdv = this.sim.engine.net.devices.get(dev);

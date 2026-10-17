@@ -1193,6 +1193,7 @@ boundary.
 | Hypervisor | `hypervisor` | HV |  | Server |  |
 | Container engine | `container_engine` | CTR |  | Server, Virtual machine |  |
 | Storage service | `storage` | STOR |  | Storage, Server, Virtual machine |  |
+| PTP | `ptp` | PTP |  | Endpoint, Server, Storage, System, Switch, Router, Firewall | only a System that is a host or a forwarder keeps a PTP clock |
 | MQTT broker | `mqtt_broker` | MQTT |  | Server, Virtual machine, Container, System | only a System whose purpose is Host runs services |
 | Applications | `applications` | APP |  | Server, Virtual machine, Container, Storage, System, Endpoint | only a System whose purpose is Host runs services |
 | Inspection | `inspection` | IPS | IDS/IPS |  |  |

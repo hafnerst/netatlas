@@ -21,6 +21,7 @@ import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader,
 import { isVm } from '../model/virtual';
 import { readServiceBlock, checkServices, ServiceNodes } from './services';
 import { AppNodes, checkApplications } from './applications';
+import { checkPtp } from './ptp';
 import { checkRaPrefixes, readIpv6 } from './ipv6';
 import { ipConfigured } from '../model/ipv6';
 
@@ -1208,6 +1209,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // the services' references, the Wi-Fi networks against the uplinks, the wireless connections, the controllers
   checkServices(c, model, svcBlocks, linkNodes);
   checkApplications(c, model, svcBlocks.map((b) => b.apps).filter((x): x is AppNodes => !!x));
+  checkPtp(c, model, svcBlocks);
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
     assocs.forEach((a, j) => {
