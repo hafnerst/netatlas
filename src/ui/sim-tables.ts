@@ -14,7 +14,7 @@
 import { ArpRow, ConnRow, GridTable, Headers, MacRow, McDecision, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
 
-export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone';
+export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone' | 'mqtt' | 'mqttc';
 
 export interface ConnData {
   rows: ConnRow[];
@@ -39,7 +39,7 @@ export interface PacketData {
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
 
-const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients' };
 
 export interface ArpData {
   v4: ArpRow[];
@@ -270,7 +270,7 @@ export class TablePanels {
       this.announce(p, n);
       return;
     }
-    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone') {
+    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone' || p.kind === 'mqtt' || p.kind === 'mqttc') {
       this.announce(p, this.gridPanel(p));
       return;
     }
@@ -456,6 +456,7 @@ export class TablePanels {
       }
       layer(`Layer 4 – ${l4.proto === 'icmp' ? (h.l3.length && h.l3[h.l3.length - 1].version === 6 ? 'ICMPv6' : 'ICMP') : l4.proto === 'other' ? 'protocol' : l4.proto.toUpperCase()}`, rows);
     }
+    if (h.app) layer(h.app.title, h.app.rows);
     layer('Payload', [['Carries', h.payload]]);
     // why it was sent then: what caused it, what it waited for
     const why: Array<[string, string]> = [['Caused by', h.causedBy || 'its own timer or start (nothing it answers)']];

@@ -1614,6 +1614,8 @@ export class Engine {
     };
     if (frame.arp) h.arp = { op: frame.arp.gratuitous ? 'request (gratuitous)' : frame.arp.op, senderMac: frame.arp.sha, senderIp: formatAddr(frame.arp.spa), targetMac: frame.arp.tha, targetIp: formatAddr(frame.arp.tpa) };
     if (inner && inner.l4) h.l4 = inner.l4;
+    const ins = frame.msg.data ? (frame.msg.data as { inspect?: Headers['app'] }).inspect : undefined;
+    if (ins) h.app = ins;
     return h;
   }
 

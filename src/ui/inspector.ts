@@ -2584,7 +2584,18 @@ export class Editor {
       card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-block', 'data-p': J(p), 'data-what': def.label + ' configuration' }, [`+ Configure ${def.label}`])]));
       return card;
     }
-    for (const prm of def.params) card.appendChild(this.svcParamField(p, prm, order, devIndex));
+    for (const prm of def.params.filter((x) => !x.advanced)) card.appendChild(this.svcParamField(p, prm, order, devIndex));
+    // what is seldom changed (modelling defaults, timers): collapsed until opened, open while one of them has an error
+    const adv = def.params.filter((x) => x.advanced && (!x.when || x.when(this.valuesAt(p))));
+    if (adv.length) {
+      const ap = p.concat('#advanced');
+      const set = adv.filter((x) => doc.get(p.concat(x.key)) !== undefined).length;
+      const box = this.e('details', { class: 'adv-section', 'data-card': J(ap) });
+      if (this.open.has(J(ap)) || adv.some((x) => doc.issuesAt(p.concat(x.key)).some((i) => i.severity === 'error'))) box.setAttribute('open', '');
+      box.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+      for (const prm of adv) box.appendChild(this.svcParamField(p, prm, order, devIndex));
+      card.appendChild(box);
+    }
     for (const l of def.lists || []) {
       const lp = p.concat(l.key);
       const ln = doc.get(lp);

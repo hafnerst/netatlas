@@ -170,13 +170,81 @@ interface Conn {
   front?: Conn;
   /** the bytes received */
   got: number;
-  /** what was sent and not yet acknowledged (for retransmission) */
-  unacked: Array<{ flags: string[]; bytes: number; what: string }>;
+  /** what was sent and not yet acknowledged (for retransmission): an application's message on its last segment */
+  unacked: Array<{ flags: string[]; bytes: number; what: string; app?: AppMessage; id?: number }>;
   keep: boolean;
   /** keepalive probes sent without an answer */
   probes: number;
   /** a server: the request's arrival (answered after the service response time) */
   answered?: boolean;
+  /** an application's own connection (MQTT): its socket, which gets the messages instead of the request / answer logic */
+  sock?: AppSocket;
+}
+
+/** A message an application sends over its connection (an MQTT packet): what is drawn and logged, its size. */
+export interface AppMessage {
+  /** the protocol it is drawn and filtered as ("mqtt") */
+  protocol: string;
+  /** "MQTT PUBLISH" */
+  type: string;
+  /** the short label of its dot ("MQTT PUBLISH") */
+  label: string;
+  /** the log's and the packet inspector's line */
+  detail: string;
+  /** its size on the wire (the application's bytes, without TCP / IP) */
+  bytes: number;
+  data: { [k: string]: unknown };
+}
+
+/** What an application's connection tells it. */
+export interface AppSocketHandlers {
+  /** a client's connection is established */
+  open?(s: AppSocket): void;
+  /** a listener accepted a connection (established) */
+  accept?(s: AppSocket): void;
+  /** a whole message arrived (its last segment) */
+  message(s: AppSocket, m: AppMessage): void;
+  /** the connection is gone: closed by the peer (FIN), reset, refused, timed out, closed here, the device powered off */
+  closed(s: AppSocket, why: string): void;
+}
+
+/** An application's end of a TCP connection (transport.ts keeps the connection itself: handshake, retransmission, close). */
+export class AppSocket {
+  closedWhy: string | null = null;
+  /** the messages it delivered (a retransmitted segment is not delivered twice) */
+  readonly seen = new Set<number>();
+  seq = 0;
+  constructor(
+    private T: Transport,
+    readonly c: Conn,
+    readonly h: AppSocketHandlers,
+  ) {}
+  get dev(): string {
+    return this.c.dev;
+  }
+  get local(): IpAddr {
+    return this.c.local;
+  }
+  get remote(): IpAddr {
+    return this.c.remote;
+  }
+  get lport(): number {
+    return this.c.lport;
+  }
+  get rport(): number {
+    return this.c.rport;
+  }
+  /** established and not closed */
+  get open(): boolean {
+    return this.closedWhy === null && this.c.state === 'ESTABLISHED';
+  }
+  send(m: AppMessage): boolean {
+    return this.T.appSend(this, m);
+  }
+  /** close it (FIN): the peer learns of it; this end is told at once */
+  close(why: string): void {
+    this.T.appClose(this, why);
+  }
 }
 
 interface FwSession {
@@ -251,6 +319,10 @@ export class Transport {
     P.handlers.set('tcp', (dev, l3, _msg, pkt) => {
       if (pkt && l3) this.tcpIn(dev, l3, pkt);
     });
+    // an application's messages over TCP (MQTT) are TCP segments drawn as their protocol
+    P.handlers.set('mqtt', (dev, l3, _msg, pkt) => {
+      if (pkt && l3 && pkt.l4 && pkt.l4.proto === 'tcp') this.tcpIn(dev, l3, pkt);
+    });
     P.handlers.set('udp', (dev, l3, _msg, pkt) => {
       if (pkt && l3) this.udpIn(dev, l3, pkt);
     });
@@ -260,7 +332,9 @@ export class Transport {
     P.sweepHooks.push(() => this.sweep());
     P.deviceHooks.push((dev, up) => {
       if (up) return;
-      // powered off: its connections and sessions are gone
+      // powered off: its connections and sessions are gone (its applications' sockets are told so)
+      const mine = this.conns.get(dev);
+      if (mine) for (const c of Array.from(mine.values())) if (c.sock) this.sockClosed(c.sock, `${dev} was powered off`);
       this.conns.delete(dev);
       this.fw.delete(dev);
       this.pmtu.delete(dev);
@@ -496,7 +570,7 @@ export class Transport {
     pkt.len = len;
     pkt.df = df;
     pkt.flow = `${formatAddr(src)}:${l4.sport || l4.echoId || 0}>${formatAddr(dst)}:${l4.dport || 0}/${l4.proto}`;
-    this.e.note('message', l4.proto, dev, peer, m.type, '', m.detail, this.e.now, m);
+    this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
     // a group goes out of the interface it is sent from (a host sends it on its own segment)
     const out = isMulticastIp(dst) ? this.sourceFor(dev, dst) : null;
     this.e.send(dev, pkt, out && out.l3 ? out.l3 : undefined);
@@ -921,6 +995,124 @@ export class Transport {
     c.since = this.e.now;
   }
 
+  // ------------------------------------------------------------ applications' own connections (MQTT)
+
+  /** the listeners of the applications' own protocols, by "device|port" */
+  private appListening = new Map<string, { h: AppSocketHandlers; what: string }>();
+
+  /** An application listens on a TCP port of its device (an MQTT broker): each connection gets a socket. */
+  appListen(dev: string, port: number, what: string, h: AppSocketHandlers): void {
+    this.appListening.set(dev + '|' + port, { h, what });
+  }
+
+  /**
+   * An application opens a connection (an MQTT client to its broker): SYN with its retransmissions;
+   * `open` when it is established, `closed` when it is refused or times out. A text when it can't send.
+   */
+  appConnect(dev: string, dst: IpAddr, port: number, what: string, h: AppSocketHandlers): AppSocket | string {
+    const s = this.sourceFor(dev, dst);
+    if (!s) return `${dev} has no IPv${dst.version} address to connect from`;
+    const lport = this.ephemeral(dev);
+    const c: Conn = { key: this.connKey(s.src, lport, dst, port), dev, proto: 'tcp', local: s.src, lport, remote: dst, rport: port, vrf: s.vrf, state: 'SYN_SENT', role: 'client', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what, got: 0, unacked: [], keep: false, probes: 0 };
+    const sock = new AppSocket(this, c, h);
+    c.sock = sock;
+    this.addConn(c);
+    this.sendSyn(c);
+    return sock;
+  }
+
+  /** Send an application's message over its connection (segments by the path MTU, retransmitted until acknowledged). */
+  appSend(sock: AppSocket, m: AppMessage): boolean {
+    const c = sock.c;
+    if (!sock.open) return false;
+    const id = ++sock.seq;
+    const mss = this.mss(c);
+    const parts: Array<{ flags: string[]; bytes: number; what: string; app?: AppMessage; id?: number }> = [];
+    for (let left = Math.max(1, m.bytes); left > 0; left -= mss) parts.push({ flags: left <= mss ? ['PSH', 'ACK'] : ['ACK'], bytes: Math.min(mss, left), what: m.detail, app: left <= mss ? m : undefined, id: left <= mss ? id : undefined });
+    const fresh = !c.unacked.length;
+    for (const p of parts) c.unacked.push(p);
+    parts.forEach((p, i) => this.appSegment(c, p, i, parts.length));
+    if (fresh) {
+      c.tries = 0;
+      this.armRetransmit(c);
+    }
+    return true;
+  }
+
+  /** One segment of an application's message: drawn as the message (its protocol, type and label), its last one carrying it. */
+  private appSegment(c: Conn, p: { flags: string[]; bytes: number; what: string; app?: AppMessage; id?: number }, i: number, n: number): void {
+    const m = p.app;
+    const proto = m ? m.protocol : 'tcp';
+    const label = m ? m.label + (c.tries ? ' (TCP retransmission)' : '') : `TCP data → ${formatAddr(c.remote)}:${c.rport}`;
+    const detail = `${m ? m.detail : p.what}${n > 1 ? ` (segment ${i + 1} of ${n})` : ''} — TCP ${formatAddr(c.local)}:${c.lport} → ${formatAddr(c.remote)}:${c.rport} [${p.flags.join(',')}] ${p.bytes} bytes${c.tries ? `, retransmission ${c.tries}` : ''}`;
+    const msg: Msg = { protocol: proto as Msg['protocol'], type: m ? m.type : 'TCP data', label, detail, data: { from: '', ...(m ? m.data : {}), appMsg: p.id, appType: m ? m.type : undefined } };
+    const seq = c.got + 1000;
+    const l4: L4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: p.flags, seq, ack: seq + 1 };
+    this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + p.bytes, true, this.e.ownerOf(c.remote) || '');
+    if (m && i === n - 1) (m as { sent?: number }).sent = this.e.now;
+  }
+
+  /** The retransmission timer of an application's connection: what is unacknowledged goes again, doubling, until the retries are spent. */
+  private armRetransmit(c: Conn): void {
+    const g = ++c.gen;
+    const wait = this.rto(c);
+    c.timer = this.e.now + wait;
+    this.later(wait, () => {
+      if (c.gen !== g || !c.unacked.length || !c.sock || !c.sock.open) return;
+      if (c.tries >= DATA_RETRIES) {
+        this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
+        return;
+      }
+      c.tries++;
+      const n = c.unacked.length;
+      c.unacked.forEach((p, i) => this.appSegment(c, p, i, n));
+      this.armRetransmit(c);
+    });
+  }
+
+  /** A segment of an application's connection arrived: acknowledged; a whole message goes to its socket. */
+  private sockData(c: Conn, pkt: Pkt, bytes: number): void {
+    const l4 = pkt.l4 as L4;
+    const flags = l4.flags || [];
+    // (cumulative: what this end sent is acknowledged by what comes back)
+    if (flags.indexOf('ACK') >= 0 && c.unacked.length) {
+      c.unacked = [];
+      c.tries = 0;
+      c.gen++;
+      c.timer = null;
+    }
+    if (bytes <= 0) return;
+    c.got += bytes;
+    this.segment(c.dev, c, ['ACK'], 0, `acknowledges ${bytes} bytes`, undefined, c);
+    const d = (pkt.msg.data || {}) as { appMsg?: number };
+    const sock = c.sock as AppSocket;
+    if (flags.indexOf('PSH') < 0 || d.appMsg === undefined || sock.seen.has(d.appMsg)) return;
+    sock.seen.add(d.appMsg);
+    const m: AppMessage = { protocol: pkt.msg.protocol, type: pkt.msg.type, label: pkt.msg.label, detail: pkt.msg.detail, bytes, data: pkt.msg.data || {} };
+    sock.h.message(sock, m);
+  }
+
+  /** Close an application's connection from its end (FIN); it is told at once. */
+  appClose(sock: AppSocket, why: string): void {
+    const c = sock.c;
+    this.sockClosed(sock, why);
+    if (c.state === 'ESTABLISHED') {
+      this.setState(c, 'FIN_WAIT_1');
+      this.segment(c.dev, c, ['FIN', 'ACK'], 0, `closes the connection (${why})`, undefined, c);
+      const g = ++c.gen;
+      this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
+        if (c.gen === g && c.state === 'FIN_WAIT_1') this.closeConn(c, 'closed (no answer to the FIN)');
+      });
+    } else if (c.state === 'SYN_SENT' || c.state === 'SYN_RCVD') this.closeConn(c, why);
+  }
+
+  /** Tell a socket its connection is gone (once). */
+  private sockClosed(sock: AppSocket, why: string): void {
+    if (sock.closedWhy !== null) return;
+    sock.closedWhy = why;
+    sock.h.closed(sock, why);
+  }
+
   /** Open a connection for a test: SYN, retransmitted with backoff until answered or the SYN retries are spent. */
   private connect(t: Test, src: IpAddr, vrf: string): void {
     const lport = this.ephemeral(t.from);
@@ -999,6 +1191,7 @@ export class Transport {
   }
 
   private closeConn(c: Conn, why: string): void {
+    if (c.sock) this.sockClosed(c.sock, why);
     const m = this.conns.get(c.dev);
     if (m && m.get(c.key) === c) m.delete(c.key);
     c.gen++;
@@ -1027,6 +1220,11 @@ export class Transport {
           return;
         }
         const sc: Conn = { key: this.connKey(pkt.dst, l4.dport as number, pkt.src, l4.sport as number), dev, proto: 'tcp', local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, vrf: pkt.vrf, state: 'SYN_RCVD', role: 'server', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what: `serves ${formatAddr(pkt.src)}`, got: 0, unacked: [], keep: false, probes: 0 };
+        const lh = this.appListening.get(dev + '|' + (l4.dport as number));
+        if (lh) {
+          sc.sock = new AppSocket(this, sc, lh.h);
+          sc.what = `${lh.what}: a client at ${formatAddr(pkt.src)}`;
+        }
         this.addConn(sc);
         this.segment(dev, sc, ['SYN', 'ACK'], 0, 'accepts the connection', undefined, sc);
         this.idle(sc);
@@ -1041,6 +1239,7 @@ export class Transport {
     c.probes = 0;
     if (has('RST')) {
       const was = c.state;
+      if (c.sock) this.sockClosed(c.sock, was === 'SYN_SENT' ? `connection refused: RST from ${formatAddr(pkt.src)}` : `connection reset by ${formatAddr(pkt.src)}`);
       this.closeConn(c, was === 'SYN_SENT' ? `connection refused (RST from ${formatAddr(pkt.src)})` : `reset by ${formatAddr(pkt.src)}`);
       if (c.test) this.finish(c.test, false, was === 'SYN_SENT' ? `connection refused: RST from ${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}` : 'connection reset');
       if (c.front) this.upstreamFailed(c, 'the server reset the connection');
@@ -1061,6 +1260,10 @@ export class Transport {
         return;
       }
       this.segment(dev, c, ['ACK'], 0, 'the connection is open', undefined, c);
+      if (c.sock) {
+        if (c.sock.h.open) c.sock.h.open(c.sock);
+        return;
+      }
       if (t && t.keep && t.source === 'manual') {
         this.finish(t, true, `connected; kept open (keepalive after ${resolvedText(this.e.params.get('tcp-keepalive', dev))})`);
         this.idle(c);
@@ -1073,11 +1276,17 @@ export class Transport {
       if (!has('ACK') || has('SYN')) return;
       this.setState(c, 'ESTABLISHED');
       this.idle(c);
+      if (c.sock && c.sock.h.accept) c.sock.h.accept(c.sock);
     }
     switch (c.state) {
       case 'ESTABLISHED':
+        if (c.sock && !has('FIN')) {
+          this.sockData(c, pkt, bytes);
+          return;
+        }
         if (has('FIN')) {
           // the peer closes: acknowledge and close our side (FIN and ACK in one segment)
+          if (c.sock) this.sockClosed(c.sock, `closed by ${formatAddr(pkt.src)} (FIN)`);
           this.setState(c, 'LAST_ACK');
           this.segment(dev, c, ['FIN', 'ACK'], 0, 'closes its side as well', undefined, c);
           const g = ++c.gen;

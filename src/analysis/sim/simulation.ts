@@ -7,6 +7,7 @@
  */
 import { CUSTOM_SUPPORT, SimGroup, simProfile } from '../../model/sim-profiles';
 import type { Support } from '../../model/support';
+import { serviceDef } from '../../model/service-registry';
 import { Model } from '../../model/types';
 import { capabilities } from '../../model/capabilities';
 import { snoopingChoice, switchedVlans } from '../../model/snooping';
@@ -23,6 +24,7 @@ import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
 import { AppSim } from './apps';
+import { MqttSim } from './mqtt';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
@@ -58,6 +60,7 @@ const ENTRY_SUPPORT: { [id: string]: Support } = {
 /** The support of an entry of the setup's list: its profile's, else the traffic's (custom: drawn only). */
 function entrySupport(id: string): Support {
   if (ENTRY_SUPPORT[id]) return ENTRY_SUPPORT[id];
+  if (id === 'mqtt') return (serviceDef('mqtt_broker') as { support: Support }).support;
   const p = simProfile(id);
   return p && p.support ? p.support : CUSTOM_SUPPORT;
 }
@@ -186,6 +189,8 @@ export class Simulation {
   readonly realtime: RealTimeScheduler;
   /** the applications: listeners answer, clients run when started (apps.ts) */
   readonly apps: AppSim;
+  /** MQTT: the brokers and their clients (mqtt.ts) */
+  readonly mqtt: MqttSim;
 
   constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
@@ -211,6 +216,8 @@ export class Simulation {
     this.transport.install();
     this.apps = new AppSim(this.protocols, this.transport);
     this.apps.realtime = this.realtime;
+    this.mqtt = new MqttSim(this.protocols, this.transport, this.apps);
+    this.mqtt.realtime = this.realtime;
     this.protocols.start();
   }
 
@@ -446,6 +453,10 @@ export class Simulation {
       shut: (d, i) => this.engine.isShut(d, i),
       rtPaused: !this.realtime.running,
       deviceOn: (d) => this.engine.deviceOn(d),
+      appView: (a) => {
+        const c = a.app ? this.mqtt.clientOf(a.app) : undefined;
+        return c ? this.mqtt.view(a, c, !this.realtime.running) : null;
+      },
       flapCycles: this.engine.params.num('flap-cycles'),
       flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,
     };
@@ -503,6 +514,16 @@ export class Simulation {
     if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, error: r });
     this.engine.stateVersion++;
     return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, app: r });
+  }
+
+  /** An MQTT broker's sessions (Show MQTT sessions). */
+  mqttBrokerTable(dev: string): GridTable {
+    return this.mqtt.brokerTable(dev);
+  }
+
+  /** A device's MQTT clients (Show MQTT clients). */
+  mqttClientTable(dev: string): GridTable {
+    return this.mqtt.clientTable(dev);
   }
 
   /** What stops a device's application from being started now (Start application's checks), or null. */
@@ -1206,6 +1227,10 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   for (const d of model.devices) {
     if (!ifs(d).some((i) => i.addresses.length || i.dhcp)) continue;
     for (const [id, label] of [['icmp', 'ICMP / ICMPv6'], ['tcp', 'TCP (tests)'], ['udp', 'UDP (tests)']]) add(id, label, 'Traffic', 'device', d.id);
+  }
+  // MQTT: its brokers and clients
+  for (const d of model.devices) {
+    if ((d.appServices && d.appServices.has('mqtt_broker')) || (d.applications || []).some((a) => a.profile === 'mqtt_client')) add('mqtt', 'MQTT', 'Services', 'device', d.id);
   }
   // DHCP: its servers and clients; DNS: its servers (and the hosts that ask them)
   for (const d of model.devices) {

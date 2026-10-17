@@ -165,9 +165,15 @@ export class AppSim {
     return null;
   }
 
-  /** An MQTT client's start, by mqtt.ts (it keeps a session, not a series of tests). */
+  /** An MQTT client's start and stop, by mqtt.ts (it keeps a session, not a series of tests). */
   mqttProblem: ((dev: string, a: AppInstance) => string | null) | null = null;
   mqttStart: ((dev: string, a: AppInstance, how: 'event' | 'start') => AppRun | string) | null = null;
+  mqttStop: ((run: AppRun) => boolean) | null = null;
+
+  /** The id of a new run (an MQTT client's too). */
+  nextId(): number {
+    return ++this.seq;
+  }
 
   /** Start a client application: its first message now, then one every interval (its count, or until stopped). */
   start(dev: string, id: string, how: 'event' | 'start'): AppRun | string {
@@ -179,7 +185,7 @@ export class AppSim {
     const peer = this.peerNow(dev, a);
     const interval = a.interval || 0;
     const count = interval ? (a.count !== undefined ? a.count : null) : 1;
-    const run: AppRun = { id: ++this.seq, dev, app: a, how, target: typeof peer === 'string' ? a.peer || '?' : peer.target, t0: this.e.now, count, interval, sent: 0, tests: [], retried: 0, skipped: [], stopped: false };
+    const run: AppRun = { id: this.nextId(), dev, app: a, how, target: typeof peer === 'string' ? a.peer || '?' : peer.target, t0: this.e.now, count, interval, sent: 0, tests: [], retried: 0, skipped: [], stopped: false };
     this.runs.push(run);
     if (this.runs.length > 200) this.runs.splice(0, this.runs.length - 200);
     const fire = (n: number): void => {
@@ -210,8 +216,9 @@ export class AppSim {
     run.rt = undefined;
   }
 
-  /** Stop a run: no more messages (those on their way finish). */
+  /** Stop a run: no more messages (those on their way finish); an MQTT client unsubscribes and disconnects. */
   stop(run: AppRun): boolean {
+    if (run.app.profile === 'mqtt_client') return !!this.mqttStop && this.mqttStop(run);
     if (run.stopped || !this.pending(run)) return false;
     run.stopped = true;
     run.stoppedAt = this.e.now;

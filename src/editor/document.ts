@@ -675,6 +675,7 @@ export class ModelDoc {
         wireless_controller: 'wireless_controller',
         storage: 'storage',
         'applications/#': 'application',
+        mqtt_broker: 'mqtt_broker',
         inspection: 'inspection',
         'separation/domains/#': 'sepDomain',
         'separation/directions/#': 'sepDirection',

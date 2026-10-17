@@ -316,6 +316,19 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     ],
   },
   {
+    id: 'mqtt_broker',
+    label: 'MQTT broker',
+    badge: 'MQTT',
+    help: 'Takes its clients’ publications and passes each to the subscribers whose filters match (MQTT 3.1.1).',
+    support: { level: 'modeled', does: 'CONNECT / CONNACK (a second client with the same identifier takes over), SUBSCRIBE with + and # filters, the fan-out of each PUBLISH to the matching subscribers (QoS 0, QoS 1 with PUBACK and DUP retries), UNSUBSCRIBE, PINGREQ and the keep alive (1.5 ×), DISCONNECT; its sessions, subscriptions and counters.', not: 'QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents.' },
+    types: [...SERVERS, 'system'],
+    needs: systemHost,
+    params: [
+      { key: 'port', label: 'Listener port', type: 'port', ...PORT, help: 'The TCP port its clients connect to (1883, the IANA port without TLS, if empty).', placeholder: '1883' },
+      { key: 'retry_interval', label: 'QoS 1 retry interval', type: 'duration', advanced: true, help: 'A QoS 1 delivery without PUBACK is sent again (DUP) after this, within the connection (a modelling default of 20 s if empty).', placeholder: '20s' },
+    ],
+  },
+  {
     id: 'applications',
     label: 'Applications',
     badge: 'APP',

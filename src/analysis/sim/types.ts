@@ -221,6 +221,8 @@ export interface Headers {
   l4?: L4;
   /** what it carries ("OSPF Hello", "Echo request, 56 bytes", the quoted header of an ICMP error) */
   payload: string;
+  /** an application protocol's fields as the packet inspector lists them (MQTT, PTP, DHCPv6, router discovery) */
+  app?: { title: string; rows: Array<[string, string]> };
   /** why it was sent then: what caused it, and what it waited for */
   causedBy?: string;
   waited?: string[];
