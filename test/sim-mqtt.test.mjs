@@ -5,7 +5,7 @@
 // counts; no IGMP state. Injected clocks, no sleeps.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, withClock, errorsOf, validate } from './helpers.mjs';
+import { load, model, withClock, errorsOf, validate, example } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 
@@ -257,4 +257,15 @@ links:
   const fc = f.mqtt.clients[0];
   assert.notEqual(fc.state, 'Connected');
   assert.ok(f.events().some((e) => e.kind === 'drop' && e.device === 'fw'), 'dropped by the firewall’s policy');
+});
+
+test('ot-network.yaml: the PLC publishes telemetry; the HMI subscribed to the temperatures gets them, the alarm log nothing; the HMI polls the PLC', () => {
+  const s = withClock(new S.Simulation(model(example('ot-network.yaml'))));
+  s.runTo(5000);
+  for (const [d, a] of [['plc', 'telemetry'], ['hmi', 'dashboard'], ['eng-ws', 'alarms'], ['hmi', 'poll']]) s.actApp(d, a);
+  s.play(20000);
+  const hmi = s.mqttClientTable('hmi').rows[0];
+  assert.match(hmi[5], /^plant\/cell1\/plc-1\/temperature: \d+$/, 'only the temperature reaches the dashboard');
+  assert.equal(s.mqttClientTable('eng-ws').rows[0][5], '—', 'nothing matches plant/cell1/+/alarm');
+  assert.ok(s.status().some((x) => x.name === 'hmi/poll → plc/registers tcp/502' && x.state === 'Answered'));
 });

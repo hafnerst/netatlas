@@ -5,7 +5,7 @@
 // interface failure, modelled clock time apart from the scheduler. Injected clocks, no sleeps.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, withClock, errorsOf } from './helpers.mjs';
+import { load, model, withClock, errorsOf, example } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('model/ptp.js');
@@ -256,4 +256,24 @@ test('reset: a new simulation of the same model starts from nothing; timers of a
   const t = sim();
   assert.equal(t.ptp.grandmaster(0), null, 'a fresh start: no grandmaster before the Announces');
   assert.ok(n > 0);
+});
+
+test('timing-ptp.yaml: gm-a is the grandmaster through the transparent and the boundary clock; gm-b takes over while it is off, gm-a wins again', () => {
+  const s = sim(example('timing-ptp.yaml'));
+  const gmOf = (d) => clock(s, d).parent.gm.priority1;
+  settle(s, 60000);
+  assert.equal(clock(s, 'gm-a').state, 'grandmaster');
+  for (const d of ['gm-b', 'rt', 'plc-b', 'drv-b']) {
+    assert.equal(clock(s, d).state, 'synchronized', d);
+    assert.equal(gmOf(d), 100, d);
+  }
+  assert.deepEqual(states(s, 'rt'), ['SLAVE', 'MASTER']);
+  s.powerOff('gm-a');
+  settle(s, 30000);
+  assert.equal(clock(s, 'gm-b').state, 'grandmaster');
+  for (const d of ['rt', 'plc-b', 'drv-b']) assert.equal(gmOf(d), 110, d);
+  s.powerOn('gm-a');
+  settle(s, 60000);
+  assert.equal(clock(s, 'gm-a').state, 'grandmaster');
+  assert.equal(clock(s, 'gm-b').state, 'synchronized');
 });

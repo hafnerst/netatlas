@@ -4,7 +4,7 @@
 // and expiry, several routers, dual stack, reset on interface failure. Injected clocks, no sleeps.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, withClock, errorsOf } from './helpers.mjs';
+import { load, model, withClock, errorsOf, example } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 
@@ -235,4 +235,11 @@ test('an application over IPv6 uses the SLAAC address; before it exists the mess
   const late = s.actApp('pc', 'get');
   settle(s, 5000);
   assert.equal(s.actions().find((v) => v.id === late.id).summary, '1 answered');
+});
+
+test('private-house.yaml: Internal is dual-stack: the laptop and the phone form SLAAC addresses in fd00:10::/64 beside their IPv4 leases', () => {
+  const s = withClock(new S.Simulation(model(example('private-house.yaml'))));
+  s.runTo(20000);
+  for (const d of ['laptop', 'phone']) assert.match(s.ipv6.status(d, 'wlan0'), /^fd00:10:[0-9a-f:]+ \(SLAAC\)$/, d);
+  assert.ok(s.status().some((x) => x.name === 'laptop → nas.home.arpa tcp/445' && x.state === 'Answered'));
 });
