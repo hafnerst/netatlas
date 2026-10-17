@@ -241,5 +241,8 @@ test('private-house.yaml: Internal is dual-stack: the laptop and the phone form 
   const s = withClock(new S.Simulation(model(example('private-house.yaml'))));
   s.runTo(20000);
   for (const d of ['laptop', 'phone']) assert.match(s.ipv6.status(d, 'wlan0'), /^fd00:10:[0-9a-f:]+ \(SLAAC\)$/, d);
+  // its SLAAC address (ready before the DHCP lease) releases no IPv4 test: they wait for the lease, then go
+  assert.ok(!s.events().some((e) => e.device === 'laptop' && /has no IPv4 address to send from/.test(e.detail || '')), 'no IPv4 test sent before the lease');
+  assert.ok(s.status().some((x) => x.name === 'laptop → 203.0.113.80 tcp/443' && x.state === 'Answered'));
   assert.ok(s.status().some((x) => x.name === 'laptop → nas.home.arpa tcp/445' && x.state === 'Answered'));
 });

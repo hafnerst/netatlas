@@ -676,7 +676,7 @@ export class Engine {
       return this.relationUp(id) && (!this.protocols || !this.protocols.sessionUp || this.protocols.sessionUp(id));
     }
     if (cond.indexOf('lease:') === 0) {
-      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen)
+      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen); IPv4 traffic's
       const [dev, iface] = cond.slice(6).split(':');
       return iface !== undefined ? this.addressReady(dev, iface) : !this.waitsForLease(dev);
     }
@@ -972,12 +972,17 @@ export class Engine {
     return this.leases.has(dev + ':' + iface);
   }
 
-  /** Is a device waiting for a DHCP lease (a client interface without one, and no address elsewhere)? */
-  waitsForLease(dev: string): string | null {
+  /**
+   * Is a device waiting for a DHCP lease (a client interface without one, and no IPv4 address elsewhere)?
+   * IPv6 traffic (version 6) never waits for one: a lease is IPv4, and an IPv6 address (SLAAC, DHCPv6,
+   * written) is no IPv4 address to send from.
+   */
+  waitsForLease(dev: string, version: 4 | 6 = 4): string | null {
+    if (version === 6) return null;
     const sd = this.net.devices.get(dev);
     if (!sd) return null;
     const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'loopback');
-    if (ls.some((l) => l.addrs.length)) return null;
+    if (ls.some((l) => l.addrs.some((a) => a.addr.version === 4))) return null;
     const c = ls.find((l) => !this.addressReady(dev, l.id));
     return c ? c.id : null;
   }

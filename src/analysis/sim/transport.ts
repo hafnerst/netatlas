@@ -633,7 +633,7 @@ export class Transport {
     if (!this.e.deviceOn(dev)) return `${dev} is powered off`;
     if (o.via !== undefined && !sd.l3.get(o.via)) return `${dev} has no interface ${o.via} with an IP address or DHCP`;
     // (a DHCP client without its lease yet: the test waits for it; a host name: for its answer)
-    const waits = this.leaseWait(dev, o.via);
+    const waits = this.leaseWait(dev, o.via, o.name ? o.qtype === 'AAAA' : o.dst.version === 6);
     const s = o.name || waits ? null : this.sourceFor(dev, o.dst, o.via);
     if (!s && !o.name && !waits) return `${o.via !== undefined ? dev + ':' + o.via : dev} has no IPv${o.dst.version} address to send from`;
     const kind = o.kind;
@@ -685,8 +685,9 @@ export class Transport {
     this.e.withTest(t.source === 'manual' ? t.id : null, () => this.beginNow(t, name));
   }
 
-  /** The DHCP client interface a test from this device (by this interface) waits for, if any. */
-  private leaseWait(dev: string, via?: string): string | null {
+  /** The DHCP client interface a test from this device (by this interface) waits for, if any (IPv6 waits for none: a lease is IPv4). */
+  private leaseWait(dev: string, via?: string, v6 = false): string | null {
+    if (v6) return null;
     if (via === undefined) return this.e.waitsForLease(dev);
     return this.e.addressReady(dev, via) ? null : via;
   }
@@ -721,7 +722,7 @@ export class Transport {
   private beginNow(t: Test, name?: string): void {
     if (t.done) return;
     const dev = t.from;
-    const lease = this.leaseWait(dev, t.via);
+    const lease = this.leaseWait(dev, t.via, name ? t.qtype === 'AAAA' : t.dst.version === 6);
     const what: Msg = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
     if (lease) {
       t.result = `waiting for a DHCP lease on ${dev}:${lease}`;
