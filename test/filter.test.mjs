@@ -18,7 +18,7 @@ const { groupRects } = load('diagram/physical.js');
 const { networkMembers } = load('model/derive.js');
 const { withVirtualNetworks } = load('model/virtual.js');
 
-const net = `netatlas: 1
+const net = `netatlas: 2
 protocols:
   - {id: custom-x, label: Custom X, category: service}
 groups:

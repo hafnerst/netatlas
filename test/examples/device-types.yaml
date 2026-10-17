@@ -4,7 +4,7 @@
 # cloud, router, vpn_gateway, firewall, ids_ips, load_balancer,
 # security_gateway, switch, ap, endpoint, server, vm, container, storage
 # and system.
-netatlas: 1
+netatlas: 2
 title: Campus — all device types
 description: |
   Internet edge with a remote-access VPN gateway, firewall and inline IPS; a

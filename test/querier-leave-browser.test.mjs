@@ -72,7 +72,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
 
       // ------------------------------------------------------------ Leave multicast group
       const order = await page.eval(`Array.from(document.querySelectorAll('#sim-act-net .sim-ne-h .sp-toggle')).map((b) => b.querySelector('span:last-child').textContent)`);
-      assert.deepEqual(order, ['Send network packets', 'Join multicast group', 'Leave multicast group', 'Start multicast stream', 'Interface actions']);
+      assert.deepEqual(order, ['Send network packets', 'Join multicast group', 'Leave multicast group', 'Start multicast stream', 'Interface actions', 'Start application']);
       // in Expand all
       await page.eval(`document.getElementById('sim-ne-expand').click(), true`);
       assert.equal(await page.eval(`document.getElementById('sim-ne-leave').hidden`), false);

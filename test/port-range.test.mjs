@@ -8,7 +8,7 @@ import { load, validate } from './helpers.mjs';
 const { ModelDoc, portRange, portIdFor, MAX_PORT_RANGE } = load('editor/document.js');
 const doc = (text) => ModelDoc.fromText(text, 't.yaml', 'file').doc;
 const names = (plan) => plan.ports.map((p) => p.name);
-const base = `netatlas: 1
+const base = `netatlas: 2
 devices:
   - id: sw1
     interfaces:
@@ -161,7 +161,7 @@ test('creating a range: physical interfaces only, all or nothing, one undo step'
 });
 
 test('a device without interfaces gets its list; the display order is alphabetical, the file order is the order of creation', () => {
-  const d = doc('netatlas: 1\ndevices:\n  - id: sw\n    type: switch\n');
+  const d = doc('netatlas: 2\ndevices:\n  - id: sw\n    type: switch\n');
   assert.ok(d.addPortRange(0, 'ge 1/9', 'ge 1/11').ok);
   assert.ok(d.addPortRange(0, 'ge 1/1', 'ge 1/2').ok);
   assert.deepEqual(d.result.model.devices[0].interfaces.map((i) => i.id), ['ge-1/9', 'ge-1/10', 'ge-1/11', 'ge-1/1', 'ge-1/2']);

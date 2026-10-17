@@ -15,7 +15,7 @@ const sim = (text, opts) => new S.Simulation(model(text), opts);
 const HOUSE = example('private-house.yaml');
 
 /** One LAN with two multicast routers, a switch, two members of 239.2.2.2 (dual stack) and a host that is none. */
-const MC = `netatlas: 1
+const MC = `netatlas: 2
 title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.1/24, "2001:db8:5::1/64"]}]}
@@ -33,7 +33,7 @@ links:
 `;
 
 /** Two switches, h1 (answers broadcast pings) and h2 on 10.0.0.0/24, r1 to h9 on 10.9.0.0/24; directed broadcasts per r1:g0. */
-const LAN = (r = '') => `netatlas: 1
+const LAN = (r = '') => `netatlas: 2
 title: lan
 devices:
   - {id: sw1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]}
@@ -115,7 +115,7 @@ test('the source and destination labels: each interface "name - address", a DHCP
   assert.equal(src('isp').ok, false);
   assert.equal(src('isp').short, 'Cannot send IP packets');
   assert.match(src('isp').reason, /no IP stack of its own/);
-  assert.deepEqual(src('core').ifaces.map((i) => i.label), ['Vlan10 - 192.168.10.1', 'Vlan110 - 10.0.10.2', 'Vlan120 - 10.0.20.2', 'Vlan130 - 10.0.30.2', 'Vlan20 - 192.168.20.1', 'Vlan30 - 192.168.30.1', 'Vlan99 - 192.168.99.1']);
+  assert.deepEqual(src('core').ifaces.map((i) => i.label), ['Vlan10 - 192.168.10.1, fd00:10::1', 'Vlan110 - 10.0.10.2', 'Vlan120 - 10.0.20.2', 'Vlan130 - 10.0.30.2', 'Vlan20 - 192.168.20.1', 'Vlan30 - 192.168.30.1', 'Vlan99 - 192.168.99.1']);
   // a DHCP client before and after its lease
   assert.deepEqual(src('guest-phone').ifaces.map((i) => [i.label, i.usable, i.ready]), [['wlan0 - No DHCP lease', true, false]]);
   s.runTo(9000);

@@ -4,7 +4,7 @@
 # checks find, each with its check id; click one to go to the object. Every
 # case is marked below with the id of the check that reports it.
 # "checks:" at the end downgrades one check, to show how a model can do that.
-netatlas: 1
+netatlas: 2
 title: Consistency checks demo
 description: |
   One deliberate inconsistency per check: static routes, port VLANs, MTU,
@@ -154,7 +154,7 @@ devices:
   - id: dhcp-pc
     type: endpoint
     interfaces:
-      - {id: eth0, dhcp: true}
+      - {id: eth0, ipv4: dhcp}
   # virtualization: hv-a's uplink ends on sw3:q1, which carries VLAN 10 only (vswitch-uplink-vlan: port group pg20);
   # vm-a1 has an address in the voice network (VLAN 20) on port group pg10 (vnic-network-vlan); vm-a2 can't restart
   # on hv-b, which has no pg20 (ha-restart-portgroup); hv-a's VMs have more vCPUs and memory than it (hypervisor-overcommit);

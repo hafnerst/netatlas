@@ -64,6 +64,8 @@ import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
 import { isContainer } from '../../model/virtual';
 import { profileAt } from '../separation';
+import { appListeners, deviceListeners, serviceListeners } from '../listeners';
+import type { AppInstance } from '../../model/applications';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** RFC 6298 §2.5 allows a maximum of at least 60 s; Linux TCP_RTO_MAX is 120 s. */
@@ -132,6 +134,14 @@ export interface Test {
   /** health check / probe: who to tell */
   onDone?: (t: Test) => void;
   timeout: Resolved | { value: number };
+  /** a one-way datagram (periodic UDP messages): done when it reaches its receiver, nothing answers it */
+  oneWay?: boolean;
+  /** a host name's record type: A (IPv4, the default) or AAAA (IPv6) */
+  qtype?: 'A' | 'AAAA';
+  /** the retry this message is (an application's request sent again after a timeout: 1, 2 …) */
+  retry?: number;
+  /** the application that sent it ("hmi/poll") */
+  app?: string;
 }
 
 /** A TCP connection end, or a UDP / ICMP socket waiting for an answer. */
@@ -160,13 +170,81 @@ interface Conn {
   front?: Conn;
   /** the bytes received */
   got: number;
-  /** what was sent and not yet acknowledged (for retransmission) */
-  unacked: Array<{ flags: string[]; bytes: number; what: string }>;
+  /** what was sent and not yet acknowledged (for retransmission): an application's message on its last segment */
+  unacked: Array<{ flags: string[]; bytes: number; what: string; app?: AppMessage; id?: number }>;
   keep: boolean;
   /** keepalive probes sent without an answer */
   probes: number;
   /** a server: the request's arrival (answered after the service response time) */
   answered?: boolean;
+  /** an application's own connection (MQTT): its socket, which gets the messages instead of the request / answer logic */
+  sock?: AppSocket;
+}
+
+/** A message an application sends over its connection (an MQTT packet): what is drawn and logged, its size. */
+export interface AppMessage {
+  /** the protocol it is drawn and filtered as ("mqtt") */
+  protocol: string;
+  /** "MQTT PUBLISH" */
+  type: string;
+  /** the short label of its dot ("MQTT PUBLISH") */
+  label: string;
+  /** the log's and the packet inspector's line */
+  detail: string;
+  /** its size on the wire (the application's bytes, without TCP / IP) */
+  bytes: number;
+  data: { [k: string]: unknown };
+}
+
+/** What an application's connection tells it. */
+export interface AppSocketHandlers {
+  /** a client's connection is established */
+  open?(s: AppSocket): void;
+  /** a listener accepted a connection (established) */
+  accept?(s: AppSocket): void;
+  /** a whole message arrived (its last segment) */
+  message(s: AppSocket, m: AppMessage): void;
+  /** the connection is gone: closed by the peer (FIN), reset, refused, timed out, closed here, the device powered off */
+  closed(s: AppSocket, why: string): void;
+}
+
+/** An application's end of a TCP connection (transport.ts keeps the connection itself: handshake, retransmission, close). */
+export class AppSocket {
+  closedWhy: string | null = null;
+  /** the messages it delivered (a retransmitted segment is not delivered twice) */
+  readonly seen = new Set<number>();
+  seq = 0;
+  constructor(
+    private T: Transport,
+    readonly c: Conn,
+    readonly h: AppSocketHandlers,
+  ) {}
+  get dev(): string {
+    return this.c.dev;
+  }
+  get local(): IpAddr {
+    return this.c.local;
+  }
+  get remote(): IpAddr {
+    return this.c.remote;
+  }
+  get lport(): number {
+    return this.c.lport;
+  }
+  get rport(): number {
+    return this.c.rport;
+  }
+  /** established and not closed */
+  get open(): boolean {
+    return this.closedWhy === null && this.c.state === 'ESTABLISHED';
+  }
+  send(m: AppMessage): boolean {
+    return this.T.appSend(this, m);
+  }
+  /** close it (FIN): the peer learns of it; this end is told at once */
+  close(why: string): void {
+    this.T.appClose(this, why);
+  }
 }
 
 interface FwSession {
@@ -241,6 +319,10 @@ export class Transport {
     P.handlers.set('tcp', (dev, l3, _msg, pkt) => {
       if (pkt && l3) this.tcpIn(dev, l3, pkt);
     });
+    // an application's messages over TCP (MQTT) are TCP segments drawn as their protocol
+    P.handlers.set('mqtt', (dev, l3, _msg, pkt) => {
+      if (pkt && l3 && pkt.l4 && pkt.l4.proto === 'tcp') this.tcpIn(dev, l3, pkt);
+    });
     P.handlers.set('udp', (dev, l3, _msg, pkt) => {
       if (pkt && l3) this.udpIn(dev, l3, pkt);
     });
@@ -250,7 +332,9 @@ export class Transport {
     P.sweepHooks.push(() => this.sweep());
     P.deviceHooks.push((dev, up) => {
       if (up) return;
-      // powered off: its connections and sessions are gone
+      // powered off: its connections and sessions are gone (its applications' sockets are told so)
+      const mine = this.conns.get(dev);
+      if (mine) for (const c of Array.from(mine.values())) if (c.sock) this.sockClosed(c.sock, `${dev} was powered off`);
       this.conns.delete(dev);
       this.fw.delete(dev);
       this.pmtu.delete(dev);
@@ -330,6 +414,24 @@ export class Transport {
     }
     let rules = this.listenCache.get(dev);
     if (!rules) {
+      rules = this.relationRules(dev).slice();
+      // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
+      for (const x of serviceListening(this.P.m.index.devices.get(dev))) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
+      // a container serves the ports it publishes
+      const md = this.P.m.index.devices.get(dev);
+      if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
+      rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
+      this.listenCache.set(dev, rules);
+    }
+    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${isContainer(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+  }
+
+  private relCache = new Map<string, PortRule[]>();
+
+  /** The ports of the relations a device serves (a load balancer: also those it passes requests on to). */
+  private relationRules(dev: string): PortRule[] {
+    let rules = this.relCache.get(dev);
+    if (!rules) {
       rules = [];
       for (const r of this.P.m.relations) {
         const devs = relationDevices(r);
@@ -343,19 +445,66 @@ export class Transport {
         if (!server) continue;
         for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
       }
-      // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
-      for (const x of serviceListening(this.P.m.index.devices.get(dev))) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
-      // a container serves the ports it publishes
-      const md = this.P.m.index.devices.get(dev);
-      if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
-      rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
-      this.listenCache.set(dev, rules);
+      this.relCache.set(dev, rules);
     }
-    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${isContainer(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+    return rules;
   }
 
-  private open(dev: string, proto: 'tcp' | 'udp', port: number): boolean {
-    return portsMatch(this.listening(dev).rules, proto, port);
+  /**
+   * Does the device take a segment or datagram to this port (and address)? Its listening ports; an
+   * application bound to an interface takes only what is addressed to that interface, unless something
+   * else listens on the port on all addresses (a service, a relation's server, an unbound application).
+   */
+  private open(dev: string, proto: 'tcp' | 'udp', port: number, dst?: IpAddr): boolean {
+    const ls = this.listening(dev);
+    if (!portsMatch(ls.rules, proto, port)) return false;
+    if (!dst || ls.written) return true;
+    const bound = this.boundOnly(dev, proto, port);
+    return !bound || bound.some((b) => this.addrOn(dev, b, dst));
+  }
+
+  /** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
+  private boundOnly(dev: string, proto: 'tcp' | 'udp', port: number): string[] | null {
+    const md = this.P.m.index.devices.get(dev);
+    const mine = appListeners(md).filter((x) => x.proto === proto && x.port === port);
+    if (!mine.length || mine.some((x) => x.bind === undefined)) return null;
+    if (serviceListeners(md).some((x) => x.proto === proto && x.port === port)) return null;
+    if (portsMatch(this.relationRules(dev), proto, port)) return null;
+    return mine.map((x) => x.bind as string);
+  }
+
+  /** Is the address one of an interface's (configured or leased) now? */
+  private addrOn(dev: string, iface: string, a: IpAddr): boolean {
+    const l = this.P.sd(dev).l3.get(iface);
+    return !!l && l.addrs.some((x) => compareAddr(x.addr, a) === 0);
+  }
+
+  /** Why a port is closed, for the log: what listens, and where a bound application listens instead. */
+  private listenText(dev: string, proto: 'tcp' | 'udp', port: number, dst: IpAddr): string {
+    const ls = this.listening(dev);
+    const bound = portsMatch(ls.rules, proto, port) ? this.boundOnly(dev, proto, port) : null;
+    if (bound) return `${proto}/${port} listens on ${bound.join(', ')} only, not on ${formatAddr(dst)}`;
+    return ls.text;
+  }
+
+  /** The listener application of a device that takes this port and address, if one does. */
+  appAt(dev: string, proto: 'tcp' | 'udp', port: number, dst: IpAddr): AppInstance | undefined {
+    const md = this.P.m.index.devices.get(dev);
+    const hit = appListeners(md).filter((x) => x.proto === proto && x.port === port && (x.bind === undefined || this.addrOn(dev, x.bind, dst)));
+    // (one bound to the address's own interface before one on all addresses)
+    hit.sort((a, b) => Number(a.bind === undefined) - Number(b.bind === undefined));
+    return hit.length && md && md.applications ? md.applications.find((a) => a.id === hit[0].app) : undefined;
+  }
+
+  /** The service response time at a port: the device attribute (or a relation's), with its source in words. */
+  private serviceTime(dev: string, proto: 'tcp' | 'udp', port: number): { value: number; text: string } {
+    const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, proto, port));
+    return { value: Number(rt.value), text: 'the service response time ' + resolvedText(rt) };
+  }
+
+  /** Run fn in the context of a test (a Send test's id, else none). */
+  private withTestOf(t: Test, fn: () => void): void {
+    this.e.withTest(t.source === 'manual' ? t.id : null, fn);
   }
 
   /** A relation's message to a port the device does not listen on (its `listening` attribute leaves it out): refused like any other. */
@@ -421,7 +570,7 @@ export class Transport {
     pkt.len = len;
     pkt.df = df;
     pkt.flow = `${formatAddr(src)}:${l4.sport || l4.echoId || 0}>${formatAddr(dst)}:${l4.dport || 0}/${l4.proto}`;
-    this.e.note('message', l4.proto, dev, peer, m.type, '', m.detail, this.e.now, m);
+    this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
     // a group goes out of the interface it is sent from (a host sends it on its own segment)
     const out = isMulticastIp(dst) ? this.sourceFor(dev, dst) : null;
     this.e.send(dev, pkt, out && out.l3 ? out.l3 : undefined);
@@ -477,14 +626,14 @@ export class Transport {
   }
 
   /** Run one test now (Send test…, test traffic, a health check, a probe); its result comes later. */
-  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number }; run?: number; msg?: number }): Test | string {
+  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number }; run?: number; msg?: number; oneWay?: boolean; qtype?: 'A' | 'AAAA'; retry?: number; app?: string }): Test | string {
     const dev = o.from;
     const sd = this.P.sd(dev);
     if (!sd) return `${dev} is not a device of the simulation`;
     if (!this.e.deviceOn(dev)) return `${dev} is powered off`;
     if (o.via !== undefined && !sd.l3.get(o.via)) return `${dev} has no interface ${o.via} with an IP address or DHCP`;
     // (a DHCP client without its lease yet: the test waits for it; a host name: for its answer)
-    const waits = this.leaseWait(dev, o.via);
+    const waits = this.leaseWait(dev, o.via, o.name ? o.qtype === 'AAAA' : o.dst.version === 6);
     const s = o.name || waits ? null : this.sourceFor(dev, o.dst, o.via);
     if (!s && !o.name && !waits) return `${o.via !== undefined ? dev + ':' + o.via : dev} has no IPv${o.dst.version} address to send from`;
     const kind = o.kind;
@@ -514,6 +663,10 @@ export class Transport {
       onDone: o.onDone,
       front: o.front,
       timeout: o.timeout || this.e.params.get('app-timeout', dev),
+      oneWay: o.oneWay,
+      qtype: o.qtype,
+      retry: o.retry,
+      app: o.app,
     };
     this.tests.push(t);
     if (this.tests.length > 400) this.tests.splice(0, this.tests.length - 400);
@@ -532,8 +685,9 @@ export class Transport {
     this.e.withTest(t.source === 'manual' ? t.id : null, () => this.beginNow(t, name));
   }
 
-  /** The DHCP client interface a test from this device (by this interface) waits for, if any. */
-  private leaseWait(dev: string, via?: string): string | null {
+  /** The DHCP client interface a test from this device (by this interface) waits for, if any (IPv6 waits for none: a lease is IPv4). */
+  private leaseWait(dev: string, via?: string, v6 = false): string | null {
+    if (v6) return null;
     if (via === undefined) return this.e.waitsForLease(dev);
     return this.e.addressReady(dev, via) ? null : via;
   }
@@ -568,7 +722,7 @@ export class Transport {
   private beginNow(t: Test, name?: string): void {
     if (t.done) return;
     const dev = t.from;
-    const lease = this.leaseWait(dev, t.via);
+    const lease = this.leaseWait(dev, t.via, name ? t.qtype === 'AAAA' : t.dst.version === 6);
     const what: Msg = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
     if (lease) {
       t.result = `waiting for a DHCP lease on ${dev}:${lease}`;
@@ -577,9 +731,10 @@ export class Transport {
     }
     if (name && this.netsvc) {
       t.result = `resolving ${name}`;
-      if (!this.netsvc.cached(dev, name, 'A')) this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name}`);
+      const qtype = t.qtype || 'A';
+      if (!this.netsvc.cached(dev, name, qtype)) this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name} (${qtype})`);
       const since = this.e.now;
-      this.netsvc.resolve(dev, name, 'A', (r) => {
+      this.netsvc.resolve(dev, name, qtype, (r) => {
         if (t.done) return;
         if (!r.addr) {
           this.finish(t, false, r.error || `${name} could not be resolved`);
@@ -606,7 +761,8 @@ export class Transport {
     // the application gives up after its response timeout (a broadcast ping collects the answers until then)
     this.later(Number(t.timeout.value), () => {
       if (t.done) return;
-      if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
+      if (t.oneWay) this.finish(t, false, `not received within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}${this.lastDrop(t)}`);
+      else if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
       else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
       else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
       else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
@@ -627,7 +783,7 @@ export class Transport {
    * packets (a firewall's policy, no route, a VLAN a port doesn't carry …), so a timeout says where it ended.
    */
   private lastDrop(t: Test): string {
-    if (t.source !== 'manual') return '';
+    if (t.source !== 'manual' && !t.app) return '';
     for (let i = this.e.log.length - 1; i >= 0; i--) {
       const ev = this.e.log[i];
       if (ev.t < t.started) break;
@@ -776,19 +932,32 @@ export class Transport {
       if (!this.e.isBroadcastAddr(t.dst) && !isMulticastIp(t.dst)) this.finish(t, true, `UDP answer from ${formatAddr(pkt.src)}:${l4.sport}`);
       return;
     }
-    if (!this.open(dev, 'udp', l4.dport as number)) {
-      this.refuse(dev, l3, pkt, this.listening(dev).text);
+    if (!this.open(dev, 'udp', l4.dport as number, pkt.dst)) {
+      this.refuse(dev, l3, pkt, this.listenText(dev, 'udp', l4.dport as number, pkt.dst));
       return;
     }
+    const app = this.appAt(dev, 'udp', l4.dport as number, pkt.dst);
+    const test = d.test !== undefined ? this.tests.find((x) => x.id === d.test) : undefined;
+    if (test && test.oneWay && !test.done) {
+      test.answers.push(`${dev}${app ? '/' + app.id : ''}`);
+      if (test.rtt === undefined) test.rtt = this.e.now - test.started;
+      this.withTestOf(test, () => this.finish(test, true, `received by ${dev}${app ? '/' + app.id : ''} on UDP ${l4.dport} (nothing comes back)`));
+    }
+    if (app && app.profile === 'udp_receiver') {
+      this.e.note('message', 'udp', dev, this.e.ownerOf(pkt.src) || '', 'received', '', `${dev}/${app.id} (${app.name}) takes the datagram from ${formatAddr(pkt.src)}:${l4.sport}: a receiver answers nothing`);
+      return;
+    }
+    // a one-way message to a listener that answers requests: it answers it too (its profile's behaviour)
     if (breaks && this.breakUdp(dev, l3, pkt)) return;
     // a protocol break's syslog leg 2 arrives at a collector: it answers nothing
     if ((pkt.msg.data as { breakLeg?: boolean } | undefined || {}).breakLeg && pkt.msg.type === 'Syslog message') return;
     const own = this.e.isBroadcastAddr(pkt.dst) || isMulticastIp(pkt.dst) ? l3.addrs.find((a) => a.addr.version === pkt.dst.version) : undefined;
     const src = own ? own.addr : pkt.dst;
-    const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, 'udp', l4.dport as number));
+    const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${durationText(app.responseDelay)} (${dev}/${app.id}'s response delay)` } : this.serviceTime(dev, 'udp', l4.dport as number);
+    const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
     const answer = (): void => {
-      const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${UDP_RESPONSE} bytes: the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`, { test: d.test, reply: true });
-      this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(pkt.src) || '');
+      const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
+      this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '');
     };
     if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
@@ -825,6 +994,124 @@ export class Transport {
   private setState(c: Conn, state: string): void {
     c.state = state;
     c.since = this.e.now;
+  }
+
+  // ------------------------------------------------------------ applications' own connections (MQTT)
+
+  /** the listeners of the applications' own protocols, by "device|port" */
+  private appListening = new Map<string, { h: AppSocketHandlers; what: string }>();
+
+  /** An application listens on a TCP port of its device (an MQTT broker): each connection gets a socket. */
+  appListen(dev: string, port: number, what: string, h: AppSocketHandlers): void {
+    this.appListening.set(dev + '|' + port, { h, what });
+  }
+
+  /**
+   * An application opens a connection (an MQTT client to its broker): SYN with its retransmissions;
+   * `open` when it is established, `closed` when it is refused or times out. A text when it can't send.
+   */
+  appConnect(dev: string, dst: IpAddr, port: number, what: string, h: AppSocketHandlers): AppSocket | string {
+    const s = this.sourceFor(dev, dst);
+    if (!s) return `${dev} has no IPv${dst.version} address to connect from`;
+    const lport = this.ephemeral(dev);
+    const c: Conn = { key: this.connKey(s.src, lport, dst, port), dev, proto: 'tcp', local: s.src, lport, remote: dst, rport: port, vrf: s.vrf, state: 'SYN_SENT', role: 'client', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what, got: 0, unacked: [], keep: false, probes: 0 };
+    const sock = new AppSocket(this, c, h);
+    c.sock = sock;
+    this.addConn(c);
+    this.sendSyn(c);
+    return sock;
+  }
+
+  /** Send an application's message over its connection (segments by the path MTU, retransmitted until acknowledged). */
+  appSend(sock: AppSocket, m: AppMessage): boolean {
+    const c = sock.c;
+    if (!sock.open) return false;
+    const id = ++sock.seq;
+    const mss = this.mss(c);
+    const parts: Array<{ flags: string[]; bytes: number; what: string; app?: AppMessage; id?: number }> = [];
+    for (let left = Math.max(1, m.bytes); left > 0; left -= mss) parts.push({ flags: left <= mss ? ['PSH', 'ACK'] : ['ACK'], bytes: Math.min(mss, left), what: m.detail, app: left <= mss ? m : undefined, id: left <= mss ? id : undefined });
+    const fresh = !c.unacked.length;
+    for (const p of parts) c.unacked.push(p);
+    parts.forEach((p, i) => this.appSegment(c, p, i, parts.length));
+    if (fresh) {
+      c.tries = 0;
+      this.armRetransmit(c);
+    }
+    return true;
+  }
+
+  /** One segment of an application's message: drawn as the message (its protocol, type and label), its last one carrying it. */
+  private appSegment(c: Conn, p: { flags: string[]; bytes: number; what: string; app?: AppMessage; id?: number }, i: number, n: number): void {
+    const m = p.app;
+    const proto = m ? m.protocol : 'tcp';
+    const label = m ? m.label + (c.tries ? ' (TCP retransmission)' : '') : `TCP data → ${formatAddr(c.remote)}:${c.rport}`;
+    const detail = `${m ? m.detail : p.what}${n > 1 ? ` (segment ${i + 1} of ${n})` : ''} — TCP ${formatAddr(c.local)}:${c.lport} → ${formatAddr(c.remote)}:${c.rport} [${p.flags.join(',')}] ${p.bytes} bytes${c.tries ? `, retransmission ${c.tries}` : ''}`;
+    const msg: Msg = { protocol: proto as Msg['protocol'], type: m ? m.type : 'TCP data', label, detail, data: { from: '', ...(m ? m.data : {}), appMsg: p.id, appType: m ? m.type : undefined } };
+    const seq = c.got + 1000;
+    const l4: L4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: p.flags, seq, ack: seq + 1 };
+    this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + p.bytes, true, this.e.ownerOf(c.remote) || '');
+    if (m && i === n - 1) (m as { sent?: number }).sent = this.e.now;
+  }
+
+  /** The retransmission timer of an application's connection: what is unacknowledged goes again, doubling, until the retries are spent. */
+  private armRetransmit(c: Conn): void {
+    const g = ++c.gen;
+    const wait = this.rto(c);
+    c.timer = this.e.now + wait;
+    this.later(wait, () => {
+      if (c.gen !== g || !c.unacked.length || !c.sock || !c.sock.open) return;
+      if (c.tries >= DATA_RETRIES) {
+        this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
+        return;
+      }
+      c.tries++;
+      const n = c.unacked.length;
+      c.unacked.forEach((p, i) => this.appSegment(c, p, i, n));
+      this.armRetransmit(c);
+    });
+  }
+
+  /** A segment of an application's connection arrived: acknowledged; a whole message goes to its socket. */
+  private sockData(c: Conn, pkt: Pkt, bytes: number): void {
+    const l4 = pkt.l4 as L4;
+    const flags = l4.flags || [];
+    // (cumulative: what this end sent is acknowledged by what comes back)
+    if (flags.indexOf('ACK') >= 0 && c.unacked.length) {
+      c.unacked = [];
+      c.tries = 0;
+      c.gen++;
+      c.timer = null;
+    }
+    if (bytes <= 0) return;
+    c.got += bytes;
+    this.segment(c.dev, c, ['ACK'], 0, `acknowledges ${bytes} bytes`, undefined, c);
+    const d = (pkt.msg.data || {}) as { appMsg?: number };
+    const sock = c.sock as AppSocket;
+    if (flags.indexOf('PSH') < 0 || d.appMsg === undefined || sock.seen.has(d.appMsg)) return;
+    sock.seen.add(d.appMsg);
+    const m: AppMessage = { protocol: pkt.msg.protocol, type: pkt.msg.type, label: pkt.msg.label, detail: pkt.msg.detail, bytes, data: pkt.msg.data || {} };
+    sock.h.message(sock, m);
+  }
+
+  /** Close an application's connection from its end (FIN); it is told at once. */
+  appClose(sock: AppSocket, why: string): void {
+    const c = sock.c;
+    this.sockClosed(sock, why);
+    if (c.state === 'ESTABLISHED') {
+      this.setState(c, 'FIN_WAIT_1');
+      this.segment(c.dev, c, ['FIN', 'ACK'], 0, `closes the connection (${why})`, undefined, c);
+      const g = ++c.gen;
+      this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
+        if (c.gen === g && c.state === 'FIN_WAIT_1') this.closeConn(c, 'closed (no answer to the FIN)');
+      });
+    } else if (c.state === 'SYN_SENT' || c.state === 'SYN_RCVD') this.closeConn(c, why);
+  }
+
+  /** Tell a socket its connection is gone (once). */
+  private sockClosed(sock: AppSocket, why: string): void {
+    if (sock.closedWhy !== null) return;
+    sock.closedWhy = why;
+    sock.h.closed(sock, why);
   }
 
   /** Open a connection for a test: SYN, retransmitted with backoff until answered or the SYN retries are spent. */
@@ -905,6 +1192,7 @@ export class Transport {
   }
 
   private closeConn(c: Conn, why: string): void {
+    if (c.sock) this.sockClosed(c.sock, why);
     const m = this.conns.get(c.dev);
     if (m && m.get(c.key) === c) m.delete(c.key);
     c.gen++;
@@ -928,11 +1216,16 @@ export class Transport {
     if (!c) {
       if (has('RST')) return;
       if (has('SYN') && !has('ACK')) {
-        if (!this.open(dev, 'tcp', l4.dport as number)) {
-          this.refuse(dev, l3, pkt, this.listening(dev).text);
+        if (!this.open(dev, 'tcp', l4.dport as number, pkt.dst)) {
+          this.refuse(dev, l3, pkt, this.listenText(dev, 'tcp', l4.dport as number, pkt.dst));
           return;
         }
         const sc: Conn = { key: this.connKey(pkt.dst, l4.dport as number, pkt.src, l4.sport as number), dev, proto: 'tcp', local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, vrf: pkt.vrf, state: 'SYN_RCVD', role: 'server', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what: `serves ${formatAddr(pkt.src)}`, got: 0, unacked: [], keep: false, probes: 0 };
+        const lh = this.appListening.get(dev + '|' + (l4.dport as number));
+        if (lh) {
+          sc.sock = new AppSocket(this, sc, lh.h);
+          sc.what = `${lh.what}: a client at ${formatAddr(pkt.src)}`;
+        }
         this.addConn(sc);
         this.segment(dev, sc, ['SYN', 'ACK'], 0, 'accepts the connection', undefined, sc);
         this.idle(sc);
@@ -947,6 +1240,7 @@ export class Transport {
     c.probes = 0;
     if (has('RST')) {
       const was = c.state;
+      if (c.sock) this.sockClosed(c.sock, was === 'SYN_SENT' ? `connection refused: RST from ${formatAddr(pkt.src)}` : `connection reset by ${formatAddr(pkt.src)}`);
       this.closeConn(c, was === 'SYN_SENT' ? `connection refused (RST from ${formatAddr(pkt.src)})` : `reset by ${formatAddr(pkt.src)}`);
       if (c.test) this.finish(c.test, false, was === 'SYN_SENT' ? `connection refused: RST from ${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}` : 'connection reset');
       if (c.front) this.upstreamFailed(c, 'the server reset the connection');
@@ -967,6 +1261,10 @@ export class Transport {
         return;
       }
       this.segment(dev, c, ['ACK'], 0, 'the connection is open', undefined, c);
+      if (c.sock) {
+        if (c.sock.h.open) c.sock.h.open(c.sock);
+        return;
+      }
       if (t && t.keep && t.source === 'manual') {
         this.finish(t, true, `connected; kept open (keepalive after ${resolvedText(this.e.params.get('tcp-keepalive', dev))})`);
         this.idle(c);
@@ -979,11 +1277,17 @@ export class Transport {
       if (!has('ACK') || has('SYN')) return;
       this.setState(c, 'ESTABLISHED');
       this.idle(c);
+      if (c.sock && c.sock.h.accept) c.sock.h.accept(c.sock);
     }
     switch (c.state) {
       case 'ESTABLISHED':
+        if (c.sock && !has('FIN')) {
+          this.sockData(c, pkt, bytes);
+          return;
+        }
         if (has('FIN')) {
           // the peer closes: acknowledge and close our side (FIN and ACK in one segment)
+          if (c.sock) this.sockClosed(c.sock, `closed by ${formatAddr(pkt.src)} (FIN)`);
           this.setState(c, 'LAST_ACK');
           this.segment(dev, c, ['FIN', 'ACK'], 0, 'closes its side as well', undefined, c);
           const g = ++c.gen;
@@ -1082,10 +1386,11 @@ export class Transport {
       this.breakTcp(c, pkt);
       return;
     }
-    const rt = this.e.params.get('service-response', c.dev, null, this.serviceRel(c.dev, 'tcp', c.lport));
+    const app = this.appAt(c.dev, 'tcp', c.lport, c.local);
+    const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${durationText(app.responseDelay)} (${c.dev}/${app.id}'s response delay)` } : this.serviceTime(c.dev, 'tcp', c.lport);
     const answer = (): void => {
       if (c.state !== 'ESTABLISHED') return;
-      this.sendData(c, RESPONSE_BYTES, `the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`);
+      this.sendData(c, app && app.responseSize !== undefined ? app.responseSize : RESPONSE_BYTES, `the answer${app ? ` of ${c.dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`);
     };
     if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
@@ -1699,30 +2004,9 @@ function svcOf(m: Model, dev: string, id: string): ServiceInstance | undefined {
   return d && d.appServices ? d.appServices.get(id) : undefined;
 }
 
-/** The ports a device's services listen on. */
+/** The ports a device's services and applications listen on (analysis/listeners.ts). */
 export function serviceListening(d: Device | undefined): PortRule[] {
   const out: PortRule[] = [];
-  if (!d || !d.appServices) return out;
-  const add = (proto: 'tcp' | 'udp', port: number): void => {
-    if (!out.some((x) => x.proto === proto && x.from === port)) out.push({ proto, from: port, to: port });
-  };
-  const s = d.appServices;
-  if (s.has('ntp')) add('udp', 123);
-  const aaa = s.get('aaa');
-  if (aaa) aaa.values.protocol === 'tacacs' ? add('tcp', 49) : add('udp', 1812);
-  const log = s.get('syslog');
-  if (log) add(log.values.transport === 'tcp' ? 'tcp' : 'udp', typeof log.values.port === 'number' ? (log.values.port as number) : 514);
-  const px = s.get('proxy');
-  if (px && typeof px.values.listener === 'number') add('tcp', px.values.listener as number);
-  const lb = s.get('load_balancing');
-  if (lb && typeof lb.values.port === 'number') add('tcp', lb.values.port as number);
-  if (s.has('wireless_controller')) add('udp', 5246);
-  const st = s.get('storage');
-  for (const p of st && Array.isArray(st.values.protocols) ? (st.values.protocols as string[]) : []) add('tcp', p === 'nfs' ? 2049 : p === 'smb' ? 445 : 3260);
-  const app = s.get('application');
-  for (const p of app && Array.isArray(app.values.ports) ? (app.values.ports as string[]) : []) {
-    const r = parsePorts(p);
-    if ('list' in r) for (const x of r.list) if (x.proto === 'tcp' || x.proto === 'udp') for (let k = x.from; k <= x.to && k - x.from < 64; k++) add(x.proto, k);
-  }
+  for (const x of deviceListeners(d)) if (!out.some((y) => y.proto === x.proto && y.from === x.port)) out.push({ proto: x.proto, from: x.port, to: x.port });
   return out;
 }

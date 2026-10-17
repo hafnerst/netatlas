@@ -102,7 +102,7 @@ test('the order of precedence: configured → object → device → simulation �
   assert.equal(q.str('fast-leave', 's', Pm.vlanRef(20)), 'off');
 });
 
-const SW = (x = {}) => `netatlas: 1
+const SW = (x = {}) => `netatlas: 2
 title: l2
 devices:
   - {id: sw1, type: switch, interfaces: [${x.p1 || 'p1'}, p2, p3]${x.sw1 || ''}}
@@ -160,7 +160,7 @@ test('per-port spanning tree: bridge priority elects the root, port cost picks t
 });
 
 test('PVST and MSTP: a priority per VLAN gives each VLAN its own root; RSTP keeps the bridge priority for every VLAN', () => {
-  const Y = (mode) => `netatlas: 1
+  const Y = (mode) => `netatlas: 2
 title: pvst
 devices:
   - {id: sw1, type: switch, interfaces: [{id: p1, vlans: [10, 20]}, {id: p2, vlans: [10, 20]}], simulation: {stp_mode: ${mode}, bridge_priority_vlans: "10=4096"}}

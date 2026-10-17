@@ -5,9 +5,9 @@
 #   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)
 # plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
-# The Hamburg LTE uplink obtains its address by DHCP ("dhcp: true"), and a
+# The Hamburg LTE uplink obtains its address by DHCP ("ipv4: dhcp"), and a
 # few devices have DNS names ("dns_names"), each associated with interfaces.
-netatlas: 1
+netatlas: 2
 title: Enterprise WAN — HQ and two branches over VPN
 description: |
   HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over
@@ -237,7 +237,7 @@ devices:
       ospf: {}
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
-      - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier
+      - {id: wan1, ipv4: dhcp, description: LTE backup modem}   # address assigned by the carrier
       - {id: lan0, ip: 10.30.0.1/24}
     logical_interfaces:
       - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}

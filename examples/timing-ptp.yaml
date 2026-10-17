@@ -1,0 +1,162 @@
+# netatlas example: time synchronization with PTP in an industrial network.
+#
+# Two production cells share one PTP domain (domain 0), the Default delay
+# request-response profile of IEEE 1588-2008 over UDP/IPv4: Announce, Sync,
+# Follow_Up, Delay_Req and Delay_Resp to 224.0.1.129, two-step clocks.
+#
+# Cell A (VLAN 10) has two grandmaster candidates, ordinary clocks with the
+# role "source capable": gm-a, priority1 100 and a GPS reference (clock class
+# 6), and gm-b, priority1 110 (clock class 248, free-running). The best
+# master clock algorithm elects from the Announces they hear: gm-a wins on
+# priority1; gm-b becomes its slave and stays a candidate. (The boundary
+# clock rt keeps the default priority1 128: it is the last resort.) Both
+# reach the cell's switch sw-a, a transparent clock: it adds the time each
+# Sync and Delay_Req spent inside it to the Follow_Up and the Delay_Resp,
+# and is never a time source itself.
+#
+# The router rt is a boundary clock: its port in cell A is a slave of gm-a,
+# its port in cell B (VLAN 20) is a master. The cell's switch sw-b is a plain
+# switch (no PTP). Behind it, the PLC plc-b and the drive drv-b are ordinary
+# clocks with the role "receiver only": they synchronize to the boundary
+# clock, never to each other, and could never become the grandmaster.
+#
+# Simulate ▾ → Start simulation…: each clock's mark in the diagram says its
+# state (★ grandmaster, ✓ synchronized, acquiring, holdover, TC); right-click
+# a clock → Show PTP clock lists its ports, data sets and estimates. Network
+# events → Power off gm-a: the others miss its Announces for three intervals,
+# gm-b becomes the grandmaster and the boundary clock follows it; Power on
+# gm-a: it wins the election again. The clocks' offsets and drifts are
+# modelled (a local clock beside the simulation's own time, never moving it);
+# the states follow the model's estimates and claim no accuracy beyond them.
+netatlas: 2
+title: Time synchronization — PTP grandmasters, boundary and transparent clocks
+description: |
+  Two cells in one PTP domain: two grandmaster candidates behind a
+  transparent-clock switch, a router as boundary clock, receiving PLC and drive.
+
+groups:
+  - id: cell-a
+    label: Cell A (timing)
+    kind: zone
+  - id: cell-b
+    label: Cell B (production)
+    kind: zone
+
+networks:
+  - {id: a, label: Cell A, cidr: 10.0.10.0/24, vlan: 10}
+  - {id: b, label: Cell B, cidr: 10.0.20.0/24, vlan: 20}
+
+devices:
+  - id: gm-a
+    tier: 1
+    label: gm-a (GPS clock)
+    type: server
+    kind: appliance
+    group: cell-a
+    services:
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: source_capable
+        priority1: 100
+        clock_class: 6
+        timestamping: hardware
+    interfaces:
+      - {id: eth0, ip: 10.0.10.11/24}
+  - id: gm-b
+    tier: 1
+    label: gm-b (standby clock)
+    type: server
+    kind: appliance
+    group: cell-a
+    services:
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: source_capable
+        priority1: 110
+        timestamping: hardware
+        clock_offset: +2ms
+        drift: 10ppm
+    interfaces:
+      - {id: eth0, ip: 10.0.10.12/24}
+  - id: sw-a
+    tier: 2
+    type: switch
+    kind: industrial
+    group: cell-a
+    igmp_mld_snooping: {10: disabled}
+    services:
+      ptp: {clock: transparent, profile: default_e2e_udp4, interfaces: [p1, p2, p3], timestamping: hardware}
+    interfaces:
+      - {id: p1, vlans: 10}
+      - {id: p2, vlans: 10}
+      - {id: p3, vlans: 10}
+  - id: rt
+    tier: 3
+    label: rt (boundary clock)
+    type: router
+    group: cell-b
+    services:
+      ptp: {clock: boundary, profile: default_e2e_udp4, domain: 0, interfaces: [a, b], timestamping: hardware}
+    interfaces:
+      - {id: a, ip: 10.0.10.1/24}
+      - {id: b, ip: 10.0.20.1/24}
+  - id: sw-b
+    tier: 4
+    type: switch
+    kind: industrial
+    group: cell-b
+    igmp_mld_snooping: {20: disabled}
+    interfaces:
+      - {id: p1, vlans: 20}
+      - {id: p2, vlans: 20}
+      - {id: p3, vlans: 20}
+  - id: plc-b
+    tier: 5
+    label: plc-b
+    type: endpoint
+    kind: plc
+    group: cell-b
+    services:
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: receiver_only
+        timestamping: hardware
+        clock_offset: "-5ms"
+        drift: 25ppm
+    interfaces:
+      - {id: eth0, ip: 10.0.20.21/24}
+  - id: drv-b
+    tier: 5
+    label: drv-b (drive)
+    type: endpoint
+    kind: other
+    kind_label: Servo drive
+    group: cell-b
+    services:
+      ptp:
+        clock: ordinary
+        profile: default_e2e_udp4
+        domain: 0
+        interfaces: [eth0]
+        role: receiver_only
+        clock_offset: +1ms
+        drift: "-15ppm"
+    interfaces:
+      - {id: eth0, ip: 10.0.20.22/24}
+
+links:
+  - {id: l-gma, a: "gm-a:eth0", b: "sw-a:p1", speed: 1G}
+  - {id: l-gmb, a: "gm-b:eth0", b: "sw-a:p2", speed: 1G}
+  - {id: l-swa-rt, a: "sw-a:p3", b: "rt:a", speed: 1G}
+  - {id: l-rt-swb, a: "rt:b", b: "sw-b:p1", speed: 1G}
+  - {id: l-plc, a: "sw-b:p2", b: "plc-b:eth0", speed: 100M}
+  - {id: l-drv, a: "sw-b:p3", b: "drv-b:eth0", speed: 100M}

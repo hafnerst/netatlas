@@ -818,6 +818,13 @@ export class ProtocolSim implements Protocols {
     return this.snoopHook ? this.snoopHook(sd, from, vlan, frame, t) : null;
   }
 
+  /** multicast (multicast.ts): has a device's own interface joined a group as a host? */
+  joinedHook: ((dev: string, iface: string, group: IpAddr) => boolean) | null = null;
+
+  joined(dev: string, iface: string, group: IpAddr): boolean {
+    return !!this.joinedHook && this.joinedHook(dev, iface, group);
+  }
+
   mroute(dev: string, l3: L3Iface, pkt: Pkt): boolean {
     return !!this.mrouteHook && this.mrouteHook(dev, l3, pkt);
   }

@@ -553,7 +553,7 @@ export function bgKind(protocol: string, label: string): string {
   return name;
 }
 
-const BG_NAMES: { [p: string]: string } = { mcast: 'UDP', igmp: 'IGMP', mld: 'MLD', arp: 'ARP', garp: 'ARP', ndp: 'NDP', dhcp: 'DHCP', dhcpv6: 'DHCPv6', dns: 'DNS', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', ospf: 'OSPF', bgp: 'BGP', pim: 'PIM', stp: 'STP', lacp: 'LACP', lldp: 'LLDP', bfd: 'BFD', vrrp: 'VRRP', demand: 'Traffic', https: 'HTTPS', http: 'HTTP' };
+const BG_NAMES: { [p: string]: string } = { mqtt: 'MQTT', mcast: 'UDP', igmp: 'IGMP', mld: 'MLD', arp: 'ARP', garp: 'ARP', ndp: 'NDP', dhcp: 'DHCP', dhcpv6: 'DHCPv6', dns: 'DNS', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', ospf: 'OSPF', bgp: 'BGP', pim: 'PIM', stp: 'STP', lacp: 'LACP', lldp: 'LLDP', bfd: 'BFD', vrrp: 'VRRP', demand: 'Traffic', https: 'HTTPS', http: 'HTTP' };
 
 /** The way a followed message has come along a track so far. */
 

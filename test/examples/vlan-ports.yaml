@@ -20,7 +20,7 @@
 # Edit a port: its VLANs are a list (one VLAN: access; several: trunk, with
 # an optional native VLAN). "Assign VLANs to ports…" gives a range of ports
 # the same VLANs in one step.
-netatlas: 1
+netatlas: 2
 title: VLANs on ports
 description: |
   Access and trunk ports with their VLANs, a native VLAN, an aggregate

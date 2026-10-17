@@ -81,8 +81,8 @@ test('only a real, writable file handle links a model: never a plain File from t
 
 test('writing: granted → written; permission asked when needed; refused or failed → reported, nothing thrown', async () => {
   const ok = handle();
-  assert.deepEqual(await F.writeFile(ok, 'netatlas: 1\n'), { ok: true });
-  assert.equal(ok.text, 'netatlas: 1\n');
+  assert.deepEqual(await F.writeFile(ok, 'netatlas: 2\n'), { ok: true });
+  assert.equal(ok.text, 'netatlas: 2\n');
   const ask = handle({ perm: 'prompt', request: 'granted' });
   assert.deepEqual(await F.writeFile(ask, 'a'), { ok: true });
   assert.equal(ask.asked, 1, 'the browser was asked for permission once');

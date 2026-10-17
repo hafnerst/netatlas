@@ -27,7 +27,7 @@ const status = (s, name) => s.status().find((r) => r.name === name);
  * x: extra YAML per device (sw, r1, r2, src, rxa), and links; x.snoop: sw's
  * igmp_mld_snooping (default: enabled in VLAN 1; '' : not configured).
  */
-const NET = (x = {}) => `netatlas: 1
+const NET = (x = {}) => `netatlas: 2
 title: mc
 devices:
   - id: src
@@ -84,7 +84,7 @@ relations:
 ${x.nets ? 'networks:\n' + x.nets + '\n' : ''}`;
 
 /** One LAN: two routers (queriers), a switch, hosts; no PIM routing needed. */
-const LAN = (x = {}) => `netatlas: 1
+const LAN = (x = {}) => `netatlas: 2
 title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.1/24, "2001:db8:5::1/64"]}]${x.q1 || ''}}
@@ -130,7 +130,7 @@ test('multicast parameters: the query interval (Layer 3) completes its section; 
 });
 
 test('multicast: blocks are checked: a group, never link-local; SSM with its sources and IGMPv3; streams with their defaults', () => {
-  const m = (iface, sim = '') => validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - id: h\n    type: endpoint\n    interfaces:\n      - {id: e0, ip: 10.0.0.5/24, multicast: ${iface}}${sim}\n`);
+  const m = (iface, sim = '') => validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - id: h\n    type: endpoint\n    interfaces:\n      - {id: e0, ip: 10.0.0.5/24, multicast: ${iface}}${sim}\n`);
   const ok = m('{join: [239.1.1.1, {group: 232.1.1.1, sources: [10.0.0.9]}], streams: [{group: 239.1.1.1}, {group: 239.1.1.2, port: 6000, interval: 500ms, size: 200}]}');
   assert.deepEqual(ok.errors, []);
   const i = ok.model.devices[0].interfaces[0].multicast;
@@ -144,7 +144,7 @@ test('multicast: blocks are checked: a group, never link-local; SSM with its sou
   assert.match(err('{join: [239.1.1.1, 239.1.1.1]}')[0], /239\.1\.1\.1 is joined twice/);
   assert.match(err('{streams: [{group: 239.1.1.1, port: 0}]}')[0], /UDP port/);
   assert.match(err('{stream: []}')[0], /unknown key "stream"/);
-  const noIp = validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - id: h\n    interfaces: [{id: e0, multicast: {join: [239.1.1.1]}}]\n`);
+  const noIp = validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - id: h\n    interfaces: [{id: e0, multicast: {join: [239.1.1.1]}}]\n`);
   assert.match(noIp.errors[0].message, /interface "e0" has no address: it can neither join a group nor send a stream/);
 });
 
@@ -274,7 +274,7 @@ test('snooping disabled floods every group; not configured floods too and says s
 });
 
 test('snooping querier: a VLAN without a multicast router is queried by the switch (when on), so that its members are learned', () => {
-  const Y = (sim, snoop = 'enabled', svi = true) => `netatlas: 1
+  const Y = (sim, snoop = 'enabled', svi = true) => `netatlas: 2
 title: q
 devices:
   - {id: sw, type: switch, igmp_mld_snooping: {1: ${snoop}}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1${svi ? ', ip: 10.9.0.2/24' : ''}}]${sim}}
@@ -423,7 +423,7 @@ test('multicast tests: a UDP datagram to a group is received by its members (tes
 });
 
 test('an access point with multicast to unicast sends a group to its client as unicast frames; tunnels carry multicast only when allowed', () => {
-  const Y = (m2u) => `netatlas: 1
+  const Y = (m2u) => `netatlas: 2
 title: ap
 devices:
   - {id: q, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.6.0.1/24}]}

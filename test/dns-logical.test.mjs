@@ -13,7 +13,7 @@ const { logicalSpecs } = load('layout/logical.js');
 const { layoutInput } = load('layout/input.js');
 
 const LONG = 'a-rather-long-host-name.with-a-long-subdomain.example.com';
-const net = `netatlas: 1
+const net = `netatlas: 2
 devices:
   - id: r1
     type: router

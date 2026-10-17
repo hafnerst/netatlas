@@ -24,7 +24,7 @@ const found = (text, id) => {
 };
 
 // a consistent model: every check is silent on it
-const base = `netatlas: 1
+const base = `netatlas: 2
 devices:
   - id: r1
     type: router

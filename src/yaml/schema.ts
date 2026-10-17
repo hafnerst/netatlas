@@ -8,7 +8,7 @@
  * The prose reference is docs/FORMAT.md.
  */
 
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;
 
 export const SCHEMA = {
   top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'checks', 'layout'],
@@ -18,7 +18,7 @@ export const SCHEMA = {
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
   device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
   /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN gateway's VPN gateway, a Security gateway's Domain separation */
-  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'application'],
+  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'ptp', 'mqtt_broker', 'applications'],
   wireless: ['controller', 'networks'],
   wirelessNetwork: ['id', 'ssid', 'vlan', 'untagged', 'radio', 'security', 'passphrase', 'forwarding'],
   ntp: ['stratum', 'upstreams'],
@@ -31,7 +31,10 @@ export const SCHEMA = {
   natRule: ['type', 'source', 'to', 'port', 'to_port', 'protocol'],
   wireless_controller: ['aps'],
   storage: ['protocols'],
-  application: ['name', 'ports'],
+  mqtt_broker: ['port', 'retry_interval'],
+  ptp: ['clock', 'profile', 'domain', 'interfaces', 'role', 'priority1', 'clock_class', 'clock_accuracy', 'variance', 'priority2', 'announce_interval', 'sync_interval', 'delay_req_interval', 'announce_receipt_timeout', 'clock_offset', 'drift', 'timestamping'],
+  /** an application instance: an entry of `services.applications` (the order of model/applications.ts APP_PARAMS) */
+  application: ['id', 'name', 'profile', 'port', 'peer', 'broker', 'client_id', 'publish', 'subscribe', 'qos', 'interval', 'count', 'start', 'payload_size', 'request_size', 'response_size', 'response_delay', 'timeout', 'retries', 'ip_version', 'keepalive', 'retry_interval', 'bind', 'description'],
   inspection: ['block'],
   /** two ports a device passes traffic between: an entry of `port_pairs` */
   portPair: ['a', 'b', 'direction', 'copy'],
@@ -72,9 +75,11 @@ export const SCHEMA = {
   dnsZone: ['name', 'records', 'simulation'],
   dnsRecord: ['name', 'type', 'value'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'vlans', 'native', 'routed', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  interface: ['id', 'label', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  /** a router interface's IPv6 router advertisements (`ipv6_ra:`) */
+  ipv6Ra: ['prefixes', 'dns', 'managed', 'other', 'autonomous', 'router_lifetime', 'interval', 'preferred_lifetime', 'valid_lifetime', 'dns_lifetime'],
   /** an interface's `multicast:` block, a group it joins written as a mapping, a stream it sends */
   multicast: ['join', 'streams'],
   mcJoin: ['group', 'sources'],

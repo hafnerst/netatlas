@@ -1129,6 +1129,21 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .svc-name { font-weight: 600; }
 .svc-btns { display: inline-flex; gap: 4px; }
+.app-card > summary .card-title { overflow-wrap: anywhere; }
+details.card.app-card > .adv-section, details.card.app-card > .app-actions, details.card.app-card > .field-err, details.card.app-card > .field-warn { margin: 4px 10px; }
+.adv-section { border-top: 1px dashed var(--border); padding-top: 2px; }
+.adv-section > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 3px 0; }
+.adv-section > .field { margin: 4px 0; }
+.app-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+/* what NetAtlas does for a protocol, service or profile (model/support.ts): closed until opened */
+.support-note { margin: 2px 0 6px; font-size: 12px; }
+.support-note > summary { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; color: var(--muted); list-style: none; border-radius: 4px; padding: 0 2px; }
+.support-note > summary::-webkit-details-marker { display: none; }
+.support-note > summary:hover { color: var(--text); }
+.support-note[data-support="drawn"] > summary, .support-note[data-support="configured"] > summary { font-style: italic; }
+.support-note .sup-i { font-style: normal; }
+.support-note > p { margin: 3px 0 0 4px; overflow-wrap: anywhere; }
+.support-note .sup-key { font-weight: 600; }
 .legend-badge { font-size: 11px; font-weight: 600; fill: var(--text); letter-spacing: 0.02em; }
 .sep-dirs { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .chips-ed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
@@ -1292,6 +1307,7 @@ table.sim-table tr[data-kind="wait"] td:nth-child(5), table.sim-table tr[data-ki
 .pp-item input { flex: none; width: 16px; height: 16px; margin: 0; }
 .pp-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .pp-uses { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pp-fid { flex: none; font-size: 11px; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; padding: 0 5px; }
 .psecs-title { flex: 1 1 auto; margin: 0; font-size: 13.5px; }
 .psecs-note { flex-basis: 100%; margin: 0; }
 .psec-caret { display: inline-block; width: 1.1em; color: var(--muted); transition: transform 0.12s; }
@@ -1480,6 +1496,15 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-querier[data-role="standby"] rect, .sim-querier[data-role="none"] rect { stroke: var(--muted); }
 .sim-querier[data-role="standby"] text, .sim-querier[data-role="none"] text { fill: var(--muted); font-weight: 500; }
 .sim-querier[data-role="none"] rect { stroke-dasharray: 2 2; }
+/* a PTP clock's role: the grandmaster stands out; synchronized calm; acquiring dashed; holdover and unsynchronized muted (the words say it, not the colour alone) */
+.sim-ptp rect { fill: var(--panel); stroke: var(--muted); stroke-width: 1.1; }
+.sim-ptp text { font-size: 9.5px; font-weight: 500; fill: var(--muted); }
+.sim-ptp[data-state="grandmaster"] rect { stroke: var(--accent); stroke-width: 1.6; }
+.sim-ptp[data-state="grandmaster"] text { fill: var(--accent); font-weight: 700; }
+.sim-ptp[data-state="synchronized"] rect { stroke: var(--accent); }
+.sim-ptp[data-state="synchronized"] text { fill: var(--text); font-weight: 600; }
+.sim-ptp[data-state="acquiring"] rect, .sim-ptp[data-state="listening"] rect { stroke-dasharray: 3 2; }
+.sim-ptp[data-state="holdover"] rect, .sim-ptp[data-state="unsynchronized"] rect { stroke-dasharray: 2 2; }
 /* a snooping switch's role per VLAN: one badge per VLAN with snooping enabled, a sign and words besides the colour */
 .sim-snoop-vlan rect { fill: var(--panel); stroke: var(--control-border); stroke-width: 1; }
 .sim-snoop-vlan text { font-size: 9.5px; font-weight: 500; fill: var(--text); }

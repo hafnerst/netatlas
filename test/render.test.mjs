@@ -141,7 +141,7 @@ test('logical view options: hide protocols, networks and group frames; there is 
 });
 
 test('representative protocol and tunnel rendering (built-in, alias, unknown, custom)', () => {
-  const text = `netatlas: 1
+  const text = `netatlas: 2
 protocols:
   - {id: quic-tun, category: tunnel, color: "#aa00aa"}
 devices:
@@ -176,7 +176,7 @@ relations:
 });
 
 test('untrusted text only ever becomes text nodes; class names are sanitized', () => {
-  const s = sessionFor(`netatlas: 1
+  const s = sessionFor(`netatlas: 2
 devices:
   - {id: a, label: "<img src=x onerror=alert(1)>", type: server}
   - {id: b, label: "</text><script>alert(2)</script>"}
@@ -207,7 +207,7 @@ test('layouts are deterministic', () => {
 });
 
 test('larger generated input renders within a reasonable time', () => {
-  let t = 'netatlas: 1\ngroups:\n';
+  let t = 'netatlas: 2\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: site${g}, kind: site}\n`;
   t += 'devices:\n';
   for (let i = 0; i < 300; i++) t += `  - {id: d${i}, type: ${i % 10 === 0 ? 'router' : 'switch'}, group: site${i % 10}, interfaces: ${i % 10 === 0 ? '[p1, p2, p3]' : '[{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]'}}\n`;

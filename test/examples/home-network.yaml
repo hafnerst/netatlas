@@ -21,7 +21,7 @@
 # Simulate ▾ → Start simulation…: the clients take their leases in their
 # own VLAN; the laptop's test to the internet leaves the model at cpe after
 # its PAT (Analyze ▾ → Trace path… shows the translation).
-netatlas: 1
+netatlas: 2
 title: Home network — CPE router with Wi-Fi
 description: |
   A CPE router with DHCP, DNS, NAT and Wireless access (Home, Guest, IoT on
@@ -106,33 +106,33 @@ devices:
     kind: pc
     group: home
     interfaces:
-      - {id: eth0, dhcp: true}
+      - {id: eth0, ipv4: dhcp}
   - id: laptop
     type: endpoint
     kind: pc
     group: home
     simulation: {test_traffic: "on", test_targets: "9.9.9.9 icmp", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: phone
     label: guest phone
     type: endpoint
     kind: mobile
     group: home
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: tv
     type: endpoint
     kind: media
     group: upstairs
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: thermostat
     type: endpoint
     kind: iot
     group: upstairs
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 
 links:
   - {id: l-wan, a: "isp:cpe", b: "cpe:wan", medium: fiber, speed: 1G}

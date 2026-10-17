@@ -17,6 +17,7 @@ import { parseAddress } from '../model/ip';
 import { Model, VLAN_MAX, VLAN_MIN } from '../model/types';
 import { vlanRangesText } from '../model/derive';
 import { PARAMS } from '../analysis/sim/params';
+import { APP_PARAMS } from '../model/applications';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { flowText } from '../yaml/write';
@@ -66,7 +67,7 @@ export const KEY_ORDER: { [k: string]: string[] } = SCHEMA;
 export type Origin = 'new' | 'file' | 'example';
 
 /** "New" starts from an empty model: nothing is created that the user did not choose. */
-export const NEW_MODEL_YAML = `netatlas: 1
+export const NEW_MODEL_YAML = `netatlas: 2
 title: New network
 `;
 
@@ -152,7 +153,7 @@ export class ModelDoc {
     const res = loadModel(text);
     if (!res.root) return { errors: res.errors };
     if (res.root.kind !== 'map') {
-      return { errors: [{ severity: 'error', line: res.root.line || 1, path: '', message: 'the document must be a mapping starting with "netatlas: 1"' }] };
+      return { errors: [{ severity: 'error', line: res.root.line || 1, path: '', message: 'the document must be a mapping starting with "netatlas: 2"' }] };
     }
     return { doc: new ModelDoc(res.root, fileName, origin), errors: [] };
   }
@@ -639,6 +640,7 @@ export class ModelDoc {
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
     const ik = ifaceSchemaKind(path);
     if (ik) return ik;
+    if (path.length === 5 && path[4] === 'ipv6_ra' && ifaceSchemaKind(path.slice(0, 4))) return 'ipv6Ra';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
@@ -673,7 +675,9 @@ export class ModelDoc {
         'nat/rules/#': 'natRule',
         wireless_controller: 'wireless_controller',
         storage: 'storage',
-        application: 'application',
+        'applications/#': 'application',
+        mqtt_broker: 'mqtt_broker',
+        ptp: 'ptp',
         inspection: 'inspection',
         'separation/domains/#': 'sepDomain',
         'separation/directions/#': 'sepDirection',
@@ -840,7 +844,7 @@ export class ModelDoc {
       return !!v && !(v.kind === 'seq' && !v.items.length);
     };
     // its management interface: a VLAN interface with an address (a Layer 2 switch's ports are switch ports, without addresses)
-    const mgmt = entries.find((e) => e.kind === 'logical' && e.type === 'virtual' && !has(e.path, 'members') && (has(e.path, 'ip') || this.text(e.path.concat('dhcp')) === 'true'));
+    const mgmt = entries.find((e) => e.kind === 'logical' && e.type === 'virtual' && !has(e.path, 'members') && (has(e.path, 'ip') || this.text(e.path.concat('ipv4')) === 'dhcp'));
     let mvrf: string | undefined;
     for (const e of entries) {
       const name = e.id || '?';
@@ -856,7 +860,7 @@ export class ModelDoc {
       if (has(e.path, 'ip')) add(e.path.concat('ip'), `${name}: addresses ${this.listTexts(e.path.concat('ip')).join(', ')}`);
       // a routed port becomes a switch port: it needs its VLANs then (they are not chosen for it)
       if (this.text(e.path.concat('routed')) === 'true') add(e.path.concat('routed'), `${name}: routed port (give it its VLANs)`);
-      if (this.text(e.path.concat('dhcp')) === 'true') add(e.path.concat('dhcp'), `${name}: dhcp`);
+      if (this.text(e.path.concat('ipv4')) === 'dhcp') add(e.path.concat('ipv4'), `${name}: ipv4: dhcp`);
       if (this.get(e.path.concat('vrf'))) add(e.path.concat('vrf'), `${name}: vrf ${this.text(e.path.concat('vrf'))}`);
     }
     const routes = this.get(dp.concat('routes'));
@@ -1469,6 +1473,144 @@ export class ModelDoc {
     });
   }
 
+  // ------------------------------------------------------------ applications
+
+  /** The path of a device's applications (`services.applications`). */
+  appsPath(devIndex: number): Path {
+    return ['devices', devIndex, 'services', 'applications'];
+  }
+
+  /** The ids of a device's applications as written, in file order. */
+  appIds(devIndex: number): string[] {
+    const n = this.get(this.appsPath(devIndex));
+    if (!n || n.kind !== 'seq') return [];
+    return n.items.map((_x, k) => this.text(this.appsPath(devIndex).concat(k, 'id')) || '');
+  }
+
+  private freeAppId(devIndex: number, base: string): string {
+    const taken = new Set(this.appIds(devIndex));
+    if (!taken.has(base)) return base;
+    const m = /^(.*?)(\d+)$/.exec(base);
+    const stem = m ? m[1] : base + '-';
+    for (let n = m ? Number(m[2]) + 1 : 2; ; n++) if (!taken.has(stem + n)) return stem + n;
+  }
+
+  /**
+   * Add an application to a device: an entry with a free id and a name
+   * (the profile is the user's choice: the editor focuses it). Creates
+   * the services block and the list when they are missing. One undo step;
+   * returns the entry's index.
+   */
+  addApplication(devIndex: number): number {
+    const lp = this.appsPath(devIndex);
+    return this.change('Add application', () => {
+      const id = this.freeAppId(devIndex, 'app1');
+      this.ensureMap(lp.slice(0, -1), this.orderFor(lp.slice(0, -2)));
+      const seq = this.ensureSeq(lp, false, this.orderFor(lp.slice(0, -1)));
+      seq.items.push(mapNode([['id', strNode(id)], ['name', strNode('Application ' + id.replace(/^app/, ''))]]));
+      return seq.items.length - 1;
+    });
+  }
+
+  /** Duplicate an application (a free id, "(copy)" in its name), right after it. One undo step; returns the copy's index. */
+  duplicateApplication(devIndex: number, k: number): number {
+    const lp = this.appsPath(devIndex);
+    const n = this.get(lp.concat(k));
+    if (!n || n.kind !== 'map') return -1;
+    return this.change('Duplicate application', () => {
+      const copy = cloneNode(n) as YMap;
+      const id = this.freeAppId(devIndex, (this.text(lp.concat(k, 'id')) || 'app') + '-2');
+      setKey(copy, 'id', strNode(id), KEY_ORDER.application);
+      const name = this.text(lp.concat(k, 'name'));
+      if (name) setKey(copy, 'name', strNode(name + ' (copy)'), KEY_ORDER.application);
+      const seq = this.get(lp) as YSeq;
+      seq.items.splice(k + 1, 0, copy);
+      return k + 1;
+    });
+  }
+
+  /**
+   * Where other applications name one ("device/app" as their peer), by
+   * path. A rename rewrites them; a removal lists them first.
+   */
+  applicationRefs(device: string, app: string): Path[] {
+    const out: Path[] = [];
+    this.entities('device').forEach((d) => {
+      const lp = this.appsPath(d.index);
+      const n = this.get(lp);
+      if (!n || n.kind !== 'seq') return;
+      n.items.forEach((_x, j) => {
+        if (this.text(lp.concat(j, 'peer')) === `${device}/${app}`) out.push(lp.concat(j, 'peer'));
+      });
+    });
+    return out;
+  }
+
+  /** The references to an application as lines for a confirmation ("hmi/poll (peer)"). */
+  applicationRefTexts(device: string, app: string): string[] {
+    return this.applicationRefs(device, app).map((p) => `${this.text(['devices', p[1], 'id']) || '?'}/${this.text(p.slice(0, 5).concat('id')) || '?'} (its peer)`);
+  }
+
+  /**
+   * Choose an application's profile: the fields that belong to no profile
+   * of its kind any more are removed with it (one undo step); returns their
+   * keys. Clearing the profile keeps everything (an error until it is chosen).
+   */
+  setAppProfile(appPath: Path, profile: string): string[] {
+    const gone: string[] = [];
+    this.change('Set application profile', () => {
+      if (!profile) {
+        this.removeAt(appPath.concat('profile'));
+        return;
+      }
+      const m = this.ensureMap(appPath, KEY_ORDER.application);
+      setKey(m, 'profile', strNode(profile), KEY_ORDER.application);
+      const v: { [k: string]: unknown } = {};
+      m.entries.forEach((e, k) => (v[k] = scalarText(e.value) !== undefined ? scalarText(e.value) : true));
+      for (const prm of APP_PARAMS) {
+        if (prm.when && m.entries.has(prm.key) && !prm.when(v)) {
+          gone.push(prm.key);
+          this.removeAt(appPath.concat(prm.key));
+        }
+      }
+    });
+    return gone;
+  }
+
+  /** Rename an application and every peer that names it. One undo step; returns the number of references updated. */
+  renameApplication(devIndex: number, k: number, newId: string): number {
+    const lp = this.appsPath(devIndex);
+    const dev = this.text(['devices', devIndex, 'id']) || '';
+    const old = this.text(lp.concat(k, 'id'));
+    return this.change('Rename application', () => {
+      const refs = old ? this.applicationRefs(dev, old) : [];
+      setKey(this.ensureMap(lp.concat(k), KEY_ORDER.application), 'id', strNode(newId), KEY_ORDER.application);
+      for (const p of refs) this.setAt(p, strNode(`${dev}/${newId}`));
+      return refs.length;
+    });
+  }
+
+  /**
+   * Remove an application. The peers that name it lose their value (they
+   * are reported as missing their peer until another is chosen); the list
+   * and an empty services block go with the last one. One undo step.
+   */
+  removeApplication(devIndex: number, k: number): void {
+    const lp = this.appsPath(devIndex);
+    const dev = this.text(['devices', devIndex, 'id']) || '';
+    const id = this.text(lp.concat(k, 'id'));
+    this.change('Remove application', () => {
+      const refs = id ? this.applicationRefs(dev, id) : [];
+      // (from the end: removing a key never shifts another reference's path)
+      for (const p of refs.reverse()) this.removeAt(p);
+      this.removeAt(lp.concat(k));
+      const left = this.get(lp);
+      if (left && left.kind === 'seq' && !left.items.length) this.removeAt(lp);
+      const b = this.get(['devices', devIndex, 'services']);
+      if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(['devices', devIndex, 'services']);
+    });
+  }
+
   /** The wireless connections that name a Wi-Fi network of a device ("link id"), in file order. */
   networkClients(device: string, network: string): string[] {
     const model = this.result.model;
@@ -1763,6 +1905,19 @@ export class ModelDoc {
           if (d === id && (iface === undefined || inf === iface)) out.push(lp.concat(k, 'destination'));
         });
       });
+      // applications: a peer that names the device (or one of its applications), an MQTT client's broker; a listener's bind interface
+      this.entities('device').forEach((dev) => {
+        const lp = this.appsPath(dev.index);
+        const n = this.get(lp);
+        if (!n || n.kind !== 'seq') return;
+        n.items.forEach((_x, j) => {
+          if (iface === undefined) {
+            const peer = this.text(lp.concat(j, 'peer'));
+            if (peer !== undefined && (peer === id || peer.indexOf(id + '/') === 0)) out.push(lp.concat(j, 'peer'));
+            if (this.text(lp.concat(j, 'broker')) === id) out.push(lp.concat(j, 'broker'));
+          } else if (dev.id === id && this.text(lp.concat(j, 'bind')) === iface) out.push(lp.concat(j, 'bind'));
+        });
+      });
       if (iface === undefined) {
         // a guest's host
         scalarRefs('devices', 'host', (t) => t === id);
@@ -1829,9 +1984,13 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks') {
+      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks' || last === 'bind') {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
+      } else if (last === 'peer') {
+        // an application's peer: the device, or "device/application"
+        const s = t.indexOf('/');
+        nt = s > 0 ? newId + t.slice(s) : newId;
       } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
@@ -2120,10 +2279,9 @@ export class ModelDoc {
 
   // --------------------------------------------------------------------- DHCP
 
-  /** Does the interface at `ipath` have `dhcp: true`? */
+  /** Does the interface at `ipath` obtain its IPv4 address by DHCP (`ipv4: dhcp`)? */
   dhcpOn(ipath: Path): boolean {
-    const n = this.get(ipath.concat('dhcp'));
-    return !!n && n.kind === 'scalar' && n.value === true;
+    return this.text(ipath.concat('ipv4')) === 'dhcp';
   }
 
   /** Can the interface at `ipath` use DHCP? Every physical and logical interface except a loopback. */
@@ -2131,25 +2289,32 @@ export class ModelDoc {
     return ifaceSchemaKind(ipath) === 'interface' || (ifaceSchemaKind(ipath) === 'logical' && this.text(ipath.concat('type')) !== 'loopback');
   }
 
+  /** The addresses written at an interface, as text. */
+  private ipTexts(ipath: Path): string[] {
+    const n = this.get(ipath.concat('ip'));
+    return !n ? [] : n.kind === 'seq' ? n.items.map((i) => scalarText(i) || '').filter((x) => x) : scalarText(n) !== undefined ? [scalarText(n) as string] : [];
+  }
+
   /**
    * What turning DHCP on for an interface would remove: its manually
-   * configured addresses and its DNS-name associations (`removed`: the name
-   * is associated with this interface only, so it would be removed too).
+   * configured IPv4 addresses (its IPv6 ones stay) and its DNS-name
+   * associations (`removed`: the name is associated with this interface
+   * only, so it would be removed too).
    */
   dhcpImpact(ipath: Path): DhcpImpact {
-    const n = this.get(ipath.concat('ip'));
-    const addresses = !n ? [] : n.kind === 'seq' ? n.items.map((i) => scalarText(i) || '').filter((x) => x) : scalarText(n) !== undefined ? [scalarText(n) as string] : [];
+    const addresses = this.ipTexts(ipath).filter((a) => a.indexOf(':') < 0);
     const iface = this.ifaceIdAt(ipath);
     return { addresses, dns: iface ? this.dnsAffected(ipath[1] as number, iface) : [] };
   }
 
   /**
-   * Turn DHCP on or off for an interface, as one undoable step. On: the
-   * manual addresses and the DNS-name associations of the interface are
-   * removed (see dhcpImpact; the UI asks first) and `dhcp: true` is written.
-   * Off: the key is removed (false is the format's default); nothing that
-   * was removed when it was turned on comes back. A loopback can't use
-   * DHCP: turning it on is refused (turning it off repairs a file that has it).
+   * Turn DHCP on or off for an interface's IPv4, as one undoable step. On:
+   * its manual IPv4 addresses and the DNS-name associations of the
+   * interface are removed (see dhcpImpact; the UI asks first) and
+   * `ipv4: dhcp` is written. Off: the key is removed (static is the
+   * format's default); nothing that was removed when it was turned on comes
+   * back. A loopback can't use DHCP: turning it on is refused (turning it
+   * off repairs a file that has it).
    */
   setDhcp(ipath: Path, on: boolean): void {
     const kind = ifaceSchemaKind(ipath);
@@ -2157,12 +2322,14 @@ export class ModelDoc {
     const iface = this.ifaceIdAt(ipath);
     this.change(on ? 'Turn DHCP on' : 'Turn DHCP off', () => {
       if (!on) {
-        this.removeAt(ipath.concat('dhcp'));
+        this.removeAt(ipath.concat('ipv4'));
         return;
       }
       if (iface) this.dropDnsRefs(ipath[1] as number, iface);
+      const keep = this.ipTexts(ipath).filter((a) => a.indexOf(':') >= 0);
       this.removeAt(ipath.concat('ip'));
-      this.setAt(ipath.concat('dhcp'), boolNode(true), KEY_ORDER[kind]);
+      if (keep.length) this.setAt(ipath.concat('ip'), keep.length === 1 ? strNode(keep[0]) : seqNode(keep.map((x) => strNode(x)), true), KEY_ORDER[kind]);
+      this.setAt(ipath.concat('ipv4'), strNode('dhcp'), KEY_ORDER[kind]);
     });
   }
 

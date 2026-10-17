@@ -78,7 +78,7 @@ test('equal-cost paths share a demand equally', () => {
 });
 
 test('a one-way cable: traffic only from end a to end b — the tracer never uses it backwards, and its dots run a → b', () => {
-  const m = model(`netatlas: 1
+  const m = model(`netatlas: 2
 devices:
   - {id: r1, type: router, interfaces: [{id: e0, ip: 10.0.0.1/30}]}
   - {id: r2, type: router, interfaces: [{id: e0, ip: 10.0.0.2/30}]}
@@ -101,7 +101,7 @@ demands:
   assert.deepEqual(T.orientCables(m, ['l1'], 'r2'), []);
   assert.deepEqual(T.orientCables(m, ['l1'], 'r1'), [{ ref: 'link:l1', from: 'a', to: 'b' }]);
   // the format: anything else than the two directions is an error
-  const bad = validate.loadModel(`netatlas: 1\ndevices: [{id: a}, {id: b}]\nlinks:\n  - {id: l1, a: a, b: b, direction: oneway}\n`);
+  const bad = validate.loadModel(`netatlas: 2\ndevices: [{id: a}, {id: b}]\nlinks:\n  - {id: l1, a: a, b: b, direction: oneway}\n`);
   assert.match(bad.errors[0].message, /unknown direction "oneway": use "bidirectional" \(the default\) or "unidirectional" \(from end a to end b\)/);
 });
 
@@ -160,7 +160,7 @@ test('deterministic: another order of the file, earlier runs and the failure ord
 });
 
 test('the demands section: its form is checked; an end that names nothing is a warning, never an error', () => {
-  const base = 'netatlas: 1\ndevices:\n  - {id: r1, type: router, interfaces: [{id: e0, ip: 10.0.0.1/30}]}\n';
+  const base = 'netatlas: 2\ndevices:\n  - {id: r1, type: router, interfaces: [{id: e0, ip: 10.0.0.1/30}]}\n';
   const msgs = (d) => {
     const r = validate.loadModel(base + 'demands:\n' + d);
     return { errors: r.errors.map((e) => e.message), warnings: r.warnings.map((e) => e.message), demands: r.model ? r.model.demands : [] };

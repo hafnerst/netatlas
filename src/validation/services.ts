@@ -23,6 +23,7 @@ import { Device, Interface, Model, ServiceInstance, WIFI_SECURITY, WirelessNetwo
 import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, Reader, get, isNull, suggest } from './reader';
+import { AppNodes, readApplications } from './applications';
 
 /** Where a device's services were written (for the checks with the whole model). */
 export interface ServiceNodes {
@@ -32,6 +33,8 @@ export interface ServiceNodes {
   /** a parameter that names devices or interfaces, to check once all are known */
   refs: Array<{ kind: 'devices' | 'interface' | 'interfaces'; values: string[]; node: YNode; path: string }>;
   wireless?: { node: YMap; path: string; networks: Array<{ net: WirelessNetwork; node: YMap; path: string }> };
+  /** its application instances (validation/applications.ts) */
+  apps?: AppNodes;
 }
 
 /** A placeholder for a secret: `<name>` or `${NAME}` (never the secret itself). */
@@ -58,6 +61,7 @@ export function readServiceBlock(r: Reader, c: Ctx, n: YNode | undefined, path: 
         continue;
       }
       if (def.id === 'wireless') readWireless(r, c, get(m, key) as YNode, `${path}.${key}`, dev, nodes);
+      else if (def.id === 'applications') nodes.apps = readApplications(r, c, get(m, key) as YNode, `${path}.${key}`, dev, nodes);
       else if (!def.custom) {
         const inst = readGeneric(r, c, def, get(m, key) as YNode, `${path}.${key}`, nodes);
         if (inst) {
@@ -100,7 +104,7 @@ function readGeneric(r: Reader, c: Ctx, def: SvcDef, n: YNode, path: string, nod
 }
 
 /** The parameters of a service (or one entry), checked by type; required ones (always, or by the others' values) are errors when missing. */
-function readParams(r: Reader, c: Ctx, params: SvcParam[], m: YMap | null, owner: YNode, path: string, nodes: ServiceNodes, what: string): SvcValues {
+export function readParams(r: Reader, c: Ctx, params: SvcParam[], m: YMap | null, owner: YNode, path: string, nodes: ServiceNodes, what: string): SvcValues {
   const v: SvcValues = {};
   for (const p of params) {
     const node = m ? get(m, p.key) : undefined;
@@ -194,6 +198,8 @@ function readValue(r: Reader, c: Ctx, p: SvcParam, n: YNode, path: string, nodes
       }
       return raw;
     }
+    case 'topics':
+      return list();
     case 'duration': {
       const t = text();
       if (t === undefined) return undefined;

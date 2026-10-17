@@ -28,7 +28,7 @@ const run = (s, o, ms = 8000) => {
 };
 
 /** pc — r1 — r2 — srv (r1 – r2 a /30), a firewall-free path; extra YAML per device. */
-const CHAIN = (x = {}) => `netatlas: 1
+const CHAIN = (x = {}) => `netatlas: 2
 title: chain
 devices:
   - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]${x.pc || ''}}
@@ -86,10 +86,10 @@ test('lists: ports and targets are parsed, normalized and checked; on / off may 
   assert.deepEqual(Pm.parseValue(Pm.paramDef('ping'), false), { value: 'off' });
   assert.equal(Pm.formatValue(allow, ''), 'nothing more');
   // in the model: a YAML list works too; a wrong entry is an error with the device's path
-  const ok = validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - {id: fw, type: firewall, simulation: {allow: [tcp/22, icmp], default_action: reject, stateful: false}}\n`);
+  const ok = validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - {id: fw, type: firewall, simulation: {allow: [tcp/22, icmp], default_action: reject, stateful: false}}\n`);
   assert.deepEqual(ok.errors, []);
   assert.deepEqual(Array.from(ok.model.devices[0].simulation), [['fw-allow', 'tcp/22, icmp'], ['fw-action', 'reject'], ['fw-stateful', 'off']]);
-  const bad = validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - {id: s, type: server, simulation: {listening: "tcp/http", allow: tcp/22}}\n`);
+  const bad = validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - {id: s, type: server, simulation: {listening: "tcp/http", allow: tcp/22}}\n`);
   assert.equal(bad.errors.length, 2);
   assert.match(bad.errors[0].message, /Listening services has "tcp\/http"/);
   assert.match(bad.errors[1].message, /"allow" \(also permits\) does not apply to "s"/);
@@ -221,7 +221,7 @@ test('TCP keepalive: a connection kept open is probed after the keepalive time; 
 
 // ------------------------------------------------------------------ firewalls
 
-const FW = (fw = '', srv = '') => `netatlas: 1
+const FW = (fw = '', srv = '') => `netatlas: 2
 title: fw
 devices:
   - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
@@ -316,7 +316,7 @@ test('Send test…: to a device, an interface, an address, a subnet broadcast an
   assert.equal(s.tests()[0], tcp);
 });
 
-const LB = (pool = '') => `netatlas: 1
+const LB = (pool = '') => `netatlas: 2
 title: lb
 devices:
   - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.5/24}]}
@@ -365,7 +365,7 @@ test('load balancer: health checks keep its pool; round robin, then persistence 
 });
 
 test('monitoring: a manager pings the agents it polls by SNMP every ICMP probe interval; one powered off is unreachable', () => {
-  const s = sim(`netatlas: 1
+  const s = sim(`netatlas: 2
 title: mon
 devices:
   - {id: nms, type: system, purpose: host, interfaces: [{id: eth0, ip: 10.0.0.1/24}], simulation: {icmp_probe_interval: 5}}
@@ -385,7 +385,7 @@ relations:
 
 // ------------------------------------------------------------------ broadcast
 
-const LAN = (sw = '', r = '') => `netatlas: 1
+const LAN = (sw = '', r = '') => `netatlas: 2
 title: lan
 devices:
   - {id: sw1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]${sw}}
@@ -510,7 +510,7 @@ test('the packet inspector: each dot’s frame layer by layer (MACs, VLAN tag, I
 });
 
 test('a wireless client silent for its access point’s idle timeout is disassociated; its next frame waits for a beacon and the association', () => {
-  const s = sim(`netatlas: 1
+  const s = sim(`netatlas: 2
 title: wifi
 devices:
   - {id: ap, type: ap, services: {wireless: {networks: [{id: lan, ssid: LAN, untagged: true, radio: w, security: open}]}}, interfaces: [{id: w, simulation: {beacon_interval: 100ms}}, up], simulation: {client_idle_timeout: 20}}
@@ -529,7 +529,7 @@ links:
 });
 
 test('BGP’s TCP connection retransmits its SYN by the Layer 4 parameters, then the ConnectRetry timer tries again', () => {
-  const Y = `netatlas: 1
+  const Y = `netatlas: 2
 title: bgp
 devices:
   - {id: a, type: router, interfaces: [{id: g0, ip: 10.0.0.1/30}], protocols: {bgp: {asn: 65001}}}
@@ -587,7 +587,7 @@ test('Send test… to a multicast group: a multicast frame on the segment, no IC
 test('the Edit tab writes a list attribute as one text (and reads a YAML list); the Simulation section lists the attributes of the device’s type', () => {
   const D = load('editor/document.js');
   const At = load('analysis/sim/attrs.js');
-  const d = D.ModelDoc.fromText(`netatlas: 1\ntitle: t\ndevices:\n  - id: fw\n    type: firewall\n    interfaces: [{id: in, ip: 10.0.0.1/24}]\n  - id: lb\n    type: load_balancer\n`, 't.yaml', 'file').doc;
+  const d = D.ModelDoc.fromText(`netatlas: 2\ntitle: t\ndevices:\n  - id: fw\n    type: firewall\n    interfaces: [{id: in, ip: 10.0.0.1/24}]\n  - id: lb\n    type: load_balancer\n`, 't.yaml', 'file').doc;
   d.setSimAttr(0, 'allow', 'tcp/443, udp/53');
   d.setSimAttr(0, 'default_action', 'reject');
   assert.match(d.exportText(), /allow: tcp\/443, udp\/53|allow: "tcp\/443, udp\/53"/);

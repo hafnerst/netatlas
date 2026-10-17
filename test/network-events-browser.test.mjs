@@ -42,7 +42,7 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 640]]) 
         obj: !!document.getElementById('sim-obj'), shows: /Show /.test(net.textContent),
         after: !!(net.compareDocumentPosition(document.getElementById('sim-act-events')) & Node.DOCUMENT_POSITION_FOLLOWING),
         none: document.getElementById('sim-failed').textContent }; })()`);
-      assert.deepEqual(S.actions, [['Send network packets', 'true', 'sim-ne-send'], ['Join multicast group', 'false', 'sim-ne-join'], ['Leave multicast group', 'false', 'sim-ne-leave'], ['Start multicast stream', 'false', 'sim-ne-stream'], ['Interface actions', 'false', 'sim-ne-iface']]);
+      assert.deepEqual(S.actions, [['Send network packets', 'true', 'sim-ne-send'], ['Join multicast group', 'false', 'sim-ne-join'], ['Leave multicast group', 'false', 'sim-ne-leave'], ['Start multicast stream', 'false', 'sim-ne-stream'], ['Interface actions', 'false', 'sim-ne-iface'], ['Start application', 'false', 'sim-ne-app']]);
       assert.deepEqual([S.heading, S.obj, S.shows, S.after], [true, false, false, true]);
       assert.equal(S.none, 'None yet: start one above, or from the diagram’s menus.');
       // the tables stay where they belong: the device's menu, the panel's status side

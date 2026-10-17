@@ -5,7 +5,7 @@
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
-import { LEASE_PLACEHOLDER } from '../model/addresses';
+import { IPV6_PLACEHOLDER, LEASE_PLACEHOLDER } from '../model/addresses';
 import { ENTITY_KINDS, EditLocked, EntityKind, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
@@ -976,6 +976,17 @@ export class App {
       const g = t.closest('[data-ref]');
       const mark = leases && g ? leases.get(g.getAttribute('data-ref') as string) : undefined;
       const text = mark || LEASE_PLACEHOLDER;
+      if (t.textContent !== text) t.textContent = text;
+      t.classList.toggle('lease-on', !!mark);
+    }
+    // automatic IPv6 in a simulation, in its reserved line
+    const v6 = this.simulation && this.simulation.ipv6Marks ? this.simulation.ipv6Marks() : null;
+    const v6lines = this.viewport.querySelectorAll('[data-field="ipv6"]');
+    for (let i = 0; i < v6lines.length; i++) {
+      const t = v6lines[i];
+      const g = t.closest('[data-ref]');
+      const mark = v6 && g ? v6.get(g.getAttribute('data-ref') as string) : undefined;
+      const text = mark || IPV6_PLACEHOLDER;
       if (t.textContent !== text) t.textContent = text;
       t.classList.toggle('lease-on', !!mark);
     }

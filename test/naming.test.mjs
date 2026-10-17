@@ -53,7 +53,7 @@ test('the surfaces read it from the registry: the device box, the legend, the De
   const Q = load('model/queries.js');
   assert.ok(Q.search(m, 'vpn gateway').some((h) => h.ref === 'device:' + gw.id));
   // a validation message, the tracer, the simulation
-  const errs = validate.loadModel(`netatlas: 1\ndevices:\n  - {id: g1, type: vpn_gateway, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n`).errors.map((e) => e.message);
+  const errs = validate.loadModel(`netatlas: 2\ndevices:\n  - {id: g1, type: vpn_gateway, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n`).errors.map((e) => e.message);
   assert.ok(errs.some((e) => /^VPN gateway "g1" needs the configuration of its VPN/.test(e)), errs.join('\n'));
   const T = load('analysis/trace.js');
   const t = T.tracePath(m, { from: 'hq-pc', to: '192.0.2.10' });
@@ -65,7 +65,7 @@ test('the surfaces read it from the registry: the device box, the legend, the De
 });
 
 test('a model is unchanged: type vpn_gateway, its behaviour, and a label a user wrote with "VPN Gateway" in it', () => {
-  const text = `netatlas: 1\ndevices:\n  - id: g1\n    label: Acme VPN Gateway 1\n    type: vpn_gateway\n    interfaces: [{id: e0, ip: 10.0.0.1/24}]\n`;
+  const text = `netatlas: 2\ndevices:\n  - id: g1\n    label: Acme VPN Gateway 1\n    type: vpn_gateway\n    interfaces: [{id: e0, ip: 10.0.0.1/24}]\n`;
   const r = validate.loadModel(text);
   assert.equal(r.model.devices[0].type, 'vpn_gateway');
   assert.equal(r.model.devices[0].label, 'Acme VPN Gateway 1');

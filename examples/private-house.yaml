@@ -58,12 +58,26 @@
 # to that member. The core routes no multicast (no PIM), so nothing reaches
 # the other VLANs.
 #
+# Dual stack: the Internal network is IPv4 and IPv6. The core's VLAN 10
+# interface has a second address, fd00:10::1/64 (a unique local prefix: the
+# provider gives the house no IPv6 here), and sends router advertisements for
+# fd00:10::/64; the laptop and the phone form their IPv6 address from it
+# (SLAAC, with duplicate address detection) and learn the core as their IPv6
+# default router, while DHCP still gives them their IPv4 lease. The other
+# networks stay IPv4 only.
+#
+# Applications: the thermostat is an Endpoint and stays one, yet runs two
+# applications: Local control, a TCP listener on port 8080 the TV (same IoT
+# network) may reach, and Cloud sync, a TCP client of the web server's HTTPS
+# application every 30 s (allowed by the IoT zone's relation). Network events
+# → Start application starts either client.
+#
 # Simulate ▾ → Start simulation…: the leases (each client in its network's
 # VLAN), the laptop's NAS session by name, HTTPS to the web server from every
 # zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by
 # the DSL router. Fail l-core-dist: both upper-floor access points lose
 # their uplink.
-netatlas: 1
+netatlas: 2
 title: Private house — three floors, Wi-Fi on VLANs
 description: |
   A DSL modem/router with NAT and a firewall, a Layer 3 switch in the
@@ -111,9 +125,8 @@ devices:
     tier: 9
     group: provider
     services:
-      application:
-        name: Web
-        ports: [tcp/443]
+      applications:
+        - {id: web, name: Web, profile: tcp_server, port: 443}
     interfaces:
       - {id: eth0, ip: 203.0.113.80/24}
   - id: dsl-router
@@ -170,7 +183,7 @@ devices:
       - {id: up2, vlans: [10, 20, 30, 99], description: to the Second-floor switch}
       - {id: nas, vlans: 10}
     logical_interfaces:
-      - {id: Vlan10, type: virtual, vlan: 10, ip: 192.168.10.1/24}
+      - {id: Vlan10, type: virtual, vlan: 10, ip: [192.168.10.1/24, fd00:10::1/64], ipv6_ra: {prefixes: [fd00:10::/64]}}
       - {id: Vlan20, type: virtual, vlan: 20, ip: 192.168.20.1/24, vrf: iot}
       - {id: Vlan30, type: virtual, vlan: 30, ip: 192.168.30.1/24, vrf: guest}
       - {id: Vlan99, type: virtual, vlan: 99, ip: 192.168.99.1/24}
@@ -276,15 +289,18 @@ devices:
     kind_label: Smart TV
     group: basement
     simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
+    services:
+      applications:
+        - {id: control, name: Thermostat control, profile: tcp_client, peer: thermostat/control, interval: 30s}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: phone
     type: endpoint
     tier: 4
     kind: mobile
     group: floor1
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp, ipv6: slaac}
   - id: guest-phone
     type: endpoint
     tier: 4
@@ -292,7 +308,7 @@ devices:
     group: floor1
     simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: laptop
     type: endpoint
     tier: 2
@@ -300,15 +316,19 @@ devices:
     group: floor2
     simulation: {test_traffic: "on", test_targets: "nas.home.arpa tcp/445, 203.0.113.80 tcp/443", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp, ipv6: slaac}
   - id: thermostat
     type: endpoint
     tier: 2
     kind: other
     kind_label: Thermostat
     group: floor2
+    services:
+      applications:
+        - {id: control, name: Local control, profile: tcp_server, port: 8080}
+        - {id: sync, name: Cloud sync, profile: tcp_client, peer: web/web, interval: 30s}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 
 links:
   - {id: l-dsl, a: "dsl-router:wan", b: "isp:house", medium: dsl, speed: 100M, label: VDSL2 (PPPoE)}

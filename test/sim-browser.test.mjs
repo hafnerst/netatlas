@@ -122,7 +122,7 @@ test('the simulation layout: setup and actions in place of the Objects list and 
     assert.equal(L.detach, false, 'the panel has nothing to detach or close it');
     assert.equal(L.scroll, 0);
     assert.equal(L.obj, false, 'no object to choose first');
-    assert.deepEqual(L.acts, ['Send network packets', 'Join multicast group', 'Leave multicast group', 'Start multicast stream', 'Interface actions'], 'the five actions, whatever is selected');
+    assert.deepEqual(L.acts, ['Send network packets', 'Join multicast group', 'Leave multicast group', 'Start multicast stream', 'Interface actions', 'Start application'], 'the six actions, whatever is selected');
     // the panel: by default its header and three rows of each table, which is also its minimum; the diagram is the largest part
     const h0 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
     const cw = await page.eval(`document.getElementById('canvas-wrap').getBoundingClientRect().height`);

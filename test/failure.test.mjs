@@ -19,7 +19,7 @@ const model = (text) => {
 const not = (m) => [...m.entries()].filter(([, s]) => s !== 'up').sort((a, b) => (a[0] < b[0] ? -1 : 1));
 
 // two routers joined by a LAG of two cables (min_links 2 on one side) and a third cable; a VRRP pair over a LAN; GRE over IPsec over the third cable; OSPF over GRE
-const net = `netatlas: 1
+const net = `netatlas: 2
 devices:
   - id: r1
     type: router
@@ -127,7 +127,7 @@ test('a failed cable or relation fails everything that runs over it, recursively
 });
 
 test('a relation of more than two devices is degraded while two are left; a network with no member left is down', () => {
-  const m = model(`netatlas: 1
+  const m = model(`netatlas: 2
 devices:
   - {id: a, type: router, interfaces: [{id: e, ip: 10.0.0.1/24}]}
   - {id: b, type: router, interfaces: [{id: e, ip: 10.0.0.2/24}]}
@@ -211,7 +211,7 @@ test('single points of failure: cables and devices that partition, a LAG listed 
   const w = (x) => x.isolated.reduce((n, g) => n + g.length, 0) + x.relations.length;
   for (let i = 1; i < s.length; i++) assert.ok(w(s[i - 1]) >= w(s[i]));
   // a ring has none
-  const ring = model(`netatlas: 1
+  const ring = model(`netatlas: 2
 devices:
   - {id: a, type: switch, interfaces: [{id: x, vlans: 1}, {id: y, vlans: 1}]}
   - {id: b, type: switch, interfaces: [{id: x, vlans: 1}, {id: y, vlans: 1}]}
