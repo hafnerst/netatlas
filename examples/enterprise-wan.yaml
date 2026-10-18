@@ -443,3 +443,30 @@ relations:
     label: SLA probe
     direction: unidirectional
     endpoints: [muc-rtr, hq-rtr1]
+
+# Design checks (Analyze ▾ → Design checks…): the firewall must log to the
+# log server (syslog, UDP 514 as the profile has it), also without HQ rack A
+# (one of the two core switches: the equal-cost path over the other
+# remains), and Munich must not open SSH to the log server (the firewall
+# permits what the relations through it name). Single points of failure →
+# What if… the HQ core room: both core switches fail together, and the
+# firewall's logging becomes unavailable.
+failure_domains:
+  - {id: hq-rack-a, label: HQ rack A, kind: rack, members: [hq-core1]}
+  - {id: hq-core-room, label: HQ core room, kind: room, members: [hq-core1, hq-core2]}
+
+expectations:
+  - {id: fw-logs, name: The firewall logs to the log server, expect: available, from: hq-fw, to: hq-log, service: udp/514}
+  - id: fw-logs-rack-a
+    name: The firewall logs without rack A
+    expect: available
+    from: hq-fw
+    to: hq-log
+    service: udp/514
+    failure: [hq-rack-a]
+  - id: muc-no-ssh
+    name: Munich can't open SSH to the log server
+    expect: blocked
+    from: "muc-rtr:lan0"
+    to: hq-log
+    service: tcp/22

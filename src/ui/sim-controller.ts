@@ -62,6 +62,7 @@ import { TestForm } from './sim-test-form';
 import { AppForm, IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
+import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { Flight, Headers, McDecision, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces } from '../model/types';
@@ -1691,6 +1692,18 @@ export class SimController implements SimulationMode {
   }
 
   // ------------------------------------------------------------ Send test
+
+  /** An analysis's handoff: Send network packets, open and prefilled (nothing is sent until Send). */
+  prefillSend(p: { from: string; via?: string; address: string; kind: TestKind; port?: number }): void {
+    if (!this.testForm) return;
+    this.openSection('sim-ne-send');
+    this.testForm.prefill(p);
+  }
+
+  /** The simulation's state now, frozen for analysis (it never changes after this). */
+  snapshot(): AnalysisSnapshot {
+    return this.sim.snapshot();
+  }
 
   /** Send network packets… from a device's menu: that form of Network events, open, with the device as the source. */
   sendTestFrom(dev: string): void {

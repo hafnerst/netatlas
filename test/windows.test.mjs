@@ -50,12 +50,13 @@ test('the table as CSV (quoted where needed) and as text', () => {
   const rows = W.spofRows(wan, F.singlePointsOfFailure(wan));
   const csv = W.spofCsv(rows);
   const lines = csv.trim().split('\n');
-  assert.equal(lines[0], 'element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,impact');
+  assert.equal(lines[0], 'element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,context');
   assert.equal(lines.length, rows.length + 1);
   assert.match(csv, /^hq-fw,Device,"hq-acc1, hq-core1, hq-core2, hq-log/m);
   const text = W.spofText(wan, rows);
-  assert.match(text, /^Single points of failure — Enterprise WAN — HQ and two branches over VPN\n\d+ single points of failure, most impact first\./);
-  assert.match(text, /Device hq-fw \(impact \d+\)\n  cuts off: hq-acc1, hq-core1, hq-core2, hq-log/);
+  assert.match(text, /^Single points of failure — Enterprise WAN — HQ and two branches over VPN\n\d+ single points of failure, most structural impact first\./);
+  assert.match(text, /Device hq-fw \(structural impact \d+\)\n  cuts off: hq-acc1, hq-core1, hq-core2, hq-log/);
+  assert.match(text, /  services unavailable: not checked\n/, 'the service impact is not claimed before it is checked');
   // a model without any
   const ring = validate.loadModel(example('metro-ring.yaml')).model;
   const none = W.spofRows(ring, []);
@@ -67,7 +68,7 @@ test('Trace path: the hop table’s columns; the tool windows’ commands (F6, C
   const cmds = new Map(C.buildCommands().map((c) => [c.id, c]));
   assert.equal(C.keyLabel(cmds.get('window.focus').keys), 'F6');
   assert.equal(cmds.get('window.focus').keys.whileTyping, true, 'F6 works while typing in a field');
-  for (const id of ['analyze.addressing', 'focus.window', 'trace.open', 'analyze.spof', 'sim.start']) assert.match(cmds.get(id).label, /…$/, id);
+  for (const id of ['analyze.addressing', 'focus.window', 'trace.open', 'analyze.spof', 'analyze.checks', 'sim.start']) assert.match(cmds.get(id).label, /…$/, id);
   assert.equal(C.keyLabel(cmds.get('analyze.addressing').keys), 'I');
   assert.equal(C.keyLabel(cmds.get('focus.window').keys), 'Shift+F');
   assert.equal(C.keyLabel(cmds.get('trace.open').keys), 'T');

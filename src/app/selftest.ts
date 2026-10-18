@@ -1209,10 +1209,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const ov = addressingOverview(m);
       const listings = ov.vrfs.reduce((s, g) => s + g.networks.length, 0);
       check(
-        'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, use, utilization, next free and free ranges; the filter has the focus',
+        'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, hosts, allocation, the next unallocated address and the unallocated ranges; the context line says what it evaluates; the filter has the focus',
         dlgOpen() && rows().length === listings && doc.querySelectorAll('#toolwin .addr-vrf').length === ov.vrfs.length && /Default table/.test(q('#toolwin .addr-vrf h3')!.textContent || '') &&
-          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Used / size', 'Utilization', 'Next free', 'Free ranges'].every((h) => (q('#toolwin .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
-          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#toolwin .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /0\.8 %/.test(q('#toolwin .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#toolwin .addr-row[data-addr-net="corp6"]')!.textContent || ''),
+          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Hosts', 'Allocated', 'Next unallocated', 'Unallocated in model'].every((h) => (q('#toolwin .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
+          /^Context: Configured model · Entire architecture$/.test(q('#toolwin .an-ctx-line')!.textContent || '') &&
+          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#toolwin .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /1\.2 %/.test(q('#toolwin .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#toolwin .addr-row[data-addr-net="corp6"]')!.textContent || ''),
         `${rows().length} rows / ${listings}`,
       );
       // utilization is text, not only a bar
@@ -1248,8 +1249,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       tog.click();
       await tick();
       check(
-        'a network’s members open below it (aria-expanded): device, interface, address, DNS name, DHCP',
-        hiddenBefore && !mrow.hidden && tog.getAttribute('aria-expanded') === 'true' && /dist/.test(mrow.textContent || '') && /10\.10\.10\.3\/24/.test(mrow.textContent || '') && /DHCP/.test(mrow.textContent || ''),
+        'a network’s members open below it (aria-expanded): device, interface, address, how it is obtained, DNS name',
+        hiddenBefore && !mrow.hidden && tog.getAttribute('aria-expanded') === 'true' && /dist/.test(mrow.textContent || '') && /10\.10\.10\.3\/24/.test(mrow.textContent || '') && /How/.test(mrow.textContent || '') && /Configured/.test(mrow.textContent || ''),
       );
       tog.click();
       await tick();
@@ -1290,13 +1291,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="edit"]');
       await tick();
       const nf = q('#side-body [data-next-free-field] select') as HTMLSelectElement | null;
-      check('Edit tab: an interface offers the next free address of a network of its VRF', !!nf && Array.from(nf.options).some((o) => o.value === 'mgmt' && /→ 10\.20\.0\.1\/24/.test(o.textContent || '')), nf ? Array.from(nf.options).map((o) => o.textContent).join(' | ') : 'none');
+      // (10.20.0.1 is the router's address in VRF MGMT on the same segment: one address space, so it is not offered)
+      check('Edit tab: an interface offers the next unallocated address of a network of its VRF, not one another VRF uses on its segment', !!nf && Array.from(nf.options).some((o) => o.value === 'mgmt' && /→ 10\.20\.0\.2\/24/.test(o.textContent || '')), nf ? Array.from(nf.options).map((o) => o.textContent).join(' | ') : 'none');
       if (nf) {
         nf.value = 'mgmt';
         (q('#side-body [data-act="add-next-free"]') as HTMLElement).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 11 }));
         await tick();
       }
-      check('“+ Add” appends that address to the interface (one undo step)', /- \{id: eth0, ip: \[10\.20\.0\.10\/24, 10\.20\.0\.1\/24\]/.test(app.exportText()) || /10\.20\.0\.1\/24/.test(app.exportText().slice(app.exportText().indexOf('id: srv'))), app.exportText().slice(app.exportText().indexOf('id: srv'), app.exportText().indexOf('id: srv') + 200));
+      check('“+ Add” appends that address to the interface (one undo step)', /- \{id: eth0, ip: \[10\.20\.0\.10\/24, 10\.20\.0\.2\/24\]/.test(app.exportText()) || /10\.20\.0\.2\/24/.test(app.exportText().slice(app.exportText().indexOf('id: srv'))), app.exportText().slice(app.exportText().indexOf('id: srv'), app.exportText().indexOf('id: srv') + 200));
       app.undo();
       await tick();
       check('… undo removes it', app.exportText() === yamlBefore);
@@ -1494,7 +1496,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const text = q('#trace-text') ? q('#trace-text')!.textContent || '' : '';
       check(
         'Trace: the banner names the path, that it is reached, the equal-cost alternatives and the return path',
-        !(q('#mode-banner') as HTMLElement).hidden && !(q('#mb-trace') as HTMLElement).hidden && /Path trace: muc-rtr:lan0 → hq-log · Reached hq-log:eno1 in 4 hops · 2 equal-cost paths/.test(text) && /return path: Reached muc-rtr:lan0/.test(text),
+        !(q('#mode-banner') as HTMLElement).hidden && !(q('#mb-trace') as HTMLElement).hidden && /Path trace: muc-rtr:lan0 → hq-log · Reachable within scope: 2 evaluated paths reach hq-log:eno1/.test(text) && /return path: Reachable within scope: 1 evaluated path reaches muc-rtr:lan0/.test(text),
         text,
       );
       const mainSec = q('#toolwin [data-trace-path="trace-main"]') as HTMLElement;
@@ -1549,7 +1551,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       md.remove(['devices', md.findEntity('device', 'hq-log')!.index, 'routes'], 'Remove routes');
       (app as unknown as { afterEdit(n?: string): void }).afterEdit();
       await tick();
-      check('after an edit the trace is computed again: without its default route the server has no way back', /return path: Stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      // an edit does not compute it again behind the user's back: the result is marked outdated; Refresh computes it on the model as it is now
+      check('after an edit the result is marked outdated (the banner and the window say so), not computed again', /outdated: the model changed/.test(q('#trace-text')!.textContent || '') && !!q('#toolwin .an-outdated [data-an-refresh]') && /return path: Reachable within scope/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      (q('#toolwin [data-an-refresh]') as HTMLElement).click();
+      await tick();
+      check('Refresh computes it again: without its default route the server has no way back', /return path: Blocked: 1 evaluated path stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || '') && !q('#toolwin .an-outdated'), q('#trace-text')!.textContent || '');
       app.undo();
       await tick();
       // Esc ends it; the form keeps what was typed
@@ -2199,8 +2205,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…; Simulate holds Start simulation… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof' && menuIds('simulate-menu').join(' ') === 'sim.start sim.exit',
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.exit',
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -2220,10 +2226,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         'Analyze → Single points of failure… opens a tool window: role dialog without aria-modal, labelled by its title, with a close button; the filter has the focus; the diagram stays usable',
         app.toolWindow() === 'spof' && win.getAttribute('role') === 'dialog' && !win.hasAttribute('aria-modal') && win.getAttribute('aria-labelledby') === 'tw-title' && q('#tw-title')!.textContent === 'Single points of failure' && !!q('#toolwin .tw-close[aria-label]') && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open,
       );
+      // the service impact is checked in steps (the page stays usable): wait for it
+      for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
       const heads = Array.from(doc.querySelectorAll('#toolwin .spof-table thead th')).map((h) => (h.textContent || '').replace(/[▲▼]/g, '').trim());
       check(
-        'what counts as a single point of failure is explained; the table: element, type, cuts off, relations down, impact (most impact first), Show in diagram',
-        /cuts devices off from the rest of the physical network/.test(win.textContent || '') && heads.slice(0, 5).join('|') === 'Element|Type|Cuts off|Relations down|Impact' && rows().length > 5 && q('#toolwin [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')),
+        'what counts as a single point of failure is explained; the table: element, type, cuts off, relations down, structural impact (most first), service impact, Show in diagram',
+        /cuts devices off, brings down relations/.test(win.textContent || '') && /an object count, not a business criticality or a probability/.test(win.textContent || '') && heads.slice(0, 6).join('|') === 'Element|Type|Cuts off|Relations down|Structural impact|Service impact' && app.spofServiceDone() && rows().length > 5 && q('#toolwin [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')),
         heads.join('|'),
       );
       const impacts = rows().map((r) => parseInt((r.querySelector('td.num') as HTMLElement).textContent || '0', 10));
@@ -2245,7 +2253,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
       const csv = spofCsv(spofRows(app.session!.model, singlePointsOfFailure(app.session!.model)));
-      check('the table as CSV: a header and a line per row', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,impact\n/.test(csv) && csv.trim().split('\n').length === impacts.length + 1);
+      check('the table as CSV: a header and a line per structural single point', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,context\n/.test(csv) && csv.trim().split('\n').length === singlePointsOfFailure(app.session!.model).length + 1);
       // F6 / Shift+F6: the focus region by region: the left panel, the diagram, the right panel, the tool window
       (q('#canvas') as unknown as HTMLElement).focus();
       const regionOf = (): string => (['outline', 'canvas-wrap', 'side', 'sim-dock', 'toolwin'].find((id) => (q('#' + id) as HTMLElement).contains(doc.activeElement)) || 'none');
@@ -6023,6 +6031,141 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       if (before === null) html.removeAttribute('data-theme');
       else html.setAttribute('data-theme', before);
+    }
+
+    // ------------------------------------------------ Analyze as architecture validation: verdicts, layers, evidence, snapshots, design checks, what if, contextual focus
+    {
+      app.loadExampleNamed('ot-network.yaml');
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      // an application to its peer: the service from the listener, layer by layer, verdict first
+      app.setTraceForm({ from: 'hmi/poll', to: '', service: '', vrf: 'auto', back: false });
+      app.runTrace();
+      await tick();
+      const verdict = q('#trace-verdict') as HTMLElement | null;
+      const layers = Array.from(doc.querySelectorAll('#toolwin .comm-layers > li[data-layer]')).map((l) => `${l.getAttribute('data-layer')}:${(l.className.match(/v-(\w+)/) || [])[1]}`);
+      check(
+        'Trace path: an application end takes its peer’s transport and port; the verdict comes first (a mark and words), then the layers: addresses, path, policy, listener, and runtime behaviour as not established',
+        !!verdict && verdict.getAttribute('data-verdict') === 'satisfied' && verdict.getAttribute('role') === 'status' && /Reachable within scope/.test(verdict.textContent || '') && layers.join(' ') === 'address:satisfied path:satisfied policy:satisfied listener:satisfied runtime:unsupported' && /TCP 502 \(the listener plc\/registers\)/.test(q('#toolwin .trace-ends')!.textContent || ''),
+        layers.join(' '),
+      );
+      // "Why this hop?": the evidence row opens under its hop, said by aria-expanded
+      const why = q('#toolwin [data-trace-path="trace-main"] [data-why]') as HTMLButtonElement | null;
+      const row = why ? doc.getElementById(why.getAttribute('aria-controls') as string) : null;
+      const closedBefore = !!row && row.hidden;
+      if (why) why.click();
+      await tick();
+      check('“Why?” opens the hop’s decision evidence (aria-expanded): the lookup, the selected route and why it won, the layer-2 way', !!why && closedBefore && why.getAttribute('aria-expanded') === 'true' && !!row && !row.hidden && /Lookup/.test(row.textContent || '') && /Layer 2/.test(row.textContent || ''));
+      // a closed port: reachable, but nothing listens; the layer says it
+      app.setTraceForm({ from: 'hmi', to: 'plc', service: 'tcp/9999' });
+      app.runTrace();
+      await tick();
+      check('a reachable address without a listener is not a success: the listener layer is violated, the path satisfied', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Reachable, but nothing listens on TCP 9999 at plc/.test(q('#trace-verdict')!.textContent || '') && !!q('#toolwin .comm-layers > li[data-layer="path"].v-satisfied') && !!q('#toolwin .comm-layers > li[data-layer="listener"].v-violated'));
+      check('the context line says the configured model; no simulation was started by a check', /^Context: Configured model · Selected endpoints$/.test(q('#toolwin .an-ctx-line')!.textContent || '') && !app.simulationOn() && app.exportText() === yamlBefore);
+      // both themes: the verdicts' marks in the theme's colours, never colour alone (a mark and words)
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const bg = doc.defaultView!.getComputedStyle(q('#toolwin') as Element).backgroundColor;
+        const mark = q('#toolwin .comm-layers > li[data-layer="listener"] .v-mark') as HTMLElement | null;
+        const ok = q('#toolwin .comm-layers > li[data-layer="path"] .v-mark') as HTMLElement | null;
+        const col = mark ? doc.defaultView!.getComputedStyle(mark).color : bg;
+        check(`${theme} theme: a verdict is a mark and words in the theme’s colours (✕ violated and ✓ satisfied differ from the background and from each other)`, !!mark && !!ok && /✕/.test(mark.textContent || '') && /✓/.test(ok.textContent || '') && col !== bg && col !== doc.defaultView!.getComputedStyle(ok).color && /Destination listener/.test(mark.parentElement!.textContent || ''));
+      }
+      app.theme.set('dark');
+      await tick();
+      app.exitTrace();
+      app.closeToolWindow();
+      await tick();
+      // contextual focus: the dependencies of the PLC's applications (configured, not proof of reachability)
+      app.select('device:plc');
+      app.openFocusWindow();
+      await tick();
+      const ctxBtn = q('#toolwin [data-focus-ctx*="\\"app\\""]') as HTMLElement | null;
+      check('Focus: contextual actions that apply to the selection only (the PLC: its application and service dependencies)', !!ctxBtn && /Application and service dependencies/.test(ctxBtn.textContent || ''));
+      if (ctxBtn) ctxBtn.click();
+      await tick();
+      const shown = app.session!.shownDevices();
+      check('the dependencies are shown (the broker and the HMI), the banner says it is configured structure; Exit focus ends it', shown.has('edge') && shown.has('hmi') && shown.has('plc') && /not proof that they reach each other/.test(q('#mode-text')!.textContent || '') && (q('#focus-more') as HTMLButtonElement).disabled);
+      app.exitFocus();
+      app.closeToolWindow();
+      await tick();
+      check('… and the complete diagram is back', !app.session!.state.focus && app.session!.shownDevices().size === app.session!.model.devices.length);
+      // Design checks: add an expectation with the form (one undo step), evaluate it statically
+      app.openDesignChecks();
+      await tick();
+      check('Analyze → Design checks… opens a tool window: the example’s saved expectations, not evaluated until Evaluate (nothing runs on its own), the consistency findings; Evaluate has the focus', app.toolWindow() === 'checks' && /^3 saved expectations, not evaluated yet.$/.test(q('#dc-status')!.textContent || '') && doc.activeElement === q('#dc-evaluate') && !!q('#dc-find-h') && !app.simulationOn());
+      (q('#dc-add') as HTMLElement).click();
+      await tick();
+      const setF = (id: string, v: string): void => {
+        const i = q('#' + id) as HTMLInputElement;
+        i.value = v;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      check('Add expectation: the basic form (name, outcome, source, destination, failure condition) with the rest collapsed under Advanced; the name has the focus', doc.activeElement === q('#dc-f-name') && !!q('#dc-f-expect') && !!q('#dc-f-from') && !!q('#dc-f-to') && !!q('#dc-f-failure') && !(q('#toolwin .dc-adv') as HTMLDetailsElement).open);
+      setF('dc-f-name', 'Polling the PLC');
+      setF('dc-f-from', 'hmi/poll');
+      (q('#dc-f-save') as HTMLElement).click();
+      await tick();
+      const rowE = q('#toolwin tr[data-exp="polling-the-plc"]') as HTMLElement | null;
+      check('saved with the model (one undo step) and evaluated: Satisfied, with its reason', /expectations:\n {2}- \{?id: polling-the-plc/.test(app.exportText()) || /id: polling-the-plc/.test(app.exportText()), app.exportText().slice(app.exportText().indexOf('expectations:'), app.exportText().indexOf('expectations:') + 160));
+      check('… its row: the verdict chip (a mark and words), the expectation, the reason', !!rowE && /Satisfied/.test(rowE.textContent || '') && /hmi\/poll → its configured peer/.test(rowE.textContent || '') && /Reachable within scope/.test(rowE.textContent || ''));
+      app.undo();
+      await tick();
+      check('undo removes it again', app.exportText() === yamlBefore);
+      app.closeToolWindow();
+      await tick();
+      // Single points of failure: a failure domain added in the window, then what if it fails
+      app.openSpof();
+      for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
+      check('the service impact of every candidate is checked; the coverage line says so', /Service impact: Checked all \d+ candidates, against \d+ configured dependenc/.test(q('#spof-progress')!.textContent || ''), q('#spof-progress')!.textContent || '');
+      (q('#dom-add') as HTMLElement).click();
+      await tick();
+      setF('dom-f-label', 'Edge shelf');
+      setF('dom-f-members', 'edge');
+      (q('#dom-f-save') as HTMLElement).click();
+      await tick();
+      check('a failure domain is added by its explicit members (one undo step)', app.session!.model.failureDomains.length === 2 && app.session!.model.failureDomains[1].id === 'edge-shelf' && app.session!.model.failureDomains[1].members.join() === 'edge' && /id: edge-shelf/.test(app.exportText()));
+      const sel = q('#wi-domain') as HTMLSelectElement;
+      sel.value = 'cell-cabinet';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      (q('#wi-go') as HTMLElement).click();
+      await tick();
+      check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q('#toolwin .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#wi-result .an-ctx-line')!.textContent || ''));
+      app.undo();
+      await tick();
+      check('undo removes the domain; the what-if result is marked outdated, not computed again', app.exportText() === yamlBefore && !!q('#wi-result .an-outdated'));
+      app.closeToolWindow();
+      await tick();
+      // a snapshot: the guest's address from its lease, the policy's decision
+      app.loadExampleNamed('private-house.yaml');
+      await tick();
+      app.setTraceForm({ from: 'guest-phone', to: 'core', service: 'tcp/22', vrf: 'auto', back: false });
+      app.runTrace();
+      await tick();
+      check('configured model: a DHCP client has no address yet: Indeterminate, with the reason (not a guess)', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'indeterminate' && /takes its IPv4 address by DHCP at runtime/.test(q('#trace-verdict')!.textContent || ''));
+      app.startProtocolSimulation({ protocols: protocolEntriesOf(app.session!.model).map((e) => e.id), params: {}, senders: [] });
+      await tick();
+      const ctl = app.simController()!;
+      ctl.setPlaying(false);
+      ctl.runTo(30000);
+      ctl.refresh(true);
+      await tick();
+      app.openTrace();
+      app.runTrace();
+      await tick();
+      check('a simulation snapshot (the default while one runs): the lease is the source, the firewall’s policy blocks SSH; the context says the snapshot’s time', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Blocked by policy/.test(q('#trace-verdict')!.textContent || '') && /DHCPv4/.test(q('#toolwin .comm-layers > li[data-layer="address"]')!.textContent || '') && /^Context: Simulation snapshot at t = \d+ s · Selected endpoints$/.test(q('#toolwin .an-ctx-line')!.textContent || '') && !!q('#toolwin [data-an-source="snapshot"][aria-checked="true"]'), `${(q('#trace-verdict') as HTMLElement).textContent} | ${(q('#toolwin .an-ctx-line') || { textContent: 'no context' }).textContent}`);
+      check('the handoff prepares the same exchange in Network events, prefilled, nothing sent', !!q('#trace-handoff') && !(q('#trace-handoff') as HTMLButtonElement).disabled && (() => {
+        const before = ctl.sim.actions().length;
+        (q('#trace-handoff') as HTMLElement).click();
+        return ctl.sim.actions().length === before && (q('#sim-t-addr') as HTMLInputElement).value === '192.168.10.1' && (q('#sim-t-port') as HTMLInputElement).value === '22';
+      })(), `${q('#trace-handoff') ? (q('#trace-handoff') as HTMLButtonElement).disabled + ' ' + q('#trace-handoff')!.getAttribute('title') : 'no button'} | addr ${(q('#sim-t-addr') as HTMLInputElement | null)?.value} port ${(q('#sim-t-port') as HTMLInputElement | null)?.value} to ${(q('#sim-t-to') as HTMLSelectElement | null)?.value} kind ${(q('#sim-t-kind') as HTMLSelectElement | null)?.value}`);
+      app.exitTrace();
+      app.closeToolWindow();
+      app.exitSimulation();
+      await tick();
+      app.mdoc!.markSaved();
     }
 
     const perf = (doc.defaultView as Window).performance;

@@ -78,8 +78,9 @@ test('no third-party runtime code: every bundled module comes from src/', () => 
 
 test('reasonable size, and the examples, the manual and the license are embedded', () => {
   // one self-contained page with every example, the manual's screenshots and the license embedded; a sanity limit, not a budget
-  // (5 MiB since virtualization: the Hypervisor and Container engine services' editing, the hosts' interiors, the simulation of virtual networking, its example and manual sections)
-  assert.ok(html.length < 5 * 1024 * 1024, `${html.length} bytes`);
+  // (5 MiB since virtualization: the Hypervisor and Container engine services' editing, the hosts' interiors, the simulation of virtual networking, its example and manual sections;
+  //  6 MiB since the architecture-validation workflow: communication checks, allocation-aware addressing, service dependencies, what-if, failure domains, saved expectations and Design checks)
+  assert.ok(html.length < 6 * 1024 * 1024, `${html.length} bytes`);
   // the screenshots are small, cropped WebP images: together under 1040 KiB as data: URLs (the manual's simulation sections added some: the packet inspector, a broadcast domain, the simulation layout and the Device types filter; then a port's VLANs, and the port labels in the diagrams; then virtualization: a host's interior, its Services card and the HA restart in a simulation; then the Send test form; then a device's applications and the PTP clocks' marks)
   const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
   assert.ok(images.length >= 8, String(images.length));

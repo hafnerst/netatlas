@@ -296,13 +296,25 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       app.openTrace();
       app.runTrace();
       await tick();
+      // every evidence row and layer evidence open: the widest the window gets
+      for (const b of Array.from(doc.querySelectorAll('#toolwin [data-why]')) as HTMLElement[]) b.click();
+      for (const d of Array.from(doc.querySelectorAll('#toolwin details')) as HTMLDetailsElement[]) d.open = true;
+      await tick();
       checkWindow('Trace path');
       app.openSpof();
+      for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
+      app.runWhatIf(['hq-core1']);
       await tick();
       checkWindow('Single points of failure');
+      app.openDesignChecks();
+      app.refreshDesignChecks();
+      await tick();
+      for (const d of Array.from(doc.querySelectorAll('#toolwin details')) as HTMLDetailsElement[]) d.open = true;
+      await tick();
+      checkWindow('Design checks');
       app.closeToolWindow();
       await tick();
-      state('the tool windows (addressing, focus, trace path, single points of failure) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
+      state('the tool windows (addressing, focus, trace path with its evidence, single points of failure with a what-if, design checks) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
       // Start simulation…: its dialog with every layer's section open fits the window; nothing in it is wider than the dialog
       {
         const why: string[] = [];

@@ -350,3 +350,22 @@ relations:
   - {id: web-internal, protocol: https, label: Internet (Internal), endpoints: [laptop, phone, web]}
   - {id: web-iot, protocol: https, label: Internet (IoT), endpoints: [tv, thermostat, web]}
   - {id: web-guest, protocol: https, label: Internet (Guest), endpoints: [guest-phone, web]}
+
+# Design checks (Analyze ▾ → Design checks…): requirements kept with the
+# model and checked statically, nothing sent. The guests must not manage an
+# access point; the laptop resolves names with the DSL router and reaches the
+# NAS; the TV's control application reaches the thermostat. Every client
+# takes its address by DHCP, so in the configured model these are
+# indeterminate (the address is assigned at runtime); evaluated on a
+# simulation snapshot (Start simulation, then Evaluate) they have their leases
+# and the guests' SSH is blocked by the DSL router's policy. Single points of
+# failure → What if… Basement power: the DSL router, the core and the
+# basement access point fail together.
+failure_domains:
+  - {id: basement-power, label: Basement power, kind: power, members: [dsl-router, core, ap-b]}
+
+expectations:
+  - {id: guest-no-mgmt, name: Guests can't manage the access points, expect: blocked, from: guest-phone, to: "ap-b:mgmt", service: tcp/22}
+  - {id: laptop-dns, name: The laptop resolves names, expect: available, from: laptop, to: dsl-router/dns}
+  - {id: laptop-nas, name: The laptop reaches the NAS, expect: available, from: laptop, to: nas, service: tcp/445}
+  - {id: tv-control, name: The TV controls the thermostat, expect: dependency, from: tv/control}

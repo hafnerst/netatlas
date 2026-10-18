@@ -1221,6 +1221,77 @@ table.spof-table thead th { white-space: nowrap; }
 table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overflow-wrap: normal; }
 .th-sort { border: 0; background: none; padding: 0; font-weight: 600; color: inherit; }
 .th-sort:hover { text-decoration: underline; }
+/* the Analyze windows' shared parts: context line, outdated notice, verdicts (a mark and words, never colour alone), limits */
+.an-context { display: grid; gap: 4px; margin: 6px 0 8px; }
+.an-context .an-source { justify-self: start; }
+.an-ctx-line { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.an-ctx-k { font-weight: 600; }
+.an-outdated { margin: 0; padding: 4px 8px; border-left: 3px solid var(--warn); background: var(--raised); color: var(--text); }
+.an-outdated > span { color: var(--warn); }
+.an-verdict { margin: 8px 0 6px; overflow-wrap: anywhere; }
+.an-verdict .v-mark, .comm-layers .v-mark { display: inline-block; min-width: 1.1em; font-weight: 700; }
+.v-satisfied > .v-mark, .an-verdict.v-satisfied .v-mark, .an-chip.v-satisfied { color: var(--ok); }
+.v-violated > .v-mark, .an-verdict.v-violated .v-mark, .an-chip.v-violated { color: var(--error); }
+.v-partial > .v-mark, .an-verdict.v-partial .v-mark, .an-chip.v-partial, .v-beyond > .v-mark, .an-verdict.v-beyond .v-mark, .an-chip.v-beyond { color: var(--warn); }
+.v-indeterminate > .v-mark, .an-verdict.v-indeterminate .v-mark, .an-chip.v-indeterminate, .v-unsupported > .v-mark, .an-chip.v-unsupported { color: var(--muted); }
+.an-chip { display: inline-block; padding: 0 6px; border: 1px solid currentColor; border-radius: 9px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.an-coverage.partial { color: var(--warn); }
+.an-limits { margin: 8px 0; }
+.an-limits summary { cursor: pointer; color: var(--link); font-size: 12px; }
+.an-limits ul { margin: 2px 0 6px; padding-left: 18px; }
+.an-lim-h { margin: 6px 0 0; font-weight: 600; }
+/* Trace path: the effective ends, the layers, the evidence of a hop */
+.trace-ends { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 4px 0 8px; }
+.trace-ends dt { color: var(--muted); }
+.trace-ends dd { margin: 0; overflow-wrap: anywhere; }
+.trace-pick { margin-left: 6px; max-width: 100%; }
+.comm-layers { list-style: none; margin: 4px 0 8px; padding: 0; display: grid; gap: 3px; }
+.comm-layers > li { overflow-wrap: anywhere; }
+.comm-layers .layer-ev { margin: 2px 0 2px 1.4em; }
+.layer-ev summary { cursor: pointer; color: var(--link); font-size: 11.5px; }
+.layer-ev ul { margin: 2px 0; padding-left: 16px; }
+.comm-legs { margin: 4px 0; padding-left: 18px; }
+.trace-end.beyond { color: var(--warn); }
+.hop-table .why-btn { display: block; margin-top: 2px; font-size: 11px; padding: 0 4px; white-space: nowrap; }
+.hop-table th.th-n { white-space: nowrap; }
+table.hop-table tr.hop-why td { background: var(--raised); border-bottom-style: dashed; }
+.why-box { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 2px 0; }
+.why-box dt { color: var(--muted); font-weight: 600; }
+.why-box dd { margin: 0; overflow-wrap: anywhere; }
+/* the Addressing overview's allocation bar: host use, DHCP pools, subnets (in the table's text too) */
+.alloc-bar { display: flex; }
+.alloc-bar > span { display: block; height: 100%; }
+.alloc-bar > .ab-host { background: var(--accent); }
+.alloc-bar > .ab-pool { background: var(--warn); }
+.alloc-bar > .ab-sub { background: var(--muted); }
+.addr-legend { max-width: 70em; }
+/* Design checks */
+.dc-section { margin-top: 6px; }
+.dc-table th .dc-name { font-weight: 600; }
+.dc-detail-box { padding: 4px 0 6px; }
+.dc-shared-box { margin: 6px 0; padding: 4px 8px; border-left: 3px solid var(--warn); background: var(--raised); }
+.dc-shared { margin: 2px 0; padding-left: 18px; }
+.dc-form { border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.dc-form .tf-row.dc-row { grid-template-columns: 8.5em minmax(0, 1fr); }
+.dc-findings { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 4px; }
+.dc-finding { overflow-wrap: anywhere; }
+.dc-finding .dc-class { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.02em; }
+.dc-finding .sev { font-size: 11px; color: var(--muted); }
+.dc-finding.sev-error .sev { color: var(--error); }
+.dc-finding.sev-warning .sev { color: var(--warn); }
+.dc-group summary { cursor: pointer; }
+/* Single points of failure: progress, what if, failure domains */
+.spof-progress { margin: 2px 0 4px; }
+.wi-section .tf-row.dc-row { grid-template-columns: 5em minmax(0, 1fr); }
+.wi-result { margin: 6px 0; }
+.wi-group { margin: 4px 0; }
+.wi-group summary { cursor: pointer; font-weight: 600; font-size: 12.5px; }
+.wi-group ul { margin: 2px 0 4px; padding-left: 18px; }
+.wi-domains { margin-top: 10px; }
+.wi-dom-list { padding-left: 18px; }
+.wi-dom-list .mini { margin-left: 4px; }
+.focus-ctx { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 6px 0; }
+.focus-ctx > p { flex: 1 1 100%; margin: 0; }
 /* the Focus window */
 .focus-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
 .focus-sel { overflow-wrap: anywhere; }

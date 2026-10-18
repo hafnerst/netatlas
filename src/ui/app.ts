@@ -33,13 +33,23 @@ import { hostOf, isGuest, machineOf } from '../model/virtual';
 import { DEVICE_TYPES, deviceTypeInText, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf } from '../model/device-types';
 import { isLayer2Switch, capabilities, ROUTING_PROTOCOL_TYPES } from '../model/capabilities';
 import { Issue } from '../validation/validate';
-import { SEVERITIES, Severity, checkById } from '../analysis/checks';
-import { addressingOverview } from '../analysis/addressing';
-import { focusSeeds } from '../analysis/focus';
-import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, traceText } from '../analysis/trace';
-import { TraceForm, TraceRun, formRequest, newTraceForm, traceSummary, traceWindowBody } from './trace';
-import { FailureResult, failureRefs, singlePointsOfFailure } from '../analysis/failure';
-import { SpofRow, SpofSort, newSpofViewState, shownSpofRows, spofBody, spofCsv, spofRows, spofTable, spofText } from './spof';
+import { Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
+import { AddressingOverview, addressingOverview } from '../analysis/addressing';
+import { FocusContext, contextFocus, focusContexts, focusSeeds } from '../analysis/focus';
+import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
+import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
+import { CommRequest, checkCommunication } from '../analysis/communication';
+import type { AnalysisSnapshot } from '../analysis/snapshot';
+import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
+import { modelFingerprint } from '../model/fingerprint';
+import { ContextBarState, contextBar } from './analysis-ui';
+import { DesignView, ExpectForm, ShownFinding, designBody, designCsv, designText, formOf, newExpectForm } from './design-checks';
+import { ExpectationRun, evaluateExpectations } from '../analysis/expectations';
+import { classCounts, groupFindings } from '../analysis/findings';
+import { FailureResult, ReachScope, Spof, SpofCandidate, failureRefs, simulate, singlePointsOfFailure, spofCandidates } from '../analysis/failure';
+import { DepChange, DepState, ServiceDependency, compareDependencies, dependencyBaseline, serviceDependencies } from '../analysis/dependencies';
+import { WhatIf, whatIf } from '../analysis/whatif';
+import { DomainForm, SpofRow, SpofSort, SpofView, WhatIfForm, newSpofViewState, newWhatIfForm, progressLine, shownSpofRows, spofBody, spofCsv, spofRows, spofTable, spofText, whatIfText } from './spof';
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
@@ -503,6 +513,8 @@ export class App {
       // keep the diagram selection in step with the editor
       if (this.session) this.session.select(this.editor.selectedRef());
       this.render();
+      // an open Analyze window shows its result as computed, marked outdated when the edit concerns it (Refresh computes it again)
+      if (model) this.refreshWindow();
     }
     this.renderOutline();
     // a new entry opens in the Edit tab, with its outline row in view
@@ -2399,6 +2411,26 @@ export class App {
   private focusHops = 1;
 
   /**
+   * A contextual focus (the Focus window's actions for the selection): the
+   * devices of a VLAN, of the dependencies of a device's applications and
+   * services, of a multicast group, of a timing domain. Configured structure,
+   * not proof of reachability; Exit focus (Esc) ends it like any focus.
+   */
+  enterContextFocus(c: FocusContext): boolean {
+    const s = this.session;
+    const ref = s ? s.state.selected : null;
+    if (!s || !ref) return false;
+    const was = s.state.focus;
+    if (!was) this.zoomBeforeFocus = { k: this.zoom.k, tx: this.zoom.tx, ty: this.zoom.ty };
+    if (!s.setFocus(ref, this.focusHops, c)) return false;
+    this.render();
+    this.updateChrome();
+    this.fit();
+    this.renderFocusWindow();
+    return true;
+  }
+
+  /**
    * Analyze → Focus… (Shift+F): the Focus window, with the selection, its
    * 1–3 hops, Focus and Exit focus. `apply`: focus on the selection at once
    * (when it can be focused).
@@ -2428,7 +2460,9 @@ export class App {
     const sel = s.state.selected;
     const f = s.state.focus;
     const blocked = !sel ? 'Select an object first: in the diagram or the object list' : !this.canFocus(sel) ? 'The selection has no device to start from' : f && f.ref === sel && f.hops === this.focusHops ? 'Focus mode shows this already' : '';
-    const body = focusWindowBody(this.doc, { selected: sel ? this.refName(sel) : '', blocked, hops: this.focusHops, note: this.focusNote() });
+    const contexts = sel ? focusContexts(s.model, sel) : [];
+    const active = f && f.context ? JSON.stringify(f.context) : '';
+    const body = focusWindowBody(this.doc, { selected: sel ? this.refName(sel) : '', blocked, hops: this.focusHops, note: this.focusNote(), contexts: contexts.map((c) => ({ key: JSON.stringify(c.ctx), label: c.label, on: JSON.stringify(c.ctx) === active })) });
     const pick = (n: number): void => {
       this.focusHops = n;
       const cur = s.state.focus;
@@ -2442,6 +2476,12 @@ export class App {
       const h = t.closest('[data-focus-hops]');
       if (h) pick(Number(h.getAttribute('data-focus-hops')));
       else if (t.closest('#focus-go')) this.enterFocus(s.state.selected, this.focusHops);
+      else if (t.closest('[data-focus-ctx]')) {
+        const key = (t.closest('[data-focus-ctx]') as Element).getAttribute('data-focus-ctx') as string;
+        this.enterContextFocus(JSON.parse(key) as FocusContext);
+        const b = this.doc.querySelector(`[data-focus-ctx='${key}']`) as HTMLElement | null;
+        if (b) b.focus();
+      }
       else if (t.closest('#focus-exit-w')) this.exitFocus();
     });
     // the hops are a radio group: the arrow keys move between them
@@ -2493,6 +2533,7 @@ export class App {
     const s = this.session;
     const f = s ? s.state.focus : null;
     if (!s || !f) return '';
+    if (f.context) return `Focus: ${contextFocus(s.model, f.context).note} · ${s.shownDevices().size} of ${s.model.devices.length} devices`;
     const sense = s.state.view === 'physical' ? 'cables' : 'relations';
     return `Focus: ${this.refName(f.ref)} and what is within ${f.hops} hop${f.hops === 1 ? '' : 's'} (${sense}${this.simulation ? ' that are up in the simulated state' : ''}) · ${s.shownDevices().size} of ${s.model.devices.length} devices`;
   }
@@ -2501,7 +2542,11 @@ export class App {
   private traceNote(): string {
     const r = this.currentTrace();
     if (!r) return '';
-    let note = `Path trace${this.simulation ? ' in the simulated state' : ''}: ${r.req.from} → ${r.req.to}${r.req.vrf !== undefined ? ' (' + (r.req.vrf ? 'VRF ' + r.req.vrf : 'default table') + ')' : ''} · ${traceSummary(r.trace)}`;
+    const run = this.traceRun;
+    const where = run && run.snap ? ` on the simulation snapshot at ${simTimeText(run.snap.at)}` : '';
+    // (the banner says the path; where the check's verdict differs (a policy, a listener), it says that too)
+    const overall = run && run.check.verdict !== traceVerdict(r.trace) ? ` · overall: ${verdictText(run.check.verdict, 'reach')}` : '';
+    let note = `Path trace${where}: ${r.req.from} → ${r.req.to}${r.req.vrf !== undefined ? ' (' + (r.req.vrf ? 'VRF ' + r.req.vrf : 'default table') + ')' : ''} · ${traceSummary(r.trace)}${overall}${this.traceOutdated() ? ' · outdated: the model changed' : ''}`;
     if (r.trace.paths.length > 1) note += ' (alternatives dashed)';
     if (r.back) note += ' · return path: ' + (r.back.error ? 'not traced' : traceSummary(r.back)) + ' (dotted)';
     return note;
@@ -3274,6 +3319,9 @@ export class App {
       case 'addressing':
         this.renderAddressingWindow();
         break;
+      case 'checks':
+        this.renderDesignChecks();
+        break;
 
     }
   }
@@ -3298,37 +3346,239 @@ export class App {
 
   /** the Single points of failure table's sort and filter (kept while the page is open; never saved) */
   private spofState = newSpofViewState();
-  /** its rows, for one model */
-  private spofCache: { model: Model; rows: SpofRow[] } | null = null;
+  /**
+   * the report for one model: the structural single points at once, then the
+   * service impact of every candidate, checked in steps (time-sliced, never
+   * blocking the page; Stop ends it, the coverage says how far it got)
+   */
+  private spofJob: {
+    model: Model;
+    spofs: Spof[];
+    cands: SpofCandidate[];
+    deps: ServiceDependency[];
+    baseline: Map<string, DepState> | null;
+    service: Map<string, DepChange[]>;
+    next: number;
+    running: boolean;
+    cancelled: boolean;
+    timer: number | null;
+    rows: SpofRow[] | null;
+  } | null = null;
+  private wiForm: WhatIfForm = newWhatIfForm();
+  private wiRun: { model: Model; result: WhatIf } | null = null;
+  private domForm: DomainForm | null = null;
+
+  /** The job for the model on screen (a new one when the model changed). */
+  private spofJobNow(): NonNullable<App['spofJob']> {
+    const s = this.session as Session;
+    const j = this.spofJob;
+    // (an edit leaves the report as computed, marked outdated: Refresh, or another model, starts a new one)
+    if (j && (j.model === s.model || !this.outdatedSince(j.model) || this.toolWindow() === 'spof')) return j;
+    if (j && j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
+    const cands = spofCandidates(s.model);
+    const spofs = singlePointsOfFailure(s.model);
+    this.spofJob = { model: s.model, spofs, cands, deps: serviceDependencies(s.model), baseline: null, service: new Map(), next: 0, running: false, cancelled: false, timer: null, rows: null };
+    return this.spofJob;
+  }
 
   private spofRowsNow(): SpofRow[] {
-    const s = this.session as Session;
-    if (!this.spofCache || this.spofCache.model !== s.model) this.spofCache = { model: s.model, rows: spofRows(s.model, singlePointsOfFailure(s.model)) };
-    return this.spofCache.rows;
+    const j = this.spofJobNow();
+    if (!j.rows) j.rows = spofRows(j.model, j.spofs, j.next > 0 ? j.service : null, j.cands);
+    return j.rows;
+  }
+
+  /** Check the service impact of the candidates, a slice at a time (about 40 ms each), until done or stopped. */
+  private stepSpofJob(): void {
+    const j = this.spofJob;
+    const win = this.doc.defaultView;
+    if (!j || !this.session || j.cancelled) return;
+    if (j.model !== this.session.model) {
+      // the model changed: the report stays as far as it got, outdated
+      j.running = false;
+      j.cancelled = true;
+      j.timer = null;
+      j.rows = null;
+      this.renderSpofTable();
+      return;
+    }
+    j.running = true;
+    if (!j.baseline) j.baseline = dependencyBaseline(j.model, j.deps);
+    const t0 = Date.now();
+    while (j.next < j.cands.length && Date.now() - t0 < 40) {
+      const c = j.cands[j.next++];
+      // (no configured dependency: nothing becomes unavailable, checked)
+      if (!j.deps.length) {
+        j.service.set(c.ref, []);
+        continue;
+      }
+      const res = simulate(j.model, c.fail);
+      const hit = new Set(Array.from(failureRefs(res).keys()));
+      j.service.set(c.ref, compareDependencies(j.model, j.deps, j.baseline, res.ctx, hit, (d) => res.devices.get(d) === 'down'));
+    }
+    j.rows = null;
+    if (j.next >= j.cands.length) {
+      j.running = false;
+      j.timer = null;
+    } else if (win) j.timer = win.setTimeout(() => this.stepSpofJob(), 0);
+    else {
+      // (no window: finish at once)
+      this.stepSpofJob();
+      return;
+    }
+    this.renderSpofTable();
+  }
+
+  /** Stop the service check where it is (the coverage says how far it got). */
+  stopSpofJob(): boolean {
+    const j = this.spofJob;
+    if (!j || !j.running) return false;
+    j.cancelled = true;
+    j.running = false;
+    if (j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
+    j.timer = null;
+    j.rows = null;
+    this.renderSpofTable();
+    const f = this.doc.getElementById('spof-filter');
+    if (f) f.focus();
+    return true;
+  }
+
+  /** Is the service check done (for tests)? */
+  spofServiceDone(): boolean {
+    const j = this.spofJob;
+    return !!j && !j.running && j.next >= j.cands.length;
   }
 
   /**
    * Analyze → Single points of failure…: a window with the table of the
-   * model as written (sort, filter, Show in diagram, CSV and text). Nothing
-   * changes mode; the model never changes.
+   * model as written (sort, filter, Show in diagram, What if, CSV and text),
+   * the service impact checked progressively, the what-if check and the
+   * failure domains. Nothing changes mode.
    */
   openSpof(): void {
     if (!this.session) return;
-    this.openWindow({ id: 'spof', title: 'Single points of failure', body: this.spofWindowBody(), width: 820, height: 520, focus: '#spof-filter' });
+    const j = this.spofJobNow();
+    this.openWindow({ id: 'spof', title: 'Single points of failure', body: this.spofWindowBody(), width: 900, height: 600, focus: '#spof-filter', onClose: () => void this.stopSpofJob() });
+    if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
   }
 
   private renderSpofWindow(): void {
-    if (this.toolWindow() === 'spof' && this.session) this.replaceWindowBody(this.spofWindowBody());
+    if (this.toolWindow() !== 'spof' || !this.session) return;
+    const j = this.spofJobNow();
+    this.replaceWindowBody(this.spofWindowBody());
+    if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
+  }
+
+  /** Only the progress line and the table again (the service check's steps): the form and the focus stay. */
+  private renderSpofTable(): void {
+    if (this.toolWindow() !== 'spof' || !this.session) return;
+    const body = this.tw ? this.tw.body() : null;
+    const old = body ? (body.querySelector('.spof-tables') as HTMLElement | null) : null;
+    const prog = body ? (body.querySelector('#spof-progress') as HTMLElement | null) : null;
+    if (!old || !prog) return;
+    const a = this.doc.activeElement as HTMLElement | null;
+    const key = a && old.contains(a) ? focusKey(a) : null;
+    const view = this.spofView();
+    old.replaceWith(spofTable(this.doc, this.spofRowsNow(), this.spofState, view));
+    prog.replaceWith(progressLine(this.doc, view.progress, { stop: () => void this.stopSpofJob() }));
+    if (key && body) {
+      const t = findFocusKey(body, key);
+      if (t) t.focus({ preventScroll: true });
+    }
+  }
+
+  private spofView(): SpofView {
+    const j = this.spofJobNow();
+    const indet = j.baseline ? Array.from(j.baseline.values()).filter((x) => x.verdict !== 'satisfied' && x.verdict !== 'violated').length : 0;
+    const progress = j.next > 0 || j.running ? { checked: j.next, total: j.cands.length, running: j.running, cancelled: j.cancelled, deps: j.deps.length, indeterminate: indet } : null;
+    const wi = this.wiRun;
+    return {
+      bar: this.barState('spof', { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' }, j.model, 'Failure analysis evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a what-if.'),
+      progress,
+      cands: j.cands,
+      // (the what-if and the failure domains are of the model as it is now; the table may be outdated)
+      whatif: { model: (this.session as Session).model, form: this.wiForm, result: wi ? wi.result : null, outdated: !!wi && this.outdatedSince(wi.model), domain: this.domForm, locked: this.editLock() },
+      info: resultInfo(
+        { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' },
+        ['A failure propagates as the failure analysis models it (interfaces, aggregates, redundancy groups, relations over their underlay, static routes).', 'Service impact: the configured dependencies (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), each checked as the communication check does.'],
+        ['Combinations of failures (What if).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'],
+        progress ? { checked: progress.checked, eligible: progress.total, unit: 'candidates', cancelled: progress.cancelled } : undefined,
+      ),
+    };
   }
 
   private spofWindowBody(): HTMLElement {
     const s = this.session as Session;
     const rows = this.spofRowsNow();
     const st = this.spofState;
-    const body = spofBody(this.doc, rows, st, this.simulationOn());
+    const view = this.spofView();
+    const body = spofBody(this.doc, rows, st, view, {
+      refresh: () => {
+        this.spofJob = null;
+        this.renderSpofWindow();
+      },
+      source: (src) => this.setAnalysisSource(src),
+      stop: () => void this.stopSpofJob(),
+      whatIf: (entries) => this.runWhatIf(entries),
+      wiInput: (k, v) => {
+        (this.wiForm as unknown as { [key: string]: string })[k] = v;
+        if (k === 'mode') {
+          this.renderSpofWindow();
+          const b = this.doc.querySelector(`[data-wi-mode="${v}"]`) as HTMLElement | null;
+          if (b) b.focus();
+        }
+      },
+      wiRun: () => {
+        const f = this.wiForm;
+        const entries = f.mode === 'domain' ? (f.domain ? [f.domain] : []) : f.components.split(/[\s,]+/).filter((x) => x);
+        if (!entries.length) {
+          this.toast(f.mode === 'domain' ? 'Choose a failure domain first.' : 'Name the components that fail.');
+          return;
+        }
+        this.runWhatIf(entries);
+      },
+      wiOut: (kind) => {
+        const w = this.wiRun;
+        if (!w || !this.mdoc) return;
+        const text = whatIfText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result);
+        if (kind === 'copy') void this.copyText(text, 'The what-if result was copied as text.');
+        else {
+          const name = pictureBaseName(this.mdoc.fileName) + '-what-if.txt';
+          downloadText(this.doc, text, name, 'text/plain');
+          this.toast(`Exported “${name}”.`);
+        }
+      },
+      domAdd: () => {
+        this.domForm = { index: -1, label: '', kind: 'rack', members: '', error: '' };
+        this.renderSpofWindow();
+        const f = this.doc.getElementById('dom-f-label');
+        if (f) f.focus();
+      },
+      domEdit: (id) => {
+        const d = s.model.failureDomains.find((x) => x.id === id);
+        const entry = (this.mdoc as ModelDoc).analysisEntries('failure_domains').find((x) => x.id === id);
+        if (!d || !entry) return;
+        this.domForm = { index: entry.index, label: d.label, kind: d.kind, members: d.members.join(', '), error: '' };
+        this.renderSpofWindow();
+        const f = this.doc.getElementById('dom-f-label');
+        if (f) f.focus();
+      },
+      domRemove: (id) => void this.removeFailureDomain(id),
+      domInput: (k, v) => {
+        if (this.domForm) (this.domForm as unknown as { [key: string]: string | number })[k] = v;
+      },
+      domSave: () => this.saveDomainForm(),
+      domCancel: () => {
+        this.domForm = null;
+        this.renderSpofWindow();
+        const b = this.doc.getElementById('dom-add');
+        if (b) b.focus();
+      },
+      goto: (ref) => this.select(ref, true),
+    });
     const redraw = (): void => {
       const old = body.querySelector('.spof-tables') as HTMLElement;
-      body.replaceChild(spofTable(this.doc, rows, st), old);
+      body.replaceChild(spofTable(this.doc, this.spofRowsNow(), st, this.spofView()), old);
     };
     body.addEventListener('input', (e) => {
       const t = e.target as HTMLInputElement;
@@ -3341,7 +3591,7 @@ export class App {
       const sort = t.closest('[data-spof-sort]');
       if (sort) {
         const k = sort.getAttribute('data-spof-sort') as SpofSort;
-        st.desc = st.sort === k ? !st.desc : k === 'impact' || k === 'cuts' || k === 'relations';
+        st.desc = st.sort === k ? !st.desc : k === 'impact' || k === 'cuts' || k === 'relations' || k === 'service';
         st.sort = k;
         redraw();
         const again = body.querySelector(`[data-spof-sort="${k}"]`) as HTMLElement | null;
@@ -3353,21 +3603,106 @@ export class App {
         this.select(show.getAttribute('data-spof-show'), true);
         return;
       }
+      const wi = t.closest('[data-spof-whatif]');
+      if (wi) {
+        const refs = (wi.getAttribute('data-spof-whatif') || '').split(' ').filter((x) => x);
+        this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((r) => r.replace(/^(device|link|relation|iface):/, '')).join(', ') };
+        this.runWhatIf(refs);
+        return;
+      }
       const out = t.closest('[data-spof-out]');
       if (!out || !this.mdoc) return;
       // what the table shows: filtered and sorted as on screen
-      const shown = shownSpofRows(rows, st);
+      const shown = shownSpofRows(this.spofRowsNow(), st);
       const kind = out.getAttribute('data-spof-out') as string;
       const base = pictureBaseName(this.mdoc.fileName) + '-single-points-of-failure';
-      if (kind === 'csv-copy') void this.copyText(spofCsv(shown), 'The single points of failure were copied as CSV.');
-      else if (kind === 'text-copy') void this.copyText(spofText(s.model, shown), 'The single points of failure were copied as text.');
+      const info = this.spofView().info;
+      const ctx = contextText(info.context) + (info.coverage ? ' · ' + coverageText(info.coverage) : '');
+      const text = (): string => spofText(s.model, shown, { info, version: this.appVersion(), outdated: false });
+      if (kind === 'csv-copy') void this.copyText(spofCsv(shown, ctx), 'The single points of failure were copied as CSV.');
+      else if (kind === 'text-copy') void this.copyText(text(), 'The single points of failure were copied as text.');
       else {
         const csv = kind === 'csv-save';
-        downloadText(this.doc, csv ? spofCsv(shown) : spofText(s.model, shown), base + (csv ? '.csv' : '.txt'), csv ? 'text/csv' : 'text/plain');
+        downloadText(this.doc, csv ? spofCsv(shown, ctx) : text(), base + (csv ? '.csv' : '.txt'), csv ? 'text/csv' : 'text/plain');
         this.toast(`Exported “${base}${csv ? '.csv' : '.txt'}”.`);
       }
     });
     return body;
+  }
+
+  /** What if these fail (failure domains, devices, cables, relations, interfaces, or refs): the result in the window. */
+  runWhatIf(entries: string[]): WhatIf | null {
+    const s = this.session;
+    if (!s) return null;
+    // (the what-if is computed on the model as it is now; the report's baseline only when the report is of this model)
+    const j0 = this.spofJobNow();
+    const j = j0.model === s.model ? j0 : { deps: serviceDependencies(s.model), baseline: null as Map<string, DepState> | null, model: s.model };
+    if (!j.baseline) j.baseline = dependencyBaseline(j.model, j.deps);
+    const reach = this.wiForm.reach === 'entire' ? ({ kind: 'entire' } as ReachScope) : this.wiForm.reach.indexOf('group:') === 0 ? ({ kind: 'group', group: this.wiForm.reach.slice(6) } as ReachScope) : undefined;
+    const result = whatIf(s.model, entries.map((e) => e.replace(/^(device|link|relation):/, '')), { deps: j.deps, baseline: j.baseline, reach });
+    this.wiRun = { model: s.model, result };
+    if (this.toolWindow() !== 'spof') this.openSpof();
+    else this.renderSpofWindow();
+    const r = this.doc.getElementById('wi-summary') || this.doc.getElementById('wi-result');
+    if (r) {
+      r.setAttribute('tabindex', '-1');
+      r.focus();
+      if (typeof r.scrollIntoView === 'function') r.scrollIntoView({ block: 'nearest' });
+    }
+    return result;
+  }
+
+  /** Save the failure domain form (one undo step); the form says what is missing. */
+  private saveDomainForm(): boolean {
+    const f = this.domForm;
+    const d = this.mdoc;
+    if (!f || !d) return false;
+    const members = f.members.split(/[\s,]+/).filter((x) => x);
+    if (!f.label.trim() || !members.length) {
+      f.error = !f.label.trim() ? 'Give the failure domain a name.' : 'Name its members: devices, cables, relations or groups.';
+      this.renderSpofWindow();
+      const bad = this.doc.getElementById(!f.label.trim() ? 'dom-f-label' : 'dom-f-members');
+      if (bad) bad.focus();
+      return false;
+    }
+    try {
+      if (f.index < 0) d.addFailureDomain({ label: f.label.trim(), kind: f.kind, members });
+      else d.updateFailureDomain(f.index, { label: f.label.trim(), kind: f.kind, members });
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.domForm = null;
+    this.afterEdit(f.index < 0 ? 'The failure domain was added.' : 'The failure domain was changed.');
+    this.renderSpofWindow();
+    const b = this.doc.getElementById('dom-add');
+    if (b) b.focus();
+    return true;
+  }
+
+  /** Delete a failure domain after a confirmation that names the expectations that use it. */
+  private async removeFailureDomain(id: string): Promise<void> {
+    const d = this.mdoc;
+    if (!d) return;
+    const entry = d.analysisEntries('failure_domains').find((x) => x.id === id);
+    if (!entry) return;
+    const users = d.failureDomainUsers(id);
+    const a = await this.dialog({
+      title: `Delete the failure domain “${id}”?`,
+      body: users.length ? [`${users.length === 1 ? 'This expectation names it in its' : `These ${users.length} expectations name it in their`} failure condition; ${users.length === 1 ? 'it keeps' : 'they keep'} the name and can’t be evaluated until you change ${users.length === 1 ? 'it' : 'them'}:`, el(this.doc, 'ul', { class: 'removal-list' }, users.map((u) => el(this.doc, 'li', {}, [u]))) as unknown as string, 'You can undo this with Ctrl+Z.'] : ['Nothing names it. You can undo this with Ctrl+Z.'],
+      buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }],
+    });
+    if (a !== 'go') return;
+    try {
+      d.removeFailureDomain(entry.index);
+    } catch (e) {
+      this.refusedEdit(e);
+      return;
+    }
+    this.afterEdit('The failure domain was deleted.');
+    this.renderSpofWindow();
+    const b = this.doc.getElementById('dom-add');
+    if (b) b.focus();
   }
 
   /** An edit that the lock refused (a safety net: the controls that edit are disabled during a simulation). */
@@ -3388,44 +3723,84 @@ export class App {
     }
   }
 
+  // ------------------------------------------------------------ analysis context and freshness
+
+  /** What an analysis is computed on while a simulation runs: a snapshot of it (the default), or the configured model. */
+  private anSource: 'model' | 'snapshot' = 'snapshot';
+
+  /** The snapshot a new analysis uses (null: the configured model, when no simulation runs or the model is chosen). */
+  private analysisSnapshot(): AnalysisSnapshot | null {
+    const s = this.simulation;
+    return s && s.snapshot && this.anSource === 'snapshot' ? s.snapshot() : null;
+  }
+
+  /** Has the model changed (anything an analysis reads) since a result was computed on `model`? */
+  private outdatedSince(model: Model): boolean {
+    return !!this.session && this.session.model !== model && modelFingerprint(this.session.model) !== modelFingerprint(model);
+  }
+
+  /** The context line's state of a window. */
+  private barState(id: string, context: AnalysisContext | null, model: Model | null, noSnapshot = ''): ContextBarState {
+    const s = this.session;
+    const canSnap = !!this.simulation && !!this.simulation.snapshot && !noSnapshot;
+    return {
+      id,
+      context,
+      outdated: !!model && this.outdatedSince(model),
+      simulation: !!this.simulation,
+      source: canSnap && this.anSource === 'snapshot' ? 'snapshot' : 'model',
+      noSnapshot: this.simulation && noSnapshot ? noSnapshot : '',
+      filtered: !!s && s.isFiltered(),
+    };
+  }
+
+  /** Choose what the next analysis is computed on (while a simulation runs), and compute the open window's result again on it. */
+  setAnalysisSource(src: 'model' | 'snapshot'): void {
+    this.anSource = src;
+    const w = this.toolWindow();
+    if (w === 'trace' && this.traceRun) this.runTrace();
+    else if (w === 'addressing') this.refreshAddressing();
+    else if (w === 'checks') this.refreshDesignChecks();
+    else this.refreshWindow();
+  }
+
+  /** The application's version, as the page says it ("0.1.3"). */
+  appVersion(): string {
+    const m = this.doc.querySelector('meta[name="generator"]');
+    const v = m ? (m.getAttribute('content') || '').replace(/^netatlas\s*/, '') : '';
+    return /__VERSION__/.test(v) ? '' : v;
+  }
+
   // ------------------------------------------------------------ path trace
 
   /** the Trace path form (kept while the page is open; never saved) */
   private traceForm: TraceForm = newTraceForm();
   /** why the form could not be traced ('' = it could) */
   private traceError = '';
-  /** the trace on screen and the model it was computed on (computed again after an edit) */
-  private traceRun: (TraceRun & { model: Model; sim: string }) | null = null;
+  /** the check on screen, the model and snapshot it was computed on (computed again only by Trace or Refresh) */
+  private traceRun: (TraceRun & { model: Model; snap: AnalysisSnapshot | null; request: CommRequest }) | null = null;
 
-  /** The trace on screen (computed again when the model has changed since), or null. */
+  /** The check on screen (it stays as computed: an edit marks it outdated, it is not computed again behind the user's back), or null. */
   currentTrace(): TraceRun | null {
-    const s = this.session;
-    const r = this.traceRun;
-    if (!s || !r) return null;
-    const sk = this.simKey();
-    if (r.model !== s.model || r.sim !== sk) this.traceRun = { ...this.computeTrace(r.req, !!r.back), model: s.model, sim: sk };
-    return this.traceRun;
+    return this.session ? this.traceRun : null;
   }
 
-  /** What the simulated state depends on ('' = no simulation): a trace is computed again when it changes. */
-  private simKey(): string {
-    return this.simulation ? this.simulation.key() : '';
+  /** Is the check on screen outdated (the model changed since)? */
+  traceOutdated(): boolean {
+    return !!this.traceRun && this.outdatedSince(this.traceRun.model);
   }
 
-  /** A trace of the model, in the simulated state when a simulation is on. */
-  private computeTrace(req: TraceRequest, withBack: boolean): TraceRun {
+  /** A check of the model, on a snapshot of the simulation when one is chosen. */
+  private computeTrace(req: CommRequest, snap: AnalysisSnapshot | null): TraceRun {
     const model = (this.session as Session).model;
-    const fr = this.simFailure();
-    const ctx = fr ? fr.ctx : undefined;
-    const trace = tracePath(model, req, ctx);
+    const check = checkCommunication(model, req, snap);
+    const treq: TraceRequest = { from: req.from, to: req.to || '' };
+    if (req.vrf !== undefined) treq.vrf = req.vrf;
+    if (req.service !== undefined) treq.service = req.service;
+    const trace: Trace = check.trace || { request: treq, paths: [], truncated: false, error: check.error || check.headline };
     let back: Trace | null = null;
-    if (withBack) {
-      const rq = returnRequest(trace);
-      back = rq
-        ? tracePath(model, rq, ctx)
-        : { request: { from: req.to, to: req.from }, paths: [], truncated: false, error: trace.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
-    }
-    return { req, trace, back };
+    if (req.back) back = check.reverse ? check.reverse.trace : { request: { from: treq.to, to: treq.from }, paths: [], truncated: false, error: check.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
+    return { req: trace.request, check, trace, back };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -3453,7 +3828,7 @@ export class App {
       if (f) f.focus();
       return;
     }
-    this.openWindow({ id: 'trace', title: 'Trace path', body: this.traceBody(), width: 860, height: 600, focus: '#' + id, onClose: () => void this.exitTrace() });
+    this.openWindow({ id: 'trace', title: 'Trace path', body: this.traceBody(), width: 880, height: 640, focus: '#' + id, onClose: () => void this.exitTrace() });
   }
 
   /** Fill the Trace form (from the page or a test) without tracing. */
@@ -3468,8 +3843,10 @@ export class App {
 
   private traceBody(): HTMLElement {
     const s = this.session as Session;
-    return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), this.traceError, this.simulationOn(), {
-      input: (field, value) => {
+    const r = this.traceRun;
+    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), canHandoff: !!this.simCtl && !!r && !!r.check.handoff };
+    return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
+      input: (field: 'from' | 'to' | 'vrf' | 'service' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
         else this.traceForm[field] = String(value);
         if (this.traceError && (field === 'from' || field === 'to')) {
@@ -3492,29 +3869,42 @@ export class App {
       },
       copy: () => void this.copyTrace(),
       save: () => void this.saveTraceText(),
+      refresh: () => void this.runTrace(true),
+      source: (src) => this.setAnalysisSource(src),
+      handoff: () => this.traceHandoff(),
+      pick: (field, value) => {
+        this.traceForm[field] = value;
+        this.runTrace();
+        const f = this.doc.getElementById('trace-pick-' + field) || this.doc.getElementById('trace-go');
+        if (f) f.focus();
+      },
     });
   }
 
   /**
-   * Trace the form's request: the path is marked in both views, the hop
-   * tables fill the window, and a banner says what is traced. A request that
-   * can't be traced (an unknown end, no address) only says why. Nothing in
-   * the model changes; no undo step. Opens the window when it isn't.
+   * Trace the form's request: the communication check with its paths, marked
+   * in both views, the result in the window, and a banner that says what is
+   * traced. A request that can't be traced (an unknown end, no address) only
+   * says why. Nothing in the model changes; no undo step; nothing is sent in
+   * a running simulation (a snapshot is read). Opens the window when it isn't.
+   * `again`: Refresh, the request on screen computed again.
    */
-  runTrace(): boolean {
+  runTrace(again = false): boolean {
     const s = this.session;
     if (!s) return false;
     if (this.toolWindow() !== 'trace') this.openTrace();
-    const run = this.computeTrace(formRequest(this.traceForm), this.traceForm.back);
-    if (run.trace.error) {
-      this.traceError = run.trace.error;
+    const req = again && this.traceRun ? this.traceRun.request : formRequest(this.traceForm);
+    const snap = this.analysisSnapshot();
+    const run = this.computeTrace(req, snap);
+    if (run.check.error && /^(Source|Destination|Service): /.test(run.check.error)) {
+      this.traceError = run.check.error;
       this.renderTraceWindow();
-      const bad = this.doc.getElementById(/^Destination/.test(run.trace.error) ? 'trace-to' : 'trace-from');
+      const bad = this.doc.getElementById(/^Destination/.test(run.check.error) ? 'trace-to' : /^Service/.test(run.check.error) ? 'trace-service' : 'trace-from');
       if (bad) bad.focus();
       return false;
     }
     this.traceError = '';
-    this.traceRun = { ...run, model: s.model, sim: this.simKey() };
+    this.traceRun = { ...run, model: s.model, snap, request: req };
     this.applyHighlight();
     this.renderTraceWindow();
     this.updateChrome();
@@ -3533,20 +3923,35 @@ export class App {
     return true;
   }
 
-  /** The hop list as text, on the clipboard (where the browser refuses: as a text file). */
-  copyTrace(): boolean {
-    const r = this.currentTrace();
-    if (!r) return false;
-    void this.copyText(traceText(r.trace, r.back), 'The path trace was copied as text.', () => this.saveTraceText());
+  /** Prepare the same exchange in the running simulation: its Network events form, prefilled; nothing is sent. */
+  traceHandoff(): boolean {
+    const r = this.traceRun;
+    const h = r ? r.check.handoff : undefined;
+    if (!this.simCtl || !h) return false;
+    if (h.kind === 'app' && h.app) this.simCtl.appFrom(h.device);
+    else if (h.target) this.simCtl.prefillSend({ from: h.device, via: h.iface, address: h.target, kind: h.proto || 'icmp', port: h.port });
+    this.toast(`${h.text}: prefilled in Network events, not sent.`);
     return true;
   }
 
-  /** The hop list as a text file. */
+  /** The check as text: its context, verdict and layers, the hops, the assumptions. */
+  private traceExport(): string {
+    const r = this.traceRun as NonNullable<App['traceRun']>;
+    return traceExportText({ title: (this.session as Session).model.title, version: this.appVersion(), outdated: this.traceOutdated() }, r);
+  }
+
+  /** The check as text, on the clipboard (where the browser refuses: as a text file). */
+  copyTrace(): boolean {
+    if (!this.traceRun) return false;
+    void this.copyText(this.traceExport(), 'The path trace was copied as text.', () => this.saveTraceText());
+    return true;
+  }
+
+  /** The check as a text file. */
   saveTraceText(): boolean {
-    const r = this.currentTrace();
-    if (!r || !this.mdoc) return false;
+    if (!this.traceRun || !this.mdoc) return false;
     const name = `${pictureBaseName(this.mdoc.fileName)}-path-trace.txt`;
-    downloadText(this.doc, traceText(r.trace, r.back), name, 'text/plain');
+    downloadText(this.doc, this.traceExport(), name, 'text/plain');
     this.toast(`Saved the path trace as “${name}”.`);
     return true;
   }
@@ -3728,7 +4133,26 @@ export class App {
    */
   openAddressing(): void {
     if (!this.session) return;
-    this.openWindow({ id: 'addressing', title: 'Addressing overview', body: this.addressingWindowBody(), width: 1000, height: 640, focus: '#addr-filter' });
+    this.computeAddressing();
+    this.openWindow({ id: 'addressing', title: 'Addressing overview', body: this.addressingWindowBody(), width: 1040, height: 660, focus: '#addr-filter' });
+  }
+
+  /** the overview on screen, and the model and snapshot it was computed on (computed again by opening the window or Refresh) */
+  private addrRun: { model: Model; snap: AnalysisSnapshot | null; ov: AddressingOverview; context: AnalysisContext } | null = null;
+
+  private computeAddressing(): void {
+    const s = this.session as Session;
+    const snap = this.analysisSnapshot();
+    this.addrRun = { model: s.model, snap, ov: addressingOverview(s.model, snap), context: snap ? { kind: 'snapshot', at: snap.at, scope: 'Entire architecture' } : { kind: 'model', scope: 'Entire architecture' } };
+  }
+
+  /** Refresh: the overview computed again (on a snapshot taken now, when one is chosen). */
+  refreshAddressing(): void {
+    if (!this.session) return;
+    this.computeAddressing();
+    this.renderAddressingWindow();
+    const f = this.doc.getElementById('addr-filter');
+    if (f && this.doc.activeElement && this.doc.activeElement.hasAttribute('data-an-refresh')) f.focus();
   }
 
   private renderAddressingWindow(): void {
@@ -3736,13 +4160,15 @@ export class App {
   }
 
   private addressingWindowBody(): HTMLElement {
-    const s = this.session as Session;
-    const ov = addressingOverview(s.model);
+    if (!this.addrRun) this.computeAddressing();
+    const run = this.addrRun as NonNullable<App['addrRun']>;
+    const ov = run.ov;
     const st = this.addrState;
-    const body = addressingBody(this.doc, ov, st);
+    const inner = addressingBody(this.doc, ov, st);
+    const body = el(this.doc, 'div', { class: 'addr-window' }, [contextBar(this.doc, this.barState('addr', run.context, run.model), { refresh: () => this.refreshAddressing(), source: (src) => this.setAnalysisSource(src) }), inner]);
     const redraw = (): void => {
-      const tables = body.querySelector('.addr-tables') as HTMLElement;
-      body.replaceChild(addressingTables(this.doc, ov, st), tables);
+      const tables = inner.querySelector('.addr-tables') as HTMLElement;
+      inner.replaceChild(addressingTables(this.doc, ov, st), tables);
       (body.querySelector('#addr-status') as HTMLElement).textContent = shownText(ov, st);
       const all = body.querySelector('[data-addr-all]') as HTMLElement;
       all.setAttribute('data-addr-all', st.open.size ? 'close' : 'open');
@@ -3798,7 +4224,7 @@ export class App {
       const csvBtn = t.closest('[data-addr-csv]');
       if (csvBtn) {
         if (csvBtn.getAttribute('data-addr-csv') === 'save') this.saveAddressingCsv();
-        else void this.copyText(addressingCsv(ov), 'The network table was copied as CSV.');
+        else void this.copyText(addressingCsv(ov, this.addrContextText()), 'The network table was copied as CSV.');
       }
     });
     return body;
@@ -3809,9 +4235,17 @@ export class App {
     const s = this.session;
     if (!s || !this.mdoc) return false;
     const name = `${pictureBaseName(this.mdoc.fileName)}-addressing.csv`;
-    downloadText(this.doc, addressingCsv(addressingOverview(s.model)), name, 'text/csv');
+    if (!this.addrRun || this.addrRun.model !== s.model) this.computeAddressing();
+    downloadText(this.doc, addressingCsv((this.addrRun as NonNullable<App['addrRun']>).ov, this.addrContextText()), name, 'text/csv');
     this.toast(`Exported “${name}”.`);
     return true;
+  }
+
+  /** The context of the overview on screen in words, for its CSV (and that it is outdated). */
+  private addrContextText(): string {
+    const r = this.addrRun;
+    if (!r) return 'Configured model · Entire architecture';
+    return contextText(r.context) + (this.outdatedSince(r.model) ? ' (outdated)' : '') + (this.appVersion() ? ' · NetAtlas ' + this.appVersion() : '');
   }
 
   /** Put text on the clipboard; where the browser refuses, say so (or save it as a file, when `orSave` is given). */
@@ -3825,6 +4259,201 @@ export class App {
       if (orSave) orSave();
       else this.toast('The browser did not allow copying to the clipboard here; use Save CSV instead.');
     }
+  }
+
+  // ------------------------------------------------------------ design checks
+
+  /** the evaluation on screen (computed by Evaluate, never on its own), the model and snapshot it was computed on */
+  private dcRun: { model: Model; snap: AnalysisSnapshot | null; run: ExpectationRun } | null = null;
+  private dcOpen = new Set<string>();
+  private dcForm: ExpectForm | null = null;
+
+  /**
+   * Analyze → Design checks…: the saved expectations (evaluated on demand,
+   * statically: nothing is sent) and the consistency findings, grouped, with
+   * their consequences and next steps.
+   */
+  openDesignChecks(): void {
+    if (!this.session) return;
+    this.openWindow({ id: 'checks', title: 'Design checks', body: this.designWindowBody(), width: 900, height: 620, focus: '#dc-evaluate' });
+  }
+
+  private renderDesignChecks(): void {
+    if (this.toolWindow() === 'checks' && this.session) this.replaceWindowBody(this.designWindowBody());
+  }
+
+  /** Evaluate the saved expectations now (on a snapshot of a running simulation, when one is chosen). */
+  refreshDesignChecks(): ExpectationRun | null {
+    const s = this.session;
+    if (!s) return null;
+    const snap = this.analysisSnapshot();
+    this.dcRun = { model: s.model, snap, run: evaluateExpectations(s.model, snap) };
+    this.renderDesignChecks();
+    return this.dcRun.run;
+  }
+
+  /** The findings of the consistency checks as the window shows them (with their index in the issue list, for Go to). */
+  private designFindings(): DesignView['findings'] {
+    const d = this.mdoc as ModelDoc;
+    const base = d.errors.length + d.warnings.length;
+    const asFinding = (is: Issue): Finding => ({ check: is.check || '', severity: is.severity, message: is.message, refs: is.refs || [], at: { ref: (is.refs && is.refs[0]) || is.path, field: is.path } });
+    const fs = d.findings.map(asFinding);
+    const { groups, singles } = groupFindings(fs);
+    const index = (f: Finding): number => base + fs.indexOf(f);
+    return {
+      groups: groups.map((g) => ({ g, n: g.findings.map((p) => index(p.finding)) })),
+      singles: singles.map((p) => ({ p, n: index(p.finding) })),
+      counts: classCounts(fs),
+    };
+  }
+
+  private designWindowBody(): HTMLElement {
+    const s = this.session as Session;
+    const r = this.dcRun;
+    const findings = this.designFindings();
+    // the findings at the place an expectation stops (its stop device and the cables and ports of that hop)
+    const related = new Map<string, ShownFinding[]>();
+    if (r) {
+      const all = findings.singles.concat(...findings.groups.map((g) => g.g.findings.map((p, k) => ({ p, n: g.n[k] }))));
+      for (const res of r.run.results) {
+        if (res.verdict === 'satisfied' || !res.check || !res.check.trace) continue;
+        const stopped = res.check.trace.paths.find((p) => p.end.kind === 'stopped');
+        if (!stopped) continue;
+        const last = stopped.hops[stopped.hops.length - 1];
+        const at = new Set<string>(['device:' + last.device].concat(last.links.map((l) => 'link:' + l), last.l2.map((x) => 'device:' + x), last.egress ? [`iface:${last.device}:${last.egress}`] : [], last.ingress ? [`iface:${last.device}:${last.ingress}`] : []));
+        const hit = all.filter((f) => f.p.finding.refs.some((x) => at.has(x)));
+        if (hit.length) related.set(res.id, hit.slice(0, 6));
+      }
+    }
+    const view: DesignView = {
+      bar: this.barState('dc', r ? r.run.info.context : null, r ? r.model : null),
+      run: r ? r.run : null,
+      open: this.dcOpen,
+      form: this.dcForm,
+      locked: this.editLock(),
+      findings,
+      related,
+    };
+    return designBody(this.doc, s.model, view, {
+      refresh: () => void this.refreshDesignChecks(),
+      source: (src) => this.setAnalysisSource(src),
+      evaluate: () => {
+        this.refreshDesignChecks();
+        const st = this.doc.getElementById('dc-status');
+        if (st) st.setAttribute('tabindex', '-1');
+        const b = this.doc.getElementById('dc-evaluate');
+        if (b) b.focus();
+      },
+      add: () => {
+        this.dcForm = newExpectForm();
+        this.renderDesignChecks();
+        const f = this.doc.getElementById('dc-f-name');
+        if (f) f.focus();
+      },
+      edit: (id) => {
+        const k = s.model.expectations.findIndex((e) => e.id === id);
+        const entry = (this.mdoc as ModelDoc).analysisEntries('expectations').find((x) => x.id === id);
+        if (k < 0 || !entry) return;
+        this.dcForm = formOf(s.model.expectations[k], entry.index);
+        this.renderDesignChecks();
+        const f = this.doc.getElementById('dc-f-name');
+        if (f) f.focus();
+      },
+      remove: (id) => void this.removeExpectation(id),
+      toggle: (id) => {
+        if (this.dcOpen.has(id)) this.dcOpen.delete(id);
+        else this.dcOpen.add(id);
+        this.renderDesignChecks();
+      },
+      trace: (id) => {
+        const e = s.model.expectations.find((x) => x.id === id);
+        if (!e) return;
+        this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', back: false };
+        this.openTrace();
+        this.runTrace();
+      },
+      formInput: (k, v) => {
+        if (!this.dcForm) return;
+        (this.dcForm as unknown as { [key: string]: string | number })[k] = v;
+        if (k === 'expect') this.renderDesignChecks();
+      },
+      formSave: () => this.saveExpectationForm(),
+      formCancel: () => {
+        this.dcForm = null;
+        this.renderDesignChecks();
+        const b = this.doc.getElementById('dc-add');
+        if (b) b.focus();
+      },
+      goto: (n) => this.gotoIssue(n),
+      show: (ref) => this.select(ref, true),
+      out: (kind) => {
+        const run = this.dcRun;
+        if (!run || !this.mdoc) return;
+        const outdated = this.outdatedSince(run.model);
+        const base = pictureBaseName(this.mdoc.fileName) + '-design-checks';
+        const text = (): string => designText({ title: s.model.title, version: this.appVersion(), outdated }, s.model, run.run);
+        const csv = (): string => designCsv(s.model, run.run, outdated);
+        if (kind === 'text-copy') void this.copyText(text(), 'The design checks were copied as text.');
+        else if (kind === 'csv-copy') void this.copyText(csv(), 'The design checks were copied as CSV.');
+        else {
+          const isCsv = kind === 'csv-save';
+          downloadText(this.doc, isCsv ? csv() : text(), base + (isCsv ? '.csv' : '.txt'), isCsv ? 'text/csv' : 'text/plain');
+          this.toast(`Exported “${base}${isCsv ? '.csv' : '.txt'}”.`);
+        }
+      },
+    });
+  }
+
+  /** Save the expectation form: a new expectation, or the changed one (one undo step); the form says what is missing. */
+  private saveExpectationForm(): boolean {
+    const f = this.dcForm;
+    const d = this.mdoc;
+    const s = this.session;
+    if (!f || !d || !s) return false;
+    const need = !f.name.trim() ? 'Give the expectation a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : '';
+    if (need) {
+      f.error = need;
+      this.renderDesignChecks();
+      const bad = this.doc.getElementById(!f.name.trim() ? 'dc-f-name' : !f.from.trim() ? 'dc-f-from' : 'dc-f-to');
+      if (bad) bad.focus();
+      return false;
+    }
+    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
+    try {
+      if (f.index < 0) d.addExpectation(fields);
+      else d.updateExpectation(f.index, fields);
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.dcForm = null;
+    this.afterEdit(f.index < 0 ? 'The expectation was added.' : 'The expectation was changed.');
+    // the change is evaluated at once (nothing is sent): the window shows it
+    this.refreshDesignChecks();
+    const b = this.doc.getElementById('dc-add');
+    if (b) b.focus();
+    return true;
+  }
+
+  /** Delete an expectation after a confirmation. */
+  private async removeExpectation(id: string): Promise<void> {
+    const d = this.mdoc;
+    if (!d) return;
+    const entry = d.analysisEntries('expectations').find((x) => x.id === id);
+    if (!entry) return;
+    const a = await this.dialog({ title: `Delete the expectation “${id}”?`, body: ['The requirement is removed from the model. You can undo this with Ctrl+Z.'], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }] });
+    if (a !== 'go') return;
+    try {
+      d.removeExpectation(entry.index);
+    } catch (e) {
+      this.refusedEdit(e);
+      return;
+    }
+    this.dcOpen.delete(id);
+    this.afterEdit('The expectation was deleted.');
+    this.renderDesignChecks();
+    const b = this.doc.getElementById('dc-add');
+    if (b) b.focus();
   }
 
   // ------------------------------------------------------------ Help menu

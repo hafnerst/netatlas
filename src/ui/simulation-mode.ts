@@ -7,6 +7,7 @@
  * for editing (see App.startSimulation).
  */
 import { FailureResult } from '../analysis/failure';
+import type { AnalysisSnapshot } from '../analysis/snapshot';
 
 export interface SimulationMode {
   /** the DHCP leases in effect, as the diagram writes them, by interface ref ("iface:pc1:eth0" → "10.1.1.50/24 (DHCP lease)") */
@@ -21,6 +22,8 @@ export interface SimulationMode {
   key(): string;
   /** what is failed in the simulated state (null: nothing) */
   failure(): FailureResult | null;
+  /** the state now, frozen for analysis (analysis/snapshot.ts); none: this simulation can't be analysed */
+  snapshot?(): AnalysisSnapshot;
   /** the devices powered off or booting, by ref ("device:pc1" → "booting"): the simulation's lifecycle state */
   powerMarks?(): Map<string, 'off' | 'booting'>;
   /** refs the diagram highlights on top (a broadcast domain; null: none) */
