@@ -43,6 +43,11 @@ import { containerNetworks, hostOf, portGroupAttachments, portGroupL2, portGroup
 import { scopeSuggestions } from '../analysis/helpers';
 import { purposeIcons } from '../diagram/icons';
 import { SERVICES, SvcDef, SvcParam, serviceDef, serviceEligibility, isBuiltIn, builtInServices } from '../model/service-registry';
+import { APP_PARAMS, APP_PROFILES, appProfile, appSummary } from '../model/applications';
+import { CUSTOM_SUPPORT, simProfile } from '../model/sim-profiles';
+import { supportNote } from './support-note';
+import { IPV6_METHODS } from '../model/ipv6';
+import { formatAddr, networkOf } from '../analysis/ipmath';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 /**
@@ -1123,8 +1128,11 @@ export class Editor {
         .concat(this.ids('protocol'))
         .filter((x) => !l2 || !relationNeedsLayer3(rm ? protocolBase(rm.protocols, x) : x, (builtinProtocols().get(x) || { category: '' }).category));
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      const pname = doc.text(base.concat('protocol'));
+      const pprof = pname && rm ? simProfile(protocolBase(rm.protocols, pname)) : undefined;
       g('Protocol', [
         this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'),
+        pname ? supportNote(this.d, pprof && pprof.support ? pprof.support : CUSTOM_SUPPORT, pprof ? pprof.label : pname) : null,
         this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'),
         this.directionField(base.concat('direction')),
       ], 'protocol');
@@ -1147,7 +1155,8 @@ export class Editor {
       notes();
     } else if (kind === 'protocol') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)')], 'drawing');
+      const own = simProfile(normalizeProtocol(doc.text(base.concat('id')) || ''));
+      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)'), supportNote(this.d, own && own.support ? own.support : CUSTOM_SUPPORT, doc.text(base.concat('label')) || doc.text(base.concat('id')) || 'this protocol')], 'drawing');
       // a protocol of the model as a routing service devices can enable
       const pm = doc.result.model;
       const pid = doc.text(base.concat('id')) || '';
@@ -2000,6 +2009,10 @@ export class Editor {
     if (o === 'interface' || isLagCard || doc.get(p.concat('vlans')) || doc.get(p.concat('native')) || doc.get(p.concat('routed'))) card.appendChild(this.portVlanField(devIndex, p, entry));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
     card.appendChild(this.addressField(p, loop, o));
+    // how it gets its IPv6 addresses, and a router's advertisements on it
+    if (!loop && kind !== 'tunnel') card.appendChild(this.ipv6Field(p, o));
+    const raCard = this.raCard(devIndex, p, o, id || '');
+    if (raCard) card.appendChild(raCard);
     if (!loop && !dhcp && id) {
       const nf = this.nextFreeField(devIndex, p, id);
       if (nf) card.appendChild(nf);
@@ -2070,10 +2083,74 @@ export class Editor {
   }
 
   /**
+   * An interface's IPv6 method (`ipv6:`): static from its written addresses
+   * (none written: no IPv6), or automatic by SLAAC, DHCPv6 or both. One
+   * choice instead of independent flags, so no contradictory state can be
+   * set; what it learned is the simulation's (its status, its tables).
+   */
+  private ipv6Field(p: Path, o: string): HTMLElement {
+    const doc = this.doc;
+    const cur = doc.text(p.concat('ipv6')) || '';
+    const v6 = this.listTexts(p.concat('ip')).some((a) => a.indexOf(':') >= 0);
+    const sel = this.e('select', { 'data-p': J(p.concat('ipv6')), 'data-t': 'ipv6-method', 'data-o': o }) as HTMLSelectElement;
+    sel.appendChild(this.e('option', { value: '' }, [v6 ? 'Static (its IPv6 addresses above)' : 'None (no IPv6 address)']));
+    for (const m of IPV6_METHODS) if (m.id !== 'static') sel.appendChild(this.e('option', { value: m.id }, [m.label]));
+    if (cur === 'static') sel.appendChild(this.e('option', { value: 'static' }, ['Static (written)']));
+    sel.value = cur;
+    const def = IPV6_METHODS.find((x) => x.id === cur);
+    return this.field('IPv6', sel, p.concat('ipv6'), def ? def.help : v6 ? 'Only the addresses written above; no router discovery.' : 'SLAAC or DHCPv6 can give it addresses; nothing is configured until you choose.');
+  }
+
+  /**
+   * A routing interface's router advertisements (`ipv6_ra:`): off until
+   * switched on, then its prefixes (each written: the interface's own /64s
+   * are offered, never filled in), the rest collapsed under Advanced with
+   * RFC 4861's defaults as placeholders.
+   */
+  private raCard(devIndex: number, p: Path, o: string, id: string): HTMLElement | null {
+    const doc = this.doc;
+    const rp = p.concat('ipv6_ra');
+    const on = !!doc.get(rp);
+    const kind = doc.text(p.concat('type')) || 'physical';
+    if (!on && (!this.capsAt(devIndex).l3Forward || kind === 'loopback' || kind === 'tunnel' || doc.get(p.concat('vlans')))) return null;
+    const box = this.e('details', { class: 'card ra-card', 'data-card': J(rp) });
+    if (this.open.has(J(rp)) || doc.issuesAt(rp).some((x) => x.severity === 'error')) box.setAttribute('open', '');
+    const cb = this.e('input', { type: 'checkbox', id: `ra-${devIndex}-${id}`, 'data-act': 'ra-toggle', 'data-p': J(rp) }) as HTMLInputElement;
+    cb.checked = on;
+    const iss = doc.issuesAt(rp);
+    box.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [`IPv6 router advertisements${on ? ': ' + (this.listTexts(rp.concat('prefixes')).join(', ') || 'no prefix yet') : ''}`]), iss.length ? this.badge(iss.filter((x) => x.severity === 'error').length, iss.filter((x) => x.severity !== 'error').length) : null]));
+    box.appendChild(this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `ra-${devIndex}-${id}` }, [cb, ' Send router advertisements on this interface'])]));
+    box.appendChild(supportNote(this.d, (simProfile('ndp') as { support: import('../model/support').Support }).support, 'Router advertisements'));
+    if (!on) return box;
+    const own = this.listTexts(p.concat('ip')).map((a) => parsePrefix(a, false)).filter((x): x is NonNullable<typeof x> => !!x && x.version === 6);
+    const sug = Array.from(new Set(own.map((x) => `${formatAddr(networkOf({ ...x, prefix: 64 }))}/64`))).filter((x) => this.listTexts(rp.concat('prefixes')).indexOf(x) < 0);
+    const owner = `${doc.text(['devices', devIndex, 'id']) || ''} ${id}`.trim();
+    box.appendChild(this.withHelpers(this.listField(rp.concat('prefixes'), 'Prefixes *', 'ipv6Ra', '2001:db8:10::/64', 'Each prefix it advertises (its own /64s are offered); SLAAC hosts form an address in each.'), rp.concat('prefixes'), 'text', sug.map((x) => ({ value: x, label: x, title: `Advertise ${x} (a prefix of ${id})` })), 'prefix', owner));
+    const adv = this.e('details', { class: 'adv-section', 'data-card': J(rp.concat('#advanced')) });
+    const advKeys = ['dns', 'managed', 'other', 'autonomous', 'router_lifetime', 'interval', 'preferred_lifetime', 'valid_lifetime', 'dns_lifetime'];
+    const set = advKeys.filter((k) => doc.get(rp.concat(k)) !== undefined).length;
+    if (this.open.has(J(rp.concat('#advanced'))) || advKeys.some((k) => doc.issuesAt(rp.concat(k)).some((x) => x.severity === 'error'))) adv.setAttribute('open', '');
+    adv.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+    adv.appendChild(this.listField(rp.concat('dns'), 'DNS servers (RDNSS)', 'ipv6Ra', '2001:db8:10::53', 'IPv6 DNS servers it advertises (RFC 8106).'));
+    const yn = (k: string, label: string, help: string, dflt: string): HTMLElement => this.field(label, this.selectEl(rp.concat(k), 'yesno', 'ipv6Ra', ['true', 'false'], doc.text(rp.concat(k)) || '', `default (${dflt})`), rp.concat(k), help);
+    adv.appendChild(yn('managed', 'Managed (M flag)', 'Hosts may get their addresses by DHCPv6 (a host’s method decides).', 'no'));
+    adv.appendChild(yn('other', 'Other configuration (O flag)', 'Hosts with SLAAC ask DHCPv6 for DNS (stateless DHCPv6).', 'no'));
+    adv.appendChild(yn('autonomous', 'Prefixes for SLAAC (A flag)', 'Hosts form addresses in its prefixes (each a /64).', 'yes'));
+    const dur = (k: string, label: string, ph: string, help: string): HTMLElement => this.textField(rp.concat(k), label, 'ipv6Ra', 'text', undefined, help, ph);
+    adv.appendChild(dur('router_lifetime', 'Router lifetime', '30min (3 × interval)', 'How long hosts keep it as a default router (0: it is none).'));
+    adv.appendChild(dur('interval', 'Advertisement interval', '600s (MaxRtrAdvInterval)', 'The longest time between two unsolicited advertisements.'));
+    adv.appendChild(dur('preferred_lifetime', 'Preferred lifetime', '7d', 'How long an address in its prefixes is preferred.'));
+    adv.appendChild(dur('valid_lifetime', 'Valid lifetime', '30d', 'How long such an address is valid at all.'));
+    adv.appendChild(dur('dns_lifetime', 'DNS servers’ lifetime', '30min (3 × interval)', 'How long hosts keep its DNS servers.'));
+    box.appendChild(adv);
+    return box;
+  }
+
+  /**
    * The addresses of an interface, with the DHCP switch next to them. While
    * DHCP is on, manual addresses can't be entered (a file that has both shows
    * them, with the error, so they can be removed). A loopback can't use
-   * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+   * DHCP, so it has no switch, unless its file says "ipv4: dhcp": then the
    * switch is shown so that it can be turned off.
    */
   private addressField(p: Path, loop: boolean, o: string): HTMLElement {
@@ -2106,7 +2183,7 @@ export class Editor {
     f.setAttribute('data-dhcp', on ? 'on' : 'off');
     // the switch sits beside the label (see .field[data-dhcp] in the styles)
     f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
-    for (const is of doc.issuesAt(p.concat('dhcp'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    for (const is of doc.issuesAt(p.concat('ipv4'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     return f;
   }
 
@@ -2391,7 +2468,7 @@ export class Editor {
       const on = !!doc.get(sp.concat(id));
       const cb = this.e('input', { type: 'checkbox', id: `svc-${id}-${devIndex}`, 'data-act': 'netsvc', 'data-svc': id, 'data-index': String(devIndex), title }) as HTMLInputElement;
       cb.checked = on;
-      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label])]);
+      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label]), on ? supportNote(this.d, (serviceDef(id) as SvcDef).support, label) : null]);
     };
     if (may('dhcp') || doc.get(sp.concat('dhcp'))) kids.push(box('dhcp', 'DHCP server', 'Leases addresses to the DHCP clients of its scopes’ networks'));
     const dhcp = doc.get(sp.concat('dhcp'));
@@ -2430,6 +2507,8 @@ export class Editor {
       kids.push(box('container_engine', 'Container engine', 'Runs containers: its container networks'));
       if (doc.get(sp.concat('container_engine'))) kids.push(this.engineCard(sp.concat('container_engine'), dev, devIndex), this.guestsField(dev, devIndex, 'container'));
     }
+    // its applications: each a collapsed entry, with Add application
+    if (doc.get(sp.concat('applications'))) kids.push(this.applicationsCard(devIndex));
     // the other services of the registry it runs (a router's Wireless access among them), then Add service…
     const builtIn = builtInServices(like).map((x) => x.id);
     for (const def of SERVICES) {
@@ -2438,6 +2517,101 @@ export class Editor {
     }
     kids.push(this.addServiceField(sp, devIndex, like));
     return this.group(isContainer({ type: type }) ? 'Services (DHCP, DNS)' : 'Services', kids, 'netservices');
+  }
+
+  /**
+   * Applications (`services.applications`): each a collapsed entry with its
+   * one-line summary ("Management · TCP listener · 443"); opened: its id,
+   * name and profile, the profile's basic fields, and its other fields in
+   * a collapsed Advanced section; Duplicate and Remove. Add application
+   * appends one and focuses its profile (nothing is chosen for it).
+   */
+  private applicationsCard(devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const lp = doc.appsPath(devIndex);
+    const n = doc.get(lp);
+    const items = n && n.kind === 'seq' ? n.items : [];
+    const card = this.e('div', { class: 'svc-card', 'data-svc-card': 'applications', role: 'group', 'aria-label': 'Applications' }, [
+      this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [`Applications (${items.length})`])]),
+      this.e('p', { class: 'help' }, ['TCP, UDP and MQTT behaviour; a name such as “Modbus TCP” only labels it.']),
+    ]);
+    for (const is of doc.issuesAt(lp, true)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    items.forEach((_it, k) => card.appendChild(this.appEntry(devIndex, k)));
+    card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-app', 'data-index': String(devIndex) }, ['+ Add application'])]));
+    return card;
+  }
+
+  /** One application: its summary; opened, its fields (basic, then Advanced), Duplicate and Remove. */
+  private appEntry(devIndex: number, k: number): HTMLElement {
+    const doc = this.doc;
+    const p = doc.appsPath(devIndex).concat(k);
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const v = this.valuesAt(p);
+    const id = doc.text(p.concat('id')) || '';
+    const portText = doc.text(p.concat('port'));
+    const summary = appSummary({ id, name: doc.text(p.concat('name')), profile: doc.text(p.concat('profile')), port: portText !== undefined && /^[0-9]+$/.test(portText) ? Number(portText) : undefined, peer: doc.text(p.concat('peer')), broker: doc.text(p.concat('broker')), publish: this.listTexts(p.concat('publish')), subscribe: this.listTexts(p.concat('subscribe')) });
+    const iss = doc.issuesAt(p);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card app-card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-app': id });
+    if (this.open.has(J(p))) card.setAttribute('open', '');
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [summary]), iss.length ? this.badge(errs, iss.length - errs) : null]));
+    const o = 'application';
+    card.appendChild(this.field('Id *', this.input(p.concat('id'), 'app-id', id, { required: '' }), p.concat('id'), `Unique on ${dev || 'the device'}; others name it ${dev || 'device'}/${id || 'id'}. Renaming updates them.`));
+    const shown = APP_PARAMS.filter((x) => x.key !== 'id' && (!x.when || x.when(v)));
+    for (const prm of shown.filter((x) => !x.advanced)) card.appendChild(this.appParamField(p, prm, devIndex, o));
+    const adv = shown.filter((x) => x.advanced);
+    if (adv.length && v.profile) {
+      const ap = p.concat('#advanced');
+      const set = adv.filter((x) => doc.get(p.concat(x.key)) !== undefined).length;
+      const advErr = adv.some((x) => doc.issuesAt(p.concat(x.key)).some((i) => i.severity === 'error'));
+      const box = this.e('details', { class: 'adv-section', 'data-card': J(ap) });
+      if (this.open.has(J(ap)) || advErr) box.setAttribute('open', '');
+      box.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+      box.appendChild(this.e('p', { class: 'help' }, ['Empty fields take the profile’s modelling defaults (their placeholders).']));
+      for (const prm of adv) box.appendChild(this.appParamField(p, prm, devIndex, o));
+      card.appendChild(box);
+    }
+    for (const is of iss.filter((x) => !x.key && doc.pathOf(x.node) !== null && J(doc.pathOf(x.node) as Path) === J(p))) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    card.appendChild(
+      this.e('div', { class: 'app-actions' }, [
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-app', 'data-index': String(devIndex), 'data-k': String(k), title: `Duplicate ${id}` }, ['Duplicate']),
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-app', 'data-index': String(devIndex), 'data-k': String(k), title: `Remove ${id}`, 'aria-label': `Remove the application ${id}` }, ['Remove']),
+      ]),
+    );
+    return card;
+  }
+
+  /** A field of an application: its peer and broker with what the model offers, its topic lists; the others as a service's. */
+  private appParamField(p: Path, prm: SvcParam, devIndex: number, o: string): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const fp = p.concat(prm.key);
+    const req = typeof prm.required === 'function' ? prm.required(this.valuesAt(p)) : !!prm.required;
+    const label = prm.label + (req ? ' *' : '');
+    if (prm.key === 'profile') {
+      const sel = this.labelledSelect(fp, o, APP_PROFILES.map((x) => [x.id, x.label] as [string, string]), 'Select a profile');
+      sel.setAttribute('data-t', 'app-profile');
+      const prof = appProfile(doc.text(fp));
+      const f = this.field(label, sel, fp, (prof || { help: prm.help }).help);
+      if (prof) f.appendChild(supportNote(this.d, prof.support, prof.label));
+      return f;
+    }
+    if (prm.key === 'peer') {
+      // the listeners of the other devices this profile can talk to, then the devices
+      const prof = appProfile(doc.text(p.concat('profile')));
+      const apps: string[] = [];
+      for (const d of model ? model.devices : []) for (const a of d.applications || []) if (d.id !== dev && prof && prof.peerProfiles.indexOf(a.profile) >= 0) apps.push(`${d.id}/${a.id}`);
+      return this.textField(fp, label, o, 'text', apps.concat(this.ids('device').filter((x) => x !== dev)), prm.help, apps[0] || prm.placeholder);
+    }
+    if (prm.key === 'broker') {
+      const brokers = model ? model.devices.filter((d) => !!d.appServices && d.appServices.has('mqtt_broker')).map((d) => d.id) : [];
+      return this.field(label, this.selectEl(fp, 'text', o, brokers, doc.text(fp) || '', brokers.length ? 'Select the broker' : 'No device runs an MQTT broker'), fp, prm.help);
+    }
+    if (prm.key === 'client_id') return this.textField(fp, label, o, 'text', undefined, prm.help, `${dev}-${doc.text(p.concat('id')) || 'app'}`);
+    if (prm.type === 'topics') return this.listField(fp, label, o, prm.placeholder || 'a/topic', prm.help);
+    if (prm.key === 'description') return this.textField(fp, label, o, 'textarea', undefined, prm.help);
+    return this.svcParamField(p, prm, o, devIndex);
   }
 
   /**
@@ -2475,12 +2649,23 @@ export class Editor {
       this.e('span', { class: 'svc-name' }, [def.label + (builtIn ? ' (built in)' : '')]),
       builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': def.id, 'data-index': String(devIndex), title: `Remove ${def.label}`, 'aria-label': `Remove ${def.label}` }, ['×']),
     ]);
-    const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help])]);
+    const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help]), supportNote(this.d, def.support, def.label)]);
     if (!doc.get(p)) {
       card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-block', 'data-p': J(p), 'data-what': def.label + ' configuration' }, [`+ Configure ${def.label}`])]));
       return card;
     }
-    for (const prm of def.params) card.appendChild(this.svcParamField(p, prm, order, devIndex));
+    for (const prm of def.params.filter((x) => !x.advanced)) card.appendChild(this.svcParamField(p, prm, order, devIndex));
+    // what is seldom changed (modelling defaults, timers): collapsed until opened, open while one of them has an error
+    const adv = def.params.filter((x) => x.advanced && (!x.when || x.when(this.valuesAt(p))));
+    if (adv.length) {
+      const ap = p.concat('#advanced');
+      const set = adv.filter((x) => doc.get(p.concat(x.key)) !== undefined).length;
+      const box = this.e('details', { class: 'adv-section', 'data-card': J(ap) });
+      if (this.open.has(J(ap)) || adv.some((x) => doc.issuesAt(p.concat(x.key)).some((i) => i.severity === 'error'))) box.setAttribute('open', '');
+      box.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+      for (const prm of adv) box.appendChild(this.svcParamField(p, prm, order, devIndex));
+      card.appendChild(box);
+    }
     for (const l of def.lists || []) {
       const lp = p.concat(l.key);
       const ln = doc.get(lp);
@@ -2551,6 +2736,7 @@ export class Editor {
         builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'wireless', 'data-index': String(devIndex), title: 'Remove Wireless access', 'aria-label': 'Remove Wireless access' }, ['×']),
       ]),
       this.e('p', { class: 'help' }, ['Each Wi-Fi network is bridged to its own VLAN; they share the radio and the uplink.']),
+      supportNote(this.d, (serviceDef('wireless') as SvcDef).support, 'Wireless access'),
     ]);
     if (!doc.get(p)) {
       card.appendChild(this.e('p', { class: 'field-err' }, ['It needs its Wi-Fi networks: none is chosen for it.']));
@@ -2987,15 +3173,30 @@ export class Editor {
     const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p) });
     if (this.open.has(J(p)) || errs) card.setAttribute('open', '');
     card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [[`Scope ${k + 1}`, net || '(no network)', range].filter((x) => x).join(' · ')]), iss.length ? this.badge(errs, iss.length - errs) : null, this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(p), title: 'Delete this scope' }, ['×'])]));
-    const v4nets = model ? model.networks.filter((x) => !!x.cidr && x.cidr.indexOf(':') < 0).map((x) => x.id) : [];
-    card.appendChild(this.refField(p.concat('network'), 'Network *', o, v4nets, 'The network it leases addresses in (an IPv4 network of the model).'));
-    const sug = model && net ? scopeSuggestions(model, net) : { range: [], gateway: [], dns: [] };
+    const nets = model ? model.networks.filter((x) => !!x.cidr).map((x) => x.id) : [];
+    const chosen = model && net ? model.networks.find((x) => x.id === net) : undefined;
+    // an IPv6 network makes it a DHCPv6 scope: stateful with a range, stateless (DNS only) without; no gateway (routers advertise themselves)
+    const v6 = !!chosen && !!chosen.cidr && chosen.cidr.indexOf(':') >= 0;
+    card.appendChild(this.refField(p.concat('network'), 'Network *', o, nets, v6 ? 'An IPv6 network: a DHCPv6 scope (RFC 8415).' : 'The network it leases addresses in (an IPv4 network: DHCP; an IPv6 network: DHCPv6).'));
+    const sug = model && net && !v6 ? scopeSuggestions(model, net) : { range: [], gateway: [], dns: [] };
     const owner = `${dev} scope ${k + 1}`;
-    card.appendChild(this.withHelpers(this.textField(p.concat('range'), 'Address range *', o, 'text', undefined, 'start-end, inside the network; not the gateway or a static address.', '10.1.1.100-10.1.1.199'), p.concat('range'), 'text', sug.range, 'range', owner));
-    card.appendChild(this.withHelpers(this.textField(p.concat('gateway'), 'Default gateway *', o, 'text', undefined, 'The router’s address (or virtual address) in the network.', '10.1.1.1'), p.concat('gateway'), 'text', sug.gateway, 'default gateway', owner));
-    card.appendChild(this.withHelpers(this.listField(p.concat('dns'), 'DNS servers *', o, '10.1.1.10', 'The DNS servers it gives its clients.'), p.concat('dns'), 'text', sug.dns, 'DNS servers', owner));
-    card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'How long a lease lasts (renewed at half of it); empty: 1 day.', '1 day (default)'));
-    card.appendChild(this.listField(p.concat('exclude'), 'Excluded addresses', o, '10.1.1.150', 'Addresses of the range it never leases.'));
+    if (v6) {
+      card.appendChild(this.textField(p.concat('range'), 'Address range', o, 'text', undefined, 'start-end: what it leases (stateful). Empty: DNS only (stateless DHCPv6).', '2001:db8:10::100-2001:db8:10::1ff'));
+      card.appendChild(this.listField(p.concat('dns'), doc.get(p.concat('range')) ? 'DNS servers' : 'DNS servers *', o, '2001:db8:10::53', 'The IPv6 DNS servers it gives its clients.'));
+      if (doc.get(p.concat('gateway'))) card.appendChild(this.textField(p.concat('gateway'), 'Default gateway', o, 'text', undefined, 'DHCPv6 has no gateway option: delete it (routers advertise themselves).'));
+      card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'Its addresses’ preferred and valid lifetime (renewed at half of it); empty: 1 day.', '1 day (default)'));
+    } else {
+      card.appendChild(this.withHelpers(this.textField(p.concat('range'), 'Address range *', o, 'text', undefined, 'start-end, inside the network; not the gateway or a static address.', '10.1.1.100-10.1.1.199'), p.concat('range'), 'text', sug.range, 'range', owner));
+      card.appendChild(this.withHelpers(this.textField(p.concat('gateway'), 'Default gateway *', o, 'text', undefined, 'The router’s address (or virtual address) in the network.', '10.1.1.1'), p.concat('gateway'), 'text', sug.gateway, 'default gateway', owner));
+      card.appendChild(this.withHelpers(this.listField(p.concat('dns'), 'DNS servers *', o, '10.1.1.10', 'The DNS servers it gives its clients.'), p.concat('dns'), 'text', sug.dns, 'DNS servers', owner));
+      card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'How long a lease lasts (renewed at half of it); empty: 1 day.', '1 day (default)'));
+    }
+    card.appendChild(this.listField(p.concat('exclude'), 'Excluded addresses', o, v6 ? '2001:db8:10::150' : '10.1.1.150', 'Addresses of the range it never leases.'));
+    if (v6) {
+      if (doc.get(p.concat('domain'))) card.appendChild(this.textField(p.concat('domain'), 'Domain name', o, 'text', undefined, 'The domain its clients get.', 'hq.example'));
+      for (const is of iss.filter((x) => !x.key)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      return card;
+    }
     // reservations: a MAC address and its address
     const rp = p.concat('reservations');
     const rn = doc.get(rp);
@@ -3469,6 +3670,7 @@ export class Editor {
       }
       const vpnBuiltIn = isBuiltIn(serviceDef('vpn') as SvcDef, this.likeAt(base));
       if (!vpnBuiltIn) kids.unshift(this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, ['A service of this device']), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'vpn', 'data-index': String(devIndex), title: 'Remove the VPN gateway', 'aria-label': 'Remove the VPN gateway' }, ['×'])]));
+      kids.push(supportNote(this.d, (serviceDef('vpn') as SvcDef).support, 'VPN gateway'));
       out.push(this.group(vpnBuiltIn ? 'VPN gateway (built in)' : 'VPN gateway', kids, 'vpn'));
     }
     // the other built-in functions: an access point's Wireless access, a load balancer's Load balancing, an IDS/IPS's Inspection
@@ -3572,6 +3774,7 @@ export class Editor {
     if (!impl) isel.classList.add('unset');
     const def = SEPARATION_IMPLEMENTATIONS.find((x) => x.id === impl);
     kids.push(this.field('Implementation *', isel, sp.concat('implementation'), def ? def.help : SEPARATION_IMPLEMENTATIONS.map((x) => `${x.label}: ${x.help}`).join(' ')));
+    kids.push(supportNote(this.d, (serviceDef('separation') as SvcDef).support, 'Domain separation'));
     // the two domains
     const dl = doc.get(sp.concat('domains'));
     const nd = dl && dl.kind === 'seq' ? dl.items.length : 0;
@@ -4603,6 +4806,12 @@ export class Editor {
         const di = Number(target.getAttribute('data-index'));
         const def = serviceDef(val);
         if (!def) return true;
+        if (val === 'applications') {
+          const k = doc.addApplication(di);
+          made = doc.appsPath(di).concat(k, 'profile');
+          note = `Application ${doc.text(doc.appsPath(di).concat(k, 'id')) || ''} added to ${this.devName(di)}: choose its profile.`;
+          break;
+        }
         if (val === 'dhcp' || val === 'dns' || val === 'hypervisor' || val === 'container_engine') doc.setNetService(di, val, true);
         else doc.addBlock(p.concat(val), def.label);
         made = p.concat(val);
@@ -4650,6 +4859,35 @@ export class Editor {
         }
         const n = doc.renameEntity(kind, p[1] as number, trimmed);
         note = n ? `Renamed; ${n} reference${n > 1 ? 's' : ''} updated.` : undefined;
+        break;
+      }
+      case 'ipv6-method':
+        if (val) doc.setText(p, val);
+        else doc.remove(p, 'IPv6 static');
+        note = val ? `IPv6: ${(IPV6_METHODS.find((x) => x.id === val) || { label: val }).label}.` : 'IPv6: static (its written addresses).';
+        break;
+      case 'app-profile': {
+        const gone = doc.setAppProfile(p.slice(0, -1), val);
+        note = val ? `Profile: ${(appProfile(val) || { label: val }).label}${gone.length ? ` (${gone.join(', ')} removed: not part of it)` : ''}.` : undefined;
+        break;
+      }
+      case 'app-id': {
+        const di = p[1] as number;
+        const k = p[4] as number;
+        const cur = doc.text(p) || '';
+        if (trimmed === cur) return true;
+        if (!ID_RE.test(trimmed)) {
+          this.host.toast('An application id is letters, digits, “_”, “.” and “-”.');
+          this.host.changed();
+          return true;
+        }
+        if (doc.appIds(di).some((x, j) => j !== k && x === trimmed)) {
+          this.host.toast(`${this.devName(di)} already has an application “${trimmed}”.`);
+          this.host.changed();
+          return true;
+        }
+        const n = doc.renameApplication(di, k, trimmed);
+        note = n ? `Renamed; ${n} peer${n > 1 ? 's' : ''} updated.` : undefined;
         break;
       }
       case 'ifid': {
@@ -4860,6 +5098,46 @@ export class Editor {
         }
         doc.remove(p, 'Delete Wi-Fi network');
         this.host.changed(`The Wi-Fi network ${net} was deleted${clients.length ? `; ${clients.length} connection${clients.length === 1 ? '' : 's'} now name${clients.length === 1 ? 's' : ''} a missing network` : ''}.`);
+        return true;
+      }
+      case 'ra-toggle': {
+        const box = btn as unknown as HTMLInputElement;
+        if (box.checked) {
+          doc.addBlock(p, 'router advertisements');
+          this.didCreate(p.concat('prefixes'), 'Router advertisements on: write the prefixes it advertises (its own /64s are offered).', btn);
+        } else {
+          doc.remove(p, 'Router advertisements off');
+          this.host.changed('Router advertisements off.');
+        }
+        return true;
+      }
+      case 'add-app': {
+        const k = doc.addApplication(index);
+        this.didCreate(doc.appsPath(index).concat(k, 'profile'), `Application ${doc.text(doc.appsPath(index).concat(k, 'id')) || ''} added to ${this.devName(index)}: choose its profile.`, btn);
+        return true;
+      }
+      case 'dup-app': {
+        const k = Number(btn.getAttribute('data-k'));
+        const j = doc.duplicateApplication(index, k);
+        if (j < 0) return true;
+        this.didCreate(doc.appsPath(index).concat(j, 'id'), `Duplicated as ${doc.text(doc.appsPath(index).concat(j, 'id')) || ''}: give it its own port or peer where it needs one.`, btn);
+        return true;
+      }
+      case 'del-app': {
+        const k = Number(btn.getAttribute('data-k'));
+        const dev = doc.text(['devices', index, 'id']) || '';
+        const id = doc.text(doc.appsPath(index).concat(k, 'id')) || '';
+        const refs = doc.applicationRefTexts(dev, id);
+        if (refs.length) {
+          const a = await this.host.dialog({
+            title: `Remove the application ${dev}/${id}?`,
+            body: [`${refs.length === 1 ? 'This application names it as its peer' : `These ${refs.length} applications name it as their peer`}; ${refs.length === 1 ? 'its peer is' : 'their peers are'} removed with it and reported as missing until you choose another:`, this.e('ul', { class: 'removal-list' }, refs.map((x) => this.e('li', {}, [x]))) as unknown as string, 'You can undo this with Ctrl+Z.'],
+            buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Remove', value: 'go', kind: 'danger' }],
+          });
+          if (a !== 'go') return true;
+        }
+        doc.removeApplication(index, k);
+        this.host.changed(`The application ${id} was removed${refs.length ? `; ${refs.length} peer${refs.length === 1 ? '' : 's'} now missing` : ''}.`);
         return true;
       }
       case 'add-block': {
@@ -5240,4 +5518,4 @@ interface SimOwner {
 }
 
 /** The services whose fields this file draws in their own cards (not from their parameters' definitions). */
-const OWN_UI = ['dhcp', 'dns', 'hypervisor', 'container_engine', 'vpn', 'separation'];
+const OWN_UI = ['dhcp', 'dns', 'hypervisor', 'container_engine', 'vpn', 'separation', 'applications'];

@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 /** The public catalog, in the order of the File menu (the first is example 0 of a "#example=0" link). */
-const CATALOG = ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml'];
+const CATALOG = ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml'];
 
 const yamls = (dir) => readdirSync(join(root, dir)).filter((f) => /\.ya?ml$/.test(f));
 const read = (dir, f) => ({ name: f, text: readFileSync(join(root, dir, f), 'utf8').replace(/\r\n/g, '\n') });

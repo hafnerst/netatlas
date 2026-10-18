@@ -365,6 +365,7 @@ export class Multicast {
     P.fallback.set('pim', (dev, l3, msg, pkt) => this.pimUnrelated(dev, l3, msg, pkt));
     P.snoopHook = (sd, from, vlan, frame, t) => this.snoop(sd, from, vlan, frame, t);
     P.mrouteHook = (dev, l3, pkt) => this.mroute(dev, l3, pkt);
+    P.joinedHook = (dev, iface, group) => this.isMember(dev, iface, formatAddr(group));
     P.routesHooks.push((dev) => this.routesChanged(dev));
     P.sweepHooks.push(() => this.sweep());
     P.ifaceHooks.push((dev, l3, up) => {
@@ -1565,6 +1566,8 @@ export class Multicast {
     const g = formatAddr(pkt.dst);
     const s = formatAddr(pkt.src);
     if (!this.mcRouter(dev)) {
+      // a group its own interface joined as a host (a PTP port): it takes it, and routes it nowhere (no note: nothing is lost)
+      if (this.isMember(dev, l3.id, g)) return true;
       if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.dropL3(`fwmc|${dev}|${g}`, dev, l3, pkt, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       else this.dropL3(`nopim|${dev}|${g}`, dev, l3, pkt, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
       return true;

@@ -42,7 +42,7 @@ devices:
         mac: 00:1c:73:aa:00:02
       - {id: ge-0/0/2, mac: 00:1c:73:aa:00:03, description: Trunk to the distribution switch}
       - {id: ge-0/0/3, ip: [10.20.0.1/24, 10.20.1.1/24], vrf: MGMT, mac: 00:1c:73:aa:00:04}
-      - {id: ge-0/0/4, dhcp: true, description: Out-of-band console network}
+      - {id: ge-0/0/4, ipv4: dhcp, description: Out-of-band console network}
       - {id: ge-0/0/6, mac: 00:1c:73:aa:00:06}
       - {id: ge-0/0/7, mac: 00:1c:73:aa:00:07}
       - {id: ge-0/0/9, mac: 00:1c:73:aa:00:09, description: Spare}

@@ -12,6 +12,7 @@ import { parseAddress } from '../model/ip';
 import { isSsmGroup } from '../analysis/sim/mac';
 import { Simulation, TestSource } from '../analysis/sim/simulation';
 import { el } from './dom';
+import { appProfile, appSummary } from '../model/applications';
 
 /** What the forms ask of the controller. */
 export interface EventFormHost {
@@ -28,6 +29,8 @@ export interface EventFormHost {
   interfacesOf(dev: string): Array<{ id: string; label: string; cabled: boolean }>;
   /** the flapping cycle as the Layer 1 parameters set it ("down 5 s, up 10 s, 3 cycles") */
   flapTimes(): string;
+  /** Start application: a client application's messages (its event in Active events) */
+  startApp(dev: string, app: string): string;
 }
 
 type Opt = { value: string; label: string; disabled?: boolean; title?: string };
@@ -317,6 +320,85 @@ export class StreamForm {
 
   focus(): void {
     (this.t.dev.value ? this.group : this.t.dev).focus();
+  }
+}
+
+/**
+ * Start application: one of a device's client applications (a TCP or UDP
+ * client, periodic messages, an MQTT client) runs as its profile says, its
+ * messages to its peer as one event of Active events. The devices offered
+ * are those with an application to start (the others listed disabled with
+ * the reason); the application's summary says what it will do. Its
+ * interval is real time, as a stream's is; nothing of its configuration is
+ * changed here (that is the Edit tab's).
+ */
+export class AppForm {
+  readonly el: HTMLElement;
+  private dev: HTMLSelectElement;
+  private app: HTMLSelectElement;
+  private ctx: HTMLElement;
+  private btn: HTMLButtonElement;
+  private f: { el: HTMLElement; need: HTMLElement; msg: HTMLElement };
+
+  constructor(
+    private doc: Document,
+    private host: EventFormHost,
+  ) {
+    this.dev = el(doc, 'select', { id: 'sim-a-dev' }) as HTMLSelectElement;
+    this.app = el(doc, 'select', { id: 'sim-a-app' }) as HTMLSelectElement;
+    this.ctx = el(doc, 'p', { id: 'sim-a-ctx', class: 'small muted sim-t-note' });
+    this.btn = el(doc, 'button', { type: 'button', id: 'sim-a-go', class: 'sp-primary' }, ['Start application']) as HTMLButtonElement;
+    this.f = footer(doc, 'sim-a', [this.btn]);
+    this.app.setAttribute('aria-describedby', 'sim-a-ctx');
+    this.el = el(doc, 'div', { class: 'sim-ev-form' }, [grid(doc, [['sim-a-dev', 'Device', this.dev], ['sim-a-app', 'Application', this.app]]), this.ctx, this.f.el]);
+    this.dev.addEventListener('change', () => {
+      this.app.value = '';
+      this.app.removeAttribute('data-key');
+      this.sync();
+    });
+    this.app.addEventListener('change', () => this.sync());
+    this.btn.addEventListener('click', () => {
+      this.sync();
+      if (this.btn.disabled) return;
+      this.f.msg.textContent = this.host.startApp(this.dev.value, this.app.value);
+      this.sync();
+    });
+    this.sync();
+  }
+
+  sync(): void {
+    const sim = this.host.sim();
+    const devs: Opt[] = [{ value: '', label: 'Select…' }];
+    for (const d of sim.model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      if (!d.applications || !d.applications.length) continue;
+      const n = sim.apps.startable(d.id).length;
+      devs.push({ value: d.id, label: n ? d.id : `${d.id} — listeners only`, disabled: !n });
+    }
+    fill(this.doc, this.dev, devs);
+    const apps = this.dev.value ? sim.apps.startable(this.dev.value) : [];
+    fill(this.doc, this.app, [{ value: '', label: apps.length ? 'Select…' : this.dev.value ? 'No application to start' : 'Choose a device first' }].concat(apps.map((a) => ({ value: a.id, label: appSummary(a) }))));
+    if (apps.length === 1 && !this.app.value) this.app.value = apps[0].id;
+    this.app.disabled = !apps.length;
+    const a = this.app.value ? apps.find((x) => x.id === this.app.value) : undefined;
+    const p = a ? appProfile(a.profile) : undefined;
+    const ctx = a && p ? `${p.help}${a.interval ? ` Every ${a.interval / 1000} s of real time${a.count ? `, ${a.count} message${a.count === 1 ? '' : 's'}` : ', until stopped'}.` : p.id === 'mqtt_client' ? '' : ' One message.'}` : devs.length === 1 ? 'No device of the model has an application to start (Edit tab → Services → Applications).' : '';
+    if (this.ctx.textContent !== ctx) this.ctx.textContent = ctx;
+    this.ctx.hidden = !ctx;
+    const why = !this.dev.value ? 'Choose a device with an application.' : !this.app.value ? 'Choose the application.' : sim.appProblem(this.dev.value, this.app.value);
+    setNeed(this.f.need, [this.btn], why ? why.replace(/\.?$/, '.') : null);
+  }
+
+  setDevice(dev: string): void {
+    if (this.dev.value !== dev) {
+      this.dev.value = dev;
+      this.app.value = '';
+      this.app.removeAttribute('data-key');
+    }
+    this.sync();
+  }
+
+  focus(): void {
+    (this.dev.value ? this.app : this.dev).focus();
   }
 }
 

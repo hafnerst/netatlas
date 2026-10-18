@@ -87,7 +87,7 @@ import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
-import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
+import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
@@ -125,6 +125,8 @@ export interface NdPdu {
   lladdr: string;
   solicited: boolean;
   unsolicited?: boolean;
+  /** a duplicate address detection probe (from ::) */
+  dad?: boolean;
 }
 
 export interface Frame {
@@ -183,6 +185,8 @@ export interface Protocols {
   snoop?(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): SnoopResult | null;
   /** a routed multicast packet at a router: true when multicast routing took it */
   mroute?(dev: string, l3: L3Iface, pkt: Pkt): boolean;
+  /** has a device's own interface joined a group (a router listening as a host: a PTP clock's port)? */
+  joined?(dev: string, iface: string, group: IpAddr): boolean;
   /** a router recomputed its routes (multicast checks its RPF interfaces) */
   routesChanged?(dev: string): void;
 }
@@ -340,6 +344,79 @@ export class Engine {
   private wifiActive = new Map<string, number>();
   /** the log line of a message, by the message (its headers when it is sent) */
   private msgEvents = new WeakMap<Msg, SimEvent>();
+  /**
+   * IPv6 host configuration (ipv6.ts): what duplicate address detection
+   * hears, and the learned on-link prefixes and default routers routing
+   * takes into account.
+   */
+  v6Hook: {
+    /** a DAD probe (an NS from ::) for a target arrived */
+    dadProbe(dev: string, l3: L3Iface, target: IpAddr): void;
+    /** a Neighbor Advertisement for a target arrived */
+    advert(dev: string, l3: L3Iface, target: IpAddr, lladdr: string): void;
+    connected(dev: string): Connected[];
+    routes(dev: string, vrf: string): RibEntry[];
+  } | null = null;
+  /**
+   * PTP (ptp.ts): what a transparent clock sees of the event messages it
+   * forwards (their arrival at its port, their start on the wire of each
+   * port they leave by: the residence time), and the moment a clock's own
+   * message starts on the wire (its hardware timestamp). `egress` may give
+   * back the frame with its correction field updated (a copy).
+   */
+  ptpHook: {
+    ingress(dev: string, port: string, frame: Frame, t: number): void;
+    egress(dev: string, port: string, frame: Frame, tIn: number, tOut: number): Frame;
+  } | null = null;
+  /** the IPv6 addresses ipv6.ts gave each interface ("dev:iface"): the simulation's, never the model's */
+  private dyn6 = new Map<string, SimAddr[]>();
+
+  /**
+   * The learned IPv6 addresses of an interface (SLAAC, DHCPv6; preferred
+   * first, deprecated after): they replace the ones it had; routing
+   * follows, and what waited for an address goes.
+   */
+  setV6(dev: string, iface: string, list: SimAddr[]): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!sd || !l3) return;
+    const k = dev + ':' + iface;
+    const was = this.dyn6.get(k) || [];
+    const same = was.length === list.length && was.every((a, i) => compareAddr(a.addr, list[i].addr) === 0);
+    this.dyn6.set(k, list.slice());
+    l3.addrs = l3.addrs.filter((a) => was.indexOf(a) < 0).concat(list);
+    if (same) return;
+    this.stateVersion++;
+    this.routingChanged();
+    if (this.protocols) this.protocols.ifaceChange(dev, l3, this.isL3Up(dev, iface));
+    this.recheckWaits();
+  }
+
+  /** An interface's link-local address (null: none, or not yet validated). */
+  setLinkLocal(dev: string, iface: string, a: SimAddr | null): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!l3) return;
+    if (a) l3.ll = a;
+    else delete l3.ll;
+    this.stateVersion++;
+  }
+
+  /** Duplicate address detection: a Neighbor Solicitation from :: for a tentative address, to its solicited-node group (RFC 4862 §5.4.2). */
+  dadSolicit(dev: string, l3: L3Iface, target: IpAddr): void {
+    const sn = solicitedNode(target);
+    const msg: Msg = { protocol: 'ndp', type: 'Neighbor Solicitation', label: `NDP NS DAD ${formatAddr(target)}`, detail: `Neighbor Solicitation (ICMPv6 135) for duplicate address detection: is ${formatAddr(target)} in use? From :: (the address is tentative) to ${formatAddr(sn)} (${multicastMac(sn)}), no source link-layer address (RFC 4862 §5.4.2)` };
+    const pkt = this.newPacket(parseAddress('::') as IpAddr, sn, l3.vrf, msg, [], 255);
+    pkt.l4 = { proto: 'icmp', num: 58, icmpType: 135, icmpCode: 0, icmpName: 'Neighbor Solicitation' };
+    pkt.len = 24;
+    this.note('message', 'ndp', dev, '', msg.type, '', msg.detail, this.now, msg);
+    this.emit(dev, l3, { src: l3.mac, dst: multicastMac(sn), msg, nd: { op: 'NS', src: parseAddress('::') as IpAddr, target, lladdr: '', solicited: false, dad: true }, ip: pkt });
+  }
+
+  /** Is the address one of the interface's own: configured, leased, learned, or its link-local one? */
+  private hasOwn(l3: L3Iface, a: IpAddr): boolean {
+    return l3.addrs.some((x) => compareAddr(x.addr, a) === 0) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
+  }
 
   constructor(model: Model, opts: EngineOptions = {}) {
     this.model = model;
@@ -599,7 +676,7 @@ export class Engine {
       return this.relationUp(id) && (!this.protocols || !this.protocols.sessionUp || this.protocols.sessionUp(id));
     }
     if (cond.indexOf('lease:') === 0) {
-      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen)
+      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen); IPv4 traffic's
       const [dev, iface] = cond.slice(6).split(':');
       return iface !== undefined ? this.addressReady(dev, iface) : !this.waitsForLease(dev);
     }
@@ -864,7 +941,8 @@ export class Engine {
     if (!sd || !l3) return;
     const had = this.leases.get(l.dev + ':' + l.iface);
     this.leases.set(l.dev + ':' + l.iface, l);
-    l3.addrs = [l.addr];
+    // (the IPv4 address it leased; its IPv6 addresses stay)
+    l3.addrs = l3.addrs.filter((a) => a.addr.version !== 4).concat([l.addr]);
     this.stateVersion++;
     this.routingChanged();
     if (!had || compareAddr(had.addr.addr, l.addr.addr) !== 0) {
@@ -881,7 +959,7 @@ export class Engine {
     this.leases.delete(k);
     const sd = this.net.devices.get(dev);
     const l3 = sd ? sd.l3.get(iface) : undefined;
-    if (l3) l3.addrs = [];
+    if (l3) l3.addrs = l3.addrs.filter((a) => a !== l.addr);
     this.flushIface(dev, iface, why);
     this.stateVersion++;
     this.routingChanged();
@@ -890,16 +968,21 @@ export class Engine {
   /** Does an interface have its address: a configured one, or (a DHCP client) a lease? */
   addressReady(dev: string, iface: string): boolean {
     const i = this.model.index.interfaces.get(dev + ':' + iface);
-    if (!i || !i.dhcp || i.addresses.length) return true;
+    if (!i || !i.dhcp) return true;
     return this.leases.has(dev + ':' + iface);
   }
 
-  /** Is a device waiting for a DHCP lease (a client interface without one, and no address elsewhere)? */
-  waitsForLease(dev: string): string | null {
+  /**
+   * Is a device waiting for a DHCP lease (a client interface without one, and no IPv4 address elsewhere)?
+   * IPv6 traffic (version 6) never waits for one: a lease is IPv4, and an IPv6 address (SLAAC, DHCPv6,
+   * written) is no IPv4 address to send from.
+   */
+  waitsForLease(dev: string, version: 4 | 6 = 4): string | null {
+    if (version === 6) return null;
     const sd = this.net.devices.get(dev);
     if (!sd) return null;
     const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'loopback');
-    if (ls.some((l) => l.addrs.length)) return null;
+    if (ls.some((l) => l.addrs.some((a) => a.addr.version === 4))) return null;
     const c = ls.find((l) => !this.addressReady(dev, l.id));
     return c ? c.id : null;
   }
@@ -910,6 +993,7 @@ export class Engine {
       if (l.dev !== device) continue;
       out.push({ device, iface: l.iface, vrf: l.vrf, net: { version: l.addr.net.version, bytes: l.addr.net.bytes, prefix: l.addr.net.prefix }, addr: l.addr.addr, address: l.addr.text });
     }
+    if (this.v6Hook) out.push(...this.v6Hook.connected(device));
     return out;
   }
 
@@ -920,6 +1004,7 @@ export class Engine {
       const zero = { version: 4 as const, bytes: [0, 0, 0, 0], prefix: 0 };
       out.push({ kind: 'static', device, vrf, net: zero, distance: 254, metric: 0, iface: l.iface, via: l.gateway, blackhole: false });
     }
+    if (this.v6Hook) out.push(...this.v6Hook.routes(device, vrf));
     return out;
   }
 
@@ -1491,6 +1576,7 @@ export class Engine {
       frame = this.toUnicast(e.link, dev, frame, t);
     }
     const w = this.wire(e.link, e.end, frame, t);
+    if (this.ptpHook && frame.msg.protocol === 'ptp') frame = this.ptpHook.egress(dev, port, frame, t, w.start);
     const o = otherEnd(this.net, e);
     const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + e.link, from: e.end, to: o.end }, parent, frameEncap(frame));
     this.inspectable(f, frame, tag);
@@ -1613,6 +1699,8 @@ export class Engine {
     };
     if (frame.arp) h.arp = { op: frame.arp.gratuitous ? 'request (gratuitous)' : frame.arp.op, senderMac: frame.arp.sha, senderIp: formatAddr(frame.arp.spa), targetMac: frame.arp.tha, targetIp: formatAddr(frame.arp.tpa) };
     if (inner && inner.l4) h.l4 = inner.l4;
+    const ins = frame.msg.data ? (frame.msg.data as { inspect?: Headers['app'] }).inspect : undefined;
+    if (ins) h.app = ins;
     return h;
   }
 
@@ -1687,6 +1775,7 @@ export class Engine {
     const fromUplink = !!sd.virt && sd.virt.kind === 'vswitch' && from !== null && sd.virt.uplinks.indexOf(from) >= 0;
     if (fromUplink && isGroupMac(frame.dst) && this.standbyUplink(sd, from as string)) return;
     if (from !== null && !wire && !fromUplink) this.learn(sd, vlan, frame.src, from, t);
+    if (from !== null && this.ptpHook && frame.msg.protocol === 'ptp') this.ptpHook.ingress(sd.id, from, frame, t);
     if (sd.caps.inspection && !wire) t += this.params.num('ips-latency', sd.id);
     // to its own VLAN interface (the switch's management or routing interface)
     if (from !== null && !wire) {
@@ -2183,7 +2272,7 @@ export class Engine {
     for (const l3 of Array.from(sd.l3.values()).sort((x, y) => cmp(x.id, y.id))) {
       if (vrf !== undefined && l3.vrf !== vrf) continue;
       if (!this.isL3Up(dev, l3.id)) continue;
-      if (l3.addrs.some((x) => compareAddr(x.addr, a) === 0)) return l3;
+      if (this.hasOwn(l3, a)) return l3;
       if (this.protocols && this.protocols.owns(dev, l3.id).some((o) => compareAddr(o.addr, a) === 0)) return l3;
     }
     return undefined;
@@ -2197,7 +2286,11 @@ export class Engine {
     // its own broadcast or multicast, back over a loop: ignored
     if ((bcast || isMulticastIp(pkt.dst)) && (frame.loops || 0) > 0 && this.ownsAddress(dev, pkt.src)) return;
     // a routed group at a router: multicast routing (the RPF check, the outgoing interfaces); link-local groups and IGMP are its own
-    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) return;
+    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) {
+      // (a group its own interface joined, as a host: it takes it too, besides routing it)
+      if (this.protocols.joined && this.protocols.joined(dev, l3.id, pkt.dst)) this.deliverLocal(dev, l3, pkt.vrf === l3.vrf ? pkt : { ...pkt, vrf: l3.vrf });
+      return;
+    }
     // to a container host's address: a reply to a translated packet, or to a published port, goes on to its container
     if (own && !bcast && !isMulticastIp(pkt.dst) && !pkt.encap) {
       const back = this.dnat(dev, pkt);
@@ -2345,6 +2438,16 @@ export class Engine {
         return;
       }
       this.emit(dev, out, { src: out.mac, dst: multicastMac(pkt.dst), msg: pkt.msg, ip: pkt });
+      return;
+    }
+    // a link-local destination (fe80::/10): out of the interface it is for, its neighbour resolved there; never routed (RFC 4291 §2.5.6)
+    if (pkt.dst.version === 6 && isLinkLocal6(pkt.dst)) {
+      if (!out) {
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `not sent: ${formatAddr(pkt.dst)} is a link-local address and no interface was given (${pkt.msg.label})`);
+        return;
+      }
+      const o = out;
+      this.resolve(dev, o, pkt.dst, pkt, (mac) => this.emit(dev, o, { src: o.mac, dst: mac, msg: pkt.msg, ip: pkt }));
       return;
     }
     // a broadcast: the limited broadcast out of `out` (else its first interface that is up with an IPv4 address); a broadcast of one of its own subnets out of that interface
@@ -2505,8 +2608,8 @@ export class Engine {
    */
   /** The device that has an address (null: none in the model). */
   ownerOf(a: IpAddr): string | null {
-    for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (l.addrs.some((x) => compareAddr(x.addr, a) === 0)) return d.id;
-    if (this.protocols) for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (this.protocols.owns(d.id, l.id).length) return d.id;
+    for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (this.hasOwn(l, a)) return d.id;
+    if (this.protocols) for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (this.protocols.owns(d.id, l.id).some((o) => compareAddr(o.addr, a) === 0)) return d.id;
     return null;
   }
 
@@ -2794,7 +2897,8 @@ export class Engine {
 
   /** An ARP Request (or Neighbor Solicitation): broadcast / to the solicited-node address, or unicast to `mac` (a refresh, a probe). */
   private solicit(dev: string, l3: L3Iface, ip: IpAddr, mac: string): void {
-    const src = l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version);
+    const ll = ip.version === 6 && l3.ll && (isLinkLocal6(ip) || !l3.addrs.some((a) => a.addr.version === 6)) ? l3.ll : undefined;
+    const src = ll || l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version);
     if (!src) return;
     const sim = l3.macSimulated ? ' (simulated)' : '';
     if (ip.version === 4) {
@@ -2847,8 +2951,22 @@ export class Engine {
   private ndReceive(dev: string, l3: L3Iface, frame: Frame, nd: NdPdu): void {
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     if (nd.op === 'NS') {
-      const own = l3.addrs.some((x) => compareAddr(x.addr, nd.target) === 0);
+      const own = this.hasOwn(l3, nd.target);
       const vip = this.protocols ? this.protocols.owns(dev, l3.id).find((o) => compareAddr(o.addr, nd.target) === 0) : undefined;
+      if (nd.dad) {
+        // duplicate address detection by another node: the owner defends its address (an NA to all-nodes, RFC 4861 §7.2.4);
+        // a node probing the same tentative address learns it is a duplicate (RFC 4862 §5.4.3)
+        if (this.v6Hook) this.v6Hook.dadProbe(dev, l3, nd.target);
+        if (!own) return;
+        const all = parseAddress('ff02::1') as IpAddr;
+        const msg: Msg = { protocol: 'ndp', type: 'Neighbor Advertisement', label: `NDP NA ${formatAddr(nd.target)} is in use`, detail: `Neighbor Advertisement (ICMPv6 136, not solicited, override): ${formatAddr(nd.target)} is at ${l3.mac} — to ff02::1 (all nodes): it defends its address against a duplicate address detection probe` };
+        const pkt = this.newPacket(nd.target, all, l3.vrf, msg, [], 255);
+        pkt.l4 = { proto: 'icmp', num: 58, icmpType: 136, icmpCode: 0, icmpName: 'Neighbor Advertisement' };
+        pkt.len = 32;
+        this.note('message', 'ndp', dev, '', msg.type, '', msg.detail, this.now, msg);
+        this.emit(dev, l3, { src: l3.mac, dst: multicastMac(all), msg, nd: { op: 'NA', src: nd.target, target: nd.target, lladdr: l3.mac, solicited: false }, ip: pkt });
+        return;
+      }
       if (!own && !vip) return;
       // RFC 4861 7.2.3: the solicitation's source goes in as STALE (created or updated)
       const k = this.entryKey(l3.id, nd.src);
@@ -2865,6 +2983,7 @@ export class Engine {
       return;
     }
     // an advertisement: solicited → REACHABLE; unsolicited → STALE (an entry it updates; none is created, RFC 4861 7.2.5)
+    if (this.v6Hook) this.v6Hook.advert(dev, l3, nd.target, nd.lladdr);
     const k = this.entryKey(l3.id, nd.target);
     const e = tab.get(k);
     if (nd.unsolicited) {
@@ -4057,6 +4176,11 @@ export function subnetBroadcast(a: { net: IpAddr & { prefix: number } }): IpAddr
 }
 
 /** The limited broadcast 255.255.255.255. */
+/** Is it an IPv6 link-local unicast address (fe80::/10)? */
+export function isLinkLocal6(a: IpAddr): boolean {
+  return a.version === 6 && a.bytes[0] === 0xfe && (a.bytes[1] & 0xc0) === 0x80;
+}
+
 export function isLimitedBroadcast(a: IpAddr): boolean {
   return a.version === 4 && a.bytes.every((b) => b === 255);
 }

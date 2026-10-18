@@ -13,14 +13,29 @@
 # passes (port_pairs: copy) and sends nothing back. The copy goes to ids, an
 # IDS/IPS in passive mode: it receives copies and never forwards anything.
 #
+# Applications: the PLC is an Endpoint (kind PLC) with three applications of
+# its own, without becoming a Server. Its register access is a TCP listener on
+# port 502, named "Modbus TCP": the name labels it, NetAtlas simulates TCP
+# requests and answers, nothing of Modbus. The HMI's register polling is a TCP
+# client of plc-1/registers. The PLC also publishes telemetry by MQTT to the
+# broker on edge-1 (an MQTT broker service): its temperature and its pressure.
+# The HMI's dashboard subscribes to plant/cell1/+/temperature (it gets the
+# temperature, never the pressure); the engineering workstation's alarm log
+# subscribes to plant/cell1/+/alarm, which nothing publishes: it receives
+# nothing. Every MQTT message goes to the broker first; no IP multicast.
+#
 # Analyze ▾ → Trace path… from eng-ws to plc notes the TAP's copy; Simulate ▾
 # → Start simulation… shows the copies arriving at the IDS while the
-# original frames go on to the PLC.
+# original frames go on to the PLC. Network events → Start application starts
+# an application: hmi-1's register polling, plc-1's telemetry, hmi-1's
+# dashboard or eng-ws's alarm log (Show MQTT sessions on edge-1 lists the
+# clients and their subscriptions).
 netatlas: 1
 title: OT cell — protocol gateway, TAP and passive IDS
 description: |
   A PLC and an HMI behind a protocol gateway (a System, Layer 3 forwarder),
-  with a pass-through TAP whose monitor port feeds a passive IDS.
+  with a pass-through TAP whose monitor port feeds a passive IDS; the PLC's
+  applications (register access, telemetry by MQTT) and an MQTT broker.
 
 groups:
   - id: it
@@ -29,13 +44,6 @@ groups:
   - id: cell
     label: OT cell 1
     kind: zone
-
-protocols:
-  - id: modbus
-    label: Modbus TCP
-    category: service
-    color: "#a61e4d"
-    description: the HMI polls the PLC's registers (user-defined protocol)
 
 devices:
   - id: eng-ws
@@ -46,6 +54,9 @@ devices:
     # (on the gateway's row: the IT side beside the cell, not under it)
     tier: 1
     simulation: {test_traffic: "on", test_targets: "10.71.0.10 icmp", test_interval: 10}
+    services:
+      applications:
+        - {id: alarms, name: Alarm log, profile: mqtt_client, broker: edge, subscribe: [plant/cell1/+/alarm]}
     interfaces:
       - {id: eth0, ip: 10.70.1.10/24}
     routes:
@@ -89,11 +100,23 @@ devices:
       - {id: p1, vlans: 1}
       - {id: p2, vlans: 1}
       - {id: p3, vlans: 1}
+      - {id: p4, vlans: 1}
   - id: plc
     label: plc-1
     type: endpoint
     kind: plc
     group: cell
+    services:
+      applications:
+        - {id: registers, name: Modbus TCP registers, profile: tcp_server, port: 502}
+        - {id: web, name: Web configuration, profile: tcp_server, port: 443}
+        - id: telemetry
+          name: Telemetry
+          profile: mqtt_client
+          broker: edge
+          publish: [plant/cell1/plc-1/temperature, plant/cell1/plc-1/pressure]
+          qos: "1"
+          interval: 5s
     interfaces:
       - {id: eth0, ip: 10.71.0.10/24}
     routes:
@@ -103,8 +126,23 @@ devices:
     type: endpoint
     kind: hmi
     group: cell
+    services:
+      applications:
+        - {id: poll, name: Register polling, profile: tcp_client, peer: plc/registers, interval: 2s}
+        - {id: dashboard, name: Temperatures, profile: mqtt_client, broker: edge, subscribe: [plant/cell1/+/temperature], qos: "1"}
     interfaces:
       - {id: eth0, ip: 10.71.0.20/24}
+  - id: edge
+    label: edge-1 (MQTT broker)
+    type: server
+    kind: appliance
+    group: cell
+    services:
+      mqtt_broker: {}
+    interfaces:
+      - {id: eth0, ip: 10.71.0.30/24}
+    routes:
+      - {prefix: 10.70.1.0/24, via: 10.71.0.1, name: engineering}
 
 links:
   - {id: l-eng, a: "eng-ws:eth0", b: "pgw:it0", speed: 1G}
@@ -113,12 +151,9 @@ links:
   - {id: l-tap-ids, a: "tap:mon", b: "ids:mon0", speed: 100M, direction: unidirectional, label: copy}
   - {id: l-plc, a: "cell-sw:p2", b: "plc:eth0", speed: 100M}
   - {id: l-hmi, a: "cell-sw:p3", b: "hmi:eth0", speed: 100M}
+  - {id: l-edge, a: "cell-sw:p4", b: "edge:eth0", speed: 100M}
 
 relations:
-  - id: hmi-plc
-    protocol: modbus
-    label: register polling
-    endpoints: [hmi, plc]
   - id: eng-plc
     protocol: https
     label: PLC web configuration

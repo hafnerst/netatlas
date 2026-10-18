@@ -314,7 +314,9 @@ export function resolveEntry(model: Model, e: RibEntry, ctx?: RoutingCtx, stack:
     if (!isUp(ctx, e.device, iface)) return { ok: false, reason: 'down', detail: `exit interface ${iface} is down` };
     if (!e.via) return { ok: true, hops: [{ iface }], recursive: false };
     const own = connectedIn(model, e.device, ctx).filter((c) => c.iface === iface);
-    if (own.length && !own.some((c) => inPrefix(c.net, e.via as IpAddr))) {
+    // (a link-local next hop, fe80::/10, is on the exit interface's link whatever its prefixes: a router's address in router discovery)
+    const ll = e.via.version === 6 && e.via.bytes[0] === 0xfe && (e.via.bytes[1] & 0xc0) === 0x80;
+    if (own.length && !ll && !own.some((c) => inPrefix(c.net, e.via as IpAddr))) {
       return { ok: false, reason: 'unresolved', detail: `${formatAddr(e.via)} is not in a network of ${iface} (${own.map((c) => prefixText(c.net)).join(', ')})` };
     }
     return { ok: true, hops: [{ iface, gateway: e.via }], recursive: false };

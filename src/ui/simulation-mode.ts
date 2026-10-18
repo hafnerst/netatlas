@@ -11,6 +11,8 @@ import { FailureResult } from '../analysis/failure';
 export interface SimulationMode {
   /** the DHCP leases in effect, as the diagram writes them, by interface ref ("iface:pc1:eth0" → "10.1.1.50/24 (DHCP lease)") */
   leaseMarks?(): Map<string, string>;
+  /** automatic IPv6 in effect, as the diagram writes it, by interface ref ("iface:pc:eth0" → "2001:db8:10::5054:ff:fe12:3456 (SLAAC)") */
+  ipv6Marks?(): Map<string, string>;
   /** the banner's and the export note's text, e.g. "Protocol simulation, t = 12.4 s" */
   note(): string;
   /** the status-bar marker's text, e.g. "Simulation · t = 12.4 s" */

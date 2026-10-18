@@ -59,7 +59,7 @@ import { textWidth } from '../layout/text';
 type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
-import { IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
+import { AppForm, IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
 import { Flight, Headers, McDecision, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
@@ -147,7 +147,7 @@ export type MenuItem = { label: string; act: () => void };
 
 /** The tables of a device the simulation panel can show (the status side's tabs). */
 type DevTable = Exclude<TableKind, 'packet'>;
-const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6', ptp: 'PTP', ntp: 'NTP' };
 
 /** An interval in seconds as the form has it: "1 s", "0.25 s". */
 function secText(sec: number): string {
@@ -189,6 +189,7 @@ export class SimController implements SimulationMode {
   private leaveForm: LeaveForm | null = null;
   private streamForm: StreamForm | null = null;
   private ifaceForm: IfaceForm | null = null;
+  private appForm: AppForm | null = null;
   private domainKey = '';
   /** the status side shows the protocols' status, or a table of the selected device */
   private statusView: { kind: DevTable; dev: string } | null = null;
@@ -714,7 +715,8 @@ export class SimController implements SimulationMode {
     const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const marks = this.querierMarks();
     const snoops = this.snoopBadges();
-    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
+    const ptps = this.ptpMarks();
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(ptps).map(([d, m]) => d + '=' + m.text + m.state).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
@@ -776,6 +778,48 @@ export class SimController implements SimulationMode {
       led.setAttribute('cx', (at.x + 9).toFixed(1));
       led.setAttribute('cy', (at.y + H / 2).toFixed(1));
       tx.setAttribute('x', (at.x + 16).toFixed(1));
+      tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
+      s.setAttribute('data-edge', at.edge);
+    }
+    // each PTP clock's role (★ the grandmaster), beside its status: the same compact mark as a querier's
+    for (const [dev, m] of ptps) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const s = doc.createElementNS(NS, 'g');
+      s.setAttribute('class', 'sim-ptp');
+      s.setAttribute('data-device', dev);
+      s.setAttribute('data-state', m.state);
+      s.setAttribute('role', 'img');
+      s.setAttribute('aria-label', m.detail);
+      const t = doc.createElementNS(NS, 'title');
+      t.textContent = m.detail;
+      const r = doc.createElementNS(NS, 'rect');
+      const tx = doc.createElementNS(NS, 'text');
+      tx.textContent = (m.state === 'grandmaster' ? '★ ' : m.state === 'synchronized' ? '✓ ' : m.state === 'holdover' || m.state === 'unsynchronized' ? '✕ ' : '') + m.text;
+      s.appendChild(t);
+      s.appendChild(r);
+      s.appendChild(tx);
+      g.appendChild(s);
+      let tw = (tx.textContent || '').length * 5.4;
+      try {
+        tw = (tx as SVGTextContentElement).getComputedTextLength() || tw;
+      } catch (e) {
+        /* not laid out: the estimate */
+      }
+      const w = Math.ceil(tw + 12);
+      const at = place.find(b, w, H);
+      r.setAttribute('x', at.x.toFixed(1));
+      r.setAttribute('y', at.y.toFixed(1));
+      r.setAttribute('width', String(w));
+      r.setAttribute('height', String(H));
+      r.setAttribute('rx', '3');
+      tx.setAttribute('x', (at.x + 6).toFixed(1));
       tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
       s.setAttribute('data-edge', at.edge);
     }
@@ -896,6 +940,16 @@ export class SimController implements SimulationMode {
    * candidate down, snooping only — and whether the VLAN has a querier), by
    * device; switches with snooping enabled nowhere have none.
    */
+  /** Each PTP clock's role now (the clocks' own view, never the configuration's): grandmaster, synchronized, acquiring, holdover … */
+  ptpMarks(): Map<string, { text: string; state: string; detail: string }> {
+    const out = new Map<string, { text: string; state: string; detail: string }>();
+    for (const dev of Array.from(this.sim.ptp.clocks.keys()).sort()) {
+      const m = this.sim.ptp.mark(dev);
+      if (m) out.set(dev, m);
+    }
+    return out;
+  }
+
   snoopBadges(): Map<string, SnoopRole[]> {
     const out = new Map<string, SnoopRole[]>();
     for (const id of Array.from(this.sim.engine.net.devices.keys()).sort()) {
@@ -1207,6 +1261,26 @@ export class SimController implements SimulationMode {
     return `${a.target}: streaming from t = ${fmtSec(this.t)}, one datagram every ${interval / 1000} s of real time; see Active events.`;
   }
 
+  /** Start application: an event of the list, its messages until they are done or Stop. */
+  startApp(dev: string, app: string): string {
+    const a = this.sim.actApp(dev, app);
+    // its first message is on screen now (paused too: there it waits for Play)
+    this.pacer.take();
+    this.logKey = '';
+    this.actionsKey = '';
+    this.refresh(true);
+    if (a.error) return a.error;
+    return `${a.target}: started at t = ${fmtSec(this.t)}; see Active events.`;
+  }
+
+  /** Start application… from a device's menu: the form, open, with the device. */
+  appFrom(dev: string): void {
+    if (!this.appForm) return;
+    this.openSection('sim-ne-app');
+    this.appForm.setDevice(dev);
+    this.appForm.focus();
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
     return this.did(this.sim.stopStream(dev, iface, group), `${dev}:${iface} stops its stream to ${group}`);
   }
@@ -1261,6 +1335,22 @@ export class SimController implements SimulationMode {
     if (this.sim.netsvc.hasLeases(dev)) out.push('dhcp');
     if (this.sim.netsvc.hasZones(dev)) out.push('dnszone');
     if (this.sim.netsvc.resolves(dev)) out.push('dnscache');
+    // MQTT: a broker's sessions, a device's clients
+    if (this.sim.mqtt.brokers.has(dev)) out.push('mqtt');
+    if (this.sim.mqtt.clients.some((c) => c.run.dev === dev)) out.push('mqttc');
+    if (this.sim.ipv6.hasTable(dev)) out.push('ipv6');
+    if (this.sim.ptp.clocks.has(dev)) out.push('ptp');
+    if (this.sim.ntp.has(dev)) out.push('ntp');
+    return out;
+  }
+
+  /** Automatic IPv6 as the diagram writes it into the interfaces' reserved lines. */
+  ipv6Marks(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const h of this.sim.ipv6.hosts.values()) {
+      const m = this.sim.ipv6.mark(h.dev, h.iface);
+      if (m) out.set(`iface:${h.dev}:${h.iface}`, m);
+    }
     return out;
   }
 
@@ -1298,6 +1388,11 @@ export class SimController implements SimulationMode {
     if (kind === 'dhcp') return () => this.sim.leaseGrid(dev);
     if (kind === 'dnscache') return () => this.sim.dnsCacheGrid(dev);
     if (kind === 'dnszone') return () => this.sim.dnsZoneGrid(dev);
+    if (kind === 'mqtt') return () => this.sim.mqttBrokerTable(dev);
+    if (kind === 'mqttc') return () => this.sim.mqttClientTable(dev);
+    if (kind === 'ipv6') return () => this.sim.ipv6.table(dev);
+    if (kind === 'ptp') return () => this.sim.ptp.table(dev);
+    if (kind === 'ntp') return () => this.sim.ntp.table(dev);
     if (kind === 'arp') return () => ({ v4: this.sim.arpTable(dev), v6: this.sim.ndTable(dev), timers: this.sim.arpTimers(dev), scale: this.sim.timerScale });
     if (kind === 'mac') return () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale });
     if (kind === 'conn') return () => ({ rows: this.sim.connTable(dev), listening: this.sim.transport.listening(dev).text });
@@ -1445,13 +1540,13 @@ export class SimController implements SimulationMode {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       const tabs = this.deviceTables(dev);
-      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
+      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone', mqtt: 'Show MQTT sessions', mqttc: 'Show MQTT clients', ipv6: 'Show IPv6 configuration', ptp: 'Show PTP clock', ntp: 'Show NTP status' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
       // multicast: a host's memberships, a router's IGMP / MLD groups and multicast routes, a switch's snooping table
       for (const k of ['members', 'igmp', 'querier', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
-      for (const k of ['dhcp', 'dnszone', 'dnscache'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      for (const k of ['ipv6', 'dhcp', 'dnszone', 'dnscache', 'mqtt', 'mqttc', 'ptp', 'ntp'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
       else items.push({ label: 'Use as sender', act: () => void this.setSender(dev, true) });
       const sdv = this.sim.engine.net.devices.get(dev);
@@ -1460,6 +1555,7 @@ export class SimController implements SimulationMode {
         for (const j of this.sim.multicast.joined(dev)) items.push({ label: `Leave group ${j.group}`, act: () => void this.leaveGroup(dev, j.iface, j.group) });
         if (this.sim.multicast.joined(dev).length) items.push({ label: 'Leave multicast group…', act: () => this.multicastFrom(dev, 'leave') });
         items.push({ label: 'Start multicast stream…', act: () => this.multicastFrom(dev, 'stream') });
+        if (this.sim.apps.startable(dev).length) items.push({ label: 'Start application…', act: () => this.appFrom(dev) });
         for (const st of this.sim.multicast.streamsOf(dev)) {
           if (st.running) items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
           else items.push({ label: `Start stream ${st.group} again`, act: () => void this.did(this.sim.multicast.restartStream(dev, st.iface, st.group), `${dev} streams to ${st.group} again`) });
@@ -1740,18 +1836,21 @@ export class SimController implements SimulationMode {
       stopFlap: (d: string, i: string) => (this.stopFlap(`iface:${d}:${i}`) ? `${d}:${i} stops flapping at t = ${fmtSec(this.t)}.` : `${d}:${i} is not flapping.`),
       interfacesOf: (d: string) => this.interfaceChoices(d),
       flapTimes: () => this.flapTimes(),
+      startApp: (d: string, a: string) => this.startApp(d, a),
     };
     this.testForm = new TestForm(doc, { sim: () => this.sim, send: (p, play) => this.sendPlan(p, play), playing: () => this.playing }, (d, id, title, body) => this.disclosure(d, id, title, body));
     this.joinForm = new JoinForm(doc, fh);
     this.leaveForm = new LeaveForm(doc, fh);
     this.streamForm = new StreamForm(doc, fh);
     this.ifaceForm = new IfaceForm(doc, fh);
+    this.appForm = new AppForm(doc, fh);
     const net = this.sec(doc, 'sim-act-net', 'Network events', [
       this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
       this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
       this.action(doc, 'sim-ne-leave', 'Leave multicast group', this.leaveForm.el),
       this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
       this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
+      this.action(doc, 'sim-ne-app', 'Start application', this.appForm.el),
     ]);
     this.bulkControls(doc, net);
     box.appendChild(net);

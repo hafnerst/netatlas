@@ -254,7 +254,7 @@ const MANUAL: Section[] = [
     title: 'Work in the simulation layout',
     steps: [
       'While a simulation runs, the window has three parts around the diagram. On the left, **Simulation setup**: the **Protocols** shown (as in the dialog; a change never restarts anything, the simulation keeps running every protocol), the **Senders** (collapsed; its heading sums them up), the **Layer 1–4 parameters** (a change applies at once and is written to the event log), and the **Table timers** scale.',
-      'On the right, **Actions**: **Network events**, five actions each with its own form: **Send network packets**, **Join multicast group**, **Leave multicast group**, **Start multicast stream** and **Interface actions** (each chooses its device and interface itself; nothing needs to be selected first). The two buttons beside the **Network events** heading, **Expand all** and **Collapse all**, open or close those five forms at once (not Active events, not a form’s **More options**); hiding a form keeps what you typed and stops nothing; a button that would change nothing is disabled. Below them **Active events**, everything they started with its state and result, and the other changes in effect (a failed cable, a device powered off); then the selected device’s **Simulation** settings. A click in the diagram opens a menu for that object: **Fail link**, **Power off**, its tables, its broadcast domain, and the four actions with that device filled in.',
+      'On the right, **Actions**: **Network events**, six actions each with its own form: **Send network packets**, **Join multicast group**, **Leave multicast group**, **Start multicast stream**, **Interface actions** and **Start application** (each chooses its device and interface itself; nothing needs to be selected first). The two buttons beside the **Network events** heading, **Expand all** and **Collapse all**, open or close those six forms at once (not Active events, not a form’s **More options**); hiding a form keeps what you typed and stops nothing; a button that would change nothing is disabled. Below them **Active events**, everything they started with its state and result, and the other changes in effect (a failed cable, a device powered off); then the selected device’s **Simulation** settings. A click in the diagram opens a menu for that object: **Fail link**, **Power off**, its tables, its broadcast domain, and the four actions with that device filled in.',
       'Under them, the **simulation panel**, by default its header and exactly three rows of the status and three of the log (also its lowest; measured, so it fits the theme and zoom): **Play / Pause**, **Step**, the state (*Playing*, *Paused*, *Paused: inspecting packet*), the **Speed**, the **Pacing**, **Skip idle time**, the simulated time and **Exit simulation**; on the left the **Status** of the protocols’ sessions, or a table of the selected device; on the right the **Event log**, filtered by text, layer, cast and protocol, and **Show all senders**. While you point at the log or use it, new events wait, so that a row doesn’t move under your click. Drag the line above the panel to change its height (or focus it and use `↑` `↓`, `Enter` for the default; double-click it for the default); it is remembered.',
       '`F6` moves the keyboard between the setup, the diagram, the actions and the simulation panel (`Shift+F6` back).',
       'After **Exit simulation** the Objects list and the Inspector are back, with the tab and the selection you had; the diagram keeps its zoom and position.',
@@ -375,6 +375,31 @@ const MANUAL: Section[] = [
     ],
   },
   {
+    id: 'applications',
+    title: 'Run applications on a device',
+    steps: [
+      'Select a server, a VM, a container, a storage device or an **Endpoint** that is a host (a PLC, an HMI, a camera, a printer, an IoT device …) and open the **Edit** tab. **Add service…** → **Applications** adds its list; a device keeps its type. A TAP, a monitoring System and a Security gateway run none (the reason is said).',
+      'Press **+ Add application**: a new entry opens with the keyboard in its **Profile**, nothing chosen for you. The profiles: **TCP listener** and **TCP client**, **UDP listener**, **UDP client**, **UDP receiver** and **Periodic UDP messages** (one-way), and **MQTT client** (publisher, subscriber or both). Each shows only its own fields; sizes, delays, timeouts, retries, the IP version and the bind interface wait in its closed **Advanced** section, with the modelling defaults as placeholders.',
+      'Give a client its **Peer**: an application of another device (*plc/registers*: its port follows from it) or a device, address or host name with a **Port**. The field offers the listeners its profile can talk to. An MQTT client chooses its **Broker** (a device with the MQTT broker service), its **Publishes to** topics and its **Subscribes to** filters (`+` one level, `#` the rest).',
+      'Closed, each entry is one line: *Name · profile · port or peer*. **Duplicate** copies one with its own id; **Remove** first lists the applications that name it as their peer (they report their missing peer afterwards). Each is one step you can undo; renaming a device or an application renames the peers that name it.',
+    ],
+    notes: [
+      'A name only labels an application: one called *Modbus TCP* is TCP requests and answers, not Modbus. Two listeners on one port, a listener on a service’s port (NTP 123, MQTT 1883, PTP 319 / 320 …), a peer that is missing or cannot answer this profile and a client identifier used twice at one broker are errors at their fields.',
+      'The **ⓘ** beside a profile, a service or a protocol says how far NetAtlas goes with it: *Diagram only*, *Configuration and validation* or *Modeled behavior*. Open it (a click or `Enter`) for two lines: what is simulated, and what is not.',
+    ],
+    figures: [['applications', 'The thermostat’s applications in private-house.yaml: Local control, a TCP listener, and Cloud sync, a TCP client of web/web, opened with its fields and its closed Advanced section.']],
+  },
+  {
+    id: 'ipv6',
+    title: 'Give hosts IPv6 addresses',
+    steps: [
+      'Select a host interface in the **Edit** tab. Its **IPv6** field is one choice: **None** or **Static** (the addresses written in its address list), **Automatic (SLAAC)**, **Automatic (DHCPv6)**, or **Automatic (SLAAC and DHCPv6)**. Its IPv4 method (**DHCP** or written addresses) is independent: a dual-stack client has both.',
+      'On the router’s interface of that link, tick **Router advertisements** and write its **Prefixes** (its own /64s are offered, never filled in). **Advanced** holds the DNS servers it advertises, the managed (M), other (O) and autonomous (A) flags, the lifetimes and the interval, with RFC 4861’s defaults as placeholders.',
+      'For DHCPv6, give a DHCP server a scope of the IPv6 network: with an **Address range** it leases addresses, without one it gives DNS servers only. A DHCPv6 scope has no default gateway: hosts learn their router from the advertisements.',
+    ],
+    notes: ['In a simulation each interface’s status says what it got: *SLAAC address acquired*, *DHCPv6 pending*, *No default router*, *Duplicate address* or *Address deprecated*; **Show IPv6 configuration** lists its addresses with their lifetimes, its default routers and DNS servers. In private-house.yaml the Internal network is dual-stack. Prefix delegation and DHCPv6 relay are not modelled.'],
+  },
+  {
     id: 'virtualization',
     title: 'Model hypervisors, VMs and containers',
     steps: [
@@ -482,6 +507,29 @@ const MANUAL: Section[] = [
       ['querier', 'The querier election in the internal example multicast-querier.yaml: q1 (10.5.0.1) is the elected querier of VLAN 10 (its mark beside its status); q2, a candidate with a higher address, is on standby.'],
       ['mroutes', 'r1’s multicast routes in the simulation panel: the RP, the shared tree (*, 239.1.1.1) and the sources’ trees, each with its incoming and outgoing interfaces.'],
     ],
+  },
+  {
+    id: 'sim-apps',
+    title: 'Start applications and follow MQTT',
+    steps: [
+      'Applications send nothing by themselves. In **Network events**, open **Start application**, choose a **Device** (a device with only listeners is listed as *listeners only*) and its **Application**, and press **Start application**; one with *Starts: With the simulation* starts 3 s after the senders.',
+      'A client connects, sends its request and waits for the answer, with its timeout and retries; a periodic sender repeats every interval of real time, its count or until stopped. **Active events** shows each start as one entry with what each message came to, and its **Stop**.',
+      'In ot-network.yaml start hmi-1’s *Temperatures* and plc-1’s *Telemetry*: the PLC connects to edge-1, the broker, and publishes its temperature and its pressure every 5 s; the broker forwards the temperature to the HMI (its filter *plant/cell1/+/temperature*) and the pressure to nobody. eng-ws’s *Alarm log* subscribes to a filter nothing matches and receives nothing.',
+      'On the broker, **Show MQTT sessions** lists its clients and their subscriptions; on a client, **Show MQTT clients** its state, publications and what it received by topic. A message’s dot opens its inspection: its type, topic, QoS and packet id, and its payload’s size, never its contents.',
+    ],
+    notes: ['MQTT 3.1.1 with clean sessions: QoS 0 and 1 (no QoS 2), keep-alives, a reconnect after a lost connection, UNSUBSCRIBE and DISCONNECT when stopped. Every message goes through the broker over TCP; nothing is IP multicast.'],
+  },
+  {
+    id: 'sim-time',
+    title: 'Follow time synchronization: NTP and PTP',
+    steps: [
+      '**NTP**: a device with a stratum serves time as a reference. One with upstreams is *Unsynchronized* (stratum 16) until an upstream answered, then *Synchronized* to it at one stratum more; after 8 unanswered polls it is unsynchronized again. **Show NTP status** lists its upstreams, their last answer and its source. No offset is computed.',
+      '**PTP**: give each clock the **PTP** service — its **Clock function** (ordinary, boundary, transparent), the one **Profile** (IEEE 1588-2008 Default, E2E, UDP/IPv4, two-step), its **Domain**, its **Interfaces** and, for an ordinary clock, its **Role** (may become the grandmaster, or receiver only). The data set (priorities, clock class), the intervals, the clock’s offset and drift and the timestamping are in **Advanced**.',
+      'Start a simulation: the clocks elect the grandmaster from their Announces, and the slaves measure offset and path delay with Sync, Follow_Up, Delay_Req and Delay_Resp. Each clock gets a mark on its box: **★ PTP · Grandmaster**, **✓ PTP · Synchronized**, **PTP · Acquiring** (dashed: its servo not locked yet; *Listening*: no master heard yet), **✕ PTP · Holdover** or **✕ PTP · Unsynchronized** (dotted: no Sync, or no master), **PTP · Transparent clock** (never a source). Its tooltip says why; **Show PTP clock** lists its ports and their states, data sets, grandmaster, last offset and path delay.',
+      'In timing-ptp.yaml, gm-a is the grandmaster through the transparent clock sw-a and the boundary clock rt. **Power off** gm-a: after three missed Announces gm-b takes over, and rt and the receivers follow; **Power on** gm-a: it wins again.',
+    ],
+    notes: ['A clock is *Synchronized* after three offsets in a row below 1 µs (hardware timestamps) or 100 µs (software): the model’s rule, not a guaranteed accuracy. Every clock is a modelled local clock beside the simulation’s time, which it never moves. Holdover quality, one-step clocks, peer delay, gPTP and TSN are not modelled; NTP and PTP never discipline each other.'],
+    figures: [['ptp', 'Cell A of timing-ptp.yaml in a simulation: gm-a the grandmaster, gm-b synchronized to it, sw-a the transparent clock between them.']],
   },
   {
     id: 'sim-broadcast',

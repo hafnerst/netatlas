@@ -22,7 +22,8 @@ NetAtlas keeps two kinds of example models apart.
 | `private-house.yaml` | Private house: three floors, a DSL modem/router, Wi-Fi networks on VLANs |
 | `dmz-services.yaml` | Internet edge: a firewall with VPN and NAT, IPS, reverse proxy, load balancer |
 | `hybrid-cloud.yaml` | Hybrid cloud: a data centre with an AWS VPC and an Azure VNet |
-| `ot-network.yaml` | OT cell: PLC, HMI, protocol gateway, TAP and passive IDS |
+| `ot-network.yaml` | OT cell: PLC, HMI, protocol gateway, TAP and passive IDS; applications and MQTT |
+| `timing-ptp.yaml` | Time synchronization: PTP grandmasters, a boundary and a transparent clock |
 | `cross-domain.yaml` | Cross-domain boundary: a Security gateway that breaks the protocol |
 
 The README's [Examples](../README.md#examples) section says why each one is

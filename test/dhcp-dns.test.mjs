@@ -1,5 +1,5 @@
 // DHCP on physical and logical interfaces, and DNS names of a device.
-// DHCP is an explicit flag (`dhcp: true`, omitted = false) that excludes
+// DHCP is an explicit flag (`ipv4: dhcp`, omitted = false) that excludes
 // manual addresses and is never treated as an address. A DNS name is entered
 // once per device and associated with one or more of its interfaces (by id)
 // that have DHCP off. Covers validation, the editing operations (confirmation
@@ -33,9 +33,9 @@ devices:
   - id: web2
     type: server
     interfaces:
-      - {id: eth0, dhcp: true}
+      - {id: eth0, ipv4: dhcp}
     logical_interfaces:
-      - {id: vlan20, type: virtual, dhcp: true}
+      - {id: vlan20, type: virtual, ipv4: dhcp}
 networks:
   - {id: front, cidr: 192.0.2.0/24}
   - {id: mgmt, cidr: 198.51.100.0/24}
@@ -43,7 +43,7 @@ networks:
 
 // ------------------------------------------------------------------ DHCP
 
-test('DHCP is off unless "dhcp: true" is written, also for an interface without addresses', () => {
+test('DHCP is off unless "ipv4: dhcp" is written, also for an interface without addresses', () => {
   const r = validate.loadModel(base);
   assert.deepEqual(r.errors.concat(r.warnings).map((e) => e.message), []);
   const ix = r.model.index.interfaces;
@@ -55,10 +55,10 @@ test('DHCP is off unless "dhcp: true" is written, also for an interface without 
   assert.equal(ix.get('web2:eth0').dhcp, true);
   assert.equal(ix.get('web2:vlan20').dhcp, true);
   assert.equal(ix.get('web2:vlan20').type, 'virtual');
-  // an explicit false is the same as leaving it out
-  assert.equal(validate.loadModel(base.replace('{id: eth0, dhcp: true}', '{id: eth0, dhcp: false}')).model.index.interfaces.get('web2:eth0').dhcp, false);
-  // only true/false is accepted
-  assert.ok(errors(base.replace('{id: eth0, dhcp: true}', '{id: eth0, dhcp: auto}')).some((m) => /true or false|boolean/i.test(m)));
+  // an explicit static is the same as leaving it out
+  assert.equal(validate.loadModel(base.replace('{id: eth0, ipv4: dhcp}', '{id: eth0, ipv4: static}')).model.index.interfaces.get('web2:eth0').dhcp, false);
+  // only dhcp / static is accepted
+  assert.ok(errors(base.replace('{id: eth0, ipv4: dhcp}', '{id: eth0, ipv4: auto}')).some((m) => /not an IPv4 method: use dhcp .* or static/.test(m)));
 });
 
 test('new physical and logical interfaces are created with DHCP off, and nothing is written for it', () => {
@@ -73,14 +73,14 @@ test('new physical and logical interfaces are created with DHCP off, and nothing
   for (const e of d.interfaceEntries(0)) assert.equal(d.dhcpOn(e.path), false);
 });
 
-test('"dhcp: true" together with manual addresses is rejected; neither value is discarded', () => {
+test('"ipv4: dhcp" together with manual addresses is rejected; neither value is discarded', () => {
   for (const [from, to] of [
-    ['{id: eth1, ip: 198.51.100.10/24}', '{id: eth1, dhcp: true, ip: 198.51.100.10/24}'],
-    ['{id: bond0, type: virtual, members: [eth2], ip: 203.0.113.10/24}', '{id: bond0, type: virtual, dhcp: true, members: [eth2], ip: 203.0.113.10/24}'],
+    ['{id: eth1, ip: 198.51.100.10/24}', '{id: eth1, ipv4: dhcp, ip: 198.51.100.10/24}'],
+    ['{id: bond0, type: virtual, members: [eth2], ip: 203.0.113.10/24}', '{id: bond0, type: virtual, ipv4: dhcp, members: [eth2], ip: 203.0.113.10/24}'],
   ]) {
     const text = base.replace(from, to).replace(/\n      - \{name: mgmt[^\n]*|, bond0\]/g, (m) => (m.startsWith(',') ? ']' : ''));
     const r = validate.loadModel(text);
-    const msg = r.errors.map((e) => e.message).filter((m) => /has "dhcp: true" and manually configured addresses/.test(m));
+    const msg = r.errors.map((e) => e.message).filter((m) => /has "ipv4: dhcp" and manually configured IPv4 addresses/.test(m));
     assert.equal(msg.length, 1, r.errors.map((e) => e.message).join('\n'));
     // the error is attached to the addresses, both facts are still in the model and in the document
     const id = /eth1/.test(to) ? 'web1:eth1' : 'web1:bond0';
@@ -97,24 +97,25 @@ test('DHCP is not an address: such an interface is in no network, and "ip: dhcp"
   assert.deepEqual(derive.interfaceAddresses(m, 'web2', 'eth0'), []);
   assert.ok(derive.networkMembers(m, 'front').every((x) => x.device !== 'web2'));
   assert.deepEqual(derive.deviceNetworks(m, 'web2'), []);
-  const w = warnings(base.replace('{id: eth0, dhcp: true}', '{id: eth0, ip: dhcp}'));
-  assert.ok(w.some((x) => /"dhcp" is not an address: .*set "dhcp: true"/.test(x)), w.join('\n'));
+  const w = warnings(base.replace('{id: eth0, ipv4: dhcp}', '{id: eth0, ip: dhcp}'));
+  assert.ok(w.some((x) => /"dhcp" is not an address: .*set "ipv4: dhcp"/.test(x)), w.join('\n'));
   assert.ok(errors(base.replace('{id: lo0, type: loopback, ip: 10.255.0.10/32}', '{id: lo0, type: loopback}')).some((x) => /needs at least one/.test(x)));
 });
 
-test('a loopback cannot use DHCP: "dhcp: true" on it is an error (kept, not dropped), and the editor never turns it on', () => {
+test('a loopback cannot use DHCP: "ipv4: dhcp" on it is an error (kept, not dropped), and the editor never turns it on', () => {
   const lo = (entry) => base.replace('{id: lo0, type: loopback, ip: 10.255.0.10/32}', entry);
   // with or without an address, the flag itself is the error; the missing address is reported as for any loopback
-  const alone = errors(lo('{id: lo0, type: loopback, dhcp: true}'));
+  const alone = errors(lo('{id: lo0, type: loopback, ipv4: dhcp}'));
   assert.ok(alone.some((x) => /loopback "lo0" cannot obtain its address by DHCP/.test(x)), alone.join('\n'));
   assert.ok(alone.some((x) => /needs at least one/.test(x)));
-  const both = errors(lo('{id: lo0, type: loopback, dhcp: true, ip: 10.255.0.10/32}'));
+  const both = errors(lo('{id: lo0, type: loopback, ipv4: dhcp, ip: 10.255.0.10/32}'));
   assert.deepEqual(both.filter((x) => /DHCP|dhcp/.test(x)).length, 1, both.join('\n'));
-  assert.equal(validate.loadModel(lo('{id: lo0, type: loopback, dhcp: true, ip: 10.255.0.10/32}')).model.index.interfaces.get('web1:lo0').dhcp, true);
-  // "dhcp: false" is harmless; "ip: dhcp" on a loopback doesn't suggest the flag
-  assert.deepEqual(errors(lo('{id: lo0, type: loopback, dhcp: false, ip: 10.255.0.10/32}')), []);
+  assert.equal(validate.loadModel(lo('{id: lo0, type: loopback, ipv4: dhcp, ip: 10.255.0.10/32}')).model.index.interfaces.get('web1:lo0').dhcp, true);
+  // "ipv4: static" is harmless; the earlier flag "dhcp" is an unknown key; "ip: dhcp" on a loopback doesn't suggest the method
+  assert.deepEqual(errors(lo('{id: lo0, type: loopback, ipv4: static, ip: 10.255.0.10/32}')), []);
+  assert.ok(errors(lo('{id: lo0, type: loopback, dhcp: false, ip: 10.255.0.10/32}')).some((x) => /unknown key "dhcp"/.test(x)));
   const word = errors(lo('{id: lo0, type: loopback, ip: dhcp}'));
-  assert.ok(word.some((x) => /a loopback cannot obtain its address by DHCP: write its address/.test(x)) && !word.some((x) => /set "dhcp: true"/.test(x)), word.join('\n'));
+  assert.ok(word.some((x) => /a loopback cannot obtain its address by DHCP: write its address/.test(x)) && !word.some((x) => /set "ipv4: dhcp"/.test(x)), word.join('\n'));
   // editor: refused for a loopback (nothing changes, nothing to undo), allowed for every other kind
   const d = doc(base);
   const lp = ['devices', 0, 'logical_interfaces', 0];
@@ -126,7 +127,7 @@ test('a loopback cannot use DHCP: "dhcp: true" on it is an error (kept, not drop
   assert.equal(d.exportText(), before);
   assert.equal(d.canUndo(), null);
   // a file that has it can be repaired by turning it off
-  const bad = doc(lo('{id: lo0, type: loopback, dhcp: true, ip: 10.255.0.10/32}'));
+  const bad = doc(lo('{id: lo0, type: loopback, ipv4: dhcp, ip: 10.255.0.10/32}'));
   bad.setDhcp(lp, false);
   assert.ok(bad.valid, bad.errors.map((e) => e.message).join());
   assert.equal(bad.canUndo(), 'Turn DHCP off');
@@ -150,7 +151,7 @@ test('turning DHCP on lists what it deletes, then removes the addresses and sets
     assert.equal(i.dhcp, true);
     assert.deepEqual(i.addresses, []);
     assert.equal(d.get(p.concat('ip')), undefined);
-    assert.equal(d.text(p.concat('dhcp')), 'true');
+    assert.equal(d.text(p.concat('ipv4')), 'dhcp');
     assert.equal(d.canUndo(), 'Turn DHCP on');
     assert.ok(d.valid, d.errors.map((e) => e.message).join());
     d.undo();
@@ -167,13 +168,13 @@ test('turning DHCP off restores manual editing but not the deleted addresses', (
   const i = iface(d, 'web1', 'eth1');
   assert.equal(i.dhcp, false);
   assert.deepEqual(i.addresses, []);
-  assert.equal(d.get(p.concat('dhcp')), undefined, 'false is the default: the key is removed');
+  assert.equal(d.get(p.concat('ipv4')), undefined, 'static is the default: the key is removed');
   d.appendText(p.concat('ip'), '198.51.100.99/24');
   assert.deepEqual(iface(d, 'web1', 'eth1').addresses, ['198.51.100.99/24']);
   assert.ok(d.valid);
   // the short form "- eth2" becomes a mapping when DHCP is turned on, and off again
   d.setDhcp(['devices', 0, 'interfaces', 2], true);
-  assert.match(d.exportText(), /- \{id: eth2, dhcp: true\}/);
+  assert.match(d.exportText(), /- \{id: eth2, ipv4: dhcp\}/);
   d.setDhcp(['devices', 0, 'interfaces', 2], false);
   assert.match(d.exportText(), /- \{id: eth2\}/);
 });
@@ -215,12 +216,12 @@ test('DNS names: invalid syntax, duplicates, unknown or DHCP interfaces and an e
     assert.ok(e.some((x) => re.test(x)), entry + '\n' + e.join('\n'));
   }
   // a DHCP interface can't carry a DNS name
-  const dh = base.replace('    logical_interfaces:\n      - {id: vlan20, type: virtual, dhcp: true}', '    logical_interfaces:\n      - {id: vlan20, type: virtual, dhcp: true}\n    dns_names:\n      - {name: web2.example.com, interfaces: [vlan20]}');
+  const dh = base.replace('    logical_interfaces:\n      - {id: vlan20, type: virtual, ipv4: dhcp}', '    logical_interfaces:\n      - {id: vlan20, type: virtual, ipv4: dhcp}\n    dns_names:\n      - {name: web2.example.com, interfaces: [vlan20]}');
   assert.ok(errors(dh).some((x) => /"vlan20" obtains its address by DHCP, so a DNS name can't be associated with it/.test(x)), errors(dh).join('\n'));
   // the same name on two devices is allowed, with a warning
   const two = base.replace(
-    '      - {id: vlan20, type: virtual, dhcp: true}\n',
-    '      - {id: vlan20, type: virtual, dhcp: true}\n      - {id: lo0, type: loopback, ip: 10.255.0.20/32}\n    dns_names:\n      - {name: www.example.com, interfaces: [lo0]}\n',
+    '      - {id: vlan20, type: virtual, ipv4: dhcp}\n',
+    '      - {id: vlan20, type: virtual, ipv4: dhcp}\n      - {id: lo0, type: loopback, ip: 10.255.0.20/32}\n    dns_names:\n      - {name: www.example.com, interfaces: [lo0]}\n',
   );
   assert.deepEqual(errors(two), []);
   assert.ok(warnings(two).some((x) => /"www.example.com" is also configured on device "web1"/.test(x)));
@@ -261,8 +262,10 @@ test('turning DHCP on removes the DNS-name associations of the interface in the 
   d.setDhcp(['devices', 0, 'interfaces', 1], true);
   assert.deepEqual(d.result.model.devices[0].dnsNames.map((x) => x.name), ['www.example.com']);
   // eth0 shares www.example.com with bond0
-  assert.deepEqual(d.dhcpImpact(['devices', 0, 'interfaces', 0]), { addresses: ['192.0.2.10/24', '2001:db8::10/64'], dns: [{ name: 'www.example.com', removed: false }] });
+  // (DHCP is IPv4's: its IPv6 address stays)
+  assert.deepEqual(d.dhcpImpact(['devices', 0, 'interfaces', 0]), { addresses: ['192.0.2.10/24'], dns: [{ name: 'www.example.com', removed: false }] });
   d.setDhcp(['devices', 0, 'interfaces', 0], true);
+  assert.deepEqual(d.result.model.index.interfaces.get('web1:eth0').addresses, ['2001:db8::10/64']);
   assert.deepEqual(d.result.model.devices[0].dnsNames.map((x) => [x.name, x.interfaces]), [['www.example.com', ['bond0']]]);
   assert.ok(d.valid, d.errors.map((e) => e.message).join());
   // the last association: the list is removed rather than left empty

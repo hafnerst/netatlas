@@ -3,6 +3,7 @@
  * "what belongs to this object" (used for highlighting) and text search.
  * No layout, rendering or YAML knowledge.
  */
+import { appProfile } from './applications';
 import { cnetRef, guestsOf, hostOf, portGroupRef, virtRefTarget, virtualRelated, vnicPortGroup, vswitchRef } from './virtual';
 import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, isBridgePort, linkNetworks, networkMembers, portBadgeText, portL2, vlanRangesText } from './derive';
 import { Device, Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
@@ -631,6 +632,11 @@ export function serviceWords(model: Model, d: Device): string[] {
   if (d.routerId) out.push(d.routerId.text, d.routerId.address || '', 'router-id ' + (d.routerId.address || d.routerId.text));
   // the services of the registry it runs, by name and badge ("ntp", "Wireless access", "wifi")
   for (const x of deviceServices(d)) out.push(x.id, x.label, x.badge.toLowerCase());
+  // its applications, by id, name, profile and topics ("registers", "Modbus TCP", "MQTT", "sensors/room1")
+  for (const a of d.applications || []) {
+    const p = appProfile(a.profile);
+    out.push(a.id, a.name, `${d.id}/${a.id}`, p ? p.short : '', ...a.publish, ...a.subscribe);
+  }
   return out.filter((x) => x !== '');
 }
 

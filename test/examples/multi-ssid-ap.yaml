@@ -93,7 +93,7 @@ devices:
     group: floor
     simulation: {test_traffic: "on", test_targets: "10.10.30.1 icmp", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: phone
     label: guest phone
     type: endpoint
@@ -101,14 +101,14 @@ devices:
     group: floor
     simulation: {test_traffic: "on", test_targets: "10.10.20.1 icmp, 10.10.10.1 icmp", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: sensor
     label: IoT sensor
     type: endpoint
     kind: iot
     group: floor
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 
 links:
   - {id: l-core-acc, a: "core:p1", b: "acc:up", speed: 10G}

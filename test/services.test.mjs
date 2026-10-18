@@ -83,7 +83,7 @@ test('a service’s parameters: required ones (always or by the others), written
   assert.match(errs(DEV('    services:\n      proxy: {mode: reverse, listener: 443}\n')).join('\n'), /needs its upstream address/);
   assert.match(errs(DEV('    services:\n      proxy: {mode: forward, listener: 3128, upstream_port: 8080}\n')).join('\n'), /"upstream_port" does not apply here/);
   assert.match(errs(DEV('    services:\n      storage: {protocols: [nfs, ftp]}\n')).join('\n'), /"ftp" is not one of nfs, smb, iscsi/);
-  assert.match(errs(DEV('    services:\n      application: {name: ERP, ports: [tcp/99999]}\n')).join('\n'), /the ports/);
+  assert.match(errs(DEV('    services:\n      applications: [{id: erp, name: ERP, profile: tcp_server, port: 99999}]\n')).join('\n'), /port/);
   assert.match(errs(DEV('    services:\n      nat: {inside: [eth0], outside: [eth0], rules: [{type: pat}]}\n')).join('\n'), /"s" can't run NAT/);
   // who may not run a service is told why, once
   const e = errs(`netatlas: 1\ndevices:\n  - id: sw\n    type: switch\n    services:\n      dhcp: {scopes: []}\n    interfaces: [{id: p, vlans: 1}]\n`);

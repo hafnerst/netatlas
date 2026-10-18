@@ -108,7 +108,7 @@ test('examples: the File menu offers the curated public catalog; the internal ex
   const { EXAMPLES } = load('generated/examples.js');
   const { INTERNAL_EXAMPLES, FIXTURES } = load('generated/test-examples.js');
   // one representative example per architecture family, in the File menu's order
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
   assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
   assert.equal(INTERNAL_EXAMPLES.length, 18);

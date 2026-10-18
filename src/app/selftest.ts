@@ -221,7 +221,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 9 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 10 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -845,7 +845,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const back = ModelDoc.fromText(text, 'dhcp.yaml', 'file').doc as ModelDoc;
         check(
           'DHCP and DNS names survive export → reload',
-          back.valid && back.exportText() === text && /- \{id: eth2, dhcp: true\}/.test(text) && /dns_names:\n {6}- \{name: api\.example\.com, interfaces: \[eth0\]\}/.test(text),
+          back.valid && back.exportText() === text && /- \{id: eth2, ipv4: dhcp\}/.test(text) && /dns_names:\n {6}- \{name: api\.example\.com, interfaces: \[eth0\]\}/.test(text),
           text,
         );
         m().markSaved();
@@ -2437,7 +2437,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP / MLD groups, querier election, multicast routes and snooping table), Send network packets…, Stop as sender, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send network packets…|Show IGMP / MLD groups|Show querier election|Show multicast routes|Show snooping table|Stop as sender|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
       const acts = Array.from(doc.querySelectorAll('#sim-act-net .sim-ne-h button > span:last-child')).map((b) => b.textContent || '');
       const net = q('#sim-act-net') as HTMLElement;
-      check(`${theme}: the Actions panel's Network events: five actions in order (Send network packets, Join multicast group, Leave multicast group, Start multicast stream, Interface actions), no object list and no table viewer; Active events below them`, acts.join('|') === 'Send network packets|Join multicast group|Leave multicast group|Start multicast stream|Interface actions' && !q('#sim-obj') && !/Show (ARP|MAC)/.test(net.textContent || '') && !!(net.compareDocumentPosition(q('#sim-act-events') as Node) & Node.DOCUMENT_POSITION_FOLLOWING), acts.join('|'));
+      check(`${theme}: the Actions panel's Network events: six actions in order (Send network packets, Join multicast group, Leave multicast group, Start multicast stream, Interface actions, Start application), no object list and no table viewer; Active events below them`, acts.join('|') === 'Send network packets|Join multicast group|Leave multicast group|Start multicast stream|Interface actions|Start application' && !q('#sim-obj') && !/Show (ARP|MAC)/.test(net.textContent || '') && !!(net.compareDocumentPosition(q('#sim-act-events') as Node) & Node.DOCUMENT_POSITION_FOLLOWING), acts.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       ctl.runTo(21000);
       await tick();

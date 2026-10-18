@@ -51,7 +51,7 @@ devices:
   - id: laptop
     type: endpoint
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 links:
   - {id: l1, a: "r1:e0", b: "r2:e0"}
   - id: l2

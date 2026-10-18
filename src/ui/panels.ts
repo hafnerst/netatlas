@@ -704,8 +704,8 @@ function row(item: LegendItem): VNode {
   return h('li', { class: 'legend-row' }, [swatchSvg(item.swatch, item.swatchH), h('span', {}, item.label)]);
 }
 
-/** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them). */
-function simStateSection(): LegendSection {
+/** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them); with PTP clocks, their marks. */
+function simStateSection(model?: Model): LegendSection {
   // (the swatch: the indicator's LED only; its word is the row's label)
   // a snooping badge: its sign and a word, in the role's style
   const snoopSwatch = (role: string, sign: string, word: string, none = false): VNode[] => [h('g', { class: 'sim-snoop-vlan', 'data-role': role, 'data-querier': none ? 'none' : 'heard' }, [h('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), h('text', { class: 'sim-snoop-icon', x: 4, y: 12.5 }, sign), h('text', { x: 14, y: 12.5 }, word)])];
@@ -722,14 +722,27 @@ function simStateSection(): LegendSection {
       { swatch: snoopSwatch('standby', '◇', 'Standby'), label: '◇ VLAN 20 · Standby: a querier candidate that yields to another querier there' },
       { swatch: snoopSwatch('snooping', '○', 'Snooping'), label: '○ VLAN 30 · Snooping · querier heard: no candidate itself, a querier queries the VLAN (behind a multicast router port)' },
       { swatch: snoopSwatch('snooping', '○', 'No querier', true), label: '○ VLAN 40 · Snooping · no querier (grey, dashed): nobody queries the VLAN, so no router port is learned there and a member’s report stays at the switch it reached; ✕ Candidate down, ⏻ Off or Booting: the switch is powered off or still booting' },
+      ...(model && model.devices.some((d) => !!d.appServices && d.appServices.has('ptp')) ? ptpLegend() : []),
     ],
     note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
   };
 }
 
+/** The PTP clocks' marks: the clocks' own state (the election's and the servo's), never a guarantee of accuracy. */
+function ptpLegend(): LegendItem[] {
+  const mark = (state: string, text: string): VNode[] => [h('g', { class: 'sim-ptp', 'data-state': state }, [h('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, text)])];
+  return [
+    { swatch: mark('grandmaster', '★ PTP'), label: '★ PTP · Grandmaster: the time source the best master clock algorithm elected in its domain (from the Announces it hears; its own clock, not verified against a reference)' },
+    { swatch: mark('synchronized', '✓ PTP'), label: '✓ PTP · Synchronized: three offsets in a row below 1 µs (hardware timestamps) or 100 µs (software) — this model’s rule, not a guaranteed accuracy' },
+    { swatch: mark('acquiring', 'PTP'), label: 'PTP · Acquiring (dashed): a master chosen, its servo not locked yet; Listening: no master heard yet' },
+    { swatch: mark('holdover', '✕ PTP'), label: '✕ PTP · Holdover or Unsynchronized (dotted): no Sync, or no master; its clock runs free from its last correction (holdover quality is not modelled)' },
+    { swatch: mark('transparent', 'PTP · TC'), label: 'PTP · Transparent clock: a switch that corrects the residence time of what it forwards; no time source' },
+  ];
+}
+
 export function legendFor(model: Model, view: View, hidden: Set<string>, simulation = false): VNode {
   const legend = legendOf(model, view);
-  if (simulation) legend.sections.unshift(simStateSection());
+  if (simulation) legend.sections.unshift(simStateSection(model));
   const sections: VNode[] = legend.sections.map((s) =>
     h('section', {}, [
       h('h4', {}, s.title),

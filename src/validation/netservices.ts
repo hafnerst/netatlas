@@ -106,15 +106,16 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
       const scope: DhcpScope = { dns: [], exclude: [], reservations: [], line: sm.line };
       const net = need('network', 'network (a network of the model it leases addresses in)');
       if (net) scope.network = r.str(net, spath + '.network', 200);
-      const rn = need('range', 'address range (start-end, e.g. 10.1.1.100-10.1.1.199)');
-      if (rn) {
-        const t = r.str(rn, spath + '.range', 100);
-        const mm = t !== undefined ? /^\s*([0-9.]+)\s*-\s*([0-9.]+)\s*$/.exec(t) : null;
+      // (what a scope needs depends on its network's family: checkNetServices, with the whole model)
+      const rn = get(sm, 'range');
+      if (!isNull(rn)) {
+        const t = r.str(rn as YNode, spath + '.range', 100);
+        const mm = t !== undefined ? /^\s*([0-9a-fA-F:.]+)\s*-\s*([0-9a-fA-F:.]+)\s*$/.exec(t) : null;
         const a = mm ? parseAddress(mm[1]) : null;
         const b = mm ? parseAddress(mm[2]) : null;
-        if (t !== undefined && (!a || !b || a.version !== 4 || b.version !== 4)) c.error(rn, spath + '.range', `"${t}" is not a range of IPv4 addresses (start-end, e.g. 10.1.1.100-10.1.1.199)`);
+        if (t !== undefined && (!a || !b || a.version !== b.version)) c.error(rn as YNode, spath + '.range', `"${t}" is not a range of addresses (start-end, e.g. 10.1.1.100-10.1.1.199, or 2001:db8:10::100-2001:db8:10::1ff)`);
         else if (a && b) {
-          if (cmpAddr(a, b) > 0) c.error(rn, spath + '.range', `the range starts after it ends (${formatAddr(a)} > ${formatAddr(b)})`);
+          if (cmpAddr(a, b) > 0) c.error(rn as YNode, spath + '.range', `the range starts after it ends (${formatAddr(a)} > ${formatAddr(b)})`);
           else {
             scope.range = `${formatAddr(a)}-${formatAddr(b)}`;
             scope.start = formatAddr(a);
@@ -122,12 +123,12 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
           }
         }
       }
-      const gw = need('gateway', 'default gateway (the router’s address in the network, or its virtual address)');
-      if (gw) scope.gateway = addr(r, c, gw, spath + '.gateway', true);
-      const dnsN = need('dns', 'DNS servers (the addresses it gives its clients)');
-      if (dnsN) {
-        scope.dns = addrList(r, c, dnsN, spath + '.dns');
-        if (!scope.dns.length && !isNull(dnsN)) c.error(dnsN, spath + '.dns', `scope ${k + 1} of "${dev.id}" needs at least one DNS server address`);
+      const gw = get(sm, 'gateway');
+      if (!isNull(gw)) scope.gateway = addr(r, c, gw as YNode, spath + '.gateway', true);
+      const dnsN = get(sm, 'dns');
+      if (!isNull(dnsN)) {
+        scope.dns = addrList(r, c, dnsN as YNode, spath + '.dns');
+        if (!scope.dns.length) c.error(dnsN as YNode, spath + '.dns', `scope ${k + 1} of "${dev.id}" needs at least one DNS server address`);
       }
       const ln = get(sm, 'lease');
       if (!isNull(ln)) {
@@ -290,12 +291,25 @@ export function checkNetServices(c: Ctx, model: Model, all: NetServiceNodes[]): 
         c.error(s.node, s.path + '.network', `scope ${k + 1} of "${n.device}": "${sc.network}" is not a network of the model`, { key: 'network' });
         return;
       }
-      const p = netPrefix(model, sc.network);
-      if (net && !p) {
-        c.error(s.node, s.path + '.network', `scope ${k + 1} of "${n.device}": network "${net.id}" is not an IPv4 network (DHCP leases IPv4 addresses here; DHCPv6 is not modelled)`, { key: 'network' });
-        return;
-      }
+      const p = netPrefix(model, sc.network, false);
       if (!p) return;
+      const v6 = p.version === 6;
+      const scopeName = `${v6 ? 'DHCPv6 ' : ''}scope ${k + 1} of "${n.device}"`;
+      if (!v6) {
+        // a DHCP (IPv4) scope: what it leases, the gateway and the DNS servers it gives are the user's to write
+        if (!sc.range && !s.node.entries.has('range')) c.error(s.node, s.path + '.range', `${scopeName} needs its address range (start-end, e.g. 10.1.1.100-10.1.1.199)`, { key: 'range' });
+        if (!s.node.entries.has('gateway')) c.error(s.node, s.path + '.gateway', `${scopeName} needs its default gateway (the router’s address in the network, or its virtual address)`, { key: 'gateway' });
+        if (!s.node.entries.has('dns')) c.error(s.node, s.path + '.dns', `${scopeName} needs its DNS servers (the addresses it gives its clients)`, { key: 'dns' });
+      } else {
+        // a DHCPv6 scope: stateful with a range, stateless (information only: DNS) without; never a default gateway
+        if (s.node.entries.has('gateway')) c.error(s.node, s.path + '.gateway', `${scopeName}: DHCPv6 gives no default gateway — hosts learn their default router from router advertisements (ipv6_ra on the router's interface); delete "gateway"`, { key: 'gateway' });
+        if (!sc.range && !s.node.entries.has('range') && !sc.dns.length) c.error(s.node, s.path + '.dns', `${scopeName} leases no addresses (no range): as a stateless DHCPv6 server it needs the DNS servers it gives`, { key: 'dns' });
+        if (sc.reservations.length) c.error(s.node, s.path + '.reservations', `${scopeName}: reservations by MAC address are a DHCP (IPv4) scope's — DHCPv6 identifies clients by their DUID (not modelled); delete them`, { key: 'reservations' });
+      }
+      for (const dn of sc.dns) {
+        const da = parseAddress(dn);
+        if (da && da.version !== p.version) c.error(s.node, s.path + '.dns', `${scopeName}: the DNS server ${dn} is an IPv${da.version} address; a ${v6 ? 'DHCPv6' : 'DHCP'} scope gives IPv${p.version} ones`, { key: 'dns' });
+      }
       const where = `${net ? net.id : ''} (${prefixText(p)})`;
       const a = sc.start ? (parseAddress(sc.start) as IpAddr) : null;
       const b = sc.end ? (parseAddress(sc.end) as IpAddr) : null;

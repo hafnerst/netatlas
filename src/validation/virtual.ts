@@ -691,10 +691,10 @@ export function checkVirtual(c: Ctx, x: VirtCheckCtx): Interface[] {
       }
       const net = found.net;
       if ((net.driver === 'host' || net.driver === 'none') && (i.addresses.length || i.dhcp)) {
-        c.error((get(im, i.dhcp ? 'dhcp' : 'ip') as YNode) || im, `${ipath}.${i.dhcp ? 'dhcp' : 'ip'}`, net.driver === 'host' ? `"${i.network}" is a host network: the container shares its host's interfaces and addresses — delete its own address` : `"${i.network}" is a none network: the container has no network there — delete the address`);
+        c.error((get(im, i.dhcp ? 'ipv4' : 'ip') as YNode) || im, `${ipath}.${i.dhcp ? 'ipv4' : 'ip'}`, net.driver === 'host' ? `"${i.network}" is a host network: the container shares its host's interfaces and addresses — delete its own address` : `"${i.network}" is a none network: the container has no network there — delete the address`);
       }
       if (i.dhcp && net.driver !== 'macvlan' && net.driver !== 'host' && net.driver !== 'none') {
-        c.error(get(im, 'dhcp') as YNode, ipath + '.dhcp', `a container gets its address on a ${net.driver} network from the engine (a static address, or the next free one of the network's range): DHCP is modelled on macvlan networks only`);
+        c.error(get(im, 'ipv4') as YNode, ipath + '.ipv4', `a container gets its address on a ${net.driver} network from the engine (a static address, or the next free one of the network's range): DHCP is modelled on macvlan networks only`);
       }
       const sub = net.subnet ? parsePrefix(net.subnet) : null;
       if (sub) {

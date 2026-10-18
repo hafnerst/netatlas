@@ -30,7 +30,7 @@ const LAN = (svc, more = {}) => `netatlas: 1
 title: lan
 devices:
   - {id: srv, type: ${more.type || 'server'}, interfaces: [{id: eth0, ip: 10.0.0.10/24}]${svc !== undefined ? ', services: ' + svc : ''}}
-  - {id: pc, type: endpoint, interfaces: [{id: eth0, dhcp: true${more.pc || ''}}]${more.pcDev || ''}}
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp${more.pc || ''}}]${more.pcDev || ''}}
   - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.1/24}]}
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
 links:
@@ -47,8 +47,10 @@ test('the services: off by default; enabled, what they still need is an error; t
   assert.equal(V.loadModel(LAN()).model.index.devices.get('srv').netServices, undefined);
   assert.deepEqual(errs(LAN(SCOPE())), []);
   assert.match(errs(LAN('{dhcp: {}}')).join('|'), /the DHCP server of "srv" needs a scope: add one \(its network, range, default gateway and DNS servers\)/);
-  const e = errs(LAN('{dhcp: {scopes: [{lease: 1h}]}}')).join('|');
-  for (const what of ['network', 'address range', 'default gateway', 'DNS servers']) assert.match(e, new RegExp(`scope 1 of "srv" needs its ${what}`), what);
+  // without its network, what else it needs is not known yet (an IPv4 scope's or a DHCPv6 scope's)
+  assert.match(errs(LAN('{dhcp: {scopes: [{lease: 1h}]}}')).join('|'), /scope 1 of "srv" needs its network/);
+  const e = errs(LAN('{dhcp: {scopes: [{network: lan, lease: 1h}]}}')).join('|');
+  for (const what of ['address range', 'default gateway', 'DNS servers']) assert.match(e, new RegExp(`scope 1 of "srv" needs its ${what}`), what);
   assert.match(errs(LAN('{dns: {}}')).join('|'), /the DNS server of "srv" needs a zone \(its domain name, e\.g\. hq\.example\) or forwarders \(the servers it asks\)/);
   assert.match(errs(LAN(SCOPE(), { type: 'storage' })).join('|'), /"srv" can't run DHCP server: DHCP server runs on Router, Switch, Firewall, Server, Virtual machine or Container/);
   // a VM and a container run them too (on their host, through its virtual networking)
@@ -176,7 +178,7 @@ test('the lease lifecycle: renew at T1 (unicast), rebind at T2 (broadcast), the 
 });
 
 test('an exhausted pool does not answer; the client retries with backoff (4, 8, 16, 32 s), pauses, and takes a link-local address when its fallback is on', () => {
-  const two = LAN('{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.100, gateway: 10.0.0.1, dns: [10.0.0.10]}]}}').replace('  - {id: r1,', '  - {id: pc2, type: endpoint, interfaces: [{id: eth0, dhcp: true, simulation: {link_local_fallback: on}}]}\n  - {id: r1,').replace('{id: p3, vlans: 1}]', '{id: p3, vlans: 1}, {id: p4, vlans: 1}]').replace('links:\n', 'links:\n  - {id: d, a: "pc2:eth0", b: "sw:p4"}\n');
+  const two = LAN('{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.100, gateway: 10.0.0.1, dns: [10.0.0.10]}]}}').replace('  - {id: r1,', '  - {id: pc2, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp, simulation: {link_local_fallback: on}}]}\n  - {id: r1,').replace('{id: p3, vlans: 1}]', '{id: p3, vlans: 1}, {id: p4, vlans: 1}]').replace('links:\n', 'links:\n  - {id: d, a: "pc2:eth0", b: "sw:p4"}\n');
   const s = sim(two);
   s.runTo(70000);
   assert.equal(s.leases().filter((l) => l.kind === 'dhcp').length, 1, 'one address for two clients');
