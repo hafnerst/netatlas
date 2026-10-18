@@ -88,7 +88,7 @@ import { Connected, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing'
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
-import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
+import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, l2Domain, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
@@ -3969,92 +3969,30 @@ export class Engine {
    * VLAN). It ends at every layer-3 interface: no router passes it on.
    */
   broadcastDomain(from: { dev: string; iface: string } | { link: string; vlan: number }): { vlan: number; refs: string[]; devices: string[]; links: string[] } {
+    // (one definition with the static analysis: net.ts l2Domain, here in the simulation's state)
+    const d = l2Domain(this.net, from, {
+      cableUp: (id) => this.cableUp(id),
+      portUp: (dev, port) => this.portUp(dev, port),
+      forwards: (dev) => !(this.off.has(dev) && !this.bypass.has(dev)),
+      blocked: (dev, bp, v) => this.blocked(dev, bp, v),
+      memberReady: (dev, port) => this.memberReady(dev, port),
+    });
     const refs = new Set<string>();
     const devs = new Set<string>();
-    const links = new Set<string>();
-    const done = new Set<string>();
-    let vlan = 0;
-    const reach = (dev: string, iface: string): void => {
-      devs.add(dev);
-      refs.add('device:' + dev);
-      refs.add(`iface:${dev}:${iface}`);
-    };
-    const cross = (dev: string, port: string, tag: number | null): void => {
-      const e = this.net.ends.get(portKey(dev, port));
-      if (!e || !this.cableUp(e.link) || !this.portUp(dev, port)) return;
-      const o = otherEnd(this.net, e);
-      const od = this.net.devices.get(o.device);
-      const bpId = od && od.bridge ? od.portOf.get(o.port) : undefined;
-      // a cable whose far end discards (an alternate port of the spanning tree) is not in the domain
-      const v = od && bpId !== undefined ? ingressVlan((od.bridgePorts.get(bpId) as BridgePort).vlans, tag) : null;
-      if (od && bpId !== undefined && (v === null || this.blocked(od.id, bpId, v))) return;
-      links.add(e.link);
-      refs.add('link:' + e.link);
-      if (!od || !this.portUp(o.device, o.port)) return;
-      if (bpId !== undefined) {
-        bridge(od, bpId, v as number);
-        return;
-      }
-      const l3 = this.l3At(od, o.port, tag);
-      if (l3) reach(od.id, o.port);
-    };
-    const bridge = (sd: SimDevice, fromBp: string | null, v: number): void => {
-      if (fromBp !== null) refs.add(`iface:${sd.id}:${fromBp}`);
-      const key = sd.id + '|' + v;
-      if (done.has(key)) return;
-      done.add(key);
-      devs.add(sd.id);
-      refs.add('device:' + sd.id);
-      if (this.off.has(sd.id) && !this.bypass.has(sd.id)) return;
-      for (const l3 of sd.l3.values()) if (l3.kind === 'svi' && l3.vlan === v) refs.add(`iface:${sd.id}:${l3.id}`);
-      for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
-        if (bp.id === fromBp) continue;
-        const c = carries(bp.vlans, v);
-        if (!c || this.blocked(sd.id, bp.id, v)) continue;
-        const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m))).sort(cmp);
-        if (!up.length) continue;
-        refs.add(`iface:${sd.id}:${bp.id}`);
-        cross(sd.id, up[0], c === 'untagged' ? null : v);
-      }
-    };
-    if ('link' in from) {
-      vlan = from.vlan;
-      const l = this.net.links.get(from.link);
-      if (l) {
-        for (const e of [l.a, l.b]) {
-          const sd = this.net.devices.get(e.device);
-          const bpId = sd && sd.bridge ? sd.portOf.get(linkPort(this.model, l, e)) : undefined;
-          if (sd && bpId !== undefined && carries((sd.bridgePorts.get(bpId) as BridgePort).vlans, from.vlan) && !this.blocked(sd.id, bpId, from.vlan)) bridge(sd, null, from.vlan);
-          else if (sd) {
-            const l3 = this.l3At(sd, linkPort(this.model, l, e), from.vlan || null) || this.l3At(sd, linkPort(this.model, l, e), null);
-            if (l3) reach(sd.id, linkPort(this.model, l, e));
-          }
-        }
-        if (this.cableUp(from.link)) {
-          links.add(from.link);
-          refs.add('link:' + from.link);
-        }
-      }
-    } else {
-      const sd = this.net.devices.get(from.dev);
-      const l3 = sd ? sd.l3.get(from.iface) : undefined;
-      if (sd && l3) {
-        reach(sd.id, l3.id);
-        if (l3.kind === 'svi') {
-          vlan = l3.vlan;
-          bridge(sd, null, l3.vlan);
-        } else {
-          vlan = l3.kind === 'subif' ? l3.vlan : 0;
-          for (const p of l3.ports) {
-            if (!this.portUp(sd.id, p)) continue;
-            refs.add(`iface:${sd.id}:${p}`);
-            cross(sd.id, p, l3.kind === 'subif' && l3.vlan ? l3.vlan : null);
-            break;
-          }
-        }
-      }
+    for (const b of d.bridges) devs.add(b.dev);
+    for (const r of d.reached) {
+      devs.add(r.dev);
+      refs.add(`iface:${r.dev}:${'link' in from || r.l3.kind === 'svi' || !(r.dev === from.dev && r.l3.id === from.iface) ? r.port : r.l3.id}`);
     }
-    return { vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: Array.from(links).sort(cmp) };
+    // (the start's own port it leaves by)
+    if (!('link' in from)) {
+      const first = d.out.find((k) => k.split('|')[0] === from.dev);
+      if (first) refs.add(`iface:${from.dev}:${first.split('|')[1]}`);
+    }
+    for (const k of d.entered.concat(d.left)) refs.add(`iface:${k.split('|')[0]}:${k.split('|')[1]}`);
+    for (const x of devs) refs.add('device:' + x);
+    for (const l of d.links) refs.add('link:' + l);
+    return { vlan: d.vlan === null ? 0 : d.vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: d.links.slice().sort(cmp) };
   }
 
   /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */
