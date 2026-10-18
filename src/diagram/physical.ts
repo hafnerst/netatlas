@@ -322,11 +322,13 @@ export function orthoCableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rec
   const a = { x: pa.x, y: pa.y };
   const b = { x: pb.x, y: pb.y };
   if (facing && (pa.nx !== 0 ? Math.abs(pa.y - pb.y) < 0.5 && (pb.x - pa.x) * pa.nx > 0 : Math.abs(pa.x - pb.x) < 0.5 && (pb.y - pa.y) * pa.ny > 0)) {
+    // (ports less than half a px off one line: the line is drawn exactly straight, at the first port's)
+    const b2 = pa.nx !== 0 ? { x: b.x, y: a.y } : { x: a.x, y: b.y };
     let blocked = false;
     boxes.forEach((o, id) => {
-      if (id !== pa.device && id !== pb.device && segmentHitsRect(a, b, o)) blocked = true;
+      if (id !== pa.device && id !== pb.device && segmentHitsRect(a, b2, o)) blocked = true;
     });
-    if (!blocked) return [a, b];
+    if (!blocked) return [a, b2];
   }
   const sa = { x: pa.x + pa.nx * STUB, y: pa.y + pa.ny * STUB };
   const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };

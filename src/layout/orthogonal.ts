@@ -451,12 +451,14 @@ export function separate(routes: SepRoute[], gap: number, obstacles: Rect[]): vo
     }
   }
   segs.sort((p, q) => Number(p.horiz) - Number(q.horiz) || p.at - q.at || p.lo - q.lo || (p.r.id < q.r.id ? -1 : p.r.id > q.r.id ? 1 : p.k - q.k));
-  const clear = (a: Pt, b: Pt): boolean => {
+  /** is the segment a-b clear of the obstacles (but those that hold `end`: a port on its own box's edge) */
+  const clear = (a: Pt, b: Pt, end?: Pt): boolean => {
     const x0 = Math.min(a.x, b.x);
     const x1 = Math.max(a.x, b.x);
     const y0 = Math.min(a.y, b.y);
     const y1 = Math.max(a.y, b.y);
-    return !obstacles.some((o) => x1 > o.x + 0.01 && x0 < o.x + o.w - 0.01 && y1 > o.y + 0.01 && y0 < o.y + o.h - 0.01);
+    const holds = (o: Rect): boolean => !!end && end.x >= o.x - 0.01 && end.x <= o.x + o.w + 0.01 && end.y >= o.y - 0.01 && end.y <= o.y + o.h + 0.01;
+    return !obstacles.some((o) => x1 > o.x + 0.01 && x0 < o.x + o.w - 0.01 && y1 > o.y + 0.01 && y0 < o.y + o.h - 0.01 && !holds(o));
   };
   let i = 0;
   while (i < segs.length) {
@@ -487,7 +489,7 @@ export function separate(routes: SepRoute[], gap: number, obstacles: Rect[]): vo
       const after = p[g.k + 2];
       const keeps = (u: Pt, v: Pt, w: Pt): boolean => (g.horiz ? (u.y - v.y) * (u.y - w.y) > 0.01 : (u.x - v.x) * (u.x - w.x) > 0.01);
       if (!keeps(before, a, na) || !keeps(after, b, nb)) continue;
-      if (!clear(na, nb) || !clear(before, na) || !clear(nb, after)) continue;
+      if (!clear(na, nb) || !clear(before, na, before) || !clear(nb, after, after)) continue;
       p[g.k] = na;
       p[g.k + 1] = nb;
     }
