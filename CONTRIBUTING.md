@@ -57,6 +57,84 @@ These rules apply to every contributor, including the automation account
    A branch whose PR was closed without merging is deleted only after
    confirming that nothing on it is still needed.
 
+## Building and testing
+
+
+Requirements: Node.js ≥ 18. The only dependency is the TypeScript compiler
+(a devDependency). There are no runtime or application-library dependencies.
+
+```sh
+npm install        # installs typescript only
+npm run build      # -> dist/netatlas.html (and the test build, build/netatlas-test.html)
+```
+
+`npm run build` does four things:
+
+1. `scripts/gen-examples.mjs` embeds the public examples (`examples/*.yaml`,
+   in the order of its `CATALOG`) into `src/generated/examples.ts` for the
+   **File** menu, and the internal test examples and fixtures
+   (`test/examples/*.yaml`, `test/fixtures/*.yaml`) into
+   `src/generated/test-examples.ts`, which only the test build imports.
+2. `scripts/gen-help.mjs` embeds `LICENSE` and the manual's screenshots
+   (`docs/img/manual/*.webp`) into `src/generated/help-assets.ts` for the
+   **Help** menu, the images as `data:` URLs (the page may load nothing else).
+3. `tsc` compiles `src/**/*.ts` to CommonJS JavaScript in `build/js/`.
+4. `scripts/build.mjs` bundles those modules into one inline `<script>`. It's
+   a small wrapper that refuses any non-relative `require`. It then inlines
+   `src/styles.css` into `src/index.html` and writes two pages:
+   * **`dist/netatlas.html`**, the released application, from
+     `src/app/main.ts`: the public examples only. The build fails if it would
+     contain a test-only module (the internal examples and fixtures, the full
+     self-test, the viewport check).
+   * **`build/netatlas-test.html`**, the test build, from
+     `src/app/main-test.ts`: the same application plus the internal examples
+     and fixtures (loadable by name, never in the File menu), the full
+     in-browser self-test and the viewport check. It is never committed or
+     shipped; the browser tests, the screenshots and the manual cross-browser
+     check use it.
+
+   The browser never sees or compiles TypeScript.
+
+To regenerate the test fixtures after changing the editing core, run
+`node scripts/make-fixtures.mjs`. Use `--check` to only verify them.
+
+To retake the screenshots of **Help → User Manual** after a UI change, run
+`npm run build && npm run screenshots:manual && npm run build`.
+`scripts/manual-screenshots.mjs` drives the built page in headless Chrome, Edge
+or Chromium through the DevTools protocol (`scripts/cdp.mjs`, over a pipe:
+no network port, no extra package) with real pointer and keyboard input, and
+writes cropped WebP images to `docs/img/manual/`; the second build embeds them.
+
+To retake the four README screenshots in `docs/img/` (`readme-*.png`) after
+a UI change, run `node scripts/readme-screenshots.mjs` after `npm run build`.
+It needs Chrome, Edge or Chromium, drives the released `dist/netatlas.html`
+with its public examples, and crops each picture to what it shows; the
+script lists the steps of each shot.
+
+To add an example, put it in `examples/` and add it to `CATALOG` in
+`scripts/gen-examples.mjs` (the build refuses a file in `examples/` that is
+not in the catalog), or put a test scenario in `test/examples/`. See
+[examples/README.md](examples/README.md).
+
+### Is the checked-in HTML current?
+
+`dist/netatlas.html` is committed so that it can be used without building.
+To confirm that it was generated from the current source:
+
+```sh
+git status --short        # 1. clean working tree (no local edits)
+npm ci                    # 2. the pinned TypeScript version
+npm run check:dist        # 3. rebuild in memory and compare byte-for-byte
+```
+
+`check:dist` regenerates `src/generated/examples.ts` and the bundle in memory
+and writes neither file. It prints the sha256 of the result, and exits with
+status 1 if either committed file differs. The build is deterministic, so the
+same source always gives the same file. `npm test` checks this too.
+
+What each test suite checks, and the manual check in other browsers, are in
+[docs/TESTING.md](docs/TESTING.md).
+
 ## Releasing
 
 A release is a pull request **from `dev` into `main`**, opened only when the
@@ -71,7 +149,8 @@ application version. Steps for a release `X.Y.Z`:
 1. **Release preparation** on a working branch from `dev` (e.g.
    `chore/release-vX.Y.Z`): set the version, add the `CHANGELOG.md` section,
    update the documentation, rebuild `dist/netatlas.html`, run `npm test`,
-   `npm run check:dist` and the manual checks in the README. PR into `dev`,
+   `npm run check:dist` and the manual checks in
+   [docs/TESTING.md](docs/TESTING.md). PR into `dev`,
    reviewed and merged by @hafnerst.
 2. **Release PR** from `dev` into `main`, reviewed and merged by @hafnerst.
 3. **Tag and GitHub release** by @hafnerst (or on explicit request), on the

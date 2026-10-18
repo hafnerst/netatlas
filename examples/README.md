@@ -26,8 +26,7 @@ NetAtlas keeps two kinds of example models apart.
 | `timing-ptp.yaml` | Time synchronization: PTP grandmasters, a boundary and a transparent clock |
 | `cross-domain.yaml` | Cross-domain boundary: a Security gateway that breaks the protocol |
 
-The README's [Examples](../README.md#examples) section says why each one is
-in the catalog. A public example has a concise `title` and a `description`,
+[Why each one is in the catalog](#why-each-one-is-in-the-catalog) is below. A public example has a concise `title` and a `description`,
 loads without errors, warnings or consistency findings (each public example
 is checked in both views and both themes by the released application's own
 self-test), and shows one architecture rather than a list of features.
@@ -61,3 +60,111 @@ self-test), and shows one architecture rather than a list of features.
 * A **test scenario**: write it in `test/examples/`; the tests read it with
   `example(name)`, the test build loads it with `loadExampleNamed`. Any model
   in either folder can also be opened with **Open model…**.
+
+## Why each one is in the catalog
+
+The **File** menu offers ten examples: one representative model for each
+kind of network NetAtlas is meant for, each a coherent architecture rather
+than a list of features. They are in [`examples/`]() and are the
+only models built into `dist/netatlas.html`.
+
+| File | Architecture | Why it is in the catalog |
+|---|---|---|
+| [`enterprise-wan.yaml`](enterprise-wan.yaml) | **Enterprise WAN.** HQ with two ISPs and two branches; IPsec → GRE → OSPF over the internet uplinks, eBGP and BFD to the providers, a WireGuard backup over LTE, VRRP, LACP and routing services per device. | Overlay tunnels on an underlay, dynamic routing and redundancy: how a WAN with VPNs is drawn in both views and traced through its tunnels. |
+| [`enterprise-campus.yaml`](enterprise-campus.yaml) | **Enterprise campus.** Core, distribution and access switches by role; two controller-managed access points with Staff and Guest on VLANs; a services server with DHCP (through the core's relays), DNS, NTP, AAA, syslog and monitoring. | A three-tier campus with VLAN-backed Wi-Fi and the services that run it; the simulation shows the leases, CAPWAP, RADIUS and the rest. |
+| [`datacenter-evpn.yaml`](datacenter-evpn.yaml) | **Data center.** A spine/leaf fabric in racks: an eBGP underlay, EVPN between loopbacks, a VXLAN VNI, MLAG and a tenant VRF. | A routed fabric with an overlay: the physical racks and the logical sessions apart. |
+| [`virtualization.yaml`](virtualization.yaml) | **Virtualized servers.** Two hypervisors in an HA cluster with teamed uplinks, VMs on port groups, a virtual router, a container host with a NAT bridge and macvlan. | Hosts with their guests and virtual switches; in the simulation an HA restart, an uplink failover and NAT. |
+| [`private-house.yaml`](private-house.yaml) | **Private house.** Three floors; a DSL modem/router with NAT and a firewall; a Layer 3 switch in the basement as the core; a distribution switch on the second floor; an access point on every floor with Internal, IoT and Guest on VLANs 10, 20 and 30 over one uplink; Internal dual-stack (SLAAC from the core's router advertisements); a thermostat with two applications. | The smallest complete network: floors as groups, several Wi-Fi networks per access point, zones with a policy point, and a shared uplink as a single point of failure. See [the private house](#the-private-house-example). |
+| [`dmz-services.yaml`](dmz-services.yaml) | **Internet edge.** A firewall with a site-to-site VPN and NAT (PAT, a port forward), an inline IPS, a reverse proxy in front of a load balancer with two application servers, a NAS reached over the VPN. | The services of a perimeter, end to end: a request through DNAT, the proxy and the pool, and what the IPS blocks. |
+| [`hybrid-cloud.yaml`](hybrid-cloud.yaml) | **Hybrid cloud.** A data centre joined over a private interconnect to an AWS VPC and an Azure VNet, each with a cloud gateway and cloud instances. | Public cloud as groups (region, VPC, VNet) and instances without a host of their own. |
+| [`ot-network.yaml`](ot-network.yaml) | **OT cell.** A PLC and an HMI behind a protocol gateway, a pass-through TAP feeding a passive IDS; the PLC's applications (a register listener the HMI polls, telemetry published by MQTT) and an MQTT broker with a matching and a non-matching subscriber. | Industrial devices, port pairs and a monitoring copy that forwards nothing; Endpoints that run applications without becoming servers, and MQTT's fan-out by topic filter. |
+| [`timing-ptp.yaml`](timing-ptp.yaml) | **Time synchronization.** Two cells in one PTP domain: two grandmaster candidates behind a transparent-clock switch, a router as boundary clock, a PLC and a drive receiving time. | The PTP election, boundary and transparent clocks, and a grandmaster failing and coming back, in the simulation. |
+| [`cross-domain.yaml`](cross-domain.yaml) | **Cross-domain boundary.** Red and Black domains joined by a Security gateway that breaks the protocol: one permitted web transfer in two legs, one denied transfer, a management network apart. | A separation boundary with an explicit policy, traced with a service. |
+
+### The private-house example
+
+The floors are groups in the house: **Basement**, **First floor (above the
+basement)** and **Second floor (top)**; every device is in the floor where it
+stands, also when its cable runs to a switch on another floor. The physical
+view draws the house as a cross-section (each device's `tier`).
+
+* **WAN edge.** NetAtlas has no DSL or PPPoE model, so the modem is a
+  **combined DSL modem/router**, and says so: its type is *Firewall* (the
+  type whose policy NetAtlas enforces) with the kind *DSL modem/router*. It
+  terminates the line to the provider (a Cloud, one Layer 3 hop; the cable's
+  label says *VDSL2 (PPPoE)*), translates the house's addresses (its NAT
+  service, PAT), filters, and answers DNS for `home.arpa`. The Layer 3 switch
+  only routes: no NAT, no firewall, no DSL.
+* **Inside.** The Layer 3 switch *core* in the basement is the gateway of
+  every VLAN and the DHCP server of all three Wi-Fi networks. The distribution
+  switch *dist* on the second floor feeds the first- and second-floor access
+  points; the basement access point is on the core.
+
+  | Wi-Fi network | SSID | VLAN | Subnet | VRF on the core |
+  |---|---|---|---|---|
+  | Internal | Home | 10 | 192.168.10.0/24 | default |
+  | IoT | Home-IoT | 20 | 192.168.20.0/24 | `iot` |
+  | Guest | Home-Guest | 30 | 192.168.30.0/24 | `guest` |
+  | management | – | 99 | 192.168.99.0/24 | default |
+
+  Every access point has the same three networks on its radio and one wired
+  uplink, a trunk with VLANs 10, 20, 30 and 99, all tagged, the same at the
+  switch end; the riser cable between the core and *dist* carries the same.
+  The core's trunk to the DSL router carries three transit VLANs (110, 120,
+  130), one per VRF.
+* **Policy.** The core routes inside each VRF only; traffic between the
+  zones, and to the Internet, goes to the DSL router, whose policy is the
+  relations through it: each zone's devices may open HTTPS to the Internet,
+  nothing else crosses between zones (default action: drop). So Internal
+  reaches the NAS directly, IoT and Guest reach the Internet but not the NAS,
+  and management (VLAN 99) is routed with Internal only.
+* **Dual stack.** Internal is IPv4 and IPv6: the core's VLAN 10 interface
+  has a second address, `fd00:10::1/64` (a unique local prefix; the provider
+  gives the house no IPv6 here), and sends router advertisements for
+  `fd00:10::/64`. The laptop and the phone (`ipv6: slaac`) form an address
+  in it after duplicate address detection and take the core as their IPv6
+  default router, while DHCP still leases their IPv4 address. The other
+  networks stay IPv4 only.
+* **Applications.** The thermostat stays an Endpoint and runs two
+  applications: *Local control*, a TCP listener on port 8080, and *Cloud
+  sync*, a TCP client of the web server's HTTPS application every 30 s. The
+  TV's *Thermostat control* is a client of the first (both are in IoT).
+  *Network events → Start application* starts a client.
+* **What to try.** Start a simulation: each client is leased in its
+  network's VLAN; the laptop finds the NAS by name and opens it; the TV's and
+  the guest phone's attempts at the NAS are dropped by the DSL router. Trace
+  path from `core:Vlan30` to `192.168.10.20` with the service `tcp/445`: it
+  stops at the DSL router's policy. Fail `l-core-dist`: both upper-floor
+  access points lose their uplink; *Single points of failure* lists it.
+* **Limits.** The policy has no zones or directions (see
+  [Limitations](../docs/LIMITATIONS.md)): "Internal may open IoT, IoT may
+  not open Internal" can't be written, so nothing is permitted between the
+  zones. There is no radio or roaming model.
+
+### Internal test examples
+
+[`test/examples/`](../test/examples/) holds nineteen more models. They are test
+scenarios, not architectures: each exercises a feature, an edge case,
+validation, layout or the simulation (`addressing.yaml`, `long-labels.yaml`,
+`consistency-checks.yaml`, `protocol-simulation.yaml`, `metro-ring.yaml`,
+`vlan-ports.yaml` …), and several were examples of the File menu before the
+catalog was curated. `test/examples/broken/errors-demo.yaml` is
+intentionally invalid. The tests read them, and the **test build**
+(`build/netatlas-test.html`, written by `npm run build` next to the release)
+can load them by name for the in-browser self-test, the viewport check and
+the screenshots; `dist/netatlas.html` does not contain them. Any of them
+opens with **Open model…**.
+
+Three more files, in `test/fixtures/`, are generated test data:
+`editor-new-network.yaml` (a model built from *New model* with the editor's
+operations), `minimal-edited.yaml` (`test/examples/minimal.yaml` imported and
+edited) and `metro-ring-arranged.yaml` (`test/examples/metro-ring.yaml` after
+Auto-arrange in both views). `scripts/make-fixtures.mjs` produces them with
+the same editing core the page uses; tests check that they're up to date,
+and the in-browser self-test checks that the browser computes the same
+positions. The browser self-test ([docs/TESTING.md](../docs/TESTING.md)) also builds a model and edits an
+imported one through the real UI. It saves the files it "downloaded" in
+`dist/selftest-downloads/`.
+
+How the two kinds are kept apart is described
+[above](#how-the-separation-is-kept).
