@@ -39,7 +39,7 @@ import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
 import { filterModel, selectsAll } from '../model/filter';
-import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusUp, focusNeighbourhood, focusSeeds } from '../analysis/focus';
+import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusContext, FocusUp, contextFocus, focusNeighbourhood, focusSeeds } from '../analysis/focus';
 import type { FailureResult } from '../analysis/failure';
 import { refExists, relatedRefs } from '../model/queries';
 import { typeKey } from '../model/device-types';
@@ -64,8 +64,8 @@ export interface ViewState {
   devices: Set<string> | null;
   /** device type keys (model/device-types.ts typeKey: "server", "switch:l2") whose devices the diagrams leave out */
   hiddenTypes: Set<string>;
-  /** focus mode: the object and the number of hops shown around it; null = off */
-  focus: { ref: string; hops: number } | null;
+  /** focus mode: the object and the number of hops shown around it, or a contextual focus (a VLAN, dependencies, a multicast group, a timing domain); null = off */
+  focus: { ref: string; hops: number; context?: FocusContext } | null;
   /**
    * Temporary positions while a node is being dragged, keyed by ref
    * ("device:x", "network:y"). The editor commits them to the document's
@@ -192,7 +192,7 @@ export class Session {
     }
     this.filtered = { physical: null, logical: null };
     // focus on an object the edit removed ends, and the views before it come back
-    if (this.state.focus && !focusSeeds(model, this.state.focus.ref).length) this.endFocus();
+    if (this.state.focus && (this.state.focus.context ? !contextFocus(model, this.state.focus.context).devices.size : !focusSeeds(model, this.state.focus.ref).length)) this.endFocus();
     for (const v of ['physical', 'logical'] as LayoutView[]) {
       if (!this.isFiltered(v)) {
         this.temp[v] = null;
@@ -238,7 +238,7 @@ export class Session {
     const hidden = this.state.hiddenTypes;
     const focus = this.state.focus;
     if (!sel && !hidden.size && !focus) return null;
-    const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined) : null;
+    const near = focus ? this.focusDevices(focus, view) : null;
     const out = new Set<string>();
     // (a guest has no cables: in the physical view's focus it goes with the machine it runs on)
     const nearHas = (d: Device): boolean => !near || near.has(d.id) || (view === 'physical' && isGuest(d) && near.has(machineOf(this.model, d).id));
@@ -281,7 +281,7 @@ export class Session {
   private wouldFocus(d: Device): boolean {
     const focus = this.state.focus;
     if (!focus) return true;
-    const near = focusNeighbourhood(this.model, focus.ref, focus.hops, 'physical', this.simUp || undefined);
+    const near = this.focusDevices(focus, 'physical');
     return near.has(d.id) || near.has(machineOf(this.model, d).id);
   }
 
@@ -297,16 +297,17 @@ export class Session {
    * ones next to their neighbours. Returns false when the object has no
    * device to start from (nothing changes then).
    */
-  setFocus(ref: string, hops: number): boolean {
-    if (!focusSeeds(this.model, ref).length) return false;
+  setFocus(ref: string, hops: number, context?: FocusContext): boolean {
+    if (context ? !contextFocus(this.model, context).devices.size : !focusSeeds(this.model, ref).length) return false;
     const n = Math.max(FOCUS_MIN_HOPS, Math.min(FOCUS_MAX_HOPS, Math.round(hops)));
     const cur = this.state.focus;
-    if (cur && cur.ref === ref && cur.hops === n) return false;
+    const sameCtx = (a?: FocusContext, b?: FocusContext): boolean => JSON.stringify(a || null) === JSON.stringify(b || null);
+    if (cur && cur.ref === ref && cur.hops === n && sameCtx(cur.context, context)) return false;
     const views: LayoutView[] = ['physical', 'logical'];
-    const same = !!cur && cur.ref === ref;
+    const same = !!cur && cur.ref === ref && sameCtx(cur.context, context);
     const seeds = same ? views.map((v) => new Map(this.positionsFor(v))) : null;
     if (!cur) this.beforeFocus = { temp: { ...this.temp }, parked: { ...this.parked }, routing: { ...this.tempRouting } };
-    this.state.focus = { ref, hops: n };
+    this.state.focus = context ? { ref, hops: n, context } : { ref, hops: n };
     this.filtered = { physical: null, logical: null };
     this.state.positions.physical.clear();
     this.state.positions.logical.clear();
@@ -315,6 +316,11 @@ export class Session {
       this.temp[v] = seeds && this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), seeds[i]) : null;
     });
     return true;
+  }
+
+  /** The devices focus mode shows in a view: the neighbourhood by hops, or the contextual focus's devices. */
+  private focusDevices(focus: { ref: string; hops: number; context?: FocusContext }, view: View): Map<string, number> {
+    return focus.context ? contextFocus(this.model, focus.context).devices : focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined);
   }
 
   /** Leave focus mode: the views come back as they were before it (the model was never changed). Returns whether it was on. */

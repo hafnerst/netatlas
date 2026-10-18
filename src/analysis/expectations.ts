@@ -1,0 +1,213 @@
+/**
+ * Evaluating saved architecture expectations (the model's `expectations:`):
+ * each one is checked statically against the configured model, or a
+ * simulation snapshot, and gets a verdict and the actual reason:
+ *
+ *   available    the communication check is satisfied (under the failure
+ *                condition, when one is given). Only some evaluated paths
+ *                reaching is a violation; a path that leaves the model is
+ *                indeterminate.
+ *   blocked      no evaluated path delivers it. What blocks it is said: a
+ *                policy decision, or something else (no route, a missing
+ *                adjacency …), which may not be the intended control. A
+ *                reachable destination without a listener is not blocked:
+ *                the network lets it through.
+ *   dependency   a client application's configured peer or broker is
+ *                usable (the same check as available, from the client).
+ *   timing       a compatible NTP or PTP source path exists within the
+ *                supported analysis; synchronization and accuracy are not
+ *                established.
+ *
+ * A failure condition (devices, cables, relations, interfaces, failure
+ * domains) is applied to the configured model only: combined with a
+ * snapshot it would blend two states, so that is unsupported. Nothing is
+ * sent: evaluating never starts the simulation. Pure and deterministic.
+ */
+import { Expectation, Model } from '../model/types';
+import { CommCheck, checkCommunication, parseCommEnd } from './communication';
+import { failureCondition, simulate } from './failure';
+import { AnalysisContext, ResultInfo, Verdict, configuredContext, resultInfo } from './result';
+import { RoutingCtx } from './routing';
+import { AnalysisSnapshot } from './snapshot';
+import { TimingCheck, timingSource } from './timing';
+import { STOP_LABEL } from './trace';
+
+export type ExpectVerdict = 'satisfied' | 'violated' | 'indeterminate' | 'unsupported';
+
+export interface ExpectationResult {
+  id: string;
+  name: string;
+  expect: Expectation['expect'];
+  verdict: ExpectVerdict;
+  /** the actual reason, in a sentence */
+  reason: string;
+  detail: string[];
+  check?: CommCheck;
+  timing?: TimingCheck;
+  /** the failure condition applied */
+  failure?: { entries: string[]; refs: string[]; unknown: string[] };
+  /** where the communication stops (for grouping by a shared cause) */
+  stop?: { device: string; reason: string; detail: string };
+  /** what it concerns (for navigation) */
+  refs: string[];
+}
+
+function toExpect(v: Verdict): ExpectVerdict {
+  return v === 'satisfied' ? 'satisfied' : v === 'violated' || v === 'partial' ? 'violated' : v === 'unsupported' ? 'unsupported' : 'indeterminate';
+}
+
+/** Evaluate one expectation (see the module comment). */
+export function evaluateExpectation(model: Model, e: Expectation, snap: AnalysisSnapshot | null = null): ExpectationResult {
+  const out: ExpectationResult = { id: e.id, name: e.name, expect: e.expect, verdict: 'indeterminate', reason: '', detail: [], refs: [] };
+  if (e.description) out.detail.push(e.description);
+  // ---- the failure condition
+  let ctx: RoutingCtx | undefined;
+  let devDown: (d: string) => boolean = () => false;
+  if (e.failure.length) {
+    const fc = failureCondition(model, e.failure);
+    out.failure = { entries: e.failure.slice(), refs: fc.refs, unknown: fc.unknown };
+    if (fc.unknown.length) {
+      out.reason = `The failure condition names ${fc.unknown.join(', ')}, which ${fc.unknown.length === 1 ? 'is' : 'are'} not in the model`;
+      return out;
+    }
+    if (snap) {
+      out.verdict = 'unsupported';
+      out.reason = 'A failure condition is evaluated on the configured model only: applied to a simulation snapshot it would blend two states';
+      return out;
+    }
+    const res = simulate(model, fc.refs);
+    ctx = res.ctx;
+    devDown = (d) => res.devices.get(d) === 'down';
+    out.detail.push(`Under the failure of ${fc.refs.map((r) => r.replace(/^[a-z]+:/, '')).join(', ')}${fc.domains.length ? ` (failure domain${fc.domains.length === 1 ? '' : 's'} ${fc.domains.join(', ')})` : ''}.`);
+  }
+  // ---- timing
+  if (e.expect === 'timing') {
+    const f = parseCommEnd(model, e.from);
+    const dev = typeof f === 'string' ? null : f.kind === 'end' ? (f.end.kind === 'address' ? null : f.end.device) : f.kind === 'app' || f.kind === 'service' ? f.device : null;
+    if (!dev) {
+      out.reason = typeof f === 'string' ? f : `${e.from} names no device whose timing could be checked`;
+      return out;
+    }
+    if (devDown(dev)) {
+      out.reason = `${dev} itself is part of the failure condition`;
+      return out;
+    }
+    const t = timingSource(model, dev, ctx || (snap ? snap.ctx : {}));
+    if (!t) {
+      out.verdict = 'unsupported';
+      out.reason = `${dev} has no PTP clock and no NTP upstreams: there is no timing dependency to check`;
+      return out;
+    }
+    out.timing = t;
+    out.refs = t.refs.slice();
+    out.detail.push(...t.detail);
+    if (t.verdict === 'satisfied' && e.to && t.chain.indexOf(e.to) < 0) {
+      out.verdict = 'violated';
+      out.reason = `${t.text}, but not from ${e.to}`;
+      return out;
+    }
+    out.verdict = toExpect(t.verdict);
+    out.reason = t.text;
+    return out;
+  }
+  // ---- communication: available, blocked, dependency
+  if (e.expect === 'dependency') {
+    const f = parseCommEnd(model, e.from);
+    if (typeof f === 'string' || f.kind !== 'app' || !f.profile.client) {
+      out.verdict = typeof f === 'string' ? 'indeterminate' : 'unsupported';
+      out.reason = typeof f === 'string' ? f : 'A dependency expectation needs a client application (device/application) whose peer or broker the model configures';
+      return out;
+    }
+  }
+  const req = { from: e.from, to: e.to, service: e.service, vrf: e.vrf };
+  const c = checkCommunication(model, req, snap, 'Saved expectations', 0, ctx);
+  out.check = c;
+  if (c.error) {
+    out.reason = c.error;
+    return out;
+  }
+  for (const l of c.layers) for (const r of l.refs) if (out.refs.indexOf(r) < 0) out.refs.push(r);
+  const stop = c.outcome ? c.outcome.groups.find((g) => g.kind === 'stopped') : undefined;
+  if (stop) out.stop = { device: stop.device, reason: stop.reason as string, detail: stop.detail || '' };
+  const fromDev = c.from ? c.from.device : undefined;
+  if (fromDev && devDown(fromDev)) {
+    out.reason = `${fromDev} itself is part of the failure condition`;
+    return out;
+  }
+  if (e.expect === 'blocked') return blockedVerdict(out, c);
+  out.verdict = toExpect(c.verdict);
+  // (the reason without the verdict's own words: the verdict is shown beside it)
+  const why = c.headline.replace(/^(Indeterminate|Partially reachable|Beyond modeled scope): /, '');
+  out.reason = c.verdict === 'partial' ? `Not all evaluated paths reach: ${why}` : c.verdict === 'beyond' ? `The path leaves the modeled architecture: ${why}` : why.charAt(0).toUpperCase() + why.slice(1);
+  return out;
+}
+
+/** A blocked expectation: what blocks the communication, if anything does, and whether it is a policy. */
+function blockedVerdict(out: ExpectationResult, c: CommCheck): ExpectationResult {
+  const layer = (id: string) => c.layers.find((l) => l.id === id);
+  const addr = layer('address');
+  if (addr && addr.verdict !== 'satisfied') {
+    out.verdict = 'indeterminate';
+    out.reason = addr.text;
+    return out;
+  }
+  const o = c.outcome;
+  if (!o) {
+    out.verdict = 'indeterminate';
+    out.reason = c.headline;
+    return out;
+  }
+  const reached = o.groups.filter((g) => g.kind === 'reached').reduce((s, g) => s + g.count, 0);
+  const stopped = o.groups.filter((g) => g.kind === 'stopped');
+  const nStopped = stopped.reduce((s, g) => s + g.count, 0);
+  if (nStopped === o.total && o.total > 0) {
+    out.verdict = 'satisfied';
+    if (o.policyOnly) out.reason = `Blocked by policy at ${stopped.map((g) => g.device).join(', ')}: ${stopped[0].detail || ''}`;
+    else {
+      const what = stopped.map((g) => `${STOP_LABEL[g.reason as keyof typeof STOP_LABEL]} at ${g.device}`).join('; ');
+      const policy = stopped.filter((g) => g.reason === 'denied');
+      out.reason = `Not reachable: ${what}. ${policy.length ? 'Only some paths are stopped by a policy' : 'No policy decision blocks it'}: the block may not be the intended control.`;
+    }
+    if (o.truncated) {
+      out.verdict = 'indeterminate';
+      out.reason += ' More equal-cost paths exist than were evaluated.';
+    }
+    return out;
+  }
+  if (reached) {
+    const lis = layer('listener');
+    out.verdict = 'violated';
+    out.reason = `Reachable: ${reached} of ${o.total} evaluated path${o.total === 1 ? '' : 's'} reach${reached === 1 ? 'es' : ''} ${c.to ? c.to.text : 'the destination'}${lis && lis.verdict === 'violated' ? `; nothing listens there (${lis.text}), but no policy blocks the traffic` : ''}`;
+    return out;
+  }
+  out.verdict = 'indeterminate';
+  out.reason = `The path leaves the modeled architecture: ${c.headline}`;
+  return out;
+}
+
+/** The evaluation of all expectations, with the context it ran in. */
+export interface ExpectationRun {
+  results: ExpectationResult[];
+  info: ResultInfo;
+}
+
+export function evaluateExpectations(model: Model, snap: AnalysisSnapshot | null = null): ExpectationRun {
+  const context: AnalysisContext = snap ? { kind: 'snapshot', at: snap.at, scope: 'Saved expectations' } : configuredContext('Saved expectations');
+  const results = model.expectations.map((e) => evaluateExpectation(model, e, snap));
+  return {
+    results,
+    info: resultInfo(context, ['Each expectation is checked statically (communication checks, the timing analysis); nothing is sent.'], ['Runtime behaviour: authentication, protocol acceptance, service health, synchronization accuracy.']),
+  };
+}
+
+/** Results grouped by where they stop, when several stop at the same device for the same reason (a shared cause: the detail of the first is shown), with the others apart. */
+export function sharedStops(results: ExpectationResult[]): Array<{ device: string; reason: string; detail: string; ids: string[] }> {
+  const m = new Map<string, { device: string; reason: string; detail: string; ids: string[] }>();
+  for (const r of results) {
+    if (!r.stop || r.verdict === 'satisfied') continue;
+    const k = `${r.stop.device}\n${r.stop.reason}`;
+    if (!m.has(k)) m.set(k, { device: r.stop.device, reason: r.stop.reason, detail: r.stop.detail, ids: [] });
+    (m.get(k) as { ids: string[] }).ids.push(r.id);
+  }
+  return Array.from(m.values()).filter((g) => g.ids.length > 1).sort((a, b) => b.ids.length - a.ids.length || (a.device < b.device ? -1 : 1));
+}
