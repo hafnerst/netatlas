@@ -221,13 +221,32 @@ what it leaves out (its ⓘ note in the editor and in **Start simulation…**).
   VLAN), and in the default table when it has none, so a network meant for
   a VRF but without members is listed in the default table. Membership is by
   address alone, as everywhere in NetAtlas. A DHCP client is listed in the
-  networks whose VLAN its cable carries; it has no address, so it isn't
-  counted as used. Gateways are found where the model writes them (virtual
-  addresses, default routes); a gateway configured only on the hosts isn't
-  known. IPv6 free ranges include a subnet's first address (the
+  networks whose VLAN its cable carries; it has no address in the
+  configured model (a simulation snapshot has its lease). Gateways are found
+  where the model writes them (virtual addresses, default routes, DHCP
+  scopes); a gateway configured only on the hosts isn't known. Listings of
+  one network in two VRFs share an address space only where a member of one
+  is on the switched segment of the other (that is what the model can
+  establish). "Unallocated in model" is the model's statement: an address
+  used outside NetAtlas is not known. SLAAC addresses (EUI-64 or random
+  interface identifiers) are not predicted in the configured model; a
+  snapshot has them. IPv6 free ranges include a subnet's first address (the
   subnet-router anycast address), but it is never offered as the next free
   address. Large IPv6 networks list their free ranges as ranges, never
   address by address.
+* **Duplicate addresses are judged in the scope the model draws.** A
+  link-local address is unique on its segment (cables through switches and
+  other devices that pass frames); any other in a VRF and a connected part
+  of the architecture (cables, relations, a guest on its host). Without a
+  cable or relation an owner's scope is not known: a *possible* conflict.
+  VLAN separation on one switch is not taken into account for link-local
+  addresses.
+* **Contextual focus shows configured structure.** VLAN members by their
+  ports' VLANs and network membership, dependencies as configured, a
+  multicast group's configured senders and receivers with the PIM routers
+  and snooping switches, a timing domain's clocks. Being shown together
+  proves no path; the observed multicast distribution is in the
+  simulation's tables.
 * **Focus mode counts hops between devices.** A hop follows a cable
   (Physical view) or a relation (Logical view) from one device to another; a
   network, a location or a protocol is not a step of its own, and an object
@@ -335,9 +354,41 @@ what it leaves out (its ⓘ note in the editor and in **Start simulation…**).
   every port carrying its VLAN does; partial capacity loss is not modelled
   (a degraded LAG has no less bandwidth in the model). Device pairs are
   checked by tracing between devices (each to the other's first address
-  that is still up), for at most 40 devices; the single points of failure
-  are found by failing each cable, device and LAG alone, never
-  combinations.
+  that is still up), in a chosen scope and at most 1600 ordered pairs,
+  relevant endpoints (those that expectations and dependencies name) first;
+  the coverage says what was left out. The single points of failure are
+  found by failing each cable, device and LAG alone; combinations are
+  what-if conditions you choose (a failure domain or up to 64 components),
+  never enumerated. The structural impact is an object count, not a
+  business criticality; no probability, convergence or recovery time is
+  computed.
+* **Service dependencies are what the model configures.** An application's
+  peer, an MQTT client's broker, a device's resolvers (its `dns_servers`,
+  or what its DHCP scopes give out), a DHCP client's servers, a timing
+  source, syslog senders and AAA clients. Dependencies nobody wrote down
+  (a licence server, a hidden backend) and business importance are not
+  inferred. A DHCP server's loss stops new assignments; leases already
+  given are taken to last (their remaining time is runtime state).
+* **Communication checks stop where static analysis stops.** A listener
+  that is configured establishes a consistent configuration, not that the
+  application accepts the connection, authenticates, answers or completes.
+  Name resolution reads the DNS servers' zones and forwarders, not caches
+  or TTLs. The return direction is reverse routing without a destination
+  port: a TCP session and a stateful firewall's return decision are not
+  evaluated (the simulation exchanges them). A timing check finds a
+  compatible source path (domain, profile, segments joined by boundary
+  clocks; an NTP upstream reachable on UDP 123), never synchronization or
+  accuracy. The syslog relation's `transport` attribute is not read: its
+  profile's port (UDP 514) is.
+* **Snapshots are of one moment.** A snapshot holds what the running
+  simulation had at that time (leases, SLAAC and DHCPv6 addresses with
+  their state, what was up, the routes learned); it is not updated, and a
+  failure condition is not applied to it (that would blend two states).
+* **Saved expectations are evaluated statically.** They never send
+  anything; a requirement about sessions, throughput or timing accuracy is
+  out of their reach. A block that holds because no route exists is said
+  to be one, but whether a route is meant to exist is the architect's
+  call.
 * **The path tracer is a model-based approximation, not a simulation of
   real protocols.** Every router of a routing protocol's adjacencies
   advertises all its connected networks and passes on what it learns;
@@ -353,10 +404,11 @@ what it leaves out (its ⓘ note in the editor and in **Start simulation…**).
   through layer-2 devices (as a spanning tree might leave it), not a
   simulation of spanning tree; an interface without a cable in the model is
   taken as connected. Equal-cost paths are all listed (up to 16), with no
-  hashing. A tunnel's underlay is traced only when the routes of the model
-  lead to its destination; otherwise its `over:` chain is shown as written.
-  The return path starts at the destination's own address (the interface
-  traced to).
+  hashing; the outcome is over every evaluated path, and beyond 16 the
+  others' outcome is not known (said so). A tunnel's underlay is traced only
+  when the routes of the model lead to its destination; otherwise its
+  `over:` chain is shown as written. The return path starts at the
+  destination's own address (the interface traced to).
 * **The command palette's shortcuts are the page's own.** `Ctrl+K` / `Cmd+K`
   is taken from the browser (in some browsers it focuses the address or
   search bar) while NetAtlas has the focus. The palette searches the open
