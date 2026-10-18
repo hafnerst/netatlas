@@ -373,6 +373,13 @@ statically; contextual focus.
   does. The single points of failure fail each cable, device and LAG alone;
   combinations are what-if conditions you choose, never enumerated. The
   structural impact is an object count, not a business criticality.
+* **Capacity is stated traffic against stated speeds.** Demands and
+  applications with an interval (payload rates) against cables, aggregates
+  (their surviving members; a single flow at most one member) and shared
+  radios, before and after a failure. The spread over equal-cost paths or
+  bundle members is not assumed (an equal split and all on one path are
+  both evaluated). Not modeled: queues, delay, microbursts, QoS, hardware
+  forwarding performance, the throughput a protocol achieves.
 * **Device pairs** are checked by tracing between devices (each to the
   other's first address that is up), in a chosen scope and at most 1600
   ordered pairs, relevant endpoints first; the coverage says what was left

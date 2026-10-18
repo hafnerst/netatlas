@@ -2354,8 +2354,21 @@ demands:
 ```
 
 `source` and `destination` take what the path tracer takes. A demand is
-traced from its source to its destination like Trace path; equal-cost
-paths share it equally.
+traced from its source to its destination like Trace path; the traffic
+animation shows equal-cost paths sharing it equally.
+
+**Capacity.** What if (Analyze → Single points of failure) compares the
+stated traffic with the stated capacity before and after the failure: the
+demands, and the applications with an `interval` (their sizes, written or
+the profile's defaults; payload rates). A resource is counted once: a cable
+(its `speed`; VLANs and tunnels riding it share it), an aggregate (the
+speeds of its members that are up; one flow at most one member's), a radio
+(its Wi-Fi associations share it). How a demand spreads over equal-cost
+paths or members is not assumed: a resource fits when even all of a demand
+on one path fits, exceeds when even an equal split exceeds, else it depends
+on the distribution. Without stated traffic capacity is not evaluated; a
+cable without a speed is insufficient information. No queues, delay or
+hardware forwarding limits are modeled.
 
 Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
 a bandwidth that isn't one and a duplicate id are **errors**; an end that

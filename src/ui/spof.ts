@@ -16,6 +16,10 @@ import { DEP_CHANGE_TEXT, DEP_LABEL, DepChange } from '../analysis/dependencies'
 import { Spof, SpofCandidate, refLabel } from '../analysis/failure';
 import { Coverage, ResultInfo, contextText, coverageText, exportFooter, exportHeader } from '../analysis/result';
 import { EXP_CHANGE_TEXT, WhatIf } from '../analysis/whatif';
+import { bpsText } from '../analysis/capacity';
+
+/** How a failure changes a demand's capacity, in words. */
+const CAP_CHANGE_TEXT: { [k: string]: string } = { overload: 'Overloaded although still carried', lost: 'No longer carried', distribution: 'Now depends on the distribution', unknown: 'Insufficient information', relieved: 'Fits again', unchanged: 'Unchanged' };
 import { FAILURE_DOMAIN_KINDS, Model } from '../model/types';
 import { el } from './dom';
 import { ContextBarActions, ContextBarState, contextBar, coverageLine, limitsDetails } from './analysis-ui';
@@ -449,6 +453,25 @@ function whatIfResult(doc: Document, v: WhatIfView, act: WhatIfActions): HTMLEle
     d.appendChild(ul);
     box.appendChild(d);
   }
+  // capacity: the stated traffic against the stated capacity, before and after
+  if (w.capacity) {
+    const c = w.capacity;
+    const d = el(doc, 'details', { class: 'wi-group', id: 'wi-capacity', 'data-evaluated': c.after.evaluated ? 'yes' : 'no' }, [el(doc, 'summary', {}, [c.after.evaluated ? `Capacity: ${c.after.text}` : 'Capacity: not evaluated'])]);
+    if (!c.after.evaluated) d.appendChild(el(doc, 'p', { class: 'small muted' }, [c.after.text]));
+    else {
+      const ul = el(doc, 'ul', { class: 'small' });
+      for (const x of c.changes.filter((y) => y.change !== 'unchanged')) ul.appendChild(el(doc, 'li', { 'data-cap-change': x.change }, [el(doc, 'strong', {}, [CAP_CHANGE_TEXT[x.change] + ': ']), x.demand.label, el(doc, 'div', { class: 'muted' }, [x.after.connectivity === 'retained' ? x.after.text : 'not carried: ' + x.after.text])]));
+      if (!ul.childNodes.length) ul.appendChild(el(doc, 'li', { class: 'muted' }, ['No demand changes: the stated traffic fits as it did.']));
+      d.appendChild(ul);
+      const ev = el(doc, 'details', { class: 'layer-ev' }, [el(doc, 'summary', {}, ['Per resource, after the failure'])]);
+      const rl = el(doc, 'ul', { class: 'small' });
+      for (const l of c.after.loads.slice(0, 40)) rl.appendChild(el(doc, 'li', { 'data-cap': l.verdict }, [`${l.resource.what}: ${l.resource.capacity === null ? 'no speed written' : bpsText(l.resource.capacity)}; ${bpsText(l.equal)} split equally, ${bpsText(l.worst)} on one path (${l.verdict === 'fits' ? 'fits' : l.verdict === 'exceeds' ? 'exceeds' : l.verdict === 'distribution' ? 'depends on the distribution' : 'not known'})`]));
+      ev.appendChild(rl);
+      for (const a of c.after.assumptions) ev.appendChild(el(doc, 'p', { class: 'small muted' }, [a]));
+      d.appendChild(ev);
+    }
+    box.appendChild(d);
+  }
   // the structure
   const s = w.summary;
   if (s) {
@@ -549,6 +572,10 @@ export function whatIfText(o: { title: string; version?: string; outdated: boole
     for (const c of list) lines.push(`  ${DEP_LABEL[c.dep.kind]}: ${c.dep.text} — ${c.text}`);
   }
   for (const x of w.expectations) lines.push(`Expectation ${x.after.name} (${x.after.expect}): ${EXP_CHANGE_TEXT[x.change]} — before ${x.before.verdict}, after ${x.after.verdict} — ${x.after.reason}`);
+  if (w.capacity) {
+    lines.push(`Capacity: ${w.capacity.after.text}`);
+    for (const x of w.capacity.changes.filter((y) => y.change !== 'unchanged')) lines.push(`  ${CAP_CHANGE_TEXT[x.change]}: ${x.demand.label} — ${x.after.text}`);
+  }
   if (w.structural && w.structural.isolated.length) lines.push(`Cut off: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`);
   if (w.reach) {
     lines.push(`Device pairs that lose reachability (${w.reach.pairs.length}); ${coverageText(w.reach.coverage)}:`);

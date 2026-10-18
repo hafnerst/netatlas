@@ -17,6 +17,7 @@ import { DepChange, ServiceDependency, compareDependencies, dependencyBaseline, 
 import { ExpectationResult, evaluateExpectation } from './expectations';
 import { FailureResult, FailureSummary, LostPair, ReachScope, SpofCandidate, failureCondition, failureRefs, lostPairs, scopePairs, simulate, structuralImpact, summarize, Spof } from './failure';
 import { Coverage, ResultInfo, configuredContext, resultInfo } from './result';
+import { CapacityChange, CapacityResult, capacityAnalysis, compareCapacity } from './capacity';
 
 /** At most this many components (after expanding the domains) fail in one what-if. */
 export const WHATIF_MAX = 64;
@@ -36,6 +37,8 @@ export interface WhatIf {
   /** the saved expectations, before and after (`alternative`: satisfied both times, over another path or source) */
   expectations: ExpChange[];
   reach?: { pairs: LostPair[]; coverage: Coverage };
+  /** the stated traffic against the stated capacity, before and after (not evaluated without traffic) */
+  capacity?: { before: CapacityResult; after: CapacityResult; changes: CapacityChange[] };
   info: ResultInfo;
 }
 
@@ -98,7 +101,7 @@ export function relevantDevices(model: Model, deps: ServiceDependency[]): string
  * failure (computed when not given); `reach` adds pairwise reachability in
  * a scope.
  */
-export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDependency[]; baseline?: Map<string, DepState>; reach?: ReachScope } = {}): WhatIf {
+export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDependency[]; baseline?: Map<string, DepState>; reach?: ReachScope; capacityBaseline?: CapacityResult } = {}): WhatIf {
   const fc = failureCondition(model, entries);
   const scope = fc.domains.length === 1 && entries.length === 1 ? `Failure domain ${fc.domains[0]}` : `Failure of ${entries.join(', ')}`;
   const out: WhatIf = { entries: entries.slice(), refs: fc.refs, unknown: fc.unknown, domains: fc.domains, tooLarge: fc.refs.length > WHATIF_MAX, result: null, summary: null, structural: null, deps: [], expectations: [], info: resultInfo(configuredContext(scope)) };
@@ -123,6 +126,10 @@ export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDe
     out.expectations.push(expChange(before, after));
   }
   out.expectations.sort((a, b) => EXP_CHANGE_ORDER.indexOf(a.change) - EXP_CHANGE_ORDER.indexOf(b.change) || (a.after.id < b.after.id ? -1 : a.after.id > b.after.id ? 1 : 0));
+  // capacity: the stated traffic against the stated capacity, the same baseline (overload although still carried is said apart)
+  const capBefore = opts.capacityBaseline || capacityAnalysis(model);
+  const capAfter = capacityAnalysis(model, res.ctx);
+  out.capacity = { before: capBefore, after: capAfter, changes: capBefore.evaluated ? compareCapacity(capBefore, capAfter) : [] };
   if (opts.reach) {
     const sp = scopePairs(model, opts.reach, relevantDevices(model, deps));
     const pairs = lostPairs(model, res, sp.pairs);
@@ -131,7 +138,7 @@ export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDe
   out.info = resultInfo(
     configuredContext(scope),
     ['The failure propagates as the failure analysis models it: devices take their interfaces and cables down, aggregates and redundancy groups degrade or fail over, relations fail with their underlay, static routes with their next hop.', 'The baseline is the configured model with nothing failed.'],
-    ['Convergence and recovery times, timers and transient loss.', 'Probabilities: a what-if is a condition, not a reliability estimate.', 'Runtime behaviour of the services (sessions, retries, caches, lease renewals in progress).'],
+    ['Convergence and recovery times, timers and transient loss.', 'Probabilities: a what-if is a condition, not a reliability estimate.', 'Runtime behaviour of the services (sessions, retries, caches, lease renewals in progress).', 'Capacity is the stated traffic against the stated speeds: no queues, delay or hardware limits; a spread over equal-cost paths or bundle members is not assumed.'],
     out.reach ? out.reach.coverage : undefined,
   );
   return out;

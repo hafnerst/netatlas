@@ -1112,3 +1112,77 @@ test('network policy: validation and renames', () => {
   d2.setTextList(['devices', d2.findEntity('device', 'r1').index, 'policy', 'rules', 0, 'source'], 'pc, pc2');
   assert.match(d2.exportText(), /policy:\n\s+default: deny\n\s+rules:\n\s+- \{action: permit, source: \[pc, pc2\]\}/);
 });
+
+// ------------------------------------------------------------------ capacity
+
+const CA = load('analysis/capacity.js');
+
+// two switches joined by a LAG of two 1G members carrying VLANs 10 and 20; a host pair per VLAN on 10G
+const lagNet = (demands, extra = '') => `netatlas: 1
+title: Capacity
+devices:
+  - id: s1
+    type: switch
+    interfaces: [{id: m1}, {id: m2}, {id: h1, vlans: 10}, {id: h3, vlans: 20}]
+    logical_interfaces: [{id: ae0, type: virtual, members: [m1, m2], vlans: [10, 20]}]
+  - id: s2
+    type: switch
+    interfaces: [{id: m1}, {id: m2}, {id: h2, vlans: 10}, {id: h4, vlans: 20}]
+    logical_interfaces: [{id: ae0, type: virtual, members: [m1, m2], vlans: [10, 20]}]
+  - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.0.10.1/24}]}
+  - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.0.10.2/24}]}
+  - {id: h3, type: endpoint, interfaces: [{id: eth0, ip: 10.0.20.3/24}]}
+  - {id: h4, type: endpoint, interfaces: [{id: eth0, ip: 10.0.20.4/24}]}${extra}
+links:
+  - {id: lm1, a: s1:m1, b: s2:m1, speed: 1G}
+  - {id: lm2, a: s1:m2, b: s2:m2, speed: 1G}
+  - {id: l1, a: h1:eth0, b: s1:h1, speed: 10G}
+  - {id: l2, a: h2:eth0, b: s2:h2, speed: 10G}
+  - {id: l3, a: h3:eth0, b: s1:h3, speed: 10G}
+  - {id: l4, a: h4:eth0, b: s2:h4, speed: 10G}
+networks:
+  - {id: v10, cidr: 10.0.10.0/24, vlan: 10}
+  - {id: v20, cidr: 10.0.20.0/24, vlan: 20}
+${demands}`;
+
+test('capacity: an aggregate’s surviving members, a single flow’s limit, overload although still carried', () => {
+  const m = model(lagNet('demands:\n  - {id: bulk, label: Bulk copy, source: h1, destination: h2, bandwidth: 1500M}\n'));
+  const base = CA.capacityAnalysis(m);
+  assert.equal(base.evaluated, true);
+  const d = base.demands[0];
+  assert.deepEqual([d.connectivity, d.verdict], ['retained', 'fits']);
+  assert.match(d.text, /fits s1:ae0 \(2 of 2 members up\): 1\.5 Gbit\/s split equally, 1\.5 Gbit\/s on one path, of 2 Gbit\/s/);
+  assert.match(d.perFlow, /1\.5 Gbit\/s is more than one member of s1:ae0 .* carries \(1 Gbit\/s\): it fits only as several flows/);
+  // one member fails: still carried, now more than the aggregate's surviving capacity
+  const w = W.whatIf(m, ['lm1']);
+  const ch = w.capacity.changes.find((x) => x.demand.id === 'demand:bulk');
+  assert.equal(ch.change, 'overload');
+  assert.equal(ch.after.connectivity, 'retained');
+  assert.match(ch.after.text, /^exceeds s1:ae0 \(1 of 2 members up\): 1\.5 Gbit\/s split equally/);
+});
+
+test('capacity: VLANs on one uplink share it (counted once); without stated traffic it is not evaluated; a missing speed is insufficient information', () => {
+  const m = model(lagNet('demands:\n  - {id: a, source: h1, destination: h2, bandwidth: 1200M}\n  - {id: b, source: h3, destination: h4, bandwidth: 1200M}\n'));
+  const r = CA.capacityAnalysis(m);
+  const lag = r.loads.find((l) => l.resource.id === 'lag:s1:ae0');
+  assert.equal(lag.worst, 2.4e9, 'both VLANs’ demands on the one bundle');
+  assert.equal(lag.verdict, 'exceeds');
+  assert.deepEqual(r.demands.map((x) => x.verdict), ['exceeds', 'exceeds']);
+  const none = CA.capacityAnalysis(model(lagNet('')));
+  assert.equal(none.evaluated, false);
+  assert.match(none.text, /^Capacity is not evaluated: the model states no traffic/);
+  const noSpeed = CA.capacityAnalysis(model(lagNet('demands:\n  - {id: a, source: h1, destination: h2, bandwidth: 100M}\n').replace('{id: l1, a: h1:eth0, b: s1:h1, speed: 10G}', '{id: l1, a: h1:eth0, b: s1:h1}')));
+  assert.equal(noSpeed.demands[0].verdict, 'unknown');
+  assert.match(noSpeed.demands[0].text, /^insufficient information: l1 has no speed written/);
+  // an application with an interval states its traffic; one without states none
+  const app = model(lagNet('').replace('  - {id: h4, type: endpoint, interfaces: [{id: eth0, ip: 10.0.20.4/24}]}', '  - id: h4\n    type: endpoint\n    interfaces: [{id: eth0, ip: 10.0.20.4/24}]\n    services:\n      applications:\n        - {id: tx, name: Telemetry, profile: udp_sender, peer: h2, port: 5000, interval: 100ms, request_size: 1250}\n        - {id: tx2, name: No rate stated, profile: udp_sender, peer: h2, port: 5001}'));
+  const ad = CA.capacityDemands(app);
+  assert.deepEqual(ad.map((x) => [x.from, x.to, x.bps, x.source]), [['h4', 'h2', 100000, 'application']], '1250 bytes every 100 ms; the one without an interval states nothing');
+});
+
+test('capacity: equal-cost paths are not assumed to share the load equally: fits split, exceeds on one path → depends on the distribution', () => {
+  const m = model(mtuNet.replace('{id: r1, ', '{id: r1, ').replace("  - {id: l-r2, a: r1:b, b: r2:a}\n  - {id: l-r3, a: r1:c, b: r3:a}", "  - {id: l-r2, a: r1:b, b: r2:a, speed: 1G}\n  - {id: l-r3, a: r1:c, b: r3:a, speed: 1G}") + 'demands:\n  - {id: d1, source: h1, destination: srv, bandwidth: 1500M}\n');
+  const r = CA.capacityAnalysis(m);
+  const branch = r.loads.filter((l) => l.resource.id === 'link:l-r2' || l.resource.id === 'link:l-r3');
+  assert.deepEqual(branch.map((l) => [l.equal, l.worst, l.verdict]), [[7.5e8, 1.5e9, 'distribution'], [7.5e8, 1.5e9, 'distribution']]);
+});

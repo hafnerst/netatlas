@@ -6159,6 +6159,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       (q('#wi-go') as HTMLElement).click();
       await tick();
+      check('… capacity: the applications with an interval are the stated traffic, evaluated (what the failure leaves without a path is said: not carried)', q('#wi-capacity')!.getAttribute('data-evaluated') === 'yes' && /^Capacity: \d+ demands?: \d+ fit.*\d+ not carried$/.test(q('#wi-capacity summary')!.textContent || ''), q('#wi-capacity summary')!.textContent || '');
       check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q('#toolwin .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#wi-result .an-ctx-line')!.textContent || ''));
       app.undo();
       await tick();
