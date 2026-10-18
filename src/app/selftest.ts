@@ -24,6 +24,8 @@ import { EXAMPLES } from '../generated/examples';
 import { FIXTURES, INTERNAL_EXAMPLES } from '../generated/test-examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
+import { SimAnimator } from '../ui/sim-anim';
+import type { Activity } from '../analysis/sim/pacing';
 import { contrast } from '../diagram/palette';
 import { drawnProblems as drawnProblemsOf } from './drawn-check';
 import { outlineStability } from './outline-check';
@@ -6283,6 +6285,71 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       s.state.showLabels = true;
       app.closeToolWindow();
       app.mdoc!.markSaved();
+    }
+
+    // ---- cable activity stands for the cable: one lane and one label side, whatever direction its traffic takes
+    {
+      app.loadExampleNamed('timing-ptp.yaml');
+      app.setView('physical');
+      await tick();
+      const ref = 'link:l-rt-swb';
+      const anim = new SimAnimator(doc);
+      // the activity as the pacing reports it: the track of the hop counted first, which alternates with two-way PTP
+      const act = (k: number): Activity[] => [{ ref, view: 'physical', track: { ref, from: k % 2 ? 'b' : 'a', to: k % 2 ? 'a' : 'b' }, counts: [['ptp', 1 + (k % 3)]] }];
+      const opts = (k: number) => ({ view: 'physical' as const, reduce: false, color: () => '#29ae76', activity: act(k) });
+      const sample = (): { d: string; side: number; x: number; y: number } => {
+        const line = q(`.sim-activity[data-activity="${ref}"]`) as SVGPathElement | null;
+        const lab = q(`.sim-activity-label[data-activity="${ref}"]`) as SVGGraphicsElement | null;
+        const cable = q(`g.cable[data-ref="${ref}"] path.cable-line`) as SVGPathElement | null;
+        if (!line || !lab || !cable) return { d: '', side: 0, x: NaN, y: NaN };
+        const a = cable.getPointAtLength(0);
+        const b = cable.getPointAtLength(cable.getTotalLength());
+        const bb = lab.getBBox();
+        const cx = bb.x + bb.width / 2;
+        const cy = bb.y + bb.height / 2;
+        const m = line.getPointAtLength(line.getTotalLength() / 2);
+        return { d: line.getAttribute('d') || '', side: Math.sign((b.x - a.x) * (cy - a.y) - (b.y - a.y) * (cx - a.x)), x: m.x, y: m.y };
+      };
+      const run = (from: number, n: number): Array<ReturnType<typeof sample>> => {
+        const out: Array<ReturnType<typeof sample>> = [];
+        anim.setScene(q('#viewport .scene'));
+        for (let k = from; k < from + n; k++) {
+          anim.draw([], opts(k));
+          out.push(sample());
+        }
+        return out;
+      };
+      const stable = (xs: Array<ReturnType<typeof sample>>): boolean => xs.every((x) => x.d && x.d === xs[0].d && x.side === xs[0].side && x.side !== 0);
+      const first = run(0, 12);
+      const cable = q(`g.cable[data-ref="${ref}"] path.cable-line`) as unknown as SVGPathElement;
+      const mid = cable.getPointAtLength(cable.getTotalLength() / 2);
+      check('cable activity (timing-ptp, rt–sw-b): the same lane and label side for 12 updates while the traffic’s direction alternates; along its cable, within the lane’s offset', stable(first) && Math.hypot(first[0].x - mid.x, first[0].y - mid.y) <= 6, first.map((x) => `${x.side}:${x.d.slice(0, 18)}`).join(' | '));
+      app.zoomBy(1.6);
+      app.panBy(40, -25);
+      await tick();
+      const zoomed = run(12, 4);
+      app.render();
+      await tick();
+      const redrawn = run(16, 4);
+      const theme = doc.documentElement.getAttribute('data-theme');
+      doc.documentElement.setAttribute('data-theme', theme === 'light' ? 'dark' : 'light');
+      app.render();
+      await tick();
+      const themed = run(20, 4);
+      if (theme) doc.documentElement.setAttribute('data-theme', theme);
+      check('… unchanged by pan and zoom, a redraw and a theme change (diagram coordinates, the same side)', stable(first.concat(zoomed, redrawn, themed)));
+      // a deliberate geometry change: rt dragged aside — a new place, then stable again
+      const pos = app.session!.positionsFor('physical').get('rt');
+      if (pos) app.session!.moveNode('device:rt', { x: pos.x + 160, y: pos.y });
+      app.render();
+      await tick();
+      const moved = run(24, 8);
+      check('… after the device is dragged: placed again along the moved cable, then stable (no oscillation)', stable(moved) && moved[0].d !== first[0].d, `${moved[0].d.slice(0, 30)} vs ${first[0].d.slice(0, 30)}`);
+      anim.setScene(null);
+      for (const l of Array.from(doc.querySelectorAll('#viewport .layer-sim, #viewport .layer-sim-labels'))) l.remove();
+      app.session!.resetPositions();
+      app.fit();
+      app.render();
     }
 
     // ---- the representative architectures: each public example's workflow, end to end
