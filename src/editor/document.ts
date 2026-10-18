@@ -1556,12 +1556,14 @@ export class ModelDoc {
         if (this.text(lp.concat(j, 'peer')) === `${device}/${app}`) out.push(lp.concat(j, 'peer'));
       });
     });
+    // a saved expectation's end that names it
+    for (const e of this.analysisEntries('expectations')) for (const k of ['from', 'to']) if (this.text(['expectations', e.index, k]) === `${device}/${app}`) out.push(['expectations', e.index, k]);
     return out;
   }
 
   /** The references to an application as lines for a confirmation ("hmi/poll (peer)"). */
   applicationRefTexts(device: string, app: string): string[] {
-    return this.applicationRefs(device, app).map((p) => `${this.text(['devices', p[1], 'id']) || '?'}/${this.text(p.slice(0, 5).concat('id')) || '?'} (its peer)`);
+    return this.applicationRefs(device, app).map((p) => (p[0] === 'expectations' ? `expectation ${this.text(['expectations', p[1], 'id']) || '?'} (its ${p[2] === 'from' ? 'source' : 'destination'}; it can’t be evaluated until you change it)` : `${this.text(['devices', p[1], 'id']) || '?'}/${this.text(p.slice(0, 5).concat('id')) || '?'} (its peer)`));
   }
 
   /**
@@ -1613,7 +1615,8 @@ export class ModelDoc {
     const dev = this.text(['devices', devIndex, 'id']) || '';
     const id = this.text(lp.concat(k, 'id'));
     this.change('Remove application', () => {
-      const refs = id ? this.applicationRefs(dev, id) : [];
+      // (the peers lose their value; a saved expectation keeps its text, and can't be evaluated until it is changed)
+      const refs = id ? this.applicationRefs(dev, id).filter((p) => p[0] === 'devices') : [];
       // (from the end: removing a key never shifts another reference's path)
       for (const p of refs.reverse()) this.removeAt(p);
       this.removeAt(lp.concat(k));
@@ -1622,6 +1625,135 @@ export class ModelDoc {
       const b = this.get(['devices', devIndex, 'services']);
       if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(['devices', devIndex, 'services']);
     });
+  }
+
+  // ------------------------------------------------- failure domains and expectations
+
+  /** The entries of an analysis section (`failure_domains`, `expectations`): index and id, in file order. */
+  analysisEntries(section: 'failure_domains' | 'expectations'): Array<{ index: number; id: string }> {
+    const s = this.get([section]);
+    if (!s || s.kind !== 'seq') return [];
+    return s.items.map((_n, i) => ({ index: i, id: this.text([section, i, 'id']) || '' }));
+  }
+
+  /** An id for a new entry of an analysis section, unique there (failure domains: also among the model's other ids). */
+  private analysisId(section: 'failure_domains' | 'expectations', base: string): string {
+    const taken = new Set(this.analysisEntries(section).map((e) => e.id));
+    if (section === 'failure_domains') this.allIds().forEach((x) => taken.add(x));
+    return this.uniqueId(base, taken);
+  }
+
+  /** Write the fields of an analysis entry (empty values remove the key; lists as flow lists). */
+  private writeAnalysisFields(path: Path, kind: 'failureDomain' | 'expectation', fields: { [k: string]: string | string[] | undefined }): void {
+    const m = this.ensureMap(path, KEY_ORDER[kind]);
+    for (const k of Object.keys(fields)) {
+      const v = fields[k];
+      if (v === undefined || (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length)) {
+        if (m.entries.has(k)) this.removeAt(path.concat(k));
+        continue;
+      }
+      setKey(m, k, Array.isArray(v) ? seqNode(v.map((x) => strNode(x)), true) : strNode(v.trim()), KEY_ORDER[kind]);
+    }
+  }
+
+  /** Add a failure domain (name, kind, members); returns its index. One undo step. */
+  addFailureDomain(fields: { label: string; kind: string; members: string[]; description?: string }): number {
+    return this.change('Add failure domain', () => {
+      const list = this.ensureSeq(['failure_domains']);
+      const id = this.analysisId('failure_domains', (fields.label || 'domain').toLowerCase());
+      list.items.push(mapNode([['id', strNode(id)]]));
+      const i = list.items.length - 1;
+      this.writeAnalysisFields(['failure_domains', i], 'failureDomain', { label: fields.label, kind: fields.kind, members: fields.members, description: fields.description });
+      return i;
+    }, { layout: false });
+  }
+
+  /** Change a failure domain's fields. One undo step. */
+  updateFailureDomain(index: number, fields: { label?: string; kind?: string; members?: string[]; description?: string }): void {
+    this.change('Edit failure domain', () => this.writeAnalysisFields(['failure_domains', index], 'failureDomain', fields), { layout: false });
+  }
+
+  /** The expectations whose failure condition names a failure domain (their ids). */
+  failureDomainUsers(id: string): string[] {
+    const out: string[] = [];
+    for (const e of this.analysisEntries('expectations')) {
+      const f = this.get(['expectations', e.index, 'failure']);
+      const items = f && f.kind === 'seq' ? f.items.map((x) => scalarText(x)) : f ? [scalarText(f)] : [];
+      if (items.indexOf(id) >= 0) out.push(e.id);
+    }
+    return out;
+  }
+
+  /** Rename a failure domain and every failure condition that names it. One undo step; returns the references updated. */
+  renameFailureDomain(index: number, newId: string): number {
+    const old = this.text(['failure_domains', index, 'id']);
+    return this.change('Rename failure domain', () => {
+      setKey(this.ensureMap(['failure_domains', index], KEY_ORDER.failureDomain), 'id', strNode(newId), KEY_ORDER.failureDomain);
+      let n = 0;
+      if (!old) return n;
+      for (const e of this.analysisEntries('expectations')) {
+        const f = this.get(['expectations', e.index, 'failure']);
+        if (f && f.kind === 'seq')
+          f.items.forEach((x, k) => {
+            if (scalarText(x) === old) {
+              this.setAt(['expectations', e.index, 'failure', k], strNode(newId));
+              n++;
+            }
+          });
+        else if (f && scalarText(f) === old) {
+          this.setAt(['expectations', e.index, 'failure'], strNode(newId));
+          n++;
+        }
+      }
+      return n;
+    }, { layout: false });
+  }
+
+  /** Remove a failure domain; the conditions that name it keep the name (they can't be evaluated until it is changed: the confirmation says so). One undo step. */
+  removeFailureDomain(index: number): void {
+    this.change('Delete failure domain', () => {
+      this.removeAt(['failure_domains', index]);
+      const s = this.get(['failure_domains']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['failure_domains']);
+    }, { layout: false });
+  }
+
+  /** Add an expectation; returns its index. One undo step. */
+  addExpectation(fields: { name: string; expect: string; from: string; to?: string; service?: string; vrf?: string; failure?: string[]; description?: string }): number {
+    return this.change('Add expectation', () => {
+      const list = this.ensureSeq(['expectations']);
+      const id = this.analysisId('expectations', (fields.name || 'expectation').toLowerCase());
+      list.items.push(mapNode([['id', strNode(id)]]));
+      const i = list.items.length - 1;
+      this.writeAnalysisFields(['expectations', i], 'expectation', { name: fields.name, expect: fields.expect, from: fields.from, to: fields.to, service: fields.service, vrf: fields.vrf, failure: fields.failure, description: fields.description });
+      return i;
+    }, { layout: false });
+  }
+
+  /** Change an expectation's fields (an empty value removes the key). One undo step. */
+  updateExpectation(index: number, fields: { name?: string; expect?: string; from?: string; to?: string; service?: string; vrf?: string; failure?: string[]; description?: string }): void {
+    this.change('Edit expectation', () => this.writeAnalysisFields(['expectations', index], 'expectation', fields), { layout: false });
+  }
+
+  /** Remove an expectation. One undo step. */
+  removeExpectation(index: number): void {
+    this.change('Delete expectation', () => {
+      this.removeAt(['expectations', index]);
+      const s = this.get(['expectations']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['expectations']);
+    }, { layout: false });
+  }
+
+  /** The analysis entries that name an object (for a delete confirmation): "expectation guest-no-mgmt", "failure domain rack-a". */
+  analysisUsers(paths: Path[]): string[] {
+    const out: string[] = [];
+    for (const p of paths) {
+      if (p[0] !== 'expectations' && p[0] !== 'failure_domains') continue;
+      const id = this.text([p[0], p[1] as number, 'id']) || '?';
+      const t = `${p[0] === 'expectations' ? 'expectation' : 'failure domain'} ${id}`;
+      if (out.indexOf(t) < 0) out.push(t);
+    }
+    return out;
   }
 
   /** The wireless connections that name a Wi-Fi network of a device ("link id"), in file order. */
@@ -1982,6 +2114,19 @@ export class ModelDoc {
     } else if (kind === 'protocol') {
       scalarRefs('relations', 'protocol', (t) => t.toLowerCase() === id.toLowerCase());
     }
+    // the analysis sections: a failure domain's members (devices, cables, relations, groups); an expectation's ends and failure condition
+    const ends = (t: string): boolean => {
+      const head = t.split(/[:/]/)[0];
+      if (kind !== 'device') return false;
+      if (iface === undefined) return head === id;
+      return t === `${id}:${iface}`;
+    };
+    if ((kind === 'device' || kind === 'link' || kind === 'relation' || kind === 'group') && iface === undefined) scalarRefs('failure_domains', 'members', (t) => t === id);
+    if (kind === 'device') {
+      scalarRefs('expectations', 'from', ends);
+      scalarRefs('expectations', 'to', ends);
+    }
+    if (kind === 'device' || kind === 'link' || kind === 'relation') scalarRefs('expectations', 'failure', (t) => (kind === 'device' ? ends(t) : t === id));
     return out;
   }
 
@@ -1997,7 +2142,17 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks' || last === 'bind') {
+      const inExpectation = p[0] === 'expectations' && (last === 'from' || last === 'to' || p[p.length - 2] === 'failure' || last === 'failure');
+      if (p[0] === 'failure_domains') {
+        // a member: an id of a device, cable, relation or group
+        nt = newId;
+      } else if (inExpectation) {
+        // an end or a failure entry: "device", "device:interface", "device/application", or a cable's, relation's or domain's id
+        const m = /^([^:/]+)([:/])(.*)$/.exec(t);
+        if (!m) nt = t === oldId ? newId : t;
+        else if (m[2] === ':') nt = (m[1] === oldId ? newId : m[1]) + ':' + (oldIf !== undefined && m[3] === oldIf ? (newIf as string) : m[3]);
+        else nt = (m[1] === oldId ? newId : m[1]) + '/' + m[3];
+      } else if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks' || last === 'bind') {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
       } else if (last === 'peer') {

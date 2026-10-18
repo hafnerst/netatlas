@@ -11,6 +11,7 @@ import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizePro
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readDemands } from './demands';
+import { readExpectations, readFailureDomains } from './expectations';
 import { readMulticast } from './multicast';
 import { SimBlock, checkObjectBlocks, readDeviceSimulation, readLinkSimulation, readSimBlock } from './simulation';
 import { NetServiceNodes, checkNetServices, readAddressList, readNetServices } from './netservices';
@@ -1207,9 +1208,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
     layout,
     checks: checkSettings,
     demands: [],
+    failureDomains: [],
+    expectations: [],
     index,
   };
   model.demands = readDemands(r, c, top, model);
+  model.failureDomains = readFailureDomains(r, c, top, model);
+  model.expectations = readExpectations(r, c, top, model, model.failureDomains);
   // the objects' simulation attributes: does each apply to its object (with the whole model known)?
   checkObjectBlocks(c, model, simBlocks);
   // the servers' scopes and zones with the whole model (ranges, gateways, overlaps, records)
