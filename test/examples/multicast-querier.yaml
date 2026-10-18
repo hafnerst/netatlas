@@ -16,7 +16,7 @@
 # Simulate ▾ → Start simulation…, then Network events: Join multicast group
 # (rx1, rx2 on 239.5.5.5), Start multicast stream (src to 239.5.5.5), Leave
 # multicast group (rx1); power q1 off and watch q2 take over.
-netatlas: 2
+netatlas: 1
 title: Multicast querier election
 description: |
   Two querier candidates on one LAN with a snooping switch, a sender and four

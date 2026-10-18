@@ -42,7 +42,7 @@
 # cable l-carrier-r3. Click a dot to inspect its packet; Send test… from
 # a device's menu; fail l-lab-b (or set lab-sw1's spanning tree back on)
 # to end the storm.
-netatlas: 2
+netatlas: 1
 title: Protocol simulation
 description: |
   The main protocols of the simulation: ARP and switching, VRRP, an OSPF

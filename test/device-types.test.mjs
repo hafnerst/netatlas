@@ -42,7 +42,7 @@ const NEEDS = {
   ap: '    services: {wireless: {networks: [{id: lan, ssid: LAN, untagged: true, radio: wlan0, security: open}]}}\n    interfaces: [eth0, wlan0]\n',
 };
 const withType = (type) =>
-  `netatlas: 2\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}` + (HOSTS[type] || NEEDS[type] || `    interfaces: [${type === 'switch' ? '{id: eth0, vlans: 1}' : 'eth0'}]\n`);
+  `netatlas: 1\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}` + (HOSTS[type] || NEEDS[type] || `    interfaces: [${type === 'switch' ? '{id: eth0, vlans: 1}' : 'eth0'}]\n`);
 
 test('the device types are exactly the specified 15, in order, with their display names', () => {
   assert.deepEqual(types.DEVICE_TYPES.map((t) => [t.label, t.id]), SPEC);

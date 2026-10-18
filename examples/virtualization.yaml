@@ -24,7 +24,7 @@
 # Power off hv2 in the simulation: app1, vr1 and lab1 restart on hv1 after
 # the VM restart time. Fail tor1's cable to hv1: vSwitch0 moves to vmnic1 and
 # announces its guests' MAC addresses.
-netatlas: 2
+netatlas: 1
 title: Virtualized servers — hypervisor cluster and containers
 description: |
   Two hypervisors in an HA cluster with teamed uplinks, VMs on port groups

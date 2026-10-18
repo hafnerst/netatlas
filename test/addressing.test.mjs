@@ -19,7 +19,7 @@ const model = (text) => {
   return r.model;
 };
 
-const base = `netatlas: 2
+const base = `netatlas: 1
 devices:
   - id: r1
     type: router

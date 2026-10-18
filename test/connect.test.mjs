@@ -10,7 +10,7 @@ const C = load('model/connect.js');
 const { ModelDoc } = load('editor/document.js');
 const { exportBoxes } = load('diagram/networks-box.js');
 
-const NET = `netatlas: 2
+const NET = `netatlas: 1
 devices:
   - id: r1
     type: router

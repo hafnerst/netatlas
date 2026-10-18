@@ -1,12 +1,18 @@
-# netatlas YAML format (version 2)
+# netatlas YAML format (version 1)
 
-This document is the contract of **NetAtlas YAML model format version 2**,
+This document is the contract of **NetAtlas YAML model format version 1**,
 the only model format NetAtlas supports. Every file declares it with
-`netatlas: 2`; a missing line or any other value is an error, and a file of
-format 1 is refused as a whole with one message that says what changed
-(below): NetAtlas does not convert it. The model format version is
-independent of the application version: an application release reads and
-writes model format 2.
+`netatlas: 1`; a missing line or any other value is an error. The model
+format version is independent of the application version: an application
+release reads and writes model format 1.
+
+> **Note: the version stays 1 while NetAtlas is not in production.**
+> NetAtlas has no production release yet, so incompatible changes to the
+> format are made within version 1 instead of raising it. A file written for
+> an earlier release can therefore fail to load even though it says
+> `netatlas: 1`: there is no backward compatibility and no conversion. Keys
+> that are gone are reported as errors that say what to write instead (see
+> [Changes since 0.1.3](#changes-since-013)).
 
 A netatlas file describes **one** network architecture. It separates two
 things that are often mixed up in diagrams:
@@ -26,7 +32,7 @@ over two internet uplinks.
 The file must use the [supported YAML subset](YAML-SUBSET.md).
 
 ```yaml
-netatlas: 2            # required format version
+netatlas: 1            # required format version
 title: My network      # optional
 description: |         # optional
   Free text.
@@ -40,23 +46,21 @@ demands: [...]         # optional: traffic demands (traced; never change the net
 checks: {...}          # optional: switch consistency checks off or change their severity
 ```
 
-### Changes from format 1
+### Changes since 0.1.3
 
-Format 2 is not backward compatible, and NetAtlas reads no format 1 file
-(there is no migration). A file with `netatlas: 1` gets one error, *this
-file is model format 1, which NetAtlas no longer reads*, and no model. To
-bring one up to date by hand:
+These changes are made within format 1 (files keep `netatlas: 1`), and they
+are not backward compatible: a file written for 0.1.3 that uses the earlier
+keys gets errors until it is changed by hand. There is no migration.
 
-| Format 1 | Format 2 |
+| Written for 0.1.3 | Now |
 |---|---|
-| `netatlas: 1` | `netatlas: 2` |
 | `dhcp: true` on an interface | `ipv4: dhcp` ([DHCP](#dhcp)); `ipv4: static` or nothing for written addresses |
 | `dhcp: false` | delete it |
 | `services: {application: {name: …, ports: [tcp/443]}}`, one per device | `services: {applications: [{id: …, name: …, profile: tcp_server, port: 443}, …]}`, a list ([Applications](#applications-servicesapplications)) |
 | applications on Servers, VMs and containers only | also on a host-capable Endpoint (a PLC, an HMI, a camera, a printer, an IoT device …) and a Storage device |
 
-New in format 2, with nothing to convert: an interface's IPv6 method and a
-router's advertisements ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
+New, with nothing to convert: an interface's IPv6 method and a router's
+advertisements ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
 DHCPv6 scopes, the `mqtt_broker` and `ptp` services.
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never

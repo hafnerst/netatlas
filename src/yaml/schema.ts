@@ -8,7 +8,7 @@
  * The prose reference is docs/FORMAT.md.
  */
 
-export const FORMAT_VERSION = 2;
+export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
   top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'checks', 'layout'],

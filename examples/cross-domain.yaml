@@ -22,7 +22,7 @@
 #
 # This models the semantics of a protocol break. It does not reproduce a
 # particular product and gives no assurance of a real device's separation.
-netatlas: 2
+netatlas: 1
 title: Cross-domain boundary (protocol break)
 description: |
   Red and Black domains joined by a Security gateway that breaks the

@@ -17,7 +17,7 @@
 # Analyze ▾ → Trace path… from br2-pc to hq-pc shows the tunnel and its
 # underlay; from br1-pc it shows the MPLS hop. Simulate ▾ → Start
 # simulation…: IKE first, then the PCs' tests.
-netatlas: 2
+netatlas: 1
 title: WAN — MPLS service and a VPN gateway
 description: |
   HQ with two branches: one over a provider's MPLS service (a Cloud), one

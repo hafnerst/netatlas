@@ -13,7 +13,7 @@ const empty = () => ModelDoc.create();
 
 test('New starts with an empty, valid model', () => {
   const d = empty();
-  assert.equal(d.exportText(), 'netatlas: 2\ntitle: New network\n');
+  assert.equal(d.exportText(), 'netatlas: 1\ntitle: New network\n');
   assert.ok(d.valid);
   assert.deepEqual(d.result.model.devices, []);
 });
@@ -25,7 +25,7 @@ test('every kind of new element gets only an id (a relation also an empty endpoi
   assert.equal(
     d.exportText().replace(/\n+layout:[\s\S]*$/, '\n'),
     [
-      'netatlas: 2',
+      'netatlas: 1',
       'title: New network',
       'protocols:',
       '  - {id: custom1}',

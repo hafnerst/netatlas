@@ -17,7 +17,7 @@ const sim = (text, opts) => withClock(new S.Simulation(model(text), opts));
 const view = (s, id) => s.actions().find((v) => v.id === id);
 
 /** One LAN: a multicast router (the querier), a switch, h1 a member of 239.2.2.2, h2 and h3 not. */
-const MC = (q = true) => `netatlas: 2
+const MC = (q = true) => `netatlas: 1
 title: lan
 devices:
 ${q ? '  - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.5.0.1/24}]}\n' : '  - {id: q1, type: server, interfaces: [{id: g0, ip: 10.5.0.1/24}]}\n'}  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]}

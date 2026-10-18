@@ -16,7 +16,7 @@ const errors = (text) => validate.loadModel(text).errors.map((e) => e.message);
 const warnings = (text) => validate.loadModel(text).warnings.map((e) => e.message);
 const iface = (d, dev, id) => d.result.model.index.interfaces.get(dev + ':' + id);
 
-const base = `netatlas: 2
+const base = `netatlas: 1
 devices:
   - id: web1
     type: server
@@ -62,7 +62,7 @@ test('DHCP is off unless "ipv4: dhcp" is written, also for an interface without 
 });
 
 test('new physical and logical interfaces are created with DHCP off, and nothing is written for it', () => {
-  const d = doc('netatlas: 2\ndevices:\n  - {id: r1}\n');
+  const d = doc('netatlas: 1\ndevices:\n  - {id: r1}\n');
   d.addInterface(0);
   d.addLogical(0, 'virtual');
   d.addLogical(0, 'tunnel');
@@ -111,7 +111,7 @@ test('a loopback cannot use DHCP: "ipv4: dhcp" on it is an error (kept, not drop
   const both = errors(lo('{id: lo0, type: loopback, ipv4: dhcp, ip: 10.255.0.10/32}'));
   assert.deepEqual(both.filter((x) => /DHCP|dhcp/.test(x)).length, 1, both.join('\n'));
   assert.equal(validate.loadModel(lo('{id: lo0, type: loopback, ipv4: dhcp, ip: 10.255.0.10/32}')).model.index.interfaces.get('web1:lo0').dhcp, true);
-  // "ipv4: static" is harmless; the format 1 flag "dhcp" is an unknown key; "ip: dhcp" on a loopback doesn't suggest the method
+  // "ipv4: static" is harmless; the earlier flag "dhcp" is an unknown key; "ip: dhcp" on a loopback doesn't suggest the method
   assert.deepEqual(errors(lo('{id: lo0, type: loopback, ipv4: static, ip: 10.255.0.10/32}')), []);
   assert.ok(errors(lo('{id: lo0, type: loopback, dhcp: false, ip: 10.255.0.10/32}')).some((x) => /unknown key "dhcp"/.test(x)));
   const word = errors(lo('{id: lo0, type: loopback, ip: dhcp}'));
@@ -245,7 +245,7 @@ test('adding a DNS name: checked first, created in one step, only interfaces wit
   assert.deepEqual(d.result.model.devices[0].dnsNames[2].interfaces, ['lo0', 'eth2', 'eth0']);
   assert.match(d.exportText(), /- \{name: api\.example\.com, interfaces: \[lo0, eth2, eth0\]\}/);
   // a device without names gets the list after its interface lists
-  const e = doc('netatlas: 2\ndevices:\n  - id: r1\n    interfaces: [ge0]\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.0.0.1/32}\n    description: x\n');
+  const e = doc('netatlas: 1\ndevices:\n  - id: r1\n    interfaces: [ge0]\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.0.0.1/32}\n    description: x\n');
   e.addDnsName(0, 'r1.example.com', ['ge0', 'lo0']);
   assert.match(e.exportText(), /logical_interfaces:\n.*\n    description: x\n    dns_names:\n      - \{name: r1\.example\.com, interfaces: \[ge0, lo0\]\}\n(\nlayout:[\s\S]*)?$/);
   // remove: the list goes with its last entry

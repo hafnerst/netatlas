@@ -17,7 +17,7 @@
 # leases in their own VLANs. Click the uplink l-acc-ap and Fail link: every
 # network of ap1 loses its way at once (it is one cable, and Analyze ▾ →
 # Single points of failure… lists it).
-netatlas: 2
+netatlas: 1
 title: One access point, three Wi-Fi networks
 description: |
   An access point with Staff, Guest and IoT networks bridged to VLANs 10, 20

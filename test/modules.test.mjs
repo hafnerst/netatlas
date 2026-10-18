@@ -14,7 +14,7 @@ const { SCHEMA } = load('yaml/schema.js');
 const files = load('ui/files.js');
 
 const doc = (text) => ModelDoc.fromText(text, 't.yaml', 'file').doc;
-const base = `netatlas: 2
+const base = `netatlas: 1
 devices:
   - id: r1   # the router
     interfaces: [eth0]
@@ -128,7 +128,7 @@ test('the format schema is the single source for allowed keys and key order', ()
     ['group', 'groups', '{id: g}'],
     ['network', 'networks', '{id: n}'],
   ]) {
-    const text = `netatlas: 2\ndevices:\n  - {id: d}\n${section === 'devices' ? '' : section + ':\n  - ' + sample + '\n'}`;
+    const text = `netatlas: 1\ndevices:\n  - {id: d}\n${section === 'devices' ? '' : section + ':\n  - ' + sample + '\n'}`;
     const withKey = (k) => text.replace(section === 'devices' ? '{id: d}' : sample, (m) => m.replace('}', `, ${k}: x}`));
     // every key in the schema is accepted (value types aside), and nothing else
     const unknown = validate.loadModel(withKey('not_in_schema')).errors.filter((e) => /unknown key/.test(e.message));
@@ -180,7 +180,7 @@ test('check:dist accepts the current build and rejects a stale HTML file', () =>
 
 test('the editor writes "direction: unidirectional" and removes the key for bidirectional (the default)', () => {
   const { ModelDoc } = load('editor/document.js');
-  const d = ModelDoc.fromText('netatlas: 2\ndevices:\n  - id: a\n  - id: b\nrelations:\n  - {id: s, protocol: syslog, endpoints: [a, b]}\n', 'd.yaml', 'file').doc;
+  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nrelations:\n  - {id: s, protocol: syslog, endpoints: [a, b]}\n', 'd.yaml', 'file').doc;
   d.setText(['relations', 0, 'direction'], 'unidirectional');
   assert.match(d.exportText(), /\{id: s, protocol: syslog, endpoints: \[a, b\], direction: unidirectional\}/);
   assert.equal(d.result.model.relations[0].direction, 'unidirectional');

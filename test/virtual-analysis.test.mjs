@@ -48,7 +48,7 @@ test('passthrough leaves by its host port; a VM in another VLAN on the same virt
   assert.ok(p.hops[0].links.includes('hv1-pt'), 'db1’s cable is the host port bound to it');
   assert.ok(p.hops[0].notes.some((n) => /passthrough of esx-01:vmnic2/.test(n)));
   // two port groups of different VLANs on one virtual switch, addressed as if in one network: no layer-2 way
-  const m = model(`netatlas: 2
+  const m = model(`netatlas: 1
 devices:
   - id: hv
     type: server
@@ -117,7 +117,7 @@ test('containers: the bridge’s default route, SNAT out of the host; DNAT to a 
 });
 
 test('the macvlan host can’t reach its own children on their LAN; a written default route wins over the implicit one', () => {
-  const m = model(`netatlas: 2
+  const m = model(`netatlas: 1
 devices:
   - id: sw
     type: switch
@@ -152,7 +152,7 @@ networks:
   // the implicit default route of a container: via its network's gateway; a written one takes its place
   const rib = R.ribOf(m, 'c1', '');
   assert.ok(rib.some((e) => e.implicit && /default route via 10\.10\.0\.1/.test(e.implicit)));
-  const w = model(`netatlas: 2
+  const w = model(`netatlas: 1
 devices:
   - id: ch
     type: server

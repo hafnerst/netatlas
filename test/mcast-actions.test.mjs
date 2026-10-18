@@ -19,7 +19,7 @@ const view = (s, id) => s.actions().find((v) => v.id === id);
 const flightsOf = (s, tag, from = 0) => s.engine.flights.filter((f) => f.test === tag && f.t0 >= from);
 
 /** One LAN: a multicast router (querier), a switch with snooping, h1 a member of 239.2.2.2, h2 and h3 not. */
-const MC = `netatlas: 2
+const MC = `netatlas: 1
 title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.5.0.1/24}]}

@@ -71,7 +71,7 @@ test('the service matrix in docs/FORMAT.md is the registry’s (node scripts/cap
 
 // ------------------------------------------------------------ validation
 
-const DEV = (extra) => `netatlas: 2\ndevices:\n  - id: s\n    type: server\n${extra}    interfaces: [{id: eth0, ip: 10.0.0.5/24}]\n  - {id: r, type: router, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n`;
+const DEV = (extra) => `netatlas: 1\ndevices:\n  - id: s\n    type: server\n${extra}    interfaces: [{id: eth0, ip: 10.0.0.5/24}]\n  - {id: r, type: router, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n`;
 
 test('a service’s parameters: required ones (always or by the others), written only where they apply, secrets as placeholders, references that exist', () => {
   assert.deepEqual(errs(DEV('    services:\n      ntp: {stratum: 2}\n')), []);
@@ -86,12 +86,12 @@ test('a service’s parameters: required ones (always or by the others), written
   assert.match(errs(DEV('    services:\n      applications: [{id: erp, name: ERP, profile: tcp_server, port: 99999}]\n')).join('\n'), /port/);
   assert.match(errs(DEV('    services:\n      nat: {inside: [eth0], outside: [eth0], rules: [{type: pat}]}\n')).join('\n'), /"s" can't run NAT/);
   // who may not run a service is told why, once
-  const e = errs(`netatlas: 2\ndevices:\n  - id: sw\n    type: switch\n    services:\n      dhcp: {scopes: []}\n    interfaces: [{id: p, vlans: 1}]\n`);
+  const e = errs(`netatlas: 1\ndevices:\n  - id: sw\n    type: switch\n    services:\n      dhcp: {scopes: []}\n    interfaces: [{id: p, vlans: 1}]\n`);
   assert.equal(e.length, 1);
   assert.match(e[0], /"sw" can't run DHCP server: a Layer 2 switch routes nothing: tick Supports Layer 3 first/);
 });
 
-const AP = (nets, ports = '{id: eth0, vlans: [10, 20]}', links = '', mode = '') => `netatlas: 2
+const AP = (nets, ports = '{id: eth0, vlans: [10, 20]}', links = '', mode = '') => `netatlas: 1
 devices:
   - id: ap
     type: ap
@@ -109,7 +109,7 @@ const NETS = '        networks:\n          - {id: a, ssid: Staff, vlan: 10, radi
 test('Wireless access: each Wi-Fi network has its SSID, its VLAN (never chosen) or untagged, its radio and its security; several connections share the radio', () => {
   assert.deepEqual(errs(AP(NETS)), []);
   assert.match(errs(AP('        networks: []')).join('\n'), /needs its Wi-Fi networks/);
-  assert.match(errs(`netatlas: 2\ndevices:\n  - {id: ap, type: ap, interfaces: [eth0]}\n`).join('\n'), /Wireless access is built into "ap" and needs its configuration/);
+  assert.match(errs(`netatlas: 1\ndevices:\n  - {id: ap, type: ap, interfaces: [eth0]}\n`).join('\n'), /Wireless access is built into "ap" and needs its configuration/);
   assert.match(errs(AP(NETS.replace('vlan: 10, ', ''))).join('\n'), /Wi-Fi network "a" needs its VLAN \(the one it is bridged to\), or untagged: true/);
   assert.match(errs(AP(NETS.replace('security: wpa2_psk, passphrase: "<psk>"', 'security: wpa2_psk'))).join('\n'), /needs its passphrase: a placeholder/);
   assert.match(warns(AP(NETS.replace('"<psk>"', 'letmein123'))).join('\n'), /write a placeholder for the passphrase/);

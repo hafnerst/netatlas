@@ -330,7 +330,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick(10);
         check(
           'start screen → New model creates an empty model and opens it in the editor',
-          doc.body.getAttribute('data-state') === 'loaded' && !shownNow(start) && !!app.mdoc && app.mdoc.origin === 'new' && app.mdoc.exportText() === 'netatlas: 2\ntitle: New network\n' && !!q('[data-tab="edit"].active') &&
+          doc.body.getAttribute('data-state') === 'loaded' && !shownNow(start) && !!app.mdoc && app.mdoc.origin === 'new' && app.mdoc.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('[data-tab="edit"].active') &&
             !!q('#side-body [data-p=\'["title"]\']') && !app.mdoc.dirty,
         );
         toStart();
@@ -374,7 +374,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
         toStart();
 
-        const bad = dragEvent('drop', [new File(['netatlas: 2\ndevices:\n  - &x {id: a}\n'], 'broken.yaml')]);
+        const bad = dragEvent('drop', [new File(['netatlas: 1\ndevices:\n  - &x {id: a}\n'], 'broken.yaml')]);
         openBtn.dispatchEvent(bad);
         await until(() => doc.body.getAttribute('data-state') === 'error');
         const errText = (q('#errors') as HTMLElement).textContent || '';
@@ -723,7 +723,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       {
         app.loadText(
           [
-            'netatlas: 2',
+            'netatlas: 1',
             'devices:',
             '  - id: web1',
             '    interfaces:',
@@ -950,7 +950,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check('the filter finds entries in folded sections', found.length >= 3 && found.every((x) => /isp1/i.test(x)) && doc.querySelectorAll('#outline .ol-item').length === 0, found.join(' | '));
       // errors inside a folded section are counted on its heading
-      const broken = app.loadText('netatlas: 2\ndevices:\n  - {id: a, interfaces: [e0]}\nlinks:\n  - {id: l1, a: "a:e0", b: nowhere}\n', 'broken-link.yaml', 'file');
+      const broken = app.loadText('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\nlinks:\n  - {id: l1, a: "a:e0", b: nowhere}\n', 'broken-link.yaml', 'file');
       const badge = (sec('link').querySelector('[data-act="fold"] .ol-badge.err') || { textContent: '' }).textContent || '';
       check('a folded section shows the number of problems inside it on its heading', broken.ok && badge === '1' && shownIn('link') === 0, badge);
       // adding to a folded section opens it
@@ -3644,7 +3644,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const d0 = app.mdoc as ModelDoc;
     check(
       'New creates an empty, valid model: nothing is chosen for the user',
-      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 2\ntitle: New network\n' && !!q('#side-body .hint-empty'),
+      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'),
       d0 ? d0.exportText() : '',
     );
     check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto' && shown().st === 'auto' && AUTO_RE.test(shown().desc));
@@ -4094,13 +4094,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('unapplied YAML text survives switching tabs', /edited as text/.test((q('#yaml-src') as HTMLTextAreaElement).value));
     click('[data-yaml="apply"]');
     check('YAML tab edits are applied', app.mdoc!.result.model!.title === 'ACME WAN (edited as text)');
-    (q('#yaml-src') as HTMLTextAreaElement).value = 'netatlas: 2\ndevices:\n  - &x {id: a}\n';
+    (q('#yaml-src') as HTMLTextAreaElement).value = 'netatlas: 1\ndevices:\n  - &x {id: a}\n';
     click('[data-yaml="apply"]');
     check('invalid YAML in the text tab is rejected with a line number', /line 3/.test(q('#side-body .field-err')!.textContent || '') && app.mdoc!.result.model!.devices.length > 3);
     click('[data-yaml="revert"]');
 
     // unknown keys are kept and shown
-    const unk = app.loadText('netatlas: 2\ndevices:\n  - id: r1\n    colour: blue\n    logical_interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
+    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    logical_interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
     app.select('device:r1');
     check('unknown properties are shown in the inspector, not dropped', unk.errors.length > 0 && !!q('#side-body .other') && /colour/.test(app.exportText()) && /weird: \{x: 1\}/.test(app.exportText()));
     click('#side-body [data-act="to-attrs"][data-k="colour"]');
@@ -4110,7 +4110,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // keys that are not part of the format are unknown keys (never read or converted)
     {
       const badFile = app.loadText(
-        'netatlas: 2\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
+        'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
         'unsupported-keys.yaml',
         'file',
       );
@@ -4126,7 +4126,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------ safety / errors / offline
     const evil =
-      'netatlas: 2\ntitle: "<img src=x onerror=alert(1)>"\ndevices:\n' +
+      'netatlas: 1\ntitle: "<img src=x onerror=alert(1)>"\ndevices:\n' +
       '  - id: a\n    label: "<script>alert(1)</script>"\n    interfaces: [e0]\n' +
       '  - id: b\n    label: "<svg onload=alert(1)>"\n    interfaces: [e0]\n' +
       'links:\n  - {id: l1, a: "a:e0", b: "b:e0"}\n';
@@ -4137,11 +4137,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('hostile labels load and are shown literally', res.ok && texts.indexOf('<script>alert(1)</script>') >= 0, texts);
     check('no injected elements (diagram, outline, inspector)', !doc.querySelector('#viewport img, #viewport script, #viewport foreignObject, #side-body img, #side-body script, #outline img, body > img'));
 
-    const bad = app.loadText('netatlas: 2\ndevices:\n  - &a {id: r1}\n', 'bad.yaml');
+    const bad = app.loadText('netatlas: 1\ndevices:\n  - &a {id: r1}\n', 'bad.yaml');
     check('YAML syntax errors are rejected before editing, with line number', !bad.ok && bad.errors[0].line === 3 && /anchor/.test(bad.errors[0].message) && (app.mdoc as ModelDoc).fileName === 'evil.yaml');
     check('the rejection is explained in a dialog and the current model is kept', /anchor/.test(q('#modal')!.textContent || ''));
     await answerDialog('ok');
-    const bad2 = app.loadText('netatlas: 2\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
+    const bad2 = app.loadText('netatlas: 1\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
     check('a file with broken references opens as a draft listing its errors', bad2.ok && bad2.errors.length === 2 && /Problems \(2\)/.test(q('[data-tab="problems"]')!.textContent || ''));
 
     {
@@ -4337,7 +4337,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       {
         // a large diagram: 96 devices in 8 groups
-        const lines = ['netatlas: 2', 'title: Large network with many devices', 'groups:'];
+        const lines = ['netatlas: 1', 'title: Large network with many devices', 'groups:'];
         for (let g = 0; g < 8; g++) lines.push(`  - {id: site-${g}, label: Site number ${g} with a long descriptive name, kind: site}`);
         lines.push('devices:');
         for (let g = 0; g < 8; g++)
@@ -4415,7 +4415,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const rect = (e: Element): DOMRect => e.getBoundingClientRect();
       const LONG = 'a-very-long-device-identifier-that-keeps-going-' + 'x'.repeat(17);
       const LABEL = 'Long label '.repeat(12).trim();
-      app.loadText(`netatlas: 2\ntitle: Header test\ndevices:\n  - id: ${LONG}\n    label: ${LABEL}\n    group: no-such-group\n    type: server\n  - id: b\n`, 'header.yaml', 'file');
+      app.loadText(`netatlas: 1\ntitle: Header test\ndevices:\n  - id: ${LONG}\n    label: ${LABEL}\n    group: no-such-group\n    type: server\n  - id: b\n`, 'header.yaml', 'file');
       app.select('device:' + LONG);
       await tick();
       const head = (): HTMLElement => q('#side-body .insp-head') as HTMLElement;
@@ -4504,7 +4504,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
       // the YAML mark: the entry of the selected object, found by structure, never by searching for its id
       const TRAP =
-        'netatlas: 2\ntitle: core\n# - id: core   (a comment that looks like an entry)\ndevices:\n  - id: edge\n    label: core\n    description: "id: core"\n    interfaces: [{id: e0}]\n' +
+        'netatlas: 1\ntitle: core\n# - id: core   (a comment that looks like an entry)\ndevices:\n  - id: edge\n    label: core\n    description: "id: core"\n    interfaces: [{id: e0}]\n' +
         '  - id: core\n    label: Core switch\n    interfaces:\n      - {id: e0}\n      - id: e1\n        description: uplink\n  - id: access\n    description: |\n      - id: core\n        not: an entry\n    interfaces: [{id: e0}]\n' +
         'links:\n  - id: l1\n    a: {device: edge, interface: e0}\n    b: {device: core, interface: e0}\n';
       app.loadText(TRAP, 'trap.yaml', 'file');
@@ -4681,13 +4681,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       const idEl = q('#side-body .insp-head .ih-id') as HTMLElement;
       check('the ID in the header is plain text that can be selected and copied on its own', !!idEl && idEl.textContent === 'net-transit' && view.getComputedStyle(idEl).userSelect !== 'none');
-      const broken = app.loadText('netatlas: 2\ndevices:\n  - id: r1\n    group: nowhere\n  - id: r2\n', 'broken.yaml', 'file');
+      const broken = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    group: nowhere\n  - id: r2\n', 'broken.yaml', 'file');
       const [okBroken, whyBroken] = await sameHeads('device:r1');
       check('an object with an error: the same "1 error" state in Details and Edit', broken.ok && okBroken && headOf().state === 'error' && /1 error/.test(headOf().text), whyBroken);
 
       // the bottom bar: the file name as a badge at its start; a long one is shortened and never widens the page
       const LONGNAME = 'acme-'.repeat(30) + 'network.yaml';
-      app.loadText('netatlas: 2\ntitle: Long name\ndevices:\n  - id: a\n', LONGNAME, 'file');
+      app.loadText('netatlas: 1\ntitle: Long name\ndevices:\n  - id: a\n', LONGNAME, 'file');
       await tick();
       const badge = q('#status .fname') as HTMLElement;
       const bar = rect(q('#status') as HTMLElement);

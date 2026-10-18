@@ -17,7 +17,7 @@
 # OFFER, REQUEST, ACK) at the start, in parallel, pc2's through the relay;
 # then their DNS queries and connections. Show DHCP leases on srv, Show DNS
 # zone on srv, Show DNS cache on pc1.
-netatlas: 2
+netatlas: 1
 title: Campus services (DHCP, DNS)
 description: |
   A DHCP and DNS server for two VLANs (one through a relay on the Layer 3

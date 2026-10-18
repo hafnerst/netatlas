@@ -9,7 +9,7 @@ import { load, model, withClock, errorsOf, validate, example } from './helpers.m
 
 const S = load('analysis/sim/simulation.js');
 
-const NET = (clients, extra = '') => `netatlas: 2
+const NET = (clients, extra = '') => `netatlas: 1
 devices:
   - id: sw
     type: switch
@@ -228,7 +228,7 @@ test('a publisher with a count disconnects once its publications are acknowledge
   assert.equal(c.state, 'Stopped');
   assert.equal(view(s, a.id).status, 'completed');
   // policy: a routed firewall between the client and the broker without a rule for MQTT drops the SYN
-  const fw = `netatlas: 2
+  const fw = `netatlas: 1
 devices:
   - id: fw
     type: firewall

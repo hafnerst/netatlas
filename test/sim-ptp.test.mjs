@@ -11,7 +11,7 @@ const S = load('analysis/sim/simulation.js');
 const P = load('model/ptp.js');
 
 /** cell A (10.0.10.0/24): gm1, gm2 and the router's port a, through the transparent clock sw1; cell B (10.0.20.0/24): rx1, rx2 through the plain switch sw2; the router bc1 is a boundary clock */
-const NET = (o = {}) => `netatlas: 2
+const NET = (o = {}) => `netatlas: 1
 devices:
   - id: gm1
     type: server
@@ -79,7 +79,7 @@ test('the format: a clock function, the one profile, a domain, its ports; what e
   assert.match(e({ gm2: ', clock_offset: fast, drift: lots' }), /"fast" is not an offset[\s\S]*"lots" is not a drift/);
   assert.match(errorsOf(NET().replace('profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable}', 'profile: gptp, domain: 0, interfaces: [eth0], role: source_capable}')).map((x) => x.message).join('|'), /"gptp" is not a profile/);
   // a VM keeps no PTP clock; nothing is inferred from a switch's kind: an industrial switch without the service is no clock
-  assert.ok(errorsOf(`netatlas: 2\ndevices:\n  - {id: v, type: vm, host: h, services: {ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [x], role: receiver_only}}}\n`).some((x) => /can't run PTP/.test(x.message)));
+  assert.ok(errorsOf(`netatlas: 1\ndevices:\n  - {id: v, type: vm, host: h, services: {ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [x], role: receiver_only}}}\n`).some((x) => /can't run PTP/.test(x.message)));
   const m = model(NET({ tc: 'transparent' }).replace(/  - id: sw2\n    type: switch\n/, '  - id: sw2\n    type: switch\n    kind: industrial\n'));
   assert.ok(!m.index.devices.get('sw2').appServices, 'no PTP because of its kind');
 });
@@ -202,7 +202,7 @@ test('domain and connectivity: another domain is ignored; a domain number never 
   assert.equal(s.ptp.grandmaster(1), 'rx1', 'alone in domain 1: its own grandmaster');
   assert.ok(s.events().some((e) => e.device === 'rx1' && /ignores domain 0/.test(e.detail)));
   // two islands of domain 0, nothing between them: two grandmasters
-  const island = `netatlas: 2
+  const island = `netatlas: 1
 devices:
   - {id: a1, type: server, services: {ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable}}, interfaces: [{id: eth0, ip: 10.1.0.1/24}]}
   - {id: a2, type: server, services: {ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable}}, interfaces: [{id: eth0, ip: 10.1.0.2/24}]}

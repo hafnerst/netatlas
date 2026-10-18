@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { state, panels, scene, example, model, byClass, queries, sessionFromYaml } from './helpers.mjs';
 
 test('invalid input gives errors instead of a session for invalid input', () => {
-  const { session, result } = sessionFromYaml('netatlas: 2\ndevices:\n  - *x\n');
+  const { session, result } = sessionFromYaml('netatlas: 1\ndevices:\n  - *x\n');
   assert.equal(session, null);
   assert.match(result.errors[0].message, /aliases/);
   assert.equal(result.errors[0].line, 3);

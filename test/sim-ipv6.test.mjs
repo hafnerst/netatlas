@@ -9,7 +9,7 @@ import { load, model, withClock, errorsOf, example } from './helpers.mjs';
 const S = load('analysis/sim/simulation.js');
 
 /** a router r1 advertising on its LAN port, a switch, hosts; a server beyond the router */
-const LAN = (o = {}) => `netatlas: 2
+const LAN = (o = {}) => `netatlas: 1
 devices:
   - id: r1
     type: router

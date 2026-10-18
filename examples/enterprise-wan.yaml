@@ -7,7 +7,7 @@
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
 # The Hamburg LTE uplink obtains its address by DHCP ("ipv4: dhcp"), and a
 # few devices have DNS names ("dns_names"), each associated with interfaces.
-netatlas: 2
+netatlas: 1
 title: Enterprise WAN — HQ and two branches over VPN
 description: |
   HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over

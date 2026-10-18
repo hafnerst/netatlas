@@ -19,7 +19,7 @@
 # never forwarded. Analyze ▾ → Trace path… with a service (tcp/443, udp/514,
 # icmp) follows the policy; Simulate ▾ → Start simulation… shows each
 # permitted transfer and each denial with its reason.
-netatlas: 2
+netatlas: 1
 title: Separation by packet filtering (bridge and router)
 description: |
   Two Security gateways with explicit policies: a filtering bridge between

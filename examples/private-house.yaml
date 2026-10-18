@@ -77,7 +77,7 @@
 # zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by
 # the DSL router. Fail l-core-dist: both upper-floor access points lose
 # their uplink.
-netatlas: 2
+netatlas: 1
 title: Private house — three floors, Wi-Fi on VLANs
 description: |
   A DSL modem/router with NAT and a firewall, a Layer 3 switch in the

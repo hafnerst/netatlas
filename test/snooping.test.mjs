@@ -28,7 +28,7 @@ const data = (s, link, group, after = -1) => s.engine.flights.filter((f) => f.t0
  * (IPv4 and IPv6), h3 and src20 in VLAN 20. src sends 239.1.1.1 and
  * 239.1.1.2, src20 239.1.1.1, each once a second (the model's streams).
  */
-const LAB = (x = {}) => `netatlas: 2
+const LAB = (x = {}) => `netatlas: 1
 title: snooping
 devices:
   - id: sw
@@ -63,8 +63,8 @@ networks:
 // ------------------------------------------------------------------ the format and the check
 
 test('the format: igmp_mld_snooping is a switch’s choice per VLAN or range, enabled or disabled, once; elsewhere or otherwise an error', () => {
-  const errs = (snoop, type = 'switch') => validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - {id: s, type: ${type}, ${snoop}, interfaces: [{id: p1, vlans: [10, 20, 30-32]}]}\n`).errors.map((e) => e.message);
-  const ok = validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - {id: s, type: switch, igmp_mld_snooping: {10: enabled, 20: disabled, 30-32: enabled}, interfaces: [{id: p1, vlans: [10, 20, 30-32]}]}\n`);
+  const errs = (snoop, type = 'switch') => validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - {id: s, type: ${type}, ${snoop}, interfaces: [{id: p1, vlans: [10, 20, 30-32]}]}\n`).errors.map((e) => e.message);
+  const ok = validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - {id: s, type: switch, igmp_mld_snooping: {10: enabled, 20: disabled, 30-32: enabled}, interfaces: [{id: p1, vlans: [10, 20, 30-32]}]}\n`);
   assert.deepEqual([ok.errors, ok.warnings], [[], []]);
   const d = ok.model.devices[0];
   assert.deepEqual(d.snooping, [{ from: 10, to: 10, enabled: true }, { from: 20, to: 20, enabled: false }, { from: 30, to: 32, enabled: true }]);
@@ -76,18 +76,18 @@ test('the format: igmp_mld_snooping is a switch’s choice per VLAN or range, en
   assert.match(errs('igmp_mld_snooping: [10]').join('|'), /expected a mapping/);
   assert.match(errs('igmp_mld_snooping: {10: enabled}', 'router').join('|'), /igmp_mld_snooping is a switch's setting \(IGMP \/ MLD snooping per VLAN\); "s" is a Router — delete it/);
   // a choice for a VLAN no switch port carries does nothing: a warning
-  const w = validate.loadModel(`netatlas: 2\ntitle: t\ndevices:\n  - {id: s, type: switch, igmp_mld_snooping: {10: enabled, 99: disabled}, interfaces: [{id: p1, vlans: 10}]}\n`);
+  const w = validate.loadModel(`netatlas: 1\ntitle: t\ndevices:\n  - {id: s, type: switch, igmp_mld_snooping: {10: enabled, 99: disabled}, interfaces: [{id: p1, vlans: 10}]}\n`);
   assert.deepEqual(w.warnings.map((x) => x.message), ['VLAN 99 is on none of the switch ports of "s": its IGMP / MLD snooping setting there does nothing']);
 });
 
 test('the check: every VLAN a switch carries on its ports needs a choice (an error until chosen); its VLAN interface alone or a routed port needs none', () => {
-  const find = (snoop) => C.runChecks(model(`netatlas: 2\ntitle: t\ndevices:\n  - {id: s, type: switch, layer3: true, ${snoop}interfaces: [{id: p1, vlans: [10, 20]}, {id: p2, vlans: 30}, {id: p3, routed: true, ip: 10.9.9.1/30}], logical_interfaces: [{id: Vlan40, type: virtual, vlan: 40, ip: 10.4.0.1/24}]}\n`)).filter((f) => f.check === 'snooping-not-configured');
+  const find = (snoop) => C.runChecks(model(`netatlas: 1\ntitle: t\ndevices:\n  - {id: s, type: switch, layer3: true, ${snoop}interfaces: [{id: p1, vlans: [10, 20]}, {id: p2, vlans: 30}, {id: p3, routed: true, ip: 10.9.9.1/30}], logical_interfaces: [{id: Vlan40, type: virtual, vlan: 40, ip: 10.4.0.1/24}]}\n`)).filter((f) => f.check === 'snooping-not-configured');
   assert.deepEqual(find('').map((f) => [f.severity, f.message]), [['error', 's carries VLANs 10, 20, 30 without an IGMP / MLD snooping choice: set igmp_mld_snooping to enabled or disabled for each (until then the simulation floods their multicast, as a switch without snooping)']]);
   assert.deepEqual(find('igmp_mld_snooping: {10: enabled}, ').map((f) => f.message.split(' without')[0]), ['s carries VLANs 20, 30']);
   // disabled is a choice too
   assert.deepEqual(find('igmp_mld_snooping: {10-20: enabled, 30: disabled}, '), []);
   // not a switch: nothing to choose
-  assert.deepEqual(C.runChecks(model(`netatlas: 2\ntitle: t\ndevices:\n  - {id: r, type: router, interfaces: [{id: g0, ip: 10.0.0.1/24}]}\n`)).filter((f) => f.check === 'snooping-not-configured'), []);
+  assert.deepEqual(C.runChecks(model(`netatlas: 1\ntitle: t\ndevices:\n  - {id: r, type: router, interfaces: [{id: g0, ip: 10.0.0.1/24}]}\n`)).filter((f) => f.check === 'snooping-not-configured'), []);
 });
 
 // ------------------------------------------------------------------ forwarding

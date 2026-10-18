@@ -7,22 +7,24 @@ releases may still change behaviour.
 
 Two version numbers are involved. The **application version** (0.1.3) names
 a NetAtlas release and is shown next to the logo. The **model format
-version** (`netatlas: 2`) names the YAML format a model file is written in;
+version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
-Model format 2: applications on host-capable devices, IPv6 host
+Applications on host-capable devices, IPv6 host
 configuration, what NetAtlas models for each protocol, MQTT, and time
 synchronization with NTP state and PTP.
 
-### Changed (model format 2)
+### Changed (model format 1, not backward compatible)
 
-- **The model format is version 2**, and NetAtlas reads no other: a file
-  with `netatlas: 1` gets one error saying it is format 1 and what changed,
-  and no model; there is no migration. Every example, test model and
-  document uses format 2. What to change by hand is in
-  [Changes from format 1](docs/FORMAT.md#changes-from-format-1).
+- **The model format version stays 1** (`netatlas: 1`) although the format
+  changes incompatibly: NetAtlas is not in production yet, so the version
+  is not raised. There is no backward compatibility and no migration: a
+  file written for 0.1.3 with the earlier keys gets errors that say what to
+  write instead. Every example, test model and document is already changed.
+  What to change by hand is in
+  [Changes since 0.1.3](docs/FORMAT.md#changes-since-013).
 - **`ipv4: dhcp`** replaces `dhcp: true` (`ipv4: static` or nothing for
   written addresses); an interface's IPv4 method no longer touches its IPv6
   addresses.

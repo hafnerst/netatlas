@@ -30,7 +30,7 @@
 # an application: hmi-1's register polling, plc-1's telemetry, hmi-1's
 # dashboard or eng-ws's alarm log (Show MQTT sessions on edge-1 lists the
 # clients and their subscriptions).
-netatlas: 2
+netatlas: 1
 title: OT cell — protocol gateway, TAP and passive IDS
 description: |
   A PLC and an HMI behind a protocol gateway (a System, Layer 3 forwarder),

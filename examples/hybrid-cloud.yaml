@@ -12,7 +12,7 @@
 # Cloud (kind ISP / carrier): an external network that carries traffic
 # between its attachments as one Layer 3 hop. Each router names its routes;
 # Analyze ▾ → Trace path… from dc-pc to web-1 or app-1 shows the way.
-netatlas: 2
+netatlas: 1
 title: Hybrid cloud — data centre, AWS and Azure
 description: |
   An on-premises site joined over a private interconnect to a VPC (AWS)

@@ -119,7 +119,7 @@ test('the placement comes from the topology, not from names or kinds', () => {
 });
 
 test('not a rule that providers go on top: a provider group cabled only to the bottom of a site is placed below it', () => {
-  const text = `netatlas: 2
+  const text = `netatlas: 1
 groups:
   - {id: site, kind: site}
   - {id: colo, label: Colocation provider, kind: provider}
@@ -157,7 +157,7 @@ test('data centre: the spine rack is above the leaf racks it feeds', () => {
   assert.ok(c.length < 4825 * 0.8 && c.crossings <= 11 && c.bends === 0, JSON.stringify(c));
 });
 
-const hub = `netatlas: 2
+const hub = `netatlas: 1
 groups:
   - {id: core, label: Core site, kind: site}
   - {id: s1, label: Satellite 1, kind: site}
@@ -263,7 +263,7 @@ test('every example, both views: still no overlaps, clipped text or cables throu
 
 test('the logical view is arranged by logical relationships, not by cables', () => {
   // a-b-c-d are cabled in a chain; logically a talks to d and b to c's network only
-  const text = `netatlas: 2
+  const text = `netatlas: 1
 devices:
   - {id: a, type: router, interfaces: [e0], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}
   - {id: b, type: router, interfaces: [e0, e1], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.2/32}]}

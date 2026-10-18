@@ -81,7 +81,7 @@ test('scoped to the LAN its queries reach: LAN B (the same VLAN ID, not cabled t
 });
 
 test('one device on two LANs holds a role on each; no candidate at all is said as such; snooping enabled makes no candidate', () => {
-  const two = `netatlas: 2
+  const two = `netatlas: 1
 title: two LANs
 devices:
   - {id: r, type: router, protocols: {pim: {mode: dense}}, simulation: {igmp_query_interval: 20}, interfaces: [{id: g0, ip: 10.1.0.1/24}, {id: g1, ip: 10.2.0.9/24}]}
@@ -97,7 +97,7 @@ checks: {protocol-unused: "off"}
   assert.deepEqual(s.multicast.querierRoles('r').map((q) => `${q.iface}:${q.role}`), ['g0:querier', 'g1:non-querier']);
   assert.equal(s.multicast.querierRoles('s')[0].role, 'querier');
   // no candidate: a switch with snooping enabled and an address, but no snooping querier; no router
-  const none = sim(`netatlas: 2
+  const none = sim(`netatlas: 1
 title: none
 devices:
   - {id: sw, type: switch, igmp_mld_snooping: {1: enabled}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.9.0.2/24}]}

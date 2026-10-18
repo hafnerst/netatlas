@@ -35,7 +35,7 @@ function flightsOf(s, to) {
   return Array.from(seen.values());
 }
 
-const PAIR = (link = '', extra = '') => `netatlas: 2
+const PAIR = (link = '', extra = '') => `netatlas: 1
 title: pair
 devices:
   - {id: h1, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24}]${extra}}
@@ -164,7 +164,7 @@ test('every device type has its simulation attributes (boot time at least); whic
 });
 
 test('a device’s simulation: block: overrides only, checked for the attribute, the device type, the range and the unit; a cable’s simulation: block', () => {
-  const dev = (block, type = 'router') => `netatlas: 2\ntitle: t\ndevices:\n  - {id: r, type: ${type}, simulation: ${block}}\n`;
+  const dev = (block, type = 'router') => `netatlas: 1\ntitle: t\ndevices:\n  - {id: r, type: ${type}, simulation: ${block}}\n`;
   assert.deepEqual(errorsOf(dev('{arp_timeout: 60, spf_delay: 50ms, boot_time: 2min, max_paths: 8}')), []);
   const m = model(dev('{arp_timeout: 60, spf_delay: 50ms}'));
   assert.deepEqual(Array.from(m.index.devices.get('r').simulation), [['arp-timeout', 60000], ['spf-delay', 50]]);
@@ -179,9 +179,9 @@ test('a device’s simulation: block: overrides only, checked for the attribute,
   assert.match(msg(dev('{stp_mode: stp, lacp_rate: fast}', 'switch')), /"lacp_rate" \(lacp rate\) is set per aggregate \(LAG\): in the aggregate \(LAG\)’s simulation:, not for the whole device/);
   assert.match(msg(dev('{fast_leave: on}', 'switch')), /"fast_leave" \(fast leave\) is set per VLAN: in the simulation: of the network with that VLAN, not for the whole device/);
   // the old fields are gone: one place for the timers
-  assert.match(msg(`netatlas: 2\ntitle: t\ndevices:\n  - {id: r, type: router, arp_timeout: 60}\n`), /unknown key "arp_timeout"/);
+  assert.match(msg(`netatlas: 1\ntitle: t\ndevices:\n  - {id: r, type: router, arp_timeout: 60}\n`), /unknown key "arp_timeout"/);
   // a cable
-  const link = (b) => `netatlas: 2\ntitle: t\ndevices:\n  - {id: a, interfaces: [p]}\n  - {id: b, interfaces: [p]}\nlinks:\n  - {id: l, a: "a:p", b: "b:p", simulation: ${b}}\n`;
+  const link = (b) => `netatlas: 1\ntitle: t\ndevices:\n  - {id: a, interfaces: [p]}\n  - {id: b, interfaces: [p]}\nlinks:\n  - {id: l, a: "a:p", b: "b:p", simulation: ${b}}\n`;
   assert.deepEqual(model(link('{latency: 5, loss: 1.5}')).links[0].simulation, { latency: 5, loss: 1.5 });
   // flapping is an interface's, never a cable's: the error says where it goes
   assert.match(errorsOf(link('{flapping: true}')).map((e) => e.message).join(' | '), /unknown key "flapping" \(flapping is an interface’s: write simulation: \{flapping: "on"\} on one of the cable’s ports \(the cable follows it\)\)/);
@@ -191,7 +191,7 @@ test('a device’s simulation: block: overrides only, checked for the attribute,
 });
 
 test('the Edit tab writes only overrides, as one undo step, also while a simulation locks the model; emptied, the block goes', () => {
-  const d = D.ModelDoc.fromText(`netatlas: 2\ntitle: t\ndevices:\n  - id: r\n    type: router\n`, 't.yaml', 'file').doc;
+  const d = D.ModelDoc.fromText(`netatlas: 1\ntitle: t\ndevices:\n  - id: r\n    type: router\n`, 't.yaml', 'file').doc;
   d.lock = 'a simulation is running';
   assert.throws(() => d.setText(['devices', 0, 'label'], 'x'), /a simulation is running/);
   d.setSimAttr(0, 'arp_timeout', '60');
@@ -219,7 +219,7 @@ test('Layer 1: latency is the cable’s propagation plus the frame’s serializa
   assert.equal(Pm.resolvedText(t.engine.latency('l')), '5 ms (simulation)');
   assert.equal(Pm.resolvedText(t.engine.speed('l')), '1 Gbit/s (default)');
   // a cloud's latency applies to its cables
-  const c = sim(`netatlas: 2\ntitle: c\ndevices:\n  - {id: a, interfaces: [{id: p, ip: 10.0.0.1/24}]}\n  - {id: net, type: cloud, interfaces: [x, y], simulation: {latency: 15}}\n  - {id: b, interfaces: [{id: p, ip: 10.0.0.2/24}]}\nlinks:\n  - {id: l1, a: "a:p", b: "net:x"}\n  - {id: l2, a: "net:y", b: "b:p"}\n`);
+  const c = sim(`netatlas: 1\ntitle: c\ndevices:\n  - {id: a, interfaces: [{id: p, ip: 10.0.0.1/24}]}\n  - {id: net, type: cloud, interfaces: [x, y], simulation: {latency: 15}}\n  - {id: b, interfaces: [{id: p, ip: 10.0.0.2/24}]}\nlinks:\n  - {id: l1, a: "a:p", b: "net:x"}\n  - {id: l2, a: "net:y", b: "b:p"}\n`);
   assert.equal(Pm.resolvedText(c.engine.latency('l1')), '15 ms (device)');
   // loss: every frame lost at 100 %; deterministic below that
   const lost = sim(PAIR(', simulation: {loss: 100}'));
@@ -339,7 +339,7 @@ test('network events: power off (tables and sessions gone, the neighbours notice
 });
 
 test('power: an inline IPS that fails open passes frames on, fail closed nothing; a server’s VMs restart on another server after the VM restart time', () => {
-  const ips = (mode) => `netatlas: 2
+  const ips = (mode) => `netatlas: 1
 title: ips
 devices:
   - {id: a, type: router, interfaces: [{id: p, ip: 10.0.0.1/24}]}
@@ -363,7 +363,7 @@ demands:
   closed.runTo(30000);
   assert.equal(closed.status().find((r) => r.protocol === 'demand').state, 'Lost');
   // a VM in an HA cluster: down with its host, restarted on the other member after the VM restart time (the Hypervisor service's)
-  const vm = sim(`netatlas: 2
+  const vm = sim(`netatlas: 1
 title: vm
 devices:
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 10}]}
@@ -459,7 +459,7 @@ test('determinism with parameter changes and network events at the same simulate
 });
 
 test('the spanning tree: RSTP takes over at once at the failure, STP after 2 × forward delay; a full MAC table floods', () => {
-  const loop = (mode) => `netatlas: 2
+  const loop = (mode) => `netatlas: 1
 title: loop
 devices:
   - {id: h1, interfaces: [{id: e, ip: 10.0.0.1/24}]}

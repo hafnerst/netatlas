@@ -22,7 +22,7 @@ const ok = (t) => {
 
 // a switch with two trunks and an access port to a KVM host (a Linux bridge on two uplinks, three port groups,
 // a management interface), a VM on it, and a Docker host with a bridge, a macvlan, a host and a none network and a container
-export const BASE = `netatlas: 2
+export const BASE = `netatlas: 1
 groups:
   - {id: dc, kind: site}
 devices:

@@ -21,7 +21,7 @@ const { deviceTier } = Cap;
 const openDoc = (text) => D.ModelDoc.fromText(text, 't.yaml', 'file').doc;
 
 const errs = (text) => validate.loadModel(text).errors.map((e) => `${e.path}: ${e.message}`);
-const one = (dev, extra = '') => `netatlas: 2\ndevices:\n  - id: d1\n${dev}${extra}`;
+const one = (dev, extra = '') => `netatlas: 1\ndevices:\n  - id: d1\n${dev}${extra}`;
 const sim = (text) => new S.Simulation(model(text));
 const ev = (s, f) => s.events().filter(f);
 
@@ -86,7 +86,7 @@ test('kinds are optional; "other" needs its name; a kind belongs to its type', (
 });
 
 test('roles: suggested or custom; Find and the palette find a device by its role', () => {
-  const m = model(`netatlas: 2\ndevices:\n  - {id: s1, type: switch, role: core, interfaces: [{id: a, vlans: 1}]}\n  - {id: s2, type: switch, role: dmz-edge, interfaces: [{id: a, vlans: 1}]}\n`);
+  const m = model(`netatlas: 1\ndevices:\n  - {id: s1, type: switch, role: core, interfaces: [{id: a, vlans: 1}]}\n  - {id: s2, type: switch, role: dmz-edge, interfaces: [{id: a, vlans: 1}]}\n`);
   assert.equal(m.devices[0].role, 'core');
   assert.equal(m.devices[1].role, 'dmz-edge');
   assert.ok(Q.search(m, 'core').some((h) => h.ref === 'device:s1'));
@@ -159,7 +159,7 @@ test('VPN gateway: it forwards only to and from its VPN, in the tracer and in th
 
 // ------------------------------------------------------------ the Security gateway
 
-const SEP = (impl, extra = '') => `netatlas: 2
+const SEP = (impl, extra = '') => `netatlas: 1
 devices:
   - id: g
     type: security_gateway
@@ -176,7 +176,7 @@ ${extra}    management: [m0]
 `;
 
 test('Security gateway: its configuration — an implementation (no default), exactly two domains, directions, explicit rules', () => {
-  assert.match(errs(`netatlas: 2\ndevices:\n  - {id: g, type: security_gateway, interfaces: [a]}\n`)[0], /needs its Domain separation/);
+  assert.match(errs(`netatlas: 1\ndevices:\n  - {id: g, type: security_gateway, interfaces: [a]}\n`)[0], /needs its Domain separation/);
   const noImpl = errs(SEP('').replace('        implementation: \n', ''));
   assert.ok(noImpl.some((x) => /Domain separation needs its implementation/.test(x)), noImpl.join('\n'));
   assert.deepEqual(errs(SEP('filtering_router')), []);
@@ -259,7 +259,7 @@ test('protocol break: two correlated legs, never a packet through; a transfer wi
 });
 
 test('protocol break over UDP: a DNS query is asked again by the gateway; the answer comes back', () => {
-  const text = `netatlas: 2
+  const text = `netatlas: 1
 devices:
   - {id: c, type: endpoint, interfaces: [{id: e, ip: 10.1.0.10/24}], simulation: {test_traffic: "on", test_targets: "10.1.0.1 udp/53", test_interval: 10}}
   - id: g
@@ -294,7 +294,7 @@ test('port pairs: an inline device keeps to its pairs, one way if set; a TAP cop
   s.runTo(5000);
   assert.ok(ev(s, (e) => e.device === 'ids' && e.what === 'observed' && /receives a copy at mon0 and forwards nothing/.test(e.detail)).length >= 1);
   // one way: a → b only
-  const oneWay = `netatlas: 2
+  const oneWay = `netatlas: 1
 devices:
   - {id: x, type: endpoint, interfaces: [{id: e, ip: 10.0.0.1/24}], simulation: {test_traffic: "on", test_targets: "10.0.0.2 icmp", test_interval: 10}}
   - {id: y, type: endpoint, interfaces: [{id: e, ip: 10.0.0.2/24}]}
@@ -315,7 +315,7 @@ test('a Cloud is one opaque Layer 3 hop: the TTL drops by one; TTL-1 hellos end 
   const s = new S.Simulation(m);
   s.runTo(5000);
   assert.ok(ev(s, (e) => e.device === 'br1-pc' && e.what === 'Test answered').length >= 1);
-  const ttl1 = `netatlas: 2
+  const ttl1 = `netatlas: 1
 devices:
   - {id: r1, type: router, protocols: {ospf: {}}, router_id: 10.0.0.1, interfaces: [{id: g0, ip: 10.0.12.1/30}]}
   - {id: r2, type: router, protocols: {ospf: {}}, router_id: 10.0.0.2, interfaces: [{id: g0, ip: 10.0.12.2/30}]}
@@ -362,8 +362,8 @@ test('cloud groups: region, VPC and VNet with their provider; VMs and containers
   }
   assert.equal(T.tracePath(m, { from: 'dc-pc', to: 'app-1' }).paths[0].end.kind, 'reached');
   // a provider is a cloud group's; a VM outside a cloud group still needs its host
-  assert.match(errs('netatlas: 2\ngroups:\n  - {id: s, kind: site, provider: aws}\n')[0], /"provider" is a cloud group's/);
-  assert.match(errs('netatlas: 2\ngroups:\n  - {id: s, kind: site}\ndevices:\n  - {id: v, type: vm, group: s, interfaces: [{id: e, ip: 10.0.0.1/24}]}\n').join('\n'), /needs its host/);
+  assert.match(errs('netatlas: 1\ngroups:\n  - {id: s, kind: site, provider: aws}\n')[0], /"provider" is a cloud group's/);
+  assert.match(errs('netatlas: 1\ngroups:\n  - {id: s, kind: site}\ndevices:\n  - {id: v, type: vm, group: s, interfaces: [{id: e, ip: 10.0.0.1/24}]}\n').join('\n'), /needs its host/);
 });
 
 // ------------------------------------------------------------ the diagram and the editor

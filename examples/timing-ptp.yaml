@@ -28,7 +28,7 @@
 # gm-a: it wins the election again. The clocks' offsets and drifts are
 # modelled (a local clock beside the simulation's own time, never moving it);
 # the states follow the model's estimates and claim no accuracy beyond them.
-netatlas: 2
+netatlas: 1
 title: Time synchronization — PTP grandmasters, boundary and transparent clocks
 description: |
   Two cells in one PTP domain: two grandmaster candidates behind a

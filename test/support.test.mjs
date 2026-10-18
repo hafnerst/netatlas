@@ -39,7 +39,7 @@ test('a protocol of the model’s own is drawn only, whatever demonstration pack
   const c = profiles.customProfile('custom:modbus', 'Modbus TCP');
   assert.equal(c.support.level, 'drawn');
   assert.match(c.support.does, /demonstration packets/);
-  const m = model(`netatlas: 2
+  const m = model(`netatlas: 1
 protocols:
   - {id: modbus, label: Modbus TCP, category: service}
 devices:

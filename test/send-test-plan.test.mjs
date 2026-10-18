@@ -15,7 +15,7 @@ const sim = (text, opts) => new S.Simulation(model(text), opts);
 const HOUSE = example('private-house.yaml');
 
 /** One LAN with two multicast routers, a switch, two members of 239.2.2.2 (dual stack) and a host that is none. */
-const MC = `netatlas: 2
+const MC = `netatlas: 1
 title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.1/24, "2001:db8:5::1/64"]}]}
@@ -33,7 +33,7 @@ links:
 `;
 
 /** Two switches, h1 (answers broadcast pings) and h2 on 10.0.0.0/24, r1 to h9 on 10.9.0.0/24; directed broadcasts per r1:g0. */
-const LAN = (r = '') => `netatlas: 2
+const LAN = (r = '') => `netatlas: 1
 title: lan
 devices:
   - {id: sw1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]}

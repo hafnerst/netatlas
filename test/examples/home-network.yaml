@@ -21,7 +21,7 @@
 # Simulate ▾ → Start simulation…: the clients take their leases in their
 # own VLAN; the laptop's test to the internet leaves the model at cpe after
 # its PAT (Analyze ▾ → Trace path… shows the translation).
-netatlas: 2
+netatlas: 1
 title: Home network — CPE router with Wi-Fi
 description: |
   A CPE router with DHCP, DNS, NAT and Wireless access (Home, Guest, IoT on

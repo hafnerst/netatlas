@@ -13,7 +13,7 @@
 #     from the device-level port beside the device's name,
 #   - an aggregate (LAG) of two cables between the core switches, and a
 #     relation between three devices (VRRP).
-netatlas: 2
+netatlas: 1
 title: Port bindings — tunnels, subinterfaces, a LAG
 
 groups:

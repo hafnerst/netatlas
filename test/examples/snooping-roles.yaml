@@ -14,7 +14,7 @@
 # LAN B (also VLAN 40, 10.41.0.0/24, not cabled to the rest): its own
 # multicast router rb queries there, for swb2 only — sw-a's VLAN 40 stays
 # without a querier (the same VLAN ID, a separate LAN).
-netatlas: 2
+netatlas: 1
 title: Snooping roles per VLAN
 description: |
   A switch snooping four VLANs with four different roles (querier, standby,

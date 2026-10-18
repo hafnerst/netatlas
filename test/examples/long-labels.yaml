@@ -5,7 +5,7 @@
 # between the same two devices, long cable labels, and several labelled
 # relations between the same pair of devices. Nothing is shortened: every
 # element grows to fit its text, and Auto-arrange leaves room for the labels.
-netatlas: 2
+netatlas: 1
 title: Long labels and mixed node sizes
 
 groups:

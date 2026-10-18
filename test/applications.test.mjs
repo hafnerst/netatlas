@@ -15,7 +15,7 @@ const doc = (text) => {
   return r.doc;
 };
 
-const BASE = `netatlas: 2
+const BASE = `netatlas: 1
 devices:
   - id: plc
     type: endpoint
@@ -73,12 +73,12 @@ test('eligibility: host-capable endpoints, servers, VMs, containers, storage and
   for (const d of [{ type: 'endpoint' }, { type: 'endpoint', kind: 'plc' }, { type: 'server' }, { type: 'vm' }, { type: 'container' }, { type: 'storage' }, { type: 'system', purpose: 'host' }]) assert.equal(reg.serviceEligibility(def, d), null, JSON.stringify(d));
   for (const d of [{ type: 'system', purpose: 'pass_through' }, { type: 'system', purpose: 'l2_forwarder' }, { type: 'cloud' }, { type: 'switch' }, { type: 'router' }, { type: 'ap' }, { type: 'security_gateway' }, { type: 'ids_ips', mode: 'passive' }]) assert.notEqual(reg.serviceEligibility(def, d), null, JSON.stringify(d));
   // a PLC need not become a Server: its type stays, the validator agrees
-  const plc = errs(`netatlas: 2\ndevices:\n  - id: plc\n    type: endpoint\n    kind: plc\n    services:\n      applications: [{id: a, name: A, profile: udp_server, port: 2222}]\n    interfaces: [{id: eth0, ip: 10.0.0.1/24}]\n`);
+  const plc = errs(`netatlas: 1\ndevices:\n  - id: plc\n    type: endpoint\n    kind: plc\n    services:\n      applications: [{id: a, name: A, profile: udp_server, port: 2222}]\n    interfaces: [{id: eth0, ip: 10.0.0.1/24}]\n`);
   assert.deepEqual(plc, []);
-  const patch = errs(`netatlas: 2\ndevices:\n  - id: pp\n    type: system\n    purpose: pass_through\n    port_pairs: [{a: p1, b: p2}]\n    services:\n      applications: [{id: a, name: A, profile: udp_server, port: 2222}]\n    interfaces: [p1, p2]\n`);
+  const patch = errs(`netatlas: 1\ndevices:\n  - id: pp\n    type: system\n    purpose: pass_through\n    port_pairs: [{a: p1, b: p2}]\n    services:\n      applications: [{id: a, name: A, profile: udp_server, port: 2222}]\n    interfaces: [p1, p2]\n`);
   assert.ok(patch.some((x) => /"pp" can't run Applications/.test(x)), patch.join('\n'));
   // the separation device stays without services
-  const sg = errs(`netatlas: 2\ndevices:\n  - id: sg\n    type: security_gateway\n    services:\n      applications: [{id: a, name: A, profile: udp_server, port: 2222}]\n      separation: {implementation: filtering_router}\n    interfaces: [{id: a0, ip: 10.0.0.1/24}]\n`);
+  const sg = errs(`netatlas: 1\ndevices:\n  - id: sg\n    type: security_gateway\n    services:\n      applications: [{id: a, name: A, profile: udp_server, port: 2222}]\n      separation: {implementation: filtering_router}\n    interfaces: [{id: a0, ip: 10.0.0.1/24}]\n`);
   assert.ok(sg.some((x) => /can't run Applications: a Security gateway runs no services/.test(x)), sg.join('\n'));
   // the services it was not given before stay out of reach: an endpoint is no DHCP server
   assert.notEqual(reg.serviceEligibility(reg.serviceDef('dhcp'), { type: 'endpoint' }), null);
@@ -121,10 +121,10 @@ test('listener bindings: the same port twice on all addresses, or on one interfa
   assert.ok(ntp.some((x) => /"alarms" and the NTP both listen on UDP 123/.test(x)), ntp.join('\n'));
 });
 
-test('format 2 only: the single application of format 1 is an unknown service, never read as an instance', () => {
-  const e = errs(`netatlas: 2\ndevices:\n  - id: s\n    type: server\n    services:\n      application: {name: ERP, ports: [tcp/443]}\n    interfaces: [{id: eth0, ip: 10.0.0.1/24}]\n`);
+test('the earlier single application is an unknown service, never read as an instance', () => {
+  const e = errs(`netatlas: 1\ndevices:\n  - id: s\n    type: server\n    services:\n      application: {name: ERP, ports: [tcp/443]}\n    interfaces: [{id: eth0, ip: 10.0.0.1/24}]\n`);
   assert.ok(e.some((x) => /unknown key "application" — did you mean "applications"/.test(x)), e.join('\n'));
-  const m = validate.loadModel(`netatlas: 2\ndevices:\n  - id: s\n    type: server\n    services:\n      application: {name: ERP, ports: [tcp/443]}\n    interfaces: [{id: eth0, ip: 10.0.0.1/24}]\n`).model;
+  const m = validate.loadModel(`netatlas: 1\ndevices:\n  - id: s\n    type: server\n    services:\n      application: {name: ERP, ports: [tcp/443]}\n    interfaces: [{id: eth0, ip: 10.0.0.1/24}]\n`).model;
   assert.ok(!m || !m.index.devices.get('s').applications || m.index.devices.get('s').applications.length === 0);
 });
 
@@ -142,7 +142,7 @@ test('editing: add (a free id, the profile left to choose), duplicate, change th
   d.undo();
   d.undo();
   assert.equal(d.exportText(), before);
-  const fresh = doc('netatlas: 2\ndevices:\n  - {id: tv, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.5/24}]}\n');
+  const fresh = doc('netatlas: 1\ndevices:\n  - {id: tv, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.5/24}]}\n');
   fresh.addApplication(0);
   assert.match(fresh.exportText(), /services: \{applications: \[\{id: app1, name: Application 1\}\]\}/);
   fresh.undo();

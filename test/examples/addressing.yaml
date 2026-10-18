@@ -5,7 +5,7 @@
 # MAC addresses, VRFs, a DHCP client port and NAT addresses. Every one of
 # them is written in the diagram, next to the interface, cable, network or
 # relation it belongs to.
-netatlas: 2
+netatlas: 1
 title: Addressing in detail
 
 groups:

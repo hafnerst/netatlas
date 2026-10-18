@@ -21,7 +21,7 @@ const run = (s, t, ms = 3000) => {
 
 // access switch sw (h1 in VLAN 10, h2 in VLAN 20, a trunk uplink with native VLAN 10) and a Layer 3 core:
 // its VLAN interfaces route between the VLANs; h3 reaches Vlan10 through another access port; a routed uplink to r
-const NET = (o = {}) => `netatlas: 2
+const NET = (o = {}) => `netatlas: 1
 title: vlans
 devices:
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}

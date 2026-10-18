@@ -27,7 +27,7 @@ const model = (text) => {
   assert.deepEqual(r.errors.concat(r.warnings).map((e) => e.message), []);
   return r.model;
 };
-const dev = (body, type = 'router') => `netatlas: 2\ndevices:\n  - id: r1\n    type: ${type}\n${body}`;
+const dev = (body, type = 'router') => `netatlas: 1\ndevices:\n  - id: r1\n    type: ${type}\n${body}`;
 const LOOP = '    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.0.1/32]}\n    interfaces:\n      - {id: e0, ip: 10.0.0.1/24}\n';
 
 test('the registry: every built-in protocol declares its parameters with a type, a scope and a validation rule, and its use of the router ID', () => {
@@ -113,7 +113,7 @@ test('mandatory parameters are errors until filled in; nothing is chosen for the
 });
 
 test('a protocol of the model declares its parameters like the built-in ones, and is validated the same way', () => {
-  const head = `netatlas: 2
+  const head = `netatlas: 1
 protocols:
   - id: macsec
     label: MACsec
@@ -134,12 +134,12 @@ protocols:
   assert.match(msgs(head + 'devices:\n  - id: r1\n    type: router\n    protocols: {macsec: {}}\n')[0], /MACsec needs cipher \(cipher\): The cipher suite/);
   assert.match(msgs(head + 'devices:\n  - id: r1\n    type: router\n    protocols: {myigp: {}}\n')[0], /myigp needs a router ID/);
   // a declaration that isn't one
-  assert.match(msgs('netatlas: 2\nprotocols:\n  - {id: x, category: other, params: [{key: k, type: color}]}\n')[0], /unknown parameter type "color"/);
-  assert.match(msgs('netatlas: 2\nprotocols:\n  - {id: bgp, category: adjacency, params: []}\n')[0], /"bgp" is a built-in routing service: its parameters are fixed/);
+  assert.match(msgs('netatlas: 1\nprotocols:\n  - {id: x, category: other, params: [{key: k, type: color}]}\n')[0], /unknown parameter type "color"/);
+  assert.match(msgs('netatlas: 1\nprotocols:\n  - {id: bgp, category: adjacency, params: []}\n')[0], /"bgp" is a built-in routing service: its parameters are fixed/);
 });
 
 test('suggestions from relations: a protocol used by a device’s relations but not enabled, one enabled but unused, static routes without static routing', () => {
-  const text = `netatlas: 2
+  const text = `netatlas: 1
 devices:
   - id: r1
     type: router
@@ -208,7 +208,7 @@ test('enabling and disabling: one undo step each; disabling removes the values (
 });
 
 test('the checks, the path tracer and the diagram read the enabled protocols', () => {
-  const two = (p1, p2, extra = '') => `netatlas: 2
+  const two = (p1, p2, extra = '') => `netatlas: 1
 devices:
   - {id: a, type: router, router_id: 10.255.0.1, protocols: ${p1}, interfaces: [{id: e0, ip: 10.0.0.1/30}, {id: lan, ip: 10.1.0.1/24}]}
   - {id: b, type: router, router_id: 10.255.0.2, protocols: ${p2}, interfaces: [{id: e0, ip: 10.0.0.2/30}, {id: lan, ip: 10.2.0.1/24}]}

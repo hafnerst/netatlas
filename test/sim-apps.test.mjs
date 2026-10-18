@@ -8,7 +8,7 @@ import { load, model, withClock } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 
-const NET = (extra = '') => `netatlas: 2
+const NET = (extra = '') => `netatlas: 1
 devices:
   - id: sw
     type: switch

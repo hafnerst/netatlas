@@ -4,7 +4,7 @@
 # checks find, each with its check id; click one to go to the object. Every
 # case is marked below with the id of the check that reports it.
 # "checks:" at the end downgrades one check, to show how a model can do that.
-netatlas: 2
+netatlas: 1
 title: Consistency checks demo
 description: |
   One deliberate inconsistency per check: static routes, port VLANs, MTU,

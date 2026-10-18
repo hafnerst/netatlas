@@ -17,7 +17,7 @@ const Pal = load('ui/palette.js');
 
 const errs = (text) => validate.loadModel(text).errors.map((e) => `${e.path}: ${e.message}`);
 
-const SW = (extra, dev = '') => `netatlas: 2
+const SW = (extra, dev = '') => `netatlas: 1
 devices:
   - id: sw
     type: switch
@@ -28,7 +28,7 @@ ${extra}`;
 
 test('layer3 is for switches only; the role of a device follows from it', () => {
   assert.deepEqual(errs(SW('', '    layer3: true\n')), []);
-  const e = errs('netatlas: 2\ndevices:\n  - {id: r, type: router, layer3: true}\n');
+  const e = errs('netatlas: 1\ndevices:\n  - {id: r, type: router, layer3: true}\n');
   assert.equal(e.length, 1);
   assert.match(e[0], /^devices\.r\.layer3: layer3 is for switches/);
   assert.equal(Cap.deviceRoutingRole({ type: 'switch' }), 'host');
@@ -48,7 +48,7 @@ test('a Layer 2 switch: one management interface, static routes in the default t
       - {prefix: 0.0.0.0/0, via: 10.99.0.1, vrf: mgmt}
 `);
   assert.deepEqual(errs(ok), []);
-  const bad = errs(`netatlas: 2
+  const bad = errs(`netatlas: 1
 devices:
   - id: sw
     type: switch
@@ -79,7 +79,7 @@ relations:
 });
 
 test('the same rule in routing and the path tracer: a Layer 2 switch never forwards, a Layer 3 switch does', () => {
-  const text = (l3) => `netatlas: 2
+  const text = (l3) => `netatlas: 1
 devices:
   - {id: h1, type: endpoint, interfaces: [{id: e, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}
   - id: sw

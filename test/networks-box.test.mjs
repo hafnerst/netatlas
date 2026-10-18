@@ -35,7 +35,7 @@ function lines(root) {
 }
 
 // one network per way of being (or not being) associated with what a view draws
-const nets = `netatlas: 2
+const nets = `netatlas: 1
 devices:
   - id: r1
     type: router
@@ -132,7 +132,7 @@ test('content: a titled box per view with name, prefix and VLAN of each network,
   assert.equal(scene.findAll(p.legend.root, (n) => scene.hasClass(n, 'nw-entry')).length, 0);
   for (const cls of ['lg-box', 'lg-heading', 'lg-label', 'lg-title']) assert.ok(scene.findAll(p.networks.root, (n) => scene.hasClass(n, cls)).length > 0 && scene.findAll(p.legend.root, (n) => scene.hasClass(n, cls)).length > 0, cls);
   // one prefix per network, a network carried on the cable only, and two networks with the same name (told apart by their ids)
-  const same = model('netatlas: 2\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: [10.0.0.1/24, 10.0.1.1/24, "2001:db8::1/64", 10.5.0.1/24]}]}\n  - {id: b, interfaces: [{id: e0, vlans: 7}]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - {id: n2, label: Users, cidr: 10.0.1.0/24, vlan: 12}\n  - {id: n1, label: Users, cidr: 10.0.0.0/24, vlan: 11}\n  - {id: n3, cidr: 10.7.0.0/24, vlan: 7}\n  - {id: n10, cidr: 10.5.0.0/24}\n');
+  const same = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: [10.0.0.1/24, 10.0.1.1/24, "2001:db8::1/64", 10.5.0.1/24]}]}\n  - {id: b, interfaces: [{id: e0, vlans: 7}]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - {id: n2, label: Users, cidr: 10.0.1.0/24, vlan: 12}\n  - {id: n1, label: Users, cidr: 10.0.0.0/24, vlan: 11}\n  - {id: n3, cidr: 10.7.0.0/24, vlan: 7}\n  - {id: n10, cidr: 10.5.0.0/24}\n');
   assert.deepEqual(lines(exported(same, 'physical').networks.root).slice(2).map((l) => l[1]), ['n3', '10.7.0.0/24 · VLAN 7', 'n10', '10.5.0.0/24', 'Users', 'id n1 · 10.0.0.0/24 · VLAN 11', 'Users', 'id n2 · 10.0.1.0/24 · VLAN 12']);
   assert.equal(nb.networkIdentity(same.networks[1], false), '10.0.0.0/24 · VLAN 11');
 });
@@ -145,7 +145,7 @@ test('empty state: a view without relevant networks says so', () => {
     assert.equal(x.networks.root.attrs['data-count'], '0');
   }
   // networks exist, but nothing drawn in the physical view uses one
-  const m = model('netatlas: 2\ndevices:\n  - {id: a, interfaces: [e0], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - {id: loops, cidr: 10.0.0.0/24}\n');
+  const m = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - {id: loops, cidr: 10.0.0.0/24}\n');
   assert.deepEqual(lines(exported(m, 'physical').networks.root).map((l) => l[1]), ['Networks — physical view', 'No network is used by the elements', 'shown in this view.']);
   assert.deepEqual(ids(m, 'logical'), ['loops']);
 });
@@ -188,7 +188,7 @@ test('every example, both views: the box is beside the legend, covers nothing, a
 
 test('long names wrap inside the box instead of widening it without bound', () => {
   const long = 'Customer access network for the north-east metropolitan region including the legacy frame-relay migration sites and/or_a_very_long_unbroken_identifier_that_has_no_spaces_at_all';
-  const m = model(`netatlas: 2\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - id: n\n    label: ${long}\n    cidr: 10.0.0.0/24\n    vlan: 4000\n`);
+  const m = model(`netatlas: 1\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - id: n\n    label: ${long}\n    cidr: 10.0.0.0/24\n    vlan: 4000\n`);
   const x = exported(m, 'physical');
   const entry = scene.findAll(x.networks.root, (n) => scene.hasClass(n, 'nw-entry'))[0];
   const name = scene.findAll(entry, (n) => scene.hasClass(n, 'nw-name'))[0];
@@ -207,7 +207,7 @@ test('long names wrap inside the box instead of widening it without bound', () =
 
 test('a large list continues in further columns; every network is listed once, readable and unclipped', () => {
   // 150 VLAN interfaces on one switch, all their VLANs tagged on its uplink
-  let t = 'netatlas: 2\ndevices:\n  - id: a\n    interfaces: [{id: e0, vlans: 100-249}]\n    logical_interfaces:\n';
+  let t = 'netatlas: 1\ndevices:\n  - id: a\n    interfaces: [{id: e0, vlans: 100-249}]\n    logical_interfaces:\n';
   for (let i = 0; i < 150; i++) t += `      - {id: Vlan${100 + i}, type: virtual, ip: 10.${i}.0.1/24}\n`;
   t += `  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n`;
   for (let i = 0; i < 150; i++) t += `  - {id: n${i}, label: "Segment ${i} of the campus", cidr: 10.${i}.0.0/24, vlan: ${100 + i}}\n`;

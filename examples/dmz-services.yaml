@@ -18,7 +18,7 @@
 # Simulate ▾ → Start simulation…: the shopper's test goes through DNAT, the
 # proxy and the load balancer; the branch PC reaches the NAS through the
 # tunnel; the shopper's Telnet test is blocked by the IPS.
-netatlas: 2
+netatlas: 1
 title: Internet edge — DMZ services and a VPN on a firewall
 description: |
   A firewall with a VPN and NAT, an inline IPS, a reverse proxy, a load

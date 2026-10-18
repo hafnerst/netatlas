@@ -26,7 +26,7 @@ const errs = (t) => V.loadModel(t).errors.map((e) => e.message);
 const warns = (t) => V.loadModel(t).warnings.map((e) => e.message);
 
 /** A server in a LAN with one client; `svc` is its services block, `more` extra YAML. */
-const LAN = (svc, more = {}) => `netatlas: 2
+const LAN = (svc, more = {}) => `netatlas: 1
 title: lan
 devices:
   - {id: srv, type: ${more.type || 'server'}, interfaces: [{id: eth0, ip: 10.0.0.10/24}]${svc !== undefined ? ', services: ' + svc : ''}}
@@ -54,7 +54,7 @@ test('the services: off by default; enabled, what they still need is an error; t
   assert.match(errs(LAN('{dns: {}}')).join('|'), /the DNS server of "srv" needs a zone \(its domain name, e\.g\. hq\.example\) or forwarders \(the servers it asks\)/);
   assert.match(errs(LAN(SCOPE(), { type: 'storage' })).join('|'), /"srv" can't run DHCP server: DHCP server runs on Router, Switch, Firewall, Server, Virtual machine or Container/);
   // a VM and a container run them too (on their host, through its virtual networking)
-  const guest = (t) => `netatlas: 2
+  const guest = (t) => `netatlas: 1
 devices:
   - {id: srv, type: ${t}, host: h, services: ${SCOPE()}, logical_interfaces: [{id: eth0, type: ${t === 'vm' ? 'vnic, port_group: pg' : 'veth, network: n'}, ip: 10.0.0.10/24}]}
   - id: h

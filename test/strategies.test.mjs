@@ -160,7 +160,7 @@ test('arranging with a strategy: one undo step, idempotent, recognised from the 
 });
 
 test('identical results: a one-device model gets the same positions from every strategy; the first (Default) counts, the order is stable', () => {
-  const d = doc('netatlas: 2\ndevices:\n  - {id: solo, type: router}\n');
+  const d = doc('netatlas: 1\ndevices:\n  - {id: solo, type: router}\n');
   for (const v of ['physical', 'logical']) {
     assert.deepEqual(d.arrangedWith(v), ['default', 'compact', 'spacious'], v);
     assert.equal(d.layoutStatus(v), 'auto');
@@ -197,7 +197,7 @@ test('filtered views: each strategy arranges the shown devices only, determinist
 });
 
 test('disconnected components and varied node sizes (long labels, many ports) stay apart in every strategy', () => {
-  let t = 'netatlas: 2\ngroups:\n  - {id: site, kind: site, label: "A site whose title is much longer than the devices inside it are wide"}\ndevices:\n';
+  let t = 'netatlas: 1\ngroups:\n  - {id: site, kind: site, label: "A site whose title is much longer than the devices inside it are wide"}\ndevices:\n';
   t += '  - {id: big, type: switch, label: "A switch with a very long label\\nand a second line", group: site, interfaces: [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12], logical_interfaces: [{id: Po1, type: virtual, members: [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12], vlans: 1}]}\n';
   t += '  - {id: small, type: router, group: site, interfaces: [e0]}\n  - {id: lone, type: server}\n  - {id: x1, type: router, interfaces: [a]}\n  - {id: x2, type: router, interfaces: [a]}\n';
   t += 'links:\n  - {id: c1, a: "big:p1", b: "small:e0"}\n  - {id: c2, a: "x1:a", b: "x2:a"}\n';

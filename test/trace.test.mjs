@@ -21,7 +21,7 @@ const devs = (p) => p.hops.map((h) => h.device);
 const trace = (m, from, to, extra = {}, ctx) => T.tracePath(m, { from, to, ...extra }, ctx);
 
 // a chain h1 – r1 – r2 – r3 – h2 with static routes, a backup over r4, and a blackhole
-const chain = `netatlas: 2
+const chain = `netatlas: 1
 devices:
   - id: h1
     type: server
@@ -158,7 +158,7 @@ test('bad requests say why: unknown ends, no address, the same device', () => {
 });
 
 // ECMP: two equal static routes, and OSPF with equal costs
-const ecmp = `netatlas: 2
+const ecmp = `netatlas: 1
 devices:
   - id: a
     type: router
@@ -200,7 +200,7 @@ test('equal-cost multipath: every branch is followed; the first is the main path
   assert.match(text, /not a simulation of the protocols/);
 });
 
-const ospf = `netatlas: 2
+const ospf = `netatlas: 1
 devices:
   - {id: a, type: router, router_id: 10.255.0.1, protocols: {ospf: {}}, interfaces: [{id: lan, ip: 10.0.1.1/24}, {id: x, ip: 10.0.12.1/30}, {id: y, ip: 10.0.13.1/30}]}
   - {id: b, type: router, router_id: 10.255.0.2, protocols: {ospf: {}}, interfaces: [{id: x, ip: 10.0.12.2/30}, {id: z, ip: 10.0.24.1/30}]}
@@ -250,7 +250,7 @@ test('a routing adjacency between devices without a common network can’t form:
 });
 
 // a GRE tunnel over IPsec over an internet cloud, OSPF over the GRE tunnel; a switch with VLANs at the far end
-const tunnel = `netatlas: 2
+const tunnel = `netatlas: 1
 devices:
   - id: inet
     type: cloud
@@ -332,7 +332,7 @@ test('tunnels: the encapsulation stack, the declared underlay down to the cables
 });
 
 test('a VRRP virtual gateway: the active member forwards; when it is down, the backup takes over', () => {
-  const m = model(`netatlas: 2
+  const m = model(`netatlas: 1
 devices:
   - {id: h, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.50/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]}
   - {id: r1, type: router, protocols: {vrrp: {}}, interfaces: [{id: lan, ip: 10.0.0.2/24, protocols: {vrrp: {group: 1, virtual_ip: 10.0.0.1, priority: 100}}}, {id: lo, ip: 10.255.0.9/32}]}
@@ -350,7 +350,7 @@ relations:
 });
 
 test('VRFs: the source interface’s VRF, or the one asked for; nothing leaks between them', () => {
-  const m = model(`netatlas: 2
+  const m = model(`netatlas: 1
 devices:
   - id: r
     type: router

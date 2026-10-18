@@ -69,7 +69,7 @@ test('startup: ARP, OSPF Hello, PIM Hello, VRRP and IGMP start together once the
 });
 
 /** pc and two hosts on one LAN (h2 never answers: it is off), r1 the gateway to srv. */
-const LAN2 = `netatlas: 2
+const LAN2 = `netatlas: 1
 title: next hops
 devices:
   - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
@@ -117,7 +117,7 @@ test('unicast waits only for its own next hop: the packet via the gateway goes w
   void b;
 });
 
-const BGP = `netatlas: 2
+const BGP = `netatlas: 1
 title: bgp
 devices:
   - {id: a, type: router, interfaces: [{id: g0, ip: 10.0.0.1/30}], protocols: {bgp: {asn: 65001}}}
@@ -188,7 +188,7 @@ test('PIM: Hellos at once; a Join waits for its RPF route, a Register for a rout
 });
 
 /** Two independent islands, each two routers with OSPF over a cable. */
-const ISLANDS = `netatlas: 2
+const ISLANDS = `netatlas: 1
 title: islands
 devices:
   - {id: a1, type: router, interfaces: [{id: g0, ip: 10.1.0.1/30}]}

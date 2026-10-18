@@ -18,7 +18,7 @@ const model = (text) => {
 const sorted = (m) => [...m.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
 
 // a chain a – b – c – d – e of cables; relations: a–e and c–d; a group around b and c
-const chain = `netatlas: 2
+const chain = `netatlas: 1
 groups:
   - {id: mid, label: Middle}
 devices:

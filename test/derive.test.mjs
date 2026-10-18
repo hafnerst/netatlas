@@ -26,7 +26,7 @@ const n1 = (cidr) => [{ id: 'n', label: 'n', cidr, attrs: [], line: 0 }];
 
 // ------------------------------------------------------------------ membership
 
-const net = `netatlas: 2
+const net = `netatlas: 1
 devices:
   - id: r1
     logical_interfaces:
@@ -252,7 +252,7 @@ test('details and logical view use derived membership and derived interface VLAN
 // ------------------------------------- keys outside the format are errors
 
 test('keys that are not part of the format are unknown keys: reported where they are, never read or converted', () => {
-  const wrong = `netatlas: 2
+  const wrong = `netatlas: 1
 devices:
   - id: r1
     interfaces:
@@ -279,8 +279,8 @@ networks:
   assert.equal(doc(wrong).exportText(), wrong);
   // the same keys are reported when written in block style, and link "speed"/"medium" stay valid
   // (a port's speed is a setting of the link end, not of the interface)
-  assert.match(errorsOf('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /unknown key "speed"/);
-  assert.deepEqual(errorsOf('netatlas: 2\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
+  assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /unknown key "speed"/);
+  assert.deepEqual(errorsOf('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
 });
 
 test('the schema: each fact has one key, in one place', () => {
@@ -309,7 +309,7 @@ test('the schema: each fact has one key, in one place', () => {
 });
 
 test('VRF is assigned on interfaces (loopbacks included), not on networks', () => {
-  const r = ok('netatlas: 2\ndevices:\n  - id: pe\n    logical_interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
+  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    logical_interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
   assert.deepEqual(r.model.devices[0].logical.concat(r.model.devices[0].interfaces).map((i) => i.vrf), ['red', 'red', undefined]);
   assert.match(JSON.stringify(panels.detailsFor(r.model, 'iface:pe:e0')), /"vrf"[^\]]*\]?[^\]]*red/);
   // membership is by prefix only; the VRF does not take part
@@ -317,12 +317,12 @@ test('VRF is assigned on interfaces (loopbacks included), not on networks', () =
 });
 
 test('a group kind is free text', () => {
-  const r = ok('netatlas: 2\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n  - {id: r3, kind: row, parent: f2}\n');
+  const r = ok('netatlas: 1\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n  - {id: r3, kind: row, parent: f2}\n');
   assert.deepEqual(r.model.groups.map((g) => g.kind), ['building', 'floor', 'row']);
 });
 
 test('loopbacks stay logical: no physical-link properties, no cable', () => {
-  const base = 'netatlas: 2\ndevices:\n  - id: a\n    logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
+  const base = 'netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
   assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /unknown key "speed"/);
   assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /"a:lo0" is a loopback, not a physical interface/);
   assert.doesNotMatch(JSON.stringify(panels.detailsFor(ok(base.replace('SPEED', '')).model, 'iface:a:lo0')), /cable|speed|media/);

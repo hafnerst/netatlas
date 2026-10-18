@@ -17,7 +17,7 @@
 #
 # Simulate ▾ → Start simulation…: the clients' leases through the relays,
 # CAPWAP keepalives, RADIUS requests, syslog messages and SNMP polls.
-netatlas: 2
+netatlas: 1
 title: Enterprise campus — three tiers and controller-managed Wi-Fi
 description: |
   Core, distribution and access switches by role; two controller-managed

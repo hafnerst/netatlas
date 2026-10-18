@@ -17,7 +17,7 @@ const doc = (text) => ModelDoc.fromText(text, 't.yaml', 'file').doc;
 const errorsOf = (text) => validate.loadModel(text).errors.map((e) => e.message);
 const findings = (text, id) => validate.loadModel(text).findings.filter((f) => !id || f.check === id);
 
-const net = `netatlas: 2
+const net = `netatlas: 1
 devices:
   - id: r1
     type: router
@@ -85,11 +85,11 @@ test('which device types may have routes: Layer 3+ (routers, switches, firewalls
   assert.notEqual(role('security_gateway', { separation: { implementation: 'protocol_break' } }), 'router');
   assert.notEqual(role('firewall', { mode: 'transparent' }), 'router');
   for (const t of ['ids_ips', 'cloud']) {
-    const e = errorsOf(`netatlas: 2\ndevices:\n  - id: x\n    type: ${t}\n${t === 'ids_ips' ? '    mode: passive\n' : ''}${t === 'ap' ? '    services: {wireless: {networks: [{id: l, ssid: L, untagged: true, radio: w, security: open}]}}\n    interfaces: [w]\n' : ''}    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.0.1}\n`);
+    const e = errorsOf(`netatlas: 1\ndevices:\n  - id: x\n    type: ${t}\n${t === 'ids_ips' ? '    mode: passive\n' : ''}${t === 'ap' ? '    services: {wireless: {networks: [{id: l, ssid: L, untagged: true, radio: w, security: open}]}}\n    interfaces: [w]\n' : ''}    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.0.1}\n`);
     assert.equal(e.length, 1, t);
     assert.match(e[0], /static routes are allowed on router, switch, .* devices — set the type or delete the routes/, t);
   }
-  assert.match(errorsOf('netatlas: 2\ndevices:\n  - id: x\n    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.0.1}\n')[0], /device "x" has no type, which has no routing table/);
+  assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: x\n    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.0.1}\n')[0], /device "x" has no type, which has no routing table/);
   // a host's default gateway is a static default route
   const h = validate.loadModel(net.replace('      - {id: eth0, ip: 10.0.12.3/30}\n', '      - {id: eth0, ip: 10.0.12.3/30}\n    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.12.1}\n'));
   assert.deepEqual(h.errors, []);
@@ -227,7 +227,7 @@ test('editing routes: add, duplicate, delete and blackhole are undoable steps; r
   d.deleteRoute(0, 3);
   assert.equal(d.result.model.index.devices.get('r1').routes.length, 3);
   // the last route removes the key
-  const one = doc('netatlas: 2\ndevices:\n  - id: r\n    type: router\n    routes:\n      - {prefix: 0.0.0.0/0, interface: e0}\n    interfaces: [e0]\n');
+  const one = doc('netatlas: 1\ndevices:\n  - id: r\n    type: router\n    routes:\n      - {prefix: 0.0.0.0/0, interface: e0}\n    interfaces: [e0]\n');
   one.deleteRoute(0, 0);
   assert.doesNotMatch(one.exportText(), /routes/);
   // renaming an exit interface updates the routes that leave through it; references name them

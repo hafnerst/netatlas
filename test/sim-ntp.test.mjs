@@ -7,7 +7,7 @@ import { load, model, withClock } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 
-const NET = (more = '') => `netatlas: 2
+const NET = (more = '') => `netatlas: 1
 devices:
   - id: ref
     type: server

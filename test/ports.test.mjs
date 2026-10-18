@@ -176,7 +176,7 @@ test('labels off and protocols hidden: the ports stay where they are, every end 
 });
 
 test('a reference to an interface that does not exist is an error, and nothing is attached in its place', () => {
-  const text = 'netatlas: 2\ndevices:\n  - {id: r1, type: router, logical_interfaces: [{id: tun0, type: tunnel}, {id: tun1, type: tunnel}]}\n  - {id: r2, type: router, logical_interfaces: [{id: tun0, type: tunnel}]}\nrelations:\n  - {id: gre, protocol: gre, endpoints: ["r1:tun9", "r2:tun0"]}\n';
+  const text = 'netatlas: 1\ndevices:\n  - {id: r1, type: router, logical_interfaces: [{id: tun0, type: tunnel}, {id: tun1, type: tunnel}]}\n  - {id: r2, type: router, logical_interfaces: [{id: tun0, type: tunnel}]}\nrelations:\n  - {id: gre, protocol: gre, endpoints: ["r1:tun9", "r2:tun0"]}\n';
   const errs = errorsOf(text);
   assert.ok(errs.some((e) => /device "r1" has no interface "tun9"/.test(e.message)), JSON.stringify(errs));
   // the model the page still draws (with the error marked) has no line for it, and no port on r1

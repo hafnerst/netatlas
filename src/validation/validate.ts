@@ -115,16 +115,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   if (isNull(verNode)) {
     c.error(top, 'netatlas', `missing format version — add "netatlas: ${FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
   } else if (!(verNode!.kind === 'scalar' && verNode!.value === FORMAT_VERSION)) {
-    // an older or unknown format is not read at all: its keys would be taken under this format's rules
-    const v = verNode!.kind === 'scalar' ? verNode!.value : undefined;
-    c.error(
-      verNode!,
-      'netatlas',
-      v === 1
-        ? `unsupported format version — this file is model format 1, which NetAtlas no longer reads; the only supported model format is "netatlas: ${FORMAT_VERSION}" (format 2 writes "ipv4: dhcp" instead of "dhcp: true" and an application list under "services.applications"; see docs/FORMAT.md, "Changes from format 1")`
-        : `unsupported format version — the only supported model format is "netatlas: ${FORMAT_VERSION}"`,
-    );
-    return null;
+    c.error(verNode!, 'netatlas', `unsupported format version — the only supported model format is "netatlas: ${FORMAT_VERSION}"`);
   }
   const title = r.field(top, 'title', '', L.maxLabel) || 'Untitled network';
   const description = r.field(top, 'description', '', L.maxDescription);
@@ -404,7 +395,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         im = { kind: 'map', entries: new Map([['id', { key: 'id', keyLine: inode.line, value: inode }]]), line: inode.line, col: inode.col };
       } else im = r.map(inode, ipath);
       if (!im) return null;
-      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT);
+      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT, { dhcp: 'write "ipv4: dhcp" instead: the IPv4 method replaced the earlier DHCP flag' });
       const iid = r.id(im, ipath, IFACE_RE, 'interface id');
       if (!iid) return null;
       const key = ifaceKey(id, iid);
