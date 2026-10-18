@@ -12,7 +12,112 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
-Applications on host-capable devices, IPv6 host
+Analyze as an architecture-validation workflow: shared verdicts with their
+context and coverage, communication checks by application and service,
+allocation-aware addressing, service impact and what-if checks of failure
+domains, saved expectations, and contextual Focus. Earlier in this release:
+applications on host-capable devices, IPv6 host
+
+### Added (Analyze)
+
+- **One meaning for every result.** Every Analyze result says its verdict
+  in a mark and words: *Satisfied* / *Reachable within scope*, *Violated* /
+  *Blocked*, *Partially*, *Beyond modeled scope*, *Indeterminate* and
+  *Unsupported*. A context line says what it was computed on (the
+  configured model, or a **simulation snapshot** at a simulated time) and
+  its scope; a coverage line says how much was checked where a limit or
+  Stop applies; assumptions and limits are under an expansion. After an
+  edit a result is marked **Outdated** with **Refresh**; nothing is computed
+  again behind the user's back. Exports carry the context, the coverage, the
+  version and the assumptions.
+- **Simulation snapshots for analysis.** While a simulation runs, Trace
+  path, the Addressing overview and Design checks evaluate a frozen
+  snapshot of it (by default; the configured model can be chosen): its DHCP
+  leases, SLAAC and DHCPv6 addresses with their state, what is up and what
+  was learned. The snapshot never changes after it was taken. Single points
+  of failure evaluates the configured model only, and says so.
+- **Communication checks in Trace path.** An end may be an application
+  (`plc/registers`), a client application (`hmi/poll`: its configured peer
+  or broker is checked), or a device's service (`core/dns`, `ntp1/ntp`). The
+  result separates addresses, name resolution (by the model's DNS servers;
+  the query is a leg of its own), the network path over every evaluated
+  equal-cost path ("3 evaluated paths reach …, 1 stops at fw2"), the policy
+  decision, the destination listener (on the address the traffic arrives
+  at: a listener bound to another interface does not take it) and runtime
+  behaviour (never established statically). An MQTT client's leg ends at the
+  broker; each subscriber is a leg of its own. The effective ends are shown,
+  with another address to choose where an end has several. **Why?** opens a
+  hop's decision evidence: the lookup, the route that won and why, the
+  routes that lost, the layer-2 way, the policy, a translation, the tunnel,
+  the stop. The return direction is reverse routing and path symmetry, said
+  apart from a session, which is not evaluated. **Prepare in simulation**
+  fills Network events with the same exchange, unsent.
+- **Allocation-aware addressing.** Each address of a network is counted
+  once, as configured, reserved (DHCP reservations, a scope's gateway, a
+  gateway routes name), acquired (in a snapshot), in a DHCP pool, in nested
+  networks, or unallocated. Host use and prefix allocation are shown apart.
+  Suggestions (the next unallocated address, the Edit tab's Next free) are
+  never in a pool, reserved or used in the same address space, and are
+  called *unallocated in model*. Members say how they are obtained; DHCP and
+  IPv6 autoconfiguration clients are listed as configured intent. Duplicates
+  are judged in the scope the model establishes: link-local addresses on
+  their segment, others in a VRF and a connected part of the architecture;
+  reuse in separate parts is listed apart, an unknown scope is a possible
+  conflict. The CSV has the allocation by state and the context.
+- **Service impact and what if.** Single points of failure checks every
+  candidate's **service impact** progressively (cancellable, with its
+  coverage): the configured dependencies that become unavailable (application
+  peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA). The former
+  impact is now called **Structural impact** (an object count). **What if…**
+  fails a failure domain or a few components together and compares with the
+  same baseline: unavailable, through an alternative, degraded, cannot be
+  determined, the saved expectations before and after, and optionally the
+  device pairs of a bounded scope with their coverage. Losing a DHCP server
+  stops new assignments, not existing leases.
+- **Failure domains** (`failure_domains:`): racks, rooms, sites, shared
+  power, conduits and providers by explicit membership (devices, cables,
+  relations, groups), added and edited in the Single points of failure
+  window.
+- **Saved expectations** (`expectations:`) and **Analyze → Design checks…**:
+  requirements kept with the model (must be available, must be blocked,
+  also after a failure condition; a dependency must be viable; a
+  timing-source path must exist), evaluated statically with the actual
+  reason (a block by policy is told apart from a missing route), grouped by
+  a shared stop point, with the findings where they stop. The consistency
+  findings are shown there by kind (contradiction, missing information,
+  potential risk) with consequence, evidence and next step, grouped by the
+  field they share. Renames update the expectations; deleting an object
+  they name lists them first.
+- **Contextual Focus**: the members of a VLAN, the dependencies of a
+  device's applications and services, a multicast group's configured
+  distribution, a timing domain — configured structure, not proof of
+  reachability.
+- The examples `private-house`, `enterprise-wan`, `ot-network` and
+  `timing-ptp` have saved expectations and failure domains.
+
+### Fixed (Analyze)
+
+- The path tracer ignored a firewall's `allow:` list (it read the wrong key);
+  it now permits what the simulation permits.
+- A trace's headline was the first equal-cost path's; a path that left the
+  model or ended in a network without the destination was marked as
+  reached. Both are now judged over every evaluated path.
+- During a simulation, Trace path used only what was failed; it now uses a
+  snapshot with the leased and autoconfigured addresses.
+- The next free address could be in a DHCP pool, a reservation, a scope's
+  gateway, or an address another VRF's member uses on the same segment.
+- Duplicate addresses were reported across disconnected parts of a model
+  and for link-local addresses on different links.
+- Pairwise reachability after a failure checked the first 40 devices by id;
+  it now checks a scope, relevant endpoints first, and reports its coverage.
+- The empty single-points list claimed that nothing could fail; it now
+  says what was checked.
+
+### Model format
+
+- The format version stays 1 (before production, changes are made within
+  it): `failure_domains:` and `expectations:` are new, optional top-level
+  sections; a file without them means what it meant.
 configuration, what NetAtlas models for each protocol, MQTT, and time
 synchronization with NTP state and PTP. Auto-arrange's three options are
 now distinct: Default as before, Compact packed tight, and Structured

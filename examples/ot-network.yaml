@@ -159,3 +159,19 @@ relations:
     label: PLC web configuration
     endpoints: [eng-ws, plc]
     direction: unidirectional
+
+# Design checks (Analyze ▾ → Design checks…): the HMI's polling and the
+# PLC's telemetry must be viable (their configured peer and broker), and the
+# IT side should not reach Modbus. The last one is violated: pgw is a Layer 3
+# forwarder without a policy, so nothing stops it (a design finding, not a
+# simulation result). Single points of failure: the cell switch cuts the cell
+# off; the broker alone cuts nothing off but makes every MQTT client's
+# dependency unavailable (service impact). What if… the cell cabinet (the TAP,
+# the cell switch and the broker) fails.
+failure_domains:
+  - {id: cell-cabinet, label: Cell cabinet, kind: rack, members: [tap, cell-sw, edge]}
+
+expectations:
+  - {id: hmi-poll, name: The HMI polls the PLC, expect: dependency, from: hmi/poll}
+  - {id: plc-telemetry, name: The PLC publishes its telemetry, expect: dependency, from: plc/telemetry}
+  - {id: it-no-modbus, name: The IT side can't reach Modbus, expect: blocked, from: eng-ws, to: plc/registers}

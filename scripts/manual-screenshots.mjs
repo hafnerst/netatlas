@@ -244,7 +244,7 @@ async function main() {
       await page.settle(300);
       const d = await page.rect('#toolwin');
       const sec = await page.rect('#toolwin .addr-vrf');
-      await save('addressing', { x: d.x, y: d.y, w: d.w, h: Math.min(d.y + d.h, sec.y + 330) - d.y }, { quality: 70 });
+      await save('addressing', { x: d.x, y: d.y, w: d.w, h: Math.min(d.y + d.h, sec.y + 330) - d.y }, { quality: 58 });
       await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
@@ -290,8 +290,10 @@ async function main() {
       await page.eval("document.getElementById('toast').hidden = true");
       await page.eval(`localStorage.removeItem('netatlas.window.spof'), netatlas.openSpof(), true`);
       await page.mouse('mouseMoved', 700, 890);
+      // the service impact is checked in steps: the picture shows it done
+      for (let k = 0; k < 200 && !(await page.eval('netatlas.spofServiceDone()')); k++) await page.settle(100);
       await page.settle(250);
-      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 40 });
+      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 34 });
       await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }

@@ -35,7 +35,8 @@ export function firewallDecision(model: Model, fw: Device, from: string | null, 
       if (t && t.proto === svc.proto && t.ports.indexOf(svc.port) >= 0) return { ok: true, text: `${fw.id} permits ${what} from ${from} to ${to}: the relation ${r.id} (${r.protocol})` };
     }
   }
-  const raw = fw.simulation ? fw.simulation.get('allow') : undefined;
+  // (the device's `allow:` as validation stores it: by its registry key)
+  const raw = fw.simulation ? fw.simulation.get('fw-allow') : undefined;
   const allow = parsePorts(raw === undefined ? 'none' : String(raw) || 'none');
   if ('list' in allow && portsMatch(allow.list, svc.proto, svc.proto === 'icmp' ? 0 : svc.port)) return { ok: true, text: `${fw.id} permits ${what}: its allow list (${String(raw)})` };
   const between = (from ? ` from ${from}` : '') + (to ? ` to ${to}` : '');

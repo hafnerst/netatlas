@@ -28,7 +28,7 @@ of real devices.
 |---|---|
 | **Model** | Build devices (15 types, from routers and switches to PLCs and VMs) with their interfaces, addresses, VLANs, routes, services and applications; cables, IP networks, relations such as routing sessions and tunnels, and locations from sites down to racks. |
 | **Visualize** | Switch between the physical and the logical view, find and filter objects, focus on a neighbourhood, and arrange a view automatically (Default, Compact or Structured). |
-| **Analyze** | Review the addressing per VRF, trace the path between two endpoints, list single points of failure, and see consistency findings with a jump to their cause. |
+| **Analyze** | Check whether a client can use an application or service, review how the address space is allocated, find single points of failure and what a failed rack or room takes with it, keep design requirements with the model, and see consistency findings with what follows from them. |
 | **Simulate** | Start a protocol simulation, follow its messages and tables, send packets, join multicast groups, start streams and applications, and fail, shut or power off parts of the network. |
 | **Share** | Save the model as YAML, open it on any other machine, and export either view as a PNG or SVG picture in the light or dark theme. |
 
@@ -77,14 +77,19 @@ part of the HTML file and works offline.
 
 ## Analysis and simulation
 
-**Analysis** looks at the architecture as it is written down: which
-addresses are used and free, which way traffic goes from here to there and
-back, which single cable, device or LAG cuts something off, and which routes,
-VLANs or settings contradict each other. It never changes the model.
+**Analysis** looks at the architecture as it is written down, or at a
+snapshot of a running simulation: whether a source can use an application
+or service (addresses, name resolution, path, policy and listener, each said
+apart), how each network's addresses are allocated, which cable, device or
+LAG cuts something off or takes a service away, what a failure domain takes
+with it, whether saved requirements hold, and which settings contradict
+each other. Every result gives its verdict with its context, coverage and
+limits; it never changes the model and never sends anything, and a modeled
+result is no proof of production behaviour.
 
-![A path trace in the dark theme: the Trace path window with its hop table from dc-pc through dc-edge and aws-gw to web-1, and the path marked in the physical view of a hybrid cloud](docs/img/readme-analysis.png)
+![A path trace in the dark theme: the Trace path window with its verdict (reachable within scope), the layers it checked (addresses, network path, policy) and what static analysis does not establish, the start of the hop table, and the path marked in the physical view of a hybrid cloud](docs/img/readme-analysis.png)
 
-*Analyze → Trace path… on `hybrid-cloud.yaml`: each hop with its interfaces, addresses and the route it uses, the path marked in the diagram.*
+*Analyze → Trace path… on `hybrid-cloud.yaml`: the verdict first, then what it rests on (addresses, path, policy), what a static check does not establish, and each hop; the path marked in the diagram.*
 
 **Simulation** runs the architecture over time. The network starts like a
 freshly booted one, and you can watch protocol exchanges, adjacencies and

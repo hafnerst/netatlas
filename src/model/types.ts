@@ -856,6 +856,69 @@ export interface Demand {
   line: number;
 }
 
+/** What a failure domain stands for (`failure_domains:`): infrastructure that fails together. */
+export type FailureDomainKind = 'rack' | 'room' | 'site' | 'power' | 'conduit' | 'provider' | 'other';
+
+export const FAILURE_DOMAIN_KINDS: ReadonlyArray<{ id: FailureDomainKind; label: string }> = [
+  { id: 'rack', label: 'Rack' },
+  { id: 'room', label: 'Room' },
+  { id: 'site', label: 'Site' },
+  { id: 'power', label: 'Shared power' },
+  { id: 'conduit', label: 'Shared conduit' },
+  { id: 'provider', label: 'Shared provider' },
+  { id: 'other', label: 'Other' },
+];
+
+/**
+ * A shared-failure domain (the `failure_domains:` section): components that
+ * fail together, by explicit membership. A member is a device, a cable, a
+ * relation or a group (all its devices, nested groups included). A group is
+ * never a failure domain by itself: only one written here is. Analysis data:
+ * a what-if condition, never a probability.
+ */
+export interface FailureDomain {
+  id: string;
+  label: string;
+  kind: FailureDomainKind;
+  /** as written: ids of devices, cables (links), relations and groups */
+  members: string[];
+  description?: string;
+  line: number;
+}
+
+/** What a saved expectation requires. */
+export type ExpectKind = 'available' | 'blocked' | 'dependency' | 'timing';
+
+export const EXPECT_KINDS: ReadonlyArray<{ id: ExpectKind; label: string; help: string }> = [
+  { id: 'available', label: 'Must be available', help: 'The communication must be available (and stay so under the failure condition, when one is given).' },
+  { id: 'blocked', label: 'Must be blocked', help: 'The communication must not be possible.' },
+  { id: 'dependency', label: 'Dependency must be viable', help: 'A client application’s configured peer or broker must be usable.' },
+  { id: 'timing', label: 'Timing source path must exist', help: 'A compatible NTP or PTP source must be reachable within the supported analysis (not proven synchronization).' },
+];
+
+/**
+ * A saved architecture expectation (the `expectations:` section): a design
+ * requirement the model is checked against, statically (Analyze → Design
+ * checks). Analysis data: it never changes the network objects, and
+ * evaluating it never runs the simulation.
+ */
+export interface Expectation {
+  id: string;
+  name: string;
+  expect: ExpectKind;
+  /** a device, interface, address or application ("device/application") */
+  from: string;
+  /** a device, interface, address, application or service ("device/service"); none: the source application's configured peer, or any timing source */
+  to?: string;
+  /** "tcp/443", "udp/53", "icmp"; none: from the applications */
+  service?: string;
+  vrf?: string;
+  /** what fails first: devices, cables, relations, interfaces (device:interface), failure domains */
+  failure: string[];
+  description?: string;
+  line: number;
+}
+
 /** Node centers per view, keyed by entity id (see layout-auto.ts). */
 export interface ModelLayout {
   physical: Map<string, { x: number; y: number }>;
@@ -885,6 +948,10 @@ export interface Model {
   checks: Map<string, 'off' | 'error' | 'warning' | 'info'>;
   /** traffic demands (analysis data: traced, never change the network objects) */
   demands: Demand[];
+  /** shared-failure domains (analysis data: what-if conditions) */
+  failureDomains: FailureDomain[];
+  /** saved architecture expectations (analysis data: checked, never change the network objects) */
+  expectations: Expectation[];
   index: ModelIndex;
 }
 

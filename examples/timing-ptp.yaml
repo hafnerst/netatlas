@@ -160,3 +160,12 @@ links:
   - {id: l-rt-swb, a: "rt:b", b: "sw-b:p1", speed: 1G}
   - {id: l-plc, a: "sw-b:p2", b: "plc-b:eth0", speed: 100M}
   - {id: l-drv, a: "sw-b:p3", b: "drv-b:eth0", speed: 100M}
+
+# Design checks (Analyze ▾ → Design checks…): the PLC must have a
+# compatible PTP source path, also without grandmaster A (then through
+# gm-b). A timing expectation is configuration and structure: it never
+# claims that the clocks synchronize, or how accurately (the simulation
+# models that).
+expectations:
+  - {id: plc-time, name: The PLC has a PTP source path, expect: timing, from: plc-b}
+  - {id: plc-time-gm-a, name: The PLC keeps a source path without grandmaster A, expect: timing, from: plc-b, failure: [gm-a]}

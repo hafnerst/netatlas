@@ -15,6 +15,8 @@ export interface FocusWindowState {
   hops: number;
   /** what focus mode shows now ('' = it is off) */
   note: string;
+  /** the contextual focus actions for the selection (a key, a label, whether it is on) */
+  contexts?: Array<{ key: string; label: string; on: boolean }>;
 }
 
 /** The window's content. Its controls: data-focus-hops (a radio per number of hops), #focus-go, #focus-exit-w. */
@@ -33,6 +35,13 @@ export function focusWindowBody(doc: Document, st: FocusWindowState): HTMLElemen
   exit.disabled = !st.note;
   box.appendChild(el(doc, 'div', { class: 'tf-actions' }, [go, exit]));
   if (st.blocked) box.appendChild(el(doc, 'p', { class: 'muted small', id: 'focus-why' }, [st.blocked]));
+  // contextual focus: only what applies to the selection
+  if (st.contexts && st.contexts.length) {
+    const g = el(doc, 'div', { class: 'focus-ctx', role: 'group', 'aria-labelledby': 'focus-ctx-h' });
+    g.appendChild(el(doc, 'p', { class: 'small', id: 'focus-ctx-h' }, ['Or show what it takes part in (configured structure, not proof of reachability):']));
+    for (const c of st.contexts) g.appendChild(el(doc, 'button', { type: 'button', class: 'mini' + (c.on ? ' active' : ''), 'aria-pressed': c.on ? 'true' : 'false', 'data-focus-ctx': c.key }, [c.label]));
+    box.appendChild(g);
+  }
   box.appendChild(el(doc, 'p', { class: 'small focus-now', role: 'status' }, [st.note ? st.note + '.' : 'Focus mode is off: the complete diagram is shown.']));
   return box;
 }

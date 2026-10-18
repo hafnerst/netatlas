@@ -11,7 +11,7 @@
 export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
-  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'checks', 'layout'],
+  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'failure_domains', 'expectations', 'checks', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
@@ -97,6 +97,10 @@ export const SCHEMA = {
   endpoint: ['device', 'interface'],
   /** a traffic demand: an entry of `demands` */
   demand: ['id', 'label', 'source', 'destination', 'bandwidth', 'class', 'description'],
+  /** a shared-failure domain: an entry of `failure_domains` */
+  failureDomain: ['id', 'label', 'kind', 'members', 'description'],
+  /** a saved architecture expectation: an entry of `expectations` */
+  expectation: ['id', 'name', 'expect', 'from', 'to', 'service', 'vrf', 'failure', 'description'],
   /** the presentation-only layout section */
   layout: ['routing', 'physical', 'logical', 'manual'],
 };

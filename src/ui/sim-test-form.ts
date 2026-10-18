@@ -206,6 +206,29 @@ export class TestForm {
     next.focus();
   }
 
+  /**
+   * Fill the form from an analysis (a communication check's handoff): a
+   * unicast from the device (and its interface) to the address, by the
+   * protocol and port. Nothing is sent: the focus goes to Send.
+   */
+  prefill(p: { from: string; via?: string; address: string; kind: TestKind; port?: number }): void {
+    this.type.value = 'unicast';
+    this.sync();
+    this.from.value = p.from;
+    this.sync();
+    if (p.via !== undefined && Array.prototype.some.call(this.via.options, (o: HTMLOptionElement) => o.value === p.via)) this.via.value = p.via;
+    this.to.value = OTHER;
+    this.sync();
+    this.addr.value = p.address;
+    this.sync();
+    this.kind.value = p.kind;
+    this.sync();
+    if (p.port !== undefined) this.port.value = String(p.port);
+    this.sync();
+    this.sendBtn.scrollIntoView({ block: 'nearest' });
+    this.sendBtn.focus();
+  }
+
   private rowShown(name: string): boolean {
     const r = this.rows.get(name);
     return !!r && !r[0].hidden;

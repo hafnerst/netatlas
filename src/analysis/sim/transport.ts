@@ -56,13 +56,14 @@ import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { L3Iface } from './net';
-import { PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
+import { ParamValue, PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
 import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
 import { dnsNameKey, dnsNameProblem } from '../../model/dns';
 import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
 import { isContainer } from '../../model/virtual';
+import { capabilities } from '../../model/capabilities';
 import { profileAt } from '../separation';
 import { appListeners, deviceListeners, serviceListeners } from '../listeners';
 import type { AppInstance } from '../../model/applications';
@@ -295,7 +296,7 @@ export class Transport {
   private series = new Map<string, Test>();
   private fw = new Map<string, Map<string, FwSession>>();
   private pools = new Map<string, { members: Member[]; rr: number; sticky: Map<string, { member: string; at: number }> }>();
-  private listenCache = new Map<string, PortRule[]>();
+  private listenCache = new Map<string, Listening>();
   /** group membership (multicast.ts): which hosts take a group's datagrams */
   multicast: Multicast | null = null;
   /** DHCP and DNS (the resolver for host names) */
@@ -399,31 +400,16 @@ export class Transport {
     return p;
   }
 
-  /** The ports a device listens on: its `listening` attribute, else the ports of the relations it serves (a load balancer or proxy: also those it passes requests on to). */
-  listening(dev: string): { rules: PortRule[]; written: boolean; text: string } {
+  /** The ports a device listens on (deviceListening: one definition for the simulation and the static analysis). */
+  listening(dev: string): Listening {
     const own = this.e.params.deviceValue(dev, 'listening');
-    if (own !== undefined) {
-      const r = parsePorts(String(own) || 'none');
-      return { rules: 'list' in r ? r.list : [], written: true, text: `listening ${String(own) || 'on nothing'} (device)` };
+    if (own !== undefined) return deviceListening(this.P.m, dev, own);
+    let l = this.listenCache.get(dev);
+    if (!l) {
+      l = deviceListening(this.P.m, dev, undefined);
+      this.listenCache.set(dev, l);
     }
-    const gw = this.P.sd(dev);
-    if (gw && gw.caps.sessionBreak && gw.caps.securityGateway) {
-      const prof = (gw.dev.separation ? gw.dev.separation.profiles : []).filter((x) => x.listenPort !== undefined && TRANSFER_PROFILES.some((k) => k.id === x.type));
-      const pr: PortRule[] = prof.map((x) => ({ proto: (TRANSFER_PROFILES.find((k) => k.id === x.type) as (typeof TRANSFER_PROFILES)[number]).transport, from: x.listenPort as number, to: x.listenPort as number }));
-      return { rules: pr, written: false, text: pr.length ? `listening on its transfer profiles' ports: ${prof.map((x) => `${x.id} at ${x.listenInterface} port ${x.listenPort}`).join(', ')}` : 'a protocol break without transfer profiles: no port open' };
-    }
-    let rules = this.listenCache.get(dev);
-    if (!rules) {
-      rules = this.relationRules(dev).slice();
-      // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
-      for (const x of serviceListening(this.P.m.index.devices.get(dev))) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
-      // a container serves the ports it publishes
-      const md = this.P.m.index.devices.get(dev);
-      if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
-      rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
-      this.listenCache.set(dev, rules);
-    }
-    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${isContainer(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+    return l;
   }
 
   private relCache = new Map<string, PortRule[]>();
@@ -432,19 +418,7 @@ export class Transport {
   private relationRules(dev: string): PortRule[] {
     let rules = this.relCache.get(dev);
     if (!rules) {
-      rules = [];
-      for (const r of this.P.m.relations) {
-        const devs = relationDevices(r);
-        if (devs.indexOf(dev) < 0) continue;
-        const prof = relationProfile(this.P.m, r);
-        const t = profileTransport(prof.proto);
-        if (t.proto === 'other') continue;
-        // a load balancer listens on the ports of the services it passes on
-        const relay = !!this.P.sd(dev) && this.P.sd(dev).caps.loadBalancing;
-        const server = prof.behaviour === 'service' || prof.behaviour === 'custom' ? relay || (prof.fromServer ? devs.slice(0, -1).indexOf(dev) >= 0 : devs[devs.length - 1] === dev) : true;
-        if (!server) continue;
-        for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
-      }
+      rules = relationServerPorts(this.P.m, dev);
       this.relCache.set(dev, rules);
     }
     return rules;
@@ -465,12 +439,7 @@ export class Transport {
 
   /** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
   private boundOnly(dev: string, proto: 'tcp' | 'udp', port: number): string[] | null {
-    const md = this.P.m.index.devices.get(dev);
-    const mine = appListeners(md).filter((x) => x.proto === proto && x.port === port);
-    if (!mine.length || mine.some((x) => x.bind === undefined)) return null;
-    if (serviceListeners(md).some((x) => x.proto === proto && x.port === port)) return null;
-    if (portsMatch(this.relationRules(dev), proto, port)) return null;
-    return mine.map((x) => x.bind as string);
+    return boundInterfaces(this.P.m, dev, proto, port, this.relationRules(dev));
   }
 
   /** Is the address one of an interface's (configured or leased) now? */
@@ -2002,6 +1971,76 @@ export function rttText(ms: number): string {
 function svcOf(m: Model, dev: string, id: string): ServiceInstance | undefined {
   const d = m.index.devices.get(dev);
   return d && d.appServices ? d.appServices.get(id) : undefined;
+}
+
+/** What a device listens on: the port rules, whether its `listening` attribute wrote them, and the rule in words. */
+export interface Listening {
+  rules: PortRule[];
+  written: boolean;
+  text: string;
+}
+
+/** The ports of the relations a device serves (a load balancer: also those it passes requests on to). */
+export function relationServerPorts(m: Model, dev: string): PortRule[] {
+  const rules: PortRule[] = [];
+  const d = m.index.devices.get(dev);
+  const relay = !!d && capabilities(d).loadBalancing;
+  for (const r of m.relations) {
+    const devs = relationDevices(r);
+    if (devs.indexOf(dev) < 0) continue;
+    const prof = relationProfile(m, r);
+    const t = profileTransport(prof.proto);
+    if (t.proto === 'other') continue;
+    // a load balancer listens on the ports of the services it passes on
+    const server = prof.behaviour === 'service' || prof.behaviour === 'custom' ? relay || (prof.fromServer ? devs.slice(0, -1).indexOf(dev) >= 0 : devs[devs.length - 1] === dev) : true;
+    if (!server) continue;
+    for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
+  }
+  return rules;
+}
+
+/**
+ * The ports a device listens on, for the simulation and the static analysis
+ * alike: its `listening` attribute when it has one (`own`: the value in
+ * effect), else a protocol break's transfer profiles, else the ports of the
+ * relations it serves, of its services and applications, and of what a
+ * container publishes.
+ */
+export function deviceListening(m: Model, dev: string, own: ParamValue | undefined): Listening {
+  if (own !== undefined) {
+    const r = parsePorts(String(own) || 'none');
+    return { rules: 'list' in r ? r.list : [], written: true, text: `listening ${String(own) || 'on nothing'} (device)` };
+  }
+  const md = m.index.devices.get(dev);
+  const caps = md ? capabilities(md) : null;
+  if (md && caps && caps.sessionBreak && caps.securityGateway) {
+    const prof = (md.separation ? md.separation.profiles : []).filter((x) => x.listenPort !== undefined && TRANSFER_PROFILES.some((k) => k.id === x.type));
+    const pr: PortRule[] = prof.map((x) => ({ proto: (TRANSFER_PROFILES.find((k) => k.id === x.type) as (typeof TRANSFER_PROFILES)[number]).transport, from: x.listenPort as number, to: x.listenPort as number }));
+    return { rules: pr, written: false, text: pr.length ? `listening on its transfer profiles' ports: ${prof.map((x) => `${x.id} at ${x.listenInterface} port ${x.listenPort}`).join(', ')}` : 'a protocol break without transfer profiles: no port open' };
+  }
+  const rules = relationServerPorts(m, dev);
+  // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
+  for (const x of serviceListening(md)) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
+  // a container serves the ports it publishes
+  if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
+  rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
+  return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${md && isContainer(md) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+}
+
+/** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
+export function boundInterfaces(m: Model, dev: string, proto: 'tcp' | 'udp', port: number, relRules: PortRule[] = relationServerPorts(m, dev)): string[] | null {
+  const md = m.index.devices.get(dev);
+  const mine = appListeners(md).filter((x) => x.proto === proto && x.port === port);
+  if (!mine.length || mine.some((x) => x.bind === undefined)) return null;
+  if (serviceListeners(md).some((x) => x.proto === proto && x.port === port)) return null;
+  if (portsMatch(relRules, proto, port)) return null;
+  return mine.map((x) => x.bind as string);
+}
+
+/** The `listening` attribute a device's model writes (its `simulation:` block), undefined when it writes none. */
+export function writtenListening(d: Device | undefined): ParamValue | undefined {
+  const v = d && d.simulation ? d.simulation.get('listening') : undefined;
+  return v === undefined ? undefined : v;
 }
 
 /** The ports a device's services and applications listen on (analysis/listeners.ts). */

@@ -215,6 +215,7 @@ export function buildCommands(): Command[] {
       state: (app) => {
         const f = app.session ? app.session.state.focus : null;
         if (!f) return off('Focus mode is off');
+        if (f.context) return off('A contextual focus shows what the object takes part in: it has no hops');
         return f.hops >= FOCUS_MAX_HOPS ? off(`Focus mode shows ${FOCUS_MAX_HOPS} hops at most`) : on(`Show ${f.hops + 1} hops around the focused object`);
       },
       run: (app) => app.changeFocusHops(1),
@@ -228,6 +229,7 @@ export function buildCommands(): Command[] {
       state: (app) => {
         const f = app.session ? app.session.state.focus : null;
         if (!f) return off('Focus mode is off');
+        if (f.context) return off('A contextual focus shows what the object takes part in: it has no hops');
         return f.hops <= FOCUS_MIN_HOPS ? off(`Focus mode shows ${FOCUS_MIN_HOPS} hop at least`) : on(`Show ${f.hops - 1} hop${f.hops - 1 > 1 ? 's' : ''} around the focused object`);
       },
       run: (app) => app.changeFocusHops(-1),
@@ -275,8 +277,17 @@ export function buildCommands(): Command[] {
       group: 'Analyze',
       mode: true,
       keywords: 'spof redundancy partition resilience failure report n-1 window csv',
-      state: (app) => needDiagram(app, 'A window with the cables, devices and LAGs whose failure alone cuts the network or brings relations down: a sortable table of the model as written'),
+      state: (app) => needDiagram(app, 'A window with the cables, devices and LAGs whose failure alone cuts the network, brings relations down or makes configured services unavailable, and what-if checks of failure domains'),
       run: (app) => app.openSpof(),
+    },
+    {
+      id: 'analyze.checks',
+      label: 'Design checks…',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'expectations requirements policy blocked available consistency findings problems validation design review',
+      state: (app) => needDiagram(app, 'A window with the saved expectations (evaluated statically, on demand) and the consistency findings, grouped, with their consequences and next steps'),
+      run: (app) => app.openDesignChecks(),
     },
     // ---------------------------------------------------------- tool windows
     {

@@ -35,7 +35,7 @@
  * model, never on the order of either.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
-import { Interface, Model, Relation, Route, deviceInterfaces, ifaceKey, relationDevices, Device } from '../model/types';
+import { Interface, Model, Relation, Route, deviceInterfaces, ifaceKey, relationDevices, Device, FailureDomain } from '../model/types';
 import { networkMembers, subinterfaceParent } from '../model/derive';
 import { clusterMembers, hostOf, isGuest, portGroupAttachments, portGroupOf, uplinkPorts, vethNetwork, vnicHost, vnicPortGroup, vswitchRef, isVm } from '../model/virtual';
 import { prefixText } from './ipmath';
@@ -449,9 +449,6 @@ export function summarize(model: Model, res: FailureResult): FailureSummary {
 
 // ------------------------------------------------------------ reachability
 
-/** At most this many devices are checked pairwise for reachability. */
-export const REACH_MAX_DEVICES = 40;
-
 export interface LostPair {
   from: string;
   to: string;
@@ -463,15 +460,6 @@ export interface LostPair {
 
 /** per model and ordered pair: does it reach, and what its paths touch */
 const reachCache = new WeakMap<Model, Map<string, { ok: boolean; partial: boolean; refs: Set<string> }>>();
-
-/** The devices whose reachability is checked: those with an address, by id (at most REACH_MAX_DEVICES). */
-export function reachDevices(model: Model): { devices: string[]; total: number } {
-  const all = model.devices
-    .filter((d) => connectedOf(model, d.id).length > 0)
-    .map((d) => d.id)
-    .sort(cmp);
-  return { devices: all.slice(0, REACH_MAX_DEVICES), total: all.length };
-}
 
 /** Does `from` reach `to`: on all equal-cost paths (ok), some of them (partial), or none? */
 function reaches(model: Model, from: string, to: string, ctx?: RoutingCtx): { ok: boolean; partial: boolean; detail: string; refs: Set<string> } {
@@ -487,37 +475,17 @@ function reaches(model: Model, from: string, to: string, ctx?: RoutingCtx): { ok
 }
 
 /**
- * The ordered device pairs that reached each other without the failure and
- * don't with it (traced device to device; a failed device's own pairs are
- * not counted). Sorted by source and destination. A failure only takes
- * routes away, so a pair whose paths touched nothing affected keeps them:
- * only the others are traced again.
+ * The ordered device pairs of a scope (the whole architecture by default)
+ * that reached each other without the failure and don't with it (traced
+ * device to device; a failed device's own pairs are not counted), with the
+ * coverage: how many pairs the scope has, how many were checked, which
+ * devices a limit left out. Sorted by source and destination. A failure only
+ * takes routes away, so a pair whose paths touched nothing affected keeps
+ * them: only the others are traced again.
  */
-export function lostReachability(model: Model, res: FailureResult): { pairs: LostPair[]; checked: number; total: number } {
-  const { devices, total } = reachDevices(model);
-  let before = reachCache.get(model);
-  if (!before) reachCache.set(model, (before = new Map()));
-  const pairs: LostPair[] = [];
-  const hit = failureRefs(res);
-  for (const a of devices) {
-    if (res.devices.get(a) === 'down') continue;
-    for (const b of devices) {
-      if (a === b || res.devices.get(b) === 'down') continue;
-      const k = a + '\n' + b;
-      let was = before.get(k);
-      if (was === undefined) {
-        const r = reaches(model, a, b);
-        before.set(k, (was = { ok: r.ok, partial: r.partial, refs: r.refs }));
-      }
-      if (!(was.ok || was.partial) || !Array.from(was.refs).some((r) => hit.has(r))) continue;
-      const now = reaches(model, a, b, res.ctx);
-      if (now.ok) continue;
-      // all of it lost, or a part that reached before
-      if (!now.partial) pairs.push({ from: a, to: b, detail: now.detail, partial: false });
-      else if (was.ok) pairs.push({ from: a, to: b, detail: now.detail, partial: true });
-    }
-  }
-  return { pairs, checked: devices.length, total };
+export function lostReachability(model: Model, res: FailureResult, scope: ReachScope = { kind: 'entire' }, relevant: string[] = []): { pairs: LostPair[]; checked: number; total: number; eligible: number; omitted: string[] } {
+  const sp = scopePairs(model, scope, relevant);
+  return { pairs: lostPairs(model, res, sp.pairs), checked: sp.devices.length, total: sp.devices.length + sp.omitted.length, eligible: sp.eligible, omitted: sp.omitted };
 }
 
 // ------------------------------------------------------------ single points of failure
@@ -614,17 +582,23 @@ function components(model: Model, devUp: (d: string) => boolean, linkUp: (l: str
   return out;
 }
 
+/** A candidate single point of failure: what fails for it. */
+export interface SpofCandidate {
+  kind: Spof['kind'];
+  ref: string;
+  fail: string[];
+  note?: string;
+}
+
 /**
- * The cables, devices and LAGs whose failure alone would partition the
- * physical network (devices that were connected by cables no longer are,
- * leaving out the failed device itself) or bring down relations whose
- * endpoints are still up (no redundant underlay). Most impact first.
+ * The candidates the single-point analysis evaluates: every cable, every
+ * device, every LAG (its member cables at once), and for virtualization the
+ * virtual switches whose uplinks are one port or all go to one device, and
+ * the passthrough ports. Nothing else is a candidate (a relation, an
+ * interface alone, a combination: those are what-if conditions).
  */
-export function singlePointsOfFailure(model: Model): Spof[] {
-  const before = components(model, () => true, () => true);
-  const compOf = new Map<string, number>();
-  before.forEach((c, i) => c.forEach((d) => compOf.set(d, i)));
-  const cands: Array<{ kind: Spof['kind']; ref: string; fail: string[]; note?: string }> = [];
+export function spofCandidates(model: Model): SpofCandidate[] {
+  const cands: SpofCandidate[] = [];
   for (const l of model.links) cands.push({ kind: 'cable', ref: 'link:' + l.id, fail: ['link:' + l.id] });
   for (const d of model.devices) cands.push({ kind: 'device', ref: 'device:' + d.id, fail: ['device:' + d.id] });
   for (const d of model.devices) {
@@ -642,9 +616,15 @@ export function singlePointsOfFailure(model: Model): Spof[] {
     }
   }
   cands.push(...virtualCandidates(model));
-  const out: Spof[] = [];
-  for (const c of cands) {
-    const res = simulate(model, c.fail);
+  return cands;
+}
+
+/** The structural impact of one candidate (null: none), with the failure it was computed from. */
+export function structuralImpact(model: Model, c: SpofCandidate, res: FailureResult = simulate(model, c.fail)): Spof | null {
+  const before = baseComponents(model);
+  const compOf = new Map<string, number>();
+  before.forEach((g, i) => g.forEach((d) => compOf.set(d, i)));
+  {
     const after = components(model, (d) => res.devices.get(d) !== 'down', (l) => res.links.get(l) !== 'down');
     // groups of survivors cut off from devices they were connected to: every group but the largest of each former group
     const isolated: string[][] = [];
@@ -681,12 +661,151 @@ export function singlePointsOfFailure(model: Model): Spof[] {
     if (isolated.length || relations.length || guests.length) {
       const s: Spof = { kind: c.kind, ref: c.ref, fail: c.fail, isolated, relations, guests };
       if (c.note !== undefined) s.note = c.note;
-      out.push(s);
+      return s;
     }
   }
-  const weight = (s: Spof): number => s.isolated.reduce((n, g) => n + g.length, 0) + s.relations.length + s.guests.length;
-  const kindRank = { device: 0, lag: 1, vswitch: 2, passthrough: 3, cable: 4 };
-  return out.sort((a, b) => weight(b) - weight(a) || kindRank[a.kind] - kindRank[b.kind] || cmp(a.ref, b.ref));
+  return null;
+}
+
+const baseCache = new WeakMap<Model, string[][]>();
+
+/** The groups of devices the cables join with nothing failed (cached per model). */
+function baseComponents(model: Model): string[][] {
+  let b = baseCache.get(model);
+  if (!b) baseCache.set(model, (b = components(model, () => true, () => true)));
+  return b;
+}
+
+/** A single point's structural impact: devices cut off (guests that go down included) plus relations that go down. */
+export function structuralWeight(s: Spof): number {
+  return s.isolated.reduce((n, g) => n + g.length, 0) + s.relations.length + s.guests.length;
+}
+
+const KIND_RANK: { [k in Spof['kind']]: number } = { device: 0, lag: 1, vswitch: 2, passthrough: 3, cable: 4 };
+
+/** Most structural impact first, then devices before LAGs … cables, then by ref. */
+export function compareSpofs(a: Spof, b: Spof): number {
+  return structuralWeight(b) - structuralWeight(a) || KIND_RANK[a.kind] - KIND_RANK[b.kind] || cmp(a.ref, b.ref);
+}
+
+/**
+ * The cables, devices and LAGs whose failure alone would partition the
+ * physical network (devices that were connected by cables no longer are,
+ * leaving out the failed device itself) or bring down relations whose
+ * endpoints are still up (no redundant underlay): the structural single
+ * points of failure. Most impact first.
+ */
+export function singlePointsOfFailure(model: Model): Spof[] {
+  const out: Spof[] = [];
+  for (const c of spofCandidates(model)) {
+    const s = structuralImpact(model, c);
+    if (s) out.push(s);
+  }
+  return out.sort(compareSpofs);
+}
+
+// ------------------------------------------------------------ failure conditions
+
+/** The failable refs of a failure domain: its devices, cables and relations, a group's devices (nested groups included). */
+export function domainRefs(model: Model, d: FailureDomain): string[] {
+  const out = new Set<string>();
+  const inGroup = (gid: string | undefined, target: string): boolean => {
+    let g = gid ? model.index.groups.get(gid) : undefined;
+    for (let n = 0; g && n < 32; n++) {
+      if (g.id === target) return true;
+      g = g.parent ? model.index.groups.get(g.parent) : undefined;
+    }
+    return false;
+  };
+  for (const m of d.members) {
+    if (model.index.devices.has(m)) out.add('device:' + m);
+    else if (model.index.links.has(m)) out.add('link:' + m);
+    else if (model.index.relations.has(m)) out.add('relation:' + m);
+    else if (model.index.groups.has(m)) for (const x of model.devices) if (inGroup(x.group, m)) out.add('device:' + x.id);
+  }
+  return Array.from(out).sort(cmp);
+}
+
+/** A failure condition as written (devices, cables, relations, interfaces device:interface, failure domains): the refs that fail, and what names nothing. */
+export function failureCondition(model: Model, entries: string[]): { refs: string[]; unknown: string[]; domains: string[] } {
+  const refs = new Set<string>();
+  const unknown: string[] = [];
+  const domains: string[] = [];
+  for (const e of entries) {
+    const d = model.failureDomains.find((x) => x.id === e);
+    if (d) {
+      domains.push(d.id);
+      for (const r of domainRefs(model, d)) refs.add(r);
+    } else if (model.index.devices.has(e)) refs.add('device:' + e);
+    else if (model.index.links.has(e)) refs.add('link:' + e);
+    else if (model.index.relations.has(e)) refs.add('relation:' + e);
+    else if (model.index.interfaces.has(e)) refs.add('iface:' + e);
+    else if (failableRef(model, e)) refs.add(e);
+    else unknown.push(e);
+  }
+  return { refs: Array.from(refs).sort(cmp), unknown, domains };
+}
+
+// ------------------------------------------------------------ scoped reachability
+
+/** At most this many ordered device pairs are traced for one failure. */
+export const REACH_MAX_PAIRS = 1600;
+
+/** What pairwise reachability covers. */
+export type ReachScope = { kind: 'devices'; devices: string[] } | { kind: 'group'; group: string } | { kind: 'entire' };
+
+/**
+ * The device pairs of a scope (the devices with an address), with how many
+ * pairs the scope has. The whole architecture beyond the limit: the devices
+ * that saved expectations and configured dependencies name come first, the
+ * others by id, and the coverage says how many were left out.
+ */
+export function scopePairs(model: Model, scope: ReachScope, relevant: string[] = [], limit = REACH_MAX_PAIRS): { pairs: Array<[string, string]>; eligible: number; devices: string[]; omitted: string[] } {
+  const addressed = (id: string): boolean => connectedOf(model, id).length > 0;
+  let devs: string[];
+  if (scope.kind === 'devices') devs = scope.devices.filter((d) => model.index.devices.has(d) && addressed(d));
+  else if (scope.kind === 'group') {
+    const inGroup = (gid: string | undefined): boolean => {
+      let g = gid ? model.index.groups.get(gid) : undefined;
+      for (let n = 0; g && n < 32; n++) {
+        if (g.id === scope.group) return true;
+        g = g.parent ? model.index.groups.get(g.parent) : undefined;
+      }
+      return false;
+    };
+    devs = model.devices.filter((d) => inGroup(d.group) && addressed(d.id)).map((d) => d.id);
+  } else devs = model.devices.filter((d) => addressed(d.id)).map((d) => d.id);
+  const rel = new Set(relevant);
+  devs = Array.from(new Set(devs)).sort((a, b) => Number(rel.has(b)) - Number(rel.has(a)) || cmp(a, b));
+  const eligible = devs.length * (devs.length - 1);
+  const keep = Math.max(2, Math.floor((1 + Math.sqrt(1 + 4 * limit)) / 2));
+  const used = devs.slice(0, keep);
+  const pairs: Array<[string, string]> = [];
+  for (const a of used) for (const b of used) if (a !== b) pairs.push([a, b]);
+  return { pairs: pairs.slice(0, limit), eligible, devices: used, omitted: devs.slice(keep) };
+}
+
+/** The pairs of a list that reached each other without the failure and don't (or only partly) with it. */
+export function lostPairs(model: Model, res: FailureResult, pairs: Array<[string, string]>): LostPair[] {
+  let before = reachCache.get(model);
+  if (!before) reachCache.set(model, (before = new Map()));
+  const out: LostPair[] = [];
+  const hit = failureRefs(res);
+  for (const [a, b] of pairs) {
+    if (res.devices.get(a) === 'down' || res.devices.get(b) === 'down') continue;
+    const k = a + '\n' + b;
+    let was = before.get(k);
+    if (was === undefined) {
+      const r = reaches(model, a, b);
+      before.set(k, (was = { ok: r.ok, partial: r.partial, refs: r.refs }));
+    }
+    if (!(was.ok || was.partial) || !Array.from(was.refs).some((r) => hit.has(r))) continue;
+    const now = reaches(model, a, b, res.ctx);
+    if (now.ok) continue;
+    if (!now.partial) out.push({ from: a, to: b, detail: now.detail, partial: false });
+    else if (was.ok) out.push({ from: a, to: b, detail: now.detail, partial: true });
+  }
+  return out;
 }
 
 /**

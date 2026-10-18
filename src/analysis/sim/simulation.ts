@@ -15,6 +15,7 @@ import { snoopingChoice, switchedVlans } from '../../model/snooping';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
+import type { AnalysisSnapshot } from '../snapshot';
 import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
 import { RealTimeScheduler } from './realtime';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
@@ -702,6 +703,11 @@ export class Simulation {
   /** What the diagram marks as down (cables, relations, interfaces, devices). */
   downRefs(): string[] {
     return this.engine.downRefs();
+  }
+
+  /** The state now, frozen for analysis (analysis/snapshot.ts): it never changes after this call. */
+  snapshot(): AnalysisSnapshot {
+    return this.engine.analysisSnapshot(this.downRefs());
   }
 
   // ------------------------------------------------------------ parameters

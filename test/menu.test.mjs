@@ -446,7 +446,7 @@ test('Analyze menu: between Find and Simulate, built like the others; Addressing
   assert.match(header, /<button id="btn-trace-exit" type="button" role="menuitem" data-command="trace\.exit"[^>]*><span class="mi-label">Exit path trace<\/span>/);
   // every entry opens a tool window (aria-haspopup="dialog"); Single points of failure is last
   const whole = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.addressing', 'focus.window', 'focus.exit', 'trace.open', 'trace.exit', 'analyze.spof']);
+  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.addressing', 'focus.window', 'focus.exit', 'trace.open', 'trace.exit', 'analyze.spof', 'analyze.checks']);
   assert.match(whole, /<button id="btn-spof" type="button" role="menuitem" data-command="analyze\.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…<\/span><\/button>/);
   // … but no simulation: Analyze is "what is", the model as written
   assert.doesNotMatch(whole, /data-command="sim\./);

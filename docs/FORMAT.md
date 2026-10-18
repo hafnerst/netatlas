@@ -43,6 +43,8 @@ links: [...]
 networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
+failure_domains: [...] # optional: components that fail together (what-if conditions)
+expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
 checks: {...}          # optional: switch consistency checks off or change their severity
 layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
@@ -62,7 +64,10 @@ keys gets errors until it is changed by hand. There is no migration.
 
 New, with nothing to convert: an interface's IPv6 method and a router's
 advertisements ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
-DHCPv6 scopes, the `mqtt_broker` and `ptp` services.
+DHCPv6 scopes, the `mqtt_broker` and `ptp` services, and the two analysis
+sections [`failure_domains`](#failure_domains-shared-failure-domains) and
+[`expectations`](#expectations-saved-design-requirements). Both are
+optional additions to format 1: a file without them means what it meant.
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never
 silently disappear. That includes `scenarios:` and `risk_groups:`, which
@@ -2261,6 +2266,86 @@ Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
 a bandwidth that isn't one and a duplicate id are **errors**; an end that
 names nothing of the model is a **warning** (the demand can't be traced and
 is shown as lost). At most 2000 demands.
+
+## `failure_domains` (shared-failure domains)
+
+Optional. Components that fail together: a rack, a room or site, shared
+power, a shared conduit, a shared provider. Membership is explicit: a
+group of the diagram is never a failure domain by itself (it may stay
+purely organizational), only one written here is. A failure domain is
+analysis data: Analyze → Single points of failure… → **What if…** fails
+it as one condition and compares the result with the same baseline, and a
+saved expectation can name it as its failure condition. It is a what-if
+condition, never a probability, and a file means the same network with or
+without it.
+
+```yaml
+failure_domains:
+  - id: hq-rack-a           # required, unique, and no id of a device, cable, relation, network or group
+    label: HQ rack A        # optional (the id if empty)
+    kind: rack              # required: rack, room, site, power, conduit, provider, other
+    members: [hq-core1, l-uplink-1, power-a-devices]   # required: devices, cables, relations, groups
+    description: …          # optional
+```
+
+A member is a device, a cable (a link's id), a relation or a group (every
+device in it, nested groups included). What a failed member takes with it
+is what the failure analysis propagates: a device its interfaces and
+cables, a cable its ports, a relation what runs over it.
+
+Validation: unknown keys, a missing or unknown `kind`, no `members`, a
+member that names nothing of the model, a duplicate id and an id that is
+already another object's are **errors**. At most 500 failure domains.
+
+## `expectations` (saved design requirements)
+
+Optional. Requirements kept with the model and checked statically by
+Analyze → **Design checks…**: a communication that must be available or
+blocked (also under a failure condition), a configured dependency that must
+be viable, a timing-source path that must exist. An expectation is analysis
+data: evaluating it never sends anything and never starts the simulation,
+and a file means the same network with or without it.
+
+```yaml
+expectations:
+  - id: guest-no-mgmt                   # required, unique among the expectations
+    name: Guests can't manage the access points   # required: what it is called
+    expect: blocked                     # required: available, blocked, dependency, timing
+    from: guest-phone                   # required: a device, device:interface, an address or device/application
+    to: "ap-b:mgmt"                     # available, blocked: a device, interface, address, device/application or device/service
+    service: tcp/22                     # optional: tcp/<port>, udp/<port> or icmp (else from the applications)
+    vrf: guest                          # optional: the source's table (else the source interface's)
+    failure: [basement-power]           # optional: what fails first: devices, cables, relations, device:interface, failure domains
+    description: …                      # optional
+```
+
+| `expect` | Satisfied when | Note |
+|---|---|---|
+| `available` | the communication check is satisfied: addresses, path, policy and listener (under the failure condition, when given) | only some evaluated equal-cost paths reaching is a violation; a path that leaves the model is indeterminate |
+| `blocked` | no evaluated path delivers it | the reason says whether a policy decision blocks it or something else (no route, a missing adjacency), which may not be the intended control |
+| `dependency` | the client application in `from` can use its configured peer or broker | `to` may be left out |
+| `timing` | a compatible PTP source path or NTP upstream exists within the supported analysis | never proof that the clock synchronizes, or of its accuracy |
+
+`from` and `to` take what Trace path takes, plus applications
+(`device/application`) and a device's services (`device/dns`,
+`device/ntp`, `device/mqtt_broker` …; an application of that id first).
+A client application in `from` names its own peer or broker, so an
+`available` or `blocked` expectation from one may leave `to` out.
+
+The verdicts: **Satisfied**, **Violated**, **Indeterminate** (information
+is missing: an address only DHCP or SLAAC assigns at runtime, a failure
+condition that names nothing of the model) and **Unsupported** (a failure
+condition evaluated on a simulation snapshot, which would blend two
+states; a dependency expectation without a client application).
+
+Validation: unknown keys, a missing `name`, `expect` or `from`, an
+unknown `expect`, an unreadable `service`, no `to` where it is needed and a
+duplicate id are **errors**; an end or a failure entry that names nothing of
+the model is a **warning** (the expectation evaluates as indeterminate). At
+most 1000 expectations and 64 entries per failure condition. Renaming a
+device, an interface, an application or a failure domain updates the
+expectations and failure domains that name it; deleting one lists them in
+the confirmation.
 
 ## Simulation parameters and device attributes
 

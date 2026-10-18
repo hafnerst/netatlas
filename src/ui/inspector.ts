@@ -5217,12 +5217,17 @@ export class Editor {
         const refs = ent && ent.id ? doc.references(kind, ent.id) : [];
         // a host: the guests that run on it are named
         const guests = kind === 'device' && ent && ent.id ? doc.guestsOfHost(ent.id) : [];
+        // the saved expectations and failure domains that name it are listed before anything is deleted
+        const users = doc.analysisUsers(refs);
         const answer = await this.host.dialog({
           title: `Delete ${kind} “${ent && ent.id ? ent.id : '(no id)'}”?`,
           body: [
             refs.length
               ? `${refs.length} reference${refs.length > 1 ? 's' : ''} to it will become invalid and will be listed as errors so you can fix or remove them.`
               : 'Nothing refers to it.',
+            ...(users.length
+              ? [' The analysis entries that name it (an expectation can’t be evaluated, a failure domain member is an error, until you change them):', this.e('ul', { class: 'removal-list', 'data-analysis-users': '' }, users.map((x) => this.e('li', {}, [x])))]
+              : []),
             ...(guests.length
               ? [` ${guests.length === 1 ? 'This guest runs' : `These ${guests.length} guests run`} on it (${guests.length === 1 ? 'its host reference breaks' : 'their host references break'}):`, this.e('ul', { class: 'removal-list' }, guests.map((x) => this.e('li', {}, [`${x.id} (${isVm(x) ? 'VM' : 'container'})`])))]
               : []),

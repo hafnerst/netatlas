@@ -45,6 +45,7 @@ import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
 import { firewallDecision } from './fw-policy';
+import type { Verdict } from './result';
 import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
 import { deviceTypeInText, deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
 import {
@@ -53,9 +54,12 @@ import {
   DecisionHop,
   RibEntry,
   RoutingCtx,
+  compareEntries,
+  connectedIn,
   connectedOf,
   ifaceVrf,
   lookup,
+  ribOf,
   routeRef,
   routeText,
   routingAdjacencies,
@@ -153,7 +157,53 @@ export interface Hop {
   /** which of them this path takes (0: the first) */
   branch: number;
   notes: string[];
+  /** why this hop forwards as it does: the decision data the tracer used ("Why this hop?") */
+  why?: HopWhy;
 }
+
+/** A table entry as the evidence names it. */
+export interface RouteChoice {
+  /** "static route 0.0.0.0/0 via 10.0.0.1", "OSPF route 10.9.0.0/24 over ospf-a (cost 20, distance 110)" */
+  text: string;
+  prefix: string;
+  distance: number;
+  metric: number;
+  /** the route's or relation's ref, for navigation */
+  ref?: string;
+}
+
+/** A matching entry that was not used, and why. */
+export interface RouteAlternative extends RouteChoice {
+  lost: 'longer-prefix' | 'distance' | 'metric' | 'unusable';
+  detail: string;
+}
+
+/**
+ * The evidence of one hop, collected while the tracer decides (never
+ * reconstructed afterwards): the lookup, the entries selected and why they
+ * won, the matching entries that lost, the layer-2 way, the policy
+ * decisions, the translation, the tunnel, and where it stops the first
+ * unmet prerequisite.
+ */
+export interface HopWhy {
+  /** "10.9.0.10 in the default table of r1" */
+  lookup: string;
+  selected: RouteChoice[];
+  /** "longest matching prefix /24, then the lowest distance (1) and metric (0)" */
+  rule: string;
+  alternatives: RouteAlternative[];
+  /** the layer-2 way to the next hop, in words */
+  l2?: string;
+  /** what a filtering device decided (permitted, or the denial) */
+  policy: string[];
+  nat?: string;
+  tunnel?: string;
+  /** the first unmet prerequisite, where the path stops at this hop */
+  stop?: string;
+}
+
+/** At most this many alternatives are listed per hop. */
+const MAX_ALTERNATIVES = 6;
 
 export interface Path {
   hops: Hop[];
@@ -267,7 +317,7 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   let destAddr: IpAddr | null = null;
   let destDev: string | undefined;
   let destIface: string | undefined;
-  const srcFamilies = familiesOf(model, srcDev, srcIface);
+  const srcFamilies = familiesOf(model, srcDev, srcIface, ctx);
   if (dst.kind === 'address') {
     destAddr = parseAddress(dst.address);
     const owners = destAddr ? holders(model, destAddr, ctx, null) : [];
@@ -285,12 +335,18 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   }
   if (!destAddr) return { ...out, error: 'Destination: not an address' };
   const vrf = vrfGiven !== undefined ? vrfGiven : srcIface !== undefined ? ifaceVrf(model, srcDev, srcIface) : '';
+  let pickedIface: string | undefined;
   if (!srcAddr) {
-    const c = srcIface !== undefined ? connectedOf(model, srcDev).find((x) => x.iface === srcIface && x.addr.version === (destAddr as IpAddr).version) : pickAddress(model, srcDev, undefined, [(destAddr as IpAddr).version], vrf, ctx);
-    if (c) srcAddr = c.addr;
+    const c = srcIface !== undefined ? connectedIn(model, srcDev, ctx).find((x) => x.iface === srcIface && x.addr.version === (destAddr as IpAddr).version) : pickAddress(model, srcDev, undefined, [(destAddr as IpAddr).version], vrf, ctx);
+    if (c) {
+      srcAddr = c.addr;
+      pickedIface = c.iface;
+    }
   }
   out.source = { device: srcDev, vrf };
+  // (the interface whose address the trace starts from, also when only the device was given: shown, it changes nothing)
   if (srcIface !== undefined) out.source.iface = srcIface;
+  else if (pickedIface !== undefined) out.source.iface = pickedIface;
   if (srcAddr) out.source.address = formatAddr(srcAddr);
   out.dest = { address: formatAddr(destAddr) };
   if (destDev !== undefined) out.dest.device = destDev;
@@ -360,6 +416,8 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   if (at.inAddr !== undefined) hop.inAddr = at.inAddr;
   const stop = (reason: StopReason, detail: string): Path[] => {
     hop.via = { kind: reason === 'blackhole' ? 'blackhole' : 'none', text: detail };
+    if (!hop.why) hop.why = { lookup: `${w.destText} at ${at.device}`, selected: [], rule: '', alternatives: [], policy: [] };
+    hop.why.stop = detail;
     return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason, detail } }];
   };
   const key = at.device + '\0' + at.vrf;
@@ -368,9 +426,10 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   const d = model.index.devices.get(at.device);
   if (!d) return stop('unresolved', `${at.device} is not in the model`);
   const decision: Decision = lookup(model, at.device, at.vrf, w.dest, w.ctx);
+  hop.why = explainDecision(model, at, w.dest, w.destText, decision, w.ctx);
   if (decision.kind === 'local' && w.dnat && w.dnat.host === at.device) return dnatHops(w, hop, before);
   if (decision.kind === 'local') {
-    const own = connectedOf(model, at.device).find((c) => compareAddr(c.addr, w.dest) === 0);
+    const own = connectedIn(model, at.device, w.ctx).find((c) => compareAddr(c.addr, w.dest) === 0);
     hop.via = { kind: 'local', text: `${w.destText} is an address of ${at.device}${own ? ' (' + own.iface + ')' : ''}` };
     return [{ hops: before.concat(hop), end: own ? { kind: 'reached', device: at.device, iface: own.iface } : { kind: 'reached', device: at.device } }];
   }
@@ -390,7 +449,9 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
     const e = decision.entries[0];
     hop.via = viaOf(model, e);
     hop.via.kind = 'blackhole';
-    return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: 'blackhole', detail: `${hop.via.text} drops the traffic (a black hole)` } }];
+    const detail = `${hop.via.text} drops the traffic (a black hole)`;
+    if (hop.why) hop.why.stop = detail;
+    return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: 'blackhole', detail } }];
   }
   if (decision.kind === 'none') return noRoute(w, at, hop, before, decision);
   const nextSeen = new Set(seen);
@@ -402,6 +463,7 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
       return;
     }
     const hp: Hop = { ...hop, encap: hop.encap.slice(), links: [], l2: [], virtual: [], networks: [], relations: [], notes: [], ecmp: decision.hops.length, branch: i };
+    if (hop.why) hp.why = { ...hop.why, selected: hop.why.selected.slice(), alternatives: hop.why.alternatives.slice(), policy: [] };
     for (const p of step(w, at, hp, h, before, nextSeen)) {
       if (paths.length >= MAX_PATHS) {
         w.truncated = true;
@@ -418,6 +480,7 @@ function noRoute(w: Walk, at: At, hop: Hop, before: Hop[], decision: Decision): 
   const { model } = w;
   const end = (reason: StopReason, detail: string): Path[] => {
     hop.via = { kind: 'none', text: detail };
+    if (hop.why) hop.why.stop = detail;
     return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason, detail } }];
   };
   if (decision.unusable.length) {
@@ -453,21 +516,27 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   hop.via = viaOf(model, h.entry);
   if (h.entry.relation) hop.relations.push(h.entry.relation);
   hop.egress = h.iface;
+  const why = hop.why as HopWhy;
   // what may pass this hop: a filtering router's policy, a VPN gateway's tunnels (traffic it forwards, not its own)
   if (before.length > 0 && at.ingress !== undefined) {
     const dev = model.index.devices.get(at.device) as Device;
+    const n0 = hop.notes.length;
     const denied = forwardDenied(w, dev, at.ingress, h.iface, hop.notes);
+    for (const n of hop.notes.slice(n0)) why.policy.push(n);
     if (denied) {
       hop.via = { kind: 'none', text: denied };
+      why.policy.push(denied);
+      why.stop = denied;
       return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: 'denied', detail: denied } }];
     }
   }
   const target = h.gateway || w.dest;
   if (h.gateway) hop.gateway = formatAddr(h.gateway);
-  const conn = connectedOf(model, at.device).filter((c) => c.iface === h.iface);
+  const conn = connectedIn(model, at.device, w.ctx).filter((c) => c.iface === h.iface);
   const outNet = conn.filter((c) => inPrefix(c.net, target)).sort((a, b) => b.net.prefix - a.net.prefix)[0] || conn[0];
   if (outNet) hop.outAddr = outNet.address.replace(/\/[0-9]+$/, '');
   // a NAT service on the way out: the translation in the hop
+  const n1 = hop.notes.length;
   if (before.length > 0 && at.ingress !== undefined) natNote(w, model.index.devices.get(at.device) as Device, at.ingress, h.iface, hop);
   if (outNet) for (const n of networksOf(model, outNet.net)) hop.networks.push(n);
   const iface = model.index.interfaces.get(ifaceKey(at.device, h.iface));
@@ -477,6 +546,7 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
     hop.nat = 'snat';
     hop.notes.push(`SNAT: source ${w.srcText || 'address'} → ${hop.outAddr} (${devLabel(model, at.device)} masquerades the network ${snat})`);
   }
+  if (hop.nat) why.nat = hop.notes.slice(n1).join('; ');
   // the next device: the one with the next-hop address (or the destination, when it is connected)
   const owners = holders(model, target, w.ctx, at.device);
   let next: { device: string; iface: string; vrf: string; address: string } | null = owners.length ? owners[0] : null;
@@ -496,6 +566,7 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
     }
     if (!w.destInModel) return [{ hops: before.concat(hop), end: { kind: 'exits', device: at.device, gateway: formatAddr(h.gateway) } }];
     const detail = `the next hop ${formatAddr(h.gateway)} is not an address of a device in the model`;
+    why.stop = detail;
     return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: 'unresolved', detail } }];
   }
   // between the two: a tunnel's underlay, or the cables
@@ -509,15 +580,31 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
     for (const r of t.relations) if (hop.relations.indexOf(r) < 0) hop.relations.push(r);
     if (t.underlay) hop.underlay = t.underlay;
     if (t.note) hop.notes.push(t.note);
-    if (t.stop) return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: t.stop.reason, detail: t.stop.detail } }];
+    why.tunnel = `${h.iface} encapsulates it (${encapText(t.layers)}) to ${next.device}: ${t.underlay ? `the outer packet is traced from ${at.device} to ${next.device}` : t.stop ? t.stop.detail : t.note || 'the underlay is not in the model'}`;
+    if (t.stop) {
+      why.stop = t.stop.detail;
+      return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: t.stop.reason, detail: t.stop.detail } }];
+    }
   } else {
     const vlan = outNet ? vlanOfNet(model, outNet.net) : undefined;
     const seg = l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: next.device, iface: next.iface }, vlan, (dev, inPort, outPort, notes) => crossDenied(w, dev, inPort, outPort, notes));
-    if (seg.kind === 'none') return [{ hops: before.concat(hop), end: { kind: 'stopped', device: seg.at || at.device, reason: seg.denied ? 'denied' : 'no-adjacency', detail: seg.detail } }];
-    if (seg.kind === 'uncabled') hop.notes.push(seg.detail);
-    else {
+    if (seg.kind === 'none') {
+      why.l2 = (vlan !== undefined ? `VLAN ${vlan}: ` : '') + seg.detail;
+      if (seg.denied) why.policy.push(seg.detail);
+      why.stop = seg.detail;
+      return [{ hops: before.concat(hop), end: { kind: 'stopped', device: seg.at || at.device, reason: seg.denied ? 'denied' : 'no-adjacency', detail: seg.detail } }];
+    }
+    if (seg.kind === 'uncabled') {
+      hop.notes.push(seg.detail);
+      why.l2 = seg.detail;
+    } else {
       hop.links = seg.links;
       hop.l2 = seg.devices;
+      const inside = (seg.notes || []).find((n) => n.indexOf('inside ') === 0);
+      why.l2 =
+        (vlan !== undefined ? `VLAN ${vlan}: ` : '') +
+        (inside && !seg.links.length ? inside : `${seg.devices.length ? 'through ' + seg.devices.join(', ') : 'a direct cable'}${seg.links.length ? ` (cable${seg.links.length > 1 ? 's' : ''} ${seg.links.join(', ')})` : ''}`) +
+        ` to ${next.device}:${next.iface}`;
     }
     for (const r of seg.virtual || []) if (hop.virtual.indexOf(r) < 0) hop.virtual.push(r);
     for (const n of seg.notes || []) hop.notes.push(n);
@@ -535,6 +622,50 @@ function viaOf(model: Model, e: RibEntry): HopVia {
   const r = e.route;
   if (!r && e.implicit) return { kind: 'static', text: e.implicit };
   return r ? { kind: 'static', text: `static route ${routeText(r)}`, route: routeRef(r) } : { kind: 'static', text: `static route ${prefixText(e.net)}` };
+}
+
+/**
+ * The evidence of a forwarding decision, from the decision itself and the
+ * table it was made from: the selected entries and the rule that chose them,
+ * and the matching entries that lost (to a longer prefix, a lower distance
+ * or metric) or could not be used (with the resolver's reason).
+ */
+function explainDecision(model: Model, at: At, dest: IpAddr, destText: string, d: Decision, ctx: RoutingCtx): HopWhy {
+  const why: HopWhy = { lookup: `${destText} in ${vrfName(at.vrf)} of ${at.device}`, selected: [], rule: '', alternatives: [], policy: [] };
+  if (d.kind === 'local') {
+    why.rule = `${destText} is an address of ${at.device}`;
+    return why;
+  }
+  const choice = (e: RibEntry): RouteChoice => {
+    const v = viaOf(model, e);
+    const c: RouteChoice = { text: v.text, prefix: prefixText(e.net), distance: e.distance, metric: e.metric };
+    if (v.route) c.ref = v.route;
+    else if (v.relation) c.ref = 'relation:' + v.relation;
+    return c;
+  };
+  const same = (a: RibEntry, b: RibEntry): boolean => a.kind === b.kind && compareEntries(a, b) === 0;
+  why.selected = d.entries.map(choice);
+  const best = d.entries[0];
+  if (best) {
+    why.rule =
+      d.kind === 'blackhole'
+        ? `the selected entry for ${prefixText(best.net)} is a blackhole route`
+        : `the longest matching prefix ${prefixText(best.net)}, then the lowest distance (${best.distance}) and metric (${best.metric})${d.hops.length > 1 ? `: ${d.hops.length} equal-cost next hops` : ''}`;
+  } else why.rule = 'no matching entry can be used';
+  const matching = ribOf(model, at.device, at.vrf, ctx)
+    .filter((e) => inPrefix(e.net, dest) && !d.entries.some((x) => same(x, e)))
+    .sort((a, b) => b.net.prefix - a.net.prefix || compareEntries(a, b));
+  for (const e of matching) {
+    if (why.alternatives.length >= MAX_ALTERNATIVES) break;
+    const c = choice(e);
+    const u = d.unusable.find((x) => same(x.entry, e));
+    if (u) why.alternatives.push({ ...c, lost: 'unusable', detail: `can't be used: ${u.detail}` });
+    else if (!best) continue;
+    else if (e.net.prefix < best.net.prefix) why.alternatives.push({ ...c, lost: 'longer-prefix', detail: `${prefixText(best.net)} is a longer match` });
+    else if (e.distance > best.distance) why.alternatives.push({ ...c, lost: 'distance', detail: `distance ${e.distance} is higher than ${best.distance}` });
+    else why.alternatives.push({ ...c, lost: 'metric', detail: `metric ${e.metric} is higher than ${best.metric}` });
+  }
+  return why;
 }
 
 function protoLabel(model: Model, p: string): string {
@@ -621,7 +752,7 @@ function holders(model: Model, a: IpAddr, ctx: RoutingCtx, except: string | null
   const out: Holder[] = [];
   for (const d of model.devices) {
     if (d.id === except) continue;
-    for (const c of connectedOf(model, d.id)) {
+    for (const c of connectedIn(model, d.id, ctx)) {
       if (compareAddr(c.addr, a) !== 0 || !up(ctx, d.id, c.iface)) continue;
       out.push({ device: d.id, iface: c.iface, vrf: c.vrf, address: formatAddr(c.addr) });
     }
@@ -666,9 +797,9 @@ export function vipHolder(model: Model, a: IpAddr, ctx: RoutingCtx, except: stri
 }
 
 /** The families (4, 6) a device (or one interface) has addresses of. */
-function familiesOf(model: Model, device: string, iface: string | undefined): Array<4 | 6> {
+function familiesOf(model: Model, device: string, iface: string | undefined, ctx?: RoutingCtx): Array<4 | 6> {
   const fams: Array<4 | 6> = [];
-  for (const c of connectedOf(model, device)) if ((iface === undefined || c.iface === iface) && fams.indexOf(c.addr.version) < 0) fams.push(c.addr.version);
+  for (const c of connectedIn(model, device, ctx)) if ((iface === undefined || c.iface === iface) && fams.indexOf(c.addr.version) < 0) fams.push(c.addr.version);
   return fams.sort();
 }
 
@@ -687,7 +818,7 @@ function pickAddress(model: Model, device: string, iface: string | undefined, fa
     return i && order.indexOf(i.type) >= 0 ? order.indexOf(i.type) : order.length;
   };
   // an interface that is down (a failure simulation) is not picked for a device as a whole
-  const cands = connectedOf(model, device).filter((c) => (iface === undefined || c.iface === iface) && (vrf === undefined || c.vrf === vrf) && (iface !== undefined || !ctx || up(ctx, device, c.iface)));
+  const cands = connectedIn(model, device, ctx).filter((c) => (iface === undefined || c.iface === iface) && (vrf === undefined || c.vrf === vrf) && (iface !== undefined || !ctx || up(ctx, device, c.iface)));
   const fam = (c: Connected): number => (families.length === 0 || families.indexOf(c.addr.version) >= 0 ? 0 : 1);
   cands.sort((a, b) => fam(a) - fam(b) || a.addr.version - b.addr.version || kind(a) - kind(b) || cmpStr(a.iface, b.iface) || compareAddr(a.addr, b.addr));
   return cands[0] || null;
@@ -1180,6 +1311,148 @@ function withoutTunnels(ctx: RoutingCtx, ifaces: string[]): RoutingCtx {
 }
 
 // ------------------------------------------------------------ reading a trace
+
+/** The stop reasons in a few words. */
+export const STOP_LABEL: { [r in StopReason]: string } = {
+  'no-route': 'no route',
+  unresolved: 'next hop can’t be resolved',
+  'no-adjacency': 'missing adjacency',
+  blackhole: 'black hole',
+  loop: 'routing loop',
+  'not-forwarding': 'does not forward',
+  down: 'down',
+  'too-long': 'too many hops',
+  denied: 'denied by policy',
+};
+
+/** One kind of end of the evaluated paths, with how many paths end so. */
+export interface OutcomeGroup {
+  kind: PathEnd['kind'];
+  count: number;
+  device: string;
+  /** a stop's reason */
+  reason?: StopReason;
+  /** "reach web-1:eth0", "stop at fw2: denied by policy" */
+  text: string;
+  detail?: string;
+  /** the indices of the paths (0: the main path) */
+  paths: number[];
+}
+
+/** The outcome of a trace over every evaluated path (never the first path alone). */
+export interface TraceOutcome {
+  verdict: Verdict;
+  groups: OutcomeGroup[];
+  total: number;
+  /** more equal-cost paths existed than were evaluated: their outcome is not known */
+  truncated: boolean;
+  /** every path stopped by a policy decision (a firewall, a Security gateway, a VPN gateway's rule), not by routing */
+  policyOnly: boolean;
+}
+
+/**
+ * The outcome of a trace: all evaluated paths reach the destination
+ * (satisfied), none does and all stop (violated), they differ (partial), or
+ * they leave the modeled architecture or end in a network where no modeled
+ * device has the address (beyond). An error is indeterminate. Paths are
+ * grouped by how and where they end, in the order of the first path of each.
+ */
+export function traceOutcome(t: Trace): TraceOutcome {
+  const groups: OutcomeGroup[] = [];
+  t.paths.forEach((p, i) => {
+    const e = p.end;
+    const key = (g: OutcomeGroup): boolean => g.kind === e.kind && g.device === e.device && (e.kind !== 'stopped' || (g.reason === e.reason && g.detail === e.detail));
+    const cur = groups.find(key);
+    if (cur) {
+      cur.count++;
+      cur.paths.push(i);
+      return;
+    }
+    const g: OutcomeGroup = { kind: e.kind, count: 1, device: e.device, text: '', paths: [i] };
+    if (e.kind === 'reached') g.text = `reach ${e.device}${e.iface ? ':' + e.iface : ''}`;
+    else if (e.kind === 'delivered') g.text = `are handed into ${e.network ? 'network ' + e.network : 'the connected network'} by ${e.device}; no modeled device has ${t.dest ? t.dest.address : 'the address'}, so receipt is not established`;
+    else if (e.kind === 'exits') g.text = `leave the modeled architecture at ${e.device} towards ${e.gateway}`;
+    else {
+      g.reason = e.reason;
+      g.detail = e.detail;
+      g.text = `stop at ${e.device} (${STOP_LABEL[e.reason]})`;
+    }
+    groups.push(g);
+  });
+  const n = (k: PathEnd['kind']): number => groups.filter((g) => g.kind === k).reduce((s, g) => s + g.count, 0);
+  const total = t.paths.length;
+  const reached = n('reached');
+  const stopped = n('stopped');
+  let verdict: Verdict;
+  if (t.error || !total) verdict = 'indeterminate';
+  else if (reached === total) verdict = 'satisfied';
+  else if (stopped === total) verdict = 'violated';
+  else if (reached === 0 && stopped === 0) verdict = 'beyond';
+  else verdict = 'partial';
+  const policyOnly = stopped === total && total > 0 && groups.every((g) => g.reason === 'denied');
+  return { verdict, groups, total, truncated: t.truncated, policyOnly };
+}
+
+/** The outcome as lines: "3 evaluated paths reach web-1:eth0", "1 evaluated path stops at fw2 (denied by policy)". */
+export function outcomeLines(o: TraceOutcome): string[] {
+  const lines = o.groups.map((g) => {
+    const verb = g.text.replace(/^(\S+)/, (w) => (g.count === 1 ? singular(w) : w));
+    return `${g.count} evaluated path${g.count === 1 ? '' : 's'} ${verb}`;
+  });
+  if (o.truncated) lines.push(`More equal-cost paths exist than the ${o.total} evaluated (limit ${MAX_PATHS}): their outcome is not known.`);
+  return lines;
+}
+
+function singular(verb: string): string {
+  return verb === 'reach' ? 'reaches' : verb === 'stop' ? 'stops' : verb === 'leave' ? 'leaves' : verb === 'are' ? 'is' : verb;
+}
+
+/** An address a device or interface could be traced from or to. */
+export interface EndpointChoice {
+  device: string;
+  iface: string;
+  vrf: string;
+  /** without the prefix length */
+  address: string;
+  version: 4 | 6;
+}
+
+/**
+ * The addresses an end could stand for (configured, and in a snapshot the
+ * acquired ones), sorted as the tracer prefers them: loopback before ports,
+ * then by interface and address. One choice means nothing needs choosing.
+ */
+export function endpointChoices(model: Model, end: TraceEnd, ctx: RoutingCtx = {}): EndpointChoice[] {
+  if (end.kind === 'address') {
+    const a = parseAddress(end.address);
+    return a ? holders(model, a, ctx, null).map((h) => ({ device: h.device, iface: h.iface, vrf: h.vrf, address: h.address, version: a.version })) : [];
+  }
+  const out: EndpointChoice[] = [];
+  const order = ['loopback', 'physical', 'vnic', 'virtual', 'veth', 'tunnel', 'bridge'];
+  const kind = (i: string): number => {
+    const x = model.index.interfaces.get(ifaceKey(end.device, i));
+    return x && order.indexOf(x.type) >= 0 ? order.indexOf(x.type) : order.length;
+  };
+  const cs = connectedIn(model, end.device, ctx).filter((c) => (end.kind !== 'iface' || c.iface === end.iface) && up(ctx, end.device, c.iface));
+  cs.sort((a, b) => a.addr.version - b.addr.version || kind(a.iface) - kind(b.iface) || cmpStr(a.iface, b.iface) || compareAddr(a.addr, b.addr));
+  for (const c of cs) {
+    const text = formatAddr(c.addr);
+    if (!out.some((x) => x.iface === c.iface && x.address === text)) out.push({ device: c.device, iface: c.iface, vrf: c.vrf, address: text, version: c.addr.version });
+  }
+  return out;
+}
+
+/** The effective ends of a trace in words: "pc1:eth0 · 10.0.0.5", and the VRF. */
+export function resolvedEnds(t: Trace): { from: string; to: string; vrf: string } | null {
+  if (!t.source || !t.dest) return null;
+  const s = t.source;
+  const d = t.dest;
+  return {
+    from: `${s.device}${s.iface ? ':' + s.iface : ''}${s.address ? ' · ' + s.address : ' · no address'}`,
+    to: d.device ? `${d.device}${d.iface ? ':' + d.iface : ''} · ${d.address}` : `${d.address} (no modeled device has it)`,
+    vrf: s.vrf ? 'VRF ' + s.vrf : 'Default table',
+  };
+}
 
 /** What a path's end says, in words. */
 export function endText(e: PathEnd, destText: string): string {
