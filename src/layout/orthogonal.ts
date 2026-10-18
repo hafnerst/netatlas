@@ -43,7 +43,7 @@ export function newLanes(): Lanes {
   return { h: [], v: [] };
 }
 
-/** Record a route's inner segments (not those at its ends) as taken. */
+/** Record a route's segments as taken (crossing a route costs, running along it too). */
 export function addLanes(l: Lanes, pts: Pt[]): void {
   for (let i = 0; i + 1 < pts.length; i++) {
     const a = pts[i];
@@ -404,6 +404,15 @@ export function simplify(pts: Pt[]): Pt[] {
   return out;
 }
 
+/** Do two segments cross properly (each from one side of the other to its other side)? */
+function properCross(a: Pt, b: Pt, c: Pt, d: Pt): boolean {
+  const side = (p: Pt, q: Pt, r: Pt): number => {
+    const v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    return v > 1e-6 ? 1 : v < -1e-6 ? -1 : 0;
+  };
+  return side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0;
+}
+
 /** Is every segment of the polyline horizontal or vertical? */
 export function isOrthogonal(pts: Pt[]): boolean {
   for (let i = 0; i + 1 < pts.length; i++) if (Math.abs(pts[i].x - pts[i + 1].x) > 0.01 && Math.abs(pts[i].y - pts[i + 1].y) > 0.01) return false;
@@ -474,6 +483,47 @@ export function separate(routes: SepRoute[], gap: number, obstacles: Rect[]): vo
     if (group.length < 2 || new Set(group.map((s) => s.r)).size < 2) continue;
     group.sort((p, q) => p.key - q.key || (p.r.id < q.r.id ? -1 : p.r.id > q.r.id ? 1 : p.k - q.k));
     const total = group.reduce((s, g) => s + g.r.width, 0) + gap * (group.length - 1);
+    // A small group is put in the order whose lanes cross each other least where they come in and go out
+    // (the segment, and the ones before and after it): every order is tried, the first of the cheapest kept.
+    if (group.length <= 6) {
+      const offsets = (n: number): number[] => {
+        const out: number[] = [];
+        let c = -total / 2;
+        for (let i = 0; i < n; i++) {
+          const g = order[i];
+          out.push(c + g.r.width / 2);
+          c += g.r.width + gap;
+        }
+        return out;
+      };
+      let order = group.slice();
+      const legs = (g: Seg, off: number): Array<[Pt, Pt]> => {
+        const p = g.r.pts;
+        const na = g.horiz ? { x: p[g.k].x, y: p[g.k].y + off } : { x: p[g.k].x + off, y: p[g.k].y };
+        const nb = g.horiz ? { x: p[g.k + 1].x, y: p[g.k + 1].y + off } : { x: p[g.k + 1].x + off, y: p[g.k + 1].y };
+        return [[p[g.k - 1], na], [na, nb], [nb, p[g.k + 2]]];
+      };
+      const crossingsOf = (o: Seg[]): number => {
+        order = o;
+        const offs = offsets(o.length);
+        const ls = o.map((g, i) => legs(g, offs[i]));
+        let n = 0;
+        for (let i = 0; i < ls.length; i++) for (let j = i + 1; j < ls.length; j++) for (const [a1, b1] of ls[i]) for (const [a2, b2] of ls[j]) if (properCross(a1, b1, a2, b2)) n++;
+        return n;
+      };
+      let best = group.slice();
+      let bestN = crossingsOf(best);
+      const perms = (xs: Seg[]): Seg[][] => (xs.length <= 1 ? [xs] : xs.flatMap((x, i) => perms(xs.slice(0, i).concat(xs.slice(i + 1))).map((r) => [x].concat(r))));
+      for (const o of perms(group)) {
+        if (!bestN) break;
+        const n = crossingsOf(o);
+        if (n < bestN) {
+          bestN = n;
+          best = o;
+        }
+      }
+      group.splice(0, group.length, ...best);
+    }
     let cur = -total / 2;
     for (const g of group) {
       const off = cur + g.r.width / 2;

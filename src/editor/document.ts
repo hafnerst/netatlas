@@ -10,7 +10,7 @@ import { lookupProtocol, protocolBase } from '../model/protocols';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
-import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING, allStrategyPositions } from '../layout/strategies';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING, strategyPositions } from '../layout/strategies';
 import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
@@ -326,26 +326,27 @@ export class ModelDoc {
 
   private autoMemo = new Map<string, Map<ArrangeStrategy, Map<string, Pt>>>();
 
-  /** Auto-arrange result of a strategy for the current model (cached per layout signature). */
+  /**
+   * Auto-arrange result of a strategy for the current model (cached per layout signature; each strategy is
+   * computed when it is first asked for, so arranging with Default never waits for the others).
+   */
   autoLayout(view: LayoutView, strategy: ArrangeStrategy = 'default'): Map<string, Pt> {
-    return this.strategyLayouts(view).get(strategy) as Map<string, Pt>;
-  }
-
-  private strategyLayouts(view: LayoutView): Map<ArrangeStrategy, Map<string, Pt>> {
     const m = this.result.model;
-    if (!m) return new Map(STRATEGIES.map((s) => [s, new Map()] as [ArrangeStrategy, Map<string, Pt>]));
+    if (!m) return new Map();
     const input = layoutInput(m);
     const key = view + '\n' + layoutSignature(input);
     let r = this.autoMemo.get(key);
     if (!r) {
-      r = allStrategyPositions(view, input);
-      // keep only the latest result per view
+      r = new Map();
+      // keep only the latest results per view
       Array.from(this.autoMemo.keys()).forEach((k) => {
         if (k.indexOf(view + '\n') === 0) this.autoMemo.delete(k);
       });
       this.autoMemo.set(key, r);
     }
-    return r;
+    let pos = r.get(strategy);
+    if (!pos) r.set(strategy, (pos = strategyPositions(view, input, strategy)));
+    return pos;
   }
 
   /**

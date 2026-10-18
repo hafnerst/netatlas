@@ -433,20 +433,20 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   };
   if (opts.orthogonal) {
     // Structured: horizontal and vertical segments only. Laid one after the other (each knowing the ones
-    // before), then each again knowing all the others, and finally cables sharing a corridor spread apart.
+    // before), then each again knowing where all the others run now (the ones already laid again included),
+    // and finally cables sharing a corridor spread apart.
     const lanes = newLanes();
     for (const { l, pa, pb } of byId) {
       const pts = orthoCableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), lanes);
       routes.set(l.id, pts);
-      addLanes(lanes, pts.slice(1, -1));
+      addLanes(lanes, pts);
     }
-    const once = new Map(routes);
     // (on large models one pass: the second one doubles the time for little)
     for (const { l, pa, pb } of byId.length > ORTHO_SECOND_PASS ? [] : byId) {
-      if ((once.get(l.id) as Pt[]).length <= 2) continue;
+      if ((routes.get(l.id) as Pt[]).length <= 2) continue;
       const others = newLanes();
-      once.forEach((q, id) => {
-        if (id !== l.id) addLanes(others, q.slice(1, -1));
+      routes.forEach((q, id) => {
+        if (id !== l.id) addLanes(others, q);
       });
       routes.set(l.id, orthoCableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), others));
     }

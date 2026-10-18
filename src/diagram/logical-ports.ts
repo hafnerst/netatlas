@@ -474,7 +474,7 @@ export function routeLogical(
       const width = b.strands[Number(si)].width;
       const way = orthoRoute(qa, { x: dirOf(ea.side), y: 0 }, qb, { x: dirOf(eb.side), y: 0 }, obstaclesFor([b.a, b.b], qa, qb).concat(labelsBut([b.a, b.b], qa, qb)), CORNER_M + width / 2, lanes);
       const pts = simplify([pa, ...way, pb]);
-      addLanes(lanes, pts.slice(1, -1));
+      addLanes(lanes, pts);
       strands.set(id, pts);
       sep.push({ id: 's' + id, pts, width });
     });
@@ -495,7 +495,7 @@ export function routeLogical(
         const c = { x: hub.cx + ed.x * HUB_R, y: hub.cy + ed.y * HUB_R };
         const way = orthoRoute(q, { x: dirOf(e.side), y: 0 }, c, ed, obstaclesFor([d], q, c).concat(labelsBut([d], q, c)), CORNER_M + e.width / 2, lanes);
         const pts = simplify([p, ...way]);
-        addLanes(lanes, pts.slice(1, -1));
+        addLanes(lanes, pts);
         spokes.set(r.id + ':' + d, pts);
         sep.push({ id: 'h' + r.id + ':' + d, pts, width: e.width });
       }
