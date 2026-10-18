@@ -41,6 +41,12 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
     not: 'that the application accepts the connection, authentication, a TCP session, a stateful return decision, health and completion: runtime behaviour, which the simulation exchanges.',
   },
   {
+    id: 'mtu',
+    name: 'Path MTU',
+    does: 'The largest packet that crosses each evaluated path unfragmented, and the payload that fits (TCP MSS, UDP or ICMP payload): the interfaces’ written MTUs, the ports of the cables on the way, tunnels as their underlay less the encapsulation overhead (nested layers added up), equal-cost branches and the return path apart.',
+    not: 'an MTU that is not written (never taken as 1500: the result is then an upper bound); encapsulations without a stated overhead; the size a flow actually uses (the simulation’s fragmentation, Fragmentation Needed / Packet Too Big and PMTUD show it).',
+  },
+  {
     id: 'addressing',
     name: 'Addressing overview',
     does: 'Each host address in its allocation state (configured, reserved, acquired in a snapshot, DHCP pool, nested network, unallocated); suggestions outside pools, reservations and used addresses; duplicates in the scope the model establishes (a link-local address on its VLAN-scoped segment, any other in a VRF and a connected part).',

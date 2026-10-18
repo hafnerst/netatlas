@@ -195,6 +195,17 @@ to the host's address, DNAT for published ports) in both.
   protocol break models HTTPS requests, DNS queries and syslog messages
   only; anything else is reported as a limitation.
 
+**Path MTU.** The static path MTU uses the MTUs the model writes (an
+interface's, an aggregate's members', the ports of the cables on the way)
+and the tunnel-MTU check's overheads (an IPv4 outer header; IPsec as the
+worst case of ESP tunnel mode); an MTU not written is not known, so the
+result is an upper bound, and an encapsulation without a figure leaves its
+path's limit unknown. Which equal-cost branch a flow takes is not modeled:
+each branch is given. The simulation fragments IPv4 without DF, drops a
+larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
+Big, and the sender learns the path MTU (PMTUD); TCP segments by it. TCP
+options, jumbo-frame negotiation and PLPMTUD are not modelled.
+
 **Not supported.** Router ACLs, rule bases with zones and address objects,
 application identification, TLS inspection, NAT ALGs and port-block
 allocation; the contents of what a Security gateway transfers.

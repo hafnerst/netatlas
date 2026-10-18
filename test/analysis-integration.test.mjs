@@ -681,3 +681,108 @@ test('timing: a snapshot adds the synchronization the simulation observed; accur
   const cyc = TI.timingSource(m, 'x', snap.ctx, 'ntp', snap);
   assert.match(cyc.observed, /x is not synchronized/);
 });
+
+// ------------------------------------------------------------------ path MTU
+
+const MT = load('analysis/mtu.js');
+
+// h1 → r1, then two equal-cost ways to the server LAN: via r2 (9000 between the routers) and via r3 (1400 on r1's port to r3); the server answers via r2
+const mtuNet = `netatlas: 1
+title: Path MTU
+devices:
+  - id: h1
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.1.0.10/24, mtu: 1500}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: r1
+    type: router
+    interfaces: [{id: lan, ip: 10.1.0.1/24, mtu: 1500}, {id: b, ip: 10.0.2.1/30, mtu: 9000}, {id: c, ip: 10.0.3.1/30, mtu: 1400}]
+    routes: [{prefix: 10.9.0.0/24, via: 10.0.2.2}, {prefix: 10.9.0.0/24, via: 10.0.3.2}]
+  - id: r2
+    type: router
+    interfaces: [{id: a, ip: 10.0.2.2/30, mtu: 9000}, {id: lan, ip: 10.9.0.2/24, mtu: 1500}]
+    routes: [{prefix: 10.1.0.0/24, via: 10.0.2.1}]
+  - id: r3
+    type: router
+    interfaces: [{id: a, ip: 10.0.3.2/30, mtu: 1500}, {id: lan, ip: 10.9.0.3/24, mtu: 1500}]
+    routes: [{prefix: 10.1.0.0/24, via: 10.0.3.1}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1, mtu: 1500}, {id: p2, vlans: 1, mtu: 1500}, {id: p3, vlans: 1, mtu: 1500}]
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: 10.9.0.10/24, mtu: 1500}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.2}]
+links:
+  - {id: l-h1, a: h1:eth0, b: r1:lan}
+  - {id: l-r2, a: r1:b, b: r2:a}
+  - {id: l-r3, a: r1:c, b: r3:a}
+  - {id: l-sw2, a: r2:lan, b: sw:p1}
+  - {id: l-sw3, a: r3:lan, b: sw:p2}
+  - {id: l-srv, a: srv:eth0, b: sw:p3}
+`;
+
+test('path MTU: the limiting component, every equal-cost branch and the return path apart, the payload apart from the MTU', () => {
+  const m = model(mtuNet);
+  const c = C.checkCommunication(m, { from: 'h1', to: 'srv', service: 'tcp/443', back: true });
+  const r = MT.pathMtu(m, c);
+  assert.equal(r.verdict, 'satisfied', r.text);
+  assert.equal(r.mtu, 1400);
+  assert.match(r.text, /^Path MTU 1400 bytes \(limited by r1:c\); payload up to 1360 bytes \(TCP MSS: 1400 − \(20 IPv4 \+ 20 TCP \(without options\)\)\)$/);
+  assert.deepEqual(r.forward.map((p) => p.mtu).sort(), [1400, 1500], 'each branch with its own limit');
+  assert.ok(r.differs.some((x) => /^The equal-cost paths differ: path 1 1500 bytes, path 2 1400 bytes/.test(x)), r.differs.join(' | '));
+  assert.deepEqual(r.reverse.map((p) => p.mtu), [1500]);
+  // a port on the way limits too (a switch port the frame crosses)
+  const port = model(mtuNet.replace('{id: p3, vlans: 1, mtu: 1500}', '{id: p3, vlans: 1, mtu: 1280}'));
+  const rp = MT.pathMtu(port, C.checkCommunication(port, { from: 'h1', to: 'srv', service: 'udp/53' }));
+  assert.equal(rp.mtu, 1280);
+  assert.match(rp.text, /limited by sw:p3 \(a port on the way\)\); payload up to 1252 bytes \(UDP payload/);
+  // unknown MTUs are not taken as known: an upper bound, said so
+  const unknown = model(mtuNet.replace(/, mtu: \d+/g, (x, k) => (x.indexOf('1400') >= 0 ? x : '')));
+  const ru = MT.pathMtu(unknown, C.checkCommunication(unknown, { from: 'h1', to: 'srv' }));
+  assert.equal(ru.verdict, 'indeterminate');
+  assert.match(ru.text, /^At most 1400 bytes \(limited by r1:c\); \d+ components on the way have no known MTU, so the limit may be lower/);
+  const none = model(mtuNet.replace(/, mtu: \d+/g, ''));
+  assert.match(MT.pathMtu(none, C.checkCommunication(none, { from: 'h1', to: 'srv' })).text, /^The path MTU is not known: no MTU is written on the way/);
+});
+
+test('path MTU: nested encapsulation (GRE over IPsec) is the underlay less the overheads added up', () => {
+  const wan = model(readFileSync(join(root, 'examples', 'enterprise-wan.yaml'), 'utf8').replace('mtu: 1400, source: wan0', 'source: wan0').replace('{id: st0.10, type: tunnel, ip: 172.16.10.1/30, mtu: 1400,', '{id: st0.10, type: tunnel, ip: 172.16.10.1/30,'));
+  const c = C.checkCommunication(wan, { from: 'muc-rtr:lan0', to: 'hq-core1' });
+  const r = MT.pathMtu(wan, c);
+  const p = r.forward[0];
+  assert.deepEqual(p.overheads.map((o) => o.bytes), [24, 73], 'GRE, then IPsec ESP (worst case)');
+  const tun = p.constraints.find((x) => x.kind === 'tunnel');
+  assert.equal(tun.mtu, 1500 - 97);
+  assert.match(tun.what, /^gre-muc over ipsec-muc: underlay 1500 \(hq-rtr1:ge-0\/0\/0\) − 97 bytes of encapsulation$/);
+  assert.equal(r.mtu, 1403);
+  assert.equal(p.limiting.kind, 'tunnel');
+});
+
+test('path MTU: the simulation fragments without DF, drops with DF (Fragmentation Needed) and the comparison says so', () => {
+  // one way only (via r3: 1400), so the simulation takes the path the analysis limits
+  const one = model(mtuNet.replace('    routes: [{prefix: 10.9.0.0/24, via: 10.0.2.2}, {prefix: 10.9.0.0/24, via: 10.0.3.2}]', '    routes: [{prefix: 10.9.0.0/24, via: 10.0.3.2}]').replace("    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.2}]\nlinks", "    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.3}]\nlinks"));
+  const c = C.checkCommunication(one, { from: 'h1', to: 'srv' });
+  const r = MT.pathMtu(one, c);
+  assert.equal(r.mtu, 1400);
+  assert.deepEqual(MT.mtuTestSizes(r), { fits: 1372, tooBig: 1373 });
+  const id = I.commIdentity(one, c);
+  const pre = I.handoffOf(one, id).prefill;
+  const s = new S.Simulation(one);
+  s.runTo(15000);
+  s.sendPlan({ delivery: 'unicast', ...pre, size: 1373, df: true });
+  s.runTo(30000);
+  const big = s.testRuns()[0];
+  assert.equal(big.tests[0].ok, false);
+  assert.match(big.tests[0].result, /too big|MTU/i);
+  const k = I.compareRun(one, c, big, s.snapshot());
+  assert.equal(k.agree, false);
+  assert.match(k.lines[0], /^Packet too big when sent/);
+  s.sendPlan({ delivery: 'unicast', ...pre, size: 1372, df: true });
+  s.runTo(45000);
+  assert.equal(s.testRuns()[0].tests[0].ok, true, 'the payload the static path MTU allows fits');
+  s.sendPlan({ delivery: 'unicast', ...pre, size: 1373, df: false });
+  s.runTo(60000);
+  assert.equal(s.testRuns()[0].tests[0].ok, true, 'IPv4 without DF: fragmented and delivered');
+  assert.ok(s.events().some((e) => /r1 fragments/.test(e.detail)), 'the fragmentation is in the event log');
+});

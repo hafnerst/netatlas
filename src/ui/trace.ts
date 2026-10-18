@@ -19,6 +19,7 @@ import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, HopWhy, Path, Trace, TraceRequest, encapText, endStatus, endText, outcomeLines, traceOutcome, traceText } from '../analysis/trace';
 import { CommCheck, CommLayer, CommRequest, LAYER_LABEL, commText } from '../analysis/communication';
 import { CommIdentity, Handoff, RunComparison } from '../analysis/comm-identity';
+import { PathMtu, PathMtuResult } from '../analysis/mtu';
 import { namedServices } from '../analysis/listeners';
 import { deviceVrfs } from '../analysis/routing';
 import { Verdict, exportFooter, exportHeader, verdictMark, verdictText } from '../analysis/result';
@@ -55,6 +56,8 @@ export interface TraceRun {
   handoff?: Handoff | null;
   /** the static result beside a send of the simulation that carries it */
   compare?: RunComparison | null;
+  /** the end-to-end path MTU of the evaluated paths */
+  mtu?: PathMtu | null;
 }
 
 /** The request a form makes. */
@@ -81,8 +84,34 @@ export interface TracePanelActions extends ContextBarActions {
   compare(): void;
   /** keep it as a saved expectation (the Design checks form, prefilled) */
   saveExpectation(): void;
+  /** prefill a send that tests the path MTU (never sends) */
+  mtuTest(): void;
   /** take another of the end's addresses */
   pick(field: 'from' | 'to', value: string): void;
+}
+
+/** The path MTU (analysis/mtu.ts): the limit and what sets it, then per path, the overheads, what is not known, the assumptions. */
+function mtuSection(doc: Document, m: PathMtu, view: TraceViewState, act: TracePanelActions): HTMLElement {
+  const d = el(doc, 'details', { class: 'layer-ev trace-mtu', id: 'trace-mtu' }, [el(doc, 'summary', {}, [el(doc, 'span', { class: 'v-mark', 'aria-hidden': 'true' }, [verdictMark(m.verdict) + ' ']), el(doc, 'strong', {}, ['Path MTU: ']), m.text])]);
+  const body = el(doc, 'div', { class: 'small' });
+  const one = (title: string, rs: PathMtuResult[]): void => {
+    for (const r of rs) {
+      body.appendChild(el(doc, 'p', {}, [el(doc, 'strong', {}, [`${title}${rs.length > 1 ? ' ' + (r.index + 1) : ''}: `]), r.mtu === null ? 'not known' : `${r.mtu} bytes${r.limiting ? ' (' + r.limiting.what + ')' : ''}`, r.unknown.length ? `; without a known MTU: ${r.unknown.map((u) => u.what).join(', ')}` : '']));
+      if (r.overheads.length) body.appendChild(el(doc, 'p', { class: 'muted' }, ['Encapsulation: ' + r.overheads.map((o) => `${o.layer}: ${o.bytes === null ? 'not known' : o.bytes + ' bytes'} (${o.what})`).join('; ')]));
+    }
+  };
+  one('Path', m.forward);
+  if (m.reverse.length) one('Return path', m.reverse);
+  for (const x of m.differs) body.appendChild(el(doc, 'p', {}, [x]));
+  for (const x of m.assumptions) body.appendChild(el(doc, 'p', { class: 'muted' }, [x]));
+  if (m.payload) {
+    const b = el(doc, 'button', { type: 'button', class: 'mini', id: 'trace-mtu-test', title: view.handoffBlocked || 'Prefill a send one byte over the limit with Don’t fragment: not sent' }, ['Test the limit in simulation']) as HTMLButtonElement;
+    b.disabled = !!view.handoffBlocked;
+    b.addEventListener('click', () => act.mtuTest());
+    body.appendChild(el(doc, 'p', {}, [b, ' ', el(doc, 'span', { class: 'muted' }, ['The simulation fragments IPv4 without DF, drops a larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too Big, and the sender learns the path MTU.'])]));
+  }
+  d.appendChild(body);
+  return d;
 }
 
 /** Every VRF of the model ('' first: the default table). */
@@ -229,6 +258,8 @@ function resultBody(doc: Document, model: Model, run: TraceRun, view: TraceViewS
   const ul = el(doc, 'ul', { class: 'comm-layers', 'aria-label': 'What the check established, layer by layer' });
   c.layers.forEach((l, k) => ul.appendChild(layerItem(doc, l, k)));
   res.appendChild(ul);
+  // the path MTU: one line, the evidence behind an expansion
+  if (run.mtu) res.appendChild(mtuSection(doc, run.mtu, view, act));
   // the paths: the main one open, the equal-cost alternatives behind an expansion
   if (!t.error) {
     t.paths.forEach((p, i) => {

@@ -53,7 +53,7 @@ function relParamOwn(r: Relation, key: string, device: string): string | undefin
 }
 
 /** The base protocol of a relation (an alias such as ibgp gives bgp). */
-function baseProtocol(model: Model, r: Relation): string {
+export function baseProtocol(model: Model, r: Relation): string {
   return protocolBase(model.protocols, r.protocol);
 }
 

@@ -158,6 +158,9 @@ export interface SendPrefill {
   toAddr?: string;
   /** an exact address, or a host name */
   target?: string;
+  /** the data size (bytes) and Don't fragment: a path MTU test */
+  size?: number;
+  df?: boolean;
 }
 
 /** What preparing a communication in the simulation does. */
@@ -314,6 +317,8 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
     const nowOk = now.verdict === 'satisfied';
     if (drop && /no route|no default route|unresolved|no ARP|no neighbo/i.test(drop[2])) {
       out.lines.push(`Route not there when sent (${sent}): ${drop[1].trim()} had ${drop[2].trim()}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency or a redundancy group that was not up yet)` : ''}`);
+    } else if (/larger than the MTU|too big for the path|Packet Too Big|Frag Needed/i.test(t.result)) {
+      out.lines.push(`Packet too big when sent (${sent}): ${t.result}. The static path MTU is in the Path MTU section: a packet larger than it, with Don’t fragment (or IPv6), is dropped with Fragmentation Needed / Packet Too Big, and the sender learns the path MTU (PMTUD)`);
     } else if (drop && /off|down|booting/i.test(drop[2])) {
       out.lines.push(`Runtime endpoint unavailable when sent (${sent}): ${drop[1].trim()}: ${drop[2].trim()}`);
     } else if (drop && /member|group|snoop/i.test(drop[2])) {

@@ -237,6 +237,14 @@ export class TestForm {
     this.sync();
     if (p.port !== undefined) this.port.value = String(p.port);
     this.sync();
+    // a path MTU test: its size and Don't fragment, under More options (opened, so they are seen)
+    if (p.size !== undefined || p.df !== undefined) {
+      if (p.size !== undefined) this.size.value = String(p.size);
+      this.df.checked = !!p.df;
+      const more = this.doc.getElementById('sim-t-more') as HTMLDetailsElement | null;
+      if (more) more.open = true;
+      this.sync();
+    }
     this.sendBtn.scrollIntoView({ block: 'nearest' });
     this.sendBtn.focus();
   }

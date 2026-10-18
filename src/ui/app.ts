@@ -40,6 +40,7 @@ import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
 import { CommRequest, checkCommunication } from '../analysis/communication';
 import { commIdentity, compareRun, expectationFields, handoffOf, planMatches, staleProblem } from '../analysis/comm-identity';
+import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
 import { modelFingerprint } from '../model/fingerprint';
@@ -3803,7 +3804,7 @@ export class App {
     if (req.back) back = check.reverse ? check.reverse.trace : { request: { from: treq.to, to: treq.from }, paths: [], truncated: false, error: check.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
     // the communication's identity: the handoff, the comparison and a saved expectation carry it on (nothing chosen again)
     const identity = commIdentity(model, check);
-    return { req: trace.request, check, trace, back, identity, handoff: identity ? handoffOf(model, identity) : null, compare: null };
+    return { req: trace.request, check, trace, back, identity, handoff: identity ? handoffOf(model, identity) : null, compare: null, mtu: pathMtu(model, check) };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -3882,6 +3883,7 @@ export class App {
       handoff: () => this.traceHandoff(),
       compare: () => void this.compareTrace(),
       saveExpectation: () => this.traceToExpectation(),
+      mtuTest: () => void this.traceMtuTest(),
       pick: (field, value) => {
         this.traceForm[field] = value;
         this.runTrace();
@@ -3961,6 +3963,24 @@ export class App {
     if (h.kind === 'app' && h.app) this.simCtl.appFrom(h.device);
     else if (h.prefill) this.simCtl.prefillSend(h.prefill);
     this.toast(`${h.text}: prefilled in Network events, not sent.`);
+    return true;
+  }
+
+  /**
+   * Prepare a path MTU test in the simulation: the same send, one byte over
+   * the payload the static path MTU allows, with Don't fragment. Nothing is
+   * sent; what to expect is said.
+   */
+  traceMtuTest(): boolean {
+    const r = this.traceRun;
+    const h = r ? r.handoff : undefined;
+    const sizes = r && r.mtu ? mtuTestSizes(r.mtu) : null;
+    if (!this.simCtl || !r || !h || !h.prefill || !sizes || this.traceHandoffBlocked()) return false;
+    // (a TCP connection segments by the path MTU: the test is an ICMP echo of that payload, as large as a segment's data)
+    const icmp = h.prefill.kind === 'tcp';
+    const pre = { ...h.prefill, kind: icmp ? ('icmp' as const) : h.prefill.kind, port: icmp ? undefined : h.prefill.port, size: icmp && r.mtu ? r.mtu.mtu! - (r.mtu.family === 4 ? 28 : 48) + 1 : sizes.tooBig, df: true };
+    this.simCtl.prefillSend(pre);
+    this.toast(`A send of ${pre.size} bytes with Don’t fragment is prefilled, not sent: one byte over what the static path MTU (${r.mtu ? r.mtu.mtu : '?'}) lets through.`);
     return true;
   }
 
