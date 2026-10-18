@@ -15,6 +15,9 @@ const D = load('analysis/dependencies.js');
 const A = load('analysis/addressing.js');
 const TI = load('analysis/timing.js');
 const N = load('analysis/sim/net.js');
+const E = load('analysis/expectations.js');
+const W = load('analysis/whatif.js');
+const F = load('analysis/failure.js');
 const S = load('analysis/sim/simulation.js');
 
 const model = (text) => {
@@ -228,7 +231,6 @@ test('DHCP: a failed first relay does not hide a working one, and the change say
   const deps = D.serviceDependencies(m);
   const base = D.dependencyBaseline(m, deps);
   assert.match(base.get('dhcp:c:eth0').text, /relay r1:lan/, 'the first relay serves it in the configured model');
-  const F = load('analysis/failure.js');
   const res = F.simulate(m, ['device:r1']);
   const hit = new Set(Array.from(F.failureRefs(res).keys()));
   const ch = D.compareDependencies(m, deps, base, res.ctx, hit, (d) => res.devices.get(d) === 'down').find((c) => c.dep.key === 'dhcp:c:eth0');
@@ -236,3 +238,85 @@ test('DHCP: a failed first relay does not hide a working one, and the change say
   assert.match(ch.text, /relay r2:lan/);
 });
 
+
+// ------------------------------------------------------------------ what if: isolation and endpoint state
+
+// pc reaches srv through the firewall (it permits HTTPS, not SSH); a floating static route on r1 takes the way through r2 when the firewall fails
+const guard = `netatlas: 1
+title: Isolation under failures
+devices:
+  - id: pc
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.1.0.10/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: r1
+    type: router
+    interfaces: [{id: lan, ip: 10.1.0.1/24}, {id: a, ip: 10.0.1.1/30}, {id: b, ip: 10.0.2.1/30}]
+    routes:
+      - {prefix: 10.9.0.0/24, via: 10.0.1.2}
+      - {prefix: 10.9.0.0/24, via: 10.0.2.2, distance: 200}
+  - id: fw
+    type: firewall
+    simulation: {allow: "tcp/443"}
+    interfaces: [{id: a, ip: 10.0.1.2/30}, {id: b, ip: 10.9.0.2/24}]
+    routes: [{prefix: 10.1.0.0/24, via: 10.0.1.1}]
+  - id: r2
+    type: router
+    interfaces: [{id: a, ip: 10.0.2.2/30}, {id: b, ip: 10.9.0.3/24}]
+    routes: [{prefix: 10.1.0.0/24, via: 10.0.2.1}]
+  - id: s2
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/22, tcp/443"}
+    interfaces: [{id: eth0, ip: 10.9.0.10/24}]
+    routes: [{prefix: 10.1.0.0/24, via: 10.9.0.2}]
+links:
+  - {id: l-pc, a: pc:eth0, b: r1:lan}
+  - {id: l-fw, a: r1:a, b: fw:a}
+  - {id: l-r2, a: r1:b, b: r2:a}
+  - {id: l-fw-s, a: fw:b, b: s2:p1}
+  - {id: l-r2-s, a: r2:b, b: s2:p2}
+  - {id: l-srv, a: srv:eth0, b: s2:p3}
+expectations:
+  - {id: no-ssh, name: No SSH from the PC to the server, expect: blocked, from: pc, to: srv, service: tcp/22}
+  - {id: https, name: The PC reaches the server over HTTPS, expect: available, from: pc, to: srv, service: tcp/443}
+`;
+
+test('what if: blocked expectations are compared too; a failure that changes the selected path exposes a forbidden one', () => {
+  const m = model(guard);
+  const w = W.whatIf(m, ['fw']);
+  const by = new Map(w.expectations.map((x) => [x.after.id, x]));
+  assert.equal(by.get('no-ssh').before.verdict, 'satisfied', 'the firewall blocks SSH without the failure');
+  assert.equal(by.get('no-ssh').change, 'isolation-violated', 'the floating route takes the way around the firewall');
+  assert.equal(by.get('https').change, 'alternative', 'HTTPS is kept, through r2');
+  assert.deepEqual(w.expectations.map((x) => x.change), ['isolation-violated', 'alternative'], 'what the failure breaks first');
+  // a failure that leaves the control in place preserves the isolation
+  const keep = W.whatIf(m, ['r2']);
+  assert.equal(keep.expectations.find((x) => x.after.id === 'no-ssh').change, 'unchanged');
+  // a failure that breaks the required availability
+  const cut = W.whatIf(m, ['l-pc']);
+  assert.equal(cut.expectations.find((x) => x.after.id === 'https').change, 'availability-lost');
+});
+
+test('what if: an endpoint the failure takes down leaves the isolation control unexercised, never proven', () => {
+  const m = model(guard);
+  const w = W.whatIf(m, ['pc']);
+  const ssh = w.expectations.find((x) => x.after.id === 'no-ssh');
+  assert.equal(ssh.after.verdict, 'indeterminate');
+  assert.equal(ssh.change, 'indeterminate');
+  assert.equal(ssh.after.reason, 'Source unavailable under this failure condition (pc is down): no traffic originates, so the isolation control is not exercised');
+  assert.deepEqual(ssh.after.unavailable, { end: 'source', what: 'pc' });
+  const https = w.expectations.find((x) => x.after.id === 'https');
+  assert.equal(https.after.verdict, 'violated');
+  assert.equal(https.after.reason, 'Source unavailable under this failure condition (pc is down)');
+  assert.equal(https.change, 'availability-lost');
+  // the destination too
+  const d = W.whatIf(m, ['srv']).expectations.find((x) => x.after.id === 'no-ssh');
+  assert.ok(d.after.reason.startsWith('Destination unavailable under this failure condition (srv is down)'), d.after.reason);
+  // missing information is not unavailability: an end that names nothing stays indeterminate with its own reason
+  const e = E.evaluateExpectation(m, { id: 'x', name: 'x', expect: 'blocked', from: 'nowhere', to: 'srv', failure: ['fw'], line: 0 });
+  assert.equal(e.verdict, 'indeterminate');
+  assert.ok(!e.unavailable);
+});

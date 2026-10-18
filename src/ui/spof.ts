@@ -15,7 +15,7 @@
 import { DEP_CHANGE_TEXT, DEP_LABEL, DepChange } from '../analysis/dependencies';
 import { Spof, SpofCandidate, refLabel } from '../analysis/failure';
 import { Coverage, ResultInfo, contextText, coverageText, exportFooter, exportHeader } from '../analysis/result';
-import { WhatIf } from '../analysis/whatif';
+import { EXP_CHANGE_TEXT, WhatIf } from '../analysis/whatif';
 import { FAILURE_DOMAIN_KINDS, Model } from '../model/types';
 import { el } from './dom';
 import { ContextBarActions, ContextBarState, contextBar, coverageLine, limitsDetails } from './analysis-ui';
@@ -419,7 +419,7 @@ function whatIfResult(doc: Document, v: WhatIfView, act: WhatIfActions): HTMLEle
     return box;
   }
   const n = (k: string): number => w.deps.filter((d) => d.change === k).length;
-  const lostExp = w.expectations.filter((x) => x.before.verdict === 'satisfied' && x.after.verdict !== 'satisfied').length;
+  const lostExp = w.expectations.filter((x) => x.change === 'availability-lost' || x.change === 'isolation-violated').length;
   box.appendChild(
     el(doc, 'p', { class: 'an-verdict ' + (n('unavailable') || lostExp ? 'v-violated' : n('indeterminate') ? 'v-indeterminate' : 'v-satisfied'), role: 'status', id: 'wi-summary' }, [
       el(doc, 'strong', {}, [`Failure of ${w.entries.join(', ')}`]),
@@ -445,7 +445,7 @@ function whatIfResult(doc: Document, v: WhatIfView, act: WhatIfActions): HTMLEle
   if (w.expectations.length) {
     const d = el(doc, 'details', { class: 'wi-group', open: '' }, [el(doc, 'summary', {}, [`Saved expectations (${w.expectations.length})`])]);
     const ul = el(doc, 'ul', { class: 'small' });
-    for (const x of w.expectations) ul.appendChild(el(doc, 'li', { class: 'v-' + x.after.verdict }, [el(doc, 'strong', {}, [x.after.name + ': ']), `before ${x.before.verdict}, after ${x.after.verdict}${x.alternative ? ' (through an alternative path)' : ''}`, el(doc, 'div', { class: 'muted' }, [x.after.reason])]));
+    for (const x of w.expectations) ul.appendChild(el(doc, 'li', { class: 'v-' + x.after.verdict, 'data-exp-change': x.change }, [el(doc, 'strong', {}, [`${EXP_CHANGE_TEXT[x.change]}: `]), `${x.after.name} (${x.after.expect === 'blocked' ? 'must be blocked' : x.after.expect === 'available' ? 'must be available' : x.after.expect}; before ${x.before.verdict}, after ${x.after.verdict})`, el(doc, 'div', { class: 'muted' }, [x.after.reason])]));
     d.appendChild(ul);
     box.appendChild(d);
   }
@@ -548,7 +548,7 @@ export function whatIfText(o: { title: string; version?: string; outdated: boole
     lines.push(`${DEP_CHANGE_TEXT[k]} (${list.length}):`);
     for (const c of list) lines.push(`  ${DEP_LABEL[c.dep.kind]}: ${c.dep.text} — ${c.text}`);
   }
-  for (const x of w.expectations) lines.push(`Expectation ${x.after.name}: before ${x.before.verdict}, after ${x.after.verdict}${x.alternative ? ' (through an alternative path)' : ''} — ${x.after.reason}`);
+  for (const x of w.expectations) lines.push(`Expectation ${x.after.name} (${x.after.expect}): ${EXP_CHANGE_TEXT[x.change]} — before ${x.before.verdict}, after ${x.after.verdict} — ${x.after.reason}`);
   if (w.structural && w.structural.isolated.length) lines.push(`Cut off: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`);
   if (w.reach) {
     lines.push(`Device pairs that lose reachability (${w.reach.pairs.length}); ${coverageText(w.reach.coverage)}:`);

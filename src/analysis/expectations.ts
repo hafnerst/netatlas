@@ -20,8 +20,13 @@
  *
  * A failure condition (devices, cables, relations, interfaces, failure
  * domains) is applied to the configured model only: combined with a
- * snapshot it would blend two states, so that is unsupported. Nothing is
- * sent: evaluating never starts the simulation. Pure and deterministic.
+ * snapshot it would blend two states, so that is unsupported. An end the
+ * failure takes down is known to be unavailable, which is not missing
+ * information: an available expectation is violated ("Source unavailable
+ * under this failure condition"), a blocked one is indeterminate — no
+ * traffic originates, so no control is exercised, and that is never a
+ * successful isolation. Nothing is sent: evaluating never starts the
+ * simulation. Pure and deterministic.
  */
 import { Expectation, Model } from '../model/types';
 import { CommCheck, checkCommunication, parseCommEnd } from './communication';
@@ -31,6 +36,7 @@ import { RoutingCtx } from './routing';
 import { AnalysisSnapshot } from './snapshot';
 import { TimingCheck, timingSource } from './timing';
 import { STOP_LABEL } from './trace';
+import { addressOwner } from './names';
 
 export type ExpectVerdict = 'satisfied' | 'violated' | 'indeterminate' | 'unsupported';
 
@@ -50,6 +56,8 @@ export interface ExpectationResult {
   stop?: { device: string; reason: string; detail: string };
   /** what it concerns (for navigation) */
   refs: string[];
+  /** an end the failure condition (or the snapshot) makes unavailable: known, not missing information */
+  unavailable?: { end: 'source' | 'destination'; what: string };
 }
 
 function toExpect(v: Verdict): ExpectVerdict {
@@ -119,6 +127,23 @@ export function evaluateExpectation(model: Model, e: Expectation, snap: Analysis
       return out;
     }
   }
+  // an end the failure takes down: known to be unavailable (see the module comment)
+  if (e.failure.length && ctx) {
+    const down = endUnavailable(model, e, ctx, devDown);
+    if (down) {
+      out.unavailable = down;
+      const who = down.end === 'source' ? 'Source' : 'Destination';
+      out.refs = [down.what.indexOf(':') > 0 ? 'iface:' + down.what : 'device:' + down.what];
+      if (e.expect === 'blocked') {
+        out.verdict = 'indeterminate';
+        out.reason = `${who} unavailable under this failure condition (${down.what} is down): no traffic originates${down.end === 'destination' ? ' toward it' : ''}, so the isolation control is not exercised`;
+      } else {
+        out.verdict = 'violated';
+        out.reason = `${who} unavailable under this failure condition (${down.what} is down)`;
+      }
+      return out;
+    }
+  }
   const req = { from: e.from, to: e.to, service: e.service, vrf: e.vrf };
   const c = checkCommunication(model, req, snap, 'Saved expectations', 0, ctx);
   out.check = c;
@@ -129,17 +154,48 @@ export function evaluateExpectation(model: Model, e: Expectation, snap: Analysis
   for (const l of c.layers) for (const r of l.refs) if (out.refs.indexOf(r) < 0) out.refs.push(r);
   const stop = c.outcome ? c.outcome.groups.find((g) => g.kind === 'stopped') : undefined;
   if (stop) out.stop = { device: stop.device, reason: stop.reason as string, detail: stop.detail || '' };
-  const fromDev = c.from ? c.from.device : undefined;
-  if (fromDev && devDown(fromDev)) {
-    out.reason = `${fromDev} itself is part of the failure condition`;
-    return out;
-  }
   if (e.expect === 'blocked') return blockedVerdict(out, c);
   out.verdict = toExpect(c.verdict);
   // (the reason without the verdict's own words: the verdict is shown beside it)
   const why = c.headline.replace(/^(Indeterminate|Partially reachable|Beyond modeled scope): /, '');
   out.reason = c.verdict === 'partial' ? `Not all evaluated paths reach: ${why}` : c.verdict === 'beyond' ? `The path leaves the modeled architecture: ${why}` : why.charAt(0).toUpperCase() + why.slice(1);
   return out;
+}
+
+/**
+ * The end of an expectation a failure takes down: its device, or the
+ * interface it names (an application's bind interface). Null when both ends
+ * are up, or an end is outside the model.
+ */
+function endUnavailable(model: Model, e: Expectation, ctx: RoutingCtx, devDown: (d: string) => boolean): { end: 'source' | 'destination'; what: string } | null {
+  const at = (text: string | undefined): { device: string; iface?: string } | null => {
+    if (!text) return null;
+    const x = parseCommEnd(model, text);
+    if (typeof x === 'string' || x.kind === 'name') return null;
+    if (x.kind === 'app') return { device: x.device, iface: x.app.bind };
+    if (x.kind === 'service') return { device: x.device };
+    if (x.end.kind === 'address') {
+      const o = addressOwner(model, x.end.address);
+      return o ? { device: o } : null;
+    }
+    return x.end.kind === 'iface' ? { device: x.end.device, iface: x.end.iface } : { device: x.end.device };
+  };
+  const ends: Array<['source' | 'destination', { device: string; iface?: string } | null]> = [['source', at(e.from)], ['destination', at(e.to)]];
+  // a client application without a destination: its configured peer or broker
+  if (!e.to) {
+    const f = parseCommEnd(model, e.from);
+    if (typeof f !== 'string' && f.kind === 'app') {
+      const peer = f.app.broker || f.app.peer;
+      const dev = peer ? (peer.indexOf('/') > 0 ? peer.slice(0, peer.indexOf('/')) : model.index.devices.has(peer) ? peer : addressOwner(model, peer)) : undefined;
+      if (dev) ends[1] = ['destination', { device: dev }];
+    }
+  }
+  for (const [end, x] of ends) {
+    if (!x) continue;
+    if (devDown(x.device)) return { end, what: x.device };
+    if (x.iface !== undefined && ctx.up && !ctx.up(x.device, x.iface)) return { end, what: x.device + ':' + x.iface };
+  }
+  return null;
 }
 
 /** A blocked expectation: what blocks the communication, if anything does, and whether it is a policy. */
