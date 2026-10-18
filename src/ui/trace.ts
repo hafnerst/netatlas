@@ -151,7 +151,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
   const box = el(doc, 'div', { class: 'trace-panel' });
   box.appendChild(
     el(doc, 'p', { class: 'muted small' }, [
-      'Whether a source reaches a destination and can use its application or service, by the routes, adjacencies, policies and listeners of the model. An end is a device, an interface (device:interface), an address, an application (device/application) or a service (device/service). The path is marked in the diagram while this window is open.',
+      'Whether a source reaches a destination and can use its application or service, by the routes, adjacencies, policies and listeners of the model. An end is a device, an interface (device:interface), an address, an application (device/application) or a service (device/service). The path is marked in the diagram while Trace path is in front.',
     ]),
   );
   box.appendChild(contextBar(doc, view.bar, act));

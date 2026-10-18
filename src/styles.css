@@ -83,6 +83,11 @@
   /* a simulated state: the frame around the diagram, its badge and banner (with a pattern and words, not colour alone) */
   --sim: #5f3dc4;
   --sim-soft: #f3f0ff;
+  /* the Experiments and Analyze workspaces: their frame, badge and banner (each also with its icon and words) */
+  --exp: #0b7285;
+  --exp-soft: #e3fafc;
+  --an: #9c4f00;
+  --an-soft: #fff4e6;
   --ok: #2a7d3a;
   --shadow: rgba(0, 0, 0, 0.16);
   --backdrop: rgba(0, 0, 0, 0.35);
@@ -124,6 +129,10 @@
   --trace: #f38bd9;
   --sim: #b197fc;
   --sim-soft: #2a2540;
+  --exp: #66d9e8;
+  --exp-soft: #15313a;
+  --an: #ffa94d;
+  --an-soft: #3a2a17;
   --ok: #7cc68a;
   --shadow: rgba(0, 0, 0, 0.45);
   --backdrop: rgba(0, 0, 0, 0.55);
@@ -1130,6 +1139,20 @@ body[data-mode~="simulation"] .mode-banner { border-bottom-color: var(--sim); }
 .mode-banner #mb-sim + .mb-row { border-top: 0; }
 .mode-banner .mb-short { display: none; }
 body[data-mode~="simulation"] .overlap-hint { bottom: 50px; }
+/* ---- the Experiments and Analyze workspaces: the same language as the simulation's — a frame inside the diagram's
+   edge, a badge in its corner, a banner row with its icon, its name and Exit — each in its own colour */
+body[data-workspace="experiments"] #canvas-wrap::after, body[data-workspace="analyze"] #canvas-wrap::after { content: ""; position: absolute; inset: 0; z-index: var(--z-overlay); pointer-events: none; box-shadow: inset 0 0 0 2px var(--ws, var(--sim)); }
+body[data-workspace="experiments"] { --ws: var(--exp); --ws-soft: var(--exp-soft); }
+body[data-workspace="analyze"] { --ws: var(--an); --ws-soft: var(--an-soft); }
+body[data-workspace="experiments"] .sim-badge, body[data-workspace="analyze"] .sim-badge { border-color: var(--ws); }
+body[data-workspace="experiments"] .sim-badge-mark, body[data-workspace="analyze"] .sim-badge-mark { color: var(--ws); }
+.mode-banner #mb-ws { background: var(--ws-soft, var(--panel)); margin: -6px -12px 0; padding: 6px 12px; border-bottom: 2px dashed var(--ws, var(--border)); }
+.mode-banner #mb-ws .mb-icon { color: var(--ws); }
+.mode-banner #mb-ws + .mb-row { border-top: 0; }
+body[data-workspace="experiments"] .mode-banner, body[data-workspace="analyze"] .mode-banner { border-bottom-color: var(--ws); }
+#simulate-btn[aria-current="true"], #analyze-btn[aria-current="true"] { box-shadow: inset 0 -3px 0 var(--ws, var(--sim)); font-weight: 700; }
+/* (an analysis over a paused simulation: the dots are the simulation's, not the analysis's) */
+body[data-workspace="analyze"] #viewport .layer-sim, body[data-workspace="analyze"] #viewport .layer-sim-labels { display: none; }
 /* a very short window: the simulation's banner is one short line that says "Simulation running" itself (the full
    text stays there for screen readers), in place of the badge, so the diagram keeps some room */
 @media (max-height: 420px) {
@@ -1444,13 +1467,13 @@ dialog#modal.sim-start-dialog .modal-body > .pp { flex: 0 1 auto; min-height: 14
 
 /* ---------------- the simulation layout: Simulation setup (left), Actions (right), the simulation panel (under them) */
 .sim-panel[hidden], .sim-dock[hidden], .sim-paneltabs[hidden] { display: none !important; }
-body[data-sim="on"] main { grid-template-columns: 280px minmax(0, 1fr) 330px; grid-template-rows: minmax(0, 1fr) var(--dock-h, 280px); }
-body[data-sim="on"] #outline { grid-column: 1; grid-row: 1; }
-body[data-sim="on"] #canvas-wrap { grid-column: 2; grid-row: 1; }
-body[data-sim="on"] #side { grid-column: 3; grid-row: 1; }
-body[data-sim="on"] #sim-dock { grid-column: 1 / -1; grid-row: 2; }
-body[data-sim="on"] #outline > .ol-header, body[data-sim="on"] #outline-body { display: none; }
-body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim="on"] #keys, body[data-sim="on"] #side-splitter, body[data-sim="on"] #side .tabs-more { display: none; }
+body[data-panels="on"] main { grid-template-columns: 280px minmax(0, 1fr) 330px; grid-template-rows: minmax(0, 1fr) var(--dock-h, 280px); }
+body[data-panels="on"] #outline { grid-column: 1; grid-row: 1; }
+body[data-panels="on"] #canvas-wrap { grid-column: 2; grid-row: 1; }
+body[data-panels="on"] #side { grid-column: 3; grid-row: 1; }
+body[data-panels="on"] #sim-dock { grid-column: 1 / -1; grid-row: 2; }
+body[data-panels="on"] #outline > .ol-header, body[data-panels="on"] #outline-body { display: none; }
+body[data-panels="on"] #side > .tabs, body[data-panels="on"] #side-body, body[data-panels="on"] #keys, body[data-panels="on"] #side-splitter, body[data-panels="on"] #side .tabs-more { display: none; }
 .sim-panel { display: flex; flex-direction: column; min-height: 0; }
 #side > .sim-panel { flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .sp-body { padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -1638,30 +1661,30 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
 .sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
 @media (max-width: 1100px) {
-  body[data-sim="on"] main { grid-template-columns: 236px minmax(0, 1fr) 286px; }
+  body[data-panels="on"] main { grid-template-columns: 236px minmax(0, 1fr) 286px; }
 }
 .sim-paneltabs { display: none; }
 #spt-diagram { display: none; }
 @media (max-width: 860px) {
-  body[data-sim="on"] main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto minmax(0, 0.9fr) var(--dock-h, 240px); }
-  body[data-sim="on"] #canvas-wrap { grid-column: 1; grid-row: 1; }
-  body[data-sim="on"] .sim-paneltabs { grid-column: 1; grid-row: 2; display: flex; gap: 4px; padding: 4px 10px 0; background: var(--panel); border-top: 1px solid var(--border); }
-  body[data-sim="on"] #outline, body[data-sim="on"] #side { grid-column: 1; grid-row: 3; border-top: 0; border-left: 0; border-right: 0; }
-  body[data-sim="on"] #sim-dock { grid-column: 1; grid-row: 4; }
-  body[data-sim="on"][data-sim-tab="setup"] #side, body[data-sim="on"]:not([data-sim-tab="setup"]) #outline { display: none; }
+  body[data-panels="on"] main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto minmax(0, 0.9fr) var(--dock-h, 240px); }
+  body[data-panels="on"] #canvas-wrap { grid-column: 1; grid-row: 1; }
+  body[data-panels="on"] .sim-paneltabs { grid-column: 1; grid-row: 2; display: flex; gap: 4px; padding: 4px 10px 0; background: var(--panel); border-top: 1px solid var(--border); }
+  body[data-panels="on"] #outline, body[data-panels="on"] #side { grid-column: 1; grid-row: 3; border-top: 0; border-left: 0; border-right: 0; }
+  body[data-panels="on"] #sim-dock { grid-column: 1; grid-row: 4; }
+  body[data-panels="on"][data-panel-tab="setup"] #side, body[data-panels="on"]:not([data-panel-tab="setup"]) #outline { display: none; }
   .sim-paneltabs [role="tab"] { min-height: 30px; padding: 3px 14px; border-radius: 6px 6px 0 0; }
   .sim-paneltabs [aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
   #sim-setup .pp-list { max-height: none; }
 }
 /* narrow and not tall (a small or strongly zoomed window): Diagram, Setup and Actions take turns above the simulation panel */
 @media (max-width: 860px) and (max-height: 700px) {
-  body[data-sim="on"] main { grid-template-rows: minmax(0, 1fr) auto var(--dock-h, 120px); }
-  body[data-sim="on"] #canvas-wrap, body[data-sim="on"] #outline, body[data-sim="on"] #side { grid-column: 1; grid-row: 1; }
-  body[data-sim="on"] .sim-paneltabs { grid-row: 2; }
-  body[data-sim="on"] #sim-dock { grid-row: 3; }
-  body[data-sim="on"] #spt-diagram { display: inline-block; }
-  body[data-sim="on"]:not([data-sim-tab="diagram"]) #canvas-wrap { visibility: hidden; }
-  body[data-sim="on"][data-sim-tab="diagram"] #side, body[data-sim="on"][data-sim-tab="diagram"] #outline { display: none; }
+  body[data-panels="on"] main { grid-template-rows: minmax(0, 1fr) auto var(--dock-h, 120px); }
+  body[data-panels="on"] #canvas-wrap, body[data-panels="on"] #outline, body[data-panels="on"] #side { grid-column: 1; grid-row: 1; }
+  body[data-panels="on"] .sim-paneltabs { grid-row: 2; }
+  body[data-panels="on"] #sim-dock { grid-row: 3; }
+  body[data-panels="on"] #spt-diagram { display: inline-block; }
+  body[data-panels="on"]:not([data-panel-tab="diagram"]) #canvas-wrap { visibility: hidden; }
+  body[data-panels="on"][data-panel-tab="diagram"] #side, body[data-panels="on"][data-panel-tab="diagram"] #outline { display: none; }
 }
 /* the simulation panel's toolbar in a narrower panel: the labels give their room (the controls keep their names), and in a
    narrow one the pacing's description goes to a second row, so that the clock and Exit stay on the first */
@@ -1815,3 +1838,55 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .has-selection .hl.vwire { stroke: var(--sel); stroke-width: 2.4; }
 /* a container network in the logical view (a bridge behind its host's NAT, an overlay): dashed */
 .cnet-net .net-box { stroke-dasharray: 7 4; }
+
+/* ---- the Experiments and Analyze workspaces' panels */
+.ws-dock { overflow: auto; padding: 8px 12px 12px; gap: 8px; }
+#outline > .sim-panel { overflow: auto; overscroll-behavior: contain; }
+.ex-head { display: grid; gap: 6px; }
+.ex-purpose { margin: 0; }
+.ex-list, .ex-seq { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 4px; }
+.ex-item, .ex-entry { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; white-space: normal; }
+.ex-entry { flex-direction: row; align-items: baseline; gap: 6px; font-size: 12.5px; }
+.ex-item[aria-pressed="true"], .ex-entry[aria-pressed="true"] { border-color: var(--ws, var(--accent)); box-shadow: inset 3px 0 0 var(--ws, var(--accent)); background: var(--ws-soft, var(--panel)); }
+.ex-entry .ex-mark { color: var(--ok); }
+.ex-entry.incomplete .ex-mark { color: var(--warn); }
+.ex-sel { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.ex-sel-h, .ex-step h3, .an-right h3, .ex-dock h3, .an-dock h3 { margin: 0; font-size: 13.5px; }
+.ex-sub { margin: 4px 0 0; font-size: 12.5px; }
+.ex-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.ex-grid .tf-row { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); align-items: center; gap: 6px; }
+.ex-grid .tf-row input, .ex-grid .tf-row select, .ex-grid .tf-pair { min-width: 0; width: 100%; }
+.ex-grid .tf-pair { display: flex; gap: 6px; flex-wrap: wrap; }
+.ex-grid .tf-pair > * { flex: 1 1 7em; min-width: 0; }
+.ex-grid .help, .ex-grid .field-err { margin: 0 0 0 calc(6.5em + 6px); }
+.ex-exps { grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+.ex-shortcuts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.ex-problems summary { color: var(--warn); font-weight: 600; }
+.ex-runbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ex-state { flex: 1 1 16em; min-width: 0; }
+.ex-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 8px 16px; align-items: start; }
+.ex-steplog, .ex-obs, .ex-plan { margin: 4px 0; padding-left: 20px; }
+.ex-steplog li[data-state="refused"] .ex-mark, .ex-obs .v-violated .v-mark { color: var(--error); }
+.ex-steplog li[data-state="submitted"] .ex-mark, .ex-obs .v-satisfied .v-mark { color: var(--ok); }
+.ex-target { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.ex-target > div { flex-basis: 100%; }
+.an-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.an-tools button { font-size: 12.5px; }
+.an-tools button[aria-checked="true"] { border-color: var(--ws, var(--accent)); box-shadow: inset 0 -3px 0 var(--ws, var(--accent)); font-weight: 700; }
+.an-left, .an-right, .an-dock { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.an-dock .trace-result, .an-dock .spof-tables, .an-dock .addr-tables { min-width: 0; }
+.an-selected { outline: 2px solid var(--ws, var(--accent)); outline-offset: -2px; }
+#an-detail:focus { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+/* the diagram's marks of a workspace: an experiment's targets (dashed), its verdicts (solid, with a word in the panel), the selected step's */
+.has-ws-marks .ws-target .dev-box, .has-ws-marks .ws-target .net-box { stroke: var(--ws) !important; stroke-width: 2.5 !important; stroke-dasharray: 6 3; }
+.has-ws-marks .ws-target .cable-line, .has-ws-marks .ws-target .rel-line { stroke: var(--ws) !important; stroke-width: 4 !important; stroke-dasharray: 6 3; }
+.has-ws-marks .ws-ok .dev-box, .has-ws-marks .ws-ok .cable-line { stroke: var(--ok) !important; stroke-dasharray: none; }
+.has-ws-marks .ws-bad .dev-box, .has-ws-marks .ws-bad .cable-line { stroke: var(--error) !important; stroke-dasharray: none; }
+.has-ws-marks .ws-sel .dev-box, .has-ws-marks .ws-sel .cable-line, .has-ws-marks .ws-sel .net-box { stroke-width: 4.5 !important; filter: drop-shadow(0 0 3px var(--ws)); }
+.has-ws-marks rect.ws-target.port, .has-ws-marks .ws-target.if-entry rect, .has-ws-marks .ws-target.if-chip rect { stroke: var(--ws) !important; stroke-width: 2.4 !important; }
+/* (a workspace's body that is not in front: hidden, whatever its own display) */
+.sp-body[hidden], .sd[hidden], .ws-body[hidden], .ws-dock[hidden] { display: none !important; }
+/* (a narrow panel: the experiment's section and its rows shrink to it, never wider) */
+.ex-ws, .ex-step, .ex-sel, .ex-sel > *, .ex-grid > *, .an-left > *, .an-right > * { min-width: 0; }
+.ex-sel, .ex-step .ex-grid { grid-template-columns: minmax(0, 1fr); }
+.ex-grid .tf-row { grid-template-columns: minmax(4.5em, 6.5em) minmax(0, 1fr); }

@@ -251,70 +251,76 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       state('a hypervisor’s Services card (its configuration and a virtual switch open, its guests with + VM) fits the panel', hw2.concat(problems()));
       app.loadExampleNamed('enterprise-wan.yaml');
       await tick();
-      // the tool windows of Analyze: inside the browser window (docked at the bottom when it is narrow), their title
-      // bar's buttons shown, nothing in them cut off sideways (a table scrolls in its own box); the page never scrolls
+      // the Analyze and Experiments workspaces: their panels in the browser window (tabs under the diagram when it is
+      // narrow), Exit shown, nothing in a panel cut off sideways (a table scrolls in its own box); the page never scrolls
       const tws: string[] = [];
       const view = { w: doc.documentElement.clientWidth, h: doc.documentElement.clientHeight };
-      const narrow = (doc.defaultView as Window).innerWidth <= 860;
-      const checkWindow = (name: string): void => {
-        const w = q('#toolwin') as HTMLElement;
-        const r = w.getBoundingClientRect();
-        if (w.hidden || r.width < 1) {
-          tws.push(`${name}: not shown`);
-          return;
-        }
-        if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) tws.push(`${name}: leaves the browser window (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')})`);
-        if (narrow && (!doc.body.classList.contains('tw-docked') || Math.abs(r.width - view.w) > 2)) tws.push(`${name}: not docked full-width in a narrow window`);
-        for (const sel of ['.tw-close', '.tw-collapse', '#tw-title']) {
-          const e = w.querySelector(sel) as HTMLElement | null;
-          const er = e ? e.getBoundingClientRect() : null;
-          if (!er || er.width < 1 || er.right > r.right + 0.5 || er.left < r.left - 0.5) tws.push(`${name}: ${sel} is not shown whole`);
-        }
-        const body = q('#tw-body') as HTMLElement;
-        if (body.scrollWidth > body.clientWidth + 1) tws.push(`${name}: the window scrolls sideways (${body.scrollWidth} > ${body.clientWidth})`);
-        const els = w.querySelectorAll('button, input, select, label, h3, p');
-        const br = body.getBoundingClientRect();
-        for (let i = 0; i < els.length; i++) {
-          const e = els[i] as HTMLElement;
-          if (e.closest('.table-wrap, .addr-scroll, .sim-scroll, .tw-head')) continue;
-          const er = e.getBoundingClientRect();
-          if (er.width < 1) continue;
-          if (er.left < br.left - 0.5 || er.right > br.right + 0.5) tws.push(`${name}: "${(e.textContent || e.getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the window sideways`);
+      const checkPanels = (name: string): void => {
+        const exit = q('#ws-exit-banner') as HTMLElement | null;
+        const xr = exit ? exit.getBoundingClientRect() : null;
+        if (!xr || xr.width < 1 || xr.right > view.w + 0.5) tws.push(`${name}: Exit is not shown whole`);
+        for (const id of ['ws-an-left', 'ws-an-right', 'ws-an-dock', 'ws-exp-left', 'ws-exp-right', 'ws-exp-dock']) {
+          const box = q('#' + id) as HTMLElement | null;
+          if (!box || box.hidden) continue;
+          const panel = box.closest('#outline, #side, #sim-dock') as HTMLElement;
+          const pr = panel.getBoundingClientRect();
+          // (a panel behind its tab in a narrow window is not shown: nothing to see there)
+          if (pr.width < 1 || pr.height < 1 || getComputedStyle(panel).display === 'none') continue;
+          if (pr.left < -0.5 || pr.right > view.w + 0.5 || pr.bottom > view.h + 0.5) tws.push(`${name}: #${panel.id} leaves the browser window`);
+          const els = box.querySelectorAll('button, input, select, label, h3, p');
+          for (let i = 0; i < els.length; i++) {
+            const e = els[i] as HTMLElement;
+            if (e.closest('.table-wrap, .addr-scroll, .sim-scroll, .spof-tables, .addr-tables, table, details:not([open])')) continue;
+            const er = e.getBoundingClientRect();
+            if (er.width < 1) continue;
+            if (er.left < pr.left - 0.5 || er.right > pr.right + 0.5) tws.push(`${name}: "${(e.textContent || e.getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves #${panel.id} sideways`);
+          }
         }
         if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) tws.push(`${name}: the page scrolls`);
       };
       void app.openAddressing();
       await tick();
-      checkWindow('Addressing overview');
+      checkPanels('Addressing');
       app.select('device:hq-fw');
       app.openFocusWindow(true);
       await tick();
-      checkWindow('Focus');
+      checkPanels('Focus');
       app.exitFocus();
       app.select(null);
       app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: true });
       app.openTrace();
       app.runTrace();
       await tick();
-      // every evidence row and layer evidence open: the widest the window gets
-      for (const b of Array.from(doc.querySelectorAll('#toolwin [data-why]')) as HTMLElement[]) b.click();
-      for (const d of Array.from(doc.querySelectorAll('#toolwin details')) as HTMLDetailsElement[]) d.open = true;
+      // every evidence row and the detail open: the widest it gets
+      for (const b of Array.from(doc.querySelectorAll('[data-an-root] [data-why]')) as HTMLElement[]) b.click();
+      for (const d of Array.from(doc.querySelectorAll('[data-an-root] details')) as HTMLDetailsElement[]) d.open = true;
       await tick();
-      checkWindow('Trace path');
+      checkPanels('Trace path');
       app.openSpof();
       for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
       app.runWhatIf(['hq-core1']);
       await tick();
-      checkWindow('Single points of failure');
+      checkPanels('Single points of failure');
       app.openDesignChecks();
       app.refreshDesignChecks();
       await tick();
-      for (const d of Array.from(doc.querySelectorAll('#toolwin details')) as HTMLDetailsElement[]) d.open = true;
+      for (const d of Array.from(doc.querySelectorAll('[data-an-root] details')) as HTMLDetailsElement[]) d.open = true;
       await tick();
-      checkWindow('Design checks');
-      app.closeToolWindow();
+      checkPanels('Design checks');
+      await app.exitWorkspace();
+      app.loadExampleNamed('ot-network.yaml');
       await tick();
-      state('the tool windows (addressing, focus, trace path with its evidence, single points of failure with a what-if, design checks) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
+      await app.enterExperiments();
+      app.selectExperimentStep({ exp: 'cabinet-outage', list: 'observe', index: 4 });
+      app.runExperimentNow('cabinet-outage');
+      await tick();
+      checkPanels('Experiments');
+      await app.exitWorkspace();
+      // (the run's toast is not part of the layout under test)
+      (q('#toast') as HTMLElement).hidden = true;
+      app.loadExampleNamed('enterprise-wan.yaml');
+      await tick();
+      state('the Analyze tools (addressing, focus, trace path with its evidence, single points of failure with a what-if, design checks) and the Experiments workspace fit the browser window: their panels in it (tabs when it is narrow), Exit shown, nothing cut off sideways; the page does not scroll', tws.concat(problems()));
       // Start simulation…: its dialog with every layer's section open fits the window; nothing in it is wider than the dialog
       {
         const why: string[] = [];
@@ -380,7 +386,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         const narrowSim = (doc.defaultView as Window).innerWidth <= 860;
         // narrow and short: Diagram, Setup and Actions take turns above the panel
         const shortSim = narrowSim && (q('#spt-diagram') as HTMLElement).getClientRects().length > 0;
-        const tabRegion = (): string => ({ diagram: 'canvas-wrap', setup: 'outline', actions: 'side' } as { [k: string]: string })[doc.body.getAttribute('data-sim-tab') || 'actions'];
+        const tabRegion = (): string => ({ diagram: 'canvas-wrap', setup: 'outline', actions: 'side' } as { [k: string]: string })[doc.body.getAttribute('data-panel-tab') || 'actions'];
         const rect = (id: string): DOMRect => (q('#' + id) as HTMLElement).getBoundingClientRect();
         const inside = (name: string, r: DOMRect): void => {
           if (r.width < 1 || r.height < 1) why.push(`${name}: not shown`);
