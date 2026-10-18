@@ -664,6 +664,37 @@ function directStatics(model: Model, device: string, vrf: string, ctx: RoutingCt
   return out;
 }
 
+/** A prefix's text as a table key, cached per prefix object (a learned route passes its own on). */
+const PREFIX_KEYS = new WeakMap<IpPrefix, string>();
+function prefixKey(net: IpPrefix): string {
+  let k = PREFIX_KEYS.get(net);
+  if (k === undefined) {
+    k = prefixText(net);
+    PREFIX_KEYS.set(net, k);
+  }
+  return k;
+}
+
+/** Are two routes the same for the fixpoint (metric, preference, AS path, adjacencies, history, installed)? */
+function sameRoute(a: DynRoute, b: DynRoute): boolean {
+  if (a.metric !== b.metric || a.localPref !== b.localPref || !!a.notInstalled !== !!b.notInstalled) return false;
+  if (a.asPath.length !== b.asPath.length || a.via.length !== b.via.length || a.origin.history.length !== b.origin.history.length) return false;
+  for (let i = 0; i < a.asPath.length; i++) if (a.asPath[i] !== b.asPath[i]) return false;
+  for (let i = 0; i < a.via.length; i++) if (a.via[i] !== b.via[i]) return false;
+  for (let i = 0; i < a.origin.history.length; i++) if (a.origin.history[i] !== b.origin.history[i]) return false;
+  return true;
+}
+
+/** Are two route tables the same (by prefix)? */
+function sameTable(a: Map<string, DynRoute>, b: Map<string, DynRoute>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, r] of a) {
+    const o = b.get(k);
+    if (!o || !sameRoute(r, o)) return false;
+  }
+  return true;
+}
+
 function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   const adjacencies: Adjacency[] = [];
   const missing: MissingAdjacency[] = [];
@@ -724,18 +755,31 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   // the best routes per protocol and node, by prefix
   const best = new Map<string, Map<string, DynRoute>>();
   const tableOf = (p: string, n: string): Map<string, DynRoute> => best.get(p + '|' + n) || new Map();
-  const conn = (dev: string, vrf: string): Connected[] => connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(ctx, dev, c.iface));
+  const connMemo = new Map<string, Connected[]>();
+  const conn = (dev: string, vrf: string): Connected[] => {
+    const k = dev + '\0' + vrf;
+    let v = connMemo.get(k);
+    if (!v) connMemo.set(k, (v = connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(ctx, dev, c.iface))));
+    return v;
+  };
+  const staticsMemo = new Map<string, IpPrefix[]>();
+  const staticsOf = (dev: string, vrf: string): IpPrefix[] => {
+    const k = dev + '\0' + vrf;
+    let v = staticsMemo.get(k);
+    if (!v) staticsMemo.set(k, (v = directStatics(model, dev, vrf, ctx)));
+    return v;
+  };
   /** what a router originates into a protocol now (its own routes: metric 0) */
   const originate = (p: string, n: string): Map<string, DynRoute> => {
     const [dev, vrf] = n.split('\0');
     const pol = policyOf(model, dev, p);
     const out = new Map<string, DynRoute>();
     const add = (net: IpPrefix, origin: RouteOrigin): void => {
-      const k = prefixText(net);
+      const k = prefixKey(net);
       if (!out.has(k)) out.set(k, { net, metric: 0, via: [], asPath: [], localPref: DEFAULT_LOCAL_PREF, origin, policy: [] });
     };
     const own = conn(dev, vrf);
-    const statics = directStatics(model, dev, vrf, ctx);
+    const statics = staticsOf(dev, vrf);
     if (pol && pol.advertise) {
       for (const t of pol.advertise) {
         const pp = parsePrefix(t);
@@ -772,23 +816,29 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
     return out;
   };
   // propagate until nothing changes (bounded: a route is never longer than the routers there are)
-  const signature = (m: Map<string, DynRoute>): string =>
-    Array.from(m.keys())
-      .sort(cmpStr)
-      .map((k) => {
-        const r = m.get(k) as DynRoute;
-        return `${k}:${r.metric}:${r.localPref}:${r.asPath.join('.')}:${r.via.map((a) => a.relation + '>' + a.to).join(',')}:${r.origin.history.join('.')}:${r.notInstalled ? 1 : 0}`;
-      })
-      .join('|');
   const maxRounds = Array.from(nodesOf.values()).reduce((x, l) => x + l.length, 0) + 4;
+  const originMemo = new Map<string, Map<string, DynRoute>>();
+  // a router's table is computed again in a round only when what it reads changed in the round before: a neighbour's
+  // table of the protocol, or one of its own tables (redistribution, a default route if installed) — the same fixpoint, less work
+  let changedTables = new Set<string>();
+  let changedNodes = new Set<string>();
   for (let round = 0; round < maxRounds; round++) {
     let changed = false;
     const next = new Map<string, Map<string, DynRoute>>();
+    const nowTables = new Set<string>();
+    const nowNodes = new Set<string>();
     for (const p of protocols) {
       const ls = LINK_STATE.indexOf(p) >= 0;
       for (const n of nodesOf.get(p) as string[]) {
+        if (round > 0 && !changedNodes.has(n) && !(inbound.get(p + '|' + n) || []).some((a) => changedTables.has(p + '|' + node(a.to, a.toVrf)))) continue;
         const [dev] = n.split('\0');
-        const mine = originate(p, n);
+        // (what it originates reads no learned table unless it redistributes another protocol or has a conditional default: then once)
+        let mine = originMemo.get(p + '|' + n);
+        if (!mine) {
+          mine = originate(p, n);
+          const pol = policyOf(model, dev, p);
+          if (!pol || (!pol.redistribute.some((x) => x !== 'connected' && x !== 'static') && pol.defaultRoute !== 'if_installed')) originMemo.set(p + '|' + n, mine);
+        }
         const out = new Map<string, DynRoute>(mine);
         const myAs = p === 'bgp' ? bgpAsn(model.index.devices.get(dev)) : undefined;
         const myPol = policyOf(model, dev, p);
@@ -827,7 +877,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
                 if (d.localPref !== undefined) cand.localPref = d.localPref;
               }
             }
-            const k = prefixText(r.net);
+            const k = prefixKey(r.net);
             const cur = out.get(k);
             if (!cur) {
               out.set(k, cand);
@@ -839,12 +889,17 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
             else if (c === 0 && !!cand.notInstalled === !!cur.notInstalled) for (const x of cand.via) if (cur.via.indexOf(x) < 0) cur.via.push(x);
           }
         }
+        if (sameTable(out, tableOf(p, n))) continue;
         next.set(p + '|' + n, out);
-        if (signature(out) !== signature(tableOf(p, n))) changed = true;
+        nowTables.add(p + '|' + n);
+        nowNodes.add(n);
+        changed = true;
       }
     }
     for (const [k, v] of next) best.set(k, v);
     if (!changed) break;
+    changedTables = nowTables;
+    changedNodes = nowNodes;
   }
   // the routes each router installs: what it learned (not its own connected networks), one entry per first adjacency
   const entries = new Map<string, RibEntry[]>();

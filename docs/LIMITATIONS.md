@@ -357,7 +357,11 @@ the user.
   them is logged where it leaves the scope. A scope adds the routing domain
   its routes come from, the switches between, its DHCP and DNS servers and
   gateway-group members; a protocol whose peers are all outside it does not
-  form. Experiments always run the entire model.
+  form. Experiments always run the entire model. A scope inside one large
+  routing domain still runs every router of that domain (its routes come
+  from them), so where route convergence dominates, a smaller scope gains
+  little: the routes are computed again for each routing message's
+  estimate, which grows with the domain.
 * **Saved experiments run on scenario time.** A run starts clean and is
   repeatable; at one time, actions apply in the order written. A stream of
   Network events (real time) is no experiment action. Observations read
