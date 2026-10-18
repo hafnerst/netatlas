@@ -9,7 +9,7 @@ import { IPV6_PLACEHOLDER, LEASE_PLACEHOLDER } from '../model/addresses';
 import { ENTITY_KINDS, EditLocked, EntityKind, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
-import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING } from '../layout/strategies';
 import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
 import { Endpoint, Model } from '../model/types';
 import { el, materialize, mount, setPaint } from './dom';
@@ -1640,7 +1640,7 @@ export class App {
   }
 
   /**
-   * The Auto-arrange buttons (Default, Compact, Spacious) and the layout
+   * The Auto-arrange buttons (Default, Compact, Structured) and the layout
    * status of the shown view. The strategy whose result the view shows is
    * marked as selected (aria-pressed) and disabled: there is nothing to do.
    * A strategy that gives exactly the same positions for this model is
@@ -1704,11 +1704,11 @@ export class App {
           ? `${STRATEGY_LABEL[st]}: gives exactly the same positions as ${STRATEGY_LABEL[current as ArrangeStrategy]} for this ${filtered ? 'filtered view' : 'model'}, so there is nothing to change.`
           : `${STRATEGY_LABEL[st]}: ${what} ${filtered ? 'Arranges the devices shown, temporarily; the saved layout is not changed.' : `Arranges the ${view} view; the other view is not changed.${st === 'default' ? ' (A)' : ''}`}`;
     });
+    // after moves or edits, a view arranged with Structured keeps its right-angle lines: said, so it is no surprise
+    const routed = s.routingFor(view) === 'orthogonal' ? ' Its lines keep the right angles of Structured.' : '';
     const msg = current
-      ? `The ${filtered ? 'filtered ' : ''}${view} view is arranged with ${STRATEGY_LABEL[current]}${matches.length > 1 ? ` (${matches.slice(1).map((x) => STRATEGY_LABEL[x]).join(', ')} give the same positions)` : ''}.`
-      : filtered
-        ? FILTERED_STATUS_MESSAGE.manual
-        : LAYOUT_STATUS_MESSAGE[status as 'manual' | 'edited'];
+      ? `The ${filtered ? 'filtered ' : ''}${view} view is arranged with ${STRATEGY_LABEL[current]}${matches.length > 1 ? ` (${matches.slice(1).map((x) => STRATEGY_LABEL[x]).join(', ')} ${matches.length > 2 ? 'give' : 'gives'} the same positions)` : ''}.`
+      : (filtered ? FILTERED_STATUS_MESSAGE.manual : LAYOUT_STATUS_MESSAGE[status as 'manual' | 'edited']) + routed;
     if (desc.textContent !== msg) desc.textContent = msg;
     group.title = msg;
   }
@@ -4528,7 +4528,7 @@ export class App {
       this.render();
       if (moved) this.fit();
       this.updateChrome();
-      this.toast(moved ? `Auto-arranged the filtered ${view} view${how}: ${moved} object${moved > 1 ? 's' : ''} moved. Temporary; the saved layout is unchanged.` : 'Already arranged — nothing moved.');
+      this.toast(moved ? `Auto-arranged the filtered ${view} view${how}: ${moved} object${moved > 1 ? 's' : ''} moved. Temporary; the saved layout is unchanged.` : `Arranged the filtered ${view} view${how}: nothing moved, ${STRATEGY_ROUTING[strategy] ? 'the lines now run at right angles' : 'the lines are routed as standard again'}. Temporary; the saved layout is unchanged.`);
       return;
     }
     const other: View = view === 'physical' ? 'logical' : 'physical';
@@ -4558,11 +4558,14 @@ export class App {
       // the model or the view may have changed while the dialog was open
       if (this.mdoc !== d || this.session !== s || s.state.view !== view) return;
     }
+    const routingBefore = d.routing(view);
     const res = d.arrange([view], strategy);
     const note = !res.changed
       ? 'Already arranged — nothing moved.'
       : res.moved === 0
-        ? 'Positions saved in the model; nothing moved.'
+        ? routingBefore !== STRATEGY_ROUTING[strategy]
+          ? `Arranged the ${view} view${how}: nothing moved, ${STRATEGY_ROUTING[strategy] ? 'the lines now run at right angles' : 'the lines are routed as standard again'}. Undo with Ctrl+Z.`
+          : 'Positions saved in the model; nothing moved.'
         : `Auto-arranged the ${view} view${how}: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
     this.afterEdit(note);
     if (res.moved) this.fit();
@@ -4956,9 +4959,9 @@ const LAYOUT_STATUS_MESSAGE = {
 
 /** What each strategy is for (hover text of its button; the trade-offs are in the README). */
 const STRATEGY_HELP: { [s in ArrangeStrategy]: string } = {
-  default: 'the standard layout: tiers and groups by cabling (physical), evenly spaced relations (logical).',
-  compact: 'the standard layout with the empty space taken out: smaller pictures for small architectures; labels sit closer to their lines.',
-  spacious: 'the standard layout spread out: more room for labels and lines in dense architectures; a larger picture.',
+  default: 'the balanced standard layout: tiers and groups by cabling (physical), evenly spaced relations (logical); lines run straight or bend around boxes.',
+  compact: 'packed tight: rows of leaf devices folded, groups and parts packed side by side, less empty space; the smallest picture without overlaps.',
+  structured: 'rows and columns: devices in tiers on a grid, aligned with what they connect to; lines only horizontal and vertical with right-angle bends.',
 };
 
 /** A value for use inside a quoted CSS attribute selector. */

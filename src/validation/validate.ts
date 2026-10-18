@@ -1075,7 +1075,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // ------------------------------------------------------------- layout
   // Presentation only: problems here are warnings and the entry is ignored,
   // so stored positions can never change what the model means.
-  const layout: ModelLayout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
+  const layout: ModelLayout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: {} };
   const layoutNode = get(top, 'layout');
   if (!isNull(layoutNode)) {
     const ln = layoutNode as YNode;
@@ -1101,8 +1101,25 @@ function build(root: YNode | null, c: Ctx): Model | null {
           });
           return;
         }
+        if (view === 'routing') {
+          // how a view's lines are routed: "orthogonal" (the Structured arrangement); without an entry the standard routing
+          if (isNull(e.value)) return;
+          if (e.value.kind !== 'map') {
+            c.warn(e.value, 'layout.routing', 'expected "physical: orthogonal" and/or "logical: orthogonal"; ignored');
+            return;
+          }
+          e.value.entries.forEach((re, rview) => {
+            const v = scalarText(re.value);
+            if ((rview !== 'physical' && rview !== 'logical') || v !== 'orthogonal') {
+              c.warn(re.value, 'layout.routing.' + rview, `"${rview}: ${v === undefined ? kindOf(re.value) : v}" is not a routing: use "physical: orthogonal" or "logical: orthogonal" (horizontal and vertical lines, the Structured arrangement), or no entry for the standard routing; ignored`, { key: rview, line: re.keyLine });
+              return;
+            }
+            layout.routing[rview] = 'orthogonal';
+          });
+          return;
+        }
         if (view !== 'physical' && view !== 'logical') {
-          c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical or manual); it is ignored`, { key: view, line: e.keyLine });
+          c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical, manual or routing); it is ignored`, { key: view, line: e.keyLine });
           return;
         }
         if (isNull(e.value)) return;

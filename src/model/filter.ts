@@ -111,7 +111,7 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
 }
 
 function emptyLayout(): Model['layout'] {
-  return { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
+  return { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: {} };
 }
 
 function indexOf(devices: Device[], links: Link[], networks: Network[], relations: Relation[], groups: Group[]): ModelIndex {

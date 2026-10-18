@@ -9,7 +9,7 @@
  */
 import type { App } from './app';
 import { EXAMPLES } from '../generated/examples';
-import { STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
+import { STRATEGIES, STRATEGY_HINT, STRATEGY_KEYWORDS, STRATEGY_LABEL } from '../layout/strategies';
 import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS } from '../analysis/focus';
 
 export type CommandGroup = 'File' | 'Example' | 'Export' | 'Find' | 'Analyze' | 'Simulate' | 'Window' | 'Help' | 'Edit' | 'View' | 'Auto-arrange' | 'Filters' | 'Zoom' | 'Panel' | 'Theme';
@@ -423,10 +423,10 @@ export function buildCommands(): Command[] {
         label: 'Auto-arrange: ' + STRATEGY_LABEL[st],
         group: 'Auto-arrange',
         keys: st === 'default' ? { combos: [{ key: 'a' }] } : undefined,
-        keywords: 'layout positions tidy',
+        keywords: STRATEGY_KEYWORDS[st],
         state: (app) => {
           const why = app.arrangeBlocked(st);
-          return why ? off(why) : on(`Arrange the view on screen: ${STRATEGY_LABEL[st]}`);
+          return why ? off(why) : on(`Arrange the view on screen: ${STRATEGY_LABEL[st]} — ${STRATEGY_HINT[st]}`);
         },
         run: (app) => void app.arrangeCurrentView(st),
       }),

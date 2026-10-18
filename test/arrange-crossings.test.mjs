@@ -46,7 +46,7 @@ test('the crossing measure: a shared end or a port two cables leave from is no c
   assert.equal(G.polylineCrossings([p(0, 5), p(5, 5), p(5, -5)], [[p(2, 0), p(2, 10)], [p(4, 0), p(8, 0)]]), 2);
 });
 
-for (const strategy of ['default', 'spacious']) {
+for (const strategy of ['default', 'structured']) {
   test(`private house, ${strategy}: the core's cables to the DSL router and to the NAS don't cross, nothing crosses; floors, ports and labels as they should be`, () => {
     const { s, scene } = arranged(example('private-house.yaml'), strategy);
     const routes = scene.routes;
@@ -87,7 +87,7 @@ for (const strategy of ['default', 'spacious']) {
 }
 
 test('a row is ordered by exchanges too: the data center’s border leaf goes where its uplink crosses nothing; only the spines’ unavoidable crossings remain', () => {
-  for (const strategy of ['default', 'spacious']) {
+  for (const strategy of ['default', 'structured']) {
     const c = crossings(arranged(example('datacenter-evpn.yaml'), strategy).scene.routes);
     // two spines cabled to four leaves in two rows: C(4,2) = 6 crossings in any order
     assert.equal(c.length, 6, `${strategy}: ${c.join(', ')}`);
@@ -95,23 +95,25 @@ test('a row is ordered by exchanges too: the data center’s border leaf goes wh
   }
 });
 
-test('no public example has more crossings than its topology leaves (Default and Spacious); the whole set has fewer than before', () => {
+test('no public example has more crossings than its topology leaves (Default and Structured; Compact at most two more); the whole set has fewer than before', () => {
   // the remaining ones: a full spine/leaf mesh (6), two ToR switches cabled crosswise to two hosts and a client between them, the campus controller under the distribution switch (Default)
   const most = { 'datacenter-evpn.yaml': 6, 'virtualization.yaml': 3, 'enterprise-campus.yaml': 1 };
   for (const f of publicExampleNames) {
-    for (const strategy of ['default', 'spacious']) {
+    for (const strategy of ['default', 'compact', 'structured']) {
       const c = crossings(arranged(example(f), strategy).scene.routes);
-      assert.ok(c.length <= (most[f] || 0), `${f} ${strategy}: ${c.join(', ')}`);
+      // (Compact packs tighter and may add a crossing or two where it saves room, never many)
+      assert.ok(c.length <= (most[f] || 0) + (strategy === 'compact' ? 2 : 0), `${f} ${strategy}: ${c.join(', ')}`);
     }
   }
-  // every example, public and internal: 26 crossings with Default and 24 with Spacious before this change
-  let total = { default: 0, spacious: 0 };
-  for (const f of exampleNames) for (const strategy of ['default', 'spacious']) total[strategy] += crossings(arranged(example(f), strategy).scene.routes).length;
-  assert.ok(total.default <= 15 && total.spacious <= 14, JSON.stringify(total));
+  // every example, public and internal (but the layout stress model, which has many on purpose): 26 crossings with
+  // Default before the crossing reduction; now 15 with Default, 13 with Compact and 16 with Structured
+  const total = { default: 0, compact: 0, structured: 0 };
+  for (const f of exampleNames.filter((x) => x !== 'layout-stress.yaml')) for (const strategy of ['default', 'compact', 'structured']) total[strategy] += crossings(arranged(example(f), strategy).scene.routes).length;
+  assert.ok(total.default <= 15 && total.compact <= 15 && total.structured <= 16, JSON.stringify(total));
 });
 
 test('deterministic and stable: the same model and strategy give the same positions and routes; arranging again changes nothing', () => {
-  for (const strategy of ['default', 'spacious']) {
+  for (const strategy of ['default', 'compact', 'structured']) {
     const a = arranged(example('private-house.yaml'), strategy);
     const b = arranged(example('private-house.yaml'), strategy);
     assert.equal(a.d.exportText(), b.d.exportText());

@@ -1,8 +1,9 @@
-// The three Auto-arrange strategies (Default, Compact, Spacious): deterministic
+// The three Auto-arrange strategies (Default, Compact, Structured): deterministic
 // and idempotent for every example (small and dense), free of overlaps, group
 // frames kept clear of what they don't contain, and recognised from the
-// positions alone — also in filtered views, and with a stable tie-break when
-// two strategies give the same positions.
+// positions and the routing (Structured: orthogonal) alone — also in filtered
+// views, and with a stable tie-break when two strategies give the same result.
+// (The geometry of Compact and Structured in detail: test/arrange-presets.test.mjs.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { load, model, example, exampleNames } from './helpers.mjs';
@@ -68,7 +69,7 @@ function extent(bs) {
 }
 
 test('three strategies, Default first; Default is exactly the existing Auto-arrange', () => {
-  assert.deepEqual(STRATEGIES, ['default', 'compact', 'spacious']);
+  assert.deepEqual(STRATEGIES, ['default', 'compact', 'structured']);
   for (const f of exampleNames) {
     const input = layoutInput(model(example(f)));
     for (const v of ['physical', 'logical']) assert.equal(posText(strategyPositions(v, input, 'default')), posText(autoPositions(v, input)), `${f} ${v}`);
@@ -94,28 +95,15 @@ test('every strategy, every example (small and dense), both views: deterministic
   }
 });
 
-test('the strategies differ meaningfully: Compact takes less room than Default, Spacious more, for the dense examples', () => {
+test('the strategies differ meaningfully: Compact takes less room than Default, Structured puts everything on its grid', () => {
   for (const f of ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml']) {
     const input = layoutInput(model(example(f)));
     for (const v of ['physical', 'logical']) {
-      const [d, c, s] = STRATEGIES.map((st) => extent(boxes(v, input, strategyPositions(v, input, st))));
+      const [d, c] = ['default', 'compact'].map((st) => extent(boxes(v, input, strategyPositions(v, input, st))));
       assert.ok(c < d, `${f} ${v}: compact ${Math.round(c)} < default ${Math.round(d)}`);
-      assert.ok(s > d * 1.3, `${f} ${v}: spacious ${Math.round(s)} > default ${Math.round(d)}`);
-    }
-  }
-});
-
-test('Compact keeps the arrangement: devices in a row stay in their left-to-right order, stacked devices stay stacked', () => {
-  const input = layoutInput(model(example('enterprise-wan.yaml')));
-  const def = strategyPositions('physical', input, 'default');
-  const cmp = strategyPositions('physical', input, 'compact');
-  const ids = Array.from(def.keys());
-  for (const a of ids) {
-    for (const b of ids) {
-      if (a === b) continue;
-      const [pa, pb, qa, qb] = [def.get(a), def.get(b), cmp.get(a), cmp.get(b)];
-      if (pa.y === pb.y && pa.x < pb.x) assert.ok(qa.x < qb.x, `${a} stays left of ${b}`);
-      if (pa.x === pb.x && pa.y < pb.y) assert.ok(qa.y < qb.y, `${a} stays above ${b}`);
+      const s = strategyPositions(v, input, 'structured');
+      assert.notEqual(posText(s), posText(strategyPositions(v, input, 'default')), `${f} ${v}: Structured is not Default`);
+      s.forEach((p, id) => assert.ok(p.x % 10 === 0, `${f} ${v}: ${id} on the 10 px grid (x ${p.x})`));
     }
   }
 });
@@ -124,10 +112,11 @@ test('arranging with a strategy: one undo step, idempotent, recognised from the 
   for (const f of ['minimal.yaml', 'metro-ring.yaml', 'long-labels.yaml']) {
     const d = doc(example(f));
     assert.deepEqual(d.arrangedWith('physical').slice(0, 1), ['default'], f);
-    for (const st of ['compact', 'spacious', 'default']) {
+    for (const st of ['compact', 'structured', 'default']) {
       for (const v of ['physical', 'logical']) {
         const res = d.arrange([v], st);
-        assert.equal(d.arrangedWith(v)[0], st, `${f} ${v} ${st}`);
+        // (Compact gives Default's positions where it can't be clearly smaller: then both match, Default first)
+        assert.ok(d.arrangedWith(v).includes(st), `${f} ${v} ${st}`);
         assert.equal(d.layoutStatus(v), 'auto');
         // the second time nothing changes
         const text = d.exportText();
@@ -141,9 +130,10 @@ test('arranging with a strategy: one undo step, idempotent, recognised from the 
     // the status survives export and reload: it comes from the stored positions
     const c = doc(example(f));
     c.arrange(['physical'], 'compact');
-    c.arrange(['logical'], 'spacious');
+    c.arrange(['logical'], 'structured');
     const back = doc(c.exportText());
-    assert.deepEqual([back.arrangedWith('physical')[0], back.arrangedWith('logical')[0]], ['compact', 'spacious'], f);
+    assert.ok(back.arrangedWith('physical').includes('compact'), f);
+    assert.deepEqual(back.arrangedWith('logical'), ['structured'], f);
     // undo goes back to what was shown before
     c.undo();
     assert.equal(c.arrangedWith('logical')[0], 'default');
@@ -155,16 +145,22 @@ test('arranging with a strategy: one undo step, idempotent, recognised from the 
     for (const st of STRATEGIES) assert.deepEqual(c.arrangeImpact('physical', st).manual, [id], `${f} ${st}`);
     // a node put back where a strategy places it is no longer counted as moved by hand
     c.movePositions('physical', new Map([[id, c.autoLayout('physical', 'compact').get(id)]]), 'Move back');
-    assert.deepEqual(c.arrangedWith('physical'), ['compact']);
+    assert.ok(c.arrangedWith('physical').includes('compact'), f);
   }
 });
 
 test('identical results: a one-device model gets the same positions from every strategy; the first (Default) counts, the order is stable', () => {
   const d = doc('netatlas: 1\ndevices:\n  - {id: solo, type: router}\n');
   for (const v of ['physical', 'logical']) {
-    assert.deepEqual(d.arrangedWith(v), ['default', 'compact', 'spacious'], v);
+    // Structured routes orthogonally: with the standard routing only Default and Compact match
+    assert.deepEqual(d.arrangedWith(v), ['default', 'compact'], v);
     assert.equal(d.layoutStatus(v), 'auto');
-    for (const st of STRATEGIES) assert.deepEqual(d.arrangeImpact(v, st).moved, [], `${v} ${st}: nothing would move`);
+    for (const st of ['default', 'compact']) assert.deepEqual(d.arrangeImpact(v, st).moved, [], `${v} ${st}: nothing would move`);
+    // Structured changes the routing (and puts the device on its grid), one undo step; then only Structured matches
+    assert.equal(d.arrange([v], 'structured').changed, true);
+    assert.deepEqual(d.arrangedWith(v), ['structured'], v);
+    d.undo();
+    assert.deepEqual(d.arrangedWith(v), ['default', 'compact'], v);
   }
 });
 
@@ -180,7 +176,7 @@ test('filtered views: each strategy arranges the shown devices only, determinist
     for (const st of STRATEGIES) {
       s.arrangeFiltered(st);
       assert.equal(posText(s.positionsFor(view)), posText(strategyPositions(view, input, st)), `${view} ${st}`);
-      assert.equal(s.filteredArrangedWith(view)[0], st);
+      assert.ok(s.filteredArrangedWith(view).includes(st), `${view} ${st}`);
       assert.equal(s.arrangeFiltered(st), 0, `${view} ${st}: nothing moves the second time`);
       assert.deepEqual(overlaps(boxes(view, input, s.positionsFor(view)), 4), [], `${view} ${st}`);
     }

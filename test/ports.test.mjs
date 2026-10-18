@@ -25,6 +25,8 @@ function session(m, view, strategy = 'default') {
   s.setView(view);
   if (strategy !== 'default') {
     s.model.layout[view] = strategyPositions(view, layoutInput(m), strategy);
+    // (Structured routes at right angles)
+    if (strategy === 'structured') s.model.layout.routing[view] = 'orthogonal';
     s.setModel(s.model);
   }
   return s;
@@ -73,7 +75,7 @@ test('long-labels.yaml: the branch router\'s GRE and OSPF leave from the port of
 
 test('logical view, every example: each end in the port area of its interface, no lane across a row, end labels beside their ports and clear of text and lines', () => {
   for (const f of exampleNames) {
-    for (const strategy of ['default', 'compact', 'spacious']) {
+    for (const strategy of ['default', 'compact', 'structured']) {
       const m = fresh(f);
       const s = session(m, 'logical', strategy);
       const r = s.render();
@@ -192,7 +194,7 @@ test('a reference to an interface that does not exist is an error, and nothing i
 
 test('physical view, every example: each cable end at the port of its interface, on its device\'s side, across no other port; LAG brackets hold members only', () => {
   for (const f of exampleNames) {
-    for (const strategy of ['default', 'compact', 'spacious']) {
+    for (const strategy of ['default', 'compact', 'structured']) {
       const m = fresh(f);
       const r = session(m, 'physical', strategy).render();
       assert.deepEqual(physicalBindingProblems(m, r.root), [], `${f} ${strategy}`);
