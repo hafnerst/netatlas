@@ -328,6 +328,14 @@ export function buildCommands(): Command[] {
       run: (app) => void app.openStartDialog(),
     },
     {
+      id: 'find.browse',
+      label: 'Applications, VLANs and VRFs…',
+      group: 'Find',
+      keywords: 'browse navigate application app vlan vrf list focus context large model',
+      state: (app) => needDiagram(app, 'A window listing every application, VLAN and VRF, each with Focus on the devices it involves'),
+      run: (app) => app.openBrowse(),
+    },
+    {
       id: 'view.collapse',
       label: 'Collapse group',
       group: 'Find',

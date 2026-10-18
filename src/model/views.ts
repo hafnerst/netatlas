@@ -12,8 +12,9 @@ export interface SavedFocus {
   /** 1–3 (a plain focus) */
   hops?: number;
   /** a contextual focus: the devices of a VLAN, of the target's dependencies, of a multicast group, of its timing domain */
-  context?: 'vlan' | 'dependencies' | 'multicast' | 'timing';
+  context?: 'vlan' | 'dependencies' | 'multicast' | 'timing' | 'vrf';
   vlan?: number;
+  vrf?: string;
   group?: string;
 }
 
@@ -38,16 +39,16 @@ export interface SavedView {
 }
 
 export const VIEW_KEYS = ['id', 'name', 'view', 'focus', 'devices', 'collapse', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'];
-export const VIEW_FOCUS_KEYS = ['target', 'hops', 'context', 'vlan', 'group'];
+export const VIEW_FOCUS_KEYS = ['target', 'hops', 'context', 'vlan', 'vrf', 'group'];
 export const VIEW_OPTION_KEYS = ['labels', 'groups', 'networks', 'routes'];
 export const VIEW_VIEWPORT_KEYS = ['x', 'y', 'zoom'];
-export const VIEW_CONTEXTS: Array<SavedFocus['context']> = ['vlan', 'dependencies', 'multicast', 'timing'];
+export const VIEW_CONTEXTS: Array<SavedFocus['context']> = ['vlan', 'dependencies', 'multicast', 'timing', 'vrf'];
 export const MAX_VIEWS = 100;
 
 /** "Logical view · focus sw (2 hops) · 3 types hidden" */
 export function viewSummary(v: SavedView): string {
   const out = [v.view === 'logical' ? 'Logical view' : 'Physical view'];
-  if (v.focus) out.push(`focus ${v.focus.target}${v.focus.context ? ` (${v.focus.context === 'vlan' ? 'VLAN ' + v.focus.vlan : v.focus.context === 'multicast' ? 'group ' + v.focus.group : v.focus.context})` : ` (${v.focus.hops || 1} hop${(v.focus.hops || 1) === 1 ? '' : 's'})`}`);
+  if (v.focus) out.push(`focus ${v.focus.target}${v.focus.context ? ` (${v.focus.context === 'vlan' ? 'VLAN ' + v.focus.vlan : v.focus.context === 'multicast' ? 'group ' + v.focus.group : v.focus.context === 'vrf' ? 'VRF ' + v.focus.vrf : v.focus.context})` : ` (${v.focus.hops || 1} hop${(v.focus.hops || 1) === 1 ? '' : 's'})`}`);
   if (v.devices) out.push(`${v.devices.length} device${v.devices.length === 1 ? '' : 's'}`);
   if (v.collapse && v.collapse.length) out.push(`${v.collapse.length} group${v.collapse.length === 1 ? '' : 's'} collapsed`);
   if (v.hideTypes.length) out.push(`${v.hideTypes.length} type${v.hideTypes.length === 1 ? '' : 's'} hidden`);

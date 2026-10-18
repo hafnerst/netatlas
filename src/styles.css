@@ -934,6 +934,7 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 .ex-editor { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .ex-compare ul { margin: 4px 0; padding-left: 18px; }
 .ex-steps input, .ex-steps select { width: 100%; min-width: 0; }
+.grp-collapse { margin: 6px 0; }
 .vw-save-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
 .vw-save-row input { flex: 1 1 200px; min-width: 0; }
 .vw-list { list-style: none; margin: 0; padding: 0; }

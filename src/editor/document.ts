@@ -1882,6 +1882,7 @@ export class ModelDoc {
       if (v.focus.hops !== undefined) f.push(['hops', numNode(v.focus.hops)]);
       if (v.focus.context) f.push(['context', strNode(v.focus.context)]);
       if (v.focus.vlan !== undefined) f.push(['vlan', numNode(v.focus.vlan)]);
+      if (v.focus.vrf) f.push(['vrf', strNode(v.focus.vrf)]);
       if (v.focus.group) f.push(['group', strNode(v.focus.group)]);
       entries.push(['focus', mapNode(f, true)]);
     }

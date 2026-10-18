@@ -36,7 +36,7 @@ import { isLayer2Switch, capabilities, ROUTING_PROTOCOL_TYPES } from '../model/c
 import { Issue } from '../validation/validate';
 import { Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { AddressingOverview, addressingOverview } from '../analysis/addressing';
-import { FocusContext, contextFocus, focusContexts, focusSeeds } from '../analysis/focus';
+import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
 import { CommRequest, checkCommunication } from '../analysis/communication';
@@ -45,6 +45,7 @@ import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { portL2 } from '../model/derive';
 import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
 import { scopeChooser } from './scope-ui';
+import { browseBody } from './browse-ui';
 import { collapsedGroup } from '../model/collapse';
 import { viewsBody } from './views-ui';
 import { SavedView, viewSummary } from '../model/views';
@@ -4575,6 +4576,36 @@ export class App {
     return true;
   }
 
+  // ------------------------------------------------------------ navigation by context
+
+  /** Find → Applications, VLANs and VRFs…: each with a contextual Focus (configured structure; nothing changes). */
+  openBrowse(): void {
+    const s = this.session;
+    if (!s) return;
+    const focusOn = (ref: string, c: FocusContext): void => {
+      if (s.state.focus) this.exitFocus();
+      this.select(ref, true);
+      if (!this.enterContextFocus(c)) this.toast('That can’t be focused on now.');
+    };
+    const firstDevice = (c: FocusContext): string | null => {
+      const ds = Array.from(contextFocus(s.model, c).devices).filter((x) => x[1] === 0).map((x) => x[0]).sort();
+      return ds.length ? 'device:' + ds[0] : null;
+    };
+    const body = browseBody(this.doc, navigationIndex(s.model), {
+      focusApp: (d) => focusOn('device:' + d, { kind: 'app', device: d }),
+      selectApp: (d) => this.select('device:' + d, true),
+      focusVlan: (v) => {
+        const r = firstDevice({ kind: 'vlan', vlan: v });
+        if (r) focusOn(r, { kind: 'vlan', vlan: v });
+      },
+      focusVrf: (v) => {
+        const r = firstDevice({ kind: 'vrf', vrf: v });
+        if (r) focusOn(r, { kind: 'vrf', vrf: v });
+      },
+    });
+    this.openWindow({ id: 'browse', title: 'Applications, VLANs and VRFs', body, width: 640, height: 560, focus: '#nav-apps summary' });
+  }
+
   // ------------------------------------------------------------ collapsed groups
 
   /** The group a collapse or expand acts on: the selected group, or the group of the selected device. */
@@ -4651,7 +4682,7 @@ export class App {
       const [kind, id] = splitRef(st.focus.ref);
       const target = kind === 'device' || kind === 'iface' ? id : `${kind}:${id}`;
       const c = st.focus.context;
-      out.focus = c ? (c.kind === 'vlan' ? { target, context: 'vlan', vlan: c.vlan } : c.kind === 'multicast' ? { target, context: 'multicast', group: c.group } : { target, context: c.kind === 'app' ? 'dependencies' : 'timing' }) : { target, hops: st.focus.hops };
+      out.focus = c ? (c.kind === 'vlan' ? { target, context: 'vlan', vlan: c.vlan } : c.kind === 'multicast' ? { target, context: 'multicast', group: c.group } : c.kind === 'vrf' ? { target, context: 'vrf', vrf: c.vrf } : { target, context: c.kind === 'app' ? 'dependencies' : 'timing' }) : { target, hops: st.focus.hops };
     }
     if (!st.showLabels) out.options.labels = false;
     if (!st.showGroups) out.options.groups = false;
@@ -4717,7 +4748,7 @@ export class App {
     if (v.focus && ref) {
       this.select(ref, true);
       const f = v.focus;
-      const ok = f.context ? this.enterContextFocus(f.context === 'vlan' ? { kind: 'vlan', vlan: f.vlan as number } : f.context === 'multicast' ? { kind: 'multicast', group: f.group as string } : f.context === 'dependencies' ? { kind: 'app', device: splitRef(ref)[1] } : { kind: 'timing', device: splitRef(ref)[1] }) : this.enterFocus(ref, f.hops || 1);
+      const ok = f.context ? this.enterContextFocus(f.context === 'vlan' ? { kind: 'vlan', vlan: f.vlan as number } : f.context === 'multicast' ? { kind: 'multicast', group: f.group as string } : f.context === 'vrf' ? { kind: 'vrf', vrf: f.vrf as string } : f.context === 'dependencies' ? { kind: 'app', device: splitRef(ref)[1] } : { kind: 'timing', device: splitRef(ref)[1] }) : this.enterFocus(ref, f.hops || 1);
       if (!ok) this.toast(`The view’s focus on ${f.target} can’t be shown now; the rest of the view is.`);
     }
     if (v.viewport) {

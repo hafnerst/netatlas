@@ -2564,7 +2564,7 @@ views:
 `focus`: `target` (a device, `device:interface`, or `network:…`,
 `group:…`, `link:…`) with `hops` (1–3), or a contextual focus with
 `context`: `vlan` (with `vlan`), `dependencies`, `multicast` (with
-`group`), `timing` — as Analyze → Focus has them.
+`group`), `timing`, `vrf` (with `vrf`) — as Analyze → Focus has them.
 
 Validation: unknown keys, a missing `name` or `view`, an unknown device
 type, context or option, a zoom outside 0.05–6, hops outside 1–3 and a

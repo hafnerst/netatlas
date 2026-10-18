@@ -76,6 +76,9 @@ export function readViews(r: Reader, c: Ctx, top: YMap, model: Model): SavedView
             const vl = r.vlanId(get(fm, 'vlan'), vp + '.focus.vlan');
             if (vl !== undefined) f.vlan = vl;
           }
+          const vr = r.field(fm, 'vrf', vp + '.focus', 64);
+          if (vr !== undefined) f.vrf = vr;
+          if (f.context === 'vrf' && !f.vrf) c.error(fm, vp + '.focus.vrf', 'a VRF focus needs its VRF', { key: 'vrf' });
           const g = r.field(fm, 'group', vp + '.focus', 64);
           if (g !== undefined) f.group = g;
           if (f.context === 'vlan' && f.vlan === undefined) c.error(fm, vp + '.focus.vlan', 'a VLAN focus needs its VLAN', { key: 'vlan' });

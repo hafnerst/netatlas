@@ -4787,8 +4787,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const viaArrow = !(q('#find-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#find-menu') as HTMLElement).contains(doc.activeElement);
       const entries = textsOf('#find-menu button');
       check(
-        'Find menu next to Export: Find in diagram… (/), Filter object list…, Saved views… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
-        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Saved views… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
+        'Find menu next to Export: Find in diagram… (/), Filter object list…, Saved views…, Applications, VLANs and VRFs… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Saved views… | Applications, VLANs and VRFs… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
           /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );
@@ -6285,6 +6285,23 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- navigation by context: applications, VLANs and VRFs, each with a contextual focus
+    {
+      const nvYaml = 'netatlas: 1\ntitle: Navigation check\ndevices:\n  - id: r1\n    type: router\n    interfaces: [{id: a, ip: 10.0.0.1/24, vrf: blue}, {id: b, ip: 10.0.1.1/24}]\n  - {id: h1, type: server, interfaces: [{id: e0, ip: 10.0.0.2/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]}\n  - {id: h2, type: endpoint, interfaces: [{id: e0, ip: 10.0.1.2/24}]}\nlinks:\n  - {id: l1, a: "r1:a", b: "h1:e0"}\n  - {id: l2, a: "r1:b", b: "h2:e0"}\n';
+      app.loadText(nvYaml, 'nav-check.yaml', 'file');
+      await tick();
+      app.runCommand('find.browse');
+      await tick();
+      check('Find → Applications, VLANs and VRFs…: a window with each, counted; a VRF lists its devices', app.toolWindow() === 'browse' && /VRFs \(1\)/.test(q('#nav-vrfs summary')!.textContent || '') && /VRF blue/.test(q('#nav-vrfs')!.textContent || '') && /None in this model/.test(q('#nav-vlans')!.textContent || ''));
+      (q('#nav-vrfs [data-nav="focus"]') as HTMLElement).click();
+      await tick();
+      const shown = Array.from(app.session!.shownDevices()).sort().join(',');
+      check('… Focus on the VRF: its devices and their neighbours on its interfaces; h2 (outside it) is not shown', !!app.session!.state.focus && app.session!.state.focus.context!.kind === 'vrf' && shown === 'h1,r1', shown);
+      app.exitFocus();
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
     // ---- collapsed groups: a group drawn as one box, its connections out of it to the box; display state only
     {
       const cgYaml = 'netatlas: 1\ntitle: Collapse check\ngroups:\n  - {id: lab, label: Lab}\ndevices:\n  - {id: a, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, group: lab, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
@@ -6331,10 +6348,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check('… Cancel starts nothing (never a simulation started by choosing)', !app.simulationOn());
       app.startProtocolSimulation({ scope: choices.find((x) => x.kind === 'group') });
-      await tick();
+      // (the status pills are drawn with the frame: draw one now)
+      app.simController()!.refresh(true);
       await tick();
       const pill = q('.sim-power[data-device="c"]');
-      check('a scoped simulation: the device outside is marked Not run (never shown as a participant); the panel counts what runs and what does not', !!pill && pill.getAttribute('data-power') === 'outside' && /Not run/.test(pill.textContent || '') && /Execution scope: Site or group: Lab\. 3 of 4 devices run, 1 not run/.test(q('#sim-scope')!.textContent || ''), pill ? pill.getAttribute('data-power') || '' : 'no pill');
+      check('a scoped simulation: the device outside is marked Not run (never shown as a participant); the panel counts what runs and what does not', !!pill && pill.getAttribute('data-power') === 'outside' && /Not run/.test(pill.textContent || '') && /Execution scope: Site or group: Lab\. 3 of 4 devices run, 1 not run/.test(q('#sim-scope')!.textContent || ''), pill ? pill.getAttribute('data-power') || '' : `no pill: sim ${app.simulationOn()}, pills ${doc.querySelectorAll('.sim-power').length}, node c ${!!q('.node[data-ref="device:c"]')}, scope ${q('#sim-scope') ? q('#sim-scope')!.textContent : 'none'}`);
       await app.exitSimulation();
       await tick();
       app.mdoc!.markSaved();

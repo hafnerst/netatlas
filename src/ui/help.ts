@@ -267,6 +267,7 @@ const MANUAL: Section[] = [
       '**Open** shows a saved view again. It changes what is drawn only: the model, the analyses and a running simulation are not touched. **Delete** removes it (Ctrl+Z brings it back).',
     ],
     notes: [
+      'To find your way by context: **Find → Applications, VLANs and VRFs…** lists every application, VLAN and VRF of the model; **Focus** shows the devices each involves (as configured), **Exit focus** (`Esc`) the complete diagram again. A VRF’s focus is its devices with an interface in it and their neighbours on those interfaces.',
       'A large model: select a group (or a device in it) and choose **Collapse in diagram** in the Inspector, or **Collapse group** in the command palette. The group is drawn as one box that says how many devices and cables it holds; every cable and relation that leaves the group ends on the box. Selecting the box selects the group; **Expand** draws its devices again. Collapsing is display state, like a filter: a saved view keeps it.',
       'The format is in docs/FORMAT.md (views). A view whose device or focus target is gone opens without it.',
     ],
