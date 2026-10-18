@@ -6285,6 +6285,29 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- collapsed groups: a group drawn as one box, its connections out of it to the box; display state only
+    {
+      const cgYaml = 'netatlas: 1\ntitle: Collapse check\ngroups:\n  - {id: lab, label: Lab}\ndevices:\n  - {id: a, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, group: lab, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
+      app.loadText(cgYaml, 'collapse-check.yaml', 'file');
+      app.setView('physical');
+      await tick();
+      const before = app.exportText();
+      app.select('device:a', true);
+      await tick();
+      check('Collapse group: available for a device in a group; Expand group not yet', app.command('view.collapse')!.state(app).enabled && !app.command('view.expand')!.state(app).enabled);
+      app.runCommand('view.collapse');
+      await tick();
+      const boxEl = q('.node[data-ref="device:⊞lab"]');
+      check('… the group is one box labelled with what it holds; the cable out of it ends on the box; the inside ones are not drawn; the model is unchanged', !!boxEl && /Lab: 3 devices, 2 cables inside\s*\(collapsed\)\s*Collapsed group/.test(boxEl.textContent || '') && !!q('#viewport [data-ref="link:l3"]') && !q('#viewport [data-ref="link:l1"]') && !q('.node[data-ref="device:a"]') && app.exportText() === before, boxEl ? boxEl.textContent || '' : 'no box');
+      app.select('device:⊞lab', true);
+      await tick();
+      check('… selecting the box selects its group; the Inspector offers Expand', app.session!.state.selected === 'group:lab' && !!q('#side [data-command="view.expand"]:not([disabled])'));
+      (q('#side [data-command="view.expand"]') as HTMLElement).click();
+      await tick();
+      check('… Expand draws its devices again', !q('.node[data-ref="device:⊞lab"]') && !!q('.node[data-ref="device:a"]') && !!q('#viewport [data-ref="link:l1"]'));
+      app.mdoc!.markSaved();
+    }
+
     // ---- execution scopes: chosen in Start simulation; what runs, apart from what is drawn
     {
       const scYaml = 'netatlas: 1\ntitle: Scope check\ngroups:\n  - {id: lab, label: Lab}\ndevices:\n  - {id: a, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, group: lab, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';

@@ -1156,6 +1156,11 @@ export class Editor {
       const provider = cloudKind || doc.get(base.concat('provider')) ? this.textField(base.concat('provider'), 'Provider', o, 'text', CLOUD_PROVIDERS.map((x) => x.id), cloudKind ? 'The cloud this region or virtual network is in (aws, azure, gcp, oci, or any other).' : 'Only a cloud group (cloud_region, vpc, vnet) has a provider.', 'aws') : null;
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o), this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS, undefined, 'Select or type a group kind'), provider], 'identity');
       g('Placement', [this.refField(base.concat('parent'), 'Parent group', o, this.ids('group').filter((x) => x !== self))], 'placement');
+      // the diagram: the group as one box, or its devices again (display state, like a filter; the commands keep these in step)
+      w.appendChild(this.e('div', { class: 'helpers grp-collapse', role: 'group', 'aria-label': `Diagram of group ${self || ''}` }, [
+        this.e('button', { type: 'button', 'data-command': 'view.collapse' }, ['Collapse in diagram']),
+        this.e('button', { type: 'button', 'data-command': 'view.expand' }, ['Expand']),
+      ]));
       notes();
     } else if (kind === 'protocol') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');

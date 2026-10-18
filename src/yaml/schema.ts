@@ -89,7 +89,7 @@ export const SCHEMA = {
   /** a static route of a device: an entry of a device's `routes` */
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
   /** a saved view (`views:`, model/views.ts) and its parts */
-  savedView: ['id', 'name', 'view', 'focus', 'devices', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'],
+  savedView: ['id', 'name', 'view', 'focus', 'devices', 'collapse', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'],
   viewFocus: ['target', 'hops', 'context', 'vlan', 'group'],
   /** a saved experiment (`experiments:`, model/experiments.ts), its actions and observations */
   experiment: ['id', 'name', 'duration', 'params', 'actions', 'observe', 'description'],

@@ -1338,3 +1338,21 @@ test('saved views: validated (diagram, focus, filters, viewport), display state 
   const w = d.result.model.views[0];
   assert.deepEqual([w.focus.target, w.devices.join()], ['fw1', 'pc,fw1,srv']);
 });
+
+// ------------------------------------------------------------------ collapsed groups
+
+test('collapsed groups: one box per outermost group; boundary cables and relations go to it, the inside ones are counted', () => {
+  const CO = load('model/collapse.js');
+  const m = model(guardOnly.replace('title: Isolation under failures\n', 'title: Isolation under failures\ngroups:\n  - {id: site, label: Site}\n  - {id: dmz, parent: site}\n').replace('  - id: srv\n    type: server\n', '  - id: srv\n    type: server\n    group: dmz\n').replace('  - id: s2\n    type: switch\n', '  - id: s2\n    type: switch\n    group: dmz\n').replace('  - id: fw\n    type: firewall\n', '  - id: fw\n    type: firewall\n    group: site\n'));
+  const c = CO.collapseGroups(m, new Set(['site', 'dmz']));
+  const box = c.devices.find((d) => d.id === '⊞site');
+  assert.ok(box, 'the outermost collapsed group is the box');
+  assert.ok(!c.devices.some((d) => ['fw', 'srv', 's2'].includes(d.id)) && !c.devices.some((d) => d.id === '⊞dmz'));
+  assert.match(box.label, /^Site: 3 devices, 2 cables inside \(collapsed\)$/);
+  assert.deepEqual(c.links.filter((l) => l.a.device === '⊞site' || l.b.device === '⊞site').map((l) => l.id).sort(), ['l-fw', 'l-r2-s']);
+  assert.ok(!c.links.some((l) => l.id === 'l-srv' || l.id === 'l-fw-s'), 'the cables inside are not drawn');
+  assert.ok(box.interfaces.some((i) => i.id === 'fw-a') && box.interfaces.some((i) => i.id === 's2-p2'), 'a port per inside end');
+  assert.equal(CO.collapsedGroup('⊞site'), 'site');
+  assert.equal(m.devices.length, 6, 'the model itself is unchanged');
+  assert.equal(CO.collapseGroups(m, new Set()), m);
+});

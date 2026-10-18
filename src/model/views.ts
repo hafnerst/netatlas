@@ -24,6 +24,8 @@ export interface SavedView {
   focus?: SavedFocus;
   /** the devices shown (left out: every device) */
   devices?: string[];
+  /** groups drawn as one box each */
+  collapse?: string[];
   /** device types left out (model/device-types.ts typeKey: "server", "switch:l2") */
   hideTypes: string[];
   /** protocols left out of the diagram */
@@ -35,7 +37,7 @@ export interface SavedView {
   line: number;
 }
 
-export const VIEW_KEYS = ['id', 'name', 'view', 'focus', 'devices', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'];
+export const VIEW_KEYS = ['id', 'name', 'view', 'focus', 'devices', 'collapse', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'];
 export const VIEW_FOCUS_KEYS = ['target', 'hops', 'context', 'vlan', 'group'];
 export const VIEW_OPTION_KEYS = ['labels', 'groups', 'networks', 'routes'];
 export const VIEW_VIEWPORT_KEYS = ['x', 'y', 'zoom'];
@@ -47,6 +49,7 @@ export function viewSummary(v: SavedView): string {
   const out = [v.view === 'logical' ? 'Logical view' : 'Physical view'];
   if (v.focus) out.push(`focus ${v.focus.target}${v.focus.context ? ` (${v.focus.context === 'vlan' ? 'VLAN ' + v.focus.vlan : v.focus.context === 'multicast' ? 'group ' + v.focus.group : v.focus.context})` : ` (${v.focus.hops || 1} hop${(v.focus.hops || 1) === 1 ? '' : 's'})`}`);
   if (v.devices) out.push(`${v.devices.length} device${v.devices.length === 1 ? '' : 's'}`);
+  if (v.collapse && v.collapse.length) out.push(`${v.collapse.length} group${v.collapse.length === 1 ? '' : 's'} collapsed`);
   if (v.hideTypes.length) out.push(`${v.hideTypes.length} type${v.hideTypes.length === 1 ? '' : 's'} hidden`);
   if (v.hideProtocols.length) out.push(`${v.hideProtocols.length} protocol${v.hideProtocols.length === 1 ? '' : 's'} hidden`);
   if (v.viewport) out.push(`zoom ${Math.round(v.viewport.zoom * 100)} %`);

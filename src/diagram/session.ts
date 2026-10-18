@@ -33,6 +33,7 @@
  * filtered views with their temporary ones). It never changes the model.
  */
 import { Pt } from '../layout/geometry';
+import { collapseGroups, hidingGroup } from '../model/collapse';
 import { LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_ROUTING, strategyPositions } from '../layout/strategies';
 import { LayoutInput, layoutInput } from '../layout/input';
@@ -66,6 +67,8 @@ export interface ViewState {
   hiddenTypes: Set<string>;
   /** focus mode: the object and the number of hops shown around it, or a contextual focus (a VLAN, dependencies, a multicast group, a timing domain); null = off */
   focus: { ref: string; hops: number; context?: FocusContext } | null;
+  /** groups drawn as one box each (model/collapse.ts); display state only */
+  collapsed: Set<string>;
   /**
    * Temporary positions while a node is being dragged, keyed by ref
    * ("device:x", "network:y"). The editor commits them to the document's
@@ -86,7 +89,8 @@ export function createViewState(): ViewState {
     hiddenProtocols: new Set(),
     devices: null,
     hiddenTypes: new Set(),
-      focus: null,
+    focus: null,
+    collapsed: new Set(),
     positions: { physical: new Map(), logical: new Map() },
   };
 }
@@ -209,7 +213,32 @@ export class Session {
 
   /** Does a view (the one on screen by default) show a proper subset of the devices (by selection, by type or by focus)? */
   isFiltered(view: View = this.state.view): boolean {
-    return this.shownSet(view) !== null;
+    return this.shownSet(view) !== null || this.collapsing();
+  }
+
+  /** Is a collapsed group drawn as a box (one that still exists and has a device)? */
+  private collapsing(): boolean {
+    const c = this.state.collapsed;
+    if (!c.size) return false;
+    for (const g of Array.from(c)) if (!this.model.index.groups.has(g)) c.delete(g);
+    return c.size > 0 && this.model.devices.some((d) => hidingGroup(this.model, d.id, c) !== null);
+  }
+
+  /**
+   * Draw a group as one box, or its devices again. Display state only: the
+   * diagram is arranged afresh (as a filtered one), the model and its layout
+   * are not touched. Returns whether it changed.
+   */
+  setCollapsed(group: string, on: boolean): boolean {
+    if (!this.model.index.groups.has(group) || this.state.collapsed.has(group) === on) return false;
+    if (on) this.state.collapsed.add(group);
+    else this.state.collapsed.delete(group);
+    this.filtered = { physical: null, logical: null };
+    this.temp = { physical: null, logical: null };
+    this.parked = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    this.state.positions.logical.clear();
+    return true;
   }
 
   /** The selected device ids (every device when there is no filter); device types switched off do not change it. */
@@ -426,6 +455,15 @@ export class Session {
   private cache(view: View): ViewCache {
     const c = this.filtered[view];
     if (c) return c;
+    if (this.collapsing()) {
+      const base = this.cacheBase(view).model;
+      const model = collapseGroups(base, this.state.collapsed);
+      return (this.filtered[view] = { model, input: layoutInput(model) });
+    }
+    return this.cacheBase(view);
+  }
+
+  private cacheBase(view: View): ViewCache {
     const shown = this.shownSet(view);
     // VMs the simulation restarted elsewhere: drawn in their new host
     if (view === 'physical' && this.placement) {

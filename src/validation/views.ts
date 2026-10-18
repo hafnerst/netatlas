@@ -95,6 +95,16 @@ export function readViews(r: Reader, c: Ctx, top: YMap, model: Model): SavedView
         else v.devices.push(t);
       }
     }
+    const cn = get(m, 'collapse');
+    if (cn) {
+      v.collapse = [];
+      for (const x of r.list(cn, vp + '.collapse')) {
+        const t = scalarText(x);
+        if (t === undefined) continue;
+        if (!model.index.groups.has(t)) c.warn(x, vp + '.collapse', `"${t}" is no group of the model: the view leaves it out`);
+        else v.collapse.push(t);
+      }
+    }
     for (const x of r.list(get(m, 'hide_types'), vp + '.hide_types')) {
       const t = scalarText(x);
       if (t === undefined) continue;

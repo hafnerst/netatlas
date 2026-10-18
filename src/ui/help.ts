@@ -266,7 +266,10 @@ const MANUAL: Section[] = [
       'Type a name and press **Save current view** (or `Enter`): the view is written to the model (one undo step), with the diagram, the focus, the devices and device types shown, the protocols drawn, the display options and the zoom.',
       '**Open** shows a saved view again. It changes what is drawn only: the model, the analyses and a running simulation are not touched. **Delete** removes it (Ctrl+Z brings it back).',
     ],
-    notes: ['The format is in docs/FORMAT.md (views). A view whose device or focus target is gone opens without it.'],
+    notes: [
+      'A large model: select a group (or a device in it) and choose **Collapse in diagram** in the Inspector, or **Collapse group** in the command palette. The group is drawn as one box that says how many devices and cables it holds; every cable and relation that leaves the group ends on the box. Selecting the box selects the group; **Expand** draws its devices again. Collapsing is display state, like a filter: a saved view keeps it.',
+      'The format is in docs/FORMAT.md (views). A view whose device or focus target is gone opens without it.',
+    ],
   },
   {
     id: 'experiments',

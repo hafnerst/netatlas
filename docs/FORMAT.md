@@ -2553,6 +2553,7 @@ views:
     view: logical                      # required: physical or logical
     focus: {target: core-sw, context: vlan, vlan: 30}   # optional
     devices: [core-sw, ap1, cam1, cam2]                 # optional: only these (left out: every device)
+    collapse: [garage]                 # optional: groups drawn as one box each
     hide_types: [server, switch:l2]    # optional: device types left out (a type stands for each of its kinds)
     hide_protocols: [ospf]             # optional: protocols not drawn
     options: {labels: false}           # optional: labels, groups, networks, routes (each on when left out)

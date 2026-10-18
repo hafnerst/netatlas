@@ -45,6 +45,7 @@ import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { portL2 } from '../model/derive';
 import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
 import { scopeChooser } from './scope-ui';
+import { collapsedGroup } from '../model/collapse';
 import { viewsBody } from './views-ui';
 import { SavedView, viewSummary } from '../model/views';
 import { focusRef } from '../validation/views';
@@ -1024,6 +1025,9 @@ export class App {
    */
   select(ref: string | null, reveal = false, detail: SelDetail | null = null): void {
     if (!this.session) return;
+    // a collapsed group's box stands for its group
+    const cg = ref && ref.indexOf('device:') === 0 ? collapsedGroup(ref.slice(7)) : null;
+    if (cg !== null) ref = 'group:' + cg;
     this.session.select(ref);
     this.editor.selectRef(this.session.state.selected);
     this.editor.setDetail(this.session.state.selected ? detail : null);
@@ -4571,6 +4575,49 @@ export class App {
     return true;
   }
 
+  // ------------------------------------------------------------ collapsed groups
+
+  /** The group a collapse or expand acts on: the selected group, or the group of the selected device. */
+  collapseTarget(): string | null {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    if (!s || !sel) return null;
+    const [kind, id] = splitRef(sel);
+    if (kind === 'group') return id;
+    const dev = kind === 'device' ? id : kind === 'iface' ? id.split(':')[0] : '';
+    const d = dev ? s.model.index.devices.get(dev) : undefined;
+    return d && d.group !== undefined ? d.group : null;
+  }
+
+  /**
+   * Draw a group as one box (its connections out of it drawn to the box),
+   * or its devices again: display state only, like a filter (no undo step,
+   * the model and its layout are untouched).
+   */
+  setGroupCollapsed(group: string | null, on: boolean): boolean {
+    const s = this.session;
+    if (!s || group === null || !s.setCollapsed(group, on)) return false;
+    this.render();
+    this.fit();
+    this.renderOutline();
+    this.updateChrome();
+    const g = s.model.index.groups.get(group);
+    this.toast(on ? `${g ? g.label || g.id : group} is drawn as one box; its connections out of it go to the box. Expand group draws its devices again.` : `${g ? g.label || g.id : group} is drawn with its devices again.`);
+    return true;
+  }
+
+  /** Expand every collapsed group. */
+  expandAllGroups(): boolean {
+    const s = this.session;
+    if (!s || !s.state.collapsed.size) return false;
+    for (const g of Array.from(s.state.collapsed)) s.setCollapsed(g, false);
+    this.render();
+    this.fit();
+    this.renderOutline();
+    this.updateChrome();
+    return true;
+  }
+
   // ------------------------------------------------------------ saved views
 
   /** Find → Saved views…: the model's saved views, Open and Delete, and Save current view. */
@@ -4599,6 +4646,7 @@ export class App {
     const st = s.state;
     const out: Omit<SavedView, 'id' | 'name' | 'line'> = { view: st.view === 'logical' ? 'logical' : 'physical', hideTypes: Array.from(st.hiddenTypes).sort(), hideProtocols: Array.from(st.hiddenProtocols).sort(), options: {} };
     if (st.devices) out.devices = s.model.devices.filter((d) => (st.devices as Set<string>).has(d.id)).map((d) => d.id);
+    if (st.collapsed.size) out.collapse = s.model.groups.filter((g) => st.collapsed.has(g.id)).map((g) => g.id);
     if (st.focus) {
       const [kind, id] = splitRef(st.focus.ref);
       const target = kind === 'device' || kind === 'iface' ? id : `${kind}:${id}`;
@@ -4658,6 +4706,8 @@ export class App {
     for (const p of Array.from(s.state.hiddenProtocols)) s.toggleProtocol(p, true);
     for (const p of v.hideProtocols) s.toggleProtocol(p, false);
     s.setDevices(v.devices || s.model.devices.map((d) => d.id));
+    for (const g of Array.from(s.state.collapsed)) s.setCollapsed(g, false);
+    for (const g of v.collapse || []) s.setCollapsed(g, true);
     this.cancelConnection();
     this.render();
     this.renderOutline();

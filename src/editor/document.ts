@@ -1886,6 +1886,7 @@ export class ModelDoc {
       entries.push(['focus', mapNode(f, true)]);
     }
     if (v.devices) entries.push(['devices', list(v.devices)]);
+    if (v.collapse && v.collapse.length) entries.push(['collapse', list(v.collapse)]);
     if (v.hideTypes.length) entries.push(['hide_types', list(v.hideTypes)]);
     if (v.hideProtocols.length) entries.push(['hide_protocols', list(v.hideProtocols)]);
     const opts = Object.keys(v.options) as Array<keyof SavedView['options']>;
