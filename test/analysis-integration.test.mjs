@@ -1279,3 +1279,40 @@ test('experiments: validation, references that follow renames, and a round trip 
   assert.deepEqual(e.actions.map((a) => [a.target, a.to || '']), [['pc', 'web'], ['pc', 'web'], ['fw1', ''], ['pc', 'web']]);
   assert.equal(e.observations.find((o) => o.of === 'device').target, 'fw1');
 });
+
+// ------------------------------------------------------------------ execution scopes
+
+const XS = load('analysis/exec-scope.js');
+
+test('execution scopes: a communication runs its evaluated paths (every alternative, the switch between), the rest is its boundary', () => {
+  const m = model(guardOnly);
+  const c = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/443' });
+  const s = XS.communicationScope(m, c);
+  assert.deepEqual(Array.from(s.devices).sort(), ['fw', 'pc', 'r1', 'srv', 's2'].sort(), 'the path through the firewall, the switch behind it; not the floating way through r2');
+  assert.deepEqual(s.boundary.map((b) => `${b.device}:${b.iface}>${b.outside}`), ['r1:b>r2', 's2:p2>r2']);
+  assert.deepEqual(s.cannot, []);
+  assert.equal(XS.entireScope(m).devices.size, m.devices.length);
+});
+
+test('execution scopes: a group, a VLAN and a failure domain; an empty one says it can’t run', () => {
+  const m = model(guardOnly.replace('title: Isolation under failures\n', 'title: Isolation under failures\ngroups:\n  - {id: site, label: Site}\n  - {id: dmz, parent: site}\n').replace('  - id: srv\n    type: server\n', '  - id: srv\n    type: server\n    group: dmz\n').replace('  - id: fw\n    type: firewall\n', '  - id: fw\n    type: firewall\n    group: site\n') + 'failure_domains:\n  - {id: cab, label: Cabinet, kind: rack, members: [r2, s2]}\n');
+  assert.deepEqual(Array.from(XS.groupScope(m, 'site').devices).sort(), ['fw', 'srv'], 'its subgroups too');
+  assert.deepEqual(Array.from(XS.domainScope(m, 'cab').devices).sort(), ['r2', 's2']);
+  assert.ok(XS.vlanScope(m, 1).devices.has('s2'));
+  assert.match(XS.vlanScope(m, 77).cannot.join(), /no device carries VLAN 77/);
+});
+
+test('execution scopes: the scoped simulation runs only the scope; traffic out of it is said to leave it, never answered', () => {
+  const m = model(guardOnly);
+  const s = XS.groupScope(m, 'nothing');
+  assert.equal(s.devices.size, 0);
+  const scope = { ...XS.communicationScope(m, C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/443' })) };
+  const sub = XS.scopedModel(m, scope);
+  assert.deepEqual(sub.devices.map((d) => d.id).sort(), ['fw', 'pc', 'r1', 's2', 'srv']);
+  assert.ok(!sub.links.some((l) => l.id === 'l-r2' || l.id === 'l-r2-s'), 'the cables to r2 are its boundary');
+  assert.equal(m.devices.length, 6, 'the model itself is unchanged');
+  const sim = new S.Simulation(sub);
+  sim.engine.run(20000);
+  const notes = sim.engine.log.map((e) => e.detail).join('\n');
+  assert.match(notes, /leaves the execution scope at (r1:b|s2:p2): r2 is outside it/);
+});

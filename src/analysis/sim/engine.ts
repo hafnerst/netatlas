@@ -1456,7 +1456,7 @@ export class Engine {
       this.bridge(sd, null, l3.vlan, frame, t, undefined, new Set([dev]));
       return;
     }
-    const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p) && this.net.ends.has(portKey(dev, p)));
+    const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p) && this.cabledOrBoundary(dev, p));
     if (!ports.length) return;
     const port = ports.length === 1 ? ports[0] : ports[hashIndex(frame.src + frame.dst + (frame.ip ? frame.ip.flow : ''), ports.length)];
     // a subinterface's frames carry its VLAN's 802.1Q tag on its port (a routed port: its own frames are untagged)
@@ -1605,9 +1605,23 @@ export class Engine {
   }
 
   /** A frame onto a cable from a port: it arrives after its serialization and the cable's latency (one frame per cable and direction at a time). */
+  /** A port with a cable, or one at an execution scope's boundary (its cable leads out of the scope: transmit says so). */
+  private cabledOrBoundary(dev: string, port: string): boolean {
+    return this.net.ends.has(portKey(dev, port)) || (!!this.model.execScope && this.model.execScope.boundary.has(dev + ':' + port));
+  }
+
   private transmit(dev: string, port: string, frame: Frame, tag: number | null, t: number, parent: number | undefined, seen: Set<string>): void {
     const e = this.net.ends.get(portKey(dev, port));
-    if (!e) return;
+    if (!e) {
+      // the boundary of an execution scope: the cable leads to a device this simulation does not run (said, never answered)
+      const out = this.model.execScope ? this.model.execScope.boundary.get(dev + ':' + port) : undefined;
+      const k = `scope|${dev}|${port}|${frame.msg.protocol}`;
+      if (out !== undefined && (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000)) {
+        this.stormNoted.set(k, t);
+        this.noteAt(t, 'drop', frame.msg.protocol, dev, out, frame.msg.type, '', `${frame.msg.label} leaves the execution scope at ${dev}:${port}: ${out} is outside it (${this.model.execScope ? this.model.execScope.label : ''}) and is not run, so nothing answers from there`);
+      }
+      return;
+    }
     const l = this.net.links.get(e.link) as Link;
     if (l.direction === 'unidirectional' && e.end === 'b') return;
     if (l.medium === 'wireless') {
@@ -1893,7 +1907,7 @@ export class Engine {
     for (const bp of to) {
       const c = carries(bp.vlans, vlan);
       if (!c || this.blocked(sd.id, bp.id, vlan) || this.tunneledNet(sd, bp.id)) continue;
-      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
+      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.cabledOrBoundary(sd.id, m));
       if (!up.length) continue;
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
       this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);

@@ -987,6 +987,8 @@ export interface Model {
   expectations: Expectation[];
   /** saved experiments (`experiments:`, model/experiments.ts) */
   experiments: Experiment[];
+  /** a simulation's execution scope (analysis/exec-scope.ts): never read from a file; set on the sub-model a scoped simulation runs */
+  execScope?: { label: string; boundary: Map<string, string> };
   index: ModelIndex;
 }
 

@@ -42,6 +42,9 @@ import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceS
 import { CommRequest, checkCommunication } from '../analysis/communication';
 import { commIdentity, compareRun, expectationFields, handoffOf, planMatches, staleProblem } from '../analysis/comm-identity';
 import { mtuTestSizes, pathMtu } from '../analysis/mtu';
+import { portL2 } from '../model/derive';
+import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
+import { scopeChooser } from './scope-ui';
 import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns } from '../analysis/sim/experiment';
 import { ExperimentsView, experimentText, experimentsBody } from './experiments';
 import { EXP_OBSERVE } from '../model/experiments';
@@ -2816,11 +2819,13 @@ export class App {
     const color = (p: string): string => lookupProtocol(model.protocols, p.indexOf('custom:') === 0 ? p.slice(7) : p).color;
     const picker = protocolPicker(this.doc, { id: 'sim-pd-protos', entries, shown: new Set(entries.filter((e) => !hidden.has(e.id)).map((e) => e.id)), color });
     const senders = sendersPicker(this.doc, { id: 'sim-pd-senders', model, selected: new Set(this.startSenders()), open: true, diagram: () => this.diagramDevices() });
+    const scopes = this.scopeChoices();
+    const scopeBox = scopeChooser(this.doc, scopes);
     const v = await this.dialog({
       title: 'Start simulation',
       className: 'sim-start-dialog',
       closeButton: true,
-      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged, for the senders chosen.']), picker.el, senders.el, editor.el],
+      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged, for the senders chosen.']), scopeBox.el, picker.el, senders.el, editor.el],
       buttons: [
         { label: 'Cancel', value: 'cancel' },
         { label: 'Start', value: 'start', kind: 'primary' },
@@ -2846,7 +2851,35 @@ export class App {
     this.storeSimSenders(chosen);
     this.storeSimParams(editor.values());
     this.storeSimShown(entries, picked);
-    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values(), senders: model.devices.filter((d) => chosen.has(d.id)).map((d) => d.id) });
+    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values(), senders: model.devices.filter((d) => chosen.has(d.id)).map((d) => d.id), scope: scopeBox.selected() });
+  }
+
+  /**
+   * The execution scopes that apply now (analysis/exec-scope.ts): the
+   * entire model; the communication of the Trace path on screen; the
+   * dependencies of the selected device; the selected group; the VLAN of
+   * the selected VLAN interface or access port; each failure domain. Only
+   * what applies is offered.
+   */
+  scopeChoices(): ExecScope[] {
+    const s = this.session;
+    if (!s) return [];
+    const m = s.model;
+    const out: ExecScope[] = [entireScope(m)];
+    const r = this.traceRun;
+    if (r && !r.check.error && !this.traceOutdated()) out.push(communicationScope(m, r.check));
+    const sel = s.state.selected;
+    const [kind, id] = sel ? splitRef(sel) : ['', ''];
+    if (kind === 'device' && id) out.push(dependencyScope(m, id));
+    if (kind === 'group' && id) out.push(groupScope(m, id));
+    if (kind === 'iface' && id) {
+      const i = m.index.interfaces.get(id);
+      const pl = i ? portL2(m, i.device, i.id) : undefined;
+      const vlan = i && i.type === 'virtual' && i.vlan !== undefined ? i.vlan : pl && pl.kind === 'access' ? pl.untagged : undefined;
+      if (vlan !== undefined) out.push(vlanScope(m, vlan));
+    }
+    for (const d of m.failureDomains) out.push(domainScope(m, d.id));
+    return out;
   }
 
   /**

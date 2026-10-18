@@ -286,6 +286,7 @@ const MANUAL: Section[] = [
     title: 'Start a protocol simulation',
     steps: [
       'Choose **Simulate → Start simulation…**. The dialog opens with the **Protocols** the model uses, all ticked, grouped by layer (*Layer 2*, *Routing*, *Tunnels and overlays*, *Multicast*, *Services*, *Traffic* …), each with how many devices or relations use it; a group says how many of its protocols are ticked (*Routing (3 of 4)*). **Select all** and **Clear** work for the whole list and for each group. The keyboard starts on the first protocol.',
+      'First, the **Execution scope**: what runs. **Entire model** is the default; the other choices are those that apply now: **Selected communication** (the Trace path on screen: its evaluated paths, every alternative and the way back), **Dependency slice** (the selected device and the providers of its dependencies), **Site or group** (the selected group), **VLAN** (of the selected VLAN interface or access port) and each **Failure domain**. A scope says how many devices it runs; what was added for it to run faithfully (the routing domain its routes come from, the switches between, its DHCP and DNS servers, a gateway group’s members) and its boundary are behind an expansion. The scope is what runs, not what is drawn (the filters) or what an analysis evaluates.',
       'Then **Senders**, open: which devices you want to watch (see *Choose the senders*). With devices selected in the diagram, they are chosen; otherwise every device.',
       'Below, the **Layer 1–4 parameters**, one collapsed section per layer (*Layer 2 – Data link (8)*): open one to change a value (its default and source are under it; a changed value is marked *modified*, and the collapsed section says so: *Layer 3 – Network (8) · 2 modified*; **Reset** puts it back). Usually the protocols and the senders are all you choose.',
       'Press **Start** (or `Enter`); `Esc` cancels. The protocols and the values are remembered for the next start in this browser session.',
@@ -294,6 +295,7 @@ const MANUAL: Section[] = [
     ],
     notes: [
       'A value configured on a cable or a relation in the model comes first, then the object’s own Simulation value (an interface’s, a VLAN’s, a relation’s, a DHCP scope’s or a DNS zone’s), then the device’s, then the simulation’s value, then the default; every value says which it is.',
+      'In a scoped simulation, a device outside the scope is not run at all: its status says **Not run**, nothing answers from it, and traffic sent towards it is logged as leaving the execution scope. The panel says how many devices run and how many do not; when the simulation can’t keep up with its rate, it says so and suggests a smaller scope.',
       'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters.',
       'Everything happens inside NetAtlas: simulated packets travel only through the model on screen. Nothing is sent to a real network, and the page makes no network connections.',
     ],

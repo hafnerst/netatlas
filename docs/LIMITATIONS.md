@@ -352,6 +352,12 @@ the user.
   model; Stop ends a series but not the messages on their way. At most 50
   finished events are kept.
 
+* **An execution scope runs a part of the model.** The devices outside are
+  not run (never frozen as participants, never answering); traffic towards
+  them is logged where it leaves the scope. A scope adds the routing domain
+  its routes come from, the switches between, its DHCP and DNS servers and
+  gateway-group members; a protocol whose peers are all outside it does not
+  form. Experiments always run the entire model.
 * **Saved experiments run on scenario time.** A run starts clean and is
   repeatable; at one time, actions apply in the order written. A stream of
   Network events (real time) is no experiment action. Observations read

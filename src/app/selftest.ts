@@ -6244,6 +6244,38 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- execution scopes: chosen in Start simulation; what runs, apart from what is drawn
+    {
+      const scYaml = 'netatlas: 1\ntitle: Scope check\ngroups:\n  - {id: lab, label: Lab}\ndevices:\n  - {id: a, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, group: lab, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
+      app.loadText(scYaml, 'scope-check.yaml', 'file');
+      await tick();
+      app.select('group:lab');
+      await tick();
+      const choices = app.scopeChoices();
+      void app.openStartDialog();
+      await tick();
+      const sel = q('#sim-pd-scope') as HTMLSelectElement | null;
+      const opts = sel ? Array.from(sel.options).map((o) => o.textContent || '') : [];
+      check('Start simulation: an Execution scope choice, the entire model first (the default), then the scopes that apply to the selection', !!sel && sel.value === '0' && opts[0] === 'Entire model' && opts.indexOf('Site or group: Lab') > 0 && /Runs every device \(4\)/.test(q('#sim-pd-scope-info')!.textContent || ''), opts.join(' | '));
+      if (sel) {
+        sel.value = String(opts.indexOf('Site or group: Lab'));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick();
+      check('… a scope says how many devices it runs and what leads out of it, behind an expansion', /Runs 3 of 4 devices/.test(q('#sim-pd-scope-info')!.textContent || '') && /Boundary: sw:p3 \(cable l3\) leads to c, not run/.test(q('#sim-pd-scope-detail')!.textContent || ''));
+      (q('#modal [data-value="cancel"]') as HTMLElement).click();
+      await tick();
+      check('… Cancel starts nothing (never a simulation started by choosing)', !app.simulationOn());
+      app.startProtocolSimulation({ scope: choices.find((x) => x.kind === 'group') });
+      await tick();
+      await tick();
+      const pill = q('.sim-power[data-device="c"]');
+      check('a scoped simulation: the device outside is marked Not run (never shown as a participant); the panel counts what runs and what does not', !!pill && pill.getAttribute('data-power') === 'outside' && /Not run/.test(pill.textContent || '') && /Execution scope: Site or group: Lab\. 3 of 4 devices run, 1 not run/.test(q('#sim-scope')!.textContent || ''), pill ? pill.getAttribute('data-power') || '' : 'no pill');
+      await app.exitSimulation();
+      await tick();
+      app.mdoc!.markSaved();
+    }
+
     // ---- routing policy in the editor: collapsed by default, compact ordered rule tables, one undo step per change
     {
       app.loadExample(0);

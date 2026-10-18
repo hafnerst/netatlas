@@ -161,7 +161,7 @@ export type SimOptions = EngineOptions & { realClock?: () => number };
  * the simulation has no such device (yet).
  */
 export interface DeviceStateView {
-  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown';
+  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown' | 'outside';
   /** "Operational", "Powered off", "Booting", "Passive", "External", "Unknown" */
   label: string;
   /** "Booting: up at t = 45 s", "Powered off at t = 12 s (down with its host esx-01)" */
