@@ -239,13 +239,12 @@ async function main() {
       const ex = 'addressing.yaml';
       await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView("logical"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.addressing'), document.getElementById('btn-addressing').click(), document.querySelector('[data-addr-toggle="|corp"]').click(), true`);
+      await page.eval(`document.getElementById('btn-addressing').click(), netatlas.selectAnalysisItem('net:|corp'), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      const d = await page.rect('#toolwin');
-      const sec = await page.rect('#toolwin .addr-vrf');
-      await save('addressing', { x: d.x, y: d.y, w: d.w, h: Math.min(d.y + d.h, sec.y + 330) - d.y }, { quality: 58 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      // Analyze: the network table at the bottom, the selected network's members on the right
+      await save('addressing', around([await page.rect('#sim-dock'), await page.rect('#side')], 0), { scale: 0.62, quality: 50 });
+      await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -257,8 +256,7 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
-      await save('focus', around([c, await page.rect('#toolwin')], 0), { scale: 0.75, quality: 48 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      await save('focus', around([c, await page.rect('#outline')], 0), { scale: 0.62, quality: 46 });
       await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`);
       await page.settle(150);
       await page.eval(`(() => { const i = document.getElementById('palette-input'); i.value = 'focus'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
@@ -266,7 +264,7 @@ async function main() {
       await save('palette', around([await page.rect('#modal')], 6), { quality: 70 });
       await page.key('Escape', 'Escape', 27);
       await page.settle(100);
-      await page.eval(`document.getElementById('focus-exit').click(), true`);
+      await page.eval(`document.getElementById('focus-exit').click(), netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -274,13 +272,11 @@ async function main() {
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.trace'), netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), true`);
+      await page.eval(`netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      const c = await page.rect('#canvas-wrap');
-      const w = await page.rect('#toolwin');
-      await save('trace', around([c, w], 0), { scale: 0.75, quality: 40 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      await save('trace', await page.rect('main'), { scale: 0.55, quality: 40 });
+      await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -293,8 +289,8 @@ async function main() {
       // the service impact is checked in steps: the picture shows it done
       for (let k = 0; k < 200 && !(await page.eval('netatlas.spofServiceDone()')); k++) await page.settle(100);
       await page.settle(250);
-      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 34 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      await save('spof', around([await page.rect('#sim-dock')], 0), { scale: 0.75, quality: 34 });
+      await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -498,10 +494,9 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       {
-        const w = await page.rect('#toolwin');
-        await save('separation-trace', { x: w.x - 4, y: w.y - 4, w: w.w + 8, h: w.h + 8 }, { scale: 0.8, quality: 40 });
+        await save('separation-trace', around([await page.rect('#sim-dock')], 0), { scale: 0.7, quality: 40 });
       }
-      await page.eval(`netatlas.exitTrace(), true`);
+      await page.eval(`netatlas.exitTrace(), netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -641,17 +636,13 @@ async function main() {
     {
       await page.eval('netatlas.loadExampleNamed("ot-network.yaml"), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.experiments'), netatlas.openExperiments(), netatlas.runExperimentNow('cabinet-outage'), true`);
+      await page.eval(`netatlas.enterExperiments().then(() => (netatlas.selectExperimentStep({ exp: 'cabinet-outage', list: 'observe', index: 3 }), netatlas.runExperimentNow('cabinet-outage'), true))`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(250);
-      {
-        // the window down to its experiment (no empty space below)
-        const w = await page.rect('#toolwin');
-        const c = await page.rect('#toolwin .ex-card');
-        await save('experiments', { x: w.x - 6, y: w.y - 6, w: w.w + 12, h: c.y + c.h + 14 - (w.y - 6) }, { scale: 0.8, quality: 30 });
-      }
-      await page.eval('netatlas.closeToolWindow(), true');
+      // the workspace: the sequence on the left, the selected step on the right, the verdicts at the bottom
+      await save('experiments', await page.rect('main'), { scale: 0.55, quality: 34 });
+      await page.eval('netatlas.exitWorkspace().then(() => true)');
     }
     // the saved views of the private house
     {

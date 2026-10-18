@@ -2480,64 +2480,91 @@ the confirmation.
 
 ## `experiments` (saved, repeatable experiments)
 
-Optional. A short declarative sequence the simulation runs again and again
-from a clean start (Simulate → **Experiments…**, **Run**): not a scripting
-language. Analysis data: saving or editing one never starts it, and a file
-means the same network with or without it.
+Optional. A repeatable, explicitly configured sequence of actions and
+observations applied to a defined architecture and starting state
+(Simulate → **Experiments…**, **Run**): not an automatic test of everything,
+and not a scripting language. Analysis data: saving or editing one never
+starts it, and a file means the same network with or without it.
 
 ```yaml
 experiments:
-  - id: broker-loss                    # required, unique among the experiments
-    name: Telemetry while the broker cabinet is down   # required
-    duration: 120s                     # required: it always ends (at most 1h of scenario time)
+  - id: cabinet-outage                 # required, unique among the experiments
+    name: Telemetry while the cabinet is down   # required (a draft without one is kept: not runnable)
+    duration: 180s                     # required to run: it always ends (at most 1h of scenario time)
+    settle: 30s                        # optional: the network runs this long first (its events are not the experiment's); none: freshly booted
+    scope: {group: cell}               # optional: one of group, vlan, domain, device (a dependency slice); none: the entire model
     params: {link_up_delay: 1s}        # optional: parameters of Start simulation (the rest: their defaults)
-    actions:                           # at times after the start; at one time, in the order written
-      - {id: poll, at: 10s, do: send, target: hmi, to: plc/registers}
-      - {id: tele, at: 10s, do: start_app, target: plc/telemetry}
+    actions:                           # at one time, in the order written
+      - {id: tele, at: 20s, do: start_app, target: plc/telemetry}
+      - {id: join, at: 5s, do: join, target: "rx:e0", group: 239.1.1.1}
+      - {at: 2s, after: join, do: start_stream, target: "src:e0", group: 239.1.1.1, interval: 500ms}
       - {at: 40s, do: fail, target: cell-cabinet}      # a device, cable, relation or failure domain
-      - {at: 80s, do: restore, target: cell-cabinet}
     observe:                           # read after that time's actions; without at: at the end
-      - {at: 30s, of: send, target: poll, expect: delivered}
-      - {at: 60s, of: device, target: edge, expect: off}
-      - {at: 60s, of: reach, target: hmi, to: plc/registers, expect: available}
-      - {of: app, target: tele, expect: delivered}
+      - {id: poll-ok, at: 35s, of: reach, target: hmi, to: plc/registers, expect: available}
+      - {at: 3s, after: join, within: 10s, of: receive, target: "rx:e0", group: 239.1.1.1, expect: received}
+      - {at: 60s, within: 20s, of: device, target: edge, expect: off}
+      - {at: 120s, of: expectations, target: "*", expect: satisfied}
+      - {of: app, target: tele, expect: failed}
     description: …
 ```
 
-| `do` | Target | Also |
+**Timing.** A step's time is `at` after the start, or `at` after the action
+named by `after` was **submitted** (its own time, resolved along the chain).
+A submitted action is no completed one: a time never promises that a
+protocol's prerequisite has happened; an observation says what happened. A
+cycle of `after`, or an `after` naming no action, keeps the experiment from
+running (and is said).
+
+| `do` | Target | Required / optional |
 |---|---|---|
-| `send` | the source (device, device:interface) | `to` (required), `service` (`tcp/443`, `udp/53`, `icmp`), `count`, `interval`; prepared from the communication's identity, as Trace path's handoff |
+| `send` | the source (device, device:interface, device/application, address) | `to` / `service` (`tcp/443`, `udp/53`, `icmp`), `count`, `interval`; prepared from the communication's identity, as Trace path's handoff |
 | `fail`, `restore` | a device (powered off, on), a cable, a relation, a failure domain (its members) | |
 | `shut`, `no_shut`, `flap`, `stop_flap` | device:interface | |
 | `power_off`, `power_on` | a device | |
-| `join`, `leave` | device:interface | `group` (required) |
+| `join`, `leave` | a host's device:interface | `group` |
+| `start_stream`, `stop_stream` | a host's device:interface | `group` / `port` (5000), `interval` (1s), `size` (1000); on scenario time |
 | `start_app`, `stop_app` | device/application | |
 
-| `of` | Target | `expect` |
-|---|---|---|
-| `send` | a send action's `id` | `delivered` (every message), `failed` |
-| `app` | a start action's `id`, or device/application | `delivered`, `failed` |
-| `device` | a device | `on`, `off` |
-| `interface` | device:interface | `up`, `down` |
-| `link` | a cable | `up`, `down` |
-| `member` | a multicast router (with `group`) | `present`, `absent` |
-| `reach` | the source (with `to`, `service`) | `available`, `unavailable` (the static check on the simulation's state then) |
+| `of` | Target | `expect` | Window |
+|---|---|---|---|
+| `send` | a send action's `id` | `delivered` (every message), `failed` | traffic |
+| `app` | a start action's `id`, or device/application | `delivered`, `failed` | traffic |
+| `receive` | a host's device:interface (with `group`) | `received`, `not received` | traffic |
+| `reach` | the source (with `to`, `service`) | `available`, `unavailable` (the communication check on the simulation's state) | state |
+| `device` | a device | `on`, `off` | state |
+| `interface` | device:interface | `up`, `down` | state |
+| `link` | a cable | `up`, `down` | state |
+| `member` | a multicast router (with `group`) | `present`, `absent` | state |
+| `expectations` | `*` (all) or saved expectation ids | `satisfied`, `violated` | state |
 
-Timing: scenario time only (the simulated clock), so a run is repeatable;
-a stream of Network events runs on real (browser) time and is no
-experiment action. An observation not decided says so (still on its way,
-stopped before it was reached). A run can be stopped; a run is compared
-with the previous one (each observation, where the event sequences part,
-whether the model changed). Not measured: convergence time, throughput,
-synchronization accuracy.
+**Evaluation.** `within` is an evaluation window: a *state* is satisfied as
+soon as it holds within it (violated when it does not by its end); *traffic*
+is counted until it ends. Without one, an observation is read at once.
+Verdicts: **satisfied**, **violated**, **indeterminate** (not decidable:
+nothing sent yet, still on its way, outside the scope, stopped before it was
+reached) and **unsupported**. `expectations` evaluates the model's own saved
+expectations on the run's state and reports what it could not decide: it
+invents no requirement. Finishing the sequence proves nothing; only
+observations do.
 
-Validation: unknown keys, a missing `name`, `duration`, `do`, `at`,
-`target`, `of` or `expect`, an unknown action or observation, a time
-after the end, an expectation the observation can't have, an unknown
-parameter and a duplicate id are **errors**; a target that names nothing of
-the model is a **warning** (that step can't be run). At most 200
-experiments, 200 actions and 200 observations each. Renaming a device,
-cable or relation updates the targets.
+**Runs.** Each run starts from the experiment's defined start (a new
+simulation of the model, or of its scope's sub-model, on the shared engine)
+on scenario time only, so a run is repeatable; a stream of Network events
+runs on real time and is no experiment action. An action is **submitted**
+or **refused** (with the simulation's reason, or outside the scope). A run
+can be stopped; it is compared with the previous one. Not measured:
+convergence time, throughput, synchronization accuracy.
+
+**Validation.** What is written wrong is an **error**: an unknown key,
+action or observation, a value that is no duration or number, a time after
+the end, an expected outcome the observation can't have, an unknown
+parameter, a duplicate id. What is not configured yet — a missing `name`,
+`duration`, `target`, `to`, `group` or `expect` — and what names nothing of
+the model (a target, a scope, an `after`) is a **warning**: the step stays
+in the model with what it misses, so that it can be finished, and the
+experiment can't run until nothing is missing. At most 200 experiments, 200
+actions and 200 observations each. Renaming a device, cable or relation
+updates the targets.
 
 ## `views` (saved views)
 
