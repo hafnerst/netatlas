@@ -25,6 +25,7 @@ import { BADGE_H, BADGE_W, deviceIcon, layerBadge, serviceBadge, glyphFor } from
 import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
 import { hostInterior } from '../layout/virtual';
+import { Lanes, SepRoute, addLanes, newLanes, orthoRoute, separate, simplify } from '../layout/orthogonal';
 import { externalWires, interiorNodes } from './virtual';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 import { capabilities } from '../model/capabilities';
@@ -38,6 +39,8 @@ export interface ViewOptions {
   showGroups?: boolean;
   /** user-dragged node centers, keyed by ref ("device:x", "network:y", "hub:z") */
   positions: Map<string, Pt>;
+  /** route cables with horizontal and vertical segments only (the Structured arrangement, layout/orthogonal.ts) */
+  orthogonal?: boolean;
 }
 
 export interface SceneResult {
@@ -308,6 +311,37 @@ export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, p
   return [a, sa, ...detour(sa, sb, obstacles, 0, 12, avoid), sb, b];
 }
 
+/**
+ * The points of a cable from port to port with horizontal and vertical
+ * segments only (the Structured arrangement): straight where the two ports
+ * face each other on one line, else out of each port along its normal and
+ * on around the boxes and the other ports (layout/orthogonal.ts).
+ */
+export function orthoCableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, ports: Rect[], lanes: Lanes): Pt[] {
+  const facing = pa.nx === -pb.nx && pa.ny === -pb.ny;
+  const a = { x: pa.x, y: pa.y };
+  const b = { x: pb.x, y: pb.y };
+  if (facing && (pa.nx !== 0 ? Math.abs(pa.y - pb.y) < 0.5 && (pb.x - pa.x) * pa.nx > 0 : Math.abs(pa.x - pb.x) < 0.5 && (pb.y - pa.y) * pa.ny > 0)) {
+    let blocked = false;
+    boxes.forEach((o, id) => {
+      if (id !== pa.device && id !== pb.device && segmentHitsRect(a, b, o)) blocked = true;
+    });
+    if (!blocked) return [a, b];
+  }
+  const sa = { x: pa.x + pa.nx * STUB, y: pa.y + pa.ny * STUB };
+  const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };
+  const inside = (p: Pt, r: Rect): boolean => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+  const covered = (r: Rect, o: Rect): boolean => r.x >= o.x && r.y >= o.y && r.x + r.w <= o.x + o.w && r.y + r.h <= o.y + o.h;
+  const around = Array.from(boxes.values());
+  const obstacles = around.concat(ports.filter((r) => !inside(sa, r) && !inside(sb, r) && !around.some((o) => covered(r, o))));
+  return simplify([a, ...orthoRoute(sa, { x: pa.nx, y: pa.ny }, sb, { x: pb.nx, y: pb.ny }, obstacles, 12, lanes), b]);
+}
+
+/** gap between two cables that share a corridor (Structured) */
+const ORTHO_GAP = 8;
+/** up to this many cables, each one is routed a second time knowing all the others (Structured) */
+const ORTHO_SECOND_PASS = 150;
+
 export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewOptions): SceneResult {
   const boxes = physicalBoxes(layout, opts.positions);
   const ports = assignPorts(portLinks(model), boxes);
@@ -395,9 +429,32 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     obstacles.forEach((r, id) => around.set(id, id === pa.device || id === pb.device ? r : (withPorts.get(id) as Rect)));
     return around;
   };
-  for (const { l, pa, pb } of byId) routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key])));
+  if (opts.orthogonal) {
+    // Structured: horizontal and vertical segments only. Laid one after the other (each knowing the ones
+    // before), then each again knowing all the others, and finally cables sharing a corridor spread apart.
+    const lanes = newLanes();
+    for (const { l, pa, pb } of byId) {
+      const pts = orthoCableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), lanes);
+      routes.set(l.id, pts);
+      addLanes(lanes, pts.slice(1, -1));
+    }
+    const once = new Map(routes);
+    // (on large models one pass: the second one doubles the time for little)
+    for (const { l, pa, pb } of byId.length > ORTHO_SECOND_PASS ? [] : byId) {
+      if ((once.get(l.id) as Pt[]).length <= 2) continue;
+      const others = newLanes();
+      once.forEach((q, id) => {
+        if (id !== l.id) addLanes(others, q.slice(1, -1));
+      });
+      routes.set(l.id, orthoCableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), others));
+    }
+    const list: SepRoute[] = byId.map(({ l }) => ({ id: l.id, pts: routes.get(l.id) as Pt[], width: speedWidth(l.speed) }));
+    separate(list, ORTHO_GAP, Array.from(obstacles.values()));
+    for (const r of list) routes.set(r.id, r.pts);
+  } else for (const { l, pa, pb } of byId) routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key])));
   const first = new Map(routes);
   for (const { l, pa, pb } of byId) {
+    if (opts.orthogonal) break;
     const pts = first.get(l.id) as Pt[];
     // (a straight cable has no way to choose)
     if (pts.length <= 2) continue;
@@ -526,7 +583,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   return {
     conflicts: placer.conflicts + nodeOverlaps(Array.from(boxes.values()).map((b) => boxRect(b))),
     routes,
-    root: h('g', { class: 'scene scene-physical' }, [
+    root: h('g', { class: 'scene scene-physical' + (opts.orthogonal ? ' orthogonal' : '') }, [
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-links' }, linkNodes),
       h('g', { class: 'layer-nodes' }, deviceNodes),

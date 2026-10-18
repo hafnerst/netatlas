@@ -29,6 +29,7 @@ import { Pt, Rect, boxRect, clipToCircle, normal, segmentHitsRect } from '../lay
 import { endLabelH, endLabelWidth } from '../layout/input';
 import { ENTRY_GAP, PORT_INSET, PORT_STUB, entryBox } from '../layout/sizes';
 import { Device, Model, Relation, relationDevices } from '../model/types';
+import { Lanes, SepRoute, addLanes, newLanes, orthoRoute, separate, simplify } from '../layout/orthogonal';
 import { entryItems } from './physical';
 
 export type PortSide = 'left' | 'right';
@@ -145,6 +146,7 @@ export function routeLogical(
   bundles: Bundle[],
   hubs: Relation[],
   others: Rect[],
+  orthogonal = false,
 ): LogicalRoutes {
   const dev = (id: string): LNode | undefined => nodes.get('device:' + id);
   const rowOf = (d: string, iface: string | undefined): RowSpan | undefined => {
@@ -387,6 +389,7 @@ export function routeLogical(
   return { strands: routed.strands, spokes: routed.spokes, ports };
 
   function routeAll(): { strands: Map<string, Pt[]>; spokes: Map<string, Pt[]> } {
+    if (orthogonal) return routeOrtho();
     /** the corners of obstacles routes go around, and how far out the next one has to go (see laneDetour) */
     const corners = new Map<string, number>();
     const strands = new Map<string, Pt[]>();
@@ -426,6 +429,82 @@ export function routeLogical(
         const last = way.length ? way[way.length - 1] : q;
         spokes.set(r.id + ':' + d, clean(elbow(clean([p, q, ...way, clipToCircle(c, HUB_R, last)]), dirOf(e.side), obstacles, boxRect(D))));
       }
+    }
+    return { strands, spokes };
+  }
+
+  /**
+   * The Structured arrangement's routes: horizontal and vertical segments
+   * only. A strand leaves its port along its stub and reaches the other
+   * port's stub; a spoke reaches the hub's circle straight along the axis
+   * it arrives on. Laid one after the other (each knowing the ones before),
+   * then those sharing a corridor are spread apart (layout/orthogonal.ts).
+   */
+  function routeOrtho(): { strands: Map<string, Pt[]>; spokes: Map<string, Pt[]> } {
+    const lanes: Lanes = newLanes();
+    // the end labels beside every port: a route keeps clear of those of the devices it doesn't connect
+    // (also of a device so close that only its box is kept clear of)
+    const labels = new Map<string, Rect[]>();
+    for (const pt of ports) {
+      if (pt.iface === undefined) continue;
+      const w = END_LABEL_X + endLabelWidth(model, pt.device, pt.iface) + 2;
+      const h = endLabelH(model, pt.device, pt.iface);
+      const x = pt.side === 'right' ? pt.x : pt.x - w;
+      const y = pt.labelBelow ? pt.bottom : pt.top - h;
+      labels.set(pt.device, (labels.get(pt.device) || []).concat([{ x, y, w, h }]));
+    }
+    const labelsBut = (own: string[], a: Pt, b: Pt): Rect[] => {
+      const out: Rect[] = [];
+      labels.forEach((rs, d) => {
+        if (own.indexOf(d) < 0) out.push(...rs.filter((r) => !inside(a, r) && !inside(b, r)));
+      });
+      return out;
+    };
+    const sep: SepRoute[] = [];
+    const strands = new Map<string, Pt[]>();
+    strandEnds.forEach(([ea, eb], id) => {
+      const [bi, si] = id.split(':');
+      const b = bundles[Number(bi)];
+      const A = dev(b.a) as LNode;
+      const B = dev(b.b) as LNode;
+      const pa = { x: sideX(A, ea.side), y: ea.y };
+      const pb = { x: sideX(B, eb.side), y: eb.y };
+      const qa = { x: pa.x + dirOf(ea.side) * ea.stub, y: pa.y };
+      const qb = { x: pb.x + dirOf(eb.side) * eb.stub, y: pb.y };
+      const width = b.strands[Number(si)].width;
+      const way = orthoRoute(qa, { x: dirOf(ea.side), y: 0 }, qb, { x: dirOf(eb.side), y: 0 }, obstaclesFor([b.a, b.b], qa, qb).concat(labelsBut([b.a, b.b], qa, qb)), CORNER_M + width / 2, lanes);
+      const pts = simplify([pa, ...way, pb]);
+      addLanes(lanes, pts.slice(1, -1));
+      strands.set(id, pts);
+      sep.push({ id: 's' + id, pts, width });
+    });
+    const spokes = new Map<string, Pt[]>();
+    for (const r of hubs) {
+      const hub = nodes.get('hub:' + r.id);
+      if (!hub) continue;
+      for (const d of relationDevices(r)) {
+        const e = spokeEnds.get(r.id + ':' + d);
+        if (!e) continue;
+        const D = dev(d) as LNode;
+        const p = { x: sideX(D, e.side), y: e.y };
+        const q = { x: p.x + dirOf(e.side) * e.stub, y: p.y };
+        // into the circle along the axis that faces the spoke's device: from the side, or from above or below
+        const dx = q.x - hub.cx;
+        const dy = q.y - hub.cy;
+        const ed = Math.abs(dx) >= Math.abs(dy) ? { x: dx >= 0 ? 1 : -1, y: 0 } : { x: 0, y: dy >= 0 ? 1 : -1 };
+        const c = { x: hub.cx + ed.x * HUB_R, y: hub.cy + ed.y * HUB_R };
+        const way = orthoRoute(q, { x: dirOf(e.side), y: 0 }, c, ed, obstaclesFor([d], q, c).concat(labelsBut([d], q, c)), CORNER_M + e.width / 2, lanes);
+        const pts = simplify([p, ...way]);
+        addLanes(lanes, pts.slice(1, -1));
+        spokes.set(r.id + ':' + d, pts);
+        sep.push({ id: 'h' + r.id + ':' + d, pts, width: e.width });
+      }
+    }
+    // (spread apart without coming into a box, or into the room of its ports and their end labels)
+    separate(sep, STRAND_GAP + 4, Array.from(far.values()).concat(others));
+    for (const s of sep) {
+      if (s.id[0] === 's') strands.set(s.id.slice(1), s.pts);
+      else spokes.set(s.id.slice(1), s.pts);
     }
     return { strands, spokes };
   }
