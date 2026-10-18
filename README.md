@@ -137,8 +137,10 @@ model's parameters; it is not a measurement of real hardware.
 - [docs/FORMAT.md](docs/FORMAT.md): the YAML model format and its rules;
   [docs/YAML-SUBSET.md](docs/YAML-SUBSET.md): the YAML that is supported.
 - [examples/README.md](examples/README.md): the built-in examples.
-- [docs/LIMITATIONS.md](docs/LIMITATIONS.md): what NetAtlas does not do, in
-  detail.
+- [docs/SUPPORT.md](docs/SUPPORT.md): what each protocol, service and
+  analysis implements and leaves out (generated from the application's own
+  statements); [docs/LIMITATIONS.md](docs/LIMITATIONS.md): the
+  simplifications and unsupported cases, area by area.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release.
 
 Important boundaries:

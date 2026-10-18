@@ -3031,7 +3031,8 @@ Services):
   cache* on a host (each cached name with its server and what is left of
   its TTL).
 
-Simplifications: IPv4 only for DHCP (no DHCPv6); one lease per interface;
+Simplifications: one lease per interface; DHCPv6 on the server's own link
+only (no DHCPv6 relay or prefix delegation);
 no DHCPDECLINE, DHCPRELEASE or DHCPINFORM; no relay agent information
 (option 82); offers are broadcast; no negative caching, DNSSEC or TCP
 fallback, and no recursion beyond the model's DNS servers.

@@ -1000,7 +1000,7 @@ const BY_BEHAVIOUR: { [b: string]: Support } = {
   session: { level: 'modeled', does: 'Session establishment (its profile’s handshake), keepalives and the dead interval are simulated; traffic is encapsulated where the profile has a header.', not: SESSION_NOT },
   data: { level: 'modeled', does: 'Traffic is encapsulated in its header along the relation and decapsulated at the far end.', not: 'a control plane of its own (learning, signalling).' },
   service: { level: 'modeled', does: 'Requests (and their answers) cross the network at a demonstration interval between the relation’s ends: reachability, firewall policy and closed ports apply.', not: 'message contents and the server’s application logic.' },
-  'dhcp-server': { level: 'modeled', does: 'DISCOVER, OFFER, REQUEST and ACK, relays, leases with renewal, rebinding and expiry are simulated from the servers’ scopes.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82.' },
+  'dhcp-server': { level: 'modeled', does: 'DISCOVER, OFFER, REQUEST and ACK, relays, leases with renewal, rebinding and expiry are simulated from the servers’ scopes; DHCPv6 (stateful and stateless) on the server’s own link.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82; DHCPv6 relays and prefix delegation.' },
 };
 const BY_PROTOCOL: { [id: string]: Support } = {
   dns: { level: 'modeled', does: 'A relation’s demonstration queries cross the network; name resolution itself (A / AAAA, CNAME, forwarders, the resolver cache) is simulated from the DNS servers’ zones.', not: 'DNSSEC, TCP fallback, recursion beyond the model’s servers.' },

@@ -927,6 +927,12 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 .man-keys { border-collapse: collapse; }
 .man-keys th { text-align: left; font-weight: 400; padding: 3px 14px 3px 0; white-space: nowrap; vertical-align: top; }
 .man-keys td { padding: 3px 0; }
+.man-support-area { margin: 6px 0; }
+.man-support-area > summary { cursor: pointer; font-weight: 600; }
+.man-support { border-collapse: collapse; width: 100%; margin: 6px 0 10px; font-size: 12.5px; table-layout: fixed; }
+.man-support th, .man-support td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.man-support thead th { font-weight: 600; color: var(--muted); border-top: 0; }
+.man-support tbody th { font-weight: 600; width: 22%; }
 /* Help → License: a short note; the full text opens in place and scrolls inside itself */
 .license-full { margin-top: 4px; }
 .license-full summary { cursor: pointer; font-weight: 600; color: var(--accent); }

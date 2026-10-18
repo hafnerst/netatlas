@@ -5,6 +5,8 @@
  */
 import { el } from './dom';
 import { LICENSE_TEXT, MANUAL_IMAGES } from '../generated/help-assets';
+import { ANALYSIS_SUPPORT, supportAreas, supportCatalog } from '../model/support-catalog';
+import { supportLabel } from '../model/support';
 
 /** A manual section: a title, short paragraphs or steps, and screenshots with captions. */
 interface Section {
@@ -505,7 +507,7 @@ const MANUAL: Section[] = [
       'Test traffic and **Send test** to a host name ask DNS first (*DNS A? srv.campus.example*, answered *DNS A srv.campus.example = 10.20.30.10*), then connect; a name missing from the server’s zone ends in NXDOMAIN, an unreachable server in a timeout.',
       'Click the server for **Show DHCP leases** and **Show DNS zone**, a client for **Show DNS cache**.',
     ],
-    notes: ['DHCP is IPv4 only, one lease per interface; DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
+    notes: ['One lease per interface; IPv4 DHCP crosses relays, DHCPv6 is served on the server’s own link only (no DHCPv6 relay). DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
     figures: [['dhcp-sim', 'The simulation of enterprise-campus.yaml: the clients’ leases in the diagram, and srv’s DHCP leases in the simulation panel.']],
   },
   {
@@ -601,7 +603,7 @@ const MANUAL: Section[] = [
     ],
     notes: [
       'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Security gateway’s policy, a firewall’s policy (the relations through it and its allow list, by the service), a VPN gateway’s tunnels and the paired ports of inline and pass-through devices are considered; router ACLs are not. A destination address reached is not an application that works: a listener establishes a consistent configuration, not that the application accepts or answers. Nothing in the model changes.',
-      'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. NAT only for container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**).',
+      'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. Trace path applies the NAT of container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**). The NAT service’s translations (PAT, port forwarding) are applied by the simulation, not by Trace path.',
     ],
     figures: [['trace', 'A trace from the Munich branch to the syslog server without a service: both equal-cost paths reach it (the alternative dashed in the diagram), and the verdict says the firewall decides by service; below, the layers and the start of the hop table.']],
   },
@@ -692,6 +694,30 @@ function figure(doc: Document, name: string, caption: string): HTMLElement | nul
   ]);
 }
 
+const SUPPORT_TITLE = 'What NetAtlas models';
+
+/**
+ * The support catalog (model/support-catalog.ts) as a section: what each
+ * static analysis evaluates, and each protocol's, service's and application
+ * profile's level, what it does and what it leaves out — the same
+ * statements as the ⓘ notes and docs/SUPPORT.md.
+ */
+function supportSection(doc: Document): HTMLElement {
+  const sec = el(doc, 'section', { class: 'man-sec', id: 'man-support', 'aria-labelledby': 'man-h-support' });
+  sec.appendChild(el(doc, 'h3', { id: 'man-h-support', tabindex: '-1' }, [SUPPORT_TITLE]));
+  sec.appendChild(el(doc, 'p', {}, ['Each protocol, service and application profile says what the simulation does for it, at one of three levels: **Diagram only**, **Configuration and validation**, **Modeled behavior** (within the stated limits; never “full support”). The static analyses evaluate the configured model or a snapshot and send nothing. The same statements are shown by the ⓘ notes in the editor and in Start simulation.'].flatMap((t) => rich(doc, t))));
+  const table = (rows: Array<[string, string, string, string]>, withLevel: boolean): HTMLElement =>
+    el(doc, 'table', { class: 'man-support' }, [
+      el(doc, 'thead', {}, [el(doc, 'tr', {}, (withLevel ? ['Name', 'Level', 'Implemented', 'Not modeled'] : ['Analysis', 'Evaluates', 'Does not establish']).map((h) => el(doc, 'th', { scope: 'col' }, [h])))]),
+      el(doc, 'tbody', {}, rows.map((r) => el(doc, 'tr', {}, [el(doc, 'th', { scope: 'row' }, [r[0]])].concat((withLevel ? [r[1], r[2], r[3]] : [r[2], r[3]]).map((c) => el(doc, 'td', {}, [c])))))),
+    ]);
+  const group = (title: string, body: HTMLElement): HTMLElement => el(doc, 'details', { class: 'man-support-area' }, [el(doc, 'summary', {}, [title]), body]);
+  sec.appendChild(group('Static analysis (Analyze)', table(ANALYSIS_SUPPORT.map((a) => [a.name, '', a.does, a.not] as [string, string, string, string]), false)));
+  const cat = supportCatalog();
+  for (const area of supportAreas()) sec.appendChild(group(area, table(cat.filter((e) => e.area === area).map((e) => [e.name, supportLabel(e.support.level), e.support.does, e.support.not] as [string, string, string, string]), true)));
+  return sec;
+}
+
 /**
  * The body of Help → User Manual: a list of the sections (buttons that
  * scroll to them, so the page's address never changes) and the sections.
@@ -703,7 +729,7 @@ export function manualBody(doc: Document): HTMLElement {
   const list = el(doc, 'ol');
   toc.appendChild(list);
   wrap.appendChild(toc);
-  for (const s of MANUAL.concat([{ id: 'keys', title: 'Keyboard shortcuts' }])) {
+  for (const s of MANUAL.concat([{ id: 'support', title: SUPPORT_TITLE }, { id: 'keys', title: 'Keyboard shortcuts' }])) {
     const b = el(doc, 'button', { type: 'button', class: 'man-link', 'data-man-goto': 'man-' + s.id }, [s.title]);
     list.appendChild(el(doc, 'li', {}, [b]));
   }
@@ -717,6 +743,7 @@ export function manualBody(doc: Document): HTMLElement {
     if (figs.length) sec.appendChild(el(doc, 'div', { class: 'man-figs' + (figs.length > 1 ? ' two' : '') }, figs));
     wrap.appendChild(sec);
   }
+  wrap.appendChild(supportSection(doc));
   const keys = el(doc, 'section', { class: 'man-sec', id: 'man-keys', 'aria-labelledby': 'man-h-keys' });
   keys.appendChild(el(doc, 'h3', { id: 'man-h-keys', tabindex: '-1' }, ['Keyboard shortcuts']));
   keys.appendChild(el(doc, 'p', { class: 'man-note' }, ['They work while the focus is not in a text field.']));

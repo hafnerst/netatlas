@@ -5,14 +5,14 @@
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "build": "node scripts/gen-examples.mjs && node scripts/gen-help.mjs && tsc -p tsconfig.json && node scripts/build.mjs",
+    "build": "node scripts/gen-examples.mjs && node scripts/gen-help.mjs && tsc -p tsconfig.json && node scripts/gen-support.mjs && node scripts/build.mjs",
     "test": "npm run build && node --test test/",
     "selftest:browser": "node scripts/browser-selftest.mjs",
     "selftest:public": "node scripts/browser-selftest.mjs --public",
     "selftest:viewport": "node scripts/browser-selftest.mjs --viewport",
     "screenshots:manual": "node scripts/manual-screenshots.mjs",
     "typecheck": "node scripts/gen-examples.mjs && node scripts/gen-help.mjs && tsc -p tsconfig.json --noEmit",
-    "check:dist": "node scripts/gen-examples.mjs --check && node scripts/gen-help.mjs --check && tsc -p tsconfig.json && node scripts/build.mjs --check"
+    "check:dist": "node scripts/gen-examples.mjs --check && node scripts/gen-help.mjs --check && tsc -p tsconfig.json && node scripts/gen-support.mjs --check && node scripts/build.mjs --check"
   },
   "devDependencies": {
     "typescript": "~5.9.2"

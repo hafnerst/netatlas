@@ -8,7 +8,10 @@
 // matters).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validate, load } from './helpers.mjs';
+import { validate, load, root } from './helpers.mjs';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 
 const SC = load('analysis/scope.js');
 const D = load('analysis/dependencies.js');
@@ -319,4 +322,24 @@ test('what if: an endpoint the failure takes down leaves the isolation control u
   const e = E.evaluateExpectation(m, { id: 'x', name: 'x', expect: 'blocked', from: 'nowhere', to: 'srv', failure: ['fw'], line: 0 });
   assert.equal(e.verdict, 'indeterminate');
   assert.ok(!e.unavailable);
+});
+
+// ------------------------------------------------------------------ support statements
+
+test('support: one catalog for the manual and docs/SUPPORT.md; no statement contradicts it', () => {
+  const SCAT = load('model/support-catalog.js');
+  const cat = SCAT.supportCatalog();
+  assert.ok(cat.length > 50 && cat.every((e) => e.support.does && e.support.not), 'every entry says what it does and leaves out');
+  assert.ok(SCAT.ANALYSIS_SUPPORT.every((a) => a.does && a.not));
+  // docs/SUPPORT.md is generated from it
+  execFileSync(process.execPath, [join(root, 'scripts', 'gen-support.mjs'), '--check'], { stdio: 'pipe' });
+  // DHCPv6 is modeled (on the server's own link): nothing may say DHCP is IPv4 only
+  const dhcp = cat.find((e) => e.id === 'dhcp');
+  assert.match(dhcp.support.does, /DHCPv6/);
+  const texts = [readFileSync(join(root, 'docs', 'LIMITATIONS.md'), 'utf8'), readFileSync(join(root, 'docs', 'FORMAT.md'), 'utf8'), readFileSync(join(root, 'src', 'ui', 'help.ts'), 'utf8')];
+  for (const t of texts) {
+    assert.ok(!/IPv4 only for DHCP|DHCP is IPv4 only|\(no DHCPv6\)/.test(t), 'no "DHCP is IPv4 only"');
+    assert.ok(!/NAT only for container bridges|NAT is modelled for container bridges and the NAT\s+service only/.test(t), 'NAT is described per workflow');
+    assert.ok(!/VLAN separation on one switch is not taken into account/.test(t), 'the VLAN-scoped segment is not denied');
+  }
 });
