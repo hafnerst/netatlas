@@ -31,7 +31,11 @@ const MANUAL: Section[] = [
       '**Open model…** opens a `.yaml` / `.yml` file from this computer. You can also drop a file anywhere on the page.',
       '**Load example**: choose a built-in example and press **Load**.',
     ],
-    notes: ['The same commands are in the **File** menu at any time. If the current model has unsaved changes, NetAtlas asks first. Files are read locally; nothing is uploaded.'],
+    notes: [
+      'The same commands are in the **File** menu at any time. If the current model has unsaved changes, NetAtlas asks first. Files are read locally; nothing is uploaded.',
+      'NetAtlas is this one HTML file: open `netatlas.html` (the built file, not `src/index.html`) in Chrome, Edge, Firefox or Safari. It needs no server, no installation and no network connection, so it also works on a computer without one.',
+      '**File → Close model** returns to the start screen; with unsaved changes it offers to save first, to discard them or to cancel.',
+    ],
     figures: [['start', 'The start screen: New model, Open model… or Load example.']],
   },
   {
@@ -42,7 +46,11 @@ const MANUAL: Section[] = [
       '**File → Save model** (`Ctrl+S`) then updates the linked file without asking. In browsers without a save picker (Firefox, Safari), *Save model as…* downloads a copy instead.',
       '**Export → Export view as… → PNG** or **SVG** saves the view on screen as a picture: the whole diagram, with its legend and networks overview, in the theme you see (Light or Dark). The picture looks the same in any viewer, whatever that viewer\'s own light or dark setting.',
     ],
-    notes: ['A small dot on the file name in the status bar means that there are unsaved changes.'],
+    notes: [
+      'A small dot on the file name in the status bar means that there are unsaved changes.',
+      'Only Chrome, Edge and other Chromium-based browsers can write to a file you choose. In Firefox and Safari the copy is downloaded into the downloads folder and is not linked: *Save model* stays unavailable and the status bar says so. A model with validation errors lists them first; the button then reads **Download anyway**.',
+      'Everything in the file survives opening, editing and saving: attributes no diagram shows, keys NetAtlas doesn’t know, comments, key order and quoting. Indentation becomes 2 spaces.',
+    ],
     figures: [
       ['file-menu', 'The File menu: new, open, save and close a model, and the examples.'],
       ['export-menu', 'Export → Export view as… with its two formats.'],
@@ -246,6 +254,7 @@ const MANUAL: Section[] = [
     notes: [
       'A value configured on a cable or a relation in the model comes first, then the object’s own Simulation value (an interface’s, a VLAN’s, a relation’s, a DHCP scope’s or a DNS zone’s), then the device’s, then the simulation’s value, then the default; every value says which it is.',
       'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters.',
+      'Everything happens inside NetAtlas: simulated packets travel only through the model on screen. Nothing is sent to a real network, and the page makes no network connections.',
     ],
     figures: [['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
   },
