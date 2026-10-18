@@ -12,6 +12,7 @@
  * model on every render, are read-only, and are never written to the file.
  */
 import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, RouteEntry, SECTION, kindOfSection, portIdFor, portRange, DeviceModelKey } from '../editor/document';
+import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS } from '../model/routing-policy';
 import { BlockTarget } from '../editor/yaml-block';
 import { DialogOpts } from './dialogs';
 import { el, icon, materialize } from './dom';
@@ -1495,7 +1496,95 @@ export class Editor {
     }
     const atEp = paramsAt(def, 'endpoint');
     if (atEp.length) card.appendChild(this.e('p', { class: 'muted small' }, [`${atEp[0].label}${atEp.length > 1 ? ' and more' : ''}: per ${name} relation.`]));
+    if (POLICY_PROTOCOLS.indexOf(id) >= 0) card.appendChild(this.routingPolicyBox(sp, devId, id, name));
     return card;
+  }
+
+  /**
+   * A routing protocol's policy (model/routing-policy.ts), collapsed by
+   * default with a one-line summary: what the device advertises, a default
+   * route, what it redistributes, and the ordered rules (import, export)
+   * (a compact table each: action, prefix, peer; the lengths and BGP's
+   * attributes behind "More"). Export is not offered for a link-state
+   * protocol.
+   */
+  private routingPolicyBox(sp: Path, devId: string, id: string, name: string): HTMLElement {
+    const m = this.doc.result.model;
+    const d = m ? m.index.devices.get(devId) : undefined;
+    const svc = d ? d.services.find((x) => x.id === id) : undefined;
+    const pol = svc ? svc.policy : undefined;
+    const ls = LINK_STATE.indexOf(id) >= 0;
+    const parts: string[] = [];
+    if (pol) {
+      parts.push(pol.advertise ? `advertises ${pol.advertise.length} prefix${pol.advertise.length === 1 ? '' : 'es'}` : 'advertises its connected networks');
+      if (pol.defaultRoute) parts.push(`default route ${pol.defaultRoute === 'always' ? 'always' : 'if installed'}`);
+      if (pol.redistribute.length) parts.push('redistributes ' + pol.redistribute.join(', '));
+      if (pol.import.length) parts.push(`import ${pol.import.length} rule${pol.import.length === 1 ? '' : 's'}`);
+      if (pol.export.length) parts.push(`export ${pol.export.length} rule${pol.export.length === 1 ? '' : 's'}`);
+    }
+    // (collapsed unless the user opened it, or it has a problem: the summary says what it holds; the open state survives a redraw)
+    const key = `rp:${devId}:${id}`;
+    const box = this.e('details', { class: 'rp-box', 'data-rp': id, 'data-card': key }, [this.e('summary', {}, [`Routing policy · ${parts.length ? parts.join(' · ') : 'none: every connected network is advertised, every route accepted'}`])]);
+    if (this.open.has(key) || ROUTE_POLICY_KEYS.some((k) => this.doc.issuesAt(sp.concat(k)).length > 0)) box.setAttribute('open', '');
+    box.appendChild(this.listField(sp.concat('advertise'), 'Advertise (instead of every connected network)', '', '10.10.0.0/16', 'Prefixes it originates; each needs a connected network or a static route.'));
+    const dr = this.selectEl(sp.concat('default_route'), 'text', '', ['always', 'if_installed'], this.doc.text(sp.concat('default_route')) || '', 'Not originated');
+    box.appendChild(this.field('Default route', dr, sp.concat('default_route'), 'Always, or only while it has a default route itself (if_installed).'));
+    // redistribution: a check box per source
+    const red = this.e('div', { class: 'rp-red', role: 'group', 'aria-label': `Redistribute into ${name}` });
+    const cur = new Set(pol ? pol.redistribute : []);
+    for (const src of REDISTRIBUTE_SOURCES) {
+      if (src === id) continue;
+      const cid = `rp-${devId}-${id}-${src}`.replace(/[^A-Za-z0-9_-]/g, '_');
+      const cb = this.e('input', { type: 'checkbox', id: cid, 'data-act': 'rp-red', 'data-p': J(sp.concat('redistribute')), 'data-v': src }) as HTMLInputElement;
+      cb.checked = cur.has(src);
+      red.appendChild(this.e('label', { class: 'check', for: cid }, [cb, ' ' + src]));
+    }
+    box.appendChild(this.field('Redistribute', red, sp.concat('redistribute'), 'Sources it originates too; no route re-enters a domain it came through.'));
+    const neighbours = new Set<string>();
+    if (m) for (const r of m.relations) if (protocolBase(m.protocols, r.protocol) === id && relationDevices(r).indexOf(devId) >= 0) for (const x of relationDevices(r)) if (x !== devId) neighbours.add(x);
+    for (const dir of ls ? (['import'] as const) : (['import', 'export'] as const)) box.appendChild(this.ruleTable(sp.concat(dir), dir, id, Array.from(neighbours).sort()));
+    if (ls) box.appendChild(this.e('p', { class: 'muted small' }, [`${name} floods: no export rules; its import: rules decide what it installs.`]));
+    return box;
+  }
+
+  /** An ordered filter (first match wins, the implicit deny at the end) as a compact table. */
+  private ruleTable(lp: Path, dir: 'import' | 'export', proto: string, neighbours: string[]): HTMLElement {
+    const n = this.doc.get(lp);
+    const items = n && n.kind === 'seq' ? n.items : [];
+    const wrap = this.e('div', { class: 'rule-ed', 'data-rules': dir });
+    wrap.appendChild(this.e('div', { class: 'rule-title' }, [dir === 'import' ? 'Import rules (what it accepts)' : 'Export rules (what it advertises)']));
+    if (items.length) {
+      const t = this.e('table', { class: 'rule-table' });
+      t.appendChild(this.e('thead', {}, [this.e('tr', {}, ['#', 'Action', 'Prefix', 'Peer', ''].map((h, k) => this.e('th', { scope: 'col' }, k === 4 ? [this.e('span', { class: 'sr-only' }, ['Actions'])] : [h])))]));
+      const tb = this.e('tbody');
+      items.forEach((_it, k) => {
+        const rp = lp.concat(k);
+        const label = `${dir} rule ${k + 1}`;
+        const act = this.selectEl(rp.concat('action'), 'text', '', ['permit', 'deny'], this.doc.text(rp.concat('action')) || '', 'Select…', { 'aria-label': `Action of ${label}` });
+        const pre = this.input(rp.concat('prefix'), 'text', this.doc.text(rp.concat('prefix')) || '', { placeholder: 'any route', 'aria-label': `Prefix of ${label}` });
+        const peer = this.selectEl(rp.concat('peer'), 'text', '', neighbours, this.doc.text(rp.concat('peer')) || '', 'any neighbour', { 'aria-label': `Peer of ${label}` });
+        const more = this.e('details', { class: 'rule-more' }, [this.e('summary', {}, ['More'])]);
+        for (const [k2, lab] of [['ge', 'ge'], ['le', 'le']] as Array<[string, string]>) more.appendChild(this.e('label', { class: 'rule-mini' }, [lab + ' ', this.input(rp.concat(k2), 'int', this.doc.text(rp.concat(k2)) || '', { inputmode: 'numeric', 'aria-label': `${lab} of ${label}` })]));
+        if (proto === 'bgp' && dir === 'import') more.appendChild(this.e('label', { class: 'rule-mini' }, ['local-pref ', this.input(rp.concat('local_pref'), 'int', this.doc.text(rp.concat('local_pref')) || '', { inputmode: 'numeric', 'aria-label': `Local preference of ${label}` })]));
+        if (proto === 'bgp' && dir === 'export') more.appendChild(this.e('label', { class: 'rule-mini' }, ['prepend ', this.input(rp.concat('prepend'), 'int', this.doc.text(rp.concat('prepend')) || '', { inputmode: 'numeric', 'aria-label': `AS prepend of ${label}` })]));
+        if (['ge', 'le', 'local_pref', 'prepend'].some((x) => this.doc.get(rp.concat(x)))) more.setAttribute('open', '');
+        const tools = this.e('td', { class: 'nowrap' }, [
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'move-up', 'data-p': J(rp), title: 'Move up', 'aria-label': `Move ${label} up`, ...(k === 0 ? { disabled: '' } : {}) }, ['↑']),
+          this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(rp), title: 'Delete', 'aria-label': `Delete ${label}` }, ['×']),
+        ]);
+        tb.appendChild(this.e('tr', { class: this.doc.issuesAt(rp).some((x) => x.severity === 'error') ? 'invalid' : '' }, [this.e('td', {}, [String(k + 1)]), this.e('td', {}, [act]), this.e('td', {}, [pre, more]), this.e('td', {}, [peer]), tools]));
+      });
+      t.appendChild(tb);
+      wrap.appendChild(t);
+      wrap.appendChild(this.e('p', { class: 'muted small' }, ['First match wins; a route no rule matches is denied (the implicit deny).']));
+    }
+    wrap.appendChild(
+      this.e('div', { class: 'rule-add' }, [
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'rule-add', 'data-p': J(lp), 'data-v': 'permit' }, [`+ permit rule`]),
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'rule-add', 'data-p': J(lp), 'data-v': 'deny' }, [`+ deny rule`]),
+      ]),
+    );
+    return wrap;
   }
 
   /** A protocol parameter's field, by its type: a choice for an enum, a number field for an int, else text; suggestions offered. */
@@ -5328,6 +5417,27 @@ export class Editor {
         doc.remove(p);
         this.host.changed();
         return true;
+      case 'rule-add': {
+        // (the box stays open for the rule to be filled in)
+        const card = btn.closest('[data-card]');
+        if (card) this.open.add(card.getAttribute('data-card') as string);
+        doc.addRule(p, btn.getAttribute('data-v') as string, p[p.length - 1] + ' rule');
+        this.host.changed(`A ${btn.getAttribute('data-v')} rule was added at the end.`);
+        return true;
+      }
+      case 'rp-red': {
+        // a redistribution source on or off (the list goes with its last entry)
+        const v = btn.getAttribute('data-v') as string;
+        const n = doc.get(p);
+        const cur = n && n.kind === 'seq' ? n.items.map((x) => scalarText(x) || '') : [];
+        if ((btn as HTMLInputElement).checked) doc.appendText(p, v, 'Redistribute ' + v);
+        else {
+          const k = cur.indexOf(v);
+          if (k >= 0) doc.remove(cur.length === 1 ? p : p.concat(k), 'Stop redistributing ' + v);
+        }
+        this.host.changed();
+        return true;
+      }
       case 'set-value': {
         // a suggestion chip: one undo step; validation follows as for typing
         const v = btn.getAttribute('data-v') as string;

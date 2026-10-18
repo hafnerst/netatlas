@@ -196,8 +196,9 @@ const MANUAL: Section[] = [
       'Fill in what the protocol requires: BGP’s **Local AS number**, OSPF’s **Router ID** (a loopback such as `lo0`, or an IPv4 address), IS-IS’s NET. Until then they are errors, here and in Problems.',
       'For VRRP or HSRP, open the interface and press **+ VRRP group**: its group number, virtual IP and priority.',
       '**Disable** removes a protocol and its values, after listing them; Ctrl+Z brings them back.',
+      '**Routing policy** (a collapsed line on BGP, OSPF, IS-IS, EIGRP and RIP) says what the device advertises: by default every connected network, else the prefixes under **Advertise**; a **Default route** (always, or only while it has one); what it **Redistributes**; and the ordered **Import** and **Export** rules (**+ permit rule**, **+ deny rule**; action, prefix, peer, the lengths and BGP’s local preference or prepend under **More**). The first matching rule decides; a route no rule matches is denied. OSPF and IS-IS flood what they learn: they have import rules only, which decide what the router installs.',
     ],
-    notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you.'],
+    notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you. Trace path and the simulation apply the routing policy alike; a hop’s **Why?** names a route’s origin, AS path, local preference and the rules on its way.'],
     figures: [['protocols', 'r3’s Protocols card: the suggestion to enable OSPF, BGP with its AS number, and Enable a protocol.']],
   },
   {

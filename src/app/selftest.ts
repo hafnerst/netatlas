@@ -6211,6 +6211,29 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- routing policy in the editor: collapsed by default, compact ordered rule tables, one undo step per change
+    {
+      app.loadExample(0);
+      await tick();
+      app.select('device:hq-rtr1');
+      (q('[data-tab="edit"]') as HTMLElement).click();
+      await tick();
+      const before = app.exportText();
+      const box = q('#side-body .rp-box[data-rp="bgp"]') as HTMLDetailsElement | null;
+      check('a routing protocol’s policy is one collapsed line on its card (nothing on every device by default)', !!box && !box.open && /^Routing policy · none: every connected network is advertised, every route accepted$/.test(box.querySelector('summary')!.textContent || ''), box ? box.querySelector('summary')!.textContent || '' : 'no box');
+      check('… OSPF (link-state) has no export rules to edit', !!q('#side-body .rp-box[data-rp="ospf"] [data-rules="import"]') && !q('#side-body .rp-box[data-rp="ospf"] [data-rules="export"]'));
+      (q('#side-body .rp-box[data-rp="bgp"] [data-rules="export"] [data-act="rule-add"][data-v="deny"]') as HTMLElement).click();
+      await tick();
+      const after = app.exportText();
+      const row = q('#side-body .rp-box[data-rp="bgp"] [data-rules="export"] .rule-table tbody tr');
+      check('… “+ deny rule” adds an ordered rule with the action chosen (flow style), the box opens with its table', /export: \[\{action: deny\}\]|export:\n\s+- \{action: deny\}/.test(after) && !!row && (q('#side-body .rp-box[data-rp="bgp"]') as HTMLDetailsElement).open && /export 1 rule/.test(q('#side-body .rp-box[data-rp="bgp"] summary')!.textContent || ''), after.slice(after.indexOf('bgp:'), after.indexOf('bgp:') + 120));
+      app.undo();
+      await tick();
+      check('… undo removes it (one step)', app.exportText() === before);
+      app.select(null);
+      app.mdoc!.markSaved();
+    }
+
     const perf = (doc.defaultView as Window).performance;
     const resources = perf && perf.getEntriesByType ? perf.getEntriesByType('resource').length : 0;
     check('no network resources requested', resources === 0, String(resources));

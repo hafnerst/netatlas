@@ -927,6 +927,22 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 .man-keys { border-collapse: collapse; }
 .man-keys th { text-align: left; font-weight: 400; padding: 3px 14px 3px 0; white-space: nowrap; vertical-align: top; }
 .man-keys td { padding: 3px 0; }
+.rp-box { margin-top: 6px; }
+.rp-box > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.rp-box[open] > summary { margin-bottom: 4px; }
+.rp-red { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.rule-ed { margin: 6px 0; }
+.rule-title { font-weight: 600; font-size: 12.5px; margin-bottom: 2px; }
+.rule-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.rule-table th, .rule-table td { text-align: left; vertical-align: top; padding: 2px 4px 2px 0; }
+.rule-table thead th { color: var(--muted); font-weight: 600; }
+.rule-table td:first-child { width: 1.6em; color: var(--muted); }
+.rule-table input, .rule-table select { width: 100%; min-width: 0; }
+.rule-table tr.invalid input, .rule-table tr.invalid select { border-color: var(--error); }
+.rule-more > summary { cursor: pointer; font-size: 11.5px; color: var(--muted); }
+.rule-mini { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+.rule-mini input { width: 5em; }
+.rule-add { display: flex; gap: 6px; margin-top: 4px; }
 .tf-pair { display: flex; gap: 6px; min-width: 0; }
 .tf-pair > select { flex: 1 1 auto; min-width: 0; }
 .trace-compare { margin-top: 8px; }

@@ -25,6 +25,7 @@ import { AppNodes, checkApplications } from './applications';
 import { checkPtp } from './ptp';
 import { checkRaPrefixes, readIpv6 } from './ipv6';
 import { ipConfigured } from '../model/ipv6';
+import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS, RouteFilterRule, RoutingPolicy } from '../model/routing-policy';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -1783,7 +1784,9 @@ function readServices(
     if (!isNull(v)) {
       const pm = r.map(v, spath);
       if (pm) {
-        const allowed = own.map((p) => p.key).concat(scope === 'device' && def.routerId !== 'none' ? [ROUTER_ID_KEY] : []);
+        // a routing protocol's policy (model/routing-policy.ts) goes with it, on the device
+        const policyKeys = scope === 'device' && POLICY_PROTOCOLS.indexOf(key) >= 0 ? ROUTE_POLICY_KEYS.slice() : [];
+        const allowed = own.map((p) => p.key).concat(scope === 'device' && def.routerId !== 'none' ? [ROUTER_ID_KEY] : [], policyKeys);
         const where: { [k: string]: string } = {};
         for (const p of def.params) {
           if (p.scope === scope) continue;
@@ -1797,6 +1800,7 @@ function readServices(
             if (t !== undefined) rids.push({ svc, text: t, node: pe.value, path: `${spath}.${pk}` });
             return;
           }
+          if (policyKeys.indexOf(pk) >= 0) return;
           const p = own.find((x) => x.key === pk);
           if (!p) return;
           const pv = pe.value;
@@ -1809,6 +1813,7 @@ function readServices(
           if (why) c.error(pv, `${spath}.${pk}`, why);
           else svc.values.set(pk, t.trim());
         });
+        if (policyKeys.length && policyKeys.some((k) => pm.entries.has(k))) svc.policy = readRoutingPolicy(r, c, pm, spath, key, def.label);
       }
     }
     // mandatory parameters: nothing is chosen for the user
@@ -1821,6 +1826,98 @@ function readServices(
     out.push(svc);
   });
   return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * A routing protocol's policy (model/routing-policy.ts): advertised
+ * prefixes, the default route, redistribution and the ordered filters (import,
+ * export). Syntax only; what it does to the routes is the routing
+ * analysis' (and its consistency check's).
+ */
+function readRoutingPolicy(r: Reader, c: Ctx, pm: YMap, spath: string, proto: string, label: string): RoutingPolicy {
+  const out: RoutingPolicy = { redistribute: [], import: [], export: [] };
+  const adv = pm.entries.get('advertise');
+  if (adv) {
+    out.advertise = [];
+    for (const [k, n] of r.list(adv.value, spath + '.advertise').entries()) {
+      const t = n.kind === 'scalar' ? (scalarText(n) || '').trim() : '';
+      if (!parsePrefix(t)) c.error(n, `${spath}.advertise[${k}]`, `"${t}" is no prefix (an advertised prefix is written as 10.1.0.0/16)`);
+      else out.advertise.push(t);
+    }
+  }
+  const dr = pm.entries.get('default_route');
+  if (dr) {
+    const t = dr.value.kind === 'scalar' ? (scalarText(dr.value) || '').trim() : '';
+    if (t === 'always' || t === 'if_installed') out.defaultRoute = t;
+    else c.error(dr.value, spath + '.default_route', `"${t}" is no default-route origination: use always or if_installed`);
+  }
+  const red = pm.entries.get('redistribute');
+  if (red) {
+    for (const [k, n] of r.list(red.value, spath + '.redistribute').entries() as IterableIterator<[number, YNode]>) {
+      const t = n.kind === 'scalar' ? (scalarText(n) || '').trim() : '';
+      if (REDISTRIBUTE_SOURCES.indexOf(t) < 0) c.error(n, `${spath}.redistribute[${k}]`, `"${t}" can't be redistributed: use ${REDISTRIBUTE_SOURCES.join(', ')}`);
+      else if (t === proto) c.error(n, `${spath}.redistribute[${k}]`, `${label} can't redistribute itself`);
+      else if (out.redistribute.indexOf(t) < 0) out.redistribute.push(t);
+    }
+  }
+  for (const dir of ['import', 'export'] as const) {
+    const ln = pm.entries.get(dir);
+    if (!ln) continue;
+    if (dir === 'export' && LINK_STATE.indexOf(proto) >= 0) {
+      c.error(ln.value, `${spath}.export`, `${label} floods what it learns: it has no export filter (its "import:" filter decides what a router installs; redistribution decides what enters it)`);
+      continue;
+    }
+    const items = r.list(ln.value, `${spath}.${dir}`);
+    items.forEach((n, k) => {
+      const rp = `${spath}.${dir}[${k}]`;
+      const rm = r.map(n, rp);
+      if (!rm) return;
+      r.keys(rm, ROUTE_RULE_KEYS.slice(), rp);
+      const action = r.field(rm, 'action', rp, 10);
+      if (action !== 'permit' && action !== 'deny') {
+        c.error(get(rm, 'action') || rm, rp + '.action', action === undefined ? 'a filter rule needs its action: permit or deny' : `"${action}" is no action: use permit or deny`, get(rm, 'action') ? {} : { key: 'action' });
+        return;
+      }
+      const rule: RouteFilterRule = { action, line: rm.line };
+      const prefix = r.field(rm, 'prefix', rp, 64);
+      if (prefix !== undefined) {
+        const p = parsePrefix(prefix.trim());
+        if (!p) {
+          c.error(get(rm, 'prefix') as YNode, rp + '.prefix', `"${prefix}" is no prefix`);
+          return;
+        }
+        rule.prefix = prefix.trim();
+      }
+      for (const lk of ['ge', 'le'] as const) {
+        const v = r.field(rm, lk, rp, 4);
+        if (v === undefined) continue;
+        const n2 = Number(v);
+        const p = rule.prefix ? parsePrefix(rule.prefix) : null;
+        const max = p && p.version === 6 ? 128 : 32;
+        if (!rule.prefix) c.error(get(rm, lk) as YNode, `${rp}.${lk}`, `${lk} goes with a prefix`);
+        else if (!/^[0-9]+$/.test(v) || n2 < (p as IpPrefix).prefix || n2 > max) c.error(get(rm, lk) as YNode, `${rp}.${lk}`, `${lk} is a prefix length from ${(p as IpPrefix).prefix} to ${max}`);
+        else rule[lk] = n2;
+      }
+      if (rule.ge !== undefined && rule.le !== undefined && rule.ge > rule.le) c.error(get(rm, 'ge') as YNode, rp + '.ge', 'ge is larger than le: the rule matches nothing');
+      const peer = r.field(rm, 'peer', rp, 64);
+      if (peer !== undefined) rule.peer = peer.trim();
+      const lp = r.field(rm, 'local_pref', rp, 12);
+      if (lp !== undefined) {
+        if (proto !== 'bgp' || dir !== 'import') c.error(get(rm, 'local_pref') as YNode, rp + '.local_pref', 'local_pref is set by a BGP rule under `import:` only');
+        else if (!/^[0-9]+$/.test(lp) || Number(lp) > 4294967295) c.error(get(rm, 'local_pref') as YNode, rp + '.local_pref', 'local_pref is a whole number (0–4294967295)');
+        else rule.localPref = Number(lp);
+      }
+      const pre = r.field(rm, 'prepend', rp, 4);
+      if (pre !== undefined) {
+        if (proto !== 'bgp' || dir !== 'export') c.error(get(rm, 'prepend') as YNode, rp + '.prepend', 'prepend is set by a BGP export rule only');
+        else if (!/^[0-9]+$/.test(pre) || Number(pre) < 1 || Number(pre) > 10) c.error(get(rm, 'prepend') as YNode, rp + '.prepend', 'prepend is how many more times the AS is added: 1 to 10');
+        else rule.prepend = Number(pre);
+      }
+      if ((rule.localPref !== undefined || rule.prepend !== undefined) && rule.action === 'deny') c.error(rm, rp, 'a deny rule sets nothing: local_pref and prepend go with permit');
+      out[dir].push(rule);
+    });
+  }
+  return out;
 }
 
 /** A router ID as written: an IPv4 address, or a loopback of the device that has an IPv4 address. */

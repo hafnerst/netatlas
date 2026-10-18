@@ -1,5 +1,6 @@
 /** Validated, typed network model produced from the YAML input. */
 import type { ServiceRegistry } from './services';
+import type { RoutingPolicy } from './routing-policy';
 import type { AppInstance } from './applications';
 import type { Ipv6Method, RaConfig } from './ipv6';
 
@@ -612,6 +613,8 @@ export interface ServiceConfig {
   id: string;
   values: Map<string, string>;
   routerId?: RouterIdValue;
+  /** a routing protocol's policy (model/routing-policy.ts), when one is written */
+  policy?: RoutingPolicy;
   line: number;
 }
 

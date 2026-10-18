@@ -617,7 +617,13 @@ function viaOf(model: Model, e: RibEntry): HopVia {
   if (e.kind === 'connected') return { kind: 'connected', text: `connected network ${prefixText(e.net)}` };
   if (e.kind === 'dynamic') {
     const p = protoLabel(model, e.protocol || '');
-    return { kind: 'dynamic', text: `${p} route ${prefixText(e.net)} over ${e.relation} (cost ${e.metric}, distance ${e.distance})`, relation: e.relation };
+    // where it was originated and how, its BGP attributes, the policy decisions on its way
+    const o = e.origin;
+    // (a plain connected network of the router it was learned from needs no word; anything else is said)
+    const origin = o && (o.how !== 'connected' || o.history.length) ? `; originated by ${o.device} (${o.how === 'redistributed' ? `redistributed out of ${o.from}` : o.how === 'default' ? 'its default route' : o.how === 'advertised' ? 'advertised' : 'connected'}${o.history.length ? ', through ' + o.history.join(' → ') : ''})` : '';
+    const bgp = e.asPath ? `; AS path ${e.asPath.length ? e.asPath.join(' ') : '(empty: own AS)'}, local preference ${e.localPref}` : '';
+    const pol = e.policy && e.policy.length ? `; ${e.policy.join('; ')}` : '';
+    return { kind: 'dynamic', text: `${p} route ${prefixText(e.net)} over ${e.relation} (cost ${e.metric}, distance ${e.distance}${origin}${bgp}${pol})`, relation: e.relation };
   }
   const r = e.route;
   if (!r && e.implicit) return { kind: 'static', text: e.implicit };

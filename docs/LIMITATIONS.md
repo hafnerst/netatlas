@@ -142,13 +142,16 @@ adjacencies that are up.
 
 **Simplifications.**
 
-* **Routes follow the adjacencies, not the protocols' algorithms.** Every
-  router of an adjacency advertises its connected networks and passes on
-  what it learns; static routes are not advertised and nothing is
-  redistributed between protocols. BGP is treated like the other
-  protocols, by hop count unless a `cost` is written. An adjacency forms
-  only where the two have a network in common (a BGP session may also run
-  between loopbacks). An LSU or UPDATE stands for what changed.
+* **Routes follow the adjacencies and a bounded policy, not the protocols'
+  algorithms.** Every router of an adjacency originates its connected
+  networks (or, with a policy, what it advertises, a default route and
+  what it redistributes) and passes on what it learns through the ordered
+  import and export filters; the lowest cost wins (a hop unless a `cost`
+  is written), for BGP first the highest local preference and the
+  shortest AS path. The simulation installs the same routes over the
+  adjacencies that are up. An adjacency forms only where the two have a
+  network in common (a BGP session may also run between loopbacks). An LSU
+  or UPDATE stands for what changed.
 * **Equal-cost paths** are all listed (up to 16), without hashing; beyond
   16 the others' outcome is not known (said so). The return path starts at
   the destination's own address.
@@ -163,12 +166,13 @@ adjacencies that are up.
   default route. A device of type access point, IDS/IPS or cloud, or
   without a type, can't have routes; a gateway is a static default route.
 
-**Not supported.** Route maps, prefix lists, AS paths, BGP path attributes
-(local preference, communities), route reflection, OSPF areas and LSA
-types, summarisation, per-VRF protocol instances, policy-based routing, MPLS
-label forwarding (traffic follows the IP path), and vendor specifics of
-static routes (tracking objects, BFD for static routes, resolution through a
-default route).
+**Not supported.** Route maps beyond the policy subset's matches and sets
+(FORMAT.md, *Routing policy*), communities, MED, route reflection and iBGP
+split horizon, export filters of link-state protocols, OSPF areas and LSA
+types, summarisation of learned routes, per-VRF protocol instances,
+policy-based routing, MPLS label forwarding (traffic follows the IP path),
+and vendor specifics of static routes (tracking objects, BFD for static
+routes, resolution through a default route).
 
 ## Policy, NAT and boundaries
 

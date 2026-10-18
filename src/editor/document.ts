@@ -7,6 +7,7 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
+import { POLICY_PROTOCOLS, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS } from '../model/routing-policy';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
@@ -746,12 +747,14 @@ export class ModelDoc {
     if (devBlock || ifBlock) return Array.from(reg.keys()).sort();
     const devSvc = at(4) && p[2] === 'protocols';
     const ifSvc = p.length === 6 && p[0] === 'devices' && (p[2] === 'interfaces' || p[2] === 'logical_interfaces') && p[4] === 'protocols';
+    // a filter rule of a routing protocol's policy
+    if (p.length === 6 && p[0] === 'devices' && p[2] === 'protocols' && (p[4] === 'import' || p[4] === 'export') && typeof p[5] === 'number') return ROUTE_RULE_KEYS.slice();
     if (!devSvc && !ifSvc) return undefined;
     const def = reg.get(String(p[p.length - 1]));
     if (!def) return undefined;
     return paramsAt(def, devSvc ? 'device' : 'interface')
       .map((x) => x.key)
-      .concat(devSvc ? [ROUTER_ID_KEY] : []);
+      .concat(devSvc ? [ROUTER_ID_KEY] : [], devSvc && POLICY_PROTOCOLS.indexOf(def.id) >= 0 ? ROUTE_POLICY_KEYS : []);
   }
 
   // ------------------------------------------------------ routing services
@@ -1808,6 +1811,14 @@ export class ModelDoc {
     });
   }
 
+  /** Append a filter rule with the action chosen (`{action: permit}`, written in flow style) to an ordered rule list; one undo step. */
+  addRule(listPath: Path, action: string, what = 'rule'): void {
+    this.change('Add ' + what, () => {
+      this.ensureMap(listPath.slice(0, -1), this.orderFor(listPath.slice(0, -2)));
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode([['action', strNode(action)]], true));
+    });
+  }
+
   /** Append an empty value, group or list to a list. */
   pushItem(listPath: Path, kind: 'value' | 'group' | 'list'): void {
     this.change('Add item', () => {
@@ -2141,6 +2152,27 @@ export class ModelDoc {
       return t === `${id}:${iface}`;
     };
     if ((kind === 'device' || kind === 'link' || kind === 'relation' || kind === 'group') && iface === undefined) scalarRefs('failure_domains', 'members', (t) => t === id);
+    if (kind === 'device' && iface === undefined) {
+      // a routing policy's filter rule that names the device as its peer
+      const devs = this.root.entries.get('devices');
+      if (devs && devs.value.kind === 'seq') {
+        devs.value.items.forEach((dn, di) => {
+          const pr = dn.kind === 'map' ? dn.entries.get('protocols') : undefined;
+          if (!pr || pr.value.kind !== 'map') return;
+          pr.value.entries.forEach((sv, sid) => {
+            if (sv.value.kind !== 'map') return;
+            for (const dir of ['import', 'export']) {
+              const l = sv.value.entries.get(dir);
+              if (!l || l.value.kind !== 'seq') continue;
+              l.value.items.forEach((rn, k) => {
+                const pe = rn.kind === 'map' ? rn.entries.get('peer') : undefined;
+                if (pe && scalarText(pe.value) === id) out.push(['devices', di, 'protocols', sid, dir, k, 'peer']);
+              });
+            }
+          });
+        });
+      }
+    }
     if (kind === 'device') {
       scalarRefs('expectations', 'from', ends);
       scalarRefs('expectations', 'to', ends);

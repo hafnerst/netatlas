@@ -279,6 +279,51 @@ Bold: mandatory once the protocol is enabled. Rules:
   IP addresses, a list of allowed values, OSPF areas (a number or a dotted
   id), NETs.
 
+#### Routing policy
+
+A routing protocol (BGP, OSPF, IS-IS, EIGRP, RIP) may carry a bounded
+policy in its block. Without one, a device originates every connected
+network into the protocol and accepts every route (as before). The path
+tracer and the simulation apply it alike (one routing computation; the
+simulation over the adjacencies that are up).
+
+```yaml
+- id: hq-rtr1
+  protocols:
+    bgp:
+      asn: 65010
+      advertise: [10.10.0.0/16]          # originate these instead of every connected network
+      default_route: always              # or if_installed: only while the device has a default route
+      redistribute: [static, ospf]       # connected, static, bgp, ospf, isis, eigrp, rip (not itself)
+      export:                            # what it advertises to its neighbours, first match wins
+        - {peer: br1-rtr, prefix: 0.0.0.0/0, action: permit}
+        - {peer: br1-rtr, action: deny}  # br1-rtr gets the default route only
+        - {action: permit}
+      import:                            # what it accepts
+        - {prefix: 10.0.0.0/8, ge: 16, le: 24, action: permit, local_pref: 200}
+        - {action: deny}
+    ospf: {}
+```
+
+| Key | Meaning |
+|---|---|
+| `advertise` | the prefixes the device originates, instead of every connected network; each must exist on the device as a connected network or a static route (a black-hole route anchors a summary), else it is not advertised (`routing-policy` check) |
+| `default_route` | `always`: originate a default route (IPv4, and IPv6 where the device has IPv6 networks); `if_installed`: only while the device has one of its own (a static route, or one another protocol installed) |
+| `redistribute` | other sources the device originates too: `connected`, `static` (routes whose next hop is on a connected network, an exit interface or a black hole), another routing protocol's routes it learned. A route keeps the routing domains it came through (a protocol's connected set of adjacencies) and never re-enters one of them: no redistribution loop |
+| `import`, `export` | ordered rules, the first that matches decides, an implicit deny at the end. `action` (`permit`, `deny`) is required; `prefix` (none: every route) matches a route inside it of exactly its length, or of a length from `ge` to `le`; `peer` limits a rule to one neighbour. BGP: `local_pref` on an import rule, `prepend` (1–10) on an export rule |
+
+Selection: the lowest cost over the adjacencies (`cost`, else a hop); for
+BGP first the highest local preference (100 unless an import rule sets it;
+eBGP resets it), then the shortest AS path; a route whose AS path holds the
+receiver's AS is refused. Export filters apply to BGP, EIGRP and RIP; OSPF
+and IS-IS flood what they learn, so they have no `export` (an error), and
+their `import` decides only what a router installs (the routers behind it
+still learn the route). The hop evidence of Trace path names a route's
+origin, its AS path and local preference, and the rules on its way. Not
+modeled: communities, MED, route reflection and iBGP split horizon,
+summarisation of learned routes, areas, route maps beyond these matches and
+sets.
+
 The [consistency checks](#consistency-checks) read the AS numbers and router
 IDs from the enabled protocols (iBGP or eBGP follows from the two local AS
 numbers; duplicate router IDs are looked for per protocol domain) and
@@ -3322,6 +3367,7 @@ VLANs is routed, not "access in VLAN 1").
 | `vlan-access-trunk` | warning | an access port cabled to a trunk whose native VLAN isn't the access port's VLAN | interfaces: `vlans`, `native` |
 | `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines (VLAN 1, the default VLAN, aside) | interfaces: `vlans`; networks and VLAN interfaces: `vlan` |
 | `lag-member-vlans` | warning | members of an aggregate whose far ends carry different VLANs (a bundle carries the same VLANs on every member) | logical interfaces: `members`, `vlans`, `native`; interfaces: `vlans`, `native` at the far ends; links |
+| `routing-policy` | warning | a routing policy that names what the model does not have: an advertised prefix the device has no connected network or static route for, a redistributed protocol it does not enable, a filter rule's peer that is no neighbour of the protocol, a filter without a catch-all rule (the implicit deny) | devices: `protocols:` (advertise, redistribute, import, export); interfaces' addresses; routes; the protocol's relations |
 | `link-mtu-mismatch` | warning | different MTUs at the two ends of a cable | interfaces: `mtu`; links |
 | `tunnel-mtu` | warning | a tunnel interface whose MTU plus the encapsulation overhead (table below) is larger than the MTU of its underlay; the message names the overhead assumed and the largest MTU that fits | tunnel interfaces: `mtu`, `source`; the MTU of the source interface, else of the device's ports on the links in `over`; the tunnel relations bound to it and the tunnels they ride on |
 | `link-speed-mismatch` | warning | port speeds that differ between the ends, or from the link's speed | links: `speed`, `a`/`b` `speed` |

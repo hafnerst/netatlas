@@ -786,3 +786,199 @@ test('path MTU: the simulation fragments without DF, drops with DF (Fragmentatio
   assert.equal(s.testRuns()[0].tests[0].ok, true, 'IPv4 without DF: fragmented and delivered');
   assert.ok(s.events().some((e) => /r1 fragments/.test(e.detail)), 'the fragmentation is in the event log');
 });
+
+// ------------------------------------------------------------------ routing policy
+
+const RT = load('analysis/routing.js');
+const IPM = load('model/ip.js');
+const I_ADDR = (t) => IPM.parseAddress(t);
+
+// HQ (AS 65000) with two internal networks, a branch (AS 65100) over eBGP
+const bgpWan = (hqBgp = '{asn: 65000}', brBgp = '{asn: 65100}', hqRoutes = '') => `netatlas: 1
+title: Branch routing policy
+devices:
+  - id: hq
+    type: router
+    protocols:
+      bgp: ${hqBgp}
+    interfaces: [{id: lan1, ip: 10.10.1.1/24}, {id: lan2, ip: 10.10.2.1/24}, {id: wan, ip: 172.16.0.1/30}]${hqRoutes}
+  - id: br
+    type: router
+    protocols:
+      bgp: ${brBgp}
+    interfaces: [{id: lan, ip: 10.20.0.1/24}, {id: wan, ip: 172.16.0.2/30}]
+links:
+  - {id: l-wan, a: hq:wan, b: br:wan}
+relations:
+  - {id: bgp-hq-br, protocol: ebgp, endpoints: [hq, br]}
+`;
+const learned = (m, dev) => RT.ribOf(m, dev, '').filter((e) => e.kind === 'dynamic').map((e) => `${e.net.version === 4 ? e.net.bytes.join('.') : '?'}/${e.net.prefix}`).sort();
+
+test('routing policy: without one, every connected network is advertised (as before)', () => {
+  const m = model(bgpWan());
+  assert.deepEqual(learned(m, 'br'), ['10.10.1.0/24', '10.10.2.0/24']);
+  const e = RT.ribOf(m, 'br', '').find((x) => x.kind === 'dynamic');
+  assert.deepEqual([e.origin.device, e.origin.how, e.asPath, e.localPref], ['hq', 'connected', [65000], 100]);
+});
+
+test('routing policy: a branch gets a default route without every internal prefix (by export at HQ, or by import at the branch)', () => {
+  const byExport = model(bgpWan('\n        asn: 65000\n        default_route: always\n        export:\n          - {peer: br, prefix: 0.0.0.0/0, action: permit}\n          - {peer: br, action: deny}\n          - {action: permit}'));
+  assert.deepEqual(learned(byExport, 'br'), ['0.0.0.0/0']);
+  const d = RT.ribOf(byExport, 'br', '').find((x) => x.kind === 'dynamic');
+  assert.equal(d.origin.how, 'default');
+  assert.deepEqual(d.policy, ['hq export rule 1 (permit 0.0.0.0/0 to br)']);
+  // the branch still reaches HQ's networks, by the default route
+  const dec = RT.lookup(byExport, 'br', '', I_ADDR('10.10.2.5'));
+  assert.equal(dec.kind, 'forward');
+  assert.equal(dec.hops[0].entry.net.prefix, 0);
+  const byImport = model(bgpWan('\n        asn: 65000\n        default_route: always', '\n        asn: 65100\n        import:\n          - {prefix: 0.0.0.0/0, action: permit}\n          - {action: deny}'));
+  assert.deepEqual(learned(byImport, 'br'), ['0.0.0.0/0']);
+  assert.match(RT.ribOf(byImport, 'br', '').find((x) => x.kind === 'dynamic').policy.join(), /br import rule 1 \(permit 0\.0\.0\.0\/0\)/);
+});
+
+test('routing policy: explicit advertisement replaces every connected network; prefix filters with ge/le; the implicit deny', () => {
+  const summary = model(bgpWan('\n        asn: 65000\n        advertise: [10.10.0.0/16]', undefined, '\n    routes: [{prefix: 10.10.0.0/16, blackhole: true}]'));
+  assert.deepEqual(learned(summary, 'br'), ['10.10.0.0/16'], 'the summary only; the /24s are not advertised');
+  assert.equal(RT.ribOf(summary, 'br', '').find((x) => x.kind === 'dynamic').origin.how, 'advertised');
+  // a filter: /24s inside 10.10.0.0/16 permitted from hq up to /24, nothing else (implicit deny)
+  const ge = model(bgpWan('{asn: 65000}', '\n        asn: 65100\n        import:\n          - {prefix: 10.10.0.0/16, ge: 24, le: 24, action: permit, peer: hq}'));
+  assert.deepEqual(learned(ge, 'br'), ['10.10.1.0/24', '10.10.2.0/24']);
+  const deny2 = model(bgpWan('{asn: 65000}', '\n        asn: 65100\n        import:\n          - {prefix: 10.10.2.0/24, action: deny}\n          - {action: permit}'));
+  assert.deepEqual(learned(deny2, 'br'), ['10.10.1.0/24'], 'first match wins');
+  // the consistency check: a missing catch-all, an advertised prefix the device does not have
+  const CK = load('analysis/checks.js');
+  const msgs = (m) => CK.runChecks(m).filter((f) => f.check === 'routing-policy').map((f) => f.message).join(' | ');
+  assert.match(msgs(ge), /br bgp import filter has no catch-all rule/);
+  assert.match(msgs(model(bgpWan('\n        asn: 65000\n        advertise: [10.99.0.0/16]'))), /hq advertises 10\.99\.0\.0\/16 into bgp, but has no connected network or static route 10\.99\.0\.0\/16: it is not advertised/);
+});
+
+test('routing policy: BGP prefers local preference, then the shorter AS path, then the cost; a path with its own AS is refused', () => {
+  // the branch is dual-homed: AS 65001 directly to HQ's network, AS 65002 via another AS; local preference overrides the shorter path
+  const dual = (brImport) => `netatlas: 1
+title: Dual-homed branch
+devices:
+  - id: dst
+    type: router
+    protocols: {bgp: {asn: 65000}}
+    interfaces: [{id: lan, ip: 10.50.0.1/24}, {id: a, ip: 172.16.1.1/30}, {id: b, ip: 172.16.2.1/30}]
+  - id: ispa
+    type: router
+    protocols: {bgp: {asn: 65001}}
+    interfaces: [{id: d, ip: 172.16.1.2/30}, {id: br, ip: 172.16.3.1/30}]
+  - id: mid
+    type: router
+    protocols: {bgp: {asn: 65003}}
+    interfaces: [{id: d, ip: 172.16.2.2/30}, {id: b, ip: 172.16.4.1/30}]
+  - id: ispb
+    type: router
+    protocols: {bgp: {asn: 65002}}
+    interfaces: [{id: m, ip: 172.16.4.2/30}, {id: br, ip: 172.16.5.1/30}]
+  - id: br
+    type: router
+    protocols:
+      bgp:
+        asn: 65100${brImport}
+    interfaces: [{id: a, ip: 172.16.3.2/30}, {id: b, ip: 172.16.5.2/30}]
+links:
+  - {id: l1, a: dst:a, b: ispa:d}
+  - {id: l2, a: dst:b, b: mid:d}
+  - {id: l3, a: mid:b, b: ispb:m}
+  - {id: l4, a: ispa:br, b: br:a}
+  - {id: l5, a: ispb:br, b: br:b}
+relations:
+  - {id: s1, protocol: ebgp, endpoints: [dst, ispa]}
+  - {id: s2, protocol: ebgp, endpoints: [dst, mid]}
+  - {id: s3, protocol: ebgp, endpoints: [mid, ispb]}
+  - {id: s4, protocol: ebgp, endpoints: [ispa, br]}
+  - {id: s5, protocol: ebgp, endpoints: [ispb, br]}
+`;
+  const plain = model(dual(''));
+  const r1 = RT.ribOf(plain, 'br', '').filter((e) => e.kind === 'dynamic' && e.net.bytes[1] === 50);
+  assert.deepEqual(r1.map((e) => [e.peer, e.asPath.join(' ')]), [['ispa', '65001 65000']], 'the shorter AS path');
+  const pref = model(dual('\n        import:\n          - {peer: ispb, action: permit, local_pref: 200}\n          - {action: permit}'));
+  const r2 = RT.ribOf(pref, 'br', '').filter((e) => e.kind === 'dynamic' && e.net.bytes[1] === 50);
+  assert.deepEqual(r2.map((e) => [e.peer, e.localPref, e.asPath.join(' ')]), [['ispb', 200, '65002 65003 65000']], 'local preference first');
+  // the hop evidence names the origin, the AS path and the rule
+  const T = load('analysis/trace.js');
+  const t = T.tracePath(pref, { from: 'br', to: '10.50.0.1' });
+  assert.match(t.paths[0].hops[0].via.text, /BGP route 10\.50\.0\.0\/24 over s5 \(cost 3, distance 20; AS path 65002 65003 65000, local preference 200; br import rule 1 \(permit any route from ispb, local-pref 200\)/);
+  // a prepend makes a path longer
+  const pre = model(dual('').replace("    protocols: {bgp: {asn: 65001}}", "    protocols:\n      bgp:\n        asn: 65001\n        export:\n          - {peer: br, action: permit, prepend: 3}\n          - {action: permit}"));
+  const r3 = RT.ribOf(pre, 'br', '').filter((e) => e.kind === 'dynamic' && e.net.bytes[1] === 50);
+  assert.deepEqual(r3.map((e) => e.peer), ['ispb'], 'four times 65001 is longer than 65002 65003');
+});
+
+test('routing policy: redistribution between protocols keeps its origin history (no loop back); validation of the subset', () => {
+  // R1 and R2 run OSPF between them and RIP to their own sides, each redistributing both ways
+  const red = `netatlas: 1
+title: Mutual redistribution
+devices:
+  - id: rip-a
+    type: router
+    protocols: {rip: {}}
+    interfaces: [{id: lan, ip: 10.1.0.1/24}, {id: u, ip: 10.0.1.1/30}]
+  - id: r1
+    type: router
+    router_id: 1.1.1.1
+    protocols:
+      rip:
+        redistribute: [ospf]
+      ospf:
+        redistribute: [rip]
+    interfaces: [{id: d, ip: 10.0.1.2/30}, {id: o, ip: 10.0.9.1/30}]
+  - id: r2
+    type: router
+    router_id: 2.2.2.2
+    protocols:
+      rip:
+        redistribute: [ospf]
+      ospf:
+        redistribute: [rip]
+    interfaces: [{id: o, ip: 10.0.9.2/30}, {id: d, ip: 10.0.2.1/30}]
+  - id: rip-b
+    type: router
+    protocols: {rip: {}}
+    interfaces: [{id: u, ip: 10.0.2.2/30}, {id: lan, ip: 10.2.0.1/24}]
+links:
+  - {id: l1, a: rip-a:u, b: r1:d}
+  - {id: l2, a: r1:o, b: r2:o}
+  - {id: l3, a: r2:d, b: rip-b:u}
+relations:
+  - {id: rip1, protocol: rip, endpoints: [rip-a, r1]}
+  - {id: ospf12, protocol: ospf, endpoints: [r1, r2]}
+  - {id: rip2, protocol: rip, endpoints: [r2, rip-b]}
+`;
+  const m = model(red);
+  // rip-a's LAN reaches rip-b through OSPF, redistributed at both ends
+  const atB = RT.ribOf(m, 'rip-b', '').find((e) => e.kind === 'dynamic' && e.net.bytes[1] === 1 && e.net.prefix === 24);
+  assert.ok(atB, 'learned');
+  assert.deepEqual(atB.origin.history, ['rip@r1', 'ospf@r1'], 'its way: rip-a’s RIP domain, then OSPF, then rip-b’s RIP domain (another one) at r2');
+  // never back into a domain it came through: r2 does not take rip-b’s routes back into OSPF once they came from OSPF
+  const atA = RT.ribOf(m, 'rip-a', '').find((e) => e.kind === 'dynamic' && e.net.bytes[1] === 2 && e.net.prefix === 24);
+  assert.deepEqual(atA.origin.history, ['rip@r2', 'ospf@r1']);
+  // r1 never takes it back from OSPF into RIP: its RIP route is the original one, from rip-a
+  const atR1 = RT.ribOf(m, 'r1', '').filter((e) => e.kind === 'dynamic' && e.net.bytes[1] === 1 && e.net.prefix === 24);
+  assert.deepEqual(atR1.map((e) => [e.protocol, e.peer]), [['rip', 'rip-a']]);
+  // validation: an export filter on a link-state protocol, a bad rule, redistributing itself
+  const errs = (y) => validate.loadModel(y).errors.map((e) => e.message).join(' | ');
+  assert.match(errs(red.replace('      ospf:\n        redistribute: [rip]\n    interfaces: [{id: d, ip: 10.0.1.2/30}', '      ospf:\n        export: [{action: deny}]\n    interfaces: [{id: d, ip: 10.0.1.2/30}')), /OSPF floods what it learns: it has no export filter/);
+  assert.match(errs(bgpWan('\n        asn: 65000\n        export: [{prefix: 10.0.0.0/8}]')), /a filter rule needs its action: permit or deny/);
+  assert.match(errs(bgpWan('\n        asn: 65000\n        redistribute: [bgp]')), /BGP can't redistribute itself/);
+  assert.match(errs(bgpWan('\n        asn: 65000\n        import: [{action: permit, prepend: 2}]')), /prepend is set by a BGP export rule only/);
+  assert.match(errs(bgpWan('\n        asn: 65000\n        export: [{prefix: 10.0.0.0/8, ge: 30, le: 24, action: permit}]')), /ge is larger than le/);
+});
+
+test('routing policy: the simulation installs the same routes (one routing computation, its adjacencies as they come up)', () => {
+  const m = model(bgpWan('\n        asn: 65000\n        default_route: always\n        export:\n          - {peer: br, prefix: 0.0.0.0/0, action: permit}\n          - {action: deny}'));
+  const s = new S.Simulation(m);
+  s.runTo(120000);
+  const snap = s.snapshot();
+  const now = RT.ribOf(m, 'br', '', snap.ctx).filter((e) => e.kind === 'dynamic').map((e) => e.net.prefix);
+  assert.deepEqual(now, [0], 'the branch learns the default route only, in the simulation too');
+  // the ED renames a filter's peer with the device
+  const ED = load('editor/document.js');
+  const d = ED.ModelDoc.fromText(bgpWan('\n        asn: 65000\n        export:\n          - {peer: br, action: deny}\n          - {action: permit}'), 'x.yaml', 'file').doc;
+  d.renameEntity('device', d.findEntity('device', 'br').index, 'branch1');
+  const hq = d.result.model.devices.find((x) => x.id === 'hq');
+  assert.equal(hq.services.find((x) => x.id === 'bgp').policy.export[0].peer, 'branch1');
+});
