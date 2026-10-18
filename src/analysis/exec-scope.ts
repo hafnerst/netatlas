@@ -18,7 +18,8 @@
  *   vlan            the devices that carry or are members of a VLAN;
  *   domain          a failure domain's members.
  *
- * What a scope needs to execute faithfully is added and said: the switches
+ * What every scope but the entire model needs to execute faithfully is
+ * added and said: the switches
  * between its routers' adjacencies, the routing domains whose routes its
  * paths use (every router of the protocol's connected adjacencies), the
  * DHCP and DNS providers of its devices that take addresses or names, and
@@ -114,10 +115,11 @@ function closeOver(model: Model, seed: Set<string>, included: Array<{ device: st
   }
   // DHCP and DNS: the providers of the scope's devices (and the devices on their way)
   const deps = serviceDependencies(model).filter((d) => (d.kind === 'dhcp' || d.kind === 'dns') && seed.has(d.consumer));
+  // (the servers first, so a server is named as one, then the devices on the way)
+  for (const d of deps) for (const o of d.options) if (o.provider) add(o.provider, `${d.consumer}’s ${d.kind === 'dhcp' ? 'DHCP server' : 'DNS server'}`);
   for (const d of deps) {
     const st = evaluateDependency(model, d);
     for (const ref of Array.from(st.refs).sort(cmp)) if (ref.indexOf('device:') === 0) add(ref.slice(7), `on the way to ${d.consumer}’s ${d.kind === 'dhcp' ? 'DHCP server' : 'resolver'}`);
-    for (const o of d.options) if (o.provider) add(o.provider, `${d.consumer}’s ${d.kind === 'dhcp' ? 'DHCP server' : 'DNS server'}`);
   }
   // the switches between the scope's routed neighbours: their broadcast domains
   const net = netOf(model);
@@ -136,6 +138,16 @@ function closeOver(model: Model, seed: Set<string>, included: Array<{ device: st
     }
   }
   return out;
+}
+
+/** The routing protocols of the relations that touch a set of devices (their domains are closed over). */
+function protocolsTouching(model: Model, seed: Set<string>): Set<string> {
+  const used = new Set<string>();
+  for (const r of model.relations) {
+    const p = routingProtocol(model, r);
+    if (p && relationDevices(r).some((x) => seed.has(x))) used.add(p);
+  }
+  return used;
 }
 
 /** The boundary and the cut relations of a set of devices. */
@@ -196,12 +208,7 @@ export function dependencyScope(model: Model, device: string): ExecScope {
     for (const ref of Array.from(st.refs).sort(cmp)) if (ref.indexOf('device:') === 0) seed.add(ref.slice(7));
     for (const o of d.options) if (o.provider) seed.add(o.provider);
   }
-  const used = new Set<string>();
-  for (const r of model.relations) {
-    const p = routingProtocol(model, r);
-    if (p && relationDevices(r).some((x) => seed.has(x))) used.add(p);
-  }
-  const devices = closeOver(model, seed, included, used);
+  const devices = closeOver(model, seed, included, protocolsTouching(model, seed));
   return finish(model, 'dependencies', `${EXEC_SCOPE_TEXT.dependencies}: ${device}`, devices, included, []);
 }
 
@@ -219,7 +226,8 @@ export function groupScope(model: Model, group: string): ExecScope {
   }
   const seed = new Set(model.devices.filter((d) => d.group !== undefined && groups.has(d.group)).map((d) => d.id));
   const g = model.index.groups.get(group);
-  return finish(model, 'group', `${EXEC_SCOPE_TEXT.group}: ${g ? g.label || g.id : group}`, seed, [], seed.size ? [] : [`the group ${group} has no devices`]);
+  const included: ExecScope['included'] = [];
+  return finish(model, 'group', `${EXEC_SCOPE_TEXT.group}: ${g ? g.label || g.id : group}`, closeOver(model, seed, included, protocolsTouching(model, seed)), included, seed.size ? [] : [`the group ${group} has no devices`]);
 }
 
 /** The devices that carry or are members of a VLAN (its ports, its VLAN interfaces, the hosts on its access ports). */
@@ -240,7 +248,8 @@ export function vlanScope(model: Model, vlan: number): ExecScope {
       for (const r of dom.reached) seed.add(r.dev);
     }
   }
-  return finish(model, 'vlan', `${EXEC_SCOPE_TEXT.vlan} ${vlan}`, seed, [], seed.size ? [] : [`no device carries VLAN ${vlan}`]);
+  const included: ExecScope['included'] = [];
+  return finish(model, 'vlan', `${EXEC_SCOPE_TEXT.vlan} ${vlan}`, closeOver(model, seed, included, protocolsTouching(model, seed)), included, seed.size ? [] : [`no device carries VLAN ${vlan}`]);
 }
 
 /** A failure domain's members (its devices; a cable's or relation's ends). */
@@ -252,7 +261,8 @@ export function domainScope(model: Model, domain: string): ExecScope {
     const l = r.indexOf('link:') === 0 ? model.index.links.get(r.slice(5)) : undefined;
     if (l) [l.a.device, l.b.device].forEach((d) => seed.add(d));
   }
-  return finish(model, 'domain', `${EXEC_SCOPE_TEXT.domain}: ${domain}`, seed, [], seed.size ? [] : [`the failure domain ${domain} names no device`]);
+  const included: ExecScope['included'] = [];
+  return finish(model, 'domain', `${EXEC_SCOPE_TEXT.domain}: ${domain}`, closeOver(model, seed, included, protocolsTouching(model, seed)), included, seed.size ? [] : [`the failure domain ${domain} names no device`]);
 }
 
 /**
