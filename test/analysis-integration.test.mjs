@@ -1220,9 +1220,9 @@ test('experiments: a clean run on scenario time, actions at the same time applie
   const r = new EX.ExperimentRunner(m, exp, FPR.modelFingerprint(m)).runAll();
   assert.equal(r.state, 'done');
   assert.equal(r.timing, 'scenario');
-  assert.deepEqual(r.actions.map((a) => [a.at, a.action.id || a.action.do, a.ok]), [[10000, 'before', true], [10000, 'ssh', true], [30000, 'fail', true], [40000, 'after', true]]);
-  assert.deepEqual(r.observations.map((o) => [o.obs.of, o.outcome]), [['send', 'met'], ['send', 'met'], ['device', 'met'], ['reach', 'met'], ['send', 'met']], r.observations.map((o) => o.actual).join(' | '));
-  assert.match(r.summary, /^5 observations: 5 met$/);
+  assert.deepEqual(r.actions.map((a) => [a.at, a.action.id || a.action.do, a.state]), [[10000, 'before', 'submitted'], [10000, 'ssh', 'submitted'], [30000, 'fail', 'submitted'], [40000, 'after', 'submitted']]);
+  assert.deepEqual(r.observations.map((o) => [o.obs.of, o.outcome]), [['send', 'satisfied'], ['send', 'satisfied'], ['device', 'satisfied'], ['reach', 'satisfied'], ['send', 'satisfied']], r.observations.map((o) => o.actual).join(' | '));
+  assert.match(r.summary, /^5 observations: 5 satisfied$/);
   // repeatable: a second run from a clean start gives the same result
   const r2 = new EX.ExperimentRunner(m, exp, FPR.modelFingerprint(m)).runAll();
   assert.deepEqual(r2.observations.map((o) => o.actual), r.observations.map((o) => o.actual));
@@ -1241,7 +1241,7 @@ test('experiments: Stop ends a run where it is (what was not reached is said); r
   a.cancel();
   const ra = a.result();
   assert.equal(ra.state, 'stopped');
-  assert.ok(ra.observations.every((o) => o.outcome === 'indeterminate' && /not reached: the run was stopped/.test(o.actual)));
+  assert.ok(ra.observations.every((o) => o.outcome === 'indeterminate' && /not decided: the run was stopped/.test(o.actual)));
   assert.equal(a.step(), true, 'a stopped run does nothing more');
   const rb = b.runAll();
   assert.equal(rb.state, 'done', 'the other runner is unaffected');
@@ -1255,21 +1255,31 @@ test('experiments: a baseline and a changed run compared (the model changed: a p
   const c = EX.compareRuns(base, now);
   assert.equal(c.modelChanged, true);
   const before = c.observations.find((x) => x.obs.target === 'before');
-  assert.deepEqual([before.before.outcome, before.after.outcome], ['met', 'not-met']);
+  assert.deepEqual([before.before.outcome, before.after.outcome], ['satisfied', 'violated']);
   assert.ok(c.diverge, 'the event sequences part');
-  assert.match(c.lines.join('\n'), /^Both runs on scenario time \(the simulated clock\), from a clean start, on different versions of the model\./);
+  assert.match(c.lines.join('\n'), /^Both runs on scenario time \(the simulated clock\), from the experiment's defined start, on different versions of the model\./);
 });
 
 test('experiments: validation, references that follow renames, and a round trip of the section', () => {
   const errs = (y) => validate.loadModel(y).errors.map((e) => e.message).join(' | ');
+  const warns = (y) => validate.loadModel(y).warnings.map((e) => e.message).join(' | ');
   const one = (body) => guardOnly + 'experiments:\n  - id: e\n    name: E\n' + body;
-  assert.match(errs(one('    actions: []\n')), /an experiment needs its duration/);
-  assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 10s, do: stream, target: pc}\n')), /"stream" is no action \(a stream runs on real time and is no experiment action\)/);
-  assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 40s, do: power_off, target: pc}\n')), /40s is after the end of the experiment \(30s\)/);
+  // what is written wrong: an error
+  assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 10s, do: stream, target: pc}\n')), /"stream" is no action/);
+  assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 40s, do: power_off, target: pc}\n')), /action 1 comes at 40 s, after the end of the experiment \(30s\)/);
   assert.match(errs(one('    duration: 30s\n    observe:\n      - {of: device, target: pc, expect: up}\n')), /A device’s state expects on or off/);
   assert.match(errs(one('    duration: 30s\n    params: {warp: 2}\n')), /"warp" is no simulation parameter/);
-  const w = validate.loadModel(one('    duration: 30s\n    actions:\n      - {at: 1s, do: power_off, target: nowhere}\n')).warnings.map((x) => x.message).join(' | ');
-  assert.match(w, /"nowhere" is nothing of the model: this action can't be run/);
+  assert.match(errs(one('    duration: 2x\n')), /"2x" is no duration/);
+  // what is not configured yet, or names nothing: a warning, the step kept, the experiment not runnable
+  const draft = one('    actions:\n      - {at: 1s, do: power_off}\n      - {at: 2s, do: join, target: "pc:eth0"}\n');
+  assert.equal(errs(draft), '', 'a draft is no error');
+  assert.match(warns(draft), /the experiment needs its duration/);
+  assert.match(warns(draft), /action 1 \(Power off\): its target is not configured yet/);
+  assert.match(warns(draft), /action 2 \(Join multicast group\): group is not configured yet/);
+  const de = model(draft).experiments[0];
+  assert.deepEqual(de.actions.map((a) => [a.do, a.target, a.missing.join()]), [['power_off', '', 'target'], ['join', 'pc:eth0', 'group']], 'the steps stay, with what they miss');
+  assert.ok(de.problems.length >= 3 && de.problems.some((p) => /observes nothing/.test(p)));
+  assert.match(warns(one('    duration: 30s\n    actions:\n      - {at: 1s, do: power_off, target: nowhere}\n')), /action 1 \(Power off\): "nowhere" is no device of the model/);
   const ED = load('editor/document.js');
   const d = ED.ModelDoc.fromText(withExperiment, 'x.yaml', 'file').doc;
   assert.equal(d.exportText(), withExperiment, 'written back as it was');
@@ -1391,7 +1401,7 @@ test('experiments: the OT example’s cabinet outage — applications on scenari
   const m = model(readFileSync(join(root, 'examples', 'ot-network.yaml'), 'utf8'));
   const e = m.experiments.find((x) => x.id === 'cabinet-outage');
   const a = new EXR.ExperimentRunner(m, e, FPO.modelFingerprint(m)).runAll();
-  assert.deepEqual(a.observations.map((o) => o.outcome), ['met', 'met', 'met', 'met', 'met'], a.observations.map((o) => o.actual).join(' | '));
+  assert.deepEqual(a.observations.map((o) => o.outcome), ['satisfied', 'satisfied', 'satisfied', 'satisfied', 'satisfied'], a.observations.map((o) => o.actual).join(' | '));
   assert.match(a.observations[4].actual, /^failed: \d+ of \d+ publication rounds sent \(\d+ not: no connection to the broker then\)/);
   const b = new EXR.ExperimentRunner(m, e, FPO.modelFingerprint(m)).runAll();
   const c = EXR.compareRuns(a, b);

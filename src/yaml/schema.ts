@@ -92,9 +92,10 @@ export const SCHEMA = {
   savedView: ['id', 'name', 'view', 'focus', 'devices', 'collapse', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'],
   viewFocus: ['target', 'hops', 'context', 'vlan', 'vrf', 'group'],
   /** a saved experiment (`experiments:`, model/experiments.ts), its actions and observations */
-  experiment: ['id', 'name', 'duration', 'params', 'actions', 'observe', 'description'],
-  expAction: ['id', 'at', 'do', 'target', 'to', 'service', 'group', 'count', 'interval'],
-  expObserve: ['at', 'of', 'target', 'to', 'service', 'group', 'expect'],
+  experiment: ['id', 'name', 'duration', 'settle', 'scope', 'params', 'actions', 'observe', 'description'],
+  expScope: ['group', 'vlan', 'domain', 'device'],
+  expAction: ['id', 'at', 'after', 'do', 'target', 'to', 'service', 'group', 'count', 'interval', 'port', 'size'],
+  expObserve: ['id', 'at', 'after', 'within', 'of', 'target', 'to', 'service', 'group', 'expect'],
   /** a device's network policy (`policy:`, model/net-policy.ts), its rules and zones */
   netPolicy: ['default', 'stateful', 'zones', 'rules'],
   policyRule: ['name', 'action', 'source', 'destination', 'proto', 'sport', 'dport', 'in', 'out', 'from_zone', 'to_zone'],
