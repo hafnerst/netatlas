@@ -7,6 +7,7 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
+import type { PortPlanRow } from '../model/bulk-ports';
 import type { SavedView } from '../model/views';
 import { POLICY_PROTOCOLS, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS } from '../model/routing-policy';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
@@ -1899,6 +1900,46 @@ export class ModelDoc {
       seq.items.push(mapNode(([['id', strNode(id)], ['name', strNode(name)]] as Array<[string, YNode]>).concat(entries)));
       return seq.items.length - 1;
     }, { layout: false });
+  }
+
+  /**
+   * Apply a bulk port plan (model/bulk-ports.ts) to a device's ports: every
+   * row that changes, as one undo step. A port is found by its id; its
+   * VLANs are written as one ID (access) or a flow list with ranges, and its
+   * native set or removed.
+   */
+  applyPortPlan(devIndex: number, rows: PortPlanRow[], what: string): number {
+    const todo = rows.filter((r) => r.write);
+    if (!todo.length) return 0;
+    return this.change(what, () => {
+      const list = this.get(['devices', devIndex, 'interfaces']);
+      if (!list || list.kind !== 'seq') return 0;
+      let n = 0;
+      for (const r of todo) {
+        const k = list.items.findIndex((x) => x.kind === 'map' && scalarText(x.entries.get('id') ? (x.entries.get('id') as { value: YNode }).value : nullNode()) === r.port);
+        if (k < 0) continue;
+        const base: Path = ['devices', devIndex, 'interfaces', k];
+        const w = r.write as { vlans: number[]; native?: number };
+        const order = this.orderFor(base);
+        if (!w.vlans.length) this.removeAt(base.concat('vlans'));
+        else if (w.vlans.length === 1 && w.native === undefined) this.setAt(base.concat('vlans'), numNode(w.vlans[0]), order);
+        else {
+          const items: YNode[] = [];
+          for (let i = 0; i < w.vlans.length; i++) {
+            let j = i;
+            while (j + 1 < w.vlans.length && w.vlans[j + 1] === w.vlans[j] + 1) j++;
+            if (j > i + 1) items.push(strNode(`${w.vlans[i]}-${w.vlans[j]}`));
+            else for (let x = i; x <= j; x++) items.push(numNode(w.vlans[x]));
+            i = j;
+          }
+          this.setAt(base.concat('vlans'), seqNode(items, true), order);
+        }
+        if (w.native !== undefined) this.setAt(base.concat('native'), numNode(w.native), order);
+        else this.removeAt(base.concat('native'));
+        n++;
+      }
+      return n;
+    });
   }
 
   /** Remove a saved view. One undo step. */

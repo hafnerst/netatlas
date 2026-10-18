@@ -12,7 +12,7 @@ import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, d
 import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING } from '../layout/strategies';
 import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
-import { Endpoint, Model } from '../model/types';
+import { Device, Endpoint, Model } from '../model/types';
 import { el, materialize, mount, setPaint } from './dom';
 import { ThemeController, themeButtonText } from './theme';
 import { inlineComputedStyles, resolvedPaint } from './export-style';
@@ -45,6 +45,8 @@ import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { portL2 } from '../model/derive';
 import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
 import { scopeChooser } from './scope-ui';
+import { bulkBody } from './bulk-ui';
+import { planPortEdit } from '../model/bulk-ports';
 import { browseBody } from './browse-ui';
 import { collapsedGroup } from '../model/collapse';
 import { viewsBody } from './views-ui';
@@ -4573,6 +4575,45 @@ export class App {
     this.refreshDesignChecks();
     const b = this.doc.getElementById('dc-add');
     if (b) b.focus();
+    return true;
+  }
+
+  // ------------------------------------------------------------ bulk port edits
+
+  /** The device a bulk port edit works on: the selected device, or the device of the selected interface. */
+  bulkTarget(): string | null {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    if (!s || !sel) return null;
+    const [kind, id] = splitRef(sel);
+    const dev = kind === 'device' ? id : kind === 'iface' ? id.split(':')[0] : '';
+    const d = dev ? s.model.index.devices.get(dev) : undefined;
+    return d && d.interfaces.some((i) => !i.routed) ? d.id : null;
+  }
+
+  /** Bulk edit ports…: one VLAN change on several ports, previewed, applied as one undo step. */
+  openBulkPorts(dev: string | null = this.bulkTarget()): boolean {
+    const s = this.session;
+    const d = this.mdoc;
+    const device = dev && s ? s.model.index.devices.get(dev) : undefined;
+    if (!s || !d || !device) return false;
+    const devIndex = s.model.devices.indexOf(device);
+    const body = bulkBody(this.doc, device, this.editLock(), {
+      plan: (ports, op) => planPortEdit((this.session as Session).model.index.devices.get(device.id) as Device, ports, op),
+      apply: (ports, op) => {
+        const rows = planPortEdit((this.session as Session).model.index.devices.get(device.id) as Device, ports, op);
+        const n = rows.filter((r) => r.write).length;
+        try {
+          d.applyPortPlan(devIndex, rows, `Edit ${n} port${n === 1 ? '' : 's'} of ${device.id}`);
+        } catch (e) {
+          this.refusedEdit(e);
+          return;
+        }
+        this.afterEdit(`${n} port${n === 1 ? '' : 's'} of ${device.id} changed (Ctrl+Z undoes all of it).`);
+        this.closeToolWindow();
+      },
+    });
+    this.openWindow({ id: 'bulk', title: `Bulk edit ports of ${device.id}`, body, width: 640, height: 620, focus: '#bulk-op' });
     return true;
   }
 

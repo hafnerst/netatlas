@@ -1077,6 +1077,8 @@ export class Editor {
     if (kind === 'device') {
       // a guest (a VM, a container): its host is its first field, its location is the host's
       const dtype = doc.text(base.concat('type')) || '';
+      // several ports at once on a device that bridges (the command keeps it in step: the model not locked)
+      if (capabilities({ type: dtype, mode: doc.text(base.concat('mode')) }).l2Forward) w.appendChild(this.e('div', { class: 'helpers grp-collapse' }, [this.e('button', { type: 'button', 'data-command': 'edit.bulk-ports' }, ['Bulk edit ports…'])]));
       const guest = isGuest({ type: dtype });
       g('Identity', [guest ? this.hostField(base, index) : null, this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o), ...this.modelFields(base, index), this.layer3Field(base, index)], 'identity');
       g('Placement', [guest && !doc.get(base.concat('group')) ? this.guestLocationField(base) : this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');

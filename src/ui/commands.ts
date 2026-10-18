@@ -328,6 +328,18 @@ export function buildCommands(): Command[] {
       run: (app) => void app.openStartDialog(),
     },
     {
+      id: 'edit.bulk-ports',
+      label: 'Bulk edit ports…',
+      group: 'Find',
+      keywords: 'bulk edit ports vlan many several access trunk native add remove batch',
+      state: (app) => {
+        if (!app.session) return off('Open or create a model first');
+        if (app.editLock()) return off(app.editLock());
+        return app.bulkTarget() ? on('One VLAN change on several ports of the selected device, previewed, as one undo step') : off('Select a device with ports');
+      },
+      run: (app) => void app.openBulkPorts(),
+    },
+    {
       id: 'find.browse',
       label: 'Applications, VLANs and VRFs…',
       group: 'Find',

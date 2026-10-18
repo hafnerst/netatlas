@@ -1356,3 +1356,29 @@ test('collapsed groups: one box per outermost group; boundary cables and relatio
   assert.equal(m.devices.length, 6, 'the model itself is unchanged');
   assert.equal(CO.collapseGroups(m, new Set()), m);
 });
+
+// ------------------------------------------------------------------ bulk port edits
+
+test('bulk port edit: planned with a preview (before, after, what is left and why), applied as one undo step', () => {
+  const BP = load('model/bulk-ports.js');
+  const ED = load('editor/document.js');
+  const y = 'netatlas: 1\ntitle: Bulk\ndevices:\n  - id: sw\n    type: switch\n    interfaces:\n      - {id: p1, vlans: 10}\n      - {id: p2, vlans: 10}\n      - {id: p3, vlans: [10, 20], native: 10}\n      - {id: p4, vlans: 30}\n';
+  const d = ED.ModelDoc.fromText(y, 'b.yaml', 'file').doc;
+  const sw = d.result.model.index.devices.get('sw');
+  const add = BP.planPortEdit(sw, ['p1', 'p2', 'p3'], { kind: 'add', vlan: 20 });
+  assert.deepEqual(add.map((r) => [r.port, r.before, r.after, r.note || '']), [
+    ['p1', 'access 10', 'trunk 10, 20 (native 10)', ''],
+    ['p2', 'access 10', 'trunk 10, 20 (native 10)', ''],
+    ['p3', 'trunk 10, 20 (native 10)', 'trunk 10, 20 (native 10)', 'already carries VLAN 20'],
+  ], 'an access port keeps its untagged VLAN as the native');
+  const before = d.exportText();
+  assert.equal(d.applyPortPlan(0, add, 'Add VLAN 20 to 3 ports'), 2);
+  assert.match(d.exportText(), /- \{id: p1, vlans: \[10, 20\], native: 10\}\n {6}- \{id: p2, vlans: \[10, 20\], native: 10\}/);
+  d.undo();
+  assert.equal(d.exportText(), before, 'one undo step for every port');
+  const rm = BP.planPortEdit(sw, ['p3', 'p4'], { kind: 'remove', vlan: 10 });
+  assert.deepEqual(rm.map((r) => [r.port, r.after, r.note || '']), [['p3', 'access 20', ''], ['p4', 'access 30', 'does not carry VLAN 10']]);
+  const tr = BP.planPortEdit(sw, ['p4'], { kind: 'trunk', vlans: [30, 31, 32, 33], native: 99 });
+  d.applyPortPlan(0, tr, 'trunk');
+  assert.match(d.exportText(), /- \{id: p4, vlans: \["?30-33"?, 99\], native: 99\}/);
+});

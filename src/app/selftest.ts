@@ -6285,6 +6285,35 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- bulk port edits: one VLAN change on several ports, previewed, one undo step
+    {
+      const bkYaml = 'netatlas: 1\ntitle: Bulk check\ndevices:\n  - id: sw\n    type: switch\n    interfaces:\n      - {id: p1, vlans: 10}\n      - {id: p2, vlans: 10}\n      - {id: p3, vlans: [10, 20], native: 10}\n';
+      app.loadText(bkYaml, 'bulk-check.yaml', 'file');
+      await tick();
+      app.select('device:sw', true);
+      await tick();
+      const btn = q('#side [data-command="edit.bulk-ports"]') as HTMLButtonElement | null;
+      check('a switch’s Inspector offers Bulk edit ports…', !!btn && !btn.disabled);
+      btn!.click();
+      await tick();
+      const before = app.exportText();
+      for (const p of ['p1', 'p2', 'p3']) (q(`#bulk-p-${p}`) as HTMLInputElement).checked = true;
+      q('.bulk-grid')!.dispatchEvent(new Event('change', { bubbles: true }));
+      const vin = q('#bulk-vlan') as HTMLInputElement;
+      vin.value = '20';
+      vin.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const rows = Array.from(doc.querySelectorAll('#bulk-preview tr[data-bulk-row]')).map((r) => r.textContent || '');
+      check('… the preview: each port before and after, the one left as it is says why; nothing changed yet', /Preview: 2 of 3 ports change/.test(q('#bulk-count')!.textContent || '') && rows[0] === 'p1access 10trunk 10, 20 (native 10)' && /unchanged: already carries VLAN 20/.test(rows[2]) && app.exportText() === before, rows.join(' | '));
+      (q('#bulk-apply') as HTMLElement).click();
+      await tick();
+      check('… Apply changes them; one undo step undoes every port', /\{id: p1, vlans: \[10, 20\], native: 10\}/.test(app.exportText()) && app.toolWindow() !== 'bulk');
+      app.undo();
+      await tick();
+      check('… undone at once', app.exportText() === before);
+      app.mdoc!.markSaved();
+    }
+
     // ---- navigation by context: applications, VLANs and VRFs, each with a contextual focus
     {
       const nvYaml = 'netatlas: 1\ntitle: Navigation check\ndevices:\n  - id: r1\n    type: router\n    interfaces: [{id: a, ip: 10.0.0.1/24, vrf: blue}, {id: b, ip: 10.0.1.1/24}]\n  - {id: h1, type: server, interfaces: [{id: e0, ip: 10.0.0.2/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]}\n  - {id: h2, type: endpoint, interfaces: [{id: e0, ip: 10.0.1.2/24}]}\nlinks:\n  - {id: l1, a: "r1:a", b: "h1:e0"}\n  - {id: l2, a: "r1:b", b: "h2:e0"}\n';
