@@ -84,7 +84,8 @@ import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/ty
 import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
 import { compareAddr, formatAddr, inPrefix } from '../ipmath';
-import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
+import { Connected, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
@@ -356,6 +357,8 @@ export class Engine {
     advert(dev: string, l3: L3Iface, target: IpAddr, lladdr: string): void;
     connected(dev: string): Connected[];
     routes(dev: string, vrf: string): RibEntry[];
+    /** the IPv6 addresses the hosts acquired (link-local, SLAAC, DHCPv6) with their state, for analysis snapshots */
+    addresses(): SnapAddr[];
   } | null = null;
   /**
    * PTP (ptp.ts): what a transparent clock sees of the event messages it
@@ -923,6 +926,44 @@ export class Engine {
       leases: (device: string) => this.leaseConnected(device),
       extraRoutes: (device: string, vrf: string) => this.leaseRoutes(device, vrf),
     };
+  }
+
+  /**
+   * The state analysis reads, frozen now for good (analysis/snapshot.ts):
+   * what is up, the adjacencies, the connected networks and default routes
+   * the leases and router advertisements added, and the acquired addresses.
+   * Unlike snapshot(), nothing of it reads the live simulation later.
+   */
+  analysisSnapshot(down: string[]): AnalysisSnapshot {
+    const base = this.snapshot();
+    const conn = new Map<string, Connected[]>();
+    const routes = new Map<string, RibEntry[]>();
+    for (const d of this.model.devices) {
+      const c = this.leaseConnected(d.id);
+      if (c.length) conn.set(d.id, c.map((x) => ({ ...x, net: { ...x.net, bytes: x.net.bytes.slice() }, addr: { ...x.addr, bytes: x.addr.bytes.slice() } })));
+      for (const vrf of deviceVrfs(this.model, d.id)) {
+        const r = this.leaseRoutes(d.id, vrf);
+        if (r.length) routes.set(d.id + '\0' + vrf, r.map((x) => ({ ...x })));
+      }
+    }
+    const addresses: SnapAddr[] = [];
+    for (const l of this.leases.values()) {
+      const s: SnapAddr = { device: l.dev, iface: l.iface, vrf: l.vrf, address: l.addr.text, text: formatAddr(l.addr.addr), version: 4, method: l.kind === 'dhcp' ? 'dhcpv4' : 'link-local', state: 'bound' };
+      if (l.server) s.from = formatAddr(l.server);
+      if (l.kind === 'dhcp') s.validUntil = l.expires;
+      addresses.push(s);
+    }
+    if (this.v6Hook) addresses.push(...this.v6Hook.addresses());
+    const cmpS = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+    addresses.sort((a, b) => cmpS(a.device, b.device) || cmpS(a.iface, b.iface) || a.version - b.version || cmpS(a.text, b.text));
+    const ctx: RoutingCtx = {
+      ...base,
+      leases: (device: string) => conn.get(device) || [],
+      extraRoutes: (device: string, vrf: string) => routes.get(device + '\0' + vrf) || [],
+    };
+    const at = this.now;
+    const key = `${at}|${this.stateVersion}|${this.routingVersion}|${down.join(',')}`;
+    return { at, ctx, addresses, down: down.slice().sort(cmpS), key };
   }
 
   // ------------------------------------------------------------ DHCP leases (the client's side)

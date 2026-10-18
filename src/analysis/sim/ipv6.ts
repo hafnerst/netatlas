@@ -63,6 +63,7 @@ import { DEFAULT_LEASE, inRange } from '../../model/netservices';
 import { deviceInterfaces } from '../../model/types';
 import { compareAddr, formatAddr, inPrefix, networkOf, prefixText } from '../ipmath';
 import { Connected, RibEntry } from '../routing';
+import type { SnapAddr } from '../snapshot';
 import { hashIndex } from './engine';
 import { L3Iface, SimAddr } from './net';
 import { durationText } from './params';
@@ -202,6 +203,7 @@ export class Ipv6Sim {
       advert: (dev, l3, target) => self.heardAdvert(dev, l3, target),
       connected: (dev) => self.connected(dev),
       routes: (dev, vrf) => self.routes(dev, vrf),
+      addresses: () => self.acquired(),
     };
     P.handlers.set('ndp', (dev, l3, msg, pkt) => (pkt && l3 ? this.ndpIn(dev, l3, msg, pkt) : false));
     P.handlers.set('dhcpv6', (dev, l3, msg, pkt) => {
@@ -552,6 +554,31 @@ export class Ipv6Sim {
     const usable = mine.filter((a) => a.state === 'preferred').concat(mine.filter((a) => a.state === 'deprecated'));
     this.e.setV6(h.dev, h.iface, usable.map((a) => a.sa));
     this.e.stateVersion++;
+  }
+
+  /** Every address the hosts acquired, with its kind and state (an analysis snapshot's; see analysis/snapshot.ts). */
+  private acquired(): SnapAddr[] {
+    const out: SnapAddr[] = [];
+    const owners: Array<{ dev: string; iface: string; l3: L3Iface; ll?: V6Addr; addrs: V6Addr[] }> = Array.from(this.hosts.values());
+    for (const r of this.routers.values()) owners.push({ dev: r.dev, iface: r.iface, l3: r.l3, ll: r.ll, addrs: [] });
+    for (const h of owners) {
+      for (const a of (h.ll ? [h.ll] : []).concat(h.addrs)) {
+        const s: SnapAddr = {
+          device: h.dev,
+          iface: h.iface,
+          vrf: h.l3.vrf,
+          address: a.sa.text,
+          text: formatAddr(a.sa.addr),
+          version: 6,
+          method: a.kind === 'link-local' ? 'link-local' : a.kind,
+          state: a.state,
+        };
+        if (a.from) s.from = a.from;
+        if (isFinite(a.validUntil)) s.validUntil = a.validUntil;
+        out.push(s);
+      }
+    }
+    return out;
   }
 
   // ------------------------------------------------------------ routing
