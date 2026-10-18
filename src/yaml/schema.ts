@@ -100,7 +100,7 @@ export const SCHEMA = {
   /** a shared-failure domain: an entry of `failure_domains` */
   failureDomain: ['id', 'label', 'kind', 'members', 'description'],
   /** a saved architecture expectation: an entry of `expectations` */
-  expectation: ['id', 'name', 'expect', 'from', 'to', 'service', 'vrf', 'family', 'enforce', 'boundary', 'failure', 'description'],
+  expectation: ['id', 'name', 'expect', 'from', 'to', 'service', 'vrf', 'family', 'enforce', 'boundary', 'method', 'failure', 'description'],
   /** the presentation-only layout section */
   layout: ['routing', 'physical', 'logical', 'manual'],
 };

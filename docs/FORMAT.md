@@ -2318,6 +2318,7 @@ expectations:
     family: 4                           # optional: 4 or 6, the address family (else the ends' own, or the client application's)
     enforce: boundary                   # blocked, optional: unreachable (the default), policy, boundary
     boundary: ap-b                      # with enforce: boundary: the device that must deny it
+    method: ptp                         # timing, required: ptp, ntp, or either (when either is accepted)
     failure: [basement-power]           # optional: what fails first: devices, cables, relations, device:interface, failure domains
     description: …                      # optional
 ```
@@ -2327,7 +2328,7 @@ expectations:
 | `available` | the communication check is satisfied: addresses, path, policy and listener (under the failure condition, when given) | only some evaluated equal-cost paths reaching is a violation; a path that leaves the model is indeterminate |
 | `blocked` | no evaluated path delivers it | the reason says whether a policy decision blocks it or something else (no route, a missing adjacency), which may not be the intended control |
 | `dependency` | the client application in `from` can use its configured peer or broker | `to` may be left out |
-| `timing` | a compatible PTP source path or NTP upstream exists within the supported analysis | never proof that the clock synchronizes, or of its accuracy |
+| `timing` | by its `method`: a compatible PTP source path (`ptp`), a structurally valid NTP source chain to a modeled reference (`ntp`), or either (`either`: both are evaluated and reported, one is enough) | never proof that the clock synchronizes, or of its accuracy; `to` may name the source the chain must reach. On a simulation snapshot the observed synchronization is added |
 
 A blocked expectation may say how it must be enforced (`enforce`), path by
 path over every evaluated equal-cost path:
@@ -2357,8 +2358,9 @@ states; a dependency expectation without a client application).
 Validation: unknown keys, a missing `name`, `expect` or `from`, an
 unknown `expect`, an unreadable `service`, a `family` other than 4 or 6, an
 `enforce` on anything but a blocked expectation, an unknown `enforce`,
-`enforce: boundary` without `boundary` (or a `boundary` without it), no `to`
-where it is needed and a duplicate id are **errors**; a `boundary` that is no
+`enforce: boundary` without `boundary` (or a `boundary` without it), a timing
+expectation without `method` (or a `method` on any other), no `to` where it
+is needed and a duplicate id are **errors**; a `boundary` that is no
 device of the model is a **warning**; an end or a failure entry that names nothing of
 the model is a **warning** (the expectation evaluates as indeterminate). At
 most 1000 expectations and 64 entries per failure condition. Renaming a

@@ -247,7 +247,12 @@ static timing check finds a compatible source path.
 **Simplifications.** PTP clock states follow the modelled timestamps (a
 model of the servo, not of real oscillators). NTP computes no time: its
 state is modelled, its offsets, jitter and clock filter are not. A static
-timing check establishes a source path, never synchronization or accuracy.
+timing check works by the method asked for (PTP, NTP, or either, both then
+reported): a PTP source path, or an NTP source chain from upstream to
+upstream to a configured reference (a reference's own clock is taken as
+given; a chain is followed for at most 15 hops). It establishes a source
+path or chain, never synchronization or accuracy; a snapshot adds the
+synchronization the simulation observed.
 
 **Not supported.** One-step clocks, peer delay, gPTP / IEEE 802.1AS,
 telecom or power profiles, IPv6 or Layer 2 PTP transport, management

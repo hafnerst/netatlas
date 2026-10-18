@@ -167,5 +167,5 @@ links:
 # claims that the clocks synchronize, or how accurately (the simulation
 # models that).
 expectations:
-  - {id: plc-time, name: The PLC has a PTP source path, expect: timing, from: plc-b}
-  - {id: plc-time-gm-a, name: The PLC keeps a source path without grandmaster A, expect: timing, from: plc-b, failure: [gm-a]}
+  - {id: plc-time, name: The PLC has a PTP source path, expect: timing, from: plc-b, method: ptp}
+  - {id: plc-time-gm-a, name: The PLC keeps a source path without grandmaster A, expect: timing, from: plc-b, method: ptp, failure: [gm-a]}

@@ -87,6 +87,8 @@ export interface ExpectationFields {
   /** blocked: unreachable, policy or boundary */
   enforce?: string;
   boundary?: string;
+  /** timing: ptp, ntp or either */
+  method?: string;
   failure?: string[];
   description?: string;
 }

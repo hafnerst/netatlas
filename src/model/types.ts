@@ -896,6 +896,15 @@ export const EXPECT_KINDS: ReadonlyArray<{ id: ExpectKind; label: string; help: 
   { id: 'timing', label: 'Timing source path must exist', help: 'A compatible NTP or PTP source must be reachable within the supported analysis (not proven synchronization).' },
 ];
 
+/** Which timing method a timing expectation accepts (`method:`): PTP, NTP, or either when either is accepted. */
+export type TimingMethod = 'ptp' | 'ntp' | 'either';
+
+export const TIMING_METHODS: ReadonlyArray<{ id: TimingMethod; label: string }> = [
+  { id: 'ptp', label: 'PTP' },
+  { id: 'ntp', label: 'NTP' },
+  { id: 'either', label: 'PTP or NTP (either is accepted)' },
+];
+
 /** How a blocked expectation must be enforced (`enforce:`): any established prevention, an evaluated policy's denial, or the denial of one selected boundary. */
 export type EnforceKind = 'unreachable' | 'policy' | 'boundary';
 
@@ -928,6 +937,8 @@ export interface Expectation {
   enforce?: EnforceKind;
   /** enforce boundary: the device that must deny it */
   boundary?: string;
+  /** timing: the method accepted (required for a timing expectation) */
+  method?: TimingMethod;
   /** what fails first: devices, cables, relations, interfaces (device:interface), failure domains */
   failure: string[];
   description?: string;

@@ -562,3 +562,122 @@ test('enforcement: evaluated in what-if too; validation; the boundary follows a 
   assert.equal(d.result.model.expectations[0].enforce, 'policy');
   assert.equal(d.result.model.expectations[0].boundary, undefined);
 });
+
+// ------------------------------------------------------------------ timing: method and NTP source chains
+
+// one LAN: an NTP reference, a chain a → ref, b → a, c → b (and an upstream outside the model), a cycle x ⇄ y,
+// a clock with both PTP (receiver) and NTP, a PTP grandmaster
+const ntpLan = `netatlas: 1
+title: NTP chains
+devices:
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}, {id: p6, vlans: 1}, {id: p7, vlans: 1}, {id: p8, vlans: 1}, {id: p9, vlans: 1}]
+  - id: ref
+    type: server
+    services: {ntp: {stratum: 1}}
+    interfaces: [{id: eth0, ip: 10.0.0.1/24}]
+  - id: a
+    type: server
+    services: {ntp: {upstreams: [10.0.0.1]}}
+    interfaces: [{id: eth0, ip: 10.0.0.2/24}]
+  - id: b
+    type: server
+    services: {ntp: {upstreams: [10.0.0.2]}}
+    interfaces: [{id: eth0, ip: 10.0.0.3/24}]
+  - id: c
+    type: server
+    services: {ntp: {upstreams: [203.0.113.5, 10.0.0.3]}}
+    interfaces: [{id: eth0, ip: 10.0.0.4/24}]
+  - id: x
+    type: server
+    services: {ntp: {upstreams: [10.0.0.8]}}
+    interfaces: [{id: eth0, ip: 10.0.0.7/24}]
+  - id: y
+    type: server
+    services: {ntp: {upstreams: [10.0.0.7]}}
+    interfaces: [{id: eth0, ip: 10.0.0.8/24}]
+  - id: ext
+    type: server
+    services: {ntp: {upstreams: [203.0.113.5]}}
+    interfaces: [{id: eth0, ip: 10.0.0.9/24}]
+  - id: both
+    type: server
+    services:
+      ntp: {upstreams: [10.0.0.1]}
+      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: receiver_only}
+    interfaces: [{id: eth0, ip: 10.0.0.10/24}]
+  - id: gm
+    type: server
+    services:
+      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable}
+    interfaces: [{id: eth0, ip: 10.0.0.11/24}]
+links:
+  - {id: l1, a: ref:eth0, b: sw:p1}
+  - {id: l2, a: a:eth0, b: sw:p2}
+  - {id: l3, a: b:eth0, b: sw:p3}
+  - {id: l4, a: c:eth0, b: sw:p4}
+  - {id: l5, a: x:eth0, b: sw:p5}
+  - {id: l6, a: y:eth0, b: sw:p6}
+  - {id: l7, a: ext:eth0, b: sw:p7}
+  - {id: l8, a: both:eth0, b: sw:p8}
+  - {id: l9, a: gm:eth0, b: sw:p9}
+`;
+
+test('timing: an NTP source chain to a modeled reference, alternatives, cycles and upstreams outside the model, said apart', () => {
+  const m = model(ntpLan);
+  const c = TI.ntpSource(m, 'c');
+  assert.equal(c.verdict, 'satisfied');
+  assert.deepEqual(c.chain, ['c', 'b', 'a', 'ref']);
+  assert.match(c.text, /^A structurally valid NTP source chain exists: c → b → a → ref \(a configured reference, stratum 1\); runtime synchronization is not established; accuracy is not evaluated$/);
+  assert.deepEqual(c.ntp.map((x) => [x.upstream, x.state]), [['203.0.113.5', 'external'], ['10.0.0.3', 'root']], 'each upstream with where it ends');
+  assert.deepEqual(c.levels, { upstream: 'satisfied', chain: 'satisfied' });
+  // a cycle without a reference: upstreams reachable, no source chain
+  const x = TI.ntpSource(m, 'x');
+  assert.equal(x.verdict, 'violated');
+  assert.match(x.text, /^No structurally valid NTP source chain: a cycle: x → y → x \(no reference on the way\) \(an upstream is reachable, but that is not a source chain\)$/);
+  assert.deepEqual(x.levels, { upstream: 'satisfied', chain: 'violated' });
+  // only an upstream outside the model: beyond modeled scope, never satisfied
+  assert.equal(TI.ntpSource(m, 'ext').verdict, 'beyond');
+  // the reference itself
+  assert.match(TI.ntpSource(m, 'ref').text, /ref is a configured reference \(stratum 1\)/);
+});
+
+test('timing: the method is explicit (PTP, NTP, either); each configured method is a dependency of its own', () => {
+  const m = model(ntpLan);
+  assert.equal(TI.timingSource(m, 'both', {}, 'ptp').protocol, 'PTP');
+  assert.equal(TI.timingSource(m, 'both', {}, 'ntp').protocol, 'NTP');
+  const either = TI.timingSource(m, 'both', {}, 'either');
+  assert.equal(either.protocol, 'PTP or NTP');
+  assert.equal(either.parts.length, 2, 'both evaluated, both reported');
+  assert.match(either.text, /^PTP: A compatible PTP source path exists.*\. NTP: A structurally valid NTP source chain exists: both → ref/);
+  // NTP is never hidden behind PTP: two dependencies
+  const deps = D.serviceDependencies(m).filter((d) => d.consumer === 'both' && d.kind === 'timing').map((d) => d.key);
+  assert.deepEqual(deps, ['timing-ntp:both', 'timing-ptp:both']);
+  // a method the device is not configured for: unsupported, never the other one instead
+  const onlyPtp = m.devices.find((d) => d.id === 'gm');
+  assert.ok(onlyPtp);
+  const e = E.evaluateExpectation(m, { id: 't', name: 't', expect: 'timing', from: 'gm', method: 'ntp', failure: [], line: 0 });
+  assert.equal(e.verdict, 'unsupported');
+  assert.match(e.reason, /gm has no NTP service: there is no NTP source chain to check/);
+  // validation: a timing expectation needs its method; only a timing expectation has one
+  const errs = (l) => validate.loadModel(ntpLan + 'expectations:\n  - ' + l + '\n').errors.map((x) => x.message).join(' | ');
+  assert.match(errs('{id: t, name: t, expect: timing, from: c}'), /a timing expectation needs its method: ptp, ntp, or either/);
+  assert.match(errs('{id: t, name: t, expect: blocked, from: c, to: a, method: ntp}'), /only a timing expectation has a method/);
+  assert.match(errs('{id: t, name: t, expect: timing, from: c, method: gps}'), /"gps" is no timing method/);
+  const ok = model(ntpLan + 'expectations:\n  - {id: t, name: t, expect: timing, from: c, method: ntp, to: ref}\n');
+  const r = E.evaluateExpectation(ok, ok.expectations[0]);
+  assert.equal(r.verdict, 'satisfied');
+});
+
+test('timing: a snapshot adds the synchronization the simulation observed; accuracy is never evaluated', () => {
+  const m = model(ntpLan);
+  const s = new S.Simulation(m);
+  s.runTo(400000);
+  const snap = s.snapshot();
+  const t = TI.timingSource(m, 'c', snap.ctx, 'ntp', snap);
+  assert.match(t.observed, /^at t = 400\.0 s c is synchronized \(synchronized to 10\.0\.0\.3/);
+  assert.match(t.text, /the snapshot: at t = 400\.0 s c is synchronized .*; accuracy is not evaluated$/);
+  const cyc = TI.timingSource(m, 'x', snap.ctx, 'ntp', snap);
+  assert.match(cyc.observed, /x is not synchronized/);
+});

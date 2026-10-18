@@ -15,7 +15,7 @@ import { snoopingChoice, switchedVlans } from '../../model/snooping';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
-import type { AnalysisSnapshot } from '../snapshot';
+import type { AnalysisSnapshot, SnapTiming } from '../snapshot';
 import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
 import { RealTimeScheduler } from './realtime';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
@@ -707,7 +707,21 @@ export class Simulation {
 
   /** The state now, frozen for analysis (analysis/snapshot.ts): it never changes after this call. */
   snapshot(): AnalysisSnapshot {
-    return this.engine.analysisSnapshot(this.downRefs());
+    const s = this.engine.analysisSnapshot(this.downRefs());
+    // the clocks' observed timing state: the protocol state, never an accuracy
+    const timing: SnapTiming[] = [];
+    for (const [dev, st] of Array.from(this.ntp.devs.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      const src = st.source ? st.upstreams.find((u) => u.addr === st.source) : undefined;
+      const t: SnapTiming = { dev, protocol: 'ntp', synchronized: st.own !== undefined || !!st.source, text: this.ntp.text(dev) };
+      if (src && src.dev) t.source = src.dev;
+      timing.push(t);
+    }
+    for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      const t: SnapTiming = { dev, protocol: 'ptp', synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: c.state + (c.parent ? ` to the grandmaster ${c.parent.gmDev}` : '') };
+      if (c.parent) t.source = c.parent.gmDev;
+      timing.push(t);
+    }
+    return { ...s, timing };
   }
 
   // ------------------------------------------------------------ parameters

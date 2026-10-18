@@ -14,7 +14,7 @@ import { CLASS_TEXT, FindingClass, FindingGroup, PresentedFinding } from '../ana
 import { LAYER_LABEL } from '../analysis/communication';
 import { Verdict, contextText, exportFooter, exportHeader, verdictMark, verdictText } from '../analysis/result';
 import { STOP_LABEL } from '../analysis/trace';
-import { ENFORCE_KINDS, EXPECT_KINDS, Expectation, Model } from '../model/types';
+import { ENFORCE_KINDS, EXPECT_KINDS, Expectation, Model, TIMING_METHODS } from '../model/types';
 import { el } from './dom';
 import { ContextBarActions, ContextBarState, contextBar, limitsDetails, verdictChip } from './analysis-ui';
 
@@ -34,16 +34,18 @@ export interface ExpectForm {
   /** blocked: '' (unreachable), 'unreachable', 'policy' or 'boundary', and the boundary device */
   enforce: string;
   boundary: string;
+  /** timing: '' (not chosen yet), 'ptp', 'ntp' or 'either' */
+  method: string;
   description: string;
   error: string;
 }
 
 export function newExpectForm(): ExpectForm {
-  return { index: -1, name: '', expect: 'available', from: '', to: '', failure: '', service: '', vrf: '', family: '', enforce: '', boundary: '', description: '', error: '' };
+  return { index: -1, name: '', expect: 'available', from: '', to: '', failure: '', service: '', vrf: '', family: '', enforce: '', boundary: '', method: '', description: '', error: '' };
 }
 
 export function formOf(e: Expectation, index: number): ExpectForm {
-  return { index, name: e.name, expect: e.expect, from: e.from, to: e.to || '', failure: e.failure.join(', '), service: e.service || '', vrf: e.vrf || '', family: e.family ? String(e.family) : '', enforce: e.enforce || '', boundary: e.boundary || '', description: e.description || '', error: '' };
+  return { index, name: e.name, expect: e.expect, from: e.from, to: e.to || '', failure: e.failure.join(', '), service: e.service || '', vrf: e.vrf || '', family: e.family ? String(e.family) : '', enforce: e.enforce || '', boundary: e.boundary || '', method: e.method || '', description: e.description || '', error: '' };
 }
 
 /** A finding of the window: as presented, and its index in the Problems list (for Go to). */
@@ -87,7 +89,7 @@ function expectLine(e: Expectation): string {
   const k = EXPECT_KINDS.find((x) => x.id === e.expect);
   const what = k ? k.label.toLowerCase() : e.expect;
   const to = e.to ? ` → ${e.to}` : e.expect === 'timing' ? '' : ' → its configured peer';
-  const enf = e.enforce && e.enforce !== 'unreachable' ? (e.enforce === 'policy' ? ' (denied by policy)' : ` (denied at ${e.boundary || '?'})`) : '';
+  const enf = e.enforce && e.enforce !== 'unreachable' ? (e.enforce === 'policy' ? ' (denied by policy)' : ` (denied at ${e.boundary || '?'})`) : e.method ? ` by ${e.method === 'either' ? 'PTP or NTP' : e.method.toUpperCase()}` : '';
   return `${e.from}${to}${e.service ? ' · ' + e.service : ''}: ${what}${enf}${e.failure.length ? ` after the failure of ${e.failure.join(', ')}` : ''}`;
 }
 
@@ -253,6 +255,16 @@ function formBox(doc: Document, model: Model, f: ExpectForm, act: DesignActions)
   sel.value = f.expect;
   sel.addEventListener('change', () => act.formInput('expect', sel.value));
   grid.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-expect' }, ['Outcome']), sel]));
+  // a timing expectation: the method it accepts (none is chosen for it)
+  if (f.expect === 'timing') {
+    const ms = el(doc, 'select', { id: 'dc-f-method', 'aria-describedby': 'dc-f-method-help' }) as HTMLSelectElement;
+    ms.appendChild(el(doc, 'option', { value: '' }, ['Select…']));
+    for (const k of TIMING_METHODS) ms.appendChild(el(doc, 'option', { value: k.id }, [k.label]));
+    ms.value = f.method;
+    ms.addEventListener('change', () => act.formInput('method', ms.value));
+    grid.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-method' }, ['Method']), ms]));
+    grid.appendChild(el(doc, 'p', { class: 'help tf-help', id: 'dc-f-method-help' }, ['Which timing source is accepted. Either: both are evaluated and reported, and one is enough; no precedence between them is assumed.']));
+  }
   field('from', 'Source', { list: 'dc-ends', placeholder: 'device, interface, address or device/application' });
   field('to', 'Destination', { list: 'dc-ends', placeholder: f.expect === 'timing' ? 'optional: the timing source' : 'device, address, device/application or device/service' });
   field('failure', 'After failure of', { list: 'dc-fail', placeholder: 'optional: failure domain, devices, cables (comma-separated)' });

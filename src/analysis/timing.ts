@@ -12,29 +12,65 @@
  *         when a source-capable ordinary clock of its domain and profile is
  *         on one of its segments, or on a segment a boundary clock of the
  *         domain joins to it (followed over boundary clocks).
- *   NTP   a device with the NTP service and upstreams: one of its upstream
- *         addresses is a device of the model that runs NTP, and the device
- *         reaches it on UDP 123 (a communication check).
+ *   NTP   a device with the NTP service and upstreams: its configured
+ *         source chain, upstream by upstream to a modeled reference (a
+ *         device with a stratum of its own), each hop reachable on UDP 123
+ *         (a communication check: path, policy, listener). The analysis
+ *         says apart: an upstream reachable; a structurally valid chain to
+ *         a root (cycles, a chain without a modeled root, an upstream
+ *         outside the model or without NTP are not); the synchronization a
+ *         simulation snapshot observed; and that accuracy is never
+ *         evaluated. A reachable NTP server is not taken to be
+ *         synchronized.
+ *
+ * The method is explicit (TimingMethod): PTP, NTP, or either when either is
+ * accepted (both are evaluated and both reported). No clock-discipline
+ * precedence and no NTP/PTP bridging is inferred.
  *
  * Pure and deterministic.
  */
 import { PTP_DEFAULTS } from '../model/ptp';
-import { Model } from '../model/types';
+import { Model, TIMING_METHODS, TimingMethod } from '../model/types';
 import { checkCommunication } from './communication';
 import { addressOwner } from './names';
 import { Verdict } from './result';
 import { RoutingCtx } from './routing';
 import { segmentOf } from './scope';
+import type { AnalysisSnapshot } from './snapshot';
+
+export type { TimingMethod };
+export { TIMING_METHODS };
+
+/** One way an NTP client's configured chain goes: an upstream and where following it ends. */
+export interface NtpAlternative {
+  /** the upstream address as configured */
+  upstream: string;
+  /** root: a modeled reference; the others say why the chain is not valid */
+  state: 'root' | 'cycle' | 'no-root' | 'external' | 'no-ntp' | 'unreachable' | 'unknown';
+  /** the devices from the client to where it ends */
+  chain: string[];
+  /** the reference's stratum (root) */
+  stratum?: number;
+  text: string;
+}
 
 export interface TimingCheck {
   verdict: Verdict;
-  /** "PTP", "NTP" */
+  /** "PTP", "NTP", "PTP or NTP" */
   protocol: string;
   text: string;
   /** the source path, clock by clock ("pc1", "bc1", "gm") */
   chain: string[];
   detail: string[];
   refs: string[];
+  /** NTP: each upstream's chain */
+  ntp?: NtpAlternative[];
+  /** NTP: the first hop (an upstream answering on UDP 123) apart from the chain to a root */
+  levels?: { upstream: Verdict; chain: Verdict };
+  /** what a simulation snapshot observed (never an accuracy) */
+  observed?: string;
+  /** either: each method's own check */
+  parts?: TimingCheck[];
 }
 
 interface Clock {
@@ -128,36 +164,131 @@ export function ptpSource(model: Model, dev: string, ctx: RoutingCtx = {}): Timi
   return { verdict: 'violated', protocol: 'PTP', text: `No PTP clock of domain ${me.domain} with a compatible profile is on ${dev}’s segments or behind a boundary clock there`, chain: [dev], detail, refs: ['device:' + dev] };
 }
 
-/** The NTP upstream path of a device (see the module comment), or null when it has no NTP upstreams. */
-export function ntpSource(model: Model, dev: string, ctx?: RoutingCtx): TimingCheck | null {
+/** The NTP configuration of a device: its own stratum (a reference) and its upstreams. */
+function ntpOf(model: Model, dev: string): { stratum?: number; upstreams: string[] } | null {
   const d = model.index.devices.get(dev);
-  const s = d && d.appServices ? d.appServices.get('ntp') : undefined;
-  const ups = s && Array.isArray(s.values.upstreams) ? (s.values.upstreams as string[]) : [];
-  if (!s || !ups.length) return null;
-  const detail: string[] = [];
-  let partial: TimingCheck | null = null;
-  for (const a of ups) {
-    const owner = addressOwner(model, a);
-    if (!owner) {
-      detail.push(`${a}: not an address of the model (outside it: not known)`);
-      continue;
-    }
-    const od = model.index.devices.get(owner);
-    if (!od || !od.appServices || !od.appServices.has('ntp')) {
-      detail.push(`${a} (${owner}) runs no NTP service`);
-      continue;
-    }
-    const c = checkCommunication(model, { from: dev, to: a, service: 'udp/123' }, null, 'Selected endpoints', 1, ctx);
-    detail.push(`${a} (${owner}): ${c.headline}`);
-    if (c.verdict === 'satisfied') return { verdict: 'satisfied', protocol: 'NTP', text: `A compatible NTP source path exists: ${dev} → ${owner} (${a}, UDP 123); synchronization is not established`, chain: [dev, owner], detail, refs: ['device:' + owner] };
-    if (!partial && (c.verdict === 'partial' || c.verdict === 'indeterminate' || c.verdict === 'beyond')) partial = { verdict: c.verdict, protocol: 'NTP', text: `${dev} → ${owner} (${a}): ${c.headline}`, chain: [dev, owner], detail, refs: ['device:' + owner] };
-  }
-  if (partial) return { ...partial, detail };
-  const outside = ups.every((a) => !addressOwner(model, a));
-  return { verdict: outside ? 'beyond' : 'violated', protocol: 'NTP', text: outside ? `${dev}’s NTP upstreams (${ups.join(', ')}) are outside the model` : `No NTP upstream of ${dev} is reachable as an NTP server within the model`, chain: [dev], detail, refs: ['device:' + dev] };
+  const svc = d && d.appServices ? d.appServices.get('ntp') : undefined;
+  if (!svc) return null;
+  return { stratum: typeof svc.values.stratum === 'number' ? (svc.values.stratum as number) : undefined, upstreams: Array.isArray(svc.values.upstreams) ? (svc.values.upstreams as string[]).slice() : [] };
 }
 
-/** The timing source of a device: PTP first, then NTP; null when it has neither. */
-export function timingSource(model: Model, dev: string, ctx: RoutingCtx = {}): TimingCheck | null {
-  return ptpSource(model, dev, ctx) || ntpSource(model, dev, ctx);
+/** At most this many hops are followed up an NTP chain (NTP's stratum ceiling). */
+const NTP_MAX_DEPTH = 15;
+
+/**
+ * Follow a device's configured NTP upstreams (see the module comment): each
+ * upstream's chain to a modeled reference, or why it is none. `path` holds
+ * the devices on the way (a cycle comes back to one of them).
+ */
+function ntpChains(model: Model, dev: string, ctx: RoutingCtx | undefined, path: string[], memo: Map<string, NtpAlternative[]>): NtpAlternative[] {
+  const cfg = ntpOf(model, dev);
+  const out: NtpAlternative[] = [];
+  for (const up of cfg ? cfg.upstreams : []) {
+    const owner = addressOwner(model, up);
+    if (!owner) {
+      out.push({ upstream: up, state: 'external', chain: path.concat([up]), text: `${up}: outside the model (an external or unknown upstream: what it is synchronized to is not modeled)` });
+      continue;
+    }
+    const oc = ntpOf(model, owner);
+    if (!oc) {
+      out.push({ upstream: up, state: 'no-ntp', chain: path.concat([owner]), text: `${up} (${owner}) runs no NTP service` });
+      continue;
+    }
+    const c = checkCommunication(model, { from: dev, to: up, service: 'udp/123' }, null, 'Selected endpoints', 1, ctx);
+    if (c.verdict !== 'satisfied') {
+      out.push({ upstream: up, state: c.verdict === 'indeterminate' || c.verdict === 'beyond' ? 'unknown' : 'unreachable', chain: path.concat([owner]), text: `${dev} → ${owner} (${up}, UDP 123): ${c.headline}` });
+      continue;
+    }
+    if (path.indexOf(owner) >= 0) {
+      out.push({ upstream: up, state: 'cycle', chain: path.concat([owner]), text: `a cycle: ${path.concat([owner]).join(' → ')} (no reference on the way)` });
+      continue;
+    }
+    if (oc.stratum !== undefined) {
+      out.push({ upstream: up, state: 'root', chain: path.concat([owner]), stratum: oc.stratum, text: `${path.concat([owner]).join(' → ')}: ${owner} is a configured reference (stratum ${oc.stratum}, its reference clock taken as given)` });
+      continue;
+    }
+    if (!oc.upstreams.length || path.length >= NTP_MAX_DEPTH) {
+      out.push({ upstream: up, state: 'no-root', chain: path.concat([owner]), text: `${owner} has ${oc.upstreams.length ? 'more than ' + NTP_MAX_DEPTH + ' hops above it' : 'no upstreams and no stratum of its own'}: the chain has no modeled reference` });
+      continue;
+    }
+    // further up: the best way from the upstream (a root first)
+    const key = owner + '|' + path.join('>');
+    const sub = memo.get(key) || ntpChains(model, owner, ctx, path.concat([owner]), memo);
+    memo.set(key, sub);
+    const best = sub.find((x) => x.state === 'root') || sub.find((x) => x.state === 'unknown') || sub.find((x) => x.state === 'external') || sub[0];
+    if (!best) {
+      out.push({ upstream: up, state: 'no-root', chain: path.concat([owner]), text: `${owner}'s upstreams lead nowhere` });
+      continue;
+    }
+    out.push({ upstream: up, state: best.state, chain: best.chain, stratum: best.stratum, text: best.text });
+  }
+  return out;
+}
+
+/** The NTP source chain of a device (see the module comment), or null when it has no NTP service. */
+export function ntpSource(model: Model, dev: string, ctx?: RoutingCtx, snap?: AnalysisSnapshot | null): TimingCheck | null {
+  const cfg = ntpOf(model, dev);
+  if (!cfg) return null;
+  const observed = observedOf(snap, dev, 'ntp');
+  if (!cfg.upstreams.length) {
+    if (cfg.stratum === undefined) return null;
+    return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
+  }
+  const alts = ntpChains(model, dev, ctx, [dev], new Map());
+  const roots = alts.filter((x) => x.state === 'root');
+  const first = alts.filter((x) => x.state !== 'external' && x.state !== 'no-ntp' && x.state !== 'unreachable' && x.state !== 'unknown');
+  const upstream: Verdict = first.length ? 'satisfied' : alts.some((x) => x.state === 'unknown') ? 'indeterminate' : alts.every((x) => x.state === 'external') ? 'beyond' : 'violated';
+  const detail = alts.map((x) => `${x.upstream}: ${x.text}`);
+  detail.push('Accuracy is not evaluated: offsets, jitter and the clock filter are not modeled.');
+  const refs = Array.from(new Set(alts.flatMap((x) => x.chain).filter((d) => model.index.devices.has(d)))).map((d) => 'device:' + d);
+  const base = { protocol: 'NTP', detail, refs, ntp: alts, observed };
+  if (roots.length) {
+    const r = roots[0];
+    const more = roots.length > 1 ? `; ${roots.length - 1} alternative root${roots.length === 2 ? '' : 's'} (${roots.slice(1).map((x) => x.chain[x.chain.length - 1]).join(', ')})` : '';
+    return { ...base, verdict: 'satisfied', text: `A structurally valid NTP source chain exists: ${r.chain.join(' → ')} (a configured reference, stratum ${r.stratum})${more}; ${observed ? 'the snapshot: ' + observed : 'runtime synchronization is not established'}; accuracy is not evaluated`, chain: r.chain, levels: { upstream, chain: 'satisfied' } };
+  }
+  const why = alts.find((x) => x.state === 'cycle') || alts.find((x) => x.state === 'no-root') || alts.find((x) => x.state === 'unreachable') || alts.find((x) => x.state === 'no-ntp');
+  if (alts.some((x) => x.state === 'unknown')) {
+    const u = alts.find((x) => x.state === 'unknown') as NtpAlternative;
+    return { ...base, verdict: 'indeterminate', text: `The NTP source chain can't be established: ${u.text}`, chain: u.chain, levels: { upstream, chain: 'indeterminate' } };
+  }
+  if (!why && alts.some((x) => x.state === 'external')) {
+    return { ...base, verdict: 'beyond', text: `${dev}'s NTP chain leaves the model (${alts.filter((x) => x.state === 'external').map((x) => x.upstream).join(', ')}): what those upstreams are synchronized to is not modeled`, chain: [dev], levels: { upstream, chain: 'beyond' } };
+  }
+  return { ...base, verdict: 'violated', text: `No structurally valid NTP source chain: ${(why as NtpAlternative).text}${upstream === 'satisfied' ? ' (an upstream is reachable, but that is not a source chain)' : ''}`, chain: (why as NtpAlternative).chain, levels: { upstream, chain: 'violated' } };
+}
+
+/** What a snapshot observed of a device's clock, in words (none without a snapshot or its state). */
+function observedOf(snap: AnalysisSnapshot | null | undefined, dev: string, protocol: 'ntp' | 'ptp'): string | undefined {
+  const t = snap && snap.timing ? snap.timing.find((x) => x.dev === dev && x.protocol === protocol) : undefined;
+  if (!t) return undefined;
+  return `at t = ${((snap as AnalysisSnapshot).at / 1000).toFixed(1)} s ${dev} is ${t.synchronized ? 'synchronized' : 'not synchronized'} (${t.text})`;
+}
+
+/**
+ * The timing source of a device by a method (see the module comment): PTP,
+ * NTP, or either — then both are evaluated and both reported, and the
+ * result is satisfied when one of them is. Null when the device has
+ * neither (or not the one asked for).
+ */
+export function timingSource(model: Model, dev: string, ctx: RoutingCtx = {}, method: TimingMethod = 'either', snap?: AnalysisSnapshot | null): TimingCheck | null {
+  const withObs = (t: TimingCheck | null): TimingCheck | null => {
+    if (t && t.protocol === 'PTP' && !t.observed) {
+      const o = observedOf(snap, dev, 'ptp');
+      if (o) {
+        t.observed = o;
+        if (t.verdict === 'satisfied') t.text = t.text.replace('; synchronization and its accuracy are not established', `; the snapshot: ${o}; accuracy is not evaluated`);
+      }
+    }
+    return t;
+  };
+  if (method === 'ptp') return withObs(ptpSource(model, dev, ctx));
+  if (method === 'ntp') return ntpSource(model, dev, ctx, snap);
+  const p = withObs(ptpSource(model, dev, ctx));
+  const n = ntpSource(model, dev, ctx, snap);
+  if (!p || !n) return p || n;
+  // both configured and either is accepted: both reported, satisfied when one is (no precedence between them is inferred)
+  const rank: Verdict[] = ['satisfied', 'partial', 'indeterminate', 'beyond', 'unsupported', 'violated'];
+  const best = rank.indexOf(p.verdict) <= rank.indexOf(n.verdict) ? p : n;
+  return { ...best, protocol: 'PTP or NTP', text: `${best.protocol}: ${best.text}. ${best === p ? 'NTP' : 'PTP'}: ${(best === p ? n : p).text}`, parts: [p, n], refs: Array.from(new Set(p.refs.concat(n.refs))) };
 }

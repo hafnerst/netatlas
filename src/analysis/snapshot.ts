@@ -44,6 +44,18 @@ export interface SnapAddr {
   validUntil?: number;
 }
 
+/** A clock's timing state observed in a snapshot (the simulation's protocol state; never an accuracy). */
+export interface SnapTiming {
+  dev: string;
+  protocol: 'ntp' | 'ptp';
+  /** NTP: synchronized to an upstream or a reference of its own; PTP: synchronized, or grandmaster */
+  synchronized: boolean;
+  /** the device it takes its time from (NTP: its upstream; PTP: its grandmaster) */
+  source?: string;
+  /** in words: "synchronized to 10.0.0.1 since t = 70 s; serving stratum 3", "slave: acquiring" */
+  text: string;
+}
+
 /** A frozen simulation state. */
 export interface AnalysisSnapshot {
   /** the simulated time it was taken at (ms) */
@@ -56,6 +68,8 @@ export interface AnalysisSnapshot {
   down: string[];
   /** a key of the snapshot (equal keys: the same state) */
   key: string;
+  /** the clocks' observed timing state (NTP and PTP), sorted by device */
+  timing?: SnapTiming[];
 }
 
 /** The acquired addresses of an interface in a snapshot. */

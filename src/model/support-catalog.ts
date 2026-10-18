@@ -61,8 +61,8 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   {
     id: 'timing',
     name: 'Timing source paths',
-    does: 'PTP: a source-capable clock of the domain and profile on the clock’s segments or behind boundary clocks; NTP: an upstream of the model that runs NTP, reachable on UDP 123.',
-    not: 'synchronization and its accuracy (the simulation models the protocol states, not oscillators); clock-discipline precedence between NTP and PTP.',
+    does: 'By the method asked for (PTP, NTP, or either: both reported). PTP: a source-capable clock of the domain and profile on the clock’s VLAN-scoped segments or behind boundary clocks. NTP: the configured source chain, upstream by upstream (each reachable on UDP 123: path, policy, listener) to a configured reference, with cycles, chains without a reference, upstreams outside the model and alternative roots said apart from a merely reachable upstream; a snapshot adds the synchronization the simulation observed.',
+    not: 'accuracy (the simulation models the protocol states, not oscillators or clock discipline); precedence or bridging between NTP and PTP.',
   },
   {
     id: 'snapshot',

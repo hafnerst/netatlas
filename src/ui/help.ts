@@ -266,7 +266,7 @@ const MANUAL: Section[] = [
       'Each row shows its verdict (**Satisfied**, **Violated**, **Indeterminate**, **Unsupported**) and the actual reason: a requirement to block that holds because no route exists says so, as opposed to a policy that blocks it. **Details** shows the layers and, where it stops, the findings that may explain it; **Trace** opens it in Trace path; **Edit** and **Delete** change it.',
       'When several expectations stop at the same place for the same reason, the window says so first: one change there may resolve them.',
     ],
-    notes: ['A timing expectation establishes a compatible source path, never that the clock synchronizes or how accurately. A failure condition is evaluated on the configured model only. Renaming a device, an interface or an application updates the expectations that name it; deleting one lists them first.'],
+    notes: ['A timing expectation names the method it accepts: **PTP**, **NTP**, or **either** (both are evaluated and reported, one is enough; no precedence between them is assumed). PTP needs a compatible source path; NTP a structurally valid source chain from upstream to upstream to a configured reference (a cycle, a chain without a reference or an upstream outside the model is none, however reachable the first upstream is). It never establishes that the clock synchronizes or how accurately; on a simulation snapshot the observed synchronization is added. A failure condition is evaluated on the configured model only. Renaming a device, an interface or an application updates the expectations that name it; deleting one lists them first.'],
   },
   {
     id: 'simulate',

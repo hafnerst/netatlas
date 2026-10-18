@@ -22,9 +22,10 @@
  *                isolation.
  *   dependency   a client application's configured peer or broker is
  *                usable (the same check as available, from the client).
- *   timing       a compatible NTP or PTP source path exists within the
- *                supported analysis; synchronization and accuracy are not
- *                established.
+ *   timing       by the method it accepts (PTP, NTP, or either): a
+ *                compatible PTP source path, or a structurally valid NTP
+ *                source chain to a modeled reference; a snapshot adds the
+ *                synchronization it observed; accuracy is never evaluated.
  *
  * A failure condition (devices, cables, relations, interfaces, failure
  * domains) is applied to the configured model only: combined with a
@@ -110,10 +111,12 @@ export function evaluateExpectation(model: Model, e: Expectation, snap: Analysis
       out.reason = `${dev} itself is part of the failure condition`;
       return out;
     }
-    const t = timingSource(model, dev, ctx || (snap ? snap.ctx : {}));
+    // (the method accepted is the expectation's: none is chosen for it)
+    const method = e.method || 'either';
+    const t = timingSource(model, dev, ctx || (snap ? snap.ctx : {}), method, snap);
     if (!t) {
       out.verdict = 'unsupported';
-      out.reason = `${dev} has no PTP clock and no NTP upstreams: there is no timing dependency to check`;
+      out.reason = method === 'ptp' ? `${dev} has no PTP clock: there is no PTP source to check` : method === 'ntp' ? `${dev} has no NTP service: there is no NTP source chain to check` : `${dev} has no PTP clock and no NTP service: there is no timing dependency to check`;
       return out;
     }
     out.timing = t;

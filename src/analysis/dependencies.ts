@@ -24,7 +24,9 @@
  *                 the supported model: on the client's link only. Losing
  *                 them stops new assignments and renewals; leases already
  *                 given last until they end (the scope's lease time);
- *   NTP, PTP      a device's timing source path (analysis/timing.ts);
+ *   NTP, PTP      a device's timing source path, one per method it is
+ *                 configured for (analysis/timing.ts): a PTP source path,
+ *                 an NTP source chain to a modeled reference;
  *   syslog, AAA   the senders of a syslog collector, the clients of an AAA
  *                 server (the services' own lists).
  *
@@ -86,6 +88,8 @@ export interface ServiceDependency {
   consequence: string;
   /** DHCP: the address family (4: DHCP, 6: DHCPv6) */
   family?: 4 | 6;
+  /** timing: the method (each configured method is a dependency of its own) */
+  method?: 'ptp' | 'ntp';
 }
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -131,7 +135,9 @@ export function serviceDependencies(model: Model): ServiceDependency[] {
     // (a clock that may become the grandmaster is a source, not a dependant: only receivers and boundary clocks depend)
     const ptpOrdinary = !!ptp && (ptp.values.clock === 'boundary' || (ptp.values.clock === 'ordinary' && ptp.values.role === 'receiver_only'));
     const ntpUp = !!ntp && Array.isArray(ntp.values.upstreams) && (ntp.values.upstreams as string[]).length > 0;
-    if (ptpOrdinary || ntpUp) out.push({ key: `timing:${d.id}`, kind: 'timing', consumer: d.id, consumerRef: 'device:' + d.id, text: `${d.id} takes its time by ${ptpOrdinary ? 'PTP' : 'NTP'}`, options: [{ text: ptpOrdinary ? 'a compatible PTP source' : 'its NTP upstreams' }], consequence: `${d.id} has no compatible timing-source path: its clock is not disciplined (holdover is not modeled)` });
+    // (each method it is configured for is a dependency of its own: NTP is never hidden behind PTP, no precedence between them is inferred)
+    if (ptpOrdinary) out.push({ key: `timing-ptp:${d.id}`, kind: 'timing', method: 'ptp', consumer: d.id, consumerRef: 'device:' + d.id, text: `${d.id} takes its time by PTP`, options: [{ text: 'a compatible PTP source' }], consequence: `${d.id} has no compatible PTP source path: its clock is not disciplined by PTP (holdover is not modeled)` });
+    if (ntpUp) out.push({ key: `timing-ntp:${d.id}`, kind: 'timing', method: 'ntp', consumer: d.id, consumerRef: 'device:' + d.id, text: `${d.id} takes its time by NTP`, options: [{ text: 'its NTP upstreams' }], consequence: `${d.id} has no valid NTP source chain: its clock is not disciplined by NTP` });
     // syslog senders, AAA clients (the services' own lists)
     const log = svc ? svc.get('syslog') : undefined;
     for (const s of log && Array.isArray(log.values.senders) ? (log.values.senders as string[]) : []) {
@@ -226,7 +232,7 @@ export function evaluateDependency(model: Model, dep: ServiceDependency, ctx: Ro
   if (devDown(dep.consumer)) return { verdict: 'indeterminate', text: `${dep.consumer} itself is down`, refs, consumerDown: true };
   const outcomes: Array<{ v: Verdict; text: string }> = [];
   if (dep.kind === 'timing') {
-    const t = timingSource(model, dep.consumer, ctx);
+    const t = timingSource(model, dep.consumer, ctx, dep.method || 'either');
     if (t) t.refs.forEach((r) => refs.add(r));
     for (const d of t ? t.chain : []) refs.add('device:' + d);
     return { verdict: t ? t.verdict : 'unsupported', via: t && t.verdict === 'satisfied' ? 0 : undefined, text: t ? t.text : 'no timing configuration', refs, way: t ? t.chain.join('<') : undefined };
