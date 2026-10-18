@@ -7,6 +7,9 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
+import type { PortPlanRow } from '../model/bulk-ports';
+import type { SavedView } from '../model/views';
+import { POLICY_PROTOCOLS, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS } from '../model/routing-policy';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
@@ -74,6 +77,25 @@ title: New network
 const MAX_UNDO = 100;
 
 /** An edit was refused: the model is locked (a simulation is on). */
+/** The fields of a saved expectation as the editor writes them (an empty value removes the key; KEY_ORDER puts them in order). */
+export interface ExpectationFields {
+  name?: string;
+  expect?: string;
+  from?: string;
+  to?: string;
+  service?: string;
+  vrf?: string;
+  /** "4" or "6" */
+  family?: string;
+  /** blocked: unreachable, policy or boundary */
+  enforce?: string;
+  boundary?: string;
+  /** timing: ptp, ntp or either */
+  method?: string;
+  failure?: string[];
+  description?: string;
+}
+
 export class EditLocked extends Error {
   constructor(reason: string) {
     super(reason);
@@ -650,6 +672,12 @@ export class ModelDoc {
   /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
   schemaKindOf(path: Path): string | undefined {
     if (path.length === 0) return 'top';
+    // (the analysis sections' entries)
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'experiments') return 'experiment';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'views') return 'savedView';
+    if (path.length === 3 && path[0] === 'views' && path[2] === 'focus') return 'viewFocus';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'expectations') return 'expectation';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'failure_domains') return 'failureDomain';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
     const ik = ifaceSchemaKind(path);
     if (ik) return ik;
@@ -657,6 +685,11 @@ export class ModelDoc {
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
+    if (path.length === 3 && path[0] === 'devices' && path[2] === 'policy') return 'netPolicy';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'experiments' && path[2] === 'actions') return 'expAction';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'experiments' && path[2] === 'observe') return 'expObserve';
+    if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'rules') return 'policyRule';
+    if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'zones') return 'policyZone';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'port_pairs') return 'portPair';
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
@@ -727,12 +760,14 @@ export class ModelDoc {
     if (devBlock || ifBlock) return Array.from(reg.keys()).sort();
     const devSvc = at(4) && p[2] === 'protocols';
     const ifSvc = p.length === 6 && p[0] === 'devices' && (p[2] === 'interfaces' || p[2] === 'logical_interfaces') && p[4] === 'protocols';
+    // a filter rule of a routing protocol's policy
+    if (p.length === 6 && p[0] === 'devices' && p[2] === 'protocols' && (p[4] === 'import' || p[4] === 'export') && typeof p[5] === 'number') return ROUTE_RULE_KEYS.slice();
     if (!devSvc && !ifSvc) return undefined;
     const def = reg.get(String(p[p.length - 1]));
     if (!def) return undefined;
     return paramsAt(def, devSvc ? 'device' : 'interface')
       .map((x) => x.key)
-      .concat(devSvc ? [ROUTER_ID_KEY] : []);
+      .concat(devSvc ? [ROUTER_ID_KEY] : [], devSvc && POLICY_PROTOCOLS.indexOf(def.id) >= 0 ? ROUTE_POLICY_KEYS : []);
   }
 
   // ------------------------------------------------------ routing services
@@ -1630,14 +1665,14 @@ export class ModelDoc {
   // ------------------------------------------------- failure domains and expectations
 
   /** The entries of an analysis section (`failure_domains`, `expectations`): index and id, in file order. */
-  analysisEntries(section: 'failure_domains' | 'expectations'): Array<{ index: number; id: string }> {
+  analysisEntries(section: 'failure_domains' | 'expectations' | 'experiments' | 'views'): Array<{ index: number; id: string }> {
     const s = this.get([section]);
     if (!s || s.kind !== 'seq') return [];
     return s.items.map((_n, i) => ({ index: i, id: this.text([section, i, 'id']) || '' }));
   }
 
   /** An id for a new entry of an analysis section, unique there (failure domains: also among the model's other ids). */
-  private analysisId(section: 'failure_domains' | 'expectations', base: string): string {
+  private analysisId(section: 'failure_domains' | 'expectations' | 'experiments' | 'views', base: string): string {
     const taken = new Set(this.analysisEntries(section).map((e) => e.id));
     if (section === 'failure_domains') this.allIds().forEach((x) => taken.add(x));
     return this.uniqueId(base, taken);
@@ -1719,20 +1754,20 @@ export class ModelDoc {
   }
 
   /** Add an expectation; returns its index. One undo step. */
-  addExpectation(fields: { name: string; expect: string; from: string; to?: string; service?: string; vrf?: string; failure?: string[]; description?: string }): number {
+  addExpectation(fields: ExpectationFields & { name: string; expect: string; from: string }): number {
     return this.change('Add expectation', () => {
       const list = this.ensureSeq(['expectations']);
       const id = this.analysisId('expectations', (fields.name || 'expectation').toLowerCase());
       list.items.push(mapNode([['id', strNode(id)]]));
       const i = list.items.length - 1;
-      this.writeAnalysisFields(['expectations', i], 'expectation', { name: fields.name, expect: fields.expect, from: fields.from, to: fields.to, service: fields.service, vrf: fields.vrf, failure: fields.failure, description: fields.description });
+      this.writeAnalysisFields(['expectations', i], 'expectation', { ...fields });
       return i;
     }, { layout: false });
   }
 
   /** Change an expectation's fields (an empty value removes the key). One undo step. */
-  updateExpectation(index: number, fields: { name?: string; expect?: string; from?: string; to?: string; service?: string; vrf?: string; failure?: string[]; description?: string }): void {
-    this.change('Edit expectation', () => this.writeAnalysisFields(['expectations', index], 'expectation', fields), { layout: false });
+  updateExpectation(index: number, fields: ExpectationFields): void {
+    this.change('Edit expectation', () => this.writeAnalysisFields(['expectations', index], 'expectation', { ...fields }), { layout: false });
   }
 
   /** Remove an expectation. One undo step. */
@@ -1787,6 +1822,142 @@ export class ModelDoc {
       this.ensureMap(listPath.slice(0, -1), this.orderFor(listPath.slice(0, -2)));
       this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode());
     });
+  }
+
+  /** Append a filter rule with the action chosen (`{action: permit}`, written in flow style) to an ordered rule list; one undo step. */
+  addRule(listPath: Path, action: string, what = 'rule'): void {
+    this.change('Add ' + what, () => {
+      this.ensureMap(listPath.slice(0, -1), this.orderFor(listPath.slice(0, -2)));
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode([['action', strNode(action)]], true));
+    });
+  }
+
+  /**
+   * A short list written as comma-separated text (a policy rule's sources,
+   * its interfaces): one item stays a scalar, several a flow list, none
+   * removes the key. One undo step.
+   */
+  setTextList(path: Path, text: string): void {
+    const items = text.split(',').map((x) => x.trim()).filter((x) => x);
+    this.change('Edit ' + this.label(path), () => {
+      if (!items.length) this.removeAt(path);
+      else this.setAt(path, items.length === 1 ? strNode(items[0]) : seqNode(items.map((x) => strNode(x)), true), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** A device's network policy, started with the default action chosen (`policy: {default: …}`); one undo step. */
+  addNetPolicy(devIndex: number, def: 'permit' | 'deny'): void {
+    this.change('Add network policy', () => {
+      this.setAt(['devices', devIndex, 'policy'], mapNode([['default', strNode(def)]]), this.orderFor(['devices', devIndex]));
+    });
+  }
+
+  /** Add an experiment (its name and duration; actions and observations are added to it after); returns its index. One undo step. */
+  addExperiment(name: string, duration: string, steps: { actions?: Array<Array<[string, string]>>; observe?: Array<Array<[string, string]>> } = {}): number {
+    return this.change('Add experiment', () => {
+      const list = this.ensureSeq(['experiments']);
+      const id = this.analysisId('experiments', (name || 'experiment').toLowerCase());
+      const entries: Array<[string, YNode]> = [['id', strNode(id)], ['name', strNode(name)], ['duration', strNode(duration)]];
+      for (const key of ['actions', 'observe'] as const) {
+        const st = steps[key];
+        if (st && st.length) entries.push([key, seqNode(st.map((e) => mapNode(e.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true)))]);
+      }
+      list.items.push(mapNode(entries));
+      return list.items.length - 1;
+    }, { layout: false });
+  }
+
+  /** Append an entry ({key: value, …}, flow style) to an experiment's actions or observations; one undo step. */
+  addListEntry(listPath: Path, entries: Array<[string, string]>, what: string): void {
+    this.change('Add ' + what, () => {
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode(entries.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true));
+    }, { layout: false });
+  }
+
+  /** Save a view (its entries as written: view, focus, filters, options, viewport); one undo step; returns its index. */
+  addView(name: string, v: Omit<SavedView, 'id' | 'name' | 'line'>): number {
+    const list = (xs: string[]): YNode => seqNode(xs.map((x) => strNode(x)), true);
+    const entries: Array<[string, YNode]> = [['view', strNode(v.view)]];
+    if (v.focus) {
+      const f: Array<[string, YNode]> = [['target', strNode(v.focus.target)]];
+      if (v.focus.hops !== undefined) f.push(['hops', numNode(v.focus.hops)]);
+      if (v.focus.context) f.push(['context', strNode(v.focus.context)]);
+      if (v.focus.vlan !== undefined) f.push(['vlan', numNode(v.focus.vlan)]);
+      if (v.focus.vrf) f.push(['vrf', strNode(v.focus.vrf)]);
+      if (v.focus.group) f.push(['group', strNode(v.focus.group)]);
+      entries.push(['focus', mapNode(f, true)]);
+    }
+    if (v.devices) entries.push(['devices', list(v.devices)]);
+    if (v.collapse && v.collapse.length) entries.push(['collapse', list(v.collapse)]);
+    if (v.hideTypes.length) entries.push(['hide_types', list(v.hideTypes)]);
+    if (v.hideProtocols.length) entries.push(['hide_protocols', list(v.hideProtocols)]);
+    const opts = Object.keys(v.options) as Array<keyof SavedView['options']>;
+    if (opts.length) entries.push(['options', mapNode(opts.map((k) => [k, boolNode(v.options[k] as boolean)] as [string, YNode]), true)]);
+    if (v.viewport) entries.push(['viewport', mapNode([['x', numNode(v.viewport.x)], ['y', numNode(v.viewport.y)], ['zoom', numNode(v.viewport.zoom)]], true)]);
+    return this.change('Save view', () => {
+      const seq = this.ensureSeq(['views']);
+      const id = this.analysisId('views', (name || 'view').toLowerCase());
+      seq.items.push(mapNode(([['id', strNode(id)], ['name', strNode(name)]] as Array<[string, YNode]>).concat(entries)));
+      return seq.items.length - 1;
+    }, { layout: false });
+  }
+
+  /**
+   * Apply a bulk port plan (model/bulk-ports.ts) to a device's ports: every
+   * row that changes, as one undo step. A port is found by its id; its
+   * VLANs are written as one ID (access) or a flow list with ranges, and its
+   * native set or removed.
+   */
+  applyPortPlan(devIndex: number, rows: PortPlanRow[], what: string): number {
+    const todo = rows.filter((r) => r.write);
+    if (!todo.length) return 0;
+    return this.change(what, () => {
+      const list = this.get(['devices', devIndex, 'interfaces']);
+      if (!list || list.kind !== 'seq') return 0;
+      let n = 0;
+      for (const r of todo) {
+        const k = list.items.findIndex((x) => x.kind === 'map' && scalarText(x.entries.get('id') ? (x.entries.get('id') as { value: YNode }).value : nullNode()) === r.port);
+        if (k < 0) continue;
+        const base: Path = ['devices', devIndex, 'interfaces', k];
+        const w = r.write as { vlans: number[]; native?: number };
+        const order = this.orderFor(base);
+        if (!w.vlans.length) this.removeAt(base.concat('vlans'));
+        else if (w.vlans.length === 1 && w.native === undefined) this.setAt(base.concat('vlans'), numNode(w.vlans[0]), order);
+        else {
+          const items: YNode[] = [];
+          for (let i = 0; i < w.vlans.length; i++) {
+            let j = i;
+            while (j + 1 < w.vlans.length && w.vlans[j + 1] === w.vlans[j] + 1) j++;
+            if (j > i + 1) items.push(strNode(`${w.vlans[i]}-${w.vlans[j]}`));
+            else for (let x = i; x <= j; x++) items.push(numNode(w.vlans[x]));
+            i = j;
+          }
+          this.setAt(base.concat('vlans'), seqNode(items, true), order);
+        }
+        if (w.native !== undefined) this.setAt(base.concat('native'), numNode(w.native), order);
+        else this.removeAt(base.concat('native'));
+        n++;
+      }
+      return n;
+    });
+  }
+
+  /** Remove a saved view. One undo step. */
+  removeView(index: number): void {
+    this.change('Delete view', () => {
+      this.removeAt(['views', index]);
+      const s = this.get(['views']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['views']);
+    }, { layout: false });
+  }
+
+  /** Remove an experiment. One undo step. */
+  removeExperiment(index: number): void {
+    this.change('Delete experiment', () => {
+      this.removeAt(['experiments', index]);
+      const s = this.get(['experiments']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['experiments']);
+    }, { layout: false });
   }
 
   /** Append an empty value, group or list to a list. */
@@ -2122,11 +2293,102 @@ export class ModelDoc {
       return t === `${id}:${iface}`;
     };
     if ((kind === 'device' || kind === 'link' || kind === 'relation' || kind === 'group') && iface === undefined) scalarRefs('failure_domains', 'members', (t) => t === id);
+    // a network policy: a rule's source and destination (a device, device:interface, a network), its in and out, a zone's interfaces (its own device's)
+    if (kind === 'device' || kind === 'network') {
+      const devs = this.root.entries.get('devices');
+      if (devs && devs.value.kind === 'seq') {
+        devs.value.items.forEach((dn, di) => {
+          const pol = dn.kind === 'map' ? dn.entries.get('policy') : undefined;
+          if (!pol || pol.value.kind !== 'map') return;
+          const own = dn.kind === 'map' && scalarText((dn.entries.get('id') || { value: nullNode() }).value) === id;
+          const scan = (n: YNode | undefined, p: Path, match: (t: string) => boolean): void => {
+            if (!n) return;
+            if (n.kind === 'scalar') {
+              const t = scalarText(n);
+              if (t !== undefined && match(t)) out.push(p);
+            } else if (n.kind === 'seq') n.items.forEach((x, k) => scan(x, p.concat(k), match));
+          };
+          const obj = (t: string): boolean => (kind === 'network' ? t === id : iface === undefined ? t === id || t.split(':')[0] === id : t === `${id}:${iface}`);
+          const rules = pol.value.entries.get('rules');
+          if (rules && rules.value.kind === 'seq') {
+            rules.value.items.forEach((rn, k) => {
+              if (rn.kind !== 'map') return;
+              for (const key of ['source', 'destination']) scan((rn.entries.get(key) || { value: undefined }).value, ['devices', di, 'policy', 'rules', k, key], obj);
+              if (kind === 'device' && own && iface !== undefined) for (const key of ['in', 'out']) scan((rn.entries.get(key) || { value: undefined }).value, ['devices', di, 'policy', 'rules', k, key], (t) => t === iface);
+            });
+          }
+          const zones = pol.value.entries.get('zones');
+          if (kind === 'device' && own && iface !== undefined && zones && zones.value.kind === 'seq') {
+            zones.value.items.forEach((zn, k) => {
+              if (zn.kind === 'map') scan((zn.entries.get('interfaces') || { value: undefined }).value, ['devices', di, 'policy', 'zones', k, 'interfaces'], (t) => t === iface);
+            });
+          }
+        });
+      }
+    }
+    if (kind === 'device' && iface === undefined) {
+      // a routing policy's filter rule that names the device as its peer
+      const devs = this.root.entries.get('devices');
+      if (devs && devs.value.kind === 'seq') {
+        devs.value.items.forEach((dn, di) => {
+          const pr = dn.kind === 'map' ? dn.entries.get('protocols') : undefined;
+          if (!pr || pr.value.kind !== 'map') return;
+          pr.value.entries.forEach((sv, sid) => {
+            if (sv.value.kind !== 'map') return;
+            for (const dir of ['import', 'export']) {
+              const l = sv.value.entries.get(dir);
+              if (!l || l.value.kind !== 'seq') continue;
+              l.value.items.forEach((rn, k) => {
+                const pe = rn.kind === 'map' ? rn.entries.get('peer') : undefined;
+                if (pe && scalarText(pe.value) === id) out.push(['devices', di, 'protocols', sid, dir, k, 'peer']);
+              });
+            }
+          });
+        });
+      }
+    }
     if (kind === 'device') {
       scalarRefs('expectations', 'from', ends);
       scalarRefs('expectations', 'to', ends);
+      if (iface === undefined) scalarRefs('expectations', 'boundary', (t) => t === id);
     }
     if (kind === 'device' || kind === 'link' || kind === 'relation') scalarRefs('expectations', 'failure', (t) => (kind === 'device' ? ends(t) : t === id));
+    // an experiment's actions and observations: their target and destination (an end, a cable, a relation, a failure domain)
+    if (kind === 'device' || kind === 'link' || kind === 'relation') {
+      const ex = this.root.entries.get('experiments');
+      if (ex && ex.value.kind === 'seq') {
+        ex.value.items.forEach((en, i) => {
+          if (en.kind !== 'map') return;
+          for (const list of ['actions', 'observe']) {
+            const l = en.entries.get(list);
+            if (!l || l.value.kind !== 'seq') continue;
+            l.value.items.forEach((st, k) => {
+              if (st.kind !== 'map') return;
+              for (const key of ['target', 'to']) {
+                const v = st.entries.get(key);
+                const t = v ? scalarText(v.value) : undefined;
+                if (t !== undefined && (kind === 'device' ? ends(t) : t === id)) out.push(['experiments', i, list, k, key]);
+              }
+            });
+          }
+        });
+      }
+    }
+    // a saved view: its devices and its focus target
+    const vs = this.root.entries.get('views');
+    if (vs && vs.value.kind === 'seq') {
+      vs.value.items.forEach((en, i) => {
+        if (en.kind !== 'map') return;
+        const dv = en.entries.get('devices');
+        if (kind === 'device' && iface === undefined && dv && dv.value.kind === 'seq') dv.value.items.forEach((x, k) => {
+          if (scalarText(x) === id) out.push(['views', i, 'devices', k]);
+        });
+        const fo = en.entries.get('focus');
+        const tg = fo && fo.value.kind === 'map' ? fo.value.entries.get('target') : undefined;
+        const t = tg ? scalarText(tg.value) : undefined;
+        if (t !== undefined && (kind === 'device' ? ends(t) || t === 'device:' + id : t === id || t === kind + ':' + id)) out.push(['views', i, 'focus', 'target']);
+      });
+    }
     return out;
   }
 
@@ -2142,8 +2404,24 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      const inExpectation = p[0] === 'expectations' && (last === 'from' || last === 'to' || p[p.length - 2] === 'failure' || last === 'failure');
-      if (p[0] === 'failure_domains') {
+      const inExpectation = (p[0] === 'expectations' && (last === 'from' || last === 'to' || last === 'boundary' || p[p.length - 2] === 'failure' || last === 'failure')) || (p[0] === 'experiments' && (last === 'target' || last === 'to'));
+      // a network policy: an object (device, device:interface, network) in source or destination; an interface of its own device in in, out or a zone
+      const inPolicy = p[0] === 'devices' && p[2] === 'policy';
+      const polKey = inPolicy ? String(typeof last === 'number' ? p[p.length - 2] : last) : '';
+      if (inPolicy && (polKey === 'source' || polKey === 'destination')) {
+        const c = t.indexOf(':');
+        if (c < 0) nt = t === oldId ? newId : t;
+        else nt = (t.slice(0, c) === oldId ? newId : t.slice(0, c)) + ':' + (oldIf !== undefined && t.slice(c + 1) === oldIf ? (newIf as string) : t.slice(c + 1));
+      } else if (inPolicy) {
+        nt = newIf !== undefined ? newIf : t;
+      } else if (p[0] === 'views') {
+        // a view's device, or its focus target (device, device:interface, kind:id)
+        const k = t.indexOf(':');
+        const kinds = ['device', 'network', 'group', 'link', 'relation'];
+        if (k > 0 && kinds.indexOf(t.slice(0, k)) >= 0) nt = t.slice(0, k) + ':' + newId;
+        else if (k > 0) nt = (t.slice(0, k) === oldId ? newId : t.slice(0, k)) + ':' + (oldIf !== undefined && t.slice(k + 1) === oldIf ? (newIf as string) : t.slice(k + 1));
+        else nt = t === oldId ? newId : t;
+      } else if (p[0] === 'failure_domains') {
         // a member: an id of a device, cable, relation or group
         nt = newId;
       } else if (inExpectation) {

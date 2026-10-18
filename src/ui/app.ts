@@ -7,11 +7,12 @@
  */
 import { IPV6_PLACEHOLDER, LEASE_PLACEHOLDER } from '../model/addresses';
 import { ENTITY_KINDS, EditLocked, EntityKind, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
+import type { Path } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING } from '../layout/strategies';
 import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
-import { Endpoint, Model } from '../model/types';
+import { Device, Endpoint, Model } from '../model/types';
 import { el, materialize, mount, setPaint } from './dom';
 import { ThemeController, themeButtonText } from './theme';
 import { inlineComputedStyles, resolvedPaint } from './export-style';
@@ -35,10 +36,25 @@ import { isLayer2Switch, capabilities, ROUTING_PROTOCOL_TYPES } from '../model/c
 import { Issue } from '../validation/validate';
 import { Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { AddressingOverview, addressingOverview } from '../analysis/addressing';
-import { FocusContext, contextFocus, focusContexts, focusSeeds } from '../analysis/focus';
+import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
 import { CommRequest, checkCommunication } from '../analysis/communication';
+import { commIdentity, compareRun, expectationFields, handoffOf, planMatches, staleProblem } from '../analysis/comm-identity';
+import { mtuTestSizes, pathMtu } from '../analysis/mtu';
+import { portL2 } from '../model/derive';
+import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
+import { scopeChooser } from './scope-ui';
+import { bulkBody } from './bulk-ui';
+import { planPortEdit } from '../model/bulk-ports';
+import { browseBody } from './browse-ui';
+import { collapsedGroup } from '../model/collapse';
+import { viewsBody } from './views-ui';
+import { SavedView, viewSummary } from '../model/views';
+import { focusRef } from '../validation/views';
+import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns } from '../analysis/sim/experiment';
+import { ExperimentsView, experimentText, experimentsBody } from './experiments';
+import { EXP_OBSERVE } from '../model/experiments';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
 import { modelFingerprint } from '../model/fingerprint';
@@ -1012,6 +1028,9 @@ export class App {
    */
   select(ref: string | null, reveal = false, detail: SelDetail | null = null): void {
     if (!this.session) return;
+    // a collapsed group's box stands for its group
+    const cg = ref && ref.indexOf('device:') === 0 ? collapsedGroup(ref.slice(7)) : null;
+    if (cg !== null) ref = 'group:' + cg;
     this.session.select(ref);
     this.editor.selectRef(this.session.state.selected);
     this.editor.setDetail(this.session.state.selected ? detail : null);
@@ -2810,11 +2829,13 @@ export class App {
     const color = (p: string): string => lookupProtocol(model.protocols, p.indexOf('custom:') === 0 ? p.slice(7) : p).color;
     const picker = protocolPicker(this.doc, { id: 'sim-pd-protos', entries, shown: new Set(entries.filter((e) => !hidden.has(e.id)).map((e) => e.id)), color });
     const senders = sendersPicker(this.doc, { id: 'sim-pd-senders', model, selected: new Set(this.startSenders()), open: true, diagram: () => this.diagramDevices() });
+    const scopes = this.scopeChoices();
+    const scopeBox = scopeChooser(this.doc, scopes);
     const v = await this.dialog({
       title: 'Start simulation',
       className: 'sim-start-dialog',
       closeButton: true,
-      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged, for the senders chosen.']), picker.el, senders.el, editor.el],
+      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged, for the senders chosen.']), scopeBox.el, picker.el, senders.el, editor.el],
       buttons: [
         { label: 'Cancel', value: 'cancel' },
         { label: 'Start', value: 'start', kind: 'primary' },
@@ -2840,7 +2861,35 @@ export class App {
     this.storeSimSenders(chosen);
     this.storeSimParams(editor.values());
     this.storeSimShown(entries, picked);
-    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values(), senders: model.devices.filter((d) => chosen.has(d.id)).map((d) => d.id) });
+    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values(), senders: model.devices.filter((d) => chosen.has(d.id)).map((d) => d.id), scope: scopeBox.selected() });
+  }
+
+  /**
+   * The execution scopes that apply now (analysis/exec-scope.ts): the
+   * entire model; the communication of the Trace path on screen; the
+   * dependencies of the selected device; the selected group; the VLAN of
+   * the selected VLAN interface or access port; each failure domain. Only
+   * what applies is offered.
+   */
+  scopeChoices(): ExecScope[] {
+    const s = this.session;
+    if (!s) return [];
+    const m = s.model;
+    const out: ExecScope[] = [entireScope(m)];
+    const r = this.traceRun;
+    if (r && !r.check.error && !this.traceOutdated()) out.push(communicationScope(m, r.check));
+    const sel = s.state.selected;
+    const [kind, id] = sel ? splitRef(sel) : ['', ''];
+    if (kind === 'device' && id) out.push(dependencyScope(m, id));
+    if (kind === 'group' && id) out.push(groupScope(m, id));
+    if (kind === 'iface' && id) {
+      const i = m.index.interfaces.get(id);
+      const pl = i ? portL2(m, i.device, i.id) : undefined;
+      const vlan = i && i.type === 'virtual' && i.vlan !== undefined ? i.vlan : pl && pl.kind === 'access' ? pl.untagged : undefined;
+      if (vlan !== undefined) out.push(vlanScope(m, vlan));
+    }
+    for (const d of m.failureDomains) out.push(domainScope(m, d.id));
+    return out;
   }
 
   /**
@@ -3322,6 +3371,12 @@ export class App {
       case 'checks':
         this.renderDesignChecks();
         break;
+      case 'experiments':
+        this.renderExperiments();
+        break;
+      case 'views':
+        this.renderViews();
+        break;
 
     }
   }
@@ -3800,7 +3855,9 @@ export class App {
     const trace: Trace = check.trace || { request: treq, paths: [], truncated: false, error: check.error || check.headline };
     let back: Trace | null = null;
     if (req.back) back = check.reverse ? check.reverse.trace : { request: { from: treq.to, to: treq.from }, paths: [], truncated: false, error: check.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
-    return { req: trace.request, check, trace, back };
+    // the communication's identity: the handoff, the comparison and a saved expectation carry it on (nothing chosen again)
+    const identity = commIdentity(model, check);
+    return { req: trace.request, check, trace, back, identity, handoff: identity ? handoffOf(model, identity) : null, compare: null, mtu: pathMtu(model, check) };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -3837,6 +3894,11 @@ export class App {
     this.renderTraceWindow();
   }
 
+  /** Draw the Trace window again (the check stays as computed). */
+  redrawTrace(): void {
+    this.renderTraceWindow();
+  }
+
   private renderTraceWindow(): void {
     if (this.toolWindow() === 'trace' && this.session) this.replaceWindowBody(this.traceBody());
   }
@@ -3844,9 +3906,9 @@ export class App {
   private traceBody(): HTMLElement {
     const s = this.session as Session;
     const r = this.traceRun;
-    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), canHandoff: !!this.simCtl && !!r && !!r.check.handoff };
+    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock() };
     return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
-      input: (field: 'from' | 'to' | 'vrf' | 'service' | 'back', value: string | boolean) => {
+      input: (field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
         else this.traceForm[field] = String(value);
         if (this.traceError && (field === 'from' || field === 'to')) {
@@ -3872,6 +3934,10 @@ export class App {
       refresh: () => void this.runTrace(true),
       source: (src) => this.setAnalysisSource(src),
       handoff: () => this.traceHandoff(),
+      compare: () => void this.compareTrace(),
+      saveExpectation: () => this.traceToExpectation(),
+      mtuTest: () => void this.traceMtuTest(),
+      experiment: () => void this.traceToExperiment(),
       pick: (field, value) => {
         this.traceForm[field] = value;
         this.runTrace();
@@ -3923,14 +3989,85 @@ export class App {
     return true;
   }
 
-  /** Prepare the same exchange in the running simulation: its Network events form, prefilled; nothing is sent. */
+  /** Why the check on screen can't be prepared in the simulation now ('' it can). */
+  private traceHandoffBlocked(): string {
+    const r = this.traceRun;
+    if (!r || !r.handoff || !r.identity) return 'Nothing to prepare: the check names no source and destination it could resolve';
+    if (!this.simCtl) return 'Start a simulation first (Simulate → Start simulation…)';
+    if (this.traceOutdated()) return 'The model changed since this check: press Refresh first';
+    return staleProblem(this.simCtl.sim.model, r.identity) || '';
+  }
+
+  /** Why there is nothing to compare the check with ('' there is). */
+  private traceCompareBlocked(): string {
+    const r = this.traceRun;
+    if (!r || !r.identity || !r.handoff || r.handoff.kind !== 'send') return 'Only a send of the simulation can be compared';
+    return this.simCtl ? '' : 'No simulation runs';
+  }
+
+  /** Prepare the same exchange in the running simulation: its Network events form, prefilled with the check's own choices; nothing is sent. */
   traceHandoff(): boolean {
     const r = this.traceRun;
-    const h = r ? r.check.handoff : undefined;
-    if (!this.simCtl || !h) return false;
+    const h = r ? r.handoff : undefined;
+    const blocked = this.traceHandoffBlocked();
+    if (!this.simCtl || !h || blocked) {
+      if (blocked) this.toast(blocked + '.');
+      return false;
+    }
     if (h.kind === 'app' && h.app) this.simCtl.appFrom(h.device);
-    else if (h.target) this.simCtl.prefillSend({ from: h.device, via: h.iface, address: h.target, kind: h.proto || 'icmp', port: h.port });
+    else if (h.prefill) this.simCtl.prefillSend(h.prefill);
     this.toast(`${h.text}: prefilled in Network events, not sent.`);
+    return true;
+  }
+
+  /**
+   * Prepare a path MTU test in the simulation: the same send, one byte over
+   * the payload the static path MTU allows, with Don't fragment. Nothing is
+   * sent; what to expect is said.
+   */
+  traceMtuTest(): boolean {
+    const r = this.traceRun;
+    const h = r ? r.handoff : undefined;
+    const sizes = r && r.mtu ? mtuTestSizes(r.mtu) : null;
+    if (!this.simCtl || !r || !h || !h.prefill || !sizes || this.traceHandoffBlocked()) return false;
+    // (a TCP connection segments by the path MTU: the test is an ICMP echo of that payload, as large as a segment's data)
+    const icmp = h.prefill.kind === 'tcp';
+    const pre = { ...h.prefill, kind: icmp ? ('icmp' as const) : h.prefill.kind, port: icmp ? undefined : h.prefill.port, size: icmp && r.mtu ? r.mtu.mtu! - (r.mtu.family === 4 ? 28 : 48) + 1 : sizes.tooBig, df: true };
+    this.simCtl.prefillSend(pre);
+    this.toast(`A send of ${pre.size} bytes with Don’t fragment is prefilled, not sent: one byte over what the static path MTU (${r.mtu ? r.mtu.mtu : '?'}) lets through.`);
+    return true;
+  }
+
+  /** The check beside the simulation's latest send that carries it, with what explains a difference. */
+  compareTrace(): boolean {
+    const r = this.traceRun;
+    if (!r || !r.identity || !this.simCtl || this.traceCompareBlocked()) return false;
+    const id = r.identity;
+    // (the newest send that carries it: testRuns lists the newest first)
+    const run = this.simCtl.sim.testRuns().find((x) => planMatches(id, x.plan));
+    if (!run) {
+      this.toast('Nothing to compare yet: prepare it in the simulation and send it first.');
+      return false;
+    }
+    r.compare = compareRun(r.model, r.check, run, this.simCtl.snapshot());
+    this.renderTraceWindow();
+    const sec = this.doc.getElementById('trace-compare-res');
+    if (sec) {
+      sec.setAttribute('tabindex', '-1');
+      sec.focus();
+    }
+    return true;
+  }
+
+  /** Keep the check on screen as a saved expectation: Design checks with its form prefilled (nothing entered again, nothing saved yet). */
+  traceToExpectation(): boolean {
+    const r = this.traceRun;
+    if (!r || !r.identity || this.editLock()) return false;
+    const f = expectationFields(r.identity);
+    this.dcForm = { ...newExpectForm(), expect: f.expect, from: f.from, to: f.to || '', service: f.service || '', vrf: f.vrf !== undefined ? f.vrf : '', family: f.family ? String(f.family) : '' };
+    this.openDesignChecks();
+    const n = this.doc.getElementById('dc-f-name');
+    if (n) n.focus();
     return true;
   }
 
@@ -4368,14 +4505,18 @@ export class App {
       trace: (id) => {
         const e = s.model.expectations.find((x) => x.id === id);
         if (!e) return;
-        this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', back: false };
+        this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', family: e.family ? String(e.family) : '', back: false };
         this.openTrace();
         this.runTrace();
       },
       formInput: (k, v) => {
         if (!this.dcForm) return;
         (this.dcForm as unknown as { [key: string]: string | number })[k] = v;
-        if (k === 'expect') this.renderDesignChecks();
+        if (k === 'expect' || k === 'enforce' || k === 'method') {
+          this.renderDesignChecks();
+          const back = this.doc.getElementById('dc-f-' + k);
+          if (back) back.focus();
+        }
       },
       formSave: () => this.saveExpectationForm(),
       formCancel: () => {
@@ -4410,15 +4551,17 @@ export class App {
     const d = this.mdoc;
     const s = this.session;
     if (!f || !d || !s) return false;
-    const need = !f.name.trim() ? 'Give the expectation a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : '';
+    const need = !f.name.trim() ? 'Give the expectation a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : f.expect === 'blocked' && f.enforce === 'boundary' && !f.boundary.trim() ? 'Give the boundary: the device that must deny it.' : f.expect === 'timing' && !f.method ? 'Choose the timing method it accepts: PTP, NTP, or either.' : '';
     if (need) {
       f.error = need;
       this.renderDesignChecks();
-      const bad = this.doc.getElementById(!f.name.trim() ? 'dc-f-name' : !f.from.trim() ? 'dc-f-from' : 'dc-f-to');
+      const bad = this.doc.getElementById(!f.name.trim() ? 'dc-f-name' : !f.from.trim() ? 'dc-f-from' : /boundary/.test(need) ? 'dc-f-boundary' : /timing method/.test(need) ? 'dc-f-method' : 'dc-f-to');
       if (bad) bad.focus();
       return false;
     }
-    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
+    // (an enforcement goes with a blocked expectation only, a boundary with enforce: boundary)
+    const blocked = f.expect === 'blocked';
+    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, family: f.family, enforce: blocked ? f.enforce : '', boundary: blocked && f.enforce === 'boundary' ? f.boundary : '', method: f.expect === 'timing' ? f.method : '', failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
     try {
       if (f.index < 0) d.addExpectation(fields);
       else d.updateExpectation(f.index, fields);
@@ -4433,6 +4576,455 @@ export class App {
     const b = this.doc.getElementById('dc-add');
     if (b) b.focus();
     return true;
+  }
+
+  // ------------------------------------------------------------ bulk port edits
+
+  /** The device a bulk port edit works on: the selected device, or the device of the selected interface. */
+  bulkTarget(): string | null {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    if (!s || !sel) return null;
+    const [kind, id] = splitRef(sel);
+    const dev = kind === 'device' ? id : kind === 'iface' ? id.split(':')[0] : '';
+    const d = dev ? s.model.index.devices.get(dev) : undefined;
+    return d && d.interfaces.some((i) => !i.routed) ? d.id : null;
+  }
+
+  /** Bulk edit ports…: one VLAN change on several ports, previewed, applied as one undo step. */
+  openBulkPorts(dev: string | null = this.bulkTarget()): boolean {
+    const s = this.session;
+    const d = this.mdoc;
+    const device = dev && s ? s.model.index.devices.get(dev) : undefined;
+    if (!s || !d || !device) return false;
+    const devIndex = s.model.devices.indexOf(device);
+    const body = bulkBody(this.doc, device, this.editLock(), {
+      plan: (ports, op) => planPortEdit((this.session as Session).model.index.devices.get(device.id) as Device, ports, op),
+      apply: (ports, op) => {
+        const rows = planPortEdit((this.session as Session).model.index.devices.get(device.id) as Device, ports, op);
+        const n = rows.filter((r) => r.write).length;
+        try {
+          d.applyPortPlan(devIndex, rows, `Edit ${n} port${n === 1 ? '' : 's'} of ${device.id}`);
+        } catch (e) {
+          this.refusedEdit(e);
+          return;
+        }
+        this.afterEdit(`${n} port${n === 1 ? '' : 's'} of ${device.id} changed (Ctrl+Z undoes all of it).`);
+        this.closeToolWindow();
+      },
+    });
+    this.openWindow({ id: 'bulk', title: `Bulk edit ports of ${device.id}`, body, width: 640, height: 620, focus: '#bulk-op' });
+    return true;
+  }
+
+  // ------------------------------------------------------------ navigation by context
+
+  /** Find → Applications, VLANs and VRFs…: each with a contextual Focus (configured structure; nothing changes). */
+  openBrowse(): void {
+    const s = this.session;
+    if (!s) return;
+    const focusOn = (ref: string, c: FocusContext): void => {
+      if (s.state.focus) this.exitFocus();
+      this.select(ref, true);
+      if (!this.enterContextFocus(c)) this.toast('That can’t be focused on now.');
+    };
+    const firstDevice = (c: FocusContext): string | null => {
+      const ds = Array.from(contextFocus(s.model, c).devices).filter((x) => x[1] === 0).map((x) => x[0]).sort();
+      return ds.length ? 'device:' + ds[0] : null;
+    };
+    const body = browseBody(this.doc, navigationIndex(s.model), {
+      focusApp: (d) => focusOn('device:' + d, { kind: 'app', device: d }),
+      selectApp: (d) => this.select('device:' + d, true),
+      focusVlan: (v) => {
+        const r = firstDevice({ kind: 'vlan', vlan: v });
+        if (r) focusOn(r, { kind: 'vlan', vlan: v });
+      },
+      focusVrf: (v) => {
+        const r = firstDevice({ kind: 'vrf', vrf: v });
+        if (r) focusOn(r, { kind: 'vrf', vrf: v });
+      },
+    });
+    this.openWindow({ id: 'browse', title: 'Applications, VLANs and VRFs', body, width: 640, height: 560, focus: '#nav-apps summary' });
+  }
+
+  // ------------------------------------------------------------ collapsed groups
+
+  /** The group a collapse or expand acts on: the selected group, or the group of the selected device. */
+  collapseTarget(): string | null {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    if (!s || !sel) return null;
+    const [kind, id] = splitRef(sel);
+    if (kind === 'group') return id;
+    const dev = kind === 'device' ? id : kind === 'iface' ? id.split(':')[0] : '';
+    const d = dev ? s.model.index.devices.get(dev) : undefined;
+    return d && d.group !== undefined ? d.group : null;
+  }
+
+  /**
+   * Draw a group as one box (its connections out of it drawn to the box),
+   * or its devices again: display state only, like a filter (no undo step,
+   * the model and its layout are untouched).
+   */
+  setGroupCollapsed(group: string | null, on: boolean): boolean {
+    const s = this.session;
+    if (!s || group === null || !s.setCollapsed(group, on)) return false;
+    this.render();
+    this.fit();
+    this.renderOutline();
+    this.updateChrome();
+    const g = s.model.index.groups.get(group);
+    this.toast(on ? `${g ? g.label || g.id : group} is drawn as one box; its connections out of it go to the box. Expand group draws its devices again.` : `${g ? g.label || g.id : group} is drawn with its devices again.`);
+    return true;
+  }
+
+  /** Expand every collapsed group. */
+  expandAllGroups(): boolean {
+    const s = this.session;
+    if (!s || !s.state.collapsed.size) return false;
+    for (const g of Array.from(s.state.collapsed)) s.setCollapsed(g, false);
+    this.render();
+    this.fit();
+    this.renderOutline();
+    this.updateChrome();
+    return true;
+  }
+
+  // ------------------------------------------------------------ saved views
+
+  /** Find → Saved views…: the model's saved views, Open and Delete, and Save current view. */
+  openSavedViews(): void {
+    if (!this.session) return;
+    this.openWindow({ id: 'views', title: 'Saved views', body: this.viewsWindowBody(), width: 640, height: 480, focus: '#vw-name' });
+  }
+
+  private renderViews(): void {
+    if (this.toolWindow() === 'views' && this.session) this.replaceWindowBody(this.viewsWindowBody());
+  }
+
+  private viewsWindowBody(): HTMLElement {
+    const s = this.session as Session;
+    const current = viewSummary({ id: '', name: '', line: 0, ...this.currentViewFields() });
+    return viewsBody(this.doc, s.model.views, current, this.editLock(), {
+      save: (name) => void this.saveCurrentView(name),
+      open: (id) => void this.openSavedView(id),
+      remove: (id) => void this.removeSavedView(id),
+    });
+  }
+
+  /** The view on screen, as a saved view has it. */
+  private currentViewFields(): Omit<SavedView, 'id' | 'name' | 'line'> {
+    const s = this.session as Session;
+    const st = s.state;
+    const out: Omit<SavedView, 'id' | 'name' | 'line'> = { view: st.view === 'logical' ? 'logical' : 'physical', hideTypes: Array.from(st.hiddenTypes).sort(), hideProtocols: Array.from(st.hiddenProtocols).sort(), options: {} };
+    if (st.devices) out.devices = s.model.devices.filter((d) => (st.devices as Set<string>).has(d.id)).map((d) => d.id);
+    if (st.collapsed.size) out.collapse = s.model.groups.filter((g) => st.collapsed.has(g.id)).map((g) => g.id);
+    if (st.focus) {
+      const [kind, id] = splitRef(st.focus.ref);
+      const target = kind === 'device' || kind === 'iface' ? id : `${kind}:${id}`;
+      const c = st.focus.context;
+      out.focus = c ? (c.kind === 'vlan' ? { target, context: 'vlan', vlan: c.vlan } : c.kind === 'multicast' ? { target, context: 'multicast', group: c.group } : c.kind === 'vrf' ? { target, context: 'vrf', vrf: c.vrf } : { target, context: c.kind === 'app' ? 'dependencies' : 'timing' }) : { target, hops: st.focus.hops };
+    }
+    if (!st.showLabels) out.options.labels = false;
+    if (!st.showGroups) out.options.groups = false;
+    if (!st.showNetworks) out.options.networks = false;
+    if (!st.showRoutes) out.options.routes = false;
+    const W = this.svg.clientWidth || 1000;
+    const H = this.svg.clientHeight || 700;
+    const k = this.zoom.k;
+    out.viewport = { x: Math.round((W / 2 - this.zoom.tx) / k), y: Math.round((H / 2 - this.zoom.ty) / k), zoom: Math.round(k * 100) / 100 };
+    return out;
+  }
+
+  /** Save the view on screen in the model (one undo step); a name is needed. */
+  saveCurrentView(name: string): boolean {
+    const d = this.mdoc;
+    if (!this.session || !d || this.editLock()) return false;
+    if (!name) {
+      this.toast('Give the view a name first.');
+      const n = this.doc.getElementById('vw-name') as HTMLElement | null;
+      if (n) n.focus();
+      return false;
+    }
+    const v = this.currentViewFields();
+    try {
+      d.addView(name, v);
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.afterEdit(`The view “${name}” was saved.`);
+    return true;
+  }
+
+  /**
+   * Open a saved view: its diagram, filters, options, focus and zoom (fitted
+   * when it has none). Display only: the model, an analysis and a running
+   * simulation are not touched. What it names that is gone is left out.
+   */
+  openSavedView(id: string): boolean {
+    const s = this.session;
+    if (!s) return false;
+    const v = s.model.views.find((x) => x.id === id);
+    if (!v) return false;
+    if (s.state.focus) this.exitFocus();
+    s.setView(v.view);
+    s.state.showLabels = v.options.labels !== false;
+    s.state.showGroups = v.options.groups !== false;
+    s.state.showNetworks = v.options.networks !== false;
+    s.state.showRoutes = v.options.routes !== false;
+    if (s.state.hiddenTypes.size) s.setTypesVisible(Array.from(s.state.hiddenTypes), true);
+    if (v.hideTypes.length) s.setTypesVisible(v.hideTypes, false);
+    for (const p of Array.from(s.state.hiddenProtocols)) s.toggleProtocol(p, true);
+    for (const p of v.hideProtocols) s.toggleProtocol(p, false);
+    s.setDevices(v.devices || s.model.devices.map((d) => d.id));
+    for (const g of Array.from(s.state.collapsed)) s.setCollapsed(g, false);
+    for (const g of v.collapse || []) s.setCollapsed(g, true);
+    this.cancelConnection();
+    this.render();
+    this.renderOutline();
+    this.layoutFilters();
+    this.updateChrome();
+    const ref = v.focus ? focusRef(s.model, v.focus.target) : null;
+    if (v.focus && ref) {
+      this.select(ref, true);
+      const f = v.focus;
+      const ok = f.context ? this.enterContextFocus(f.context === 'vlan' ? { kind: 'vlan', vlan: f.vlan as number } : f.context === 'multicast' ? { kind: 'multicast', group: f.group as string } : f.context === 'vrf' ? { kind: 'vrf', vrf: f.vrf as string } : f.context === 'dependencies' ? { kind: 'app', device: splitRef(ref)[1] } : { kind: 'timing', device: splitRef(ref)[1] }) : this.enterFocus(ref, f.hops || 1);
+      if (!ok) this.toast(`The view’s focus on ${f.target} can’t be shown now; the rest of the view is.`);
+    }
+    if (v.viewport) {
+      const W = this.svg.clientWidth || 1000;
+      const H = this.svg.clientHeight || 700;
+      const k = v.viewport.zoom;
+      this.zoom = { k, tx: W / 2 - v.viewport.x * k, ty: H / 2 - v.viewport.y * k };
+      this.applyZoom();
+    } else this.fit();
+    this.renderViews();
+    this.toast(`Showing the view “${v.name}”.`);
+    return true;
+  }
+
+  /** Delete a saved view (one undo step; no confirmation: it is display state, and Ctrl+Z brings it back). */
+  removeSavedView(id: string): boolean {
+    const d = this.mdoc;
+    if (!d || this.editLock()) return false;
+    const e = d.analysisEntries('views').find((x) => x.id === id);
+    if (!e) return false;
+    try {
+      d.removeView(e.index);
+    } catch (err) {
+      this.refusedEdit(err);
+      return false;
+    }
+    this.afterEdit('The view was deleted (Ctrl+Z brings it back).');
+    return true;
+  }
+
+  // ------------------------------------------------------------ experiments
+
+  private expOpen = new Set<string>();
+  private expRuns = new Map<string, ExpRunResult[]>();
+  private expCompare = new Map<string, RunCompare>();
+  private expRunner: { runner: ExperimentRunner; id: string; doc: ModelDoc | null } | null = null;
+
+  /** Simulate → Experiments…: the saved experiments, each run on demand from a clean start (never by saving or editing). */
+  openExperiments(): void {
+    if (!this.session) return;
+    this.openWindow({ id: 'experiments', title: 'Experiments', body: this.experimentsWindowBody(), width: 900, height: 620, focus: '#ex-add' });
+  }
+
+  private renderExperiments(): void {
+    if (this.toolWindow() === 'experiments' && this.session) this.replaceWindowBody(this.experimentsWindowBody());
+  }
+
+  /** The runs of an experiment so far (the newest last). */
+  experimentRuns(id: string): ExpRunResult[] {
+    return this.expRuns.get(id) || [];
+  }
+
+  /** Is an experiment running? */
+  experimentRunning(): string | null {
+    return this.expRunner ? this.expRunner.id : null;
+  }
+
+  /**
+   * Run an experiment: a new runner (a clean start), advanced in slices of
+   * the page's time so the page stays responsive; Stop cancels it. A runner
+   * replaced or stopped is never advanced again (no stale or duplicate
+   * work); a model replaced stops it.
+   */
+  runExperiment(id: string): boolean {
+    const s = this.session;
+    if (!s) return false;
+    const e = s.model.experiments.find((x) => x.id === id);
+    if (!e) return false;
+    if (this.expRunner) this.stopExperiment();
+    const runner = new ExperimentRunner(s.model, e, modelFingerprint(s.model));
+    const slot = { runner, id, doc: this.mdoc };
+    this.expRunner = slot;
+    this.expCompare.delete(id);
+    const tick = (): void => {
+      if (this.expRunner !== slot) return;
+      // a model replaced (another file) stops it
+      if (this.mdoc !== slot.doc) {
+        this.stopExperiment();
+        return;
+      }
+      const done = runner.step(30);
+      const prog = this.doc.getElementById('ex-progress');
+      if (prog) prog.textContent = `Running on scenario time: t = ${(runner.result().reached / 1000).toFixed(0)} s of ${(e.duration / 1000).toFixed(0)} s`;
+      if (done) this.finishExperiment(slot);
+      else if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
+      else {
+        runner.runAll();
+        this.finishExperiment(slot);
+      }
+    };
+    this.renderExperiments();
+    if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
+    else tick();
+    return true;
+  }
+
+  /** Run an experiment to its end at once (the self-test, small models). */
+  runExperimentNow(id: string): ExpRunResult | null {
+    if (!this.runExperiment(id) || !this.expRunner) return null;
+    const slot = this.expRunner;
+    slot.runner.runAll();
+    this.finishExperiment(slot);
+    return slot.runner.result();
+  }
+
+  private finishExperiment(slot: { runner: ExperimentRunner; id: string }): void {
+    if (this.expRunner !== slot) return;
+    this.expRunner = null;
+    const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
+    this.expRuns.set(slot.id, list);
+    this.renderExperiments();
+    this.toast(`Experiment ${slot.id}: ${slot.runner.result().summary}.`);
+  }
+
+  /** Stop the running experiment: it keeps what it observed and says what was not reached. */
+  stopExperiment(): boolean {
+    const slot = this.expRunner;
+    if (!slot) return false;
+    slot.runner.cancel();
+    this.expRunner = null;
+    const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
+    this.expRuns.set(slot.id, list);
+    this.renderExperiments();
+    return true;
+  }
+
+  /** Compare an experiment's last two runs. */
+  compareExperiment(id: string): boolean {
+    const runs = this.expRuns.get(id) || [];
+    if (runs.length < 2) return false;
+    this.expCompare.set(id, compareRuns(runs[runs.length - 2], runs[runs.length - 1]));
+    this.renderExperiments();
+    return true;
+  }
+
+  /** Keep the traced communication as an experiment: a send and the observation of its delivery (one undo step; nothing runs). */
+  traceToExperiment(): boolean {
+    const r = this.traceRun;
+    const d = this.mdoc;
+    if (!r || !r.identity || !d || this.editLock() || !r.handoff || r.handoff.kind !== 'send') return false;
+    const req = r.identity.request;
+    const send: Array<[string, string]> = [['id', 'send'], ['at', '10s'], ['do', 'send'], ['target', req.from]];
+    if (req.to) send.push(['to', req.to]);
+    if (req.service) send.push(['service', req.service]);
+    else if (r.identity.service && r.identity.service.proto !== 'icmp') send.push(['service', `${r.identity.service.proto}/${r.identity.service.port}`]);
+    const expect = r.check.verdict === 'violated' ? 'failed' : 'delivered';
+    const name = `${req.from} to ${req.to || 'its peer'}`;
+    let k: number;
+    try {
+      k = d.addExperiment(name, '60s', { actions: [send], observe: [[['of', 'send'], ['target', 'send'], ['expect', expect]]] });
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.afterEdit('The experiment was added: press Run to run it.');
+    const id = (this.session as Session).model.experiments[k] ? (this.session as Session).model.experiments[k].id : '';
+    if (id) this.expOpen.add(id);
+    this.openExperiments();
+    return true;
+  }
+
+  private experimentsWindowBody(): HTMLElement {
+    const s = this.session as Session;
+    const d = this.mdoc as ModelDoc;
+    const index = new Map<string, number>(d.analysisEntries('experiments').map((x) => [x.id, x.index] as [string, number]));
+    const run = this.expRunner;
+    const view: ExperimentsView = {
+      open: this.expOpen,
+      runs: this.expRuns,
+      running: run ? { id: run.id, reached: run.runner.result().reached, duration: run.runner.result().duration } : null,
+      compare: this.expCompare,
+      outdated: (r) => r.fingerprint !== modelFingerprint(s.model),
+      locked: this.editLock(),
+      index,
+    };
+    const edit = (f: () => void, note?: string): void => {
+      try {
+        f();
+      } catch (e) {
+        this.refusedEdit(e);
+        return;
+      }
+      this.afterEdit(note);
+    };
+    return experimentsBody(this.doc, s.model, view, {
+      add: () => {
+        const n = s.model.experiments.length + 1;
+        edit(() => {
+          const k = d.addExperiment(`Experiment ${n}`, '60s');
+          const id = (d.result.model as Model).experiments[k] ? (d.result.model as Model).experiments[k].id : '';
+          if (id) this.expOpen.add(id);
+        }, 'An experiment was added: give it actions and observations.');
+      },
+      run: (id) => void this.runExperiment(id),
+      stop: () => void this.stopExperiment(),
+      compare: (id) => void this.compareExperiment(id),
+      toggle: (id) => {
+        if (this.expOpen.has(id)) this.expOpen.delete(id);
+        else this.expOpen.add(id);
+        this.renderExperiments();
+      },
+      remove: (id) => void this.removeExperiment(id),
+      set: (path, kind, value) => {
+        const p = JSON.parse(path) as Path;
+        edit(() => (kind === 'int' ? d.setInteger(p, value) : d.setText(p, value)));
+      },
+      addStep: (k, list, kind) => edit(() => d.addListEntry(['experiments', k, list], list === 'actions' ? [['at', '10s'], ['do', kind], ['target', '']] : [['of', kind], ['target', ''], ['expect', (EXP_OBSERVE.find((x) => x.id === kind) as { expect: string[] }).expect[0]]], list === 'actions' ? 'action' : 'observation')),
+      delStep: (path) => edit(() => d.remove(JSON.parse(path) as Path)),
+      upStep: (path) => edit(() => d.moveUp(JSON.parse(path) as Path)),
+      copy: (id) => {
+        const e = s.model.experiments.find((x) => x.id === id);
+        const runs = this.expRuns.get(id) || [];
+        if (!e || !runs.length) return;
+        void this.copyText(experimentText({ title: s.model.title, version: this.appVersion() }, e, runs[runs.length - 1], this.expCompare.get(id)), 'The experiment’s result was copied as text.');
+      },
+    });
+  }
+
+  /** Delete an experiment after a confirmation. */
+  private async removeExperiment(id: string): Promise<void> {
+    const d = this.mdoc;
+    if (!d) return;
+    const entry = d.analysisEntries('experiments').find((x) => x.id === id);
+    if (!entry) return;
+    const a = await this.dialog({ title: `Delete the experiment “${id}”?`, body: ['It is removed from the model with its actions and observations. You can undo this with Ctrl+Z.'], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }] });
+    if (a !== 'go') return;
+    try {
+      d.removeExperiment(entry.index);
+    } catch (e) {
+      this.refusedEdit(e);
+      return;
+    }
+    this.expOpen.delete(id);
+    this.expRuns.delete(id);
+    this.afterEdit('The experiment was deleted.');
   }
 
   /** Delete an expectation after a confirmation. */

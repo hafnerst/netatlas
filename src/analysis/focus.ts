@@ -124,7 +124,7 @@ export function hopGraph(model: Model, view: FocusView, up?: FocusUp): Map<strin
  *   timing     a PTP domain's clocks (and the transparent clocks), or an
  *              NTP device's upstreams and the devices that take time from it.
  */
-export type FocusContext = { kind: 'vlan'; vlan: number } | { kind: 'app'; device: string } | { kind: 'multicast'; group: string } | { kind: 'timing'; device: string };
+export type FocusContext = { kind: 'vlan'; vlan: number } | { kind: 'app'; device: string } | { kind: 'multicast'; group: string } | { kind: 'timing'; device: string } | { kind: 'vrf'; vrf: string };
 
 export interface ContextFocus {
   /** device → 0 (what the context is about) or 1 (what it involves) */
@@ -162,6 +162,12 @@ export function focusContexts(model: Model, ref: string): Array<{ ctx: FocusCont
   } else if (kind === 'device') device = id;
   Array.from(vlans).sort((a, b) => a - b).slice(0, 4).forEach((v) => out.push({ ctx: { kind: 'vlan', vlan: v }, label: `VLAN ${v} members` }));
   const d = device ? ix.devices.get(device) : undefined;
+  // the VRFs of the interface, or of the device's interfaces
+  const vrfs = new Set<string>();
+  const ifc = kind === 'iface' ? ix.interfaces.get(id) : undefined;
+  if (ifc && ifc.vrf) vrfs.add(ifc.vrf);
+  else if (d) for (const i of d.interfaces.concat(d.logical)) if (i.vrf) vrfs.add(i.vrf);
+  Array.from(vrfs).sort().slice(0, 4).forEach((v) => out.push({ ctx: { kind: 'vrf', vrf: v }, label: `VRF ${v}` }));
   if (d) {
     const deps = appNeighbours(model, d.id);
     if (deps.length) out.push({ ctx: { kind: 'app', device: d.id }, label: 'Application and service dependencies' });
@@ -244,6 +250,20 @@ export function contextFocus(model: Model, c: FocusContext): ContextFocus {
     for (const d of model.devices) if (d.snooping && d.snooping.some((s) => s.enabled && Array.from(recvVlans).some((v) => v >= s.from && v <= s.to))) put(d.id, 1);
     return { devices, note: `Multicast group ${c.group}: its configured senders and receivers, the PIM routers and the snooping switches of the receivers’ VLANs (configured; the simulation’s multicast tables show the observed distribution)` };
   }
+  if (c.kind === 'vrf') {
+    // the devices with an interface in it, and the devices cabled to those interfaces
+    for (const d of model.devices) {
+      for (const i of d.interfaces.concat(d.logical)) {
+        if (i.vrf !== c.vrf) continue;
+        put(d.id, 0);
+        for (const l of model.links) {
+          if (l.a.device === d.id && l.a.iface === i.id) put(l.b.device, 1);
+          if (l.b.device === d.id && l.b.iface === i.id) put(l.a.device, 1);
+        }
+      }
+    }
+    return { devices, note: `VRF ${c.vrf}: the devices with an interface in it and their neighbours on those interfaces (configured)` };
+  }
   // timing
   const d = model.index.devices.get(c.device);
   const ptp = d && d.appServices ? d.appServices.get('ptp') : undefined;
@@ -272,9 +292,35 @@ export function contextFocus(model: Model, c: FocusContext): ContextFocus {
   return { devices, note: `NTP: ${c.device}, its upstreams and the devices that take time from it (configured; not proof that they synchronize)` };
 }
 
+/**
+ * What can be navigated to by context (Find → Applications, VLANs and
+ * VRFs…): every application (its device), every VLAN with its number of
+ * devices, every VRF with its devices. Configured structure.
+ */
+export function navigationIndex(model: Model): { apps: Array<{ device: string; app: string; name: string }>; vlans: Array<{ vlan: number; devices: number; name: string }>; vrfs: Array<{ vrf: string; devices: string[] }> } {
+  const apps: Array<{ device: string; app: string; name: string }> = [];
+  for (const d of model.devices) for (const a of d.applications || []) apps.push({ device: d.id, app: a.id, name: a.name || a.id });
+  const vset = new Set<number>();
+  for (const d of model.devices)
+    for (const i of d.interfaces.concat(d.logical)) {
+      const l2 = portL2(model, d.id, i.id);
+      if (l2) for (const v of l2.vlans) vset.add(v);
+      for (const v of interfaceVlans(model, i)) vset.add(v);
+    }
+  for (const n of model.networks) if (n.vlan !== undefined) vset.add(n.vlan);
+  const vlans = Array.from(vset).sort((a, b) => a - b).slice(0, 4094).map((v) => {
+    const n = model.networks.find((x) => x.vlan === v);
+    return { vlan: v, devices: contextFocus(model, { kind: 'vlan', vlan: v }).devices.size, name: n ? n.label || n.id : '' };
+  });
+  const vm = new Map<string, Set<string>>();
+  for (const d of model.devices) for (const i of d.interfaces.concat(d.logical)) if (i.vrf) vm.set(i.vrf, (vm.get(i.vrf) || new Set()).add(d.id));
+  const vrfs = Array.from(vm).sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([vrf, ds]) => ({ vrf, devices: Array.from(ds).sort() }));
+  return { apps, vlans, vrfs };
+}
+
 /** A contextual focus in words, for the banner: "VLAN 10 members". */
 export function contextLabel(c: FocusContext): string {
-  return c.kind === 'vlan' ? `VLAN ${c.vlan} members` : c.kind === 'app' ? `Dependencies of ${c.device}` : c.kind === 'multicast' ? `Multicast group ${c.group}` : `Timing of ${c.device}`;
+  return c.kind === 'vlan' ? `VLAN ${c.vlan} members` : c.kind === 'app' ? `Dependencies of ${c.device}` : c.kind === 'multicast' ? `Multicast group ${c.group}` : c.kind === 'vrf' ? `VRF ${c.vrf}` : `Timing of ${c.device}`;
 }
 
 /**

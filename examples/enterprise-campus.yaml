@@ -17,6 +17,17 @@
 #
 # Simulate ▾ → Start simulation…: the clients' leases through the relays,
 # CAPWAP keepalives, RADIUS requests, syslog messages and SNMP polls.
+#
+# Policy and alternatives: the core's network policy keeps the guests out of
+# the staff, server and management VLANs (they may still ask srv for DNS);
+# Trace path from visitor to srv over tcp/22 names the rule. The Staff VLAN's
+# relay has two DHCP servers, srv and srv2 (each with its own part of the
+# range): Single points of failure says that losing srv leaves the staff an
+# alternative, and the guests none. The expectations are decided on a
+# simulation snapshot (the clients take their addresses by DHCP); with the
+# Trace path of visitor → srv on screen, Start simulation offers that
+# communication as the execution scope. The saved view "Guest VLAN" focuses
+# on VLAN 20.
 netatlas: 1
 title: Enterprise campus — three tiers and controller-managed Wi-Fi
 description: |
@@ -56,12 +67,18 @@ devices:
     interfaces:
       - {id: d1, vlans: [10, 20, 99]}
       - {id: s1, vlans: 30}
+      - {id: s3, vlans: 30}
       - {id: s2, vlans: 99}
     logical_interfaces:
-      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.20.10.1/24, dhcp_relay: [10.20.30.10]}
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.20.10.1/24, dhcp_relay: [10.20.30.10, 10.20.30.11]}
       - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.20.1/24, dhcp_relay: [10.20.30.10]}
       - {id: Vlan30, type: virtual, vlan: 30, ip: 10.20.30.1/24}
       - {id: Vlan99, type: virtual, vlan: 99, ip: 10.20.99.1/24}
+    policy:
+      default: permit
+      rules:
+        - {name: guest-dns, action: permit, in: Vlan20, destination: srv, proto: udp, dport: "53"}
+        - {name: guest-isolation, action: deny, in: Vlan20, destination: [staff, servers, mgmt]}
   - id: dist1
     type: switch
     role: distribution
@@ -165,6 +182,18 @@ devices:
       - {name: srv.campus.example, interfaces: [eth0]}
     routes:
       - {prefix: 0.0.0.0/0, via: 10.20.30.1, name: default gateway}
+  - id: srv2
+    label: srv2 (second DHCP server)
+    type: server
+    group: dc
+    services:
+      dhcp:
+        scopes:
+          - {network: staff, range: 10.20.10.200-10.20.10.249, gateway: 10.20.10.1, dns: [10.20.30.10]}
+    interfaces:
+      - {id: eth0, ip: 10.20.30.11/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.30.1, name: default gateway}
   - id: laptop1
     type: endpoint
     kind: pc
@@ -188,6 +217,7 @@ devices:
 links:
   - {id: l-core-dist, a: "core1:d1", b: "dist1:up", medium: fiber, speed: 10G}
   - {id: l-core-srv, a: "core1:s1", b: "srv:eth0", speed: 10G}
+  - {id: l-core-srv2, a: "core1:s3", b: "srv2:eth0", speed: 10G}
   - {id: l-core-wlc, a: "core1:s2", b: "wlc:eth0", speed: 1G}
   - {id: l-dist-acc1, a: "dist1:a1", b: "acc1:up", medium: fiber, speed: 10G}
   - {id: l-dist-acc2, a: "dist1:a2", b: "acc2:up", medium: fiber, speed: 10G}
@@ -196,3 +226,17 @@ links:
   - {id: w-laptop1, a: "ap1:radio0", b: "laptop1:wlan0", medium: wireless, wireless_network: staff}
   - {id: w-visitor, a: "ap1:radio0", b: "visitor:wlan0", medium: wireless, wireless_network: guest}
   - {id: w-laptop2, a: "ap2:radio0", b: "laptop2:wlan0", medium: wireless, wireless_network: staff}
+
+expectations:
+  - id: guest-no-ssh
+    name: Guests can't open SSH on the servers
+    expect: blocked
+    from: visitor
+    to: srv
+    service: tcp/22
+    enforce: policy
+  - {id: guest-dns, name: Guests resolve names, expect: available, from: visitor, to: srv, service: udp/53}
+  - {id: staff-dns, name: Staff resolve names, expect: available, from: laptop1, to: srv, service: udp/53}
+
+views:
+  - {id: guest-vlan, name: Guest VLAN, view: physical, focus: {target: core1, context: vlan, vlan: 20}}

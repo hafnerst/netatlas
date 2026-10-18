@@ -10,7 +10,7 @@
  */
 import { parseCommEnd } from '../analysis/communication';
 import { parseService } from '../analysis/trace';
-import { EXPECT_KINDS, ExpectKind, Expectation, FAILURE_DOMAIN_KINDS, FailureDomain, FailureDomainKind, Model } from '../model/types';
+import { EXPECT_KINDS, ENFORCE_KINDS, EnforceKind, TIMING_METHODS, TimingMethod, ExpectKind, Expectation, FAILURE_DOMAIN_KINDS, FailureDomain, FailureDomainKind, Model } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, ID_RE, Reader, get } from './reader';
@@ -173,6 +173,31 @@ export function readExpectations(r: Reader, c: Ctx, top: YMap, model: Model, dom
     if (service !== undefined && service.trim()) e.service = service.trim();
     const vrf = r.field(m, 'vrf', epath, 64);
     if (vrf !== undefined) e.vrf = vrf;
+    const fam = r.field(m, 'family', epath, 8);
+    if (fam !== undefined) {
+      if (fam !== '4' && fam !== '6') c.error(get(m, 'family') as YNode, epath + '.family', `"${fam}" is no address family: use 4 (IPv4) or 6 (IPv6)`);
+      else e.family = fam === '4' ? 4 : 6;
+    }
+    // how a block must be enforced: blocked expectations only; a boundary is a device of the model
+    const enforce = r.field(m, 'enforce', epath, 20);
+    if (enforce !== undefined) {
+      if (!ENFORCE_KINDS.some((k) => k.id === enforce)) c.error(get(m, 'enforce') as YNode, epath + '.enforce', `"${enforce}" is no enforcement: use ${ENFORCE_KINDS.map((k) => k.id).join(', ')}`);
+      else if (kind !== 'blocked') c.error(get(m, 'enforce') as YNode, epath + '.enforce', 'only a blocked expectation is enforced: delete "enforce"');
+      else e.enforce = enforce as EnforceKind;
+    }
+    const boundary = r.field(m, 'boundary', epath, 200);
+    if (boundary !== undefined) {
+      if (e.enforce !== 'boundary') c.error(get(m, 'boundary') as YNode, epath + '.boundary', 'a boundary goes with "enforce: boundary": delete "boundary", or set enforce');
+      else if (!model.index.devices.has(boundary.trim())) c.warn(get(m, 'boundary') as YNode, epath + '.boundary', `"${boundary}" is no device of the model: the expectation can't be evaluated`);
+      e.boundary = boundary.trim();
+    } else if (e.enforce === 'boundary') c.error(get(m, 'enforce') as YNode, epath + '.boundary', 'enforce: boundary needs the boundary: the device that must deny it', { key: 'boundary' });
+    // a timing expectation says which method it accepts: none is chosen for it
+    const method = r.field(m, 'method', epath, 10);
+    if (method !== undefined) {
+      if (!TIMING_METHODS.some((k) => k.id === method)) c.error(get(m, 'method') as YNode, epath + '.method', `"${method}" is no timing method: use ${TIMING_METHODS.map((k) => k.id).join(', ')}`);
+      else if (kind !== 'timing') c.error(get(m, 'method') as YNode, epath + '.method', 'only a timing expectation has a method: delete "method"');
+      else e.method = method as TimingMethod;
+    } else if (kind === 'timing') c.error(m, epath + '.method', 'a timing expectation needs its method: ptp, ntp, or either (when either is accepted)', { key: 'method' });
     const desc = r.field(m, 'description', epath, 2000);
     if (desc !== undefined) e.description = desc;
     out.push(e);

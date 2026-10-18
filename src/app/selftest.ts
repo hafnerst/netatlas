@@ -2205,8 +2205,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.exit',
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation…, Experiments… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit',
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -4787,8 +4787,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const viaArrow = !(q('#find-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#find-menu') as HTMLElement).contains(doc.activeElement);
       const entries = textsOf('#find-menu button');
       check(
-        'Find menu next to Export: Find in diagram… (/), Filter object list… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
-        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
+        'Find menu next to Export: Find in diagram… (/), Filter object list…, Saved views…, Applications, VLANs and VRFs… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Saved views… | Applications, VLANs and VRFs… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
           /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );
@@ -5669,7 +5669,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
       check(
         'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Services, Simulation with its count, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Services\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Network policy\|Services\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');
@@ -6114,6 +6114,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.undo();
       await tick();
       check('undo removes it again', app.exportText() === yamlBefore);
+      // a blocked expectation: its enforcement under Advanced, the boundary only when a boundary is chosen
+      (q('#dc-add') as HTMLElement).click();
+      await tick();
+      const expSel = q('#dc-f-expect') as HTMLSelectElement;
+      expSel.value = 'blocked';
+      expSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('a blocked expectation: Enforcement is under Advanced (Unreachable by default), no boundary field until one is asked for', /enforcement/.test(q('#toolwin .dc-adv summary')!.textContent || '') && !(q('#toolwin .dc-adv') as HTMLDetailsElement).open && (q('#dc-f-enforce') as HTMLSelectElement).value === '' && !q('#dc-f-boundary') && doc.activeElement === q('#dc-f-expect'));
+      const enfSel = q('#dc-f-enforce') as HTMLSelectElement;
+      enfSel.value = 'boundary';
+      enfSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… Denied at the selected boundary shows the boundary field, with its help', !!q('#dc-f-boundary') && /selected enforcement boundary must deny/.test(q('#dc-f-enforce-help')!.textContent || '') && (q('#toolwin .dc-adv') as HTMLDetailsElement).open);
+      setF('dc-f-name', 'IT kept out at the gateway');
+      setF('dc-f-from', 'eng-ws');
+      setF('dc-f-to', 'plc/registers');
+      (q('#dc-f-save') as HTMLElement).click();
+      await tick();
+      check('… without the boundary the form says what is missing, and the boundary field has the focus', /Give the boundary/.test(q('#dc-f-error')!.textContent || '') && doc.activeElement === q('#dc-f-boundary'));
+      setF('dc-f-boundary', 'pgw');
+      (q('#dc-f-save') as HTMLElement).click();
+      await tick();
+      const rowB = q('#toolwin tr[data-exp="it-kept-out-at-the-gateway"]') as HTMLElement | null;
+      check('… saved with enforce and boundary, evaluated: violated, with the reason (the path reaches the PLC)', /enforce: boundary/.test(app.exportText()) && /boundary: pgw/.test(app.exportText()) && !!rowB && /\(denied at pgw\)/.test(rowB.textContent || '') && rowB.classList.contains('v-violated') && /Reachable: 1 of 1 evaluated path reaches plc/.test(rowB.textContent || ''), rowB ? rowB.textContent || '' : 'no row');
+      app.undo();
+      await tick();
+      check('… undo removes it', app.exportText() === yamlBefore);
       app.closeToolWindow();
       await tick();
       // Single points of failure: a failure domain added in the window, then what if it fails
@@ -6132,6 +6159,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       (q('#wi-go') as HTMLElement).click();
       await tick();
+      check('… capacity: the applications with an interval are the stated traffic, evaluated (what the failure leaves without a path is said: not carried)', q('#wi-capacity')!.getAttribute('data-evaluated') === 'yes' && /^Capacity: \d+ demands?: \d+ fit.*\d+ not carried$/.test(q('#wi-capacity summary')!.textContent || ''), q('#wi-capacity summary')!.textContent || '');
       check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q('#toolwin .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#wi-result .an-ctx-line')!.textContent || ''));
       app.undo();
       await tick();
@@ -6159,12 +6187,303 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('the handoff prepares the same exchange in Network events, prefilled, nothing sent', !!q('#trace-handoff') && !(q('#trace-handoff') as HTMLButtonElement).disabled && (() => {
         const before = ctl.sim.actions().length;
         (q('#trace-handoff') as HTMLElement).click();
-        return ctl.sim.actions().length === before && (q('#sim-t-addr') as HTMLInputElement).value === '192.168.10.1' && (q('#sim-t-port') as HTMLInputElement).value === '22';
-      })(), `${q('#trace-handoff') ? (q('#trace-handoff') as HTMLButtonElement).disabled + ' ' + q('#trace-handoff')!.getAttribute('title') : 'no button'} | addr ${(q('#sim-t-addr') as HTMLInputElement | null)?.value} port ${(q('#sim-t-port') as HTMLInputElement | null)?.value} to ${(q('#sim-t-to') as HTMLSelectElement | null)?.value} kind ${(q('#sim-t-kind') as HTMLSelectElement | null)?.value}`);
-      app.exitTrace();
-      app.closeToolWindow();
+        // (the same destination interface, its effective address when sent; the same source interface and port)
+        return ctl.sim.actions().length === before && (q('#sim-t-to') as HTMLSelectElement).value === 'core' && /\|192\.168\.10\.1$/.test((q('#sim-t-toif') as HTMLSelectElement).value) && (q('#sim-t-port') as HTMLInputElement).value === '22' && (q('#sim-t-kind') as HTMLSelectElement).value === 'tcp';
+      })(), `${q('#trace-handoff') ? (q('#trace-handoff') as HTMLButtonElement).disabled + ' ' + q('#trace-handoff')!.getAttribute('title') : 'no button'} | toif ${(q('#sim-t-toif') as HTMLSelectElement | null)?.value} port ${(q('#sim-t-port') as HTMLInputElement | null)?.value} to ${(q('#sim-t-to') as HTMLSelectElement | null)?.value} kind ${(q('#sim-t-kind') as HTMLSelectElement | null)?.value}`);
+      check('the path MTU: one line under the layers (collapsed), honest about MTUs the model does not write', !!q('#trace-mtu') && !(q('#trace-mtu') as HTMLDetailsElement).open && /^. ?Path MTU: /.test(q('#trace-mtu summary')!.textContent || '') && (/not known|At most|No evaluated path reaches the destination: there is no path MTU/.test(q('#trace-mtu summary')!.textContent || '') || !!q('#trace-mtu-test')), q('#trace-mtu') ? q('#trace-mtu summary')!.textContent || '' : 'no section');
+      check('what the simulation gets is said under the result: carried over, and what is not', !!q('#trace-carry') && /Source: guest-phone/.test(q('#trace-carry')!.textContent || '') && /Not carried over: Expected outcome/.test(q('#trace-carry')!.textContent || ''));
+      check('nothing to compare before a send of it (said, nothing sent)', !!q('#trace-compare') && !app.compareTrace() && !q('#trace-compare-res') && /send it first/.test(q('#toast')!.textContent || ''));
+      // the user sends it; the comparison is then offered, and agrees (blocked statically, not delivered)
+      (q('#sim-t-send') as HTMLElement).click();
+      ctl.runTo(ctl.sim.now + 30000);
+      ctl.refresh(true);
+      app.redrawTrace();
+      await tick();
+      check('after the send: Compare with simulation sets the static result beside it', !!q('#trace-compare') && !(q('#trace-compare') as HTMLButtonElement).disabled && app.compareTrace() && !!q('#trace-compare-res') && q('#trace-compare-res [data-agree]')!.getAttribute('data-agree') === 'yes' && /They agree/.test(q('#trace-compare-res')!.textContent || ''), q('#trace-compare-res') ? q('#trace-compare-res')!.textContent || '' : 'no comparison');
+      check('while the simulation runs the model is locked: Save as expectation… says so', (q('#trace-save-exp') as HTMLButtonElement).disabled && !app.traceToExpectation());
       app.exitSimulation();
       await tick();
+      app.redrawTrace();
+      await tick();
+      check('Save as expectation… opens Design checks with the fields of the check, nothing saved yet', !(q('#trace-save-exp') as HTMLButtonElement).disabled && app.traceToExpectation() && app.toolWindow() === 'checks' && (q('#dc-f-from') as HTMLInputElement).value === 'guest-phone' && (q('#dc-f-to') as HTMLInputElement).value === 'core' && (q('#dc-f-service') as HTMLInputElement).value === 'tcp/22' && (q('#dc-f-expect') as HTMLSelectElement).value === 'blocked' && app.session!.model.expectations.length === 4);
+      app.exitTrace();
+      app.closeToolWindow();
+      await tick();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- saved experiments: a list, an explicit Run from a clean start on scenario time, the result, a compare, the editor
+    {
+      const exYaml = 'netatlas: 1\ntitle: Experiment check\ndevices:\n  - {id: a, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "b:e0"}\nexperiments:\n  - id: cut\n    name: The cable cut\n    duration: 40s\n    actions:\n      - {id: ping1, at: 5s, do: send, target: a, to: b}\n      - {at: 15s, do: fail, target: l1}\n      - {id: ping2, at: 20s, do: send, target: a, to: b}\n    observe:\n      - {at: 12s, of: send, target: ping1, expect: delivered}\n      - {of: send, target: ping2, expect: failed}\n      - {of: link, target: l1, expect: down}\n';
+      const loaded = app.loadText(exYaml, 'experiment-check.yaml', 'file');
+      await tick();
+      const before = app.exportText();
+      app.openExperiments();
+      await tick();
+      check('Simulate → Experiments… opens a window: the saved experiment with Run, nothing run yet (saving or opening never starts one)', loaded.ok && app.toolWindow() === 'experiments' && !!q('#toolwin .ex-card[data-exp="cut"] [data-ex="run"]') && !q('#toolwin .ex-result') && app.experimentRuns('cut').length === 0 && !app.simulationOn());
+      const r1 = app.runExperimentNow('cut');
+      await tick();
+      const obs = Array.from(doc.querySelectorAll('#toolwin .ex-card[data-exp="cut"] .ex-obs li')).map((x) => x.getAttribute('data-outcome')).join(',');
+      check('… Run: a clean start on scenario time, each observation met or not with what was found, the steps and events behind expansions', !!r1 && r1.state === 'done' && r1.timing === 'scenario' && obs === 'met,met,met' && /Last run: 3 observations: 3 met/.test(q('#toolwin .ex-result')!.textContent || '') && !app.simulationOn(), obs);
+      app.runExperimentNow('cut');
+      await tick();
+      (q('#toolwin .ex-card[data-exp="cut"] [data-ex="compare"]') as HTMLElement).click();
+      await tick();
+      check('… a second run is the same (repeatable), and Compare with the previous run says so', /Every observation came out as before/.test(q('#ex-compare-cut')!.textContent || '') && /The event sequences are the same/.test(q('#ex-compare-cut')!.textContent || ''), q('#ex-compare-cut') ? q('#ex-compare-cut')!.textContent || '' : 'no comparison');
+      (q('#toolwin .ex-card[data-exp="cut"] [data-ex="toggle"]') as HTMLElement).click();
+      await tick();
+      const addSel = q('#toolwin [data-ex-add="observe"]') as HTMLSelectElement;
+      addSel.value = 'device';
+      addSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… the editor: actions and observations in order; + observation adds one (one undo step), never runs anything', !!q('#toolwin .ex-steps[data-ex-list="actions"]') && /- \{of: device, target: "?"?, expect: on\}|of: device/.test(app.exportText()) && app.experimentRuns('cut').length === 2);
+      app.undo();
+      await tick();
+      check('… undo removes it', app.exportText() === before);
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- saved views: the diagram, focus, filters, options and zoom as one named view; display state only
+    {
+      const vwYaml = 'netatlas: 1\ntitle: View check\ndevices:\n  - {id: a, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: server, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
+      app.loadText(vwYaml, 'view-check.yaml', 'file');
+      await tick();
+      const s = app.session!;
+      app.setView('logical');
+      app.setTypeVisible('server', false);
+      app.select('device:sw', true);
+      app.enterFocus('device:sw', 2);
+      s.state.showLabels = false;
+      app.render();
+      await tick();
+      app.openSavedViews();
+      await tick();
+      check('Find → Saved views…: a window with the view on screen described, a name to save it under, no saved views yet', app.toolWindow() === 'views' && /On screen: Logical view · focus sw \(2 hops\) · 1 type hidden/.test(q('#toolwin')!.textContent || '') && !!q('#vw-empty'));
+      const before = app.exportText();
+      (q('#vw-name') as HTMLInputElement).value = 'Switch close-up';
+      (q('#vw-save') as HTMLElement).click();
+      await tick();
+      const y = app.exportText();
+      check('… Save current view writes it to the model (one undo step): its diagram, focus, filters, options and viewport', s.model.views.length === 1 && /views:\n {2}- id: switch-close-up\n {4}name: Switch close-up\n {4}view: logical\n {4}focus: \{target: sw, hops: 2\}\n {4}hide_types: \[server\]\n {4}options: \{labels: false\}\n {4}viewport: \{x: -?\d+, y: -?\d+, zoom: [\d.]+\}/.test(y), y.slice(y.indexOf('views:')));
+      app.exitFocus();
+      app.setView('physical');
+      app.setTypeVisible('server', true);
+      s.state.showLabels = true;
+      app.render();
+      await tick();
+      (q('#toolwin [data-vw="open"][data-id="switch-close-up"]') as HTMLElement).click();
+      await tick();
+      check('… Open shows it again: the logical diagram, the server type hidden, labels off, the focus on sw with 2 hops; the model unchanged, no simulation started', s.state.view === 'logical' && s.state.hiddenTypes.has('server') && !s.state.showLabels && !!s.state.focus && s.state.focus.ref === 'device:sw' && s.state.focus.hops === 2 && app.exportText() === y && !app.simulationOn());
+      app.exitFocus();
+      app.undo();
+      await tick();
+      check('… undo removes the saved view', app.exportText() === before && s.model.views.length === 0);
+      app.setTypeVisible('server', true);
+      s.state.showLabels = true;
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- the representative architectures: each public example's workflow, end to end
+    {
+      // private house: a saved view with the upper floors collapsed; the VLAN view
+      app.loadExampleNamed('private-house.yaml');
+      await tick();
+      app.openSavedViews();
+      await tick();
+      (q('#toolwin [data-vw="open"][data-id="basement"]') as HTMLElement).click();
+      await tick();
+      check('private house: the saved view collapses the upper floors (their uplinks to the basement kept); the IoT VLAN view focuses on VLAN 20', !!q('.node[data-ref="device:⊞floor1"]') && !!q('.node[data-ref="device:⊞floor2"]') && !!q('.node[data-ref="device:core"]') && !q('.node[data-ref="device:ap-1"]'));
+      (q('#toolwin [data-vw="open"][data-id="iot-vlan"]') as HTMLElement).click();
+      await tick();
+      check('… the IoT VLAN view', !!app.session!.state.focus && app.session!.state.focus.context!.kind === 'vlan' && !app.session!.state.collapsed.size && !q('.node[data-ref="device:⊞floor1"]'));
+      app.exitFocus();
+      app.closeToolWindow();
+      // WAN: the branches' routes (default-only, a prefix filter) and the path MTU over the GRE tunnel
+      app.loadExampleNamed('enterprise-wan.yaml');
+      await tick();
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-rtr1', service: 'icmp', vrf: 'auto', back: false });
+      app.runTrace();
+      await tick();
+      check('WAN branch: Trace path from Munich to HQ is reachable (the prefix filter keeps HQ’s routes) and gives the path MTU of the GRE tunnel, 1400 bytes', (q('#trace-verdict')!.textContent || '').indexOf('Reachable') >= 0 && /1400/.test(q('#trace-mtu summary') ? q('#trace-mtu summary')!.textContent || '' : ''), q('#trace-mtu summary') ? q('#trace-mtu summary')!.textContent || '' : 'no MTU line');
+      app.exitTrace();
+      // data center: the stated replication over two spines, and what survives spine 1's power feed
+      app.loadExampleNamed('datacenter-evpn.yaml');
+      await tick();
+      app.openSpof();
+      for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
+      const dsel = q('#wi-domain') as HTMLSelectElement;
+      dsel.value = 'spine1-power';
+      dsel.dispatchEvent(new Event('change', { bubbles: true }));
+      (q('#wi-go') as HTMLElement).click();
+      await tick();
+      check('data center: What if spine 1’s power fails — the replication that depended on the distribution over two spines exceeds the surviving 100G cables', /exceeds/.test(q('#wi-capacity')!.textContent || ''), (q('#wi-capacity')!.textContent || '').slice(0, 200));
+      app.closeToolWindow();
+      // embedded / IoT: the repeatable failure experiment
+      app.loadExampleNamed('ot-network.yaml');
+      await tick();
+      app.openExperiments();
+      await tick();
+      const run = app.runExperimentNow('cabinet-outage');
+      await tick();
+      check('embedded / IoT: the cabinet outage experiment runs on scenario time; every observation met (the telemetry misses its rounds without the broker)', !!run && run.observations.every((o) => o.outcome === 'met') && /5 observations: 5 met/.test(q('#toolwin .ex-card[data-exp="cabinet-outage"] .ex-result')!.textContent || ''));
+      app.closeToolWindow();
+      // timing: the method is explicit; NTP and PTP apart
+      app.loadExampleNamed('timing-ptp.yaml');
+      await tick();
+      app.runCommand('analyze.checks');
+      await tick();
+      (q('#dc-evaluate') as HTMLElement).click();
+      for (let k = 0; k < 40 && /not evaluated/.test(q('#dc-status')!.textContent || ''); k++) await tick();
+      const ntp = q('#toolwin [data-exp-id="rt-ntp-gm-a"]') || Array.from(doc.querySelectorAll('#toolwin li, #toolwin tr')).find((x) => /NTP chain without grandmaster A/.test(x.textContent || '')) || null;
+      check('timing: the router’s NTP chain without gm-a has no reference (its upstream is down), while the PLC’s PTP keeps gm-b', !!ntp && /violated/i.test(ntp.textContent || ''), ntp ? (ntp.textContent || '').slice(0, 200) : 'no row');
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- bulk port edits: one VLAN change on several ports, previewed, one undo step
+    {
+      const bkYaml = 'netatlas: 1\ntitle: Bulk check\ndevices:\n  - id: sw\n    type: switch\n    interfaces:\n      - {id: p1, vlans: 10}\n      - {id: p2, vlans: 10}\n      - {id: p3, vlans: [10, 20], native: 10}\n';
+      app.loadText(bkYaml, 'bulk-check.yaml', 'file');
+      await tick();
+      app.select('device:sw', true);
+      await tick();
+      const btn = q('#side [data-command="edit.bulk-ports"]') as HTMLButtonElement | null;
+      check('a switch’s Inspector offers Bulk edit ports…', !!btn && !btn.disabled);
+      btn!.click();
+      await tick();
+      const before = app.exportText();
+      for (const p of ['p1', 'p2', 'p3']) (q(`#bulk-p-${p}`) as HTMLInputElement).checked = true;
+      q('.bulk-grid')!.dispatchEvent(new Event('change', { bubbles: true }));
+      const vin = q('#bulk-vlan') as HTMLInputElement;
+      vin.value = '20';
+      vin.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const rows = Array.from(doc.querySelectorAll('#bulk-preview tr[data-bulk-row]')).map((r) => r.textContent || '');
+      check('… the preview: each port before and after, the one left as it is says why; nothing changed yet', /Preview: 2 of 3 ports change/.test(q('#bulk-count')!.textContent || '') && rows[0] === 'p1access 10trunk 10, 20 (native 10)' && /unchanged: already carries VLAN 20/.test(rows[2]) && app.exportText() === before, rows.join(' | '));
+      (q('#bulk-apply') as HTMLElement).click();
+      await tick();
+      check('… Apply changes them; one undo step undoes every port', /\{id: p1, vlans: \[10, 20\], native: 10\}/.test(app.exportText()) && app.toolWindow() !== 'bulk');
+      app.undo();
+      await tick();
+      check('… undone at once', app.exportText() === before);
+      app.mdoc!.markSaved();
+    }
+
+    // ---- navigation by context: applications, VLANs and VRFs, each with a contextual focus
+    {
+      const nvYaml = 'netatlas: 1\ntitle: Navigation check\ndevices:\n  - id: r1\n    type: router\n    interfaces: [{id: a, ip: 10.0.0.1/24, vrf: blue}, {id: b, ip: 10.0.1.1/24}]\n  - {id: h1, type: server, interfaces: [{id: e0, ip: 10.0.0.2/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]}\n  - {id: h2, type: endpoint, interfaces: [{id: e0, ip: 10.0.1.2/24}]}\nlinks:\n  - {id: l1, a: "r1:a", b: "h1:e0"}\n  - {id: l2, a: "r1:b", b: "h2:e0"}\n';
+      app.loadText(nvYaml, 'nav-check.yaml', 'file');
+      await tick();
+      app.runCommand('find.browse');
+      await tick();
+      check('Find → Applications, VLANs and VRFs…: a window with each, counted; a VRF lists its devices', app.toolWindow() === 'browse' && /VRFs \(1\)/.test(q('#nav-vrfs summary')!.textContent || '') && /VRF blue/.test(q('#nav-vrfs')!.textContent || '') && /None in this model/.test(q('#nav-vlans')!.textContent || ''));
+      (q('#nav-vrfs [data-nav="focus"]') as HTMLElement).click();
+      await tick();
+      const shown = Array.from(app.session!.shownDevices()).sort().join(',');
+      check('… Focus on the VRF: its devices and their neighbours on its interfaces; h2 (outside it) is not shown', !!app.session!.state.focus && app.session!.state.focus.context!.kind === 'vrf' && shown === 'h1,r1', shown);
+      app.exitFocus();
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- collapsed groups: a group drawn as one box, its connections out of it to the box; display state only
+    {
+      const cgYaml = 'netatlas: 1\ntitle: Collapse check\ngroups:\n  - {id: lab, label: Lab}\ndevices:\n  - {id: a, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, group: lab, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
+      app.loadText(cgYaml, 'collapse-check.yaml', 'file');
+      app.setView('physical');
+      await tick();
+      const before = app.exportText();
+      app.select('device:a', true);
+      await tick();
+      check('Collapse group: available for a device in a group; Expand group not yet', app.command('view.collapse')!.state(app).enabled && !app.command('view.expand')!.state(app).enabled);
+      app.runCommand('view.collapse');
+      await tick();
+      const boxEl = q('.node[data-ref="device:⊞lab"]');
+      check('… the group is one box labelled with what it holds; the cable out of it ends on the box; the inside ones are not drawn; the model is unchanged', !!boxEl && /Lab: 3 devices, 2 cables inside\s*\(collapsed\)\s*Collapsed group/.test(boxEl.textContent || '') && !!q('#viewport [data-ref="link:l3"]') && !q('#viewport [data-ref="link:l1"]') && !q('.node[data-ref="device:a"]') && app.exportText() === before, boxEl ? boxEl.textContent || '' : 'no box');
+      app.select('device:⊞lab', true);
+      await tick();
+      check('… selecting the box selects its group; the Inspector offers Expand', app.session!.state.selected === 'group:lab' && !!q('#side [data-command="view.expand"]:not([disabled])'));
+      (q('#side [data-command="view.expand"]') as HTMLElement).click();
+      await tick();
+      check('… Expand draws its devices again', !q('.node[data-ref="device:⊞lab"]') && !!q('.node[data-ref="device:a"]') && !!q('#viewport [data-ref="link:l1"]'));
+      app.mdoc!.markSaved();
+    }
+
+    // ---- execution scopes: chosen in Start simulation; what runs, apart from what is drawn
+    {
+      const scYaml = 'netatlas: 1\ntitle: Scope check\ngroups:\n  - {id: lab, label: Lab}\ndevices:\n  - {id: a, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, group: lab, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: endpoint, group: lab, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
+      app.loadText(scYaml, 'scope-check.yaml', 'file');
+      await tick();
+      app.select('group:lab');
+      await tick();
+      const choices = app.scopeChoices();
+      void app.openStartDialog();
+      await tick();
+      const sel = q('#sim-pd-scope') as HTMLSelectElement | null;
+      const opts = sel ? Array.from(sel.options).map((o) => o.textContent || '') : [];
+      check('Start simulation: an Execution scope choice, the entire model first (the default), then the scopes that apply to the selection', !!sel && sel.value === '0' && opts[0] === 'Entire model' && opts.indexOf('Site or group: Lab') > 0 && /Runs every device \(4\)/.test(q('#sim-pd-scope-info')!.textContent || ''), opts.join(' | '));
+      if (sel) {
+        sel.value = String(opts.indexOf('Site or group: Lab'));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick();
+      check('… a scope says how many devices it runs and what leads out of it, behind an expansion', /Runs 3 of 4 devices/.test(q('#sim-pd-scope-info')!.textContent || '') && /Boundary: sw:p3 \(cable l3\) leads to c, not run/.test(q('#sim-pd-scope-detail')!.textContent || ''));
+      (q('#modal [data-value="cancel"]') as HTMLElement).click();
+      await tick();
+      check('… Cancel starts nothing (never a simulation started by choosing)', !app.simulationOn());
+      app.startProtocolSimulation({ scope: choices.find((x) => x.kind === 'group') });
+      // (the status pills are drawn with the frame: draw one now)
+      app.simController()!.refresh(true);
+      await tick();
+      const pill = q('.sim-power[data-device="c"]');
+      check('a scoped simulation: the device outside is marked Not run (never shown as a participant); the panel counts what runs and what does not', !!pill && pill.getAttribute('data-power') === 'outside' && /Not run/.test(pill.textContent || '') && /Execution scope: Site or group: Lab\. 3 of 4 devices run, 1 not run/.test(q('#sim-scope')!.textContent || ''), pill ? pill.getAttribute('data-power') || '' : `no pill: sim ${app.simulationOn()}, pills ${doc.querySelectorAll('.sim-power').length}, node c ${!!q('.node[data-ref="device:c"]')}, scope ${q('#sim-scope') ? q('#sim-scope')!.textContent : 'none'}`);
+      await app.exitSimulation();
+      await tick();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- routing policy in the editor: collapsed by default, compact ordered rule tables, one undo step per change
+    {
+      app.loadExample(0);
+      await tick();
+      app.select('device:hq-rtr1');
+      (q('[data-tab="edit"]') as HTMLElement).click();
+      await tick();
+      const before = app.exportText();
+      const box = q('#side-body .rp-box[data-rp="bgp"]') as HTMLDetailsElement | null;
+      check('a routing protocol’s policy is one collapsed line on its card (nothing on every device by default)', !!box && !box.open && /^Routing policy · none: every connected network is advertised, every route accepted$/.test(box.querySelector('summary')!.textContent || ''), box ? box.querySelector('summary')!.textContent || '' : 'no box');
+      check('… OSPF (link-state) has no export rules to edit', !!q('#side-body .rp-box[data-rp="ospf"] [data-rules="import"]') && !q('#side-body .rp-box[data-rp="ospf"] [data-rules="export"]'));
+      (q('#side-body .rp-box[data-rp="bgp"] [data-rules="export"] [data-act="rule-add"][data-v="deny"]') as HTMLElement).click();
+      await tick();
+      const after = app.exportText();
+      const row = q('#side-body .rp-box[data-rp="bgp"] [data-rules="export"] .rule-table tbody tr');
+      check('… “+ deny rule” adds an ordered rule with the action chosen (flow style), the box opens with its table', /export: \[\{action: deny\}\]|export:\n\s+- \{action: deny\}/.test(after) && !!row && (q('#side-body .rp-box[data-rp="bgp"]') as HTMLDetailsElement).open && /export 1 rule/.test(q('#side-body .rp-box[data-rp="bgp"] summary')!.textContent || ''), after.slice(after.indexOf('bgp:'), after.indexOf('bgp:') + 120));
+      app.undo();
+      await tick();
+      check('… undo removes it (one step)', app.exportText() === before);
+      // a network policy: none on the router until its default action is chosen
+      const np = q('#side-body .np-box') as HTMLDetailsElement | null;
+      check('a network policy is one collapsed line too: none written, it forwards everything it routes', !!np && !np.open && /^Network policy · none: it forwards everything it routes$/.test(np.querySelector('summary')!.textContent || ''), np ? np.querySelector('summary')!.textContent || '' : 'no box');
+      const start = q('#side-body .np-box select[data-t="np-add"]') as HTMLSelectElement;
+      start.value = 'deny';
+      start.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… choosing its default action starts it (policy: {default: deny}), the box stays open with its rule table', /policy:\n\s+default: deny/.test(app.exportText()) && (q('#side-body .np-box') as HTMLDetailsElement).open && !!q('#side-body .np-box [data-rules="policy"] [data-act="rule-add"][data-v="permit"]'));
+      (q('#side-body .np-box [data-act="rule-add"][data-v="permit"]') as HTMLElement).click();
+      await tick();
+      const src = q('#side-body .np-box .rule-table tbody tr input[data-t="csv"]') as HTMLInputElement;
+      src.value = 'hq-core1, hq-core2';
+      src.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… a rule: action, source (a short list as text), in order', /rules:\n\s+- \{action: permit, source: \[hq-core1, hq-core2\]\}/.test(app.exportText()), app.exportText().slice(app.exportText().indexOf('policy:'), app.exportText().indexOf('policy:') + 120));
+      app.undo();
+      app.undo();
+      app.undo();
+      await tick();
+      check('… undo, step by step, back to no policy', app.exportText() === before);
+      app.select(null);
       app.mdoc!.markSaved();
     }
 

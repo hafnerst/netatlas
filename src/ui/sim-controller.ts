@@ -43,6 +43,8 @@
  * happens. Nothing here changes the model or adds an undo step (a device's
  * Simulation settings are edited in the Actions panel, see modelChanged).
  */
+import type { SendPrefill } from '../analysis/comm-identity';
+import { ExecScope, scopedModel } from '../analysis/exec-scope';
 import { virtBridgeId } from '../model/virtual';
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
@@ -128,6 +130,8 @@ export interface SimStartOptions {
   senders?: string[];
   /** the simulation-wide parameters that differ from their defaults */
   params?: { [key: string]: ParamValue };
+  /** what it runs (analysis/exec-scope.ts): the entire model when left out */
+  scope?: ExecScope;
 }
 
 const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c' };
@@ -206,7 +210,9 @@ export class SimController implements SimulationMode {
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
     // the real-time schedule (a stream's interval) counts the page's own clock
     const win = host.doc.defaultView;
-    this.sim = new Simulation(host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+    // an execution scope runs a model of its own (the devices outside are not run at all; display and analysis are not changed by it)
+    this.scope = o.scope && o.scope.kind !== 'entire' ? o.scope : null;
+    this.sim = new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
     // closing the packet inspector ends the pause it caused
@@ -692,10 +698,24 @@ export class SimController implements SimulationMode {
   /** the devices' lifecycle, as of a state version of the simulation (every power change counts one) */
   private powerStates: { ver: number; states: Map<string, DeviceStateView> } | null = null;
 
-  /** The devices' lifecycle now (computed again only when the simulation's state changed). */
+  /** The execution scope it runs (null: the entire model). */
+  readonly scope: ExecScope | null;
+
+  /** "Execution scope: Entire model (12 devices)" — or how many it runs and how many it does not. */
+  scopeText(): string {
+    const n = this.host.model().devices.length;
+    if (!this.scope) return `Execution scope: Entire model (${n} device${n === 1 ? '' : 's'} run).`;
+    return `Execution scope: ${this.scope.label}. ${this.scope.devices.size} of ${n} devices run, ${n - this.scope.devices.size} not run (marked Not run); ${this.scope.boundary.length} cable${this.scope.boundary.length === 1 ? '' : 's'} lead out of it.`;
+  }
+
+  /** The devices' lifecycle now (computed again only when the simulation's state changed); a device outside the execution scope is "Not run". */
   private deviceStates(): Map<string, DeviceStateView> {
     const ver = this.sim.engine.stateVersion;
-    if (!this.powerStates || this.powerStates.ver !== ver) this.powerStates = { ver, states: this.sim.deviceStates() };
+    if (!this.powerStates || this.powerStates.ver !== ver) {
+      const states = this.sim.deviceStates();
+      if (this.scope) for (const d of this.host.model().devices) if (!this.scope.devices.has(d.id)) states.set(d.id, { state: 'outside', label: 'Not run', detail: `outside the execution scope (${this.scope.label}): not simulated, nothing answers from it` });
+      this.powerStates = { ver, states };
+    }
     return this.powerStates.states;
   }
 
@@ -1694,7 +1714,7 @@ export class SimController implements SimulationMode {
   // ------------------------------------------------------------ Send test
 
   /** An analysis's handoff: Send network packets, open and prefilled (nothing is sent until Send). */
-  prefillSend(p: { from: string; via?: string; address: string; kind: TestKind; port?: number }): void {
+  prefillSend(p: SendPrefill): void {
     if (!this.testForm) return;
     this.openSection('sim-ne-send');
     this.testForm.prefill(p);
@@ -2069,6 +2089,9 @@ export class SimController implements SimulationMode {
     if (note && note.parentNode && !setup!.querySelector('#sim-shapes'))
       note.parentNode.insertBefore(el(doc, 'p', { class: 'sim-shapes small', id: 'sim-shapes' }, [el(doc, 'span', {}, [shape('unicast'), ' unicast']), el(doc, 'span', {}, [shape('broadcast'), ' broadcast']), el(doc, 'span', {}, [shape('multicast'), ' multicast']), el(doc, 'span', { class: 'muted' }, ['A dot opens the packet inspector.'])]), note.nextSibling);
     box.appendChild(el(doc, 'p', { id: 'sim-storm', class: 'sim-storm', role: 'alert', hidden: '' }, ['']));
+    // what runs: the execution scope (evaluated and not run), and a note when the simulation can't keep up
+    box.appendChild(el(doc, 'p', { id: 'sim-scope', class: 'small muted' }, [this.scopeText()]));
+    box.appendChild(el(doc, 'p', { id: 'sim-behind', class: 'small', role: 'status', hidden: '' }, ['']));
     // the narrow layout shows one side at a time: tabs
     const tabS = el(doc, 'button', { type: 'button', role: 'tab', id: 'sd-tab-status', 'aria-controls': 'sd-status', 'aria-selected': 'true' }, ['Status']);
     const tabL = el(doc, 'button', { type: 'button', role: 'tab', id: 'sd-tab-log', 'aria-controls': 'sd-log', 'aria-selected': 'false', tabindex: '-1' }, ['Event log']);
@@ -2206,6 +2229,16 @@ export class SimController implements SimulationMode {
     this.updateClock();
     const drawn = q('sim-drawn');
     if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `at most ${CONV_LIMIT} exchanges as dots at once`}).` : '';
+    // behind for a while (more than 2 s of simulated time): say so, and suggest a smaller execution scope
+    const bh = q('sim-behind');
+    if (bh) {
+      const t = this.pacer.behind > 2000 ? `The simulation is behind its rate (${fmtSec(this.pacer.behind)} of simulated time). ${this.scope ? 'A smaller execution scope' : 'An execution scope (Start simulation: a communication, a dependency slice, a site, a VLAN)'} runs fewer devices; or slow the speed down.` : '';
+      if (bh.textContent !== t) bh.textContent = t;
+      if (bh.hidden !== !t) {
+        bh.hidden = !t;
+        if (this.host.panelChanged) this.host.panelChanged();
+      }
+    }
     // a broadcast storm: a warning
     const storm = q('sim-storm');
     if (storm) {

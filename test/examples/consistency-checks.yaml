@@ -85,7 +85,9 @@ devices:
     type: router
     group: core
     protocols:
-      bgp: {asn: 65003}                                       # protocol-not-enabled: OSPF (ospf-13) is not enabled
+      bgp:                                                    # protocol-not-enabled: OSPF (ospf-13) is not enabled
+        asn: 65003
+        advertise: [10.99.0.0/16]                             # routing-policy: r3 has no 10.99.0.0/16 to advertise
     interfaces:
       - {id: e0, ip: 10.0.31.2/30}
       - e4

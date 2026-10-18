@@ -311,6 +311,8 @@ export function deviceTypeInText(id: string, plural = false): string {
  * then its kind ("Router · Cloud gateway").
  */
 export function deviceSubtitle(type: string, layer3?: boolean, extra?: { kind?: string; kindLabel?: string; mode?: string; purpose?: string }): string {
+  // a collapsed group's box (model/collapse.ts) is no device of its own
+  if (extra && extra.kind === 'collapsed_group') return 'Collapsed group';
   let t = deviceTypeLabel(type);
   if (type === 'switch') t = layer3 ? 'Layer 3 switch' : 'Layer 2 switch';
   else if (type === 'vm' && layer3) t = 'Virtual machine · Layer 3';

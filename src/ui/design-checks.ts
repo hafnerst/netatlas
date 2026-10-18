@@ -14,7 +14,7 @@ import { CLASS_TEXT, FindingClass, FindingGroup, PresentedFinding } from '../ana
 import { LAYER_LABEL } from '../analysis/communication';
 import { Verdict, contextText, exportFooter, exportHeader, verdictMark, verdictText } from '../analysis/result';
 import { STOP_LABEL } from '../analysis/trace';
-import { EXPECT_KINDS, Expectation, Model } from '../model/types';
+import { ENFORCE_KINDS, EXPECT_KINDS, Expectation, Model, TIMING_METHODS } from '../model/types';
 import { el } from './dom';
 import { ContextBarActions, ContextBarState, contextBar, limitsDetails, verdictChip } from './analysis-ui';
 
@@ -29,16 +29,23 @@ export interface ExpectForm {
   failure: string;
   service: string;
   vrf: string;
+  /** '' (the ends'), '4' or '6' */
+  family: string;
+  /** blocked: '' (unreachable), 'unreachable', 'policy' or 'boundary', and the boundary device */
+  enforce: string;
+  boundary: string;
+  /** timing: '' (not chosen yet), 'ptp', 'ntp' or 'either' */
+  method: string;
   description: string;
   error: string;
 }
 
 export function newExpectForm(): ExpectForm {
-  return { index: -1, name: '', expect: 'available', from: '', to: '', failure: '', service: '', vrf: '', description: '', error: '' };
+  return { index: -1, name: '', expect: 'available', from: '', to: '', failure: '', service: '', vrf: '', family: '', enforce: '', boundary: '', method: '', description: '', error: '' };
 }
 
 export function formOf(e: Expectation, index: number): ExpectForm {
-  return { index, name: e.name, expect: e.expect, from: e.from, to: e.to || '', failure: e.failure.join(', '), service: e.service || '', vrf: e.vrf || '', description: e.description || '', error: '' };
+  return { index, name: e.name, expect: e.expect, from: e.from, to: e.to || '', failure: e.failure.join(', '), service: e.service || '', vrf: e.vrf || '', family: e.family ? String(e.family) : '', enforce: e.enforce || '', boundary: e.boundary || '', method: e.method || '', description: e.description || '', error: '' };
 }
 
 /** A finding of the window: as presented, and its index in the Problems list (for Go to). */
@@ -82,7 +89,8 @@ function expectLine(e: Expectation): string {
   const k = EXPECT_KINDS.find((x) => x.id === e.expect);
   const what = k ? k.label.toLowerCase() : e.expect;
   const to = e.to ? ` → ${e.to}` : e.expect === 'timing' ? '' : ' → its configured peer';
-  return `${e.from}${to}${e.service ? ' · ' + e.service : ''}: ${what}${e.failure.length ? ` after the failure of ${e.failure.join(', ')}` : ''}`;
+  const enf = e.enforce && e.enforce !== 'unreachable' ? (e.enforce === 'policy' ? ' (denied by policy)' : ` (denied at ${e.boundary || '?'})`) : e.method ? ` by ${e.method === 'either' ? 'PTP or NTP' : e.method.toUpperCase()}` : '';
+  return `${e.from}${to}${e.service ? ' · ' + e.service : ''}: ${what}${enf}${e.failure.length ? ` after the failure of ${e.failure.join(', ')}` : ''}`;
 }
 
 /** The counts of a run, in words: "5 expectations: 3 satisfied, 1 violated, 1 indeterminate". */
@@ -190,6 +198,14 @@ function detailBox(doc: Document, r: ExpectationResult, related: ShownFinding[],
     box.appendChild(ul);
   }
   if (r.timing && r.timing.chain.length > 1) box.appendChild(el(doc, 'p', {}, ['Source path: ', r.timing.chain.join(' ← ')]));
+  if (r.enforcement) {
+    const en = r.enforcement;
+    const k = ENFORCE_KINDS.find((x) => x.id === en.kind);
+    box.appendChild(el(doc, 'p', {}, [el(doc, 'strong', {}, ['Enforcement: ']), `${k ? k.label : en.kind}${en.boundary ? ' (' + en.boundary + ')' : ''}, path by path:`]));
+    const ul = el(doc, 'ul', { class: 'dc-enf' });
+    en.paths.forEach((p, i) => ul.appendChild(el(doc, 'li', { 'data-outcome': p.outcome }, [`Path ${i + 1}: ${p.outcome === 'denied' ? 'denied' : p.outcome === 'reached' ? 'reaches' : p.outcome === 'beyond' ? 'leaves the model' : 'stops'} at ${p.at}${p.detail ? ' — ' + p.detail : ''}${p.permittedBy.length ? ` (permitted before by ${p.permittedBy.join(', ')})` : ''}`])));
+    box.appendChild(ul);
+  }
   if (r.refs.length) {
     const p = el(doc, 'p', {}, ['In the diagram: ']);
     r.refs.slice(0, 12).forEach((x, i) => {
@@ -239,11 +255,21 @@ function formBox(doc: Document, model: Model, f: ExpectForm, act: DesignActions)
   sel.value = f.expect;
   sel.addEventListener('change', () => act.formInput('expect', sel.value));
   grid.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-expect' }, ['Outcome']), sel]));
+  // a timing expectation: the method it accepts (none is chosen for it)
+  if (f.expect === 'timing') {
+    const ms = el(doc, 'select', { id: 'dc-f-method', 'aria-describedby': 'dc-f-method-help' }) as HTMLSelectElement;
+    ms.appendChild(el(doc, 'option', { value: '' }, ['Select…']));
+    for (const k of TIMING_METHODS) ms.appendChild(el(doc, 'option', { value: k.id }, [k.label]));
+    ms.value = f.method;
+    ms.addEventListener('change', () => act.formInput('method', ms.value));
+    grid.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-method' }, ['Method']), ms]));
+    grid.appendChild(el(doc, 'p', { class: 'help tf-help', id: 'dc-f-method-help' }, ['Which timing source is accepted. Either: both are evaluated and reported, and one is enough; no precedence between them is assumed.']));
+  }
   field('from', 'Source', { list: 'dc-ends', placeholder: 'device, interface, address or device/application' });
   field('to', 'Destination', { list: 'dc-ends', placeholder: f.expect === 'timing' ? 'optional: the timing source' : 'device, address, device/application or device/service' });
   field('failure', 'After failure of', { list: 'dc-fail', placeholder: 'optional: failure domain, devices, cables (comma-separated)' });
   form.appendChild(grid);
-  const adv = el(doc, 'details', { class: 'dc-adv' }, [el(doc, 'summary', {}, ['Advanced: service, VRF, description'])]);
+  const adv = el(doc, 'details', { class: 'dc-adv' }, [el(doc, 'summary', {}, [f.expect === 'blocked' ? 'Advanced: service, VRF, family, enforcement, description' : 'Advanced: service, VRF, family, description'])]);
   const g2 = el(doc, 'div', { class: 'tf-grid' });
   const field2 = (k: keyof ExpectForm, label: string, ph: string): void => {
     const i = el(doc, 'input', { id: 'dc-f-' + k, type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: ph }) as HTMLInputElement;
@@ -253,9 +279,32 @@ function formBox(doc: Document, model: Model, f: ExpectForm, act: DesignActions)
   };
   field2('service', 'Service', 'from the application, or tcp/22, udp/53, icmp');
   field2('vrf', 'VRF', 'the source interface’s');
+  const fam = el(doc, 'select', { id: 'dc-f-family' }) as HTMLSelectElement;
+  for (const [v, t] of [['', 'The ends’ (or the application’s)'], ['4', 'IPv4'], ['6', 'IPv6']]) fam.appendChild(el(doc, 'option', { value: v }, [t]));
+  fam.value = f.family;
+  fam.addEventListener('change', () => act.formInput('family', fam.value));
+  g2.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-family' }, ['Family']), fam]));
+  // how a block must be enforced: blocked only (the basic form stays as it is)
+  if (f.expect === 'blocked') {
+    const enf = el(doc, 'select', { id: 'dc-f-enforce', 'aria-describedby': 'dc-f-enforce-help' }) as HTMLSelectElement;
+    enf.appendChild(el(doc, 'option', { value: '' }, ['Unreachable (any prevention; the default)']));
+    for (const k of ENFORCE_KINDS.filter((x) => x.id !== 'unreachable')) enf.appendChild(el(doc, 'option', { value: k.id, title: k.help }, [k.label]));
+    enf.value = f.enforce === 'unreachable' ? '' : f.enforce;
+    enf.addEventListener('change', () => act.formInput('enforce', enf.value));
+    g2.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-enforce' }, ['Enforcement']), enf]));
+    const k = ENFORCE_KINDS.find((x) => x.id === (f.enforce || 'unreachable'));
+    g2.appendChild(el(doc, 'p', { class: 'help tf-help', id: 'dc-f-enforce-help' }, [k ? k.help : '']));
+    if (f.enforce === 'boundary') {
+      const blist = el(doc, 'datalist', { id: 'dc-boundaries' });
+      for (const d of model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) blist.appendChild(el(doc, 'option', { value: d.id }));
+      g2.appendChild(blist);
+      field2('boundary', 'Boundary', 'the device that must deny it (a firewall, a gateway)');
+      (g2.lastElementChild as HTMLElement).querySelector('input')!.setAttribute('list', 'dc-boundaries');
+    }
+  }
   field2('description', 'Note', 'why it is required');
   adv.appendChild(g2);
-  if (f.service || f.vrf || f.description) adv.setAttribute('open', '');
+  if (f.service || f.vrf || f.family || f.enforce || f.description) adv.setAttribute('open', '');
   form.appendChild(adv);
   if (f.error) form.appendChild(el(doc, 'p', { class: 'trace-error', id: 'dc-f-error', role: 'alert' }, [f.error]));
   const save = el(doc, 'button', { type: 'submit', class: 'primary', id: 'dc-f-save' }, [f.index < 0 ? 'Add' : 'Save']);

@@ -82,8 +82,9 @@ snapshot of a running simulation: whether a source can use an application
 or service (addresses, name resolution, path, policy and listener, each said
 apart), how each network's addresses are allocated, which cable, device or
 LAG cuts something off or takes a service away, what a failure domain takes
-with it, whether saved requirements hold, and which settings contradict
-each other. Every result gives its verdict with its context, coverage and
+with it and whether the stated traffic still fits, whether saved
+requirements hold (an isolation by the policy that enforces it), the path
+MTU, and which settings contradict each other. Every result gives its verdict with its context, coverage and
 limits; it never changes the model and never sends anything, and a modeled
 result is no proof of production behaviour.
 
@@ -103,6 +104,8 @@ learned tables (ARP, MAC, DHCP leases, routes) as they form. Under
 | **Start application** | How an application's requests, periodic messages or MQTT publications travel |
 | **Interface actions**, a device's **Power off** | How the network reacts to a failure, a shut port or a flapping link, and how it recovers |
 
+Saved **experiments** repeat a sequence of such events from a clean start
+and compare runs; an **execution scope** runs one part of a larger model.
 Each message can be opened in the **packet inspector**, layer by layer.
 Simulated packets exist only inside NetAtlas: nothing is sent to your real
 network.
@@ -137,8 +140,10 @@ model's parameters; it is not a measurement of real hardware.
 - [docs/FORMAT.md](docs/FORMAT.md): the YAML model format and its rules;
   [docs/YAML-SUBSET.md](docs/YAML-SUBSET.md): the YAML that is supported.
 - [examples/README.md](examples/README.md): the built-in examples.
-- [docs/LIMITATIONS.md](docs/LIMITATIONS.md): what NetAtlas does not do, in
-  detail.
+- [docs/SUPPORT.md](docs/SUPPORT.md): what each protocol, service and
+  analysis implements and leaves out (generated from the application's own
+  statements); [docs/LIMITATIONS.md](docs/LIMITATIONS.md): the
+  simplifications and unsupported cases, area by area.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release.
 
 Important boundaries:

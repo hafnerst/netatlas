@@ -81,11 +81,11 @@ test('reasonable size, and the examples, the manual and the license are embedded
   // (5 MiB since virtualization: the Hypervisor and Container engine services' editing, the hosts' interiors, the simulation of virtual networking, its example and manual sections;
   //  6 MiB since the architecture-validation workflow: communication checks, allocation-aware addressing, service dependencies, what-if, failure domains, saved expectations and Design checks)
   assert.ok(html.length < 6 * 1024 * 1024, `${html.length} bytes`);
-  // the screenshots are small, cropped WebP images: together under 1040 KiB as data: URLs (the manual's simulation sections added some: the packet inspector, a broadcast domain, the simulation layout and the Device types filter; then a port's VLANs, and the port labels in the diagrams; then virtualization: a host's interior, its Services card and the HA restart in a simulation; then the Send test form; then a device's applications and the PTP clocks' marks)
+  // the screenshots are small, cropped WebP images: together under 1080 KiB as data: URLs (the manual's simulation sections added some: the packet inspector, a broadcast domain, the simulation layout and the Device types filter; then a port's VLANs, and the port labels in the diagrams; then virtualization: a host's interior, its Services card and the HA restart in a simulation; then the Send test form; then a device's applications and the PTP clocks' marks; then a saved experiment's run, the saved views and the execution scope)
   const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
   assert.ok(images.length >= 8, String(images.length));
   const total = images.reduce((n, s) => n + s.length, 0);
-  assert.ok(total < 1040 * 1024, `${total} bytes of screenshots`);
+  assert.ok(total < 1080 * 1024, `${total} bytes of screenshots`);
   assert.match(js, /Apache License\\n\s+Version 2\.0, January 2004/);
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);

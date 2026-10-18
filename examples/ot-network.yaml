@@ -175,3 +175,27 @@ expectations:
   - {id: hmi-poll, name: The HMI polls the PLC, expect: dependency, from: hmi/poll}
   - {id: plc-telemetry, name: The PLC publishes its telemetry, expect: dependency, from: plc/telemetry}
   - {id: it-no-modbus, name: The IT side can't reach Modbus, expect: blocked, from: eng-ws, to: plc/registers}
+
+# A repeatable experiment (Simulate ▾ → Experiments…, Run): the PLC's
+# telemetry and the HMI's polling while the cell cabinet is down for 40 s.
+# The HMI reaches the PLC again only after the cell switch has booted (its
+# boot time) and its ports are up; the telemetry misses the rounds without a
+# broker, so its delivery fails.
+# It runs on scenario time from a clean start, so every run gives the same
+# result; Compare with the previous run says so (or what changed after an
+# edit).
+experiments:
+  - id: cabinet-outage
+    name: Telemetry and polling while the cell cabinet is down
+    duration: 180s
+    actions:
+      - {id: tele, at: 20s, do: start_app, target: plc/telemetry}
+      - {id: poll, at: 20s, do: start_app, target: hmi/poll}
+      - {at: 40s, do: fail, target: cell-cabinet}
+      - {at: 80s, do: restore, target: cell-cabinet}
+    observe:
+      - {at: 35s, of: reach, target: hmi, to: plc/registers, expect: available}
+      - {at: 60s, of: device, target: edge, expect: off}
+      - {at: 60s, of: reach, target: hmi, to: plc/registers, expect: unavailable}
+      - {at: 170s, of: reach, target: hmi, to: plc/registers, expect: available}
+      - {of: app, target: tele, expect: failed}

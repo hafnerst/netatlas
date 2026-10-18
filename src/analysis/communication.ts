@@ -127,22 +127,10 @@ export interface CommRequest {
   /** "tcp/443", "udp/53", "icmp"; none: from the applications, else not given */
   service?: string;
   vrf?: string;
+  /** the address family asked for (none: the ends', or the client application's) */
+  family?: 4 | 6;
   /** also the reverse direction (reverse routing and symmetry) */
   back?: boolean;
-}
-
-/** A prefilled simulation action (offered, never run by the check). */
-export interface Handoff {
-  kind: 'send' | 'app';
-  device: string;
-  iface?: string;
-  /** the destination address (send) */
-  target?: string;
-  proto?: 'tcp' | 'udp' | 'icmp';
-  port?: number;
-  /** the application to start (app) */
-  app?: string;
-  text: string;
 }
 
 export interface CommCheck {
@@ -165,7 +153,6 @@ export interface CommCheck {
   reverse?: { trace: Trace; outcome: TraceOutcome; symmetry: 'symmetric' | 'asymmetric' | 'not comparable'; lines: string[] };
   /** separate legs: a broker's subscribers (each over its own connection), a host name's DNS query */
   legs: Array<{ label: string; check: CommCheck }>;
-  handoff?: Handoff;
   info: ResultInfo;
 }
 
@@ -261,8 +248,16 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
     serviceSource = `the port of ${clientApp.text}`;
   }
   if (to.kind === 'app' && !to.profile.listener) return failed(req, `Destination: ${to.text} is a ${to.profile.short}, not a listener: nothing connects to it`, context);
+  // an address written as an address has its family: a different one asked for is a contradiction
+  if (req.family) {
+    for (const [what, e] of [['Source', from], ['Destination', to]] as Array<[string, typeof from]>) {
+      const a = e.kind === 'end' && e.end.kind === 'address' ? parseAddress(e.end.address) : null;
+      if (a && a.version !== req.family) return failed(req, `${what}: ${e.text} is an IPv${a.version} address, not IPv${req.family}`, context);
+    }
+  }
   // ---- the address family: the client's (ip_version, an address peer), else what the ends have
   const famOf = (): 4 | 6 | undefined => {
+    if (req.family) return req.family;
     if (clientApp) {
       const pa = clientApp.app.peer ? parseAddress(clientApp.app.peer) : null;
       return pa ? pa.version : clientApp.app.ipVersion || 4;
@@ -321,14 +316,15 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   const srcChoices = endpointChoices(model, srcEnd, ctx).filter((c) => fam === undefined || c.version === fam);
   const addr: CommLayer = { id: 'address', verdict: 'satisfied', text: '', detail: [], refs: ['device:' + fromDev] };
   layers.unshift(addr);
-  const famText = fam ? `IPv${fam}` : 'an';
+  // ("has no IPv4 address", or "has no address" when the family is open)
+  const famText = fam ? `IPv${fam} ` : '';
   /** an end without an address: indeterminate where one is assigned at runtime (the configured model), else violated */
   const noAddress = (dev: string, what: string, bind?: string): void => {
     // (in a failure: the interfaces that have an address may be down)
     const down = connectedIn(model, dev, ctx).filter((c) => (fam === undefined || c.addr.version === fam) && (bind === undefined || c.iface === bind) && !!ctx.up && !ctx.up(dev, c.iface));
     if (down.length) {
       addr.verdict = 'violated';
-      addr.detail.push(`${dev}:${down.map((c) => c.iface).filter((x, k, a) => a.indexOf(x) === k).join(', ')} ${down.length === 1 ? 'is' : 'are'} down: ${dev} has no ${famText} address that is up`);
+      addr.detail.push(`${dev}:${down.map((c) => c.iface).filter((x, k, a) => a.indexOf(x) === k).join(', ')} ${down.length === 1 ? 'is' : 'are'} down: ${dev} has no ${famText}address that is up`);
       addr.refs.push(`iface:${dev}:${down[0].iface}`);
       return;
     }
@@ -339,7 +335,7 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
       addr.refs.push(`iface:${dev}:${auto[0]}`);
     } else {
       addr.verdict = 'violated';
-      addr.detail.push(snap && auto.length ? `${dev}:${auto[0]} has no ${famText} address at the snapshot (not acquired yet)` : bind !== undefined ? `${dev}:${bind}, the bind interface of ${to.text}, has no ${famText} address` : `${dev} has no ${famText} address${what === 'source' && from.kind === 'end' && from.end.kind === 'iface' ? ' on ' + from.end.iface : ''}`);
+      addr.detail.push(snap && auto.length ? `${dev}:${auto[0]} has no ${famText}address at the snapshot (not acquired yet)` : bind !== undefined ? `${dev}:${bind}, the bind interface of ${to.text}, has no ${famText}address` : `${dev} has no ${famText}address${what === 'source' && from.kind === 'end' && from.end.kind === 'iface' ? ' on ' + from.end.iface : ''}`);
     }
   };
   if (!srcChoices.length) noAddress(fromDev, 'source');
@@ -418,15 +414,9 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   out.info = resultInfo(
     context,
     ['Routing, layer 2 and the modeled policies decide as the path tracer does (a model-based approximation).'].concat(svc ? [`The service is ${svcText(svc)} (${serviceSource}).`] : []),
-    ['Router ACLs are not modeled.', 'Runtime behaviour: authentication, protocol acceptance, service health and completion.'].concat(out.outcome && out.outcome.truncated ? ['Equal-cost paths beyond the evaluated ones.'] : []),
+    ['A policy decides by its rules for this direction; a stateful return decision is the simulation’s.', 'Runtime behaviour: authentication, protocol acceptance, service health and completion.'].concat(out.outcome && out.outcome.truncated ? ['Equal-cost paths beyond the evaluated ones.'] : []),
   );
-  // ---- the handoff: the same exchange, prefilled in the simulation's Network events
-  // (the destination address: the application's or service's, else the one the trace resolved)
-  const target = toAddr || (out.to ? out.to.address : undefined);
-  if (out.from && out.from.address && target) {
-    if (clientApp) out.handoff = { kind: 'app', device: fromDev, app: clientApp.app.id, text: `Start ${clientApp.text} in the simulation (Network events → Start application)` };
-    else out.handoff = { kind: 'send', device: fromDev, iface: out.from.iface, target, proto: svc ? svc.proto : 'icmp', port: svc ? svc.port : undefined, text: `Send ${svc ? svcText(svc) : 'a ping'} from ${fromDev} to ${target} in the simulation (Network events → Send network packets)` };
-  }
+  // (the simulation handoff is made from the check's identity: analysis/comm-identity.ts)
   return out;
 }
 
@@ -476,12 +466,12 @@ function policyLayer(model: Model, t: Trace, o: TraceOutcome, svc: TraceService 
       const d = model.index.devices.get(h.device);
       if (!d || k === 0) return;
       const c = capabilities(d);
-      if (!(c.firewallPolicy || c.securityGateway || c.vpnOnlyTransit)) return;
+      if (!(c.firewallPolicy || c.securityGateway || c.vpnOnlyTransit || !!d.policy)) return;
       filters.add(h.device);
       for (const x of h.why ? h.why.policy : []) {
         const line = `${h.device}: ${x}`;
         if (said.indexOf(line) < 0) said.push(line);
-        if (/give a service/.test(x)) unknown = true;
+        if (/give a service|give a source/.test(x)) unknown = true;
       }
     });
     for (const h of p.hops) for (const l2 of h.l2) {
@@ -489,7 +479,7 @@ function policyLayer(model: Model, t: Trace, o: TraceOutcome, svc: TraceService 
       if (d && capabilities(d).securityGateway) filters.add(l2);
     }
   }
-  if (!filters.size) return { id: 'policy', verdict: 'satisfied', text: 'No modeled policy on the path (router ACLs are not modeled)', detail: [], refs: [] };
+  if (!filters.size) return { id: 'policy', verdict: 'satisfied', text: 'No modeled policy on the path', detail: [], refs: [] };
   if (unknown || (!svc && filters.size)) return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} filter${filters.size === 1 ? 's' : ''} by service: give a service (or an application) to evaluate the decision`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
   return { id: 'policy', verdict: 'satisfied', text: `Permitted by ${Array.from(filters).join(', ')}`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
 }

@@ -53,6 +53,7 @@ const MEANING: { [id: string]: CheckMeaning } = {
   'vlan-access-trunk': M('contradiction', 'Make both ends access ports in one VLAN, or both trunks.', 'Untagged frames are dropped or land in the native VLAN.'),
   'vlan-unknown': M('missing', 'Define the VLAN (a network with its VLAN, or a VLAN interface), or remove it from the port.'),
   'lag-member-vlans': M('contradiction', 'Carry the same VLANs on every member’s far end.', 'Traffic hashed onto a member whose far end lacks the VLAN is lost.'),
+  'routing-policy': M('missing', 'Write the prefix, enable the protocol or name a neighbour of the protocol; end each filter with an explicit catch-all rule.', 'Routes are not advertised, redistributed or matched as the policy intends.'),
   'link-mtu-mismatch': M('risk', 'Use the same MTU on both ends.', 'Large packets are dropped or fragmented in one direction.'),
   'tunnel-mtu': M('risk', 'Lower the tunnel’s MTU below its underlay’s, less the encapsulation.', 'Full-size packets in the tunnel need fragmentation or are dropped.'),
   'link-speed-mismatch': M('risk', 'Set the same speed on both ends (or auto on both).', 'The link may not come up, or runs at the lower speed.'),

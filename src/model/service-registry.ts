@@ -110,7 +110,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'DHCP server',
     badge: 'DHCP',
     help: 'Leases addresses to the clients of its scopes.',
-    support: { level: 'modeled', does: 'Leases from its scopes: DISCOVER, OFFER, REQUEST and ACK, relays, renewal, rebinding and expiry.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82.' },
+    support: { level: 'modeled', does: 'IPv4 leases from its scopes (DISCOVER, OFFER, REQUEST and ACK, through relays too, renewal, rebinding and expiry); DHCPv6 from its IPv6 scopes on its own link, stateful (Solicit, Advertise, Request, Reply, renewal) and stateless (DNS servers only).', not: 'DHCPDECLINE, RELEASE, INFORM, option 82; DHCPv6 relays and prefix delegation.' },
     types: ['router', 'switch', 'firewall', ...SERVERS],
     needs: l3Switch,
     params: [],

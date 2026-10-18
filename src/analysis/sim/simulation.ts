@@ -15,7 +15,7 @@ import { snoopingChoice, switchedVlans } from '../../model/snooping';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
-import type { AnalysisSnapshot } from '../snapshot';
+import type { AnalysisSnapshot, SnapTiming } from '../snapshot';
 import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
 import { RealTimeScheduler } from './realtime';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
@@ -161,7 +161,7 @@ export type SimOptions = EngineOptions & { realClock?: () => number };
  * the simulation has no such device (yet).
  */
 export interface DeviceStateView {
-  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown';
+  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown' | 'outside';
   /** "Operational", "Powered off", "Booting", "Passive", "External", "Unknown" */
   label: string;
   /** "Booting: up at t = 45 s", "Powered off at t = 12 s (down with its host esx-01)" */
@@ -524,8 +524,9 @@ export class Simulation {
   }
 
   /** Start application (Network events): a client application's messages, one event until they are done or Stop. */
-  actApp(dev: string, id: string): ActionRecord {
-    const r = this.apps.start(dev, id, 'event');
+  actApp(dev: string, id: string, how: 'event' | 'start' = 'event'): ActionRecord {
+    // (an experiment starts it on scenario time, as the scenario's own applications run: a Network event's repeats on real time)
+    const r = this.apps.start(dev, id, how);
     const a = this.apps.app(dev, id);
     const target = `${dev}/${id}${a && a.peer ? ' → ' + a.peer : a && a.broker ? ' → ' + a.broker : ''}`;
     if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, error: r });
@@ -707,7 +708,21 @@ export class Simulation {
 
   /** The state now, frozen for analysis (analysis/snapshot.ts): it never changes after this call. */
   snapshot(): AnalysisSnapshot {
-    return this.engine.analysisSnapshot(this.downRefs());
+    const s = this.engine.analysisSnapshot(this.downRefs());
+    // the clocks' observed timing state: the protocol state, never an accuracy
+    const timing: SnapTiming[] = [];
+    for (const [dev, st] of Array.from(this.ntp.devs.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      const src = st.source ? st.upstreams.find((u) => u.addr === st.source) : undefined;
+      const t: SnapTiming = { dev, protocol: 'ntp', synchronized: st.own !== undefined || !!st.source, text: this.ntp.text(dev) };
+      if (src && src.dev) t.source = src.dev;
+      timing.push(t);
+    }
+    for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      const t: SnapTiming = { dev, protocol: 'ptp', synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: c.state + (c.parent ? ` to the grandmaster ${c.parent.gmDev}` : '') };
+      if (c.parent) t.source = c.parent.gmDev;
+      timing.push(t);
+    }
+    return { ...s, timing };
   }
 
   // ------------------------------------------------------------ parameters

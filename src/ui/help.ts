@@ -5,6 +5,8 @@
  */
 import { el } from './dom';
 import { LICENSE_TEXT, MANUAL_IMAGES } from '../generated/help-assets';
+import { ANALYSIS_SUPPORT, supportAreas, supportCatalog } from '../model/support-catalog';
+import { supportLabel } from '../model/support';
 
 /** A manual section: a title, short paragraphs or steps, and screenshots with captions. */
 interface Section {
@@ -194,8 +196,9 @@ const MANUAL: Section[] = [
       'Fill in what the protocol requires: BGP’s **Local AS number**, OSPF’s **Router ID** (a loopback such as `lo0`, or an IPv4 address), IS-IS’s NET. Until then they are errors, here and in Problems.',
       'For VRRP or HSRP, open the interface and press **+ VRRP group**: its group number, virtual IP and priority.',
       '**Disable** removes a protocol and its values, after listing them; Ctrl+Z brings them back.',
+      '**Routing policy** (a collapsed line on BGP, OSPF, IS-IS, EIGRP and RIP) says what the device advertises: by default every connected network, else the prefixes under **Advertise**; a **Default route** (always, or only while it has one); what it **Redistributes**; and the ordered **Import** and **Export** rules (**+ permit rule**, **+ deny rule**; action, prefix, peer, the lengths and BGP’s local preference or prepend under **More**). The first matching rule decides; a route no rule matches is denied. OSPF and IS-IS flood what they learn: they have **Import** rules only, which decide what the router installs.',
     ],
-    notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you.'],
+    notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you. Trace path and the simulation apply the routing policy alike; a hop’s **Why?** names a route’s origin, AS path, local preference and the rules on its way.', 'A router, Layer 3 switch or firewall has a **Network policy** card too, one collapsed line until opened: **Add a policy…** starts one with the default action you choose; its **Rules** (first match wins: action, source, destination, protocol, port; the name, source port, interfaces and zones under **More**) filter what it forwards, statefully on a firewall unless **Stateful** says otherwise. Trace path, the design checks and the simulation decide by the same rules and name the rule that decided. Without a policy a firewall keeps its relations and allow list.'],
     figures: [['protocols', 'r3’s Protocols card: the suggestion to enable OSPF, BGP with its AS number, and Enable a protocol.']],
   },
   {
@@ -252,25 +255,55 @@ const MANUAL: Section[] = [
       '**Failure domains of the model**: **Add failure domain**, name it, choose its kind (rack, room, site, shared power, conduit, provider) and name its members. A group of the diagram is no failure domain unless one names it. **Edit** and **Delete** are next to each; deleting one names the expectations that use it.',
       '**Copy CSV**, **Save CSV**, **Copy text** and **Save text** give the rows as shown, with the context and coverage.',
     ],
-    notes: ['A what-if is a condition, not a probability; no convergence or recovery time is claimed. Losing a DHCP server stops new assignments and renewals; the leases already given last until they end. The failure follows the model: what runs `over` it, LAGs with their minimum links, VRRP groups failing over. Nothing in the model changes.'],
+    notes: ['**Capacity** in a what-if compares the traffic the model states (demands, applications with an interval) with the speeds it states, before and after: what is **overloaded although still carried**, what is no longer carried, what **depends on the distribution** (fits split equally over equal-cost paths, exceeds on one), and where a speed is missing. An aggregate counts its surviving members; one flow is at most one member. Without stated traffic it is not evaluated.', 'A what-if is a condition, not a probability; no convergence or recovery time is claimed. Losing a DHCP server stops new assignments and renewals; the leases already given last until they end. The failure follows the model: what runs `over` it, LAGs with their minimum links, VRRP groups failing over. Nothing in the model changes.'],
     figures: [['spof', 'The Single points of failure window for the enterprise WAN: the internet cloud and the uplinks first, with what each cuts off and the relations that go down.']],
+  },
+  {
+    id: 'views',
+    title: 'Save and open a view',
+    steps: [
+      'Choose **Find → Saved views…**. The window says what is on screen (the diagram, a focus, the filters, the zoom).',
+      'Type a name and press **Save current view** (or `Enter`): the view is written to the model (one undo step), with the diagram, the focus, the devices and device types shown, the protocols drawn, the display options and the zoom.',
+      '**Open** shows a saved view again. It changes what is drawn only: the model, the analyses and a running simulation are not touched. **Delete** removes it (Ctrl+Z brings it back).',
+    ],
+    notes: [
+      'To find your way by context: **Find → Applications, VLANs and VRFs…** lists every application, VLAN and VRF of the model; **Focus** shows the devices each involves (as configured), **Exit focus** (`Esc`) the complete diagram again. A VRF’s focus is its devices with an interface in it and their neighbours on those interfaces.',
+      'Many ports at once: select a switch (or another device that bridges: an access point, a transparent firewall) and choose **Bulk edit ports…** in its Inspector or the command palette. Tick the ports, choose the change (**Add a VLAN**, **Remove a VLAN**, **Make access ports of a VLAN**, **Make trunks of VLANs**, **Remove every VLAN**) and its VLANs: the **preview** shows each port before and after, and a port left as it is says why (a routed port, already so). Nothing changes before **Apply**; Ctrl+Z undoes every port at once. Adding a VLAN to an access port makes it a trunk with its old VLAN native, so its untagged traffic stays as it was.',
+      'A large model: select a group (or a device in it) and choose **Collapse in diagram** in the Inspector, or **Collapse group** in the command palette. The group is drawn as one box that says how many devices and cables it holds; every cable and relation that leaves the group ends on the box. Selecting the box selects the group; **Expand** draws its devices again. Collapsing is display state, like a filter: a saved view keeps it.',
+      'The format is in docs/FORMAT.md (views). A view whose device or focus target is gone opens without it.',
+    ],
+    figures: [['views', 'Find → Saved views…: the private house’s two views, and a name to save the one on screen.']],
+  },
+  {
+    id: 'experiments',
+    title: 'Run a saved experiment',
+    steps: [
+      'Choose **Simulate → Experiments…**. Each saved experiment shows its length and steps; nothing has run yet: saving or editing one never starts it, and a run is apart from a simulation on screen.',
+      'Press **Run**: a new simulation of the model starts clean, on scenario time (the simulated clock), so a run can be repeated. Its actions happen at their times (at one time, in the order written), and each observation is read then: **Met**, **Not met**, **Indeterminate** (still on its way, not reached) with what was found. **Stop** ends a run where it is.',
+      '**Steps** and **Events** (state changes and drops) are behind expansions. **Compare with the previous run** says which observations changed, where the event sequences part, and whether the model changed in between. **Copy result** gives it as text, with the model and the timing.',
+      '**Edit** opens the short editor: the name and duration, the actions (a time, what it does, its target; the destination or group beside it, the rest under **More**) and the observations (a time or the end, what it reads, its target, the outcome expected). **+ action…** and **+ observation…** add one; each change is one undo step.',
+      'In Trace path, **Use in experiment…** adds an experiment that sends the traced communication and observes its delivery, without entering it again.',
+    ],
+    figures: [['experiments', 'Simulate → Experiments…: the OT cell’s cabinet outage after Run — each observation met, with what was found and when; the steps and events behind expansions.']],
+    notes: ['Experiments run on scenario time only: a stream of Network events runs on real time, so it is no experiment action. They observe states and deliveries, not convergence time, throughput or synchronization accuracy. The model format is in docs/FORMAT.md (experiments).'],
   },
   {
     id: 'expectations',
     title: 'Save design requirements',
     steps: [
       'Choose **Analyze → Design checks…**. **Saved expectations** lists the requirements kept with the model; **Evaluate** checks them all against the model (or a simulation snapshot), statically: nothing is sent.',
-      'Press **Add expectation**: give it a **name**, its **outcome** (must be available, must be blocked, dependency must be viable, timing-source path must exist), the **source** (a device, an interface, an address or an application, device/application) and the **destination** (also a service: device/dns, device/ntp …), and optionally what fails first (**After failure of**: a failure domain, devices, cables). The service, the VRF and a note are under **Advanced**. **Add** saves it in the model (one undo step).',
+      'Press **Add expectation**: give it a **name**, its **outcome** (must be available, must be blocked, dependency must be viable, timing-source path must exist), the **source** (a device, an interface, an address or an application, device/application) and the **destination** (also a service: device/dns, device/ntp …), and optionally what fails first (**After failure of**: a failure domain, devices, cables). The service, the VRF, the address family and a note are under **Advanced**; for a blocked expectation also its **Enforcement**: **Unreachable** (any prevention is enough, the default), **Denied by policy** (an evaluated policy must deny it on every path: a missing route or listener does not count) or **Denied at the selected boundary** (that device must deny it). **Add** saves it in the model (one undo step).',
       'Each row shows its verdict (**Satisfied**, **Violated**, **Indeterminate**, **Unsupported**) and the actual reason: a requirement to block that holds because no route exists says so, as opposed to a policy that blocks it. **Details** shows the layers and, where it stops, the findings that may explain it; **Trace** opens it in Trace path; **Edit** and **Delete** change it.',
       'When several expectations stop at the same place for the same reason, the window says so first: one change there may resolve them.',
     ],
-    notes: ['A timing expectation establishes a compatible source path, never that the clock synchronizes or how accurately. A failure condition is evaluated on the configured model only. Renaming a device, an interface or an application updates the expectations that name it; deleting one lists them first.'],
+    notes: ['A timing expectation names the method it accepts: **PTP**, **NTP**, or **either** (both are evaluated and reported, one is enough; no precedence between them is assumed). PTP needs a compatible source path; NTP a structurally valid source chain from upstream to upstream to a configured reference (a cycle, a chain without a reference or an upstream outside the model is none, however reachable the first upstream is). It never establishes that the clock synchronizes or how accurately; on a simulation snapshot the observed synchronization is added. A failure condition is evaluated on the configured model only. Renaming a device, an interface or an application updates the expectations that name it; deleting one lists them first.'],
   },
   {
     id: 'simulate',
     title: 'Start a protocol simulation',
     steps: [
       'Choose **Simulate → Start simulation…**. The dialog opens with the **Protocols** the model uses, all ticked, grouped by layer (*Layer 2*, *Routing*, *Tunnels and overlays*, *Multicast*, *Services*, *Traffic* …), each with how many devices or relations use it; a group says how many of its protocols are ticked (*Routing (3 of 4)*). **Select all** and **Clear** work for the whole list and for each group. The keyboard starts on the first protocol.',
+      'First, the **Execution scope**: what runs. **Entire model** is the default; the other choices are those that apply now: **Selected communication** (the Trace path on screen: its evaluated paths, every alternative and the way back), **Dependency slice** (the selected device and the providers of its dependencies), **Site or group** (the selected group), **VLAN** (of the selected VLAN interface or access port) and each **Failure domain**. A scope says how many devices it runs; what was added for it to run faithfully (the routing domain its routes come from, the switches between, its DHCP and DNS servers, a gateway group’s members) and its boundary are behind an expansion. The scope is what runs, not what is drawn (the filters) or what an analysis evaluates.',
       'Then **Senders**, open: which devices you want to watch (see *Choose the senders*). With devices selected in the diagram, they are chosen; otherwise every device.',
       'Below, the **Layer 1–4 parameters**, one collapsed section per layer (*Layer 2 – Data link (8)*): open one to change a value (its default and source are under it; a changed value is marked *modified*, and the collapsed section says so: *Layer 3 – Network (8) · 2 modified*; **Reset** puts it back). Usually the protocols and the senders are all you choose.',
       'Press **Start** (or `Enter`); `Esc` cancels. The protocols and the values are remembered for the next start in this browser session.',
@@ -279,10 +312,11 @@ const MANUAL: Section[] = [
     ],
     notes: [
       'A value configured on a cable or a relation in the model comes first, then the object’s own Simulation value (an interface’s, a VLAN’s, a relation’s, a DHCP scope’s or a DNS zone’s), then the device’s, then the simulation’s value, then the default; every value says which it is.',
+      'In a scoped simulation, a device outside the scope is not run at all: its status says **Not run**, nothing answers from it, and traffic sent towards it is logged as leaving the execution scope. The panel says how many devices run and how many do not; when the simulation can’t keep up with its rate, it says so and suggests a smaller scope.',
       'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters.',
       'Everything happens inside NetAtlas: simulated packets travel only through the model on screen. Nothing is sent to a real network, and the page makes no network connections.',
     ],
-    figures: [['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
+    figures: [['sim-scope', 'The execution scope in Start simulation: Building A of the campus runs 11 of 12 devices, its DHCP and DNS servers and the switches between included; the cable to the controller is its boundary.'], ['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
   },
   {
     id: 'sim-layout',
@@ -505,7 +539,7 @@ const MANUAL: Section[] = [
       'Test traffic and **Send test** to a host name ask DNS first (*DNS A? srv.campus.example*, answered *DNS A srv.campus.example = 10.20.30.10*), then connect; a name missing from the server’s zone ends in NXDOMAIN, an unreachable server in a timeout.',
       'Click the server for **Show DHCP leases** and **Show DNS zone**, a client for **Show DNS cache**.',
     ],
-    notes: ['DHCP is IPv4 only, one lease per interface; DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
+    notes: ['One lease per interface; IPv4 DHCP crosses relays, DHCPv6 is served on the server’s own link only (no DHCPv6 relay). DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
     figures: [['dhcp-sim', 'The simulation of enterprise-campus.yaml: the clients’ leases in the diagram, and srv’s DHCP leases in the simulation panel.']],
   },
   {
@@ -593,15 +627,18 @@ const MANUAL: Section[] = [
     title: 'Trace a path and check a communication',
     steps: [
       'Press `T` or choose **Analyze → Trace path…**. The **Trace path** window opens; a selected device or interface is already in **From**.',
-      'Fill in **To**: a device, an interface (`device:interface`), an IP address, an application (`device/application`, such as `plc/registers`) or a service (`device/dns`, `device/ntp` …). **From** may be a client application (`hmi/poll`): then **To** may stay empty, and its configured peer or broker is checked. **Service** (tcp/443, udp/53, icmp) comes from the application or service when there is one. Tick **Return direction too** for the way back, then press **Trace**.',
+      'Fill in **To**: a device, an interface (`device:interface`), an IP address, an application (`device/application`, such as `plc/registers`) or a service (`device/dns`, `device/ntp` …). **From** may be a client application (`hmi/poll`): then **To** may stay empty, and its configured peer or broker is checked. **Service** (tcp/443, udp/53, icmp) comes from the application or service when there is one; beside **VRF**, **IPv4** or **IPv6** fixes the address family (else the ends’ own). Tick **Return direction too** for the way back, then press **Trace**.',
       'The verdict comes first, then the effective ends (**From**, **To**, **VRF**, **Service**; **Another address…** when an end has several) and the layers, each with its **Evidence**: **Addresses**, **Name resolution** (a host name, by the model’s DNS servers), **Network path** (every evaluated equal-cost path: “3 evaluated paths reach …, 1 stops at fw2”), **Policy** (what firewalls and gateways decide), **Destination listener** (something listens on the port, on the address the traffic arrives at) and **Runtime behaviour**, which a static analysis never establishes.',
       'The path is marked in the diagram (thick outline; equal-cost alternatives dashed, the return path dotted) and listed in a table, a row per hop: the **device**, the interfaces **in** and **out**, the **addresses**, the **route or relation** used and the **encapsulation**. **Why?** opens a hop’s evidence: the lookup, the route that won and why, the routes that lost, the layer-2 way, the policy, a translation, the tunnel, where it stops.',
-      'The **Return path** section says three things apart: reverse routing, path symmetry, and that a session (a TCP exchange, a stateful firewall’s return decision) is not evaluated. While a simulation runs, **Prepare in simulation** fills Network events with the same exchange; it sends nothing until you press Send.',
+      'The **Return path** section says three things apart: reverse routing, path symmetry, and that a session (a TCP exchange, a stateful firewall’s return decision) is not evaluated.',
+      'While a simulation runs, **Prepare in simulation** fills Network events with the same communication: the same source interface, family, destination and port, nothing chosen again; it sends nothing until you press Send. **What the simulation gets** says how each end is taken: an address written as an address is that exact address, a device or interface follows its effective address when sent (a DHCP lease too), a host name is resolved when sent; what can’t be carried over (a VRF other than the source interface’s) is said. A result outdated by an edit, or an end the running simulation no longer has, must be refreshed first. After the send, **Compare with simulation** sets the static result beside what the simulation did and explains a difference from recorded state (an address acquired at runtime, a route not learned yet when it was sent, an end that was off), or says that nothing recorded explains it.',
+      '**Save as expectation…** opens Design checks with the communication’s fields filled in (the outcome taken from the verdict); nothing is saved until you press **Add**.',
+      '**Path MTU** (under the layers) says the largest packet that crosses unfragmented and the payload that fits (TCP MSS, UDP or ICMP payload), and what limits it: an interface, a port of a cable on the way, or a tunnel (its underlay less the encapsulation overhead, nested layers added up). Equal-cost paths and the return path are given apart where they differ. An MTU the model does not write is never taken as known: the result is then an upper bound. **Test the limit in simulation** prefills a send one byte over it with Don’t fragment (nothing is sent): the simulation drops it with Fragmentation Needed or Packet Too Big, and the sender learns the path MTU.',
       'Click a name to select it. **Copy as text** and **Save as text** carry the context, the verdict, the layers and the hops; **Clear**, `Esc` in the diagram or closing the window removes the path.',
     ],
     notes: [
       'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Security gateway’s policy, a firewall’s policy (the relations through it and its allow list, by the service), a VPN gateway’s tunnels and the paired ports of inline and pass-through devices are considered; router ACLs are not. A destination address reached is not an application that works: a listener establishes a consistent configuration, not that the application accepts or answers. Nothing in the model changes.',
-      'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. NAT only for container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**).',
+      'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. Trace path applies the NAT of container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**). The NAT service’s translations (PAT, port forwarding) are applied by the simulation, not by Trace path.',
     ],
     figures: [['trace', 'A trace from the Munich branch to the syslog server without a service: both equal-cost paths reach it (the alternative dashed in the diagram), and the verdict says the firewall decides by service; below, the layers and the start of the hop table.']],
   },
@@ -692,6 +729,30 @@ function figure(doc: Document, name: string, caption: string): HTMLElement | nul
   ]);
 }
 
+const SUPPORT_TITLE = 'What NetAtlas models';
+
+/**
+ * The support catalog (model/support-catalog.ts) as a section: what each
+ * static analysis evaluates, and each protocol's, service's and application
+ * profile's level, what it does and what it leaves out — the same
+ * statements as the ⓘ notes and docs/SUPPORT.md.
+ */
+function supportSection(doc: Document): HTMLElement {
+  const sec = el(doc, 'section', { class: 'man-sec', id: 'man-support', 'aria-labelledby': 'man-h-support' });
+  sec.appendChild(el(doc, 'h3', { id: 'man-h-support', tabindex: '-1' }, [SUPPORT_TITLE]));
+  sec.appendChild(el(doc, 'p', {}, ['Each protocol, service and application profile says what the simulation does for it, at one of three levels: **Diagram only**, **Configuration and validation**, **Modeled behavior** (within the stated limits; never “full support”). The static analyses evaluate the configured model or a snapshot and send nothing. The same statements are shown by the ⓘ notes in the editor and in Start simulation.'].flatMap((t) => rich(doc, t))));
+  const table = (rows: Array<[string, string, string, string]>, withLevel: boolean): HTMLElement =>
+    el(doc, 'table', { class: 'man-support' }, [
+      el(doc, 'thead', {}, [el(doc, 'tr', {}, (withLevel ? ['Name', 'Level', 'Implemented', 'Not modeled'] : ['Analysis', 'Evaluates', 'Does not establish']).map((h) => el(doc, 'th', { scope: 'col' }, [h])))]),
+      el(doc, 'tbody', {}, rows.map((r) => el(doc, 'tr', {}, [el(doc, 'th', { scope: 'row' }, [r[0]])].concat((withLevel ? [r[1], r[2], r[3]] : [r[2], r[3]]).map((c) => el(doc, 'td', {}, [c])))))),
+    ]);
+  const group = (title: string, body: HTMLElement): HTMLElement => el(doc, 'details', { class: 'man-support-area' }, [el(doc, 'summary', {}, [title]), body]);
+  sec.appendChild(group('Static analysis (Analyze)', table(ANALYSIS_SUPPORT.map((a) => [a.name, '', a.does, a.not] as [string, string, string, string]), false)));
+  const cat = supportCatalog();
+  for (const area of supportAreas()) sec.appendChild(group(area, table(cat.filter((e) => e.area === area).map((e) => [e.name, supportLabel(e.support.level), e.support.does, e.support.not] as [string, string, string, string]), true)));
+  return sec;
+}
+
 /**
  * The body of Help → User Manual: a list of the sections (buttons that
  * scroll to them, so the page's address never changes) and the sections.
@@ -703,7 +764,7 @@ export function manualBody(doc: Document): HTMLElement {
   const list = el(doc, 'ol');
   toc.appendChild(list);
   wrap.appendChild(toc);
-  for (const s of MANUAL.concat([{ id: 'keys', title: 'Keyboard shortcuts' }])) {
+  for (const s of MANUAL.concat([{ id: 'support', title: SUPPORT_TITLE }, { id: 'keys', title: 'Keyboard shortcuts' }])) {
     const b = el(doc, 'button', { type: 'button', class: 'man-link', 'data-man-goto': 'man-' + s.id }, [s.title]);
     list.appendChild(el(doc, 'li', {}, [b]));
   }
@@ -717,6 +778,7 @@ export function manualBody(doc: Document): HTMLElement {
     if (figs.length) sec.appendChild(el(doc, 'div', { class: 'man-figs' + (figs.length > 1 ? ' two' : '') }, figs));
     wrap.appendChild(sec);
   }
+  wrap.appendChild(supportSection(doc));
   const keys = el(doc, 'section', { class: 'man-sec', id: 'man-keys', 'aria-labelledby': 'man-h-keys' });
   keys.appendChild(el(doc, 'h3', { id: 'man-h-keys', tabindex: '-1' }, ['Keyboard shortcuts']));
   keys.appendChild(el(doc, 'p', { class: 'man-note' }, ['They work while the focus is not in a text field.']));

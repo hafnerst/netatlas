@@ -11,12 +11,12 @@
 export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
-  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'failure_domains', 'expectations', 'checks', 'layout'],
+  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'failure_domains', 'expectations', 'experiments', 'views', 'checks', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
+  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes', 'policy'],
   /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN gateway's VPN gateway, a Security gateway's Domain separation */
   netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'ptp', 'mqtt_broker', 'applications'],
   wireless: ['controller', 'networks'],
@@ -88,6 +88,17 @@ export const SCHEMA = {
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
+  /** a saved view (`views:`, model/views.ts) and its parts */
+  savedView: ['id', 'name', 'view', 'focus', 'devices', 'collapse', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'],
+  viewFocus: ['target', 'hops', 'context', 'vlan', 'vrf', 'group'],
+  /** a saved experiment (`experiments:`, model/experiments.ts), its actions and observations */
+  experiment: ['id', 'name', 'duration', 'params', 'actions', 'observe', 'description'],
+  expAction: ['id', 'at', 'do', 'target', 'to', 'service', 'group', 'count', 'interval'],
+  expObserve: ['at', 'of', 'target', 'to', 'service', 'group', 'expect'],
+  /** a device's network policy (`policy:`, model/net-policy.ts), its rules and zones */
+  netPolicy: ['default', 'stateful', 'zones', 'rules'],
+  policyRule: ['name', 'action', 'source', 'destination', 'proto', 'sport', 'dport', 'in', 'out', 'from_zone', 'to_zone'],
+  policyZone: ['name', 'interfaces'],
   link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'wireless_network', 'simulation', 'description', 'attrs'],
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'speed', 'duplex'],
@@ -100,7 +111,7 @@ export const SCHEMA = {
   /** a shared-failure domain: an entry of `failure_domains` */
   failureDomain: ['id', 'label', 'kind', 'members', 'description'],
   /** a saved architecture expectation: an entry of `expectations` */
-  expectation: ['id', 'name', 'expect', 'from', 'to', 'service', 'vrf', 'failure', 'description'],
+  expectation: ['id', 'name', 'expect', 'from', 'to', 'service', 'vrf', 'family', 'enforce', 'boundary', 'method', 'failure', 'description'],
   /** the presentation-only layout section */
   layout: ['routing', 'physical', 'logical', 'manual'],
 };

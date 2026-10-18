@@ -328,6 +328,76 @@ export function buildCommands(): Command[] {
       run: (app) => void app.openStartDialog(),
     },
     {
+      id: 'edit.bulk-ports',
+      label: 'Bulk edit ports…',
+      group: 'Find',
+      keywords: 'bulk edit ports vlan many several access trunk native add remove batch',
+      state: (app) => {
+        if (!app.session) return off('Open or create a model first');
+        if (app.editLock()) return off(app.editLock());
+        return app.bulkTarget() ? on('One VLAN change on several ports of the selected device, previewed, as one undo step') : off('Select a device with ports');
+      },
+      run: (app) => void app.openBulkPorts(),
+    },
+    {
+      id: 'find.browse',
+      label: 'Applications, VLANs and VRFs…',
+      group: 'Find',
+      keywords: 'browse navigate application app vlan vrf list focus context large model',
+      state: (app) => needDiagram(app, 'A window listing every application, VLAN and VRF, each with Focus on the devices it involves'),
+      run: (app) => app.openBrowse(),
+    },
+    {
+      id: 'view.collapse',
+      label: 'Collapse group',
+      group: 'Find',
+      keywords: 'collapse group site room rack box fold hide members summarize large model',
+      state: (app) => {
+        const g = app.collapseTarget();
+        if (!app.session) return off('Open or create a model first');
+        if (g === null) return off('Select a group, or a device in one');
+        return app.session.state.collapsed.has(g) ? off('This group is drawn as one box already') : on('Draw the group as one box; its connections out of it go to the box (display only)');
+      },
+      run: (app) => app.setGroupCollapsed(app.collapseTarget(), true),
+    },
+    {
+      id: 'view.expand',
+      label: 'Expand group',
+      group: 'Find',
+      keywords: 'expand group uncollapse unfold show members',
+      state: (app) => {
+        const g = app.collapseTarget();
+        if (!app.session) return off('Open or create a model first');
+        return g !== null && app.session.state.collapsed.has(g) ? on('Draw the group’s devices again') : off('Select a collapsed group');
+      },
+      run: (app) => app.setGroupCollapsed(app.collapseTarget(), false),
+    },
+    {
+      id: 'view.expand-all',
+      label: 'Expand all groups',
+      group: 'Find',
+      keywords: 'expand all groups uncollapse unfold',
+      state: (app) => (app.session && app.session.state.collapsed.size ? on('Draw every collapsed group’s devices again') : off('No group is collapsed')),
+      run: (app) => app.expandAllGroups(),
+    },
+    {
+      id: 'view.saved',
+      label: 'Saved views…',
+      group: 'Find',
+      keywords: 'view saved save named viewport focus filters bookmark layout display',
+      state: (app) => needDiagram(app, 'A window with the model’s saved views: open one, or save the diagram, focus, filters and zoom on screen as one'),
+      run: (app) => app.openSavedViews(),
+    },
+    {
+      id: 'sim.experiments',
+      label: 'Experiments…',
+      group: 'Simulate',
+      mode: true,
+      keywords: 'experiment repeatable scenario run actions observations compare baseline failure test sequence',
+      state: (app) => needDiagram(app, 'A window with the saved experiments: each runs from a clean start on scenario time when you press Run, observations met or not, compared with the previous run'),
+      run: (app) => app.openExperiments(),
+    },
+    {
       id: 'sim.exit',
       label: 'Exit simulation',
       group: 'Simulate',

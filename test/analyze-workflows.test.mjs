@@ -123,5 +123,5 @@ test('timing: a compatible source path, the dependency on a grandmaster and the 
   const deps = D.serviceDependencies(m).filter((d) => d.kind === 'timing').map((d) => d.consumer).sort();
   assert.ok(deps.indexOf('plc-b') >= 0 && deps.indexOf('gm-a') < 0, 'a grandmaster candidate is a source, not a dependant: ' + deps.join(' '));
   const w = W.whatIf(m, ['gm-a']);
-  assert.equal(w.deps.find((d) => d.dep.key === 'timing:plc-b').change, 'alternative');
+  assert.equal(w.deps.find((d) => d.dep.key === 'timing-ptp:plc-b').change, 'alternative');
 });

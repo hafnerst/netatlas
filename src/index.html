@@ -50,6 +50,8 @@
     <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
       <button id="btn-find" type="button" role="menuitem" data-command="find.diagram" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
       <button id="btn-outline-filter" type="button" role="menuitem" data-command="find.outline" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+      <button id="btn-views" type="button" role="menuitem" aria-haspopup="dialog" data-command="view.saved" title="Open or create a model first" disabled><span class="mi-label">Saved views…</span></button>
+      <button id="btn-browse" type="button" role="menuitem" aria-haspopup="dialog" data-command="find.browse" title="Open or create a model first" disabled><span class="mi-label">Applications, VLANs and VRFs…</span></button>
       <button id="btn-palette" type="button" role="menuitem" aria-haspopup="dialog" data-command="palette.open" title="Search every action and every object of the model, and run or select it (Ctrl+K)"><span class="mi-label">Command palette…</span><span class="mi-hint">Ctrl+K</span></button>
     </div>
   </div>
@@ -72,6 +74,7 @@
     <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: a hypothetical state in a window of its own; it never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
     <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
       <button id="btn-sim-start" type="button" role="menuitem" data-command="sim.start" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Start simulation…</span></button>
+      <button id="btn-experiments" type="button" role="menuitem" data-command="sim.experiments" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Experiments…</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>

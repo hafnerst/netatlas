@@ -1,5 +1,9 @@
 /** Validated, typed network model produced from the YAML input. */
 import type { ServiceRegistry } from './services';
+import type { RoutingPolicy } from './routing-policy';
+import type { NetPolicy } from './net-policy';
+import type { Experiment } from './experiments';
+import type { SavedView } from './views';
 import type { AppInstance } from './applications';
 import type { Ipv6Method, RaConfig } from './ipv6';
 
@@ -252,6 +256,8 @@ export interface Device {
   applications?: AppInstance[];
   /** a Security gateway's built-in Domain separation (`services.separation`) */
   separation?: SeparationService;
+  /** its network policy (`policy:`, model/net-policy.ts): an ordered Layer 3/4 rule base of a router, Layer 3 switch or firewall */
+  policy?: NetPolicy;
   /**
    * A switch that routes (`layer3: true`): a Layer 3 switch with the full
    * Layer 3+ feature set. Without it a switch is a Layer 2 switch: it
@@ -612,6 +618,8 @@ export interface ServiceConfig {
   id: string;
   values: Map<string, string>;
   routerId?: RouterIdValue;
+  /** a routing protocol's policy (model/routing-policy.ts), when one is written */
+  policy?: RoutingPolicy;
   line: number;
 }
 
@@ -896,6 +904,24 @@ export const EXPECT_KINDS: ReadonlyArray<{ id: ExpectKind; label: string; help: 
   { id: 'timing', label: 'Timing source path must exist', help: 'A compatible NTP or PTP source must be reachable within the supported analysis (not proven synchronization).' },
 ];
 
+/** Which timing method a timing expectation accepts (`method:`): PTP, NTP, or either when either is accepted. */
+export type TimingMethod = 'ptp' | 'ntp' | 'either';
+
+export const TIMING_METHODS: ReadonlyArray<{ id: TimingMethod; label: string }> = [
+  { id: 'ptp', label: 'PTP' },
+  { id: 'ntp', label: 'NTP' },
+  { id: 'either', label: 'PTP or NTP (either is accepted)' },
+];
+
+/** How a blocked expectation must be enforced (`enforce:`): any established prevention, an evaluated policy's denial, or the denial of one selected boundary. */
+export type EnforceKind = 'unreachable' | 'policy' | 'boundary';
+
+export const ENFORCE_KINDS: ReadonlyArray<{ id: EnforceKind; label: string; help: string }> = [
+  { id: 'unreachable', label: 'Unreachable', help: 'Any prevention the model establishes is enough; the actual cause is reported.' },
+  { id: 'policy', label: 'Denied by policy', help: 'An evaluated modeled policy must deny it on every path; a missing route or listener does not count.' },
+  { id: 'boundary', label: 'Denied at the selected boundary', help: 'The selected enforcement boundary must deny it on every path.' },
+];
+
 /**
  * A saved architecture expectation (the `expectations:` section): a design
  * requirement the model is checked against, statically (Analyze → Design
@@ -913,6 +939,14 @@ export interface Expectation {
   /** "tcp/443", "udp/53", "icmp"; none: from the applications */
   service?: string;
   vrf?: string;
+  /** the address family (none: the ends' own, or the client application's) */
+  family?: 4 | 6;
+  /** blocked: how it must be enforced (none: unreachable, any established prevention) */
+  enforce?: EnforceKind;
+  /** enforce boundary: the device that must deny it */
+  boundary?: string;
+  /** timing: the method accepted (required for a timing expectation) */
+  method?: TimingMethod;
   /** what fails first: devices, cables, relations, interfaces (device:interface), failure domains */
   failure: string[];
   description?: string;
@@ -952,6 +986,12 @@ export interface Model {
   failureDomains: FailureDomain[];
   /** saved architecture expectations (analysis data: checked, never change the network objects) */
   expectations: Expectation[];
+  /** saved experiments (`experiments:`, model/experiments.ts) */
+  experiments: Experiment[];
+  /** saved views (`views:`, model/views.ts): display state only */
+  views: SavedView[];
+  /** a simulation's execution scope (analysis/exec-scope.ts): never read from a file; set on the sub-model a scoped simulation runs */
+  execScope?: { label: string; boundary: Map<string, string> };
   index: ModelIndex;
 }
 

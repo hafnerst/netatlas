@@ -77,7 +77,8 @@ test('interfaces are stored once under their device, as physical and logical; ze
   const none = validate.loadModel('netatlas: 1\ndevices:\n  - {id: a}\n  - {id: b, interfaces: [e0]}\n  - {id: c, logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n');
   assert.deepEqual(none.errors, []);
   assert.deepEqual(none.model.devices.map((x) => [x.interfaces.length, x.logical.length]), [[0, 0], [1, 0], [0, 1]]);
-  assert.deepEqual(SCHEMA.device.slice(-5), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes']);
+  // the lists of a device come last; its network policy after them (its rules name its interfaces)
+  assert.deepEqual(SCHEMA.device.slice(-6), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes', 'policy']);
 });
 
 test('a physical interface has no type; a logical interface has one of loopback, virtual, tunnel, vnic, veth', () => {

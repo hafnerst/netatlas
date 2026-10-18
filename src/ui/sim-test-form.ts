@@ -24,6 +24,7 @@ import { TestKind } from '../analysis/sim/transport';
 import { DELIVERIES, DELIVERY_LABEL, Delivery, KIND_LABEL, MAX_INTERVAL, MAX_MESSAGES, MIN_INTERVAL, TestPlan, kindsFor, needsInterface, usesPorts } from '../analysis/sim/test-plan';
 import { Simulation, TestDestination, TestSource } from '../analysis/sim/simulation';
 import { el } from './dom';
+import type { SendPrefill } from '../analysis/comm-identity';
 
 export interface TestFormHost {
   sim(): Simulation;
@@ -207,24 +208,43 @@ export class TestForm {
   }
 
   /**
-   * Fill the form from an analysis (a communication check's handoff): a
-   * unicast from the device (and its interface) to the address, by the
-   * protocol and port. Nothing is sent: the focus goes to Send.
+   * Fill the form from an analysis (a communication's identity,
+   * analysis/comm-identity.ts): a unicast from the device and its
+   * interface, to a device's interface (its effective address when sent, a
+   * lease too) or to an exact address or host name, by the protocol and
+   * port. Nothing is sent: the focus goes to Send.
    */
-  prefill(p: { from: string; via?: string; address: string; kind: TestKind; port?: number }): void {
+  prefill(p: SendPrefill): void {
     this.type.value = 'unicast';
     this.sync();
     this.from.value = p.from;
     this.sync();
     if (p.via !== undefined && Array.prototype.some.call(this.via.options, (o: HTMLOptionElement) => o.value === p.via)) this.via.value = p.via;
-    this.to.value = OTHER;
-    this.sync();
-    this.addr.value = p.address;
-    this.sync();
+    const opt = (s: HTMLSelectElement, v: string): boolean => Array.prototype.some.call(s.options, (o: HTMLOptionElement) => o.value === v);
+    if (p.to !== undefined && opt(this.to, p.to)) {
+      this.to.value = p.to;
+      this.sync();
+      const want = `${p.toIface}|${p.toAddr}`;
+      if (opt(this.toif, want)) this.toif.value = want;
+      this.sync();
+    } else {
+      this.to.value = OTHER;
+      this.sync();
+      this.addr.value = p.target || p.toAddr || '';
+      this.sync();
+    }
     this.kind.value = p.kind;
     this.sync();
     if (p.port !== undefined) this.port.value = String(p.port);
     this.sync();
+    // a path MTU test: its size and Don't fragment, under More options (opened, so they are seen)
+    if (p.size !== undefined || p.df !== undefined) {
+      if (p.size !== undefined) this.size.value = String(p.size);
+      this.df.checked = !!p.df;
+      const more = this.doc.getElementById('sim-t-more') as HTMLDetailsElement | null;
+      if (more) more.open = true;
+      this.sync();
+    }
     this.sendBtn.scrollIntoView({ block: 'nearest' });
     this.sendBtn.focus();
   }

@@ -194,7 +194,8 @@ test('communication: an application to its peer application takes the listenerâ€
   assert.deepEqual(lay, { address: 'satisfied', path: 'satisfied', policy: 'satisfied', listener: 'satisfied', runtime: 'unsupported' });
   assert.match(c.layers.find((l) => l.id === 'policy').text, /Permitted by fw/);
   assert.match(c.layers.find((l) => l.id === 'runtime').text, /Not established by static analysis/);
-  assert.equal(c.handoff.kind, 'app', 'a client application is started in the simulation, never by the check');
+  const CI = load('analysis/comm-identity.js');
+  assert.equal(CI.handoffOf(m, CI.commIdentity(m, c)).kind, 'app', 'a client application is started in the simulation, never by the check');
 });
 
 test('communication: the address is reachable but nothing listens; a listener on another binding does not take it', () => {

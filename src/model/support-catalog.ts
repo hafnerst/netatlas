@@ -1,0 +1,120 @@
+/**
+ * One catalog of what NetAtlas implements, read from the definitions that
+ * carry it (model/support.ts): the protocols of the simulation
+ * (model/sim-profiles.ts), the services (model/service-registry.ts), the
+ * application profiles (model/applications.ts), and what the static
+ * analysis evaluates (below). The User Manual shows it, and
+ * docs/SUPPORT.md is generated from it (scripts/gen-support.mjs), so a
+ * statement of support is written once. Each entry says what is
+ * implemented and what is left out; docs/LIMITATIONS.md adds the
+ * simplifications that cut across them.
+ */
+import { APP_PROFILES } from './applications';
+import { SERVICES } from './service-registry';
+import { SIM_GROUPS, SIM_PROFILES } from './sim-profiles';
+import { Support, SupportLevel } from './support';
+
+/** What a static analysis evaluates, and what it does not (no level: it runs no exchanges). */
+export interface AnalysisSupport {
+  id: string;
+  name: string;
+  does: string;
+  not: string;
+}
+
+/**
+ * The static analyses (Analyze, the consistency checks): what each
+ * evaluates from the configured model or a simulation snapshot, and what
+ * only the simulation (or nothing in NetAtlas) establishes.
+ */
+export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
+  {
+    id: 'trace',
+    name: 'Trace path',
+    does: 'Longest-prefix forwarding over connected networks, static routes (distance, metric, recursive next hops) and the routes of enabled routing protocols’ adjacencies through the routing-policy subset (advertised prefixes, a default route, redistribution with its origin history, ordered import/export filters, BGP local preference and AS path); equal-cost paths (up to 16), VRFs, VRRP / HSRP holders, tunnels with their traced underlay, the layer-2 way through VLANs and Wi-Fi networks; the filtering decision of network policies (routers, Layer 3 switches, firewalls) and Security gateways for a given service; NAT of container bridges.',
+    not: 'the NAT service’s translations (the simulation applies them), policy-based routing, MPLS label forwarding, multicast forwarding (the simulation forwards multicast), spanning-tree blocking (the cable way is the shortest one through layer-2 devices).',
+  },
+  {
+    id: 'policy',
+    name: 'Network policy',
+    does: 'One engine for Trace path, the communication checks and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named; a firewall without one: its relations and allow list.',
+    not: 'a return decision statically (the simulation keeps a stateful policy’s sessions); application identification, TLS inspection, user identities, NAT rules, VLAN ACLs.',
+  },
+  {
+    id: 'communication',
+    name: 'Communication check',
+    does: 'Address, name resolution (the model’s DNS zones and forwarders), the path over every evaluated equal-cost path, the modeled policy, the destination’s listener and bind interface, for applications and services; the reverse direction as reverse routing and symmetry.',
+    not: 'that the application accepts the connection, authentication, a TCP session, a stateful return decision, health and completion: runtime behaviour, which the simulation exchanges.',
+  },
+  {
+    id: 'mtu',
+    name: 'Path MTU',
+    does: 'The largest packet that crosses each evaluated path unfragmented, and the payload that fits (TCP MSS, UDP or ICMP payload): the interfaces’ written MTUs, the ports of the cables on the way, tunnels as their underlay less the encapsulation overhead (nested layers added up), equal-cost branches and the return path apart.',
+    not: 'an MTU that is not written (never taken as 1500: the result is then an upper bound); encapsulations without a stated overhead; the size a flow actually uses (the simulation’s fragmentation, Fragmentation Needed / Packet Too Big and PMTUD show it).',
+  },
+  {
+    id: 'addressing',
+    name: 'Addressing overview',
+    does: 'Each host address in its allocation state (configured, reserved, acquired in a snapshot, DHCP pool, nested network, unallocated); suggestions outside pools, reservations and used addresses; duplicates in the scope the model establishes (a link-local address on its VLAN-scoped segment, any other in a VRF and a connected part).',
+    not: 'addresses used outside the model, SLAAC interface identifiers in the configured model (a snapshot has them).',
+  },
+  {
+    id: 'dependencies',
+    name: 'Service dependencies',
+    does: 'Only what the model configures: application peers, MQTT brokers, resolvers, DHCP (a server on the client’s broadcast domain with a scope for it, or an IPv4 relay whose way passes the path, the policy and the listener both ways), timing sources, syslog senders and AAA clients; compared under a failure.',
+    not: 'dependencies nobody wrote down, business importance, DHCPv6 relays (DHCPv6 is served on the client’s link only), the remaining lease time of addresses already given.',
+  },
+  {
+    id: 'failure',
+    name: 'Failure analysis and what if',
+    does: 'Single points of failure (each cable, device and LAG alone) with their structural and service impact; what-if conditions of failure domains or up to 64 components, compared with the same baseline: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
+    not: 'probabilities, convergence and recovery times, combinations beyond the condition given; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
+  },
+  {
+    id: 'timing',
+    name: 'Timing source paths',
+    does: 'By the method asked for (PTP, NTP, or either: both reported). PTP: a source-capable clock of the domain and profile on the clock’s VLAN-scoped segments or behind boundary clocks. NTP: the configured source chain, upstream by upstream (each reachable on UDP 123: path, policy, listener) to a configured reference, with cycles, chains without a reference, upstreams outside the model and alternative roots said apart from a merely reachable upstream; a snapshot adds the synchronization the simulation observed.',
+    not: 'accuracy (the simulation models the protocol states, not oscillators or clock discipline); precedence or bridging between NTP and PTP.',
+  },
+  {
+    id: 'experiments',
+    name: 'Saved experiments',
+    does: 'A declarative sequence run from a clean start on scenario time: sends prepared from the communication’s identity, failures and restores, interface and power actions, joins and leaves, applications; observations of delivery, state, membership and the static check of a communication at a time; a run compared with the previous one.',
+    not: 'real-time streams (they run on browser time); convergence time, throughput and synchronization accuracy; a scripting language.',
+  },
+  {
+    id: 'snapshot',
+    name: 'Simulation snapshots',
+    does: 'The state of a running simulation at one moment for the analyses: leases, SLAAC and DHCPv6 addresses with their state, what is up, the routes learned.',
+    not: 'later changes of the running simulation; hypothetical failures applied to it (they would blend two states).',
+  },
+];
+
+export interface SupportEntry {
+  /** the area it is listed under */
+  area: string;
+  id: string;
+  name: string;
+  support: Support;
+}
+
+/** The protocols, services and application profiles with their support, by area (stable order). */
+export function supportCatalog(): SupportEntry[] {
+  const out: SupportEntry[] = [];
+  for (const g of SIM_GROUPS) {
+    if (g === 'Custom') continue;
+    for (const p of SIM_PROFILES) if (p.group === g && p.support) out.push({ area: `Protocols: ${g}`, id: p.id, name: p.label, support: p.support });
+  }
+  for (const s of SERVICES) out.push({ area: 'Services', id: s.id, name: s.label, support: s.support });
+  for (const a of APP_PROFILES) out.push({ area: 'Application profiles', id: a.id, name: a.label, support: a.support });
+  return out;
+}
+
+/** The areas of the catalog, in order. */
+export function supportAreas(): string[] {
+  const out: string[] = [];
+  for (const e of supportCatalog()) if (out.indexOf(e.area) < 0) out.push(e.area);
+  return out;
+}
+
+export type { SupportLevel };

@@ -18,6 +18,84 @@ allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
 
+### Added (analysis integration)
+
+- **Communication identity across Analyze and Simulate.** Trace path's
+  result names what it chose (source interface, family, destination,
+  port); **Send in simulation** carries exactly that, says what is not
+  carried, and stops when a reference went stale. **Compare with
+  simulation** sets the static result beside a run and explains a
+  difference from recorded state only (a route not there when sent, too
+  big, membership, an end unavailable). **Save as expectation** keeps the
+  fields; expectations have an address `family`.
+- **Isolation that is enforced.** A blocked expectation may require how:
+  `enforce: unreachable`, `policy` (an evaluated policy's denial on every
+  path) or `boundary` (a named device's). A missing route or listener is
+  no isolation, partial ECMP is none.
+- **NTP and PTP chosen explicitly.** A timing expectation names its
+  `method` (`ptp`, `ntp`, `either`); NTP source chains to a modeled
+  reference, with cycles, external upstreams and an upstream that a
+  failure takes down said apart; snapshots add the synchronization the
+  simulation observed. Accuracy is never claimed.
+- **Path MTU** over every evaluated path and branch and the way back, with
+  nested encapsulation and the limiting component; **Test path MTU**
+  prefills a send of that size with DF.
+- **Routing policy** (a bounded subset): `advertise`, `default_route`,
+  `redistribute`, ordered `import`/`export` rules with prefixes, ge/le
+  and peers, BGP local preference and AS-path prepending — one routing
+  computation for Analyze and Simulate, with each route's origin and the
+  rules it passed.
+- **Network policy:** one ordered rule engine (`policy:` on routers,
+  Layer 3 switches and firewalls: zones, objects, ports, stateful or
+  stateless) for Trace path, the communication checks and the simulation;
+  a transparent firewall's policy now applies to what it bridges.
+- **Capacity under failure:** What if compares the stated traffic (demands,
+  applications with an interval) with the stated capacity before and after
+  the failure, without assuming how multipath spreads.
+- **Saved experiments** (`experiments:`, Simulate → Experiments…): a short
+  declarative sequence of actions and observations, run on demand from a
+  clean start on scenario time — repeatable, stoppable, compared with the
+  previous run, copied as text. Trace path's **Use in experiment…** adds
+  one.
+- **Execution scopes** in Start simulation: the entire model (the
+  default), the traced communication, a device's dependency slice, a group,
+  a VLAN or a failure domain. A scope runs only its devices (and says what
+  it added to run faithfully); the others are marked **Not run**, traffic
+  towards them is logged where it leaves the scope. The panel counts what
+  runs and what does not, and suggests a smaller scope when the
+  simulation stays behind its rate.
+- **Larger models:** **Saved views** (`views:`, Find → Saved views…: the
+  diagram, focus, filters, collapsed groups and zoom); **collapsed groups**
+  drawn as one box with their connections out of it; **Applications,
+  VLANs and VRFs…** with a contextual Focus (VRF is new); **Bulk edit
+  ports…** with a preview and one undo step.
+- **What NetAtlas models**, one catalog for the manual and
+  [docs/SUPPORT.md](docs/SUPPORT.md) (generated, checked by
+  `npm run check:dist`); LIMITATIONS is ordered by area.
+- The public examples show each representative architecture's workflow:
+  private house (views), campus (policy, alternative DHCP), WAN
+  (default-only and prefix filters, path MTU), data center (surviving
+  capacity), OT (a repeatable outage experiment), timing (NTP and PTP
+  apart).
+
+### Fixed (analysis integration)
+
+- VLAN-scoped segments: DHCP, PTP and link-local conflicts no longer leak
+  across isolated VLANs on one switch; the analyses and the simulation use
+  one broadcast-domain definition.
+- A route alone no longer makes a DHCP relay target a provider; a failing
+  first relay no longer hides a working second one; DHCPv6 is a
+  dependency of its own.
+- What if now compares blocked expectations too (a failure that exposes a
+  forbidden path), and an end that the failure takes down leaves an
+  isolation "not exercised" instead of proven.
+- A reachable NTP cycle was accepted as a source chain; an NTP upstream on
+  a failed device read as "beyond the model".
+- The path tracer ignored a transparent firewall's policy.
+- The documentation contradicted itself on DHCPv6 support.
+- An experiment's application started on real time and never ran on
+  scenario time; an MQTT client's delivery is read from its own counts.
+
 ### Added (Analyze)
 
 - **One meaning for every result.** Every Analyze result says its verdict
@@ -116,8 +194,13 @@ applications on host-capable devices, IPv6 host
 ### Model format
 
 - The format version stays 1 (before production, changes are made within
-  it): `failure_domains:` and `expectations:` are new, optional top-level
-  sections; a file without them means what it meant.
+  it): `failure_domains:`, `expectations:`, `experiments:` and `views:`
+  are new, optional top-level sections; a file without them means what it
+  meant. New optional keys: an expectation's `family`, `enforce`,
+  `boundary` and `method` (required for timing); a routing protocol's
+  `advertise`, `default_route`, `redistribute`, `import`, `export`; a
+  device's `policy`. A timing expectation written without `method` is now
+  an error (state ptp, ntp or either).
 configuration, what NetAtlas models for each protocol, MQTT, and time
 synchronization with NTP state and PTP. Auto-arrange's three options are
 now distinct: Default as before, Compact packed tight, and Structured

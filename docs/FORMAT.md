@@ -45,6 +45,8 @@ relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
 failure_domains: [...] # optional: components that fail together (what-if conditions)
 expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
+experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
+views: [...]           # optional: saved views (display state: diagram, focus, filters, zoom)
 checks: {...}          # optional: switch consistency checks off or change their severity
 layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
@@ -279,6 +281,51 @@ Bold: mandatory once the protocol is enabled. Rules:
   IP addresses, a list of allowed values, OSPF areas (a number or a dotted
   id), NETs.
 
+#### Routing policy
+
+A routing protocol (BGP, OSPF, IS-IS, EIGRP, RIP) may carry a bounded
+policy in its block. Without one, a device originates every connected
+network into the protocol and accepts every route (as before). The path
+tracer and the simulation apply it alike (one routing computation; the
+simulation over the adjacencies that are up).
+
+```yaml
+- id: hq-rtr1
+  protocols:
+    bgp:
+      asn: 65010
+      advertise: [10.10.0.0/16]          # originate these instead of every connected network
+      default_route: always              # or if_installed: only while the device has a default route
+      redistribute: [static, ospf]       # connected, static, bgp, ospf, isis, eigrp, rip (not itself)
+      export:                            # what it advertises to its neighbours, first match wins
+        - {peer: br1-rtr, prefix: 0.0.0.0/0, action: permit}
+        - {peer: br1-rtr, action: deny}  # br1-rtr gets the default route only
+        - {action: permit}
+      import:                            # what it accepts
+        - {prefix: 10.0.0.0/8, ge: 16, le: 24, action: permit, local_pref: 200}
+        - {action: deny}
+    ospf: {}
+```
+
+| Key | Meaning |
+|---|---|
+| `advertise` | the prefixes the device originates, instead of every connected network; each must exist on the device as a connected network or a static route (a black-hole route anchors a summary), else it is not advertised (`routing-policy` check) |
+| `default_route` | `always`: originate a default route (IPv4, and IPv6 where the device has IPv6 networks); `if_installed`: only while the device has one of its own (a static route, or one another protocol installed) |
+| `redistribute` | other sources the device originates too: `connected`, `static` (routes whose next hop is on a connected network, an exit interface or a black hole), another routing protocol's routes it learned. A route keeps the routing domains it came through (a protocol's connected set of adjacencies) and never re-enters one of them: no redistribution loop |
+| `import`, `export` | ordered rules, the first that matches decides, an implicit deny at the end. `action` (`permit`, `deny`) is required; `prefix` (none: every route) matches a route inside it of exactly its length, or of a length from `ge` to `le`; `peer` limits a rule to one neighbour. BGP: `local_pref` on an import rule, `prepend` (1–10) on an export rule |
+
+Selection: the lowest cost over the adjacencies (`cost`, else a hop); for
+BGP first the highest local preference (100 unless an import rule sets it;
+eBGP resets it), then the shortest AS path; a route whose AS path holds the
+receiver's AS is refused. Export filters apply to BGP, EIGRP and RIP; OSPF
+and IS-IS flood what they learn, so they have no `export` (an error), and
+their `import` decides only what a router installs (the routers behind it
+still learn the route). The hop evidence of Trace path names a route's
+origin, its AS path and local preference, and the rules on its way. Not
+modeled: communities, MED, route reflection and iBGP split horizon,
+summarisation of learned routes, areas, route maps beyond these matches and
+sets.
+
 The [consistency checks](#consistency-checks) read the AS numbers and router
 IDs from the enabled protocols (iBGP or eBGP follows from the two local AS
 numbers; duplicate router IDs are looked for per protocol domain) and
@@ -287,6 +334,56 @@ enable, and one enabled but used by no relation. The path tracer and the
 failure analysis use only the protocols a device enables: a routing
 adjacency forms only between devices that both enable its protocol. The
 diagram writes the router ID and the AS number only where they apply.
+
+### Network policy (`policy`)
+
+A router, a Layer 3 switch or a firewall may carry an ordered Layer 3/4
+rule base, `policy:`, after its lists. One engine evaluates it for Trace
+path, the communication checks and the simulation. Without one, a router
+forwards everything it routes and a firewall keeps its implicit policy (the
+model's relations through it and its `allow` list, default deny), now
+evaluated by the same engine. A Security gateway's Domain separation is its
+own policy (a `policy:` there is an error).
+
+```yaml
+- id: edge-fw
+  type: firewall
+  interfaces: [{id: lan, ip: 10.1.0.1/24}, {id: dmz, ip: 10.9.0.1/24}, {id: wan, ip: 203.0.113.2/30}]
+  policy:
+    default: deny                       # required: permit or deny, what no rule matches gets
+    stateful: true                      # optional; without it a firewall keeps sessions, a router is stateless
+    zones:
+      - {name: inside, interfaces: [lan]}
+      - {name: dmz, interfaces: dmz}
+    rules:                              # first match wins
+      - {name: web, action: permit, from_zone: inside, to_zone: dmz, proto: tcp, dport: "80,443"}
+      - {action: permit, source: admin-pc, destination: dmz-web, proto: tcp, dport: 22}
+      - {action: deny, source: 10.1.0.0/16, destination: [mgmt, 10.200.0.0/24]}
+```
+
+| Key of a rule | Meaning |
+|---|---|
+| `action` | required: `permit` or `deny` |
+| `source`, `destination` | one or a list of: a prefix or address, `any`, a device (its addresses), a network (its prefix), `device:interface`; none: any |
+| `proto` | `tcp`, `udp`, `icmp` or `any` (the default) |
+| `sport`, `dport` | with tcp or udp: ports and ranges, `"443"`, `"8000-8080"`, `"80,443"` |
+| `in`, `out` | the device's interfaces it comes in at, leaves by (one or a list) |
+| `from_zone`, `to_zone` | zones of the policy (their interfaces) |
+| `name` | a label |
+
+Semantics: the first rule whose conditions all hold decides; none: the
+default action. A router's or Layer 3 switch's policy applies to what it
+routes (not to what it bridges within a VLAN); a transparent firewall's to
+what it bridges. Statically, Trace path decides one direction for the
+service given (without one, a decision that depends on it is said, not
+guessed); the simulation decides each packet: stateful, a permitted packet
+that opens a flow opens a session and the replies pass by it; stateless,
+each direction needs its own rule. The trace's hop evidence and the
+simulation's drop name the rule. Validation: a missing or unknown
+`default` or `action`, ports without tcp or udp, an interface, zone or
+object the model doesn't have, and a policy on a device that forwards no IP
+are errors. Not modeled: application identification, TLS inspection, user
+identities, time ranges, NAT rules (the NAT service's), vendor rule syntax.
 
 ### Device types
 
@@ -2259,8 +2356,21 @@ demands:
 ```
 
 `source` and `destination` take what the path tracer takes. A demand is
-traced from its source to its destination like Trace path; equal-cost
-paths share it equally.
+traced from its source to its destination like Trace path; the traffic
+animation shows equal-cost paths sharing it equally.
+
+**Capacity.** What if (Analyze → Single points of failure) compares the
+stated traffic with the stated capacity before and after the failure: the
+demands, and the applications with an `interval` (their sizes, written or
+the profile's defaults; payload rates). A resource is counted once: a cable
+(its `speed`; VLANs and tunnels riding it share it), an aggregate (the
+speeds of its members that are up; one flow at most one member's), a radio
+(its Wi-Fi associations share it). How a demand spreads over equal-cost
+paths or members is not assumed: a resource fits when even all of a demand
+on one path fits, exceeds when even an equal split exceeds, else it depends
+on the distribution. Without stated traffic capacity is not evaluated; a
+cable without a speed is insufficient information. No queues, delay or
+hardware forwarding limits are modeled.
 
 Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
 a bandwidth that isn't one and a duplicate id are **errors**; an end that
@@ -2315,6 +2425,10 @@ expectations:
     to: "ap-b:mgmt"                     # available, blocked: a device, interface, address, device/application or device/service
     service: tcp/22                     # optional: tcp/<port>, udp/<port> or icmp (else from the applications)
     vrf: guest                          # optional: the source's table (else the source interface's)
+    family: 4                           # optional: 4 or 6, the address family (else the ends' own, or the client application's)
+    enforce: boundary                   # blocked, optional: unreachable (the default), policy, boundary
+    boundary: ap-b                      # with enforce: boundary: the device that must deny it
+    method: ptp                         # timing, required: ptp, ntp, or either (when either is accepted)
     failure: [basement-power]           # optional: what fails first: devices, cables, relations, device:interface, failure domains
     description: …                      # optional
 ```
@@ -2324,7 +2438,20 @@ expectations:
 | `available` | the communication check is satisfied: addresses, path, policy and listener (under the failure condition, when given) | only some evaluated equal-cost paths reaching is a violation; a path that leaves the model is indeterminate |
 | `blocked` | no evaluated path delivers it | the reason says whether a policy decision blocks it or something else (no route, a missing adjacency), which may not be the intended control |
 | `dependency` | the client application in `from` can use its configured peer or broker | `to` may be left out |
-| `timing` | a compatible PTP source path or NTP upstream exists within the supported analysis | never proof that the clock synchronizes, or of its accuracy |
+| `timing` | by its `method`: a compatible PTP source path (`ptp`), a structurally valid NTP source chain to a modeled reference (`ntp`), or either (`either`: both are evaluated and reported, one is enough) | never proof that the clock synchronizes, or of its accuracy; `to` may name the source the chain must reach. On a simulation snapshot the observed synchronization is added |
+
+A blocked expectation may say how it must be enforced (`enforce`), path by
+path over every evaluated equal-cost path:
+
+| `enforce` | Satisfied when |
+|---|---|
+| `unreachable` (the default) | no evaluated path delivers it, whatever stops it (the actual cause is reported) |
+| `policy` | an evaluated modeled policy denies it on every path; the denial names the device and its rule. A missing route or listener is no denial: a path that stops before any policy decides leaves it indeterminate (not exercised), one that a policy permitted before it stopped violates it |
+| `boundary` | the device in `boundary` denies it on every path; a denial elsewhere, or a path that crosses the boundary without a denial, violates it |
+
+Partial equal-cost outcomes and truncated evaluation never count as
+complete isolation. An end the failure condition takes down leaves the
+control not exercised (indeterminate), never proven.
 
 `from` and `to` take what Trace path takes, plus applications
 (`device/application`) and a device's services (`device/dns`,
@@ -2339,13 +2466,111 @@ condition evaluated on a simulation snapshot, which would blend two
 states; a dependency expectation without a client application).
 
 Validation: unknown keys, a missing `name`, `expect` or `from`, an
-unknown `expect`, an unreadable `service`, no `to` where it is needed and a
-duplicate id are **errors**; an end or a failure entry that names nothing of
+unknown `expect`, an unreadable `service`, a `family` other than 4 or 6, an
+`enforce` on anything but a blocked expectation, an unknown `enforce`,
+`enforce: boundary` without `boundary` (or a `boundary` without it), a timing
+expectation without `method` (or a `method` on any other), no `to` where it
+is needed and a duplicate id are **errors**; a `boundary` that is no
+device of the model is a **warning**; an end or a failure entry that names nothing of
 the model is a **warning** (the expectation evaluates as indeterminate). At
 most 1000 expectations and 64 entries per failure condition. Renaming a
 device, an interface, an application or a failure domain updates the
 expectations and failure domains that name it; deleting one lists them in
 the confirmation.
+
+## `experiments` (saved, repeatable experiments)
+
+Optional. A short declarative sequence the simulation runs again and again
+from a clean start (Simulate → **Experiments…**, **Run**): not a scripting
+language. Analysis data: saving or editing one never starts it, and a file
+means the same network with or without it.
+
+```yaml
+experiments:
+  - id: broker-loss                    # required, unique among the experiments
+    name: Telemetry while the broker cabinet is down   # required
+    duration: 120s                     # required: it always ends (at most 1h of scenario time)
+    params: {link_up_delay: 1s}        # optional: parameters of Start simulation (the rest: their defaults)
+    actions:                           # at times after the start; at one time, in the order written
+      - {id: poll, at: 10s, do: send, target: hmi, to: plc/registers}
+      - {id: tele, at: 10s, do: start_app, target: plc/telemetry}
+      - {at: 40s, do: fail, target: cell-cabinet}      # a device, cable, relation or failure domain
+      - {at: 80s, do: restore, target: cell-cabinet}
+    observe:                           # read after that time's actions; without at: at the end
+      - {at: 30s, of: send, target: poll, expect: delivered}
+      - {at: 60s, of: device, target: edge, expect: off}
+      - {at: 60s, of: reach, target: hmi, to: plc/registers, expect: available}
+      - {of: app, target: tele, expect: delivered}
+    description: …
+```
+
+| `do` | Target | Also |
+|---|---|---|
+| `send` | the source (device, device:interface) | `to` (required), `service` (`tcp/443`, `udp/53`, `icmp`), `count`, `interval`; prepared from the communication's identity, as Trace path's handoff |
+| `fail`, `restore` | a device (powered off, on), a cable, a relation, a failure domain (its members) | |
+| `shut`, `no_shut`, `flap`, `stop_flap` | device:interface | |
+| `power_off`, `power_on` | a device | |
+| `join`, `leave` | device:interface | `group` (required) |
+| `start_app`, `stop_app` | device/application | |
+
+| `of` | Target | `expect` |
+|---|---|---|
+| `send` | a send action's `id` | `delivered` (every message), `failed` |
+| `app` | a start action's `id`, or device/application | `delivered`, `failed` |
+| `device` | a device | `on`, `off` |
+| `interface` | device:interface | `up`, `down` |
+| `link` | a cable | `up`, `down` |
+| `member` | a multicast router (with `group`) | `present`, `absent` |
+| `reach` | the source (with `to`, `service`) | `available`, `unavailable` (the static check on the simulation's state then) |
+
+Timing: scenario time only (the simulated clock), so a run is repeatable;
+a stream of Network events runs on real (browser) time and is no
+experiment action. An observation not decided says so (still on its way,
+stopped before it was reached). A run can be stopped; a run is compared
+with the previous one (each observation, where the event sequences part,
+whether the model changed). Not measured: convergence time, throughput,
+synchronization accuracy.
+
+Validation: unknown keys, a missing `name`, `duration`, `do`, `at`,
+`target`, `of` or `expect`, an unknown action or observation, a time
+after the end, an expectation the observation can't have, an unknown
+parameter and a duplicate id are **errors**; a target that names nothing of
+the model is a **warning** (that step can't be run). At most 200
+experiments, 200 actions and 200 observations each. Renaming a device,
+cable or relation updates the targets.
+
+## `views` (saved views)
+
+Optional. A named way of looking at the model (Find → **Saved views…**):
+display state only. Opening one changes what is drawn — never the
+network, an analysis or a simulation (a running one goes on). **Save
+current view** writes the one on screen.
+
+```yaml
+views:
+  - id: iot-vlan                       # required, unique among the views
+    name: The IoT VLAN                 # required
+    view: logical                      # required: physical or logical
+    focus: {target: core-sw, context: vlan, vlan: 30}   # optional
+    devices: [core-sw, ap1, cam1, cam2]                 # optional: only these (left out: every device)
+    collapse: [garage]                 # optional: groups drawn as one box each
+    hide_types: [server, switch:l2]    # optional: device types left out (a type stands for each of its kinds)
+    hide_protocols: [ospf]             # optional: protocols not drawn
+    options: {labels: false}           # optional: labels, groups, networks, routes (each on when left out)
+    viewport: {x: 420, y: 180, zoom: 1.25}   # optional: the diagram's centre and zoom; left out: fitted
+    description: …
+```
+
+`focus`: `target` (a device, `device:interface`, or `network:…`,
+`group:…`, `link:…`) with `hops` (1–3), or a contextual focus with
+`context`: `vlan` (with `vlan`), `dependencies`, `multicast` (with
+`group`), `timing`, `vrf` (with `vrf`) — as Analyze → Focus has them.
+
+Validation: unknown keys, a missing `name` or `view`, an unknown device
+type, context or option, a zoom outside 0.05–6, hops outside 1–3 and a
+duplicate id are **errors**; a device or focus target that names nothing of
+the model is a **warning** (the view opens without it). Renaming a device
+or interface updates its views.
 
 ## Simulation parameters and device attributes
 
@@ -2924,9 +3149,11 @@ README's limitations):
   also on the ports it passes requests on to; a protocol break on its
   transfer profiles' ports). A request of a
   relation to a port its `listening` leaves out is refused like any other.
-- **Firewalls** (routing ones): the traffic of the model's relations (and
-  of its demands, and tests between a service relation's endpoints on its
-  port) is their policy and passes; anything else passes when it belongs to
+- **Firewalls** (routing ones) and devices with a network policy: a
+  written `policy:` decides each packet by its rules (see *Network policy*),
+  keeping sessions when it is stateful. Without one, a firewall's policy
+  is the traffic of the model's relations (and of its demands, and tests
+  between a service relation's endpoints on its port), which passes; anything else passes when it belongs to
   a session (stateful: replies, and ICMP errors about them) or when their
   `allow` list permits it (which opens a session), else the default action
   drops it, or rejects it (TCP RST from the destination's address, else
@@ -3031,7 +3258,8 @@ Services):
   cache* on a host (each cached name with its server and what is left of
   its TTL).
 
-Simplifications: IPv4 only for DHCP (no DHCPv6); one lease per interface;
+Simplifications: one lease per interface; DHCPv6 on the server's own link
+only (no DHCPv6 relay or prefix delegation);
 no DHCPDECLINE, DHCPRELEASE or DHCPINFORM; no relay agent information
 (option 82); offers are broadcast; no negative caching, DNSSEC or TCP
 fallback, and no recursion beyond the model's DNS servers.
@@ -3300,6 +3528,7 @@ VLANs is routed, not "access in VLAN 1").
 | `vlan-access-trunk` | warning | an access port cabled to a trunk whose native VLAN isn't the access port's VLAN | interfaces: `vlans`, `native` |
 | `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines (VLAN 1, the default VLAN, aside) | interfaces: `vlans`; networks and VLAN interfaces: `vlan` |
 | `lag-member-vlans` | warning | members of an aggregate whose far ends carry different VLANs (a bundle carries the same VLANs on every member) | logical interfaces: `members`, `vlans`, `native`; interfaces: `vlans`, `native` at the far ends; links |
+| `routing-policy` | warning | a routing policy that names what the model does not have: an advertised prefix the device has no connected network or static route for, a redistributed protocol it does not enable, a filter rule's peer that is no neighbour of the protocol, a filter without a catch-all rule (the implicit deny) | devices: `protocols:` (advertise, redistribute, import, export); interfaces' addresses; routes; the protocol's relations |
 | `link-mtu-mismatch` | warning | different MTUs at the two ends of a cable | interfaces: `mtu`; links |
 | `tunnel-mtu` | warning | a tunnel interface whose MTU plus the encapsulation overhead (table below) is larger than the MTU of its underlay; the message names the overhead assumed and the largest MTU that fits | tunnel interfaces: `mtu`, `source`; the MTU of the source interface, else of the device's ports on the links in `over`; the tunnel relations bound to it and the tunnels they ride on |
 | `link-speed-mismatch` | warning | port speeds that differ between the ends, or from the link's speed | links: `speed`, `a`/`b` `speed` |

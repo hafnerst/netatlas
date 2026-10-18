@@ -14,15 +14,23 @@
  *              distance takes over.
  *   dynamic    learned over the routing adjacencies of the model (relations
  *              of OSPF, IS-IS, EIGRP, RIP and BGP): every router of a
- *              protocol's adjacencies advertises its connected networks to
- *              the others, and each learns them along the cheapest chain of
- *              adjacencies, with the relation's `cost` (per device:
- *              `cost.<device>`) per adjacency, else 1 (a hop count). The
- *              distance is the protocol's usual default (eBGP 20, EIGRP 90,
- *              OSPF 110, IS-IS 115, RIP 120, iBGP 200) unless the relation
- *              writes `distance`. Nothing is redistributed between
- *              protocols, static routes are not advertised, and no policy,
- *              area or AS-path rule is applied (see dynamicEntries).
+ *              protocol's adjacencies originates its connected networks
+ *              (or, with a policy, what it advertises, a default route and
+ *              what it redistributes: model/routing-policy.ts), and the
+ *              routes propagate from neighbour to neighbour through the
+ *              filters (export, then import), each router keeping the best: the
+ *              cheapest chain of adjacencies, with the relation's `cost`
+ *              (per device: `cost.<device>`) per adjacency, else 1 (a hop
+ *              count); for BGP first the highest local preference and the
+ *              shortest AS path (a route with the receiver's AS in its path
+ *              is refused). The distance is the protocol's usual default
+ *              (eBGP 20, EIGRP 90, OSPF 110, IS-IS 115, RIP 120, iBGP 200)
+ *              unless the relation writes `distance`. Without a policy,
+ *              static routes are not advertised and nothing is
+ *              redistributed; areas, route maps beyond the policy subset,
+ *              communities and route reflection are not applied (see
+ *              dynamicEntries). The simulation installs the same routes
+ *              over the adjacencies that are up (RoutingCtx.adjUp).
  *
  * Selection (lookup): the longest matching prefix among the usable entries
  * of the table; for that prefix the lowest distance, then the lowest
@@ -44,6 +52,7 @@ import { bgpAsn, hasService, routerIdFor } from '../model/services';
 import { Device, Interface, Model, Relation, Route, deviceInterfaces, relationDevices, routeKey } from '../model/types';
 import { addrBig, compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { vethNetwork, isContainer } from '../model/virtual';
+import { DEFAULT_LOCAL_PREF, LINK_STATE, RoutingPolicy, filterRoute } from '../model/routing-policy';
 
 /** Distance a static route without `distance` gets in route selection. */
 export const DEFAULT_STATIC_DISTANCE = 1;
@@ -170,8 +179,26 @@ export interface RibEntry {
   protocol?: string;
   relation?: string;
   peer?: string;
+  /** dynamic: where the route was originated and how (connected, advertised, a default route, redistributed from …) */
+  origin?: RouteOrigin;
+  /** dynamic, BGP: the AS path (nearest AS first) and the local preference */
+  asPath?: number[];
+  localPref?: number;
+  /** dynamic: the policy decisions on its way here ("hq-rtr1 export rule 1 (permit 0.0.0.0/0 to br1)") */
+  policy?: string[];
   /** static, not written: a container's default route via its network's gateway, in words */
   implicit?: string;
+}
+
+/** Where a dynamic route came from. */
+export interface RouteOrigin {
+  device: string;
+  /** connected, advertised (a policy's `advertise`), default (`default_route`), or redistributed */
+  how: 'connected' | 'advertised' | 'default' | 'redistributed';
+  /** redistributed: from what (connected, static, another protocol) */
+  from?: string;
+  /** the routing domains it came through before this one, oldest first: "rip@rip-a" (a protocol's connected set of adjacencies, named by its first device) */
+  history: string[];
 }
 
 /** A static route as a table entry (null when its prefix or next hop can't be read). */
@@ -586,6 +613,88 @@ function positiveInt(v: string | undefined, dflt: number, max: number): number {
   return n >= 1 && n <= max ? n : dflt;
 }
 
+/** A route as one router holds it for one protocol while routes propagate. */
+interface DynRoute {
+  net: IpPrefix;
+  metric: number;
+  /** the first adjacencies of every best chain (none: originated here) */
+  via: Adjacency[];
+  asPath: number[];
+  localPref: number;
+  origin: RouteOrigin;
+  /** the policy decisions on its way */
+  policy: string[];
+  /** a link-state import filter refused it here: it is flooded on, not installed */
+  notInstalled?: string;
+}
+
+/** The policy of a device's routing protocol (none written: none). */
+function policyOf(model: Model, device: string, protocol: string): RoutingPolicy | undefined {
+  const d = model.index.devices.get(device);
+  const svc = d ? d.services.find((x) => x.id === protocol) : undefined;
+  return svc ? svc.policy : undefined;
+}
+
+/** Is `a` a better BGP / IGP route than `b` (-1), as good (0), or worse (1)? */
+function rank(protocol: string, a: DynRoute, b: DynRoute): number {
+  if (protocol === 'bgp') {
+    if (a.localPref !== b.localPref) return a.localPref > b.localPref ? -1 : 1;
+    if (a.asPath.length !== b.asPath.length) return a.asPath.length < b.asPath.length ? -1 : 1;
+  }
+  return a.metric < b.metric ? -1 : a.metric > b.metric ? 1 : 0;
+}
+
+/** The static routes of a device in a VRF that resolve directly (a next hop on a connected network, an exit interface, or a black hole): what `advertise`, `redistribute: [static]` and `if_installed` read. */
+function directStatics(model: Model, device: string, vrf: string, ctx: RoutingCtx | undefined): IpPrefix[] {
+  const d = model.index.devices.get(device);
+  if (!d) return [];
+  const conn = connectedOf(model, device).filter((c) => c.vrf === vrf && isUp(ctx, device, c.iface));
+  const out: IpPrefix[] = [];
+  for (const r of d.routes) {
+    if (vrfKey(r.vrf) !== vrf) continue;
+    const e = staticEntry(r);
+    if (!e) continue;
+    // (a null route is installed: the usual anchor of an advertised summary)
+    if (e.blackhole) {
+      out.push(e.net);
+      continue;
+    }
+    if ((e.iface !== undefined && isUp(ctx, device, e.iface)) || (e.via && conn.some((c) => inPrefix(c.net, e.via as IpAddr)))) out.push(e.net);
+  }
+  return out;
+}
+
+/** A prefix's text as a table key, cached per prefix object (a learned route passes its own on). */
+const PREFIX_KEYS = new WeakMap<IpPrefix, string>();
+function prefixKey(net: IpPrefix): string {
+  let k = PREFIX_KEYS.get(net);
+  if (k === undefined) {
+    k = prefixText(net);
+    PREFIX_KEYS.set(net, k);
+  }
+  return k;
+}
+
+/** Are two routes the same for the fixpoint (metric, preference, AS path, adjacencies, history, installed)? */
+function sameRoute(a: DynRoute, b: DynRoute): boolean {
+  if (a.metric !== b.metric || a.localPref !== b.localPref || !!a.notInstalled !== !!b.notInstalled) return false;
+  if (a.asPath.length !== b.asPath.length || a.via.length !== b.via.length || a.origin.history.length !== b.origin.history.length) return false;
+  for (let i = 0; i < a.asPath.length; i++) if (a.asPath[i] !== b.asPath[i]) return false;
+  for (let i = 0; i < a.via.length; i++) if (a.via[i] !== b.via[i]) return false;
+  for (let i = 0; i < a.origin.history.length; i++) if (a.origin.history[i] !== b.origin.history[i]) return false;
+  return true;
+}
+
+/** Are two route tables the same (by prefix)? */
+function sameTable(a: Map<string, DynRoute>, b: Map<string, DynRoute>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, r] of a) {
+    const o = b.get(k);
+    if (!o || !sameRoute(r, o)) return false;
+  }
+  return true;
+}
+
 function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   const adjacencies: Adjacency[] = [];
   const missing: MissingAdjacency[] = [];
@@ -611,68 +720,208 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
       }
     }
   }
-  // per protocol: the cheapest chains of adjacencies between (device, VRF) nodes
-  const entries = new Map<string, RibEntry[]>();
   const node = (dev: string, vrf: string): string => dev + '\0' + vrf;
-  for (const protocol of ROUTING_PROTOCOLS) {
-    const adj = adjacencies.filter((a) => a.protocol === protocol);
-    if (!adj.length) continue;
-    const out = new Map<string, Adjacency[]>();
+  const protocols = ROUTING_PROTOCOLS.filter((p) => adjacencies.some((a) => a.protocol === p));
+  // each protocol's routers, and the adjacencies each learns over (by the learning node)
+  const nodesOf = new Map<string, string[]>();
+  const inbound = new Map<string, Adjacency[]>();
+  for (const p of protocols) {
+    const adj = adjacencies.filter((a) => a.protocol === p);
+    nodesOf.set(p, Array.from(new Set(adj.map((a) => node(a.from, a.fromVrf)).concat(adj.map((a) => node(a.to, a.toVrf))))).sort(cmpStr));
     for (const a of adj) {
-      const k = node(a.from, a.fromVrf);
-      if (!out.has(k)) out.set(k, []);
-      (out.get(k) as Adjacency[]).push(a);
+      const k = p + '|' + node(a.from, a.fromVrf);
+      if (!inbound.has(k)) inbound.set(k, []);
+      (inbound.get(k) as Adjacency[]).push(a);
     }
-    const nodes = Array.from(new Set(adj.map((a) => node(a.from, a.fromVrf)).concat(adj.map((a) => node(a.to, a.toVrf))))).sort(cmpStr);
-    for (const src of nodes) {
-      // Dijkstra with the set of first adjacencies of every cheapest chain
-      const dist = new Map<string, number>([[src, 0]]);
-      const first = new Map<string, Adjacency[]>([[src, []]]);
-      const done = new Set<string>();
-      for (;;) {
-        let cur: string | null = null;
-        for (const n of nodes) if (!done.has(n) && dist.has(n) && (cur === null || (dist.get(n) as number) < (dist.get(cur) as number))) cur = n;
-        if (cur === null) break;
-        done.add(cur);
-        const dc = dist.get(cur) as number;
-        for (const a of out.get(cur) || []) {
-          const t = node(a.to, a.toVrf);
-          const nd = dc + a.cost;
-          const fh = cur === src ? [a] : (first.get(cur) as Adjacency[]);
-          const known = dist.get(t);
-          if (known === undefined || nd < known) {
-            dist.set(t, nd);
-            first.set(t, fh.slice());
-          } else if (nd === known && !done.has(t)) {
-            const list = first.get(t) as Adjacency[];
-            for (const x of fh) if (list.indexOf(x) < 0) list.push(x);
+  }
+  // each protocol's routing domains: its connected sets of adjacencies (a route never re-enters a domain it came through)
+  const domain = new Map<string, string>();
+  for (const p of protocols) {
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let r = x;
+      while (parent.get(r) !== r) r = parent.get(r) as string;
+      return r;
+    };
+    for (const n of nodesOf.get(p) as string[]) parent.set(n, n);
+    for (const a of adjacencies.filter((x) => x.protocol === p)) {
+      const ra = find(node(a.from, a.fromVrf));
+      const rb = find(node(a.to, a.toVrf));
+      if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+    }
+    for (const n of nodesOf.get(p) as string[]) domain.set(p + '|' + n, p + '@' + find(n).split('\0')[0]);
+  }
+  const domainOf = (p: string, n: string): string => domain.get(p + '|' + n) || p + '@' + n.split('\0')[0];
+  // the best routes per protocol and node, by prefix
+  const best = new Map<string, Map<string, DynRoute>>();
+  const tableOf = (p: string, n: string): Map<string, DynRoute> => best.get(p + '|' + n) || new Map();
+  const connMemo = new Map<string, Connected[]>();
+  const conn = (dev: string, vrf: string): Connected[] => {
+    const k = dev + '\0' + vrf;
+    let v = connMemo.get(k);
+    if (!v) connMemo.set(k, (v = connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(ctx, dev, c.iface))));
+    return v;
+  };
+  const staticsMemo = new Map<string, IpPrefix[]>();
+  const staticsOf = (dev: string, vrf: string): IpPrefix[] => {
+    const k = dev + '\0' + vrf;
+    let v = staticsMemo.get(k);
+    if (!v) staticsMemo.set(k, (v = directStatics(model, dev, vrf, ctx)));
+    return v;
+  };
+  /** what a router originates into a protocol now (its own routes: metric 0) */
+  const originate = (p: string, n: string): Map<string, DynRoute> => {
+    const [dev, vrf] = n.split('\0');
+    const pol = policyOf(model, dev, p);
+    const out = new Map<string, DynRoute>();
+    const add = (net: IpPrefix, origin: RouteOrigin): void => {
+      const k = prefixKey(net);
+      if (!out.has(k)) out.set(k, { net, metric: 0, via: [], asPath: [], localPref: DEFAULT_LOCAL_PREF, origin, policy: [] });
+    };
+    const own = conn(dev, vrf);
+    const statics = staticsOf(dev, vrf);
+    if (pol && pol.advertise) {
+      for (const t of pol.advertise) {
+        const pp = parsePrefix(t);
+        if (!pp) continue;
+        const net = networkOf(pp);
+        if (own.some((c) => comparePrefix(c.net, net) === 0) || statics.some((x) => comparePrefix(x, net) === 0)) add(net, { device: dev, how: 'advertised', history: [] });
+      }
+    } else for (const c of own) add(c.net, { device: dev, how: 'connected', history: [] });
+    if (pol) {
+      for (const src of pol.redistribute) {
+        if (src === 'connected') for (const c of own) add(c.net, { device: dev, how: 'redistributed', from: 'connected', history: [] });
+        else if (src === 'static') for (const x of statics) add(x, { device: dev, how: 'redistributed', from: 'static', history: [] });
+        else {
+          // another protocol's routes this router learned (not its own: they are its connected networks already), never back into a domain they came through
+          const into = domainOf(p, n);
+          for (const r of Array.from(tableOf(src, n).values())) {
+            if (!r.via.length || r.notInstalled) continue;
+            const history = r.origin.history.concat([domainOf(src, n)]);
+            if (history.indexOf(into) >= 0) continue;
+            add(r.net, { device: dev, how: 'redistributed', from: src, history });
           }
         }
       }
-      const [srcDev, srcVrf] = src.split('\0');
+      if (pol.defaultRoute) {
+        const fams = new Set(own.map((c) => c.net.version));
+        for (const v of [4, 6] as Array<4 | 6>) {
+          if (!fams.has(v)) continue;
+          const def = parsePrefix(v === 4 ? '0.0.0.0/0' : '::/0') as IpPrefix;
+          const installed = statics.some((x) => x.version === v && x.prefix === 0) || protocols.some((q) => q !== p && Array.from(tableOf(q, n).values()).some((r) => r.net.version === v && r.net.prefix === 0 && r.via.length > 0 && !r.notInstalled));
+          if (pol.defaultRoute === 'always' || installed) add(def, { device: dev, how: 'default', history: [] });
+        }
+      }
+    }
+    return out;
+  };
+  // propagate until nothing changes (bounded: a route is never longer than the routers there are)
+  const maxRounds = Array.from(nodesOf.values()).reduce((x, l) => x + l.length, 0) + 4;
+  const originMemo = new Map<string, Map<string, DynRoute>>();
+  // a router's table is computed again in a round only when what it reads changed in the round before: a neighbour's
+  // table of the protocol, or one of its own tables (redistribution, a default route if installed) — the same fixpoint, less work
+  let changedTables = new Set<string>();
+  let changedNodes = new Set<string>();
+  for (let round = 0; round < maxRounds; round++) {
+    let changed = false;
+    const next = new Map<string, Map<string, DynRoute>>();
+    const nowTables = new Set<string>();
+    const nowNodes = new Set<string>();
+    for (const p of protocols) {
+      const ls = LINK_STATE.indexOf(p) >= 0;
+      for (const n of nodesOf.get(p) as string[]) {
+        if (round > 0 && !changedNodes.has(n) && !(inbound.get(p + '|' + n) || []).some((a) => changedTables.has(p + '|' + node(a.to, a.toVrf)))) continue;
+        const [dev] = n.split('\0');
+        // (what it originates reads no learned table unless it redistributes another protocol or has a conditional default: then once)
+        let mine = originMemo.get(p + '|' + n);
+        if (!mine) {
+          mine = originate(p, n);
+          const pol = policyOf(model, dev, p);
+          if (!pol || (!pol.redistribute.some((x) => x !== 'connected' && x !== 'static') && pol.defaultRoute !== 'if_installed')) originMemo.set(p + '|' + n, mine);
+        }
+        const out = new Map<string, DynRoute>(mine);
+        const myAs = p === 'bgp' ? bgpAsn(model.index.devices.get(dev)) : undefined;
+        const myPol = policyOf(model, dev, p);
+        for (const a of inbound.get(p + '|' + n) || []) {
+          const from = node(a.to, a.toVrf);
+          const theirPol = policyOf(model, a.to, p);
+          const theirAs = p === 'bgp' ? bgpAsn(model.index.devices.get(a.to)) : undefined;
+          const ebgp = p === 'bgp' && myAs !== undefined && theirAs !== undefined && myAs !== theirAs;
+          for (const r of Array.from(tableOf(p, from).values())) {
+            // (what it holds but did not install, a link-state router still floods; a distance vector does not pass on what it refused)
+            if (r.notInstalled && !ls) continue;
+            const evidence = r.policy.slice();
+            let prepend = 0;
+            if (!ls && theirPol && theirPol.export.length) {
+              const d = filterRoute(theirPol.export, r.net, dev, 'export');
+              if (!d.permit) continue;
+              evidence.push(`${a.to} ${d.text}`);
+              prepend = d.prepend || 0;
+            }
+            // BGP: the AS path, loop prevention, local preference (eBGP resets it)
+            let asPath = r.asPath;
+            let localPref = r.localPref;
+            if (ebgp) {
+              if (r.asPath.indexOf(myAs as number) >= 0) continue;
+              asPath = Array(prepend + 1).fill(theirAs as number).concat(r.asPath);
+              localPref = DEFAULT_LOCAL_PREF;
+            }
+            const cand: DynRoute = { net: r.net, metric: r.metric + a.cost, via: [a], asPath, localPref, origin: r.origin, policy: evidence };
+            if (myPol && myPol.import.length) {
+              const d = filterRoute(myPol.import, r.net, a.to, 'import');
+              if (!d.permit) {
+                if (!ls) continue;
+                cand.notInstalled = `${dev} ${d.text}`;
+              } else {
+                cand.policy = evidence.concat([`${dev} ${d.text}`]);
+                if (d.localPref !== undefined) cand.localPref = d.localPref;
+              }
+            }
+            const k = prefixKey(r.net);
+            const cur = out.get(k);
+            if (!cur) {
+              out.set(k, cand);
+              continue;
+            }
+            if (!cur.via.length) continue; // its own route
+            const c = rank(p, cand, cur);
+            if (c < 0) out.set(k, cand);
+            else if (c === 0 && !!cand.notInstalled === !!cur.notInstalled) for (const x of cand.via) if (cur.via.indexOf(x) < 0) cur.via.push(x);
+          }
+        }
+        if (sameTable(out, tableOf(p, n))) continue;
+        next.set(p + '|' + n, out);
+        nowTables.add(p + '|' + n);
+        nowNodes.add(n);
+        changed = true;
+      }
+    }
+    for (const [k, v] of next) best.set(k, v);
+    if (!changed) break;
+    changedTables = nowTables;
+    changedNodes = nowNodes;
+  }
+  // the routes each router installs: what it learned (not its own connected networks), one entry per first adjacency
+  const entries = new Map<string, RibEntry[]>();
+  for (const p of protocols) {
+    for (const n of nodesOf.get(p) as string[]) {
+      const [srcDev, srcVrf] = n.split('\0');
       const ownNets = connectedOf(model, srcDev).filter((c) => c.vrf === srcVrf);
-      // every network a reached router is connected to: the lowest cost, and the first adjacencies of all chains at that cost
-      const best = new Map<string, { net: IpPrefix; metric: number; via: Adjacency[] }>();
-      for (const t of nodes) {
-        if (t === src || !dist.has(t)) continue;
-        const [dev, vrf] = t.split('\0');
-        const m = dist.get(t) as number;
-        for (const c of connectedOf(model, dev)) {
-          if (c.vrf !== vrf || !isUp(ctx, dev, c.iface)) continue;
-          if (ownNets.some((o) => comparePrefix(o.net, c.net) === 0)) continue;
-          const k = prefixText(c.net);
-          const b = best.get(k);
-          if (!b || m < b.metric) best.set(k, { net: c.net, metric: m, via: (first.get(t) as Adjacency[]).slice() });
-          else if (m === b.metric) for (const x of first.get(t) as Adjacency[]) if (b.via.indexOf(x) < 0) b.via.push(x);
+      const list = entries.get(n) || [];
+      for (const r of Array.from(tableOf(p, n).values())) {
+        if (!r.via.length || r.notInstalled) continue;
+        if (ownNets.some((o) => comparePrefix(o.net, r.net) === 0)) continue;
+        for (const a of r.via) {
+          const e: RibEntry = { kind: 'dynamic', device: srcDev, vrf: srcVrf, net: r.net, distance: a.distance, metric: r.metric, iface: a.iface, via: a.via, blackhole: false, protocol: p, relation: a.relation, peer: a.to, origin: r.origin };
+          if (p === 'bgp') {
+            e.asPath = r.asPath.slice();
+            e.localPref = r.localPref;
+          }
+          if (r.policy.length) e.policy = r.policy.slice();
+          list.push(e);
         }
       }
-      const list = entries.get(src) || [];
-      for (const b of Array.from(best.values())) {
-        for (const a of b.via) {
-          list.push({ kind: 'dynamic', device: srcDev, vrf: srcVrf, net: b.net, distance: a.distance, metric: b.metric, iface: a.iface, via: a.via, blackhole: false, protocol, relation: a.relation, peer: a.to });
-        }
-      }
-      entries.set(src, list.sort(compareEntries));
+      entries.set(n, list.sort(compareEntries));
     }
   }
   return { adjacencies, missing, entries };
