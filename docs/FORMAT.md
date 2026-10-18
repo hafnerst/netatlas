@@ -44,6 +44,7 @@ networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
 checks: {...}          # optional: switch consistency checks off or change their severity
+layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
 
 ### Changes since 0.1.3
@@ -3049,6 +3050,54 @@ from a fixed seed (the model's title and interfaces) and the interface's
 `device:interface` id, so the same model always gives the same addresses.
 They are marked *(simulated)* wherever they are shown and never written to
 the model.
+
+## `layout` (diagram positions)
+
+Presentation only: the section never changes what the model means, and
+a broken entry is a warning and ignored. NetAtlas writes it; you don't
+have to.
+
+```yaml
+layout:
+  routing: {physical: orthogonal}   # optional: lines at right angles (Structured)
+  physical:                         # device id: [x, y]
+    core: [520, 140]
+    ap-1: [300, 420]
+  logical:                          # devices, networks and multipoint relations
+    core: [480, 300]
+    internal: [480, 520]
+  manual:                           # optional: what was placed by hand, per view
+    physical: [ap-1]
+```
+
+| Key | Meaning |
+|---|---|
+| `physical`, `logical` | The centre of each node of the view: in the physical view the devices (a guest is drawn inside its host and has no entry); in the logical view the devices, the networks, the relations with three or more devices (their hubs) and a container network drawn as a network (`host/name`). Coordinates are numbers from −1 000 000 to 1 000 000. A view without entries shows the Default arrangement; a node without an entry is placed next to its neighbours, and nothing else moves. |
+| `manual` | The nodes of each view placed by hand (`physical: [ids]`, `logical: [ids]`). It only tells *Manually adjusted* from *Edited since arranged* after a reload. |
+| `routing` | How a view's cables (physical) and relations, memberships and next-hop lines (logical) are drawn: `orthogonal` for horizontal and vertical segments with right-angle bends only, the routing of **Structured**. Without an entry for a view, the standard routing: straight lines that bend around boxes. Any other value is a warning and ignored. |
+
+Opening a file never writes positions. They are written when you drag a
+node, make the first edit that changes the geometry (the positions shown
+are stored, so nothing moves by itself) or use Auto-arrange. **Remove
+stored positions** removes the whole section, routing included.
+
+### Auto-arrange
+
+Auto-arrange computes the positions of the view on screen from the model
+alone, deterministically: the same model (in any key and list order) gets
+the same positions, and arranging twice moves nothing the second time.
+It writes them, with the routing, in one undo step:
+
+| Option | Positions | `routing` of the view |
+|---|---|---|
+| **Default** | Rows by tier, groups placed by their cabling, each row ordered to keep cables short and uncrossed (physical); evenly spaced relations (logical). The layout every model starts with. | removed (standard) |
+| **Compact** | The Default rows packed tight: the slack taken out, rows of leaf devices folded, unconnected groups side by side; the smallest of these that keeps the lines readable, never larger than Default (then Default's positions). | removed (standard) |
+| **Structured** | Rows and columns on a 10 px grid: the rows of the physical Default layout in both views (networks and hubs of the logical view in a row under the highest row they connect), every item aligned with what it is connected to, room between rows for the lines that bend there. | `orthogonal` |
+
+The option a view is arranged with is recognised from its positions *and*
+its routing, so it is right after undo, reload and manual moves. After a
+move the routing stays: a view arranged with Structured keeps its
+right-angle lines.
 
 ## Validation and limits
 

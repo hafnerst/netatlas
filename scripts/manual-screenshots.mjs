@@ -133,6 +133,14 @@ async function main() {
     await page.settle();
     await save('toolbar-groups', around([await page.rect('#view-group'), await page.rect('#filters-group')], 8));
 
+    // the private house arranged with Structured (physical view): rows and columns, right-angle lines
+    await page.eval('netatlas.loadExampleNamed("private-house.yaml"), netatlas.setView("physical"), netatlas.select(null), true');
+    await page.click('#btn-arrange-structured');
+    await page.eval(`(() => { document.getElementById('toast').hidden = true; netatlas.fit(); return true; })()`);
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(200);
+    await save('arrange-structured', around([await page.rect('#canvas-wrap')], 0), { scale: 0.7, quality: 30 });
+
     // the addresses of a router in the logical view, at 100 % (addressing example)
     await page.eval('netatlas.loadExampleNamed("addressing.yaml"), netatlas.setView("logical"), netatlas.select("device:core", true), netatlas.select(null), true');
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);

@@ -98,7 +98,7 @@ export const SCHEMA = {
   /** a traffic demand: an entry of `demands` */
   demand: ['id', 'label', 'source', 'destination', 'bandwidth', 'class', 'description'],
   /** the presentation-only layout section */
-  layout: ['physical', 'logical', 'manual'],
+  layout: ['routing', 'physical', 'logical', 'manual'],
 };
 
 export type SchemaKind = keyof typeof SCHEMA;

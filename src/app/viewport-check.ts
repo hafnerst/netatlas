@@ -437,7 +437,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       const g = q('#arrange-group') as HTMLElement;
       const gr = g.getBoundingClientRect();
       const tr = (q('#arrange-title') as HTMLElement).getBoundingClientRect();
-      const bs = ['default', 'compact', 'spacious'].map((s) => (q('#btn-arrange-' + s) as HTMLElement).getBoundingClientRect());
+      const bs = ['default', 'compact', 'structured'].map((s) => (q('#btn-arrange-' + s) as HTMLElement).getBoundingClientRect());
       const why: string[] = [];
       const cs = (doc.defaultView as Window).getComputedStyle(g);
       if (cs.borderTopStyle !== 'dashed') why.push('the group has no dashed frame');

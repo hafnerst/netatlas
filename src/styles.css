@@ -191,6 +191,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 /* a very narrow toolbar: the menus' carets go (decorative: each menu button says it opens a menu, aria-haspopup) */
 @container (max-width: 700px) {
   .menu-btn .caret { display: none; }
+  /* … and the Auto-arrange options are only as wide as their names */
+  .arrange-btns .arrange-btn { flex: 0 0 auto; padding: 2px 6px; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
 /* the slot takes the rest of the toolbar row and holds the framed Filters group at its right end */
@@ -531,6 +533,8 @@ button.ref:hover { text-decoration: underline; }
 .icon { fill: none; stroke: var(--icon); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .swatch .icon { stroke-width: 1.8; }
 .cable-line { fill: none; stroke-linejoin: round; }
+/* the Structured arrangement routes with right angles: sharp corners, never rounded */
+.orthogonal .cable-line, .orthogonal .rel-line, .orthogonal .tube-outer, .orthogonal .tube-inner, .orthogonal .member, .orthogonal .nh-line, .orthogonal .hit { stroke-linejoin: miter; }
 .link { cursor: pointer; }
 .link:hover .cable-line { filter: drop-shadow(0 0 2px var(--accent)); }
 .port { stroke: var(--dev-fill); stroke-width: 1.2; cursor: pointer; }

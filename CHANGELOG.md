@@ -14,7 +14,46 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 Applications on host-capable devices, IPv6 host
 configuration, what NetAtlas models for each protocol, MQTT, and time
-synchronization with NTP state and PTP.
+synchronization with NTP state and PTP. Auto-arrange's three options are
+now distinct: Default as before, Compact packed tight, and Structured
+(replacing Spacious) with rows, columns and right-angle lines.
+
+### Changed (Auto-arrange)
+
+- **Structured replaces Spacious.** It puts each group's devices in the
+  rows of the physical Default layout (in both views; networks and hubs of
+  the logical view in a row under the highest row they connect), aligns
+  every device with what it is connected to on a 10 px grid, leaves a lane
+  between rows for every line that bends there, and draws every cable and
+  relation (and membership and next-hop line) with **horizontal and
+  vertical segments and right-angle bends only**, around boxes, ports and
+  end labels; lines that share a corridor run side by side, ends stay at
+  their interfaces, tunnels keep what they carry inside them.
+- **Its routing is part of the model:** `layout.routing: {physical:
+  orthogonal}` (or `logical`), written with the positions in one undo step
+  and removed by Default, Compact and Remove stored positions. A device
+  moved afterwards has its lines routed again at right angles and nothing
+  else moves; the status says the lines keep Structured's right angles. The
+  screen, the SVG and PNG export and a reloaded file show the same lines. A
+  filtered view follows the document's routing until it is arranged itself.
+  The format version stays 1: the key is optional and new
+  ([docs/FORMAT.md](docs/FORMAT.md#layout-diagram-positions), which now
+  describes the whole `layout` section).
+- **Compact packs instead of only shrinking.** Group by group it tries the
+  Default rows with the slack taken out, leaf rows (the clients under a
+  switch) folded, and unconnected groups and parts side by side, and keeps
+  the smallest that adds no more than a crossing or two and (logical view)
+  doesn't send more lines through boxes; a device never comes to stand
+  beside what it is cabled to above it. Sizes and port-label room are taken
+  from the result itself. It is never larger than Default: where Default is
+  already tight, Compact gives the same positions. Typical drawn pictures
+  are 14–25 % smaller in the physical view and 30–55 % in the logical view.
+- **Default is unchanged** — its positions and drawn scenes are compared
+  with a snapshot of every example on every test run — and it stays the
+  preset unless another one is chosen.
+- The buttons' hover texts and the command palette say what each option
+  does (and find them by words like *grid*, *orthogonal*, *tight*); in a
+  very narrow toolbar the three buttons are only as wide as their names.
 
 ### Changed (model format 1, not backward compatible)
 

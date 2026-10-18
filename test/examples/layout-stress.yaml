@@ -1,0 +1,284 @@
+# Internal layout test (not a public example): a larger campus with nested
+# groups (site, building, floors, racks), parallel cables (a port-channel
+# between the core pair, dual-homed access switches), a hypervisor with VMs,
+# a branch over an IPsec tunnel with GRE and OSPF inside it. The three
+# Auto-arrange options are compared on it (test/arrange-presets.test.mjs).
+netatlas: 1
+title: Layout stress — nested groups and parallel cables
+
+groups:
+  - id: providers
+    label: Service providers
+    kind: provider
+  - id: hq
+    label: HQ
+    kind: site
+  - id: core-rack
+    label: Core rack
+    kind: rack
+    parent: hq
+  - id: srv-rack
+    label: Server rack
+    kind: rack
+    parent: hq
+  - id: bldg
+    label: Building 1
+    kind: building
+    parent: hq
+  - id: f1
+    label: Floor 1
+    kind: floor
+    parent: bldg
+  - id: f2
+    label: Floor 2
+    kind: floor
+    parent: bldg
+  - id: branch
+    label: Branch
+    kind: site
+
+devices:
+  - id: inet
+    type: cloud
+  - id: isp-pe
+    type: router
+    group: providers
+    interfaces: [ge0, ge1, ge2]
+  - id: rt1
+    type: router
+    group: core-rack
+    interfaces: [wan, c1, c2]
+    logical_interfaces:
+      - {id: tun0, type: tunnel, ip: 172.16.0.1/30}
+  - id: rt2
+    type: router
+    group: core-rack
+    interfaces: [wan, c1, c2]
+  - id: core1
+    type: switch
+    group: core-rack
+    layer3: true
+    role: core
+    interfaces:
+      - {id: r1, routed: true}
+      - {id: r2, routed: true}
+      - {id: p1}
+      - {id: p2}
+      - {id: a1, vlans: [10, 20]}
+      - {id: a2, vlans: [10, 20]}
+      - {id: a3, vlans: [10, 20]}
+      - {id: a4, vlans: [10, 20]}
+      - {id: s1, vlans: 10}
+      - {id: s2, vlans: 10}
+      - {id: h1, vlans: 10}
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [p1, p2], vlans: [10, 20]}
+  - id: core2
+    type: switch
+    group: core-rack
+    layer3: true
+    role: core
+    interfaces:
+      - {id: r1, routed: true}
+      - {id: r2, routed: true}
+      - {id: p1}
+      - {id: p2}
+      - {id: a1, vlans: [10, 20]}
+      - {id: a2, vlans: [10, 20]}
+      - {id: a3, vlans: [10, 20]}
+      - {id: a4, vlans: [10, 20]}
+      - {id: s1, vlans: 10}
+      - {id: s2, vlans: 10}
+      - {id: h1, vlans: 10}
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [p1, p2], vlans: [10, 20]}
+  - id: acc1
+    type: switch
+    group: f1
+    role: access
+    interfaces: [{id: u1, vlans: [10, 20]}, {id: u2, vlans: [10, 20]}, {id: e1, vlans: 10}, {id: e2, vlans: 10}, {id: e3, vlans: 20}]
+  - id: pc11
+    type: endpoint
+    group: f1
+    kind: pc
+    interfaces: [eth0]
+  - id: pc12
+    type: endpoint
+    group: f1
+    kind: pc
+    interfaces: [eth0]
+  - id: pc13
+    type: endpoint
+    group: f1
+    kind: pc
+    interfaces: [eth0]
+  - id: acc2
+    type: switch
+    group: f1
+    role: access
+    interfaces: [{id: u1, vlans: [10, 20]}, {id: u2, vlans: [10, 20]}, {id: e1, vlans: 10}, {id: e2, vlans: 10}, {id: e3, vlans: 20}]
+  - id: pc21
+    type: endpoint
+    group: f1
+    kind: pc
+    interfaces: [eth0]
+  - id: pc22
+    type: endpoint
+    group: f1
+    kind: pc
+    interfaces: [eth0]
+  - id: pc23
+    type: endpoint
+    group: f1
+    kind: pc
+    interfaces: [eth0]
+  - id: acc3
+    type: switch
+    group: f2
+    role: access
+    interfaces: [{id: u1, vlans: [10, 20]}, {id: u2, vlans: [10, 20]}, {id: e1, vlans: 10}, {id: e2, vlans: 10}, {id: e3, vlans: 20}]
+  - id: pc31
+    type: endpoint
+    group: f2
+    kind: pc
+    interfaces: [eth0]
+  - id: pc32
+    type: endpoint
+    group: f2
+    kind: pc
+    interfaces: [eth0]
+  - id: pc33
+    type: endpoint
+    group: f2
+    kind: pc
+    interfaces: [eth0]
+  - id: acc4
+    type: switch
+    group: f2
+    role: access
+    interfaces: [{id: u1, vlans: [10, 20]}, {id: u2, vlans: [10, 20]}, {id: e1, vlans: 10}, {id: e2, vlans: 10}, {id: e3, vlans: 20}]
+  - id: pc41
+    type: endpoint
+    group: f2
+    kind: pc
+    interfaces: [eth0]
+  - id: pc42
+    type: endpoint
+    group: f2
+    kind: pc
+    interfaces: [eth0]
+  - id: pc43
+    type: endpoint
+    group: f2
+    kind: pc
+    interfaces: [eth0]
+  - id: srv1
+    type: server
+    group: srv-rack
+    interfaces: [eth0, eth1]
+  - id: srv2
+    type: server
+    group: srv-rack
+    interfaces: [eth0, eth1]
+  - id: hv1
+    type: server
+    group: srv-rack
+    services:
+      hypervisor:
+        platform: kvm
+        vswitches:
+          - name: br0
+            type: standard
+            uplinks: [eno1]
+            teaming: active_standby
+            port_groups:
+              - {name: Servers, vlans: 10}
+    interfaces: [eno1]
+  - id: vm1
+    type: vm
+    host: hv1
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Servers, ip: 10.10.0.11/24}
+  - id: vm2
+    type: vm
+    host: hv1
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Servers, ip: 10.10.0.12/24}
+  - id: br-rt
+    type: router
+    group: branch
+    interfaces: [wan, lan]
+    logical_interfaces:
+      - {id: tun0, type: tunnel, ip: 172.16.0.2/30}
+  - id: br-sw
+    type: switch
+    group: branch
+    role: access
+    interfaces: [{id: up, vlans: 30}, {id: e1, vlans: 30}, {id: e2, vlans: 30}, {id: e3, vlans: 30}]
+  - id: br-pc1
+    type: endpoint
+    group: branch
+    kind: pc
+    interfaces: [eth0]
+  - id: br-pc2
+    type: endpoint
+    group: branch
+    kind: pc
+    interfaces: [eth0]
+  - id: br-pc3
+    type: endpoint
+    group: branch
+    kind: pc
+    interfaces: [eth0]
+
+links:
+  - {id: l-inet-pe, a: "inet", b: "isp-pe:ge0"}
+  - {id: l-pe-rt1, a: "isp-pe:ge1", b: "rt1:wan"}
+  - {id: l-pe-rt2, a: "isp-pe:ge2", b: "rt2:wan"}
+  - {id: l-inet-br, a: "inet", b: "br-rt:wan"}
+  - {id: l-rt1-c1, a: "rt1:c1", b: "core1:r1"}
+  - {id: l-rt1-c2, a: "rt1:c2", b: "core2:r1"}
+  - {id: l-rt2-c1, a: "rt2:c1", b: "core1:r2"}
+  - {id: l-rt2-c2, a: "rt2:c2", b: "core2:r2"}
+  - {id: l-peer1, a: "core1:p1", b: "core2:p1"}
+  - {id: l-peer2, a: "core1:p2", b: "core2:p2"}
+  - {id: l-c1-acc1, a: "core1:a1", b: "acc1:u1"}
+  - {id: l-c2-acc1, a: "core2:a1", b: "acc1:u2"}
+  - {id: l-acc1-pc1, a: "acc1:e1", b: "pc11:eth0"}
+  - {id: l-acc1-pc2, a: "acc1:e2", b: "pc12:eth0"}
+  - {id: l-acc1-pc3, a: "acc1:e3", b: "pc13:eth0"}
+  - {id: l-c1-acc2, a: "core1:a2", b: "acc2:u1"}
+  - {id: l-c2-acc2, a: "core2:a2", b: "acc2:u2"}
+  - {id: l-acc2-pc1, a: "acc2:e1", b: "pc21:eth0"}
+  - {id: l-acc2-pc2, a: "acc2:e2", b: "pc22:eth0"}
+  - {id: l-acc2-pc3, a: "acc2:e3", b: "pc23:eth0"}
+  - {id: l-c1-acc3, a: "core1:a3", b: "acc3:u1"}
+  - {id: l-c2-acc3, a: "core2:a3", b: "acc3:u2"}
+  - {id: l-acc3-pc1, a: "acc3:e1", b: "pc31:eth0"}
+  - {id: l-acc3-pc2, a: "acc3:e2", b: "pc32:eth0"}
+  - {id: l-acc3-pc3, a: "acc3:e3", b: "pc33:eth0"}
+  - {id: l-c1-acc4, a: "core1:a4", b: "acc4:u1"}
+  - {id: l-c2-acc4, a: "core2:a4", b: "acc4:u2"}
+  - {id: l-acc4-pc1, a: "acc4:e1", b: "pc41:eth0"}
+  - {id: l-acc4-pc2, a: "acc4:e2", b: "pc42:eth0"}
+  - {id: l-acc4-pc3, a: "acc4:e3", b: "pc43:eth0"}
+  - {id: l-c1-srv1, a: "core1:s1", b: "srv1:eth0"}
+  - {id: l-c2-srv1, a: "core2:s1", b: "srv1:eth1"}
+  - {id: l-c1-srv2, a: "core1:s2", b: "srv2:eth0"}
+  - {id: l-c2-srv2, a: "core2:s2", b: "srv2:eth1"}
+  - {id: l-c1-hv1, a: "core1:h1", b: "hv1:eno1"}
+  - {id: l-br, a: "br-rt:lan", b: "br-sw:up"}
+  - {id: l-br-pc1, a: "br-sw:e1", b: "br-pc1:eth0"}
+  - {id: l-br-pc2, a: "br-sw:e2", b: "br-pc2:eth0"}
+  - {id: l-br-pc3, a: "br-sw:e3", b: "br-pc3:eth0"}
+
+relations:
+  - {id: ipsec-br, protocol: ipsec, endpoints: ["rt1:wan", "br-rt:wan"], over: [l-pe-rt1, l-inet-pe, l-inet-br]}
+  - {id: gre-br, protocol: gre, endpoints: ["rt1:tun0", "br-rt:tun0"], over: ipsec-br}
+  - {id: ospf-br, protocol: ospf, endpoints: ["rt1:tun0", "br-rt:tun0"], over: gre-br}
+  - {id: ospf-r1c1, protocol: ospf, endpoints: ["rt1:c1", "core1:r1"], over: l-rt1-c1}
+  - {id: ospf-r1c2, protocol: ospf, endpoints: ["rt1:c2", "core2:r1"], over: l-rt1-c2}
+  - {id: ospf-r2c1, protocol: ospf, endpoints: ["rt2:c1", "core1:r2"], over: l-rt2-c1}
+  - {id: ospf-r2c2, protocol: ospf, endpoints: ["rt2:c2", "core2:r2"], over: l-rt2-c2}
+  - {id: lacp-core, protocol: lacp, endpoints: ["core1:Po1", "core2:Po1"], over: [l-peer1, l-peer2]}
+  - {id: vrrp-edge, protocol: vrrp, endpoints: [rt1, rt2]}

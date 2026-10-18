@@ -34,7 +34,7 @@
  */
 import { Pt } from '../layout/geometry';
 import { LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
-import { ArrangeStrategy, STRATEGIES, strategyPositions } from '../layout/strategies';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_ROUTING, strategyPositions } from '../layout/strategies';
 import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
@@ -106,6 +106,8 @@ export class Session {
   private filtered: { physical: ViewCache | null; logical: ViewCache | null } = { physical: null, logical: null };
   /** temporary positions of the filtered views, keyed by entity id; null = not arranged yet */
   private temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } = { physical: null, logical: null };
+  /** the routing of a filtered view once it was arranged with an option ('standard' or 'orthogonal'); null: the document's */
+  private tempRouting: { physical: 'standard' | 'orthogonal' | null; logical: 'standard' | 'orthogonal' | null } = { physical: null, logical: null };
   /**
    * Places of the filtered views' nodes as they were when a device type was
    * switched off, so that switching it on again brings its devices back
@@ -194,6 +196,7 @@ export class Session {
     for (const v of ['physical', 'logical'] as LayoutView[]) {
       if (!this.isFiltered(v)) {
         this.temp[v] = null;
+        this.tempRouting[v] = null;
         this.parked[v] = null;
       } else {
         const old = this.temp[v];
@@ -285,7 +288,7 @@ export class Session {
   // ------------------------------------------------------------- focus mode
 
   /** the temporary positions of the views as they were before focus mode began (restored when it ends) */
-  private beforeFocus: { temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } } | null = null;
+  private beforeFocus: { temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; routing: Session['tempRouting'] } | null = null;
 
   /**
    * Show only the neighbourhood of an object: the devices within `hops`
@@ -302,7 +305,7 @@ export class Session {
     const views: LayoutView[] = ['physical', 'logical'];
     const same = !!cur && cur.ref === ref;
     const seeds = same ? views.map((v) => new Map(this.positionsFor(v))) : null;
-    if (!cur) this.beforeFocus = { temp: { ...this.temp }, parked: { ...this.parked } };
+    if (!cur) this.beforeFocus = { temp: { ...this.temp }, parked: { ...this.parked }, routing: { ...this.tempRouting } };
     this.state.focus = { ref, hops: n };
     this.filtered = { physical: null, logical: null };
     this.state.positions.physical.clear();
@@ -327,6 +330,7 @@ export class Session {
       const t = back ? back.temp[v] : null;
       this.temp[v] = t && this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), t) : null;
       this.parked[v] = back && this.isFiltered(v) ? back.parked[v] : null;
+      this.tempRouting[v] = back && this.isFiltered(v) ? back.routing[v] : null;
     }
     return true;
   }
@@ -436,7 +440,9 @@ export class Session {
     if (this.isFiltered(view)) {
       let t = this.temp[view];
       // a filtered view is arranged once, when it is first shown; afterwards it only changes when the user moves or arranges it
-      if (!t) t = this.temp[view] = autoPositions(view, this.viewInput(view));
+      // (as Structured when the complete view is routed that way, else as Default)
+      if (!t) this.tempRouting[view] = null;
+      if (!t) t = this.temp[view] = this.model.layout.routing[view] === 'orthogonal' ? strategyPositions(view, this.viewInput(view), 'structured') : autoPositions(view, this.viewInput(view));
       return t;
     }
     return this.resolvedPositions(view);
@@ -473,7 +479,20 @@ export class Session {
   filteredArrangedWith(view: LayoutView): ArrangeStrategy[] {
     const cur = this.positionsFor(view);
     const input = this.viewInput(view);
-    return STRATEGIES.filter((st) => samePositions(cur, strategyPositions(view, input, st)));
+    const routing = this.routingFor(view);
+    return STRATEGIES.filter((st) => STRATEGY_ROUTING[st] === routing && samePositions(cur, strategyPositions(view, input, st)));
+  }
+
+  /**
+   * How a view's cables and relations are routed now: 'orthogonal' (the
+   * Structured arrangement) or undefined (the standard routing). The
+   * document says it; a filtered view that was arranged with an option
+   * follows that option until the filter ends.
+   */
+  routingFor(view: LayoutView): 'orthogonal' | undefined {
+    const t = this.isFiltered(view) ? this.tempRouting[view] : null;
+    if (t) return t === 'orthogonal' ? 'orthogonal' : undefined;
+    return this.model.layout.routing[view];
   }
 
   /**
@@ -490,6 +509,7 @@ export class Session {
       if (!q || q.x !== p.x || q.y !== p.y) moved++;
     });
     this.temp[view] = auto;
+    this.tempRouting[view] = STRATEGY_ROUTING[strategy] || 'standard';
     this.parked[view] = null;
     this.state.positions[view].clear();
     return moved;
@@ -585,7 +605,7 @@ export class Session {
   render(): SceneResult {
     const s = this.state;
     if (s.view === 'physical') {
-      return renderPhysical(this.viewModel('physical'), this.physicalLayout(), { showLabels: s.showLabels, showGroups: s.showGroups, positions: new Map() });
+      return renderPhysical(this.viewModel('physical'), this.physicalLayout(), { showLabels: s.showLabels, showGroups: s.showGroups, positions: new Map(), orthogonal: this.routingFor('physical') === 'orthogonal' || undefined });
     }
     return renderLogical(this.viewModel('logical'), this.logicalLayout(), {
       showLabels: s.showLabels,
@@ -594,6 +614,7 @@ export class Session {
       showGroups: s.showGroups,
       hiddenProtocols: s.hiddenProtocols,
       positions: s.positions.logical,
+      orthogonal: this.routingFor('logical') === 'orthogonal' || undefined,
     });
   }
 

@@ -42,6 +42,10 @@ const SHOTS = [
   ['tagging-physical.png', 'light', 'example=vlan-ports.yaml&view=physical', 'netatlas.fit()'],
   ['virtualization-physical.png', 'dark', 'example=virtualization.yaml&view=physical', 'netatlas.fit()'],
   ['addressing-overview.png', 'light', 'example=addressing.yaml&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
+  // the three Auto-arrange options on one model, side by side in the README
+  ['arrange-default.png', 'light', 'example=private-house.yaml&view=physical', 'netatlas.fit()'],
+  ['arrange-compact.png', 'light', 'example=private-house.yaml&view=physical', `document.getElementById('btn-arrange-compact').click(); document.getElementById('toast').hidden = true; netatlas.fit()`],
+  ['arrange-structured.png', 'light', 'example=private-house.yaml&view=physical', `document.getElementById('btn-arrange-structured').click(); document.getElementById('toast').hidden = true; netatlas.fit()`],
 ];
 
 // the simulation layout: file name, window width and height

@@ -862,6 +862,8 @@ export interface ModelLayout {
   logical: Map<string, { x: number; y: number }>;
   /** ids of nodes the user positioned by hand, per view (for the layout status only) */
   manual: { physical: Set<string>; logical: Set<string> };
+  /** how each view's cables and relations are routed: orthogonal (the Structured arrangement), else the standard routing */
+  routing: { physical?: 'orthogonal'; logical?: 'orthogonal' };
 }
 
 export interface Model {

@@ -84,7 +84,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
   /** layout status of a view, as tracked on the Auto-arrange group: "auto" | "manual" | "edited" */
   const status = (v: 'physical' | 'logical'): string => (q('#arrange-group') || { getAttribute: () => '' }).getAttribute('data-status-' + v) || '';
   const arrangeBtn = (s: string): HTMLButtonElement => q('#btn-arrange-' + s) as HTMLButtonElement;
-  const STRATS = ['default', 'compact', 'spacious'];
+  const STRATS = ['default', 'compact', 'structured'];
   /** what the Auto-arrange group shows for the view on screen: status, the option pressed (the strategy that matches), hover text, accessible description */
   const shown = (): { view: string; st: string; current: string; title: string; desc: string } => {
     const g = q('#arrange-group') as HTMLElement;
@@ -179,10 +179,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bs = STRATS.map(arrangeBtn);
       const rs = bs.map((b) => (b ? b.getBoundingClientRect() : null));
       check(
-        'Auto-arrange: three options in the top toolbar (Default, Compact, Spacious), visible and labelled as one group, disabled without a status until a model is open; no check mark or edit icon',
+        'Auto-arrange: three options in the top toolbar (Default, Compact, Structured), visible and labelled as one group, disabled without a status until a model is open; no check mark or edit icon',
         !!group && !!group.closest('header.topbar') && /^Auto-arrange$/.test((q('#arrange-title') as HTMLElement).textContent || '') &&
           bs.every((b, i) => !!b && b.disabled && b.getAttribute('aria-pressed') === 'false' && !!rs[i] && rs[i]!.width > 30 && rs[i]!.height > 10 && rs[i]!.top < 60 && b.getAttribute('aria-label') === 'Auto-arrange: ' + b.textContent) &&
-          bs.map((b) => b.textContent).join() === 'Default,Compact,Spacious' && !q('.arrange-icon') && shown().st === '' && shown().desc === '' && !q('#layout-status') && !q('#btn-arrange') &&
+          bs.map((b) => b.textContent).join() === 'Default,Compact,Structured' && !q('.arrange-icon') && shown().st === '' && shown().desc === '' && !q('#layout-status') && !q('#btn-arrange') &&
           doc.querySelectorAll('header.topbar [data-view-btn]').length === 2,
         bs.map((b) => (b ? b.textContent + (b.disabled ? ' (disabled)' : '') : 'missing')).join(', '),
       );
@@ -198,7 +198,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-spacious', '#menu-btn', '#export-btn', '#find-btn', '#help-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-structured', '#menu-btn', '#export-btn', '#find-btn', '#help-btn'];
       check(
         'toolbar: logo and version, the File, Export, Find and Help menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
@@ -2803,7 +2803,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
     check(
       '… and Default is selected and disabled (the view is arranged with it); the description says so',
-      shows('physical', 'auto') && /arranged with Default/.test(shown().desc) && arrangeBtn('default').getAttribute('aria-pressed') === 'true' && !arrangeBtn('compact').disabled && !arrangeBtn('spacious').disabled,
+      shows('physical', 'auto') && /arranged with Default/.test(shown().desc) && arrangeBtn('default').getAttribute('aria-pressed') === 'true' && !arrangeBtn('compact').disabled && !arrangeBtn('structured').disabled,
       JSON.stringify(shown()) + ' ' + arrangeLook(),
     );
     {
@@ -5088,25 +5088,47 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.setView('physical');
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const pos =(v: 'physical' | 'logical'): string => JSON.stringify(Array.from(app.session!.positionsFor(v)));
-      const want = (v: 'physical' | 'logical', st: 'default' | 'compact' | 'spacious'): string => JSON.stringify(Array.from(md().autoLayout(v, st)));
+      const want = (v: 'physical' | 'logical', st: 'default' | 'compact' | 'structured'): string => JSON.stringify(Array.from(md().autoLayout(v, st)));
       const logBefore = pos('logical');
       click('#btn-arrange-compact');
       await tick(10);
-      const compactShown = pos('physical') === want('physical', 'compact') && shown().current === 'compact' && arrangeBtn('compact').disabled && !arrangeBtn('default').disabled && !arrangeBtn('spacious').disabled && /arranged with Compact/.test(shown().desc);
+      const compactShown = pos('physical') === want('physical', 'compact') && shown().current === 'compact' && arrangeBtn('compact').disabled && !arrangeBtn('default').disabled && !arrangeBtn('structured').disabled && /arranged with Compact/.test(shown().desc);
       const undoLabel = md().canUndo();
-      click('#btn-arrange-spacious');
+      click('#btn-arrange-structured');
       await tick(10);
-      const spaciousShown = pos('physical') === want('physical', 'spacious') && shown().current === 'spacious';
-      click('#btn-arrange-spacious');
+      const structuredShown = pos('physical') === want('physical', 'structured') && shown().current === 'structured';
+      // Structured draws every cable with horizontal and vertical segments only, and says so on the scene
+      const straight = (): boolean => {
+        const scene = q('#canvas .scene');
+        const paths = Array.from(doc.querySelectorAll('#canvas .cable-line'));
+        return !!scene && scene.classList.contains('orthogonal') && paths.length > 0 && paths.every((pa) => {
+          const pts = (pa.getAttribute('d') || '').match(/-?[\d.]+/g)!.map(Number);
+          for (let k = 0; k + 3 < pts.length; k += 2) if (Math.abs(pts[k] - pts[k + 2]) > 0.15 && Math.abs(pts[k + 1] - pts[k + 3]) > 0.15) return false;
+          return true;
+        });
+      };
+      const rightAngles = straight();
+      click('#btn-arrange-structured');
       await tick(10);
       check(
-        'Auto-arrange → Compact and → Spacious arrange the physical view (one undo step each), the matching option is selected and disabled, the others stay available; the logical view is not changed',
-        compactShown && undoLabel === 'Auto-arrange (physical view, Compact)' && spaciousShown && md().canUndo() === 'Auto-arrange (physical view, Spacious)' && pos('logical') === logBefore && status('logical') === 'auto',
-        `${compactShown} ${undoLabel} ${spaciousShown}`,
+        'Auto-arrange → Compact and → Structured arrange the physical view (one undo step each), the matching option is selected and disabled, the others stay available; Structured draws the cables at right angles only; the logical view is not changed',
+        compactShown && undoLabel === 'Auto-arrange (physical view, Compact)' && structuredShown && rightAngles && md().canUndo() === 'Auto-arrange (physical view, Structured)' && pos('logical') === logBefore && status('logical') === 'auto',
+        `${compactShown} ${undoLabel} ${structuredShown} ${rightAngles}`,
       );
-      // the match comes from the positions: undo brings Compact back as the selected option
+      // a device moved after Structured: its cables are routed again, still at right angles; undo takes the move back
+      {
+        const sv0 = app.session!;
+        const id0 = sv0.model.devices[0].id;
+        const p0 = sv0.positionsFor('physical').get(id0)!;
+        md().movePositions('physical', new Map([[id0, { x: p0.x + 120, y: p0.y + 60 }]]), 'Move ' + id0);
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        const stillStraight = straight() && shown().current === '' && /keep the right angles of Structured/.test(shown().desc);
+        app.undo();
+        check('a device moved after Structured: no option is selected, the lines keep their right angles (the status says so); undo brings Structured back', stillStraight && shown().current === 'structured', `${stillStraight} ${shown().desc}`);
+      }
+      // the match comes from the positions and the routing: undo brings Compact back as the selected option, with standard routing
       app.undo();
-      const back = shown().current === 'compact';
+      const back = shown().current === 'compact' && !q('#canvas .scene')!.classList.contains('orthogonal');
       // a manual move: nothing matches, all three can be used, and replacing it asks first
       const sv = app.session!;
       const id = sv.model.devices[0].id;
@@ -5123,10 +5145,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // a filtered view: the options arrange the shown devices only, temporarily
       const yaml = app.exportText();
       app.setDevices(sv.model.devices.slice(0, 4).map((d) => d.id));
-      click('#btn-arrange-spacious');
+      click('#btn-arrange-structured');
       await tick(10);
       const filtered = app.session!.filteredArrangedWith('physical');
-      check('in a filtered view an option arranges the shown devices only, temporarily: the YAML is unchanged and the option is selected', filtered[0] === 'spacious' && shown().current === 'spacious' && app.exportText() === yaml && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === 'true', filtered.join());
+      check('in a filtered view an option arranges the shown devices only, temporarily: the YAML is unchanged and the option is selected', filtered[0] === 'structured' && shown().current === 'structured' && app.exportText() === yaml && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === 'true', filtered.join());
       app.setDevices(sv.model.devices.map((d) => d.id));
       md().markSaved();
       // identical results: a model with one device gets the same positions from every strategy; the tie is resolved in favour of Default
@@ -5136,7 +5158,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const same = STRATS.map((st) => `${st}:${arrangeBtn(st).getAttribute('aria-pressed')}/${arrangeBtn(st).disabled}/${arrangeBtn(st).classList.contains('same')}`).join(' ');
       check(
         'when strategies give identical positions, Default is the selected one and the others are disabled and say they give the same positions (they never pretend to differ)',
-        same === 'default:true/true/false compact:false/true/true spacious:false/true/true' && /gives exactly the same positions as Default/.test(arrangeBtn('compact').title) && /Compact, Spacious give the same positions/.test(shown().desc),
+        // (Structured routes at right angles and puts the device on its grid: it is a change)
+        same === 'default:true/true/false compact:false/true/true structured:false/false/false' && /gives exactly the same positions as Default/.test(arrangeBtn('compact').title) && /\(Compact gives the same positions\)/.test(shown().desc),
         same + ' ' + shown().desc,
       );
       md().markSaved();

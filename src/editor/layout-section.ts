@@ -83,3 +83,41 @@ export function writeManual(root: YMap, view: LayoutView, ids: Set<string>): voi
   setKey(man, view, seqNode(Array.from(ids).sort(cmp).map(strNode), true), ['physical', 'logical']);
 }
 
+
+/** The routing of a view stored in the document ("orthogonal"), or undefined (valid or not). */
+export function rawRouting(root: YMap, view: LayoutView): string | undefined {
+  const lay = root.entries.get('layout');
+  if (!lay || lay.value.kind !== 'map') return undefined;
+  const r = lay.value.entries.get('routing');
+  if (!r || r.value.kind !== 'map') return undefined;
+  const v = r.value.entries.get(view);
+  return v ? scalarText(v.value) : undefined;
+}
+
+/** Store how a view's lines are routed: "orthogonal" (Structured), or null for the standard routing (the entry removed). */
+export function writeRouting(root: YMap, view: LayoutView, routing: 'orthogonal' | null): void {
+  let lay = root.entries.get('layout');
+  if (!lay || lay.value.kind !== 'map') {
+    if (!routing) return;
+    const fresh = mapNode();
+    fresh.blank = true;
+    setKey(root, 'layout', fresh, SCHEMA.top);
+    lay = root.entries.get('layout') as { key: string; keyLine: number; value: YNode };
+  }
+  const layMap = lay.value as YMap;
+  const cur = layMap.entries.get('routing');
+  let m = cur && cur.value.kind === 'map' ? cur.value : null;
+  if (!routing) {
+    if (m) {
+      m.entries.delete(view);
+      if (!m.entries.size) layMap.entries.delete('routing');
+    } else if (cur) layMap.entries.delete('routing');
+    return;
+  }
+  if (!m) {
+    m = mapNode();
+    m.flow = true;
+    setKey(layMap, 'routing', m, SCHEMA.layout);
+  }
+  setKey(m, view, strNode(routing), ['physical', 'logical']);
+}

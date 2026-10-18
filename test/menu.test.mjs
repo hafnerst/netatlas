@@ -19,7 +19,7 @@ test('toolbar: logo and version, then File, Export, Find, Help, undo/redo, views
   assert.deepEqual(at, at.slice().sort((p, q) => p - q), 'in this order');
   assert.match(header, /<span>netatlas<\/span><span class="version"[^>]*>v__VERSION__<\/span>/);
   // these stay direct controls: none of them is inside the menu
-  for (const id of ['btn-undo', 'btn-redo', 'arrange-group', 'btn-arrange-default', 'btn-arrange-compact', 'btn-arrange-spacious']) assert.ok(!menu.includes(`id="${id}"`), id);
+  for (const id of ['btn-undo', 'btn-redo', 'arrange-group', 'btn-arrange-default', 'btn-arrange-compact', 'btn-arrange-structured']) assert.ok(!menu.includes(`id="${id}"`), id);
   // Find is not in the toolbar any more: it opens from the Find menu (or "/") as a bar over the diagram
   assert.ok(!header.includes('id="search"') && html.includes('id="find-bar"'));
   assert.ok(!/data-view-btn/.test(menu));
@@ -111,7 +111,7 @@ test('examples: the File menu offers the curated public catalog; the internal ex
   assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
   assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
-  assert.equal(INTERNAL_EXAMPLES.length, 18);
+  assert.equal(INTERNAL_EXAMPLES.length, 19);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.ok(!INTERNAL_EXAMPLES.some((x) => EXAMPLES.some((e) => e.name === x.name)), 'no internal example has a public name');
   // every public example has a title and a description
@@ -321,7 +321,7 @@ test('PNG export: scale and file names', () => {
   assert.equal(files.pictureBaseName('a/b:c.yaml'), 'a_b_c');
 });
 
-test('Auto-arrange: three direct options (Default, Compact, Spacious) in one labelled group; the matching one is selected and disabled', () => {
+test('Auto-arrange: three direct options (Default, Compact, Structured) in one labelled group; the matching one is selected and disabled; no Spacious anywhere', () => {
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const group = /<div id="arrange-group"[^>]*>([\s\S]*?)\n  <\/div>/.exec(header);
   assert.ok(group, 'the group is in the toolbar');
@@ -329,7 +329,11 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.match(group[1], /<span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange<\/span>/);
   // three buttons, directly in the toolbar (no menu, no dialog to pick one), each named for assistive technology
   const buttons = [...group[1].matchAll(/<button id="btn-arrange-(\w+)" type="button" class="arrange-btn" data-strategy="(\w+)" aria-label="Auto-arrange: (\w+)" aria-pressed="false" disabled>(\w+)<\/button>/g)].map((m) => [m[1], m[2], m[3], m[4]]);
-  assert.deepEqual(buttons, [['default', 'default', 'Default', 'Default'], ['compact', 'compact', 'Compact', 'Compact'], ['spacious', 'spacious', 'Spacious', 'Spacious']]);
+  assert.deepEqual(buttons, [['default', 'default', 'Default', 'Default'], ['compact', 'compact', 'Compact', 'Compact'], ['structured', 'structured', 'Structured', 'Structured']]);
+  // Spacious is gone from the page, the application, the commands, the manual and the strategies
+  const help = readFileSync(join(root, 'src', 'ui', 'help.ts'), 'utf8');
+  const strategies = readFileSync(join(root, 'src', 'layout', 'strategies.ts'), 'utf8');
+  for (const [name, text] of [['index.html', html], ['app.ts', app], ['help.ts', help], ['strategies.ts', strategies], ['commands.ts', readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8')]]) assert.doesNotMatch(text, /spacious/i, name);
   // no check mark or edit icon any more
   assert.doesNotMatch(html + app + css, /arrange-icon|LAYOUT_STATUS_ICON|\\u270E/);
   // the state comes from the positions (document or filtered session), never from the last button pressed
@@ -346,7 +350,7 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.match(css, /\.arrange-btn\.current, \.arrange-btn\.current:disabled \{[^}]*background: var\(--accent-soft\);[^}]*border-color: var\(--accent\);/);
   assert.doesNotMatch(css, /\.arrange-btn\[data-status/);
   // presentation: the label above one row of the three buttons, the whole group in a dashed frame
-  assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-spacious"[^>]*>Spacious<\/button>\s*<\/div>/);
+  assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-structured"[^>]*>Structured<\/button>\s*<\/div>/);
   assert.match(css, /\.tool-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--frame\);/);
   assert.match(css, /\.arrange-btns \{ display: flex; \}/);
   // the label takes no width above the buttons, so no narrow toolbar hides it

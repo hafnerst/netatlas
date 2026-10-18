@@ -117,11 +117,14 @@ test('no text over other text, no label over a node, entries inside their boxes:
     const m = auto(example(f));
     const input = layoutInput(m);
     for (const view of ['physical', 'logical']) {
-      for (const strategy of ['default', 'compact', 'spacious']) {
+      for (const strategy of ['default', 'compact', 'structured']) {
         const s = new state.Session(m);
         s.setView(view);
         const pos = strategyPositions(view, input, strategy);
         s.model.layout[view] = pos;
+        // (Structured routes at right angles)
+        if (strategy === 'structured') s.model.layout.routing[view] = 'orthogonal';
+        else delete s.model.layout.routing[view];
         s.setModel(s.model);
         const r = s.render();
         assert.deepEqual(problems(r.root), [], `${f} ${view} ${strategy}`);

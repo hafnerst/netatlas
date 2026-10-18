@@ -10,7 +10,7 @@ import { lookupProtocol, protocolBase } from '../model/protocols';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
-import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, allStrategyPositions } from '../layout/strategies';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING, strategyPositions } from '../layout/strategies';
 import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
@@ -23,7 +23,7 @@ import { SCHEMA } from '../yaml/schema';
 import { flowText } from '../yaml/write';
 import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
-import { rawLayoutKeys, rawManualIds, writeLayout, writeManual } from './layout-section';
+import { rawLayoutKeys, rawManualIds, writeLayout, writeManual, writeRouting } from './layout-section';
 import { keepTrivia, sameSet, setKey } from './tree';
 import { isGuest } from '../model/virtual';
 import { DeviceLike, capabilities, layer3Option, deviceRoutingRole } from '../model/capabilities';
@@ -326,26 +326,27 @@ export class ModelDoc {
 
   private autoMemo = new Map<string, Map<ArrangeStrategy, Map<string, Pt>>>();
 
-  /** Auto-arrange result of a strategy for the current model (cached per layout signature). */
+  /**
+   * Auto-arrange result of a strategy for the current model (cached per layout signature; each strategy is
+   * computed when it is first asked for, so arranging with Default never waits for the others).
+   */
   autoLayout(view: LayoutView, strategy: ArrangeStrategy = 'default'): Map<string, Pt> {
-    return this.strategyLayouts(view).get(strategy) as Map<string, Pt>;
-  }
-
-  private strategyLayouts(view: LayoutView): Map<ArrangeStrategy, Map<string, Pt>> {
     const m = this.result.model;
-    if (!m) return new Map(STRATEGIES.map((s) => [s, new Map()] as [ArrangeStrategy, Map<string, Pt>]));
+    if (!m) return new Map();
     const input = layoutInput(m);
     const key = view + '\n' + layoutSignature(input);
     let r = this.autoMemo.get(key);
     if (!r) {
-      r = allStrategyPositions(view, input);
-      // keep only the latest result per view
+      r = new Map();
+      // keep only the latest results per view
       Array.from(this.autoMemo.keys()).forEach((k) => {
         if (k.indexOf(view + '\n') === 0) this.autoMemo.delete(k);
       });
       this.autoMemo.set(key, r);
     }
-    return r;
+    let pos = r.get(strategy);
+    if (!pos) r.set(strategy, (pos = strategyPositions(view, input, strategy)));
+    return pos;
   }
 
   /**
@@ -357,7 +358,15 @@ export class ModelDoc {
    */
   arrangedWith(view: LayoutView): ArrangeStrategy[] {
     const shown = this.displayedPositions(view);
-    return STRATEGIES.filter((s) => samePositions(shown, this.autoLayout(view, s)));
+    const routing = this.routing(view);
+    // a strategy's result is its positions and its routing (Structured: orthogonal; the others: the standard routing)
+    return STRATEGIES.filter((s) => STRATEGY_ROUTING[s] === routing && samePositions(shown, this.autoLayout(view, s)));
+  }
+
+  /** How the lines of a view are routed: 'orthogonal' (stored by Structured), else undefined (the standard routing). */
+  routing(view: LayoutView): 'orthogonal' | undefined {
+    const m = this.result.model;
+    return m ? m.layout.routing[view] : undefined;
   }
 
   /**
@@ -371,7 +380,7 @@ export class ModelDoc {
    */
   layoutStatus(view: LayoutView): 'auto' | 'manual' | 'edited' {
     const m = this.result.model;
-    if (!m || m.layout[view].size === 0) return 'auto';
+    if (!m || (m.layout[view].size === 0 && !m.layout.routing[view])) return 'auto';
     if (this.arrangedWith(view).length) return 'auto';
     const shown = this.displayedPositions(view);
     return Array.from(m.layout.manual[view]).some((id) => shown.has(id)) ? 'manual' : 'edited';
@@ -408,10 +417,12 @@ export class ModelDoc {
     if (!m) return { changed: false, moved: 0 };
     const targets = new Map<LayoutView, Map<string, Pt>>();
     let moved = 0;
+    const routing = STRATEGY_ROUTING[strategy];
     for (const v of views) {
       const auto = this.autoLayout(v, strategy);
       moved += this.arrangeImpact(v, strategy).moved.length;
-      if (!samePositions(auto, m.layout[v])) targets.set(v, auto);
+      // (the same positions with another routing are still a change: Structured after Default on a single device)
+      if (!samePositions(auto, m.layout[v]) || m.layout.routing[v] !== routing) targets.set(v, auto);
     }
     if (!targets.size) return { changed: false, moved: 0 };
     const how = strategy === 'default' ? '' : `, ${STRATEGY_LABEL[strategy]}`;
@@ -422,6 +433,8 @@ export class ModelDoc {
         targets.forEach((pos, v) => {
           writeLayout(this.root, v, pos);
           writeManual(this.root, v, new Set());
+          // positions and routing in one undo step: Structured routes orthogonally, the others as standard
+          writeRouting(this.root, v, routing || null);
         }),
       { layout: false },
     );
