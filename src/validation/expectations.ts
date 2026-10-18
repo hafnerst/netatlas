@@ -10,7 +10,7 @@
  */
 import { parseCommEnd } from '../analysis/communication';
 import { parseService } from '../analysis/trace';
-import { EXPECT_KINDS, ExpectKind, Expectation, FAILURE_DOMAIN_KINDS, FailureDomain, FailureDomainKind, Model } from '../model/types';
+import { EXPECT_KINDS, ENFORCE_KINDS, EnforceKind, ExpectKind, Expectation, FAILURE_DOMAIN_KINDS, FailureDomain, FailureDomainKind, Model } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, ID_RE, Reader, get } from './reader';
@@ -178,6 +178,19 @@ export function readExpectations(r: Reader, c: Ctx, top: YMap, model: Model, dom
       if (fam !== '4' && fam !== '6') c.error(get(m, 'family') as YNode, epath + '.family', `"${fam}" is no address family: use 4 (IPv4) or 6 (IPv6)`);
       else e.family = fam === '4' ? 4 : 6;
     }
+    // how a block must be enforced: blocked expectations only; a boundary is a device of the model
+    const enforce = r.field(m, 'enforce', epath, 20);
+    if (enforce !== undefined) {
+      if (!ENFORCE_KINDS.some((k) => k.id === enforce)) c.error(get(m, 'enforce') as YNode, epath + '.enforce', `"${enforce}" is no enforcement: use ${ENFORCE_KINDS.map((k) => k.id).join(', ')}`);
+      else if (kind !== 'blocked') c.error(get(m, 'enforce') as YNode, epath + '.enforce', 'only a blocked expectation is enforced: delete "enforce"');
+      else e.enforce = enforce as EnforceKind;
+    }
+    const boundary = r.field(m, 'boundary', epath, 200);
+    if (boundary !== undefined) {
+      if (e.enforce !== 'boundary') c.error(get(m, 'boundary') as YNode, epath + '.boundary', 'a boundary goes with "enforce: boundary": delete "boundary", or set enforce');
+      else if (!model.index.devices.has(boundary.trim())) c.warn(get(m, 'boundary') as YNode, epath + '.boundary', `"${boundary}" is no device of the model: the expectation can't be evaluated`);
+      e.boundary = boundary.trim();
+    } else if (e.enforce === 'boundary') c.error(get(m, 'enforce') as YNode, epath + '.boundary', 'enforce: boundary needs the boundary: the device that must deny it', { key: 'boundary' });
     const desc = r.field(m, 'description', epath, 2000);
     if (desc !== undefined) e.description = desc;
     out.push(e);

@@ -6114,6 +6114,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.undo();
       await tick();
       check('undo removes it again', app.exportText() === yamlBefore);
+      // a blocked expectation: its enforcement under Advanced, the boundary only when a boundary is chosen
+      (q('#dc-add') as HTMLElement).click();
+      await tick();
+      const expSel = q('#dc-f-expect') as HTMLSelectElement;
+      expSel.value = 'blocked';
+      expSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('a blocked expectation: Enforcement is under Advanced (Unreachable by default), no boundary field until one is asked for', /enforcement/.test(q('#toolwin .dc-adv summary')!.textContent || '') && !(q('#toolwin .dc-adv') as HTMLDetailsElement).open && (q('#dc-f-enforce') as HTMLSelectElement).value === '' && !q('#dc-f-boundary') && doc.activeElement === q('#dc-f-expect'));
+      const enfSel = q('#dc-f-enforce') as HTMLSelectElement;
+      enfSel.value = 'boundary';
+      enfSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… Denied at the selected boundary shows the boundary field, with its help', !!q('#dc-f-boundary') && /selected enforcement boundary must deny/.test(q('#dc-f-enforce-help')!.textContent || '') && (q('#toolwin .dc-adv') as HTMLDetailsElement).open);
+      setF('dc-f-name', 'IT kept out at the gateway');
+      setF('dc-f-from', 'eng-ws');
+      setF('dc-f-to', 'plc/registers');
+      (q('#dc-f-save') as HTMLElement).click();
+      await tick();
+      check('… without the boundary the form says what is missing, and the boundary field has the focus', /Give the boundary/.test(q('#dc-f-error')!.textContent || '') && doc.activeElement === q('#dc-f-boundary'));
+      setF('dc-f-boundary', 'pgw');
+      (q('#dc-f-save') as HTMLElement).click();
+      await tick();
+      const rowB = q('#toolwin tr[data-exp="it-kept-out-at-the-gateway"]') as HTMLElement | null;
+      check('… saved with enforce and boundary, evaluated: violated, with the reason (the path reaches the PLC)', /enforce: boundary/.test(app.exportText()) && /boundary: pgw/.test(app.exportText()) && !!rowB && /\(denied at pgw\)/.test(rowB.textContent || '') && rowB.classList.contains('v-violated') && /Reachable: 1 of 1 evaluated path reaches plc/.test(rowB.textContent || ''), rowB ? rowB.textContent || '' : 'no row');
+      app.undo();
+      await tick();
+      check('… undo removes it', app.exportText() === yamlBefore);
       app.closeToolWindow();
       await tick();
       // Single points of failure: a failure domain added in the window, then what if it fails

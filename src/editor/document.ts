@@ -84,6 +84,9 @@ export interface ExpectationFields {
   vrf?: string;
   /** "4" or "6" */
   family?: string;
+  /** blocked: unreachable, policy or boundary */
+  enforce?: string;
+  boundary?: string;
   failure?: string[];
   description?: string;
 }
@@ -2139,6 +2142,7 @@ export class ModelDoc {
     if (kind === 'device') {
       scalarRefs('expectations', 'from', ends);
       scalarRefs('expectations', 'to', ends);
+      if (iface === undefined) scalarRefs('expectations', 'boundary', (t) => t === id);
     }
     if (kind === 'device' || kind === 'link' || kind === 'relation') scalarRefs('expectations', 'failure', (t) => (kind === 'device' ? ends(t) : t === id));
     return out;
@@ -2156,7 +2160,7 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      const inExpectation = p[0] === 'expectations' && (last === 'from' || last === 'to' || p[p.length - 2] === 'failure' || last === 'failure');
+      const inExpectation = p[0] === 'expectations' && (last === 'from' || last === 'to' || last === 'boundary' || p[p.length - 2] === 'failure' || last === 'failure');
       if (p[0] === 'failure_domains') {
         // a member: an id of a device, cable, relation or group
         nt = newId;

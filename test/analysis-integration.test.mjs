@@ -484,3 +484,81 @@ test('identity: an expectation’s address family is saved, validated and evalua
   const bad = validate.loadModel(dual + 'expectations:\n  - {id: v5, name: x, expect: available, from: h1, to: srv, family: 5}\n');
   assert.match(bad.errors.map((e) => e.message).join('|'), /"5" is no address family: use 4 \(IPv4\) or 6 \(IPv6\)/);
 });
+
+// ------------------------------------------------------------------ isolation enforcement
+
+const withExp = (yaml, lines) => yaml + 'expectations:\n' + lines.map((l) => '  - ' + l).join('\n') + '\n';
+const guardOnly = guard.slice(0, guard.indexOf('expectations:'));
+
+test('enforcement: denied by policy needs an evaluated policy’s denial; a missing route is no denial, and leaves it not exercised', () => {
+  const m = model(withExp(guardOnly, [
+    '{id: ssh-pol, name: SSH denied by policy, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: policy}',
+    '{id: ssh-any, name: SSH unreachable, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: unreachable}',
+    '{id: nowhere-pol, name: No route counts?, expect: blocked, from: pc, to: 10.77.0.1, enforce: policy}',
+    '{id: nowhere-any, name: No route is enough, expect: blocked, from: pc, to: 10.77.0.1}',
+    '{id: ssh-fw, name: SSH denied at the firewall, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: boundary, boundary: fw}',
+    '{id: ssh-r2, name: SSH denied at r2, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: boundary, boundary: r2}',
+  ]));
+  const by = new Map(m.expectations.map((e) => [e.id, E.evaluateExpectation(m, e)]));
+  assert.equal(by.get('ssh-pol').verdict, 'satisfied');
+  assert.match(by.get('ssh-pol').reason, /^Denied by policy on the evaluated path: fw — /, 'the denial names where, and its rule');
+  assert.equal(by.get('ssh-pol').enforcement.paths[0].outcome, 'denied');
+  assert.match(by.get('ssh-any').reason, /^Unreachable \(any prevention is enough\): Blocked by policy at fw/);
+  // a missing route: enough for "unreachable", never for "denied by policy"
+  assert.equal(by.get('nowhere-any').verdict, 'satisfied');
+  assert.equal(by.get('nowhere-pol').verdict, 'indeterminate');
+  assert.match(by.get('nowhere-pol').reason, /^Denied by policy is not established: not exercised: it stops at r1 \(no route.*\) before any policy decides; a missing route is no denial/);
+  // the selected boundary
+  assert.equal(by.get('ssh-fw').verdict, 'satisfied');
+  assert.match(by.get('ssh-fw').reason, /^Denied at fw on the evaluated path/);
+  assert.equal(by.get('ssh-r2').verdict, 'violated');
+  assert.match(by.get('ssh-r2').reason, /denied at fw, not at the selected boundary r2 \(the path does not cross r2\)/);
+});
+
+test('enforcement: a missing listener proves no isolation; a policy that permits and a later stop is no denial; partial ECMP is no isolation', () => {
+  // the firewall permits TCP 8080 to the server, which listens on nothing there
+  const open = model(withExp(guardOnly.replace('simulation: {allow: "tcp/443"}', 'simulation: {allow: "tcp/443, tcp/8080"}').replace('      - {prefix: 10.9.0.0/24, via: 10.0.1.2}', '      - {prefix: 10.9.0.0/24, via: 10.0.1.2}\n      - {prefix: 10.50.0.0/16, via: 10.0.1.2}').replace('    routes: [{prefix: 10.1.0.0/24, via: 10.0.1.1}]\n  - id: r2', '    routes: [{prefix: 10.1.0.0/24, via: 10.0.1.1}, {prefix: 10.50.0.0/16, via: 10.9.0.3}]\n  - id: r2'), [
+    '{id: alt, name: No 8080, expect: blocked, from: pc, to: srv, service: tcp/8080, enforce: policy}',
+    '{id: other, name: No HTTPS beyond the server network, expect: blocked, from: pc, to: 10.50.0.5, service: tcp/443, enforce: policy}',
+  ]));
+  const alt = E.evaluateExpectation(open, open.expectations[0]);
+  assert.equal(alt.verdict, 'violated');
+  assert.match(alt.reason, /nothing listens there .* but no policy blocks the traffic/);
+  const other = E.evaluateExpectation(open, open.expectations[1]);
+  assert.equal(other.verdict, 'violated', other.reason);
+  assert.match(other.reason, /fw permits it; it stops at r2 for another reason \(no route.*\), which is no denial by policy$/);
+  // equal-cost paths, one through the firewall (denied), one through r2 (it passes): never complete isolation
+  const ecmp = model(withExp(guardOnly.replace('      - {prefix: 10.9.0.0/24, via: 10.0.2.2, distance: 200}', '      - {prefix: 10.9.0.0/24, via: 10.0.2.2}'), [
+    '{id: e1, name: SSH by policy, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: policy}',
+    '{id: e2, name: SSH at all, expect: blocked, from: pc, to: srv, service: tcp/22}',
+  ]));
+  for (const e of ecmp.expectations) {
+    const r = E.evaluateExpectation(ecmp, e);
+    assert.equal(r.verdict, 'violated', r.reason);
+    assert.match(r.reason, /1 of 2 evaluated paths/);
+  }
+});
+
+test('enforcement: evaluated in what-if too; validation; the boundary follows a rename', () => {
+  const m = model(withExp(guardOnly, ['{id: p, name: SSH by policy, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: policy}', '{id: b, name: SSH at fw, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: boundary, boundary: fw}']));
+  const w = W.whatIf(m, ['fw']);
+  assert.deepEqual(w.expectations.map((x) => [x.after.id, x.change]), [['b', 'isolation-violated'], ['p', 'isolation-violated']]);
+  const r2 = W.whatIf(m, ['r1']).expectations.find((x) => x.after.id === 'p');
+  assert.equal(r2.after.verdict, 'indeterminate', 'the source can’t reach any policy: not exercised, never proven');
+  const errs = (lines) => validate.loadModel(withExp(guardOnly, lines)).errors.map((e) => e.message).join(' | ');
+  assert.match(errs(['{id: a, name: a, expect: available, from: pc, to: srv, enforce: policy}']), /only a blocked expectation is enforced/);
+  assert.match(errs(['{id: a, name: a, expect: blocked, from: pc, to: srv, enforce: wall}']), /"wall" is no enforcement: use unreachable, policy, boundary/);
+  assert.match(errs(['{id: a, name: a, expect: blocked, from: pc, to: srv, enforce: boundary}']), /enforce: boundary needs the boundary/);
+  assert.match(errs(['{id: a, name: a, expect: blocked, from: pc, to: srv, boundary: fw}']), /a boundary goes with "enforce: boundary"/);
+  const warn = validate.loadModel(withExp(guardOnly, ['{id: a, name: a, expect: blocked, from: pc, to: srv, enforce: boundary, boundary: nofw}'])).warnings.map((x) => x.message).join(' | ');
+  assert.match(warn, /"nofw" is no device of the model/);
+  const ED = load('editor/document.js');
+  const d = ED.ModelDoc.fromText(withExp(guardOnly, ['{id: b, name: SSH at fw, expect: blocked, from: pc, to: srv, service: tcp/22, enforce: boundary, boundary: fw}']), 'x.yaml', 'file').doc;
+  d.renameEntity('device', d.findEntity('device', 'fw').index, 'fw-edge');
+  assert.equal(d.result.model.expectations[0].boundary, 'fw-edge');
+  assert.deepEqual(d.analysisUsers(d.references('device', 'fw-edge')), ['expectation b']);
+  // written through the editor: enforce and boundary in their place, removed again by an empty value
+  d.updateExpectation(0, { enforce: 'policy', boundary: '' });
+  assert.equal(d.result.model.expectations[0].enforce, 'policy');
+  assert.equal(d.result.model.expectations[0].boundary, undefined);
+});

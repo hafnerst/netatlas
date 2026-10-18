@@ -896,6 +896,15 @@ export const EXPECT_KINDS: ReadonlyArray<{ id: ExpectKind; label: string; help: 
   { id: 'timing', label: 'Timing source path must exist', help: 'A compatible NTP or PTP source must be reachable within the supported analysis (not proven synchronization).' },
 ];
 
+/** How a blocked expectation must be enforced (`enforce:`): any established prevention, an evaluated policy's denial, or the denial of one selected boundary. */
+export type EnforceKind = 'unreachable' | 'policy' | 'boundary';
+
+export const ENFORCE_KINDS: ReadonlyArray<{ id: EnforceKind; label: string; help: string }> = [
+  { id: 'unreachable', label: 'Unreachable', help: 'Any prevention the model establishes is enough; the actual cause is reported.' },
+  { id: 'policy', label: 'Denied by policy', help: 'An evaluated modeled policy must deny it on every path; a missing route or listener does not count.' },
+  { id: 'boundary', label: 'Denied at the selected boundary', help: 'The selected enforcement boundary must deny it on every path.' },
+];
+
 /**
  * A saved architecture expectation (the `expectations:` section): a design
  * requirement the model is checked against, statically (Analyze → Design
@@ -915,6 +924,10 @@ export interface Expectation {
   vrf?: string;
   /** the address family (none: the ends' own, or the client application's) */
   family?: 4 | 6;
+  /** blocked: how it must be enforced (none: unreachable, any established prevention) */
+  enforce?: EnforceKind;
+  /** enforce boundary: the device that must deny it */
+  boundary?: string;
   /** what fails first: devices, cables, relations, interfaces (device:interface), failure domains */
   failure: string[];
   description?: string;

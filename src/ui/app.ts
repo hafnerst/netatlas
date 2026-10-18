@@ -4438,7 +4438,11 @@ export class App {
       formInput: (k, v) => {
         if (!this.dcForm) return;
         (this.dcForm as unknown as { [key: string]: string | number })[k] = v;
-        if (k === 'expect') this.renderDesignChecks();
+        if (k === 'expect' || k === 'enforce') {
+          this.renderDesignChecks();
+          const back = this.doc.getElementById('dc-f-' + k);
+          if (back) back.focus();
+        }
       },
       formSave: () => this.saveExpectationForm(),
       formCancel: () => {
@@ -4473,15 +4477,17 @@ export class App {
     const d = this.mdoc;
     const s = this.session;
     if (!f || !d || !s) return false;
-    const need = !f.name.trim() ? 'Give the expectation a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : '';
+    const need = !f.name.trim() ? 'Give the expectation a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : f.expect === 'blocked' && f.enforce === 'boundary' && !f.boundary.trim() ? 'Give the boundary: the device that must deny it.' : '';
     if (need) {
       f.error = need;
       this.renderDesignChecks();
-      const bad = this.doc.getElementById(!f.name.trim() ? 'dc-f-name' : !f.from.trim() ? 'dc-f-from' : 'dc-f-to');
+      const bad = this.doc.getElementById(!f.name.trim() ? 'dc-f-name' : !f.from.trim() ? 'dc-f-from' : /boundary/.test(need) ? 'dc-f-boundary' : 'dc-f-to');
       if (bad) bad.focus();
       return false;
     }
-    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, family: f.family, failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
+    // (an enforcement goes with a blocked expectation only, a boundary with enforce: boundary)
+    const blocked = f.expect === 'blocked';
+    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, family: f.family, enforce: blocked ? f.enforce : '', boundary: blocked && f.enforce === 'boundary' ? f.boundary : '', failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
     try {
       if (f.index < 0) d.addExpectation(fields);
       else d.updateExpectation(f.index, fields);

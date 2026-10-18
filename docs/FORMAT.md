@@ -2316,6 +2316,8 @@ expectations:
     service: tcp/22                     # optional: tcp/<port>, udp/<port> or icmp (else from the applications)
     vrf: guest                          # optional: the source's table (else the source interface's)
     family: 4                           # optional: 4 or 6, the address family (else the ends' own, or the client application's)
+    enforce: boundary                   # blocked, optional: unreachable (the default), policy, boundary
+    boundary: ap-b                      # with enforce: boundary: the device that must deny it
     failure: [basement-power]           # optional: what fails first: devices, cables, relations, device:interface, failure domains
     description: …                      # optional
 ```
@@ -2326,6 +2328,19 @@ expectations:
 | `blocked` | no evaluated path delivers it | the reason says whether a policy decision blocks it or something else (no route, a missing adjacency), which may not be the intended control |
 | `dependency` | the client application in `from` can use its configured peer or broker | `to` may be left out |
 | `timing` | a compatible PTP source path or NTP upstream exists within the supported analysis | never proof that the clock synchronizes, or of its accuracy |
+
+A blocked expectation may say how it must be enforced (`enforce`), path by
+path over every evaluated equal-cost path:
+
+| `enforce` | Satisfied when |
+|---|---|
+| `unreachable` (the default) | no evaluated path delivers it, whatever stops it (the actual cause is reported) |
+| `policy` | an evaluated modeled policy denies it on every path; the denial names the device and its rule. A missing route or listener is no denial: a path that stops before any policy decides leaves it indeterminate (not exercised), one that a policy permitted before it stopped violates it |
+| `boundary` | the device in `boundary` denies it on every path; a denial elsewhere, or a path that crosses the boundary without a denial, violates it |
+
+Partial equal-cost outcomes and truncated evaluation never count as
+complete isolation. An end the failure condition takes down leaves the
+control not exercised (indeterminate), never proven.
 
 `from` and `to` take what Trace path takes, plus applications
 (`device/application`) and a device's services (`device/dns`,
@@ -2340,8 +2355,11 @@ condition evaluated on a simulation snapshot, which would blend two
 states; a dependency expectation without a client application).
 
 Validation: unknown keys, a missing `name`, `expect` or `from`, an
-unknown `expect`, an unreadable `service`, a `family` other than 4 or 6, no
-`to` where it is needed and a duplicate id are **errors**; an end or a failure entry that names nothing of
+unknown `expect`, an unreadable `service`, a `family` other than 4 or 6, an
+`enforce` on anything but a blocked expectation, an unknown `enforce`,
+`enforce: boundary` without `boundary` (or a `boundary` without it), no `to`
+where it is needed and a duplicate id are **errors**; a `boundary` that is no
+device of the model is a **warning**; an end or a failure entry that names nothing of
 the model is a **warning** (the expectation evaluates as indeterminate). At
 most 1000 expectations and 64 entries per failure condition. Renaming a
 device, an interface, an application or a failure domain updates the

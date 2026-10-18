@@ -11,7 +11,15 @@
  *                policy decision, or something else (no route, a missing
  *                adjacency …), which may not be the intended control. A
  *                reachable destination without a listener is not blocked:
- *                the network lets it through.
+ *                the network lets it through. An enforcement requirement
+ *                (`enforce`) says what must block it, path by path:
+ *                unreachable (any prevention established), policy (an
+ *                evaluated policy denies every path: a missing route or
+ *                listener is no denial, and a path that stops before any
+ *                policy decides leaves it not exercised), or boundary (the
+ *                selected device denies every path). Partial equal-cost
+ *                outcomes and truncated evaluation never count as complete
+ *                isolation.
  *   dependency   a client application's configured peer or broker is
  *                usable (the same check as available, from the client).
  *   timing       a compatible NTP or PTP source path exists within the
@@ -28,14 +36,14 @@
  * successful isolation. Nothing is sent: evaluating never starts the
  * simulation. Pure and deterministic.
  */
-import { Expectation, Model } from '../model/types';
+import { EnforceKind, Expectation, Model } from '../model/types';
 import { CommCheck, checkCommunication, parseCommEnd } from './communication';
 import { failureCondition, simulate } from './failure';
 import { AnalysisContext, ResultInfo, Verdict, configuredContext, resultInfo } from './result';
 import { RoutingCtx } from './routing';
 import { AnalysisSnapshot } from './snapshot';
 import { TimingCheck, timingSource } from './timing';
-import { STOP_LABEL } from './trace';
+import { STOP_LABEL, Trace } from './trace';
 import { addressOwner } from './names';
 
 export type ExpectVerdict = 'satisfied' | 'violated' | 'indeterminate' | 'unsupported';
@@ -58,6 +66,8 @@ export interface ExpectationResult {
   refs: string[];
   /** an end the failure condition (or the snapshot) makes unavailable: known, not missing information */
   unavailable?: { end: 'source' | 'destination'; what: string };
+  /** a blocked expectation's enforcement, path by path: what denied each, or why none did */
+  enforcement?: { kind: EnforceKind; boundary?: string; paths: Array<{ outcome: 'denied' | 'stopped' | 'reached' | 'beyond'; at: string; detail: string; permittedBy: string[] }> };
 }
 
 function toExpect(v: Verdict): ExpectVerdict {
@@ -154,7 +164,7 @@ export function evaluateExpectation(model: Model, e: Expectation, snap: Analysis
   for (const l of c.layers) for (const r of l.refs) if (out.refs.indexOf(r) < 0) out.refs.push(r);
   const stop = c.outcome ? c.outcome.groups.find((g) => g.kind === 'stopped') : undefined;
   if (stop) out.stop = { device: stop.device, reason: stop.reason as string, detail: stop.detail || '' };
-  if (e.expect === 'blocked') return blockedVerdict(out, c);
+  if (e.expect === 'blocked') return blockedVerdict(out, c, e);
   out.verdict = toExpect(c.verdict);
   // (the reason without the verdict's own words: the verdict is shown beside it)
   const why = c.headline.replace(/^(Indeterminate|Partially reachable|Beyond modeled scope): /, '');
@@ -198,8 +208,67 @@ function endUnavailable(model: Model, e: Expectation, ctx: RoutingCtx, devDown: 
   return null;
 }
 
-/** A blocked expectation: what blocks the communication, if anything does, and whether it is a policy. */
-function blockedVerdict(out: ExpectationResult, c: CommCheck): ExpectationResult {
+/** A blocked expectation: what blocks the communication, if anything does, and whether it is a policy; then its enforcement requirement. */
+function blockedVerdict(out: ExpectationResult, c: CommCheck, e: Expectation): ExpectationResult {
+  const base = blockedBase(out, c);
+  if (!e.enforce || e.enforce === 'unreachable' || !c.trace || base.verdict === 'violated' || (base.verdict === 'indeterminate' && !c.outcome)) {
+    if (e.enforce === 'unreachable' && base.verdict === 'satisfied') base.reason = 'Unreachable (any prevention is enough): ' + base.reason.replace(/ the block may not be the intended control\.$/, '');
+    return base;
+  }
+  return enforced(out, c, e);
+}
+
+/** The enforcement of a blocked expectation by a policy or a selected boundary (see the module comment), path by path. */
+function enforced(out: ExpectationResult, c: CommCheck, e: Expectation): ExpectationResult {
+  const kind = e.enforce as EnforceKind;
+  const b = e.boundary;
+  const paths = (c.trace as Trace).paths.map((p) => {
+    const end = p.end;
+    // the filtering devices on the way that permitted it (a hop with a policy decision that is not where it stops)
+    const permittedBy = p.hops.filter((h, k) => !!h.why && h.why.policy.length > 0 && !(k === p.hops.length - 1 && end.kind === 'stopped' && end.reason === 'denied')).map((h) => h.device);
+    const via = p.hops.map((h) => h.device).concat(...p.hops.map((h) => h.l2));
+    if (end.kind === 'reached' || end.kind === 'delivered') return { outcome: 'reached' as const, at: end.device, detail: '', permittedBy, via };
+    if (end.kind === 'exits') return { outcome: 'beyond' as const, at: end.device, detail: end.gateway, permittedBy, via };
+    return { outcome: end.reason === 'denied' ? ('denied' as const) : ('stopped' as const), at: end.device, detail: end.reason === 'denied' ? end.detail : `${STOP_LABEL[end.reason]}${end.detail ? ': ' + end.detail : ''}`, permittedBy, via };
+  });
+  out.enforcement = { kind, boundary: b, paths: paths.map((p) => ({ outcome: p.outcome, at: p.at, detail: p.detail, permittedBy: p.permittedBy })) };
+  if (kind === 'boundary' && (!b || !c.trace)) {
+    out.verdict = 'indeterminate';
+    out.reason = 'No boundary is selected';
+    return out;
+  }
+  const label = kind === 'policy' ? 'Denied by policy' : `Denied at ${b}`;
+  const verdicts: Array<{ v: 'satisfied' | 'violated' | 'indeterminate'; why: string }> = paths.map((p) => {
+    if (p.outcome === 'reached') return { v: 'violated', why: `a path reaches ${p.at}` };
+    if (p.outcome === 'beyond') return { v: 'indeterminate', why: `a path leaves the model at ${p.at}: what happens beyond is not modeled` };
+    if (p.outcome === 'denied') {
+      if (kind === 'policy' || p.at === b) return { v: 'satisfied', why: `denied at ${p.at}: ${p.detail}` };
+      return { v: 'violated', why: `denied at ${p.at}, not at the selected boundary ${b}${p.via.indexOf(b as string) >= 0 ? ` (${b} permits it)` : ` (the path does not cross ${b})`}` };
+    }
+    // stopped for another reason: a policy that permitted it first does not deny it; else the control is not exercised
+    const permitted = kind === 'policy' ? p.permittedBy : p.permittedBy.filter((d) => d === b);
+    if (permitted.length) return { v: 'violated', why: `${permitted.join(', ')} permit${permitted.length === 1 ? 's' : ''} it; it stops at ${p.at} for another reason (${p.detail}), which is no denial ${kind === 'policy' ? 'by policy' : 'at the boundary'}` };
+    if (kind === 'boundary' && p.via.indexOf(b as string) >= 0) return { v: 'violated', why: `it crosses ${b} without a denial there and stops at ${p.at} (${p.detail})` };
+    return { v: 'indeterminate', why: `not exercised: it stops at ${p.at} (${p.detail}) before ${kind === 'policy' ? 'any policy decides' : `it reaches ${b}`}; ${/no route|adjacency|resolved/.test(p.detail) ? 'a missing route is no denial' : 'that is no denial'}` };
+  });
+  const any = (v: string) => verdicts.filter((x) => x.v === v);
+  const n = paths.length;
+  if (any('violated').length) {
+    out.verdict = 'violated';
+    out.reason = `${label} is not established: ${any('violated')[0].why}${n > 1 ? ` (${any('violated').length} of ${n} evaluated paths)` : ''}`;
+  } else if (any('indeterminate').length || (c.outcome && c.outcome.truncated)) {
+    out.verdict = 'indeterminate';
+    out.reason = any('indeterminate').length ? `${label} is not established: ${any('indeterminate')[0].why}${n > 1 ? ` (${any('indeterminate').length} of ${n} evaluated paths)` : ''}` : `${label} on the ${n} evaluated paths, but more equal-cost paths exist than were evaluated`;
+  } else {
+    out.verdict = 'satisfied';
+    const at = Array.from(new Set(paths.map((p) => p.at)));
+    out.reason = `${label} on ${n === 1 ? 'the evaluated path' : `every evaluated path (${n})`}: ${at.join(', ')} — ${paths[0].detail}`;
+  }
+  return out;
+}
+
+/** A blocked expectation's base verdict: what blocks the communication, if anything does, and whether it is a policy. */
+function blockedBase(out: ExpectationResult, c: CommCheck): ExpectationResult {
   const layer = (id: string) => c.layers.find((l) => l.id === id);
   const addr = layer('address');
   if (addr && addr.verdict !== 'satisfied') {
