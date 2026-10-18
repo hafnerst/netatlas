@@ -121,7 +121,8 @@ export interface SimHost {
 }
 
 /** Why the simulation is paused: by the user (Pause, Step), or while the packet inspector is in use. */
-export type PauseReason = 'user' | 'inspector' | null;
+/** Why it is paused: the user, the packet inspector, or Analyze in front (resumed when Analyze is left) */
+export type PauseReason = 'user' | 'inspector' | 'analyze' | null;
 
 export interface SimStartOptions {
   /** the protocols shown at the start (all when left out) */
