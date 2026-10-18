@@ -1382,3 +1382,26 @@ test('bulk port edit: planned with a preview (before, after, what is left and wh
   d.applyPortPlan(0, tr, 'trunk');
   assert.match(d.exportText(), /- \{id: p4, vlans: \["?30-33"?, 99\], native: 99\}/);
 });
+
+test('experiments: the OT example’s cabinet outage — applications on scenario time, an MQTT client’s rounds counted, the same result every run', () => {
+  const EXR = load('analysis/sim/experiment.js');
+  const FPO = load('model/fingerprint.js');
+  const m = model(readFileSync(join(root, 'examples', 'ot-network.yaml'), 'utf8'));
+  const e = m.experiments.find((x) => x.id === 'cabinet-outage');
+  const a = new EXR.ExperimentRunner(m, e, FPO.modelFingerprint(m)).runAll();
+  assert.deepEqual(a.observations.map((o) => o.outcome), ['met', 'met', 'met', 'met', 'met'], a.observations.map((o) => o.actual).join(' | '));
+  assert.match(a.observations[4].actual, /^failed: \d+ of \d+ publication rounds sent \(\d+ not: no connection to the broker then\)/);
+  const b = new EXR.ExperimentRunner(m, e, FPO.modelFingerprint(m)).runAll();
+  const c = EXR.compareRuns(a, b);
+  assert.ok(!c.diverge && c.observations.every((x) => x.before.outcome === x.after.outcome && x.before.actual === x.after.actual), 'repeatable');
+});
+
+test('timing: an NTP upstream on a failed device is unavailable (never "beyond the model"); PTP keeps its alternative', () => {
+  const m = model(readFileSync(join(root, 'examples', 'timing-ptp.yaml'), 'utf8'));
+  const r = E.evaluateExpectations(m).results;
+  const by = new Map(r.map((x) => [x.id, x]));
+  assert.equal(by.get('rt-ntp').verdict, 'satisfied');
+  assert.equal(by.get('rt-ntp-gm-a').verdict, 'violated');
+  assert.match(by.get('rt-ntp-gm-a').summary || by.get('rt-ntp-gm-a').reason, /10\.0\.10\.11 \(gm-a:eth0\) is down under this failure condition/);
+  assert.equal(by.get('plc-time-gm-a').verdict, 'satisfied', 'PTP: gm-b takes over');
+});

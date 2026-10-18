@@ -6285,6 +6285,63 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- the representative architectures: each public example's workflow, end to end
+    {
+      // private house: a saved view with the upper floors collapsed; the VLAN view
+      app.loadExampleNamed('private-house.yaml');
+      await tick();
+      app.openSavedViews();
+      await tick();
+      (q('#toolwin [data-vw="open"][data-id="basement"]') as HTMLElement).click();
+      await tick();
+      check('private house: the saved view collapses the upper floors (their uplinks to the basement kept); the IoT VLAN view focuses on VLAN 20', !!q('.node[data-ref="device:⊞floor1"]') && !!q('.node[data-ref="device:⊞floor2"]') && !!q('.node[data-ref="device:core"]') && !q('.node[data-ref="device:ap-1"]'));
+      (q('#toolwin [data-vw="open"][data-id="iot-vlan"]') as HTMLElement).click();
+      await tick();
+      check('… the IoT VLAN view', !!app.session!.state.focus && app.session!.state.focus.context!.kind === 'vlan' && !app.session!.state.collapsed.size && !q('.node[data-ref="device:⊞floor1"]'));
+      app.exitFocus();
+      app.closeToolWindow();
+      // WAN: the branches' routes (default-only, a prefix filter) and the path MTU over the GRE tunnel
+      app.loadExampleNamed('enterprise-wan.yaml');
+      await tick();
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-rtr1', service: 'icmp', vrf: 'auto', back: false });
+      app.runTrace();
+      await tick();
+      check('WAN branch: Trace path from Munich to HQ is reachable (the prefix filter keeps HQ’s routes) and gives the path MTU of the GRE tunnel, 1400 bytes', (q('#trace-verdict')!.textContent || '').indexOf('Reachable') >= 0 && /1400/.test(q('#trace-mtu summary') ? q('#trace-mtu summary')!.textContent || '' : ''), q('#trace-mtu summary') ? q('#trace-mtu summary')!.textContent || '' : 'no MTU line');
+      app.exitTrace();
+      // data center: the stated replication over two spines, and what survives spine 1's power feed
+      app.loadExampleNamed('datacenter-evpn.yaml');
+      await tick();
+      app.openSpof();
+      for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
+      const dsel = q('#wi-domain') as HTMLSelectElement;
+      dsel.value = 'spine1-power';
+      dsel.dispatchEvent(new Event('change', { bubbles: true }));
+      (q('#wi-go') as HTMLElement).click();
+      await tick();
+      check('data center: What if spine 1’s power fails — the replication that depended on the distribution over two spines exceeds the surviving 100G cables', /exceeds/.test(q('#wi-capacity')!.textContent || ''), (q('#wi-capacity')!.textContent || '').slice(0, 200));
+      app.closeToolWindow();
+      // embedded / IoT: the repeatable failure experiment
+      app.loadExampleNamed('ot-network.yaml');
+      await tick();
+      app.openExperiments();
+      await tick();
+      const run = app.runExperimentNow('cabinet-outage');
+      await tick();
+      check('embedded / IoT: the cabinet outage experiment runs on scenario time; every observation met (the telemetry misses its rounds without the broker)', !!run && run.observations.every((o) => o.outcome === 'met') && /5 observations: 5 met/.test(q('#toolwin .ex-card[data-exp="cabinet-outage"] .ex-result')!.textContent || ''));
+      app.closeToolWindow();
+      // timing: the method is explicit; NTP and PTP apart
+      app.loadExampleNamed('timing-ptp.yaml');
+      await tick();
+      app.runCommand('analyze.checks');
+      await tick();
+      (q('#dc-evaluate') as HTMLElement).click();
+      for (let k = 0; k < 40 && /not evaluated/.test(q('#dc-status')!.textContent || ''); k++) await tick();
+      const ntp = q('#toolwin [data-exp-id="rt-ntp-gm-a"]') || Array.from(doc.querySelectorAll('#toolwin li, #toolwin tr')).find((x) => /NTP chain without grandmaster A/.test(x.textContent || '')) || null;
+      check('timing: the router’s NTP chain without gm-a has no reference (its upstream is down), while the PLC’s PTP keeps gm-b', !!ntp && /violated/i.test(ntp.textContent || ''), ntp ? (ntp.textContent || '').slice(0, 200) : 'no row');
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
     // ---- bulk port edits: one VLAN change on several ports, previewed, one undo step
     {
       const bkYaml = 'netatlas: 1\ntitle: Bulk check\ndevices:\n  - id: sw\n    type: switch\n    interfaces:\n      - {id: p1, vlans: 10}\n      - {id: p2, vlans: 10}\n      - {id: p3, vlans: [10, 20], native: 10}\n';

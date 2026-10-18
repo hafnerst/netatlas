@@ -7,6 +7,15 @@
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
 # The Hamburg LTE uplink obtains its address by DHCP ("ipv4: dhcp"), and a
 # few devices have DNS names ("dns_names"), each associated with interfaces.
+#
+# Routing policy: hq-rtr1 originates a default route into OSPF; Hamburg
+# installs only that default (its OSPF `import:` rules), Munich the default and
+# HQ's /24s (a prefix filter with ge/le), so neither branch carries every
+# internal prefix. The Inspector's Routing policy box shows the rules, and
+# Trace path names the rule a route passed. Path MTU: Trace path from
+# muc-rtr:lan0 to hq-rtr1 gives 1400 bytes (the GRE tunnel's MTU over
+# IPsec), the underlay interfaces whose MTU is not written said apart; Test
+# path MTU prefills a Send network packets with that size and DF.
 netatlas: 1
 title: Enterprise WAN — HQ and two branches over VPN
 description: |
@@ -78,7 +87,8 @@ devices:
     protocols:
       bfd: {}
       bgp: {asn: 65010}
-      ospf: {}
+      ospf:
+        default_route: always            # the branches' way out: one default route instead of every prefix
     interfaces:
       - {id: ge-0/0/0, ip: 198.51.100.2/30, mtu: 1500, description: ISP-1 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.2/28}
@@ -204,7 +214,11 @@ devices:
     group: branch-muc
     router_id: 10.255.1.1
     protocols:
-      ospf: {}
+      ospf:
+        import:                          # installs the default route and HQ's /24s, nothing else
+          - {prefix: 0.0.0.0/0, action: permit}
+          - {prefix: 10.10.0.0/16, ge: 24, le: 24, action: permit}
+          - {action: deny}
     interfaces:
       - {id: wan0, ip: 192.0.2.10/29, description: VDSL}
       - {id: lan0, ip: 10.20.0.1/24}
@@ -234,7 +248,10 @@ devices:
     group: branch-ham
     router_id: 10.255.2.1
     protocols:
-      ospf: {}
+      ospf:
+        import:                          # default-only: everything beyond its LAN goes to HQ
+          - {prefix: 0.0.0.0/0, action: permit}
+          - {action: deny}
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
       - {id: wan1, ipv4: dhcp, description: LTE backup modem}   # address assigned by the carrier

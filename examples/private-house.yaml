@@ -369,3 +369,11 @@ expectations:
   - {id: laptop-dns, name: The laptop resolves names, expect: available, from: laptop, to: dsl-router/dns}
   - {id: laptop-nas, name: The laptop reaches the NAS, expect: available, from: laptop, to: nas, service: tcp/445}
   - {id: tv-control, name: The TV controls the thermostat, expect: dependency, from: tv/control}
+
+# Saved views (Find ▾ → Saved views…): the IoT VLAN on its own (a VLAN
+# focus: the devices with a port or VLAN interface in it), and the house with
+# the two upper floors collapsed into one box each, their uplinks to the
+# basement kept. Opening one changes only what is drawn.
+views:
+  - {id: iot-vlan, name: The IoT VLAN, view: physical, focus: {target: core, context: vlan, vlan: 20}}
+  - {id: basement, name: The basement with the floors collapsed, view: physical, collapse: [floor1, floor2]}

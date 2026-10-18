@@ -113,10 +113,11 @@ test('no public example has more crossings than its topology leaves (Default and
     }
   }
   // every example, public and internal (but the layout stress model, which has many on purpose): 26 crossings with
-  // Default before the crossing reduction; now 15 with Default, 15 with Compact and 18 with Structured
+  // Default before the crossing reduction; now 14 with Default, 15 with Compact and 19 with Structured (the campus's
+  // second DHCP server: Default lost a crossing, Structured's right-angle routes to the two servers gained one)
   const total = { default: 0, compact: 0, structured: 0 };
   for (const f of exampleNames.filter((x) => x !== 'layout-stress.yaml')) for (const strategy of ['default', 'compact', 'structured']) total[strategy] += crossings(arranged(example(f), strategy).scene.routes).length;
-  assert.ok(total.default <= 15 && total.compact <= 15 && total.structured <= 18, JSON.stringify(total));
+  assert.ok(total.default <= 14 && total.compact <= 15 && total.structured <= 19, JSON.stringify(total));
 });
 
 test('deterministic and stable: the same model and strategy give the same positions and routes; arranging again changes nothing', () => {

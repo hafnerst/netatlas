@@ -262,3 +262,19 @@ relations:
     endpoints: ["leaf3:Et48", "wan-pe:xe-0/1/0"]
     over: wan-uplink
     attrs: {peer-as: {leaf3: 64512, wan-pe: 65100}}
+
+# Capacity and multipath (Analyze ▾ → Single points of failure → What if…):
+# the replication between leaf1 and leaf4 is stated traffic of 120 Gbit/s.
+# It takes both spines (two equal-cost paths of 100G cables); how it spreads
+# over them is not assumed, so the spine cables "depend on the distribution".
+# What if spine 1's power fails: the surviving path through spine 2 carries
+# all of it and exceeds its 100G cables. The saved view "Compute racks
+# collapsed" draws rack A02 as one box with its cables out of it.
+demands:
+  - {id: replication, label: Storage replication leaf1 → leaf4, source: "leaf1:Lo0", destination: "leaf4:Lo0", bandwidth: 120G}
+
+failure_domains:
+  - {id: spine1-power, label: Spine 1 power feed, kind: power, members: [spine1]}
+
+views:
+  - {id: compute-collapsed, name: Compute racks collapsed, view: physical, collapse: [rack-a02]}

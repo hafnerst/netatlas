@@ -83,36 +83,38 @@
  },
  "enterprise-campus.yaml physical": {
   "positions": [
-   "acc1 779 825",
-   "acc2 1005 825",
-   "ap1 293 825",
-   "ap2 1374 825",
-   "core1 775 144",
-   "dist1 775 337",
-   "laptop1 480 1033",
-   "laptop2 1070 1033",
-   "srv 596 545",
-   "visitor 775 1033",
-   "wlc 917 545"
+   "acc1 127 825",
+   "acc2 840 825",
+   "ap1 531 825",
+   "ap2 1210 825",
+   "core1 693 144",
+   "dist1 693 337",
+   "laptop1 398 1033",
+   "laptop2 988 1033",
+   "srv 672 545",
+   "srv2 372 545",
+   "visitor 693 1033",
+   "wlc 993 545"
   ],
-  "scene": "8b0e3fe0382b0162"
+  "scene": "8a8043cbb0d60f5e"
  },
  "enterprise-campus.yaml logical": {
   "positions": [
-   "ap1 627 1786",
-   "ap2 966 1786",
-   "core1 650 476",
-   "guest 983 572",
-   "laptop1 612 2004",
-   "laptop2 921 2004",
-   "mgmt 902 1327",
-   "servers 390 700",
-   "srv 157 906",
-   "staff 603 133",
-   "visitor 1230 2004",
-   "wlc 1295 188"
+   "ap1 1009 1896",
+   "ap2 1348 1896",
+   "core1 721 488",
+   "guest 1094 457",
+   "laptop1 994 2114",
+   "laptop2 1303 2114",
+   "mgmt 1167 1453",
+   "servers 508 807",
+   "srv 613 1123",
+   "srv2 172 832",
+   "staff 608 133",
+   "visitor 1612 2114",
+   "wlc 1405 188"
   ],
-  "scene": "fede7d9706c9d20c"
+  "scene": "c0928aee61ff33af"
  },
  "enterprise-wan.yaml physical": {
   "positions": [
@@ -260,7 +262,7 @@
    "sw-a 253 327",
    "sw-b 253 863"
   ],
-  "scene": "b961b16f140d3f14"
+  "scene": "4de5351671cbd687"
  },
  "timing-ptp.yaml logical": {
   "positions": [
@@ -272,7 +274,7 @@
    "plc-b 671 1301",
    "rt 376 833"
   ],
-  "scene": "e7fd297122db59ff"
+  "scene": "abd3877e4c37dff7"
  },
  "virtualization.yaml physical": {
   "positions": [
