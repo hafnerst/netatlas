@@ -328,6 +328,15 @@ export function buildCommands(): Command[] {
       run: (app) => void app.openStartDialog(),
     },
     {
+      id: 'sim.experiments',
+      label: 'Experiments…',
+      group: 'Simulate',
+      mode: true,
+      keywords: 'experiment repeatable scenario run actions observations compare baseline failure test sequence',
+      state: (app) => needDiagram(app, 'A window with the saved experiments: each runs from a clean start on scenario time when you press Run, observations met or not, compared with the previous run'),
+      run: (app) => app.openExperiments(),
+    },
+    {
       id: 'sim.exit',
       label: 'Exit simulation',
       group: 'Simulate',

@@ -452,8 +452,9 @@ test('Analyze menu: between Find and Simulate, built like the others; Addressing
   assert.doesNotMatch(whole, /data-command="sim\./);
   // Simulate ("what if", a state that never changes the model) is the menu right after it
   const sim = /<div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  // the protocol simulation (a window), and Exit simulation; no scenarios, no X, no steps
-  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.start', 'sim.exit']);
+  // the protocol simulation (a window), the saved experiments (a window: run on demand), and Exit simulation; no scenarios, no X, no steps
+  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.start', 'sim.experiments', 'sim.exit']);
+  assert.match(sim, /<button id="btn-experiments" type="button" role="menuitem" data-command="sim\.experiments" aria-haspopup="dialog"[^>]*><span class="mi-label">Experiments…<\/span>/);
   assert.match(sim, /<button id="btn-sim-start" type="button" role="menuitem" data-command="sim\.start" aria-haspopup="dialog"[^>]*><span class="mi-label">Start simulation…<\/span>/);
   assert.match(sim, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');

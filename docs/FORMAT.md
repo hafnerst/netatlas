@@ -45,6 +45,7 @@ relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
 failure_domains: [...] # optional: components that fail together (what-if conditions)
 expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
+experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
 checks: {...}          # optional: switch consistency checks off or change their severity
 layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
@@ -2475,6 +2476,67 @@ most 1000 expectations and 64 entries per failure condition. Renaming a
 device, an interface, an application or a failure domain updates the
 expectations and failure domains that name it; deleting one lists them in
 the confirmation.
+
+## `experiments` (saved, repeatable experiments)
+
+Optional. A short declarative sequence the simulation runs again and again
+from a clean start (Simulate → **Experiments…**, **Run**): not a scripting
+language. Analysis data: saving or editing one never starts it, and a file
+means the same network with or without it.
+
+```yaml
+experiments:
+  - id: broker-loss                    # required, unique among the experiments
+    name: Telemetry while the broker cabinet is down   # required
+    duration: 120s                     # required: it always ends (at most 1h of scenario time)
+    params: {link_up_delay: 1s}        # optional: parameters of Start simulation (the rest: their defaults)
+    actions:                           # at times after the start; at one time, in the order written
+      - {id: poll, at: 10s, do: send, target: hmi, to: plc/registers}
+      - {id: tele, at: 10s, do: start_app, target: plc/telemetry}
+      - {at: 40s, do: fail, target: cell-cabinet}      # a device, cable, relation or failure domain
+      - {at: 80s, do: restore, target: cell-cabinet}
+    observe:                           # read after that time's actions; without at: at the end
+      - {at: 30s, of: send, target: poll, expect: delivered}
+      - {at: 60s, of: device, target: edge, expect: off}
+      - {at: 60s, of: reach, target: hmi, to: plc/registers, expect: available}
+      - {of: app, target: tele, expect: delivered}
+    description: …
+```
+
+| `do` | Target | Also |
+|---|---|---|
+| `send` | the source (device, device:interface) | `to` (required), `service` (`tcp/443`, `udp/53`, `icmp`), `count`, `interval`; prepared from the communication's identity, as Trace path's handoff |
+| `fail`, `restore` | a device (powered off, on), a cable, a relation, a failure domain (its members) | |
+| `shut`, `no_shut`, `flap`, `stop_flap` | device:interface | |
+| `power_off`, `power_on` | a device | |
+| `join`, `leave` | device:interface | `group` (required) |
+| `start_app`, `stop_app` | device/application | |
+
+| `of` | Target | `expect` |
+|---|---|---|
+| `send` | a send action's `id` | `delivered` (every message), `failed` |
+| `app` | a start action's `id`, or device/application | `delivered`, `failed` |
+| `device` | a device | `on`, `off` |
+| `interface` | device:interface | `up`, `down` |
+| `link` | a cable | `up`, `down` |
+| `member` | a multicast router (with `group`) | `present`, `absent` |
+| `reach` | the source (with `to`, `service`) | `available`, `unavailable` (the static check on the simulation's state then) |
+
+Timing: scenario time only (the simulated clock), so a run is repeatable;
+a stream of Network events runs on real (browser) time and is no
+experiment action. An observation not decided says so (still on its way,
+stopped before it was reached). A run can be stopped; a run is compared
+with the previous one (each observation, where the event sequences part,
+whether the model changed). Not measured: convergence time, throughput,
+synchronization accuracy.
+
+Validation: unknown keys, a missing `name`, `duration`, `do`, `at`,
+`target`, `of` or `expect`, an unknown action or observation, a time
+after the end, an expectation the observation can't have, an unknown
+parameter and a duplicate id are **errors**; a target that names nothing of
+the model is a **warning** (that step can't be run). At most 200
+experiments, 200 actions and 200 observations each. Renaming a device,
+cable or relation updates the targets.
 
 ## Simulation parameters and device attributes
 

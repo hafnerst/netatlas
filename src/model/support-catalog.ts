@@ -77,6 +77,12 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
     not: 'accuracy (the simulation models the protocol states, not oscillators or clock discipline); precedence or bridging between NTP and PTP.',
   },
   {
+    id: 'experiments',
+    name: 'Saved experiments',
+    does: 'A declarative sequence run from a clean start on scenario time: sends prepared from the communication’s identity, failures and restores, interface and power actions, joins and leaves, applications; observations of delivery, state, membership and the static check of a communication at a time; a run compared with the previous one.',
+    not: 'real-time streams (they run on browser time); convergence time, throughput and synchronization accuracy; a scripting language.',
+  },
+  {
     id: 'snapshot',
     name: 'Simulation snapshots',
     does: 'The state of a running simulation at one moment for the analyses: leases, SLAAC and DHCPv6 addresses with their state, what is up, the routes learned.',

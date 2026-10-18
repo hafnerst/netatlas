@@ -352,6 +352,12 @@ the user.
   model; Stop ends a series but not the messages on their way. At most 50
   finished events are kept.
 
+* **Saved experiments run on scenario time.** A run starts clean and is
+  repeatable; at one time, actions apply in the order written. A stream of
+  Network events (real time) is no experiment action. Observations read
+  states and deliveries: no convergence time, throughput or accuracy is
+  measured.
+
 **Not supported.** Real timing jitter, vendor-specific behaviour beyond the
 parameters, CPU limits, full TCP-stack fidelity.
 

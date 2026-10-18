@@ -7,6 +7,7 @@
  */
 import { IPV6_PLACEHOLDER, LEASE_PLACEHOLDER } from '../model/addresses';
 import { ENTITY_KINDS, EditLocked, EntityKind, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
+import type { Path } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING } from '../layout/strategies';
@@ -41,6 +42,9 @@ import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceS
 import { CommRequest, checkCommunication } from '../analysis/communication';
 import { commIdentity, compareRun, expectationFields, handoffOf, planMatches, staleProblem } from '../analysis/comm-identity';
 import { mtuTestSizes, pathMtu } from '../analysis/mtu';
+import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns } from '../analysis/sim/experiment';
+import { ExperimentsView, experimentText, experimentsBody } from './experiments';
+import { EXP_OBSERVE } from '../model/experiments';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
 import { modelFingerprint } from '../model/fingerprint';
@@ -3324,6 +3328,9 @@ export class App {
       case 'checks':
         this.renderDesignChecks();
         break;
+      case 'experiments':
+        this.renderExperiments();
+        break;
 
     }
   }
@@ -3884,6 +3891,7 @@ export class App {
       compare: () => void this.compareTrace(),
       saveExpectation: () => this.traceToExpectation(),
       mtuTest: () => void this.traceMtuTest(),
+      experiment: () => void this.traceToExperiment(),
       pick: (field, value) => {
         this.traceForm[field] = value;
         this.runTrace();
@@ -4522,6 +4530,213 @@ export class App {
     const b = this.doc.getElementById('dc-add');
     if (b) b.focus();
     return true;
+  }
+
+  // ------------------------------------------------------------ experiments
+
+  private expOpen = new Set<string>();
+  private expRuns = new Map<string, ExpRunResult[]>();
+  private expCompare = new Map<string, RunCompare>();
+  private expRunner: { runner: ExperimentRunner; id: string; doc: ModelDoc | null } | null = null;
+
+  /** Simulate → Experiments…: the saved experiments, each run on demand from a clean start (never by saving or editing). */
+  openExperiments(): void {
+    if (!this.session) return;
+    this.openWindow({ id: 'experiments', title: 'Experiments', body: this.experimentsWindowBody(), width: 900, height: 620, focus: '#ex-add' });
+  }
+
+  private renderExperiments(): void {
+    if (this.toolWindow() === 'experiments' && this.session) this.replaceWindowBody(this.experimentsWindowBody());
+  }
+
+  /** The runs of an experiment so far (the newest last). */
+  experimentRuns(id: string): ExpRunResult[] {
+    return this.expRuns.get(id) || [];
+  }
+
+  /** Is an experiment running? */
+  experimentRunning(): string | null {
+    return this.expRunner ? this.expRunner.id : null;
+  }
+
+  /**
+   * Run an experiment: a new runner (a clean start), advanced in slices of
+   * the page's time so the page stays responsive; Stop cancels it. A runner
+   * replaced or stopped is never advanced again (no stale or duplicate
+   * work); a model replaced stops it.
+   */
+  runExperiment(id: string): boolean {
+    const s = this.session;
+    if (!s) return false;
+    const e = s.model.experiments.find((x) => x.id === id);
+    if (!e) return false;
+    if (this.expRunner) this.stopExperiment();
+    const runner = new ExperimentRunner(s.model, e, modelFingerprint(s.model));
+    const slot = { runner, id, doc: this.mdoc };
+    this.expRunner = slot;
+    this.expCompare.delete(id);
+    const tick = (): void => {
+      if (this.expRunner !== slot) return;
+      // a model replaced (another file) stops it
+      if (this.mdoc !== slot.doc) {
+        this.stopExperiment();
+        return;
+      }
+      const done = runner.step(30);
+      const prog = this.doc.getElementById('ex-progress');
+      if (prog) prog.textContent = `Running on scenario time: t = ${(runner.result().reached / 1000).toFixed(0)} s of ${(e.duration / 1000).toFixed(0)} s`;
+      if (done) this.finishExperiment(slot);
+      else if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
+      else {
+        runner.runAll();
+        this.finishExperiment(slot);
+      }
+    };
+    this.renderExperiments();
+    if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
+    else tick();
+    return true;
+  }
+
+  /** Run an experiment to its end at once (the self-test, small models). */
+  runExperimentNow(id: string): ExpRunResult | null {
+    if (!this.runExperiment(id) || !this.expRunner) return null;
+    const slot = this.expRunner;
+    slot.runner.runAll();
+    this.finishExperiment(slot);
+    return slot.runner.result();
+  }
+
+  private finishExperiment(slot: { runner: ExperimentRunner; id: string }): void {
+    if (this.expRunner !== slot) return;
+    this.expRunner = null;
+    const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
+    this.expRuns.set(slot.id, list);
+    this.renderExperiments();
+    this.toast(`Experiment ${slot.id}: ${slot.runner.result().summary}.`);
+  }
+
+  /** Stop the running experiment: it keeps what it observed and says what was not reached. */
+  stopExperiment(): boolean {
+    const slot = this.expRunner;
+    if (!slot) return false;
+    slot.runner.cancel();
+    this.expRunner = null;
+    const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
+    this.expRuns.set(slot.id, list);
+    this.renderExperiments();
+    return true;
+  }
+
+  /** Compare an experiment's last two runs. */
+  compareExperiment(id: string): boolean {
+    const runs = this.expRuns.get(id) || [];
+    if (runs.length < 2) return false;
+    this.expCompare.set(id, compareRuns(runs[runs.length - 2], runs[runs.length - 1]));
+    this.renderExperiments();
+    return true;
+  }
+
+  /** Keep the traced communication as an experiment: a send and the observation of its delivery (one undo step; nothing runs). */
+  traceToExperiment(): boolean {
+    const r = this.traceRun;
+    const d = this.mdoc;
+    if (!r || !r.identity || !d || this.editLock() || !r.handoff || r.handoff.kind !== 'send') return false;
+    const req = r.identity.request;
+    const send: Array<[string, string]> = [['id', 'send'], ['at', '10s'], ['do', 'send'], ['target', req.from]];
+    if (req.to) send.push(['to', req.to]);
+    if (req.service) send.push(['service', req.service]);
+    else if (r.identity.service && r.identity.service.proto !== 'icmp') send.push(['service', `${r.identity.service.proto}/${r.identity.service.port}`]);
+    const expect = r.check.verdict === 'violated' ? 'failed' : 'delivered';
+    const name = `${req.from} to ${req.to || 'its peer'}`;
+    let k: number;
+    try {
+      k = d.addExperiment(name, '60s', { actions: [send], observe: [[['of', 'send'], ['target', 'send'], ['expect', expect]]] });
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.afterEdit('The experiment was added: press Run to run it.');
+    const id = (this.session as Session).model.experiments[k] ? (this.session as Session).model.experiments[k].id : '';
+    if (id) this.expOpen.add(id);
+    this.openExperiments();
+    return true;
+  }
+
+  private experimentsWindowBody(): HTMLElement {
+    const s = this.session as Session;
+    const d = this.mdoc as ModelDoc;
+    const index = new Map<string, number>(d.analysisEntries('experiments').map((x) => [x.id, x.index] as [string, number]));
+    const run = this.expRunner;
+    const view: ExperimentsView = {
+      open: this.expOpen,
+      runs: this.expRuns,
+      running: run ? { id: run.id, reached: run.runner.result().reached, duration: run.runner.result().duration } : null,
+      compare: this.expCompare,
+      outdated: (r) => r.fingerprint !== modelFingerprint(s.model),
+      locked: this.editLock(),
+      index,
+    };
+    const edit = (f: () => void, note?: string): void => {
+      try {
+        f();
+      } catch (e) {
+        this.refusedEdit(e);
+        return;
+      }
+      this.afterEdit(note);
+    };
+    return experimentsBody(this.doc, s.model, view, {
+      add: () => {
+        const n = s.model.experiments.length + 1;
+        edit(() => {
+          const k = d.addExperiment(`Experiment ${n}`, '60s');
+          const id = (d.result.model as Model).experiments[k] ? (d.result.model as Model).experiments[k].id : '';
+          if (id) this.expOpen.add(id);
+        }, 'An experiment was added: give it actions and observations.');
+      },
+      run: (id) => void this.runExperiment(id),
+      stop: () => void this.stopExperiment(),
+      compare: (id) => void this.compareExperiment(id),
+      toggle: (id) => {
+        if (this.expOpen.has(id)) this.expOpen.delete(id);
+        else this.expOpen.add(id);
+        this.renderExperiments();
+      },
+      remove: (id) => void this.removeExperiment(id),
+      set: (path, kind, value) => {
+        const p = JSON.parse(path) as Path;
+        edit(() => (kind === 'int' ? d.setInteger(p, value) : d.setText(p, value)));
+      },
+      addStep: (k, list, kind) => edit(() => d.addListEntry(['experiments', k, list], list === 'actions' ? [['at', '10s'], ['do', kind], ['target', '']] : [['of', kind], ['target', ''], ['expect', (EXP_OBSERVE.find((x) => x.id === kind) as { expect: string[] }).expect[0]]], list === 'actions' ? 'action' : 'observation')),
+      delStep: (path) => edit(() => d.remove(JSON.parse(path) as Path)),
+      upStep: (path) => edit(() => d.moveUp(JSON.parse(path) as Path)),
+      copy: (id) => {
+        const e = s.model.experiments.find((x) => x.id === id);
+        const runs = this.expRuns.get(id) || [];
+        if (!e || !runs.length) return;
+        void this.copyText(experimentText({ title: s.model.title, version: this.appVersion() }, e, runs[runs.length - 1], this.expCompare.get(id)), 'The experiment’s result was copied as text.');
+      },
+    });
+  }
+
+  /** Delete an experiment after a confirmation. */
+  private async removeExperiment(id: string): Promise<void> {
+    const d = this.mdoc;
+    if (!d) return;
+    const entry = d.analysisEntries('experiments').find((x) => x.id === id);
+    if (!entry) return;
+    const a = await this.dialog({ title: `Delete the experiment “${id}”?`, body: ['It is removed from the model with its actions and observations. You can undo this with Ctrl+Z.'], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }] });
+    if (a !== 'go') return;
+    try {
+      d.removeExperiment(entry.index);
+    } catch (e) {
+      this.refusedEdit(e);
+      return;
+    }
+    this.expOpen.delete(id);
+    this.expRuns.delete(id);
+    this.afterEdit('The experiment was deleted.');
   }
 
   /** Delete an expectation after a confirmation. */

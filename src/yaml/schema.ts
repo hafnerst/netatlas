@@ -11,7 +11,7 @@
 export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
-  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'failure_domains', 'expectations', 'checks', 'layout'],
+  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'failure_domains', 'expectations', 'experiments', 'checks', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
@@ -88,6 +88,10 @@ export const SCHEMA = {
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
+  /** a saved experiment (`experiments:`, model/experiments.ts), its actions and observations */
+  experiment: ['id', 'name', 'duration', 'params', 'actions', 'observe', 'description'],
+  expAction: ['id', 'at', 'do', 'target', 'to', 'service', 'group', 'count', 'interval'],
+  expObserve: ['at', 'of', 'target', 'to', 'service', 'group', 'expect'],
   /** a device's network policy (`policy:`, model/net-policy.ts), its rules and zones */
   netPolicy: ['default', 'stateful', 'zones', 'rules'],
   policyRule: ['name', 'action', 'source', 'destination', 'proto', 'sport', 'dport', 'in', 'out', 'from_zone', 'to_zone'],

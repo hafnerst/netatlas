@@ -86,6 +86,8 @@ export interface TracePanelActions extends ContextBarActions {
   saveExpectation(): void;
   /** prefill a send that tests the path MTU (never sends) */
   mtuTest(): void;
+  /** keep it as an experiment (a send and its observation; nothing runs) */
+  experiment(): void;
   /** take another of the end's addresses */
   pick(field: 'from' | 'to', value: string): void;
 }
@@ -337,6 +339,12 @@ function resultBody(doc: Document, model: Model, run: TraceRun, view: TraceViewS
     sx.disabled = !!view.locked;
     sx.addEventListener('click', () => act.saveExpectation());
     acts.appendChild(sx);
+    if (run.handoff && run.handoff.kind === 'send') {
+      const xb = el(doc, 'button', { type: 'button', id: 'trace-experiment', title: view.locked || 'Add an experiment that sends it and observes its delivery (it runs only when you press Run)' }, ['Use in experiment…']) as HTMLButtonElement;
+      xb.disabled = !!view.locked;
+      xb.addEventListener('click', () => act.experiment());
+      acts.appendChild(xb);
+    }
   }
   res.appendChild(acts);
   // what the handoff carries over, and what it can't

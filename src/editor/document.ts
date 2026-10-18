@@ -670,6 +670,10 @@ export class ModelDoc {
   /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
   schemaKindOf(path: Path): string | undefined {
     if (path.length === 0) return 'top';
+    // (the analysis sections' entries)
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'experiments') return 'experiment';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'expectations') return 'expectation';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'failure_domains') return 'failureDomain';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
     const ik = ifaceSchemaKind(path);
     if (ik) return ik;
@@ -678,6 +682,8 @@ export class ModelDoc {
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
     if (path.length === 3 && path[0] === 'devices' && path[2] === 'policy') return 'netPolicy';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'experiments' && path[2] === 'actions') return 'expAction';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'experiments' && path[2] === 'observe') return 'expObserve';
     if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'rules') return 'policyRule';
     if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'zones') return 'policyZone';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'port_pairs') return 'portPair';
@@ -1655,14 +1661,14 @@ export class ModelDoc {
   // ------------------------------------------------- failure domains and expectations
 
   /** The entries of an analysis section (`failure_domains`, `expectations`): index and id, in file order. */
-  analysisEntries(section: 'failure_domains' | 'expectations'): Array<{ index: number; id: string }> {
+  analysisEntries(section: 'failure_domains' | 'expectations' | 'experiments'): Array<{ index: number; id: string }> {
     const s = this.get([section]);
     if (!s || s.kind !== 'seq') return [];
     return s.items.map((_n, i) => ({ index: i, id: this.text([section, i, 'id']) || '' }));
   }
 
   /** An id for a new entry of an analysis section, unique there (failure domains: also among the model's other ids). */
-  private analysisId(section: 'failure_domains' | 'expectations', base: string): string {
+  private analysisId(section: 'failure_domains' | 'expectations' | 'experiments', base: string): string {
     const taken = new Set(this.analysisEntries(section).map((e) => e.id));
     if (section === 'failure_domains') this.allIds().forEach((x) => taken.add(x));
     return this.uniqueId(base, taken);
@@ -1840,6 +1846,37 @@ export class ModelDoc {
     this.change('Add network policy', () => {
       this.setAt(['devices', devIndex, 'policy'], mapNode([['default', strNode(def)]]), this.orderFor(['devices', devIndex]));
     });
+  }
+
+  /** Add an experiment (its name and duration; actions and observations are added to it after); returns its index. One undo step. */
+  addExperiment(name: string, duration: string, steps: { actions?: Array<Array<[string, string]>>; observe?: Array<Array<[string, string]>> } = {}): number {
+    return this.change('Add experiment', () => {
+      const list = this.ensureSeq(['experiments']);
+      const id = this.analysisId('experiments', (name || 'experiment').toLowerCase());
+      const entries: Array<[string, YNode]> = [['id', strNode(id)], ['name', strNode(name)], ['duration', strNode(duration)]];
+      for (const key of ['actions', 'observe'] as const) {
+        const st = steps[key];
+        if (st && st.length) entries.push([key, seqNode(st.map((e) => mapNode(e.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true)))]);
+      }
+      list.items.push(mapNode(entries));
+      return list.items.length - 1;
+    }, { layout: false });
+  }
+
+  /** Append an entry ({key: value, …}, flow style) to an experiment's actions or observations; one undo step. */
+  addListEntry(listPath: Path, entries: Array<[string, string]>, what: string): void {
+    this.change('Add ' + what, () => {
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode(entries.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true));
+    }, { layout: false });
+  }
+
+  /** Remove an experiment. One undo step. */
+  removeExperiment(index: number): void {
+    this.change('Delete experiment', () => {
+      this.removeAt(['experiments', index]);
+      const s = this.get(['experiments']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['experiments']);
+    }, { layout: false });
   }
 
   /** Append an empty value, group or list to a list. */
@@ -2235,6 +2272,27 @@ export class ModelDoc {
       if (iface === undefined) scalarRefs('expectations', 'boundary', (t) => t === id);
     }
     if (kind === 'device' || kind === 'link' || kind === 'relation') scalarRefs('expectations', 'failure', (t) => (kind === 'device' ? ends(t) : t === id));
+    // an experiment's actions and observations: their target and destination (an end, a cable, a relation, a failure domain)
+    if (kind === 'device' || kind === 'link' || kind === 'relation') {
+      const ex = this.root.entries.get('experiments');
+      if (ex && ex.value.kind === 'seq') {
+        ex.value.items.forEach((en, i) => {
+          if (en.kind !== 'map') return;
+          for (const list of ['actions', 'observe']) {
+            const l = en.entries.get(list);
+            if (!l || l.value.kind !== 'seq') continue;
+            l.value.items.forEach((st, k) => {
+              if (st.kind !== 'map') return;
+              for (const key of ['target', 'to']) {
+                const v = st.entries.get(key);
+                const t = v ? scalarText(v.value) : undefined;
+                if (t !== undefined && (kind === 'device' ? ends(t) : t === id)) out.push(['experiments', i, list, k, key]);
+              }
+            });
+          }
+        });
+      }
+    }
     return out;
   }
 
@@ -2250,7 +2308,7 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      const inExpectation = p[0] === 'expectations' && (last === 'from' || last === 'to' || last === 'boundary' || p[p.length - 2] === 'failure' || last === 'failure');
+      const inExpectation = (p[0] === 'expectations' && (last === 'from' || last === 'to' || last === 'boundary' || p[p.length - 2] === 'failure' || last === 'failure')) || (p[0] === 'experiments' && (last === 'target' || last === 'to'));
       // a network policy: an object (device, device:interface, network) in source or destination; an interface of its own device in in, out or a zone
       const inPolicy = p[0] === 'devices' && p[2] === 'policy';
       const polKey = inPolicy ? String(typeof last === 'number' ? p[p.length - 2] : last) : '';

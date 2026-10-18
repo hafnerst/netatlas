@@ -927,6 +927,13 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 .man-keys { border-collapse: collapse; }
 .man-keys th { text-align: left; font-weight: 400; padding: 3px 14px 3px 0; white-space: nowrap; vertical-align: top; }
 .man-keys td { padding: 3px 0; }
+.ex-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.ex-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.ex-tools { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ex-obs { margin: 4px 0; padding-left: 18px; }
+.ex-editor { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.ex-compare ul { margin: 4px 0; padding-left: 18px; }
+.ex-steps input, .ex-steps select { width: 100%; min-width: 0; }
 .rp-box { margin-top: 6px; }
 .rp-box > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
 .rp-box[open] > summary { margin-bottom: 4px; }

@@ -259,6 +259,18 @@ const MANUAL: Section[] = [
     figures: [['spof', 'The Single points of failure window for the enterprise WAN: the internet cloud and the uplinks first, with what each cuts off and the relations that go down.']],
   },
   {
+    id: 'experiments',
+    title: 'Run a saved experiment',
+    steps: [
+      'Choose **Simulate → Experiments…**. Each saved experiment shows its length and steps; nothing has run yet: saving or editing one never starts it, and a run is apart from a simulation on screen.',
+      'Press **Run**: a new simulation of the model starts clean, on scenario time (the simulated clock), so a run can be repeated. Its actions happen at their times (at one time, in the order written), and each observation is read then: **Met**, **Not met**, **Indeterminate** (still on its way, not reached) with what was found. **Stop** ends a run where it is.',
+      '**Steps** and **Events** (state changes and drops) are behind expansions. **Compare with the previous run** says which observations changed, where the event sequences part, and whether the model changed in between. **Copy result** gives it as text, with the model and the timing.',
+      '**Edit** opens the short editor: the name and duration, the actions (a time, what it does, its target; the destination or group beside it, the rest under **More**) and the observations (a time or the end, what it reads, its target, the outcome expected). **+ action…** and **+ observation…** add one; each change is one undo step.',
+      'In Trace path, **Use in experiment…** adds an experiment that sends the traced communication and observes its delivery, without entering it again.',
+    ],
+    notes: ['Experiments run on scenario time only: a stream of Network events runs on real time, so it is no experiment action. They observe states and deliveries, not convergence time, throughput or synchronization accuracy. The model format is in docs/FORMAT.md (experiments).'],
+  },
+  {
     id: 'expectations',
     title: 'Save design requirements',
     steps: [

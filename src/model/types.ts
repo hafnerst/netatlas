@@ -2,6 +2,7 @@
 import type { ServiceRegistry } from './services';
 import type { RoutingPolicy } from './routing-policy';
 import type { NetPolicy } from './net-policy';
+import type { Experiment } from './experiments';
 import type { AppInstance } from './applications';
 import type { Ipv6Method, RaConfig } from './ipv6';
 
@@ -984,6 +985,8 @@ export interface Model {
   failureDomains: FailureDomain[];
   /** saved architecture expectations (analysis data: checked, never change the network objects) */
   expectations: Expectation[];
+  /** saved experiments (`experiments:`, model/experiments.ts) */
+  experiments: Experiment[];
   index: ModelIndex;
 }
 

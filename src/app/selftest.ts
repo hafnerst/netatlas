@@ -2205,8 +2205,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.exit',
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation…, Experiments… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit',
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -6209,6 +6209,38 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exitTrace();
       app.closeToolWindow();
       await tick();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- saved experiments: a list, an explicit Run from a clean start on scenario time, the result, a compare, the editor
+    {
+      const exYaml = 'netatlas: 1\ntitle: Experiment check\ndevices:\n  - {id: a, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "b:e0"}\nexperiments:\n  - id: cut\n    name: The cable cut\n    duration: 40s\n    actions:\n      - {id: ping1, at: 5s, do: send, target: a, to: b}\n      - {at: 15s, do: fail, target: l1}\n      - {id: ping2, at: 20s, do: send, target: a, to: b}\n    observe:\n      - {at: 12s, of: send, target: ping1, expect: delivered}\n      - {of: send, target: ping2, expect: failed}\n      - {of: link, target: l1, expect: down}\n';
+      const loaded = app.loadText(exYaml, 'experiment-check.yaml', 'file');
+      await tick();
+      const before = app.exportText();
+      app.openExperiments();
+      await tick();
+      check('Simulate → Experiments… opens a window: the saved experiment with Run, nothing run yet (saving or opening never starts one)', loaded.ok && app.toolWindow() === 'experiments' && !!q('#toolwin .ex-card[data-exp="cut"] [data-ex="run"]') && !q('#toolwin .ex-result') && app.experimentRuns('cut').length === 0 && !app.simulationOn());
+      const r1 = app.runExperimentNow('cut');
+      await tick();
+      const obs = Array.from(doc.querySelectorAll('#toolwin .ex-card[data-exp="cut"] .ex-obs li')).map((x) => x.getAttribute('data-outcome')).join(',');
+      check('… Run: a clean start on scenario time, each observation met or not with what was found, the steps and events behind expansions', !!r1 && r1.state === 'done' && r1.timing === 'scenario' && obs === 'met,met,met' && /Last run: 3 observations: 3 met/.test(q('#toolwin .ex-result')!.textContent || '') && !app.simulationOn(), obs);
+      app.runExperimentNow('cut');
+      await tick();
+      (q('#toolwin .ex-card[data-exp="cut"] [data-ex="compare"]') as HTMLElement).click();
+      await tick();
+      check('… a second run is the same (repeatable), and Compare with the previous run says so', /Every observation came out as before/.test(q('#ex-compare-cut')!.textContent || '') && /The event sequences are the same/.test(q('#ex-compare-cut')!.textContent || ''), q('#ex-compare-cut') ? q('#ex-compare-cut')!.textContent || '' : 'no comparison');
+      (q('#toolwin .ex-card[data-exp="cut"] [data-ex="toggle"]') as HTMLElement).click();
+      await tick();
+      const addSel = q('#toolwin [data-ex-add="observe"]') as HTMLSelectElement;
+      addSel.value = 'device';
+      addSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… the editor: actions and observations in order; + observation adds one (one undo step), never runs anything', !!q('#toolwin .ex-steps[data-ex-list="actions"]') && /- \{of: device, target: "?"?, expect: on\}|of: device/.test(app.exportText()) && app.experimentRuns('cut').length === 2);
+      app.undo();
+      await tick();
+      check('… undo removes it', app.exportText() === before);
+      app.closeToolWindow();
       app.mdoc!.markSaved();
     }
 

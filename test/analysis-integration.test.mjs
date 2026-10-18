@@ -1186,3 +1186,96 @@ test('capacity: equal-cost paths are not assumed to share the load equally: fits
   const branch = r.loads.filter((l) => l.resource.id === 'link:l-r2' || l.resource.id === 'link:l-r3');
   assert.deepEqual(branch.map((l) => [l.equal, l.worst, l.verdict]), [[7.5e8, 1.5e9, 'distribution'], [7.5e8, 1.5e9, 'distribution']]);
 });
+
+// ------------------------------------------------------------------ saved experiments
+
+const EX = load('analysis/sim/experiment.js');
+const FPR = load('model/fingerprint.js');
+
+// The way there moves to r2 when the firewall fails (r1's floating route), but the server still answers via the firewall:
+// its route's next hop is on a connected network, so without tracking the route stays and the answer is lost. The experiment
+// says so (the static check of the way there says available; the run finds the reply lost).
+const withExperiment = guardOnly + `experiments:
+  - id: fw-loss
+    name: HTTPS after the firewall's loss
+    duration: 90s
+    params: {link_up_delay: 1s}
+    actions:
+      - {id: before, at: 10s, do: send, target: pc, to: srv, service: tcp/443}
+      - {id: ssh, at: 10s, do: send, target: pc, to: srv, service: tcp/22}
+      - {at: 30s, do: fail, target: fw}
+      - {id: after, at: 40s, do: send, target: pc, to: srv, service: tcp/443}
+    observe:
+      - {at: 25s, of: send, target: before, expect: delivered}
+      - {at: 25s, of: send, target: ssh, expect: failed}
+      - {at: 35s, of: device, target: fw, expect: off}
+      - {at: 45s, of: reach, target: pc, to: srv, service: tcp/443, expect: available}
+      - {of: send, target: after, expect: failed}
+`;
+
+test('experiments: a clean run on scenario time, actions at the same time applied in their written order, observations after them', () => {
+  const m = model(withExperiment);
+  const exp = m.experiments[0];
+  assert.deepEqual([exp.duration, exp.actions.length, exp.observations.length, exp.params.map((p) => p.key)], [90000, 4, 5, ['link-up-delay']]);
+  const r = new EX.ExperimentRunner(m, exp, FPR.modelFingerprint(m)).runAll();
+  assert.equal(r.state, 'done');
+  assert.equal(r.timing, 'scenario');
+  assert.deepEqual(r.actions.map((a) => [a.at, a.action.id || a.action.do, a.ok]), [[10000, 'before', true], [10000, 'ssh', true], [30000, 'fail', true], [40000, 'after', true]]);
+  assert.deepEqual(r.observations.map((o) => [o.obs.of, o.outcome]), [['send', 'met'], ['send', 'met'], ['device', 'met'], ['reach', 'met'], ['send', 'met']], r.observations.map((o) => o.actual).join(' | '));
+  assert.match(r.summary, /^5 observations: 5 met$/);
+  // repeatable: a second run from a clean start gives the same result
+  const r2 = new EX.ExperimentRunner(m, exp, FPR.modelFingerprint(m)).runAll();
+  assert.deepEqual(r2.observations.map((o) => o.actual), r.observations.map((o) => o.actual));
+  assert.deepEqual(r2.events, r.events);
+});
+
+test('experiments: Stop ends a run where it is (what was not reached is said); runners never share state', () => {
+  const m = model(withExperiment);
+  const exp = m.experiments[0];
+  let fake = 0;
+  const clock = () => (fake += 30);
+  const a = new EX.ExperimentRunner(m, exp, 'x');
+  const b = new EX.ExperimentRunner(m, exp, 'x');
+  assert.notEqual(a.gen, b.gen, 'each run its own generation');
+  assert.equal(a.step(40, clock), false, 'a slice, not the whole run');
+  a.cancel();
+  const ra = a.result();
+  assert.equal(ra.state, 'stopped');
+  assert.ok(ra.observations.every((o) => o.outcome === 'indeterminate' && /not reached: the run was stopped/.test(o.actual)));
+  assert.equal(a.step(), true, 'a stopped run does nothing more');
+  const rb = b.runAll();
+  assert.equal(rb.state, 'done', 'the other runner is unaffected');
+});
+
+test('experiments: a baseline and a changed run compared (the model changed: a policy denies HTTPS)', () => {
+  const m = model(withExperiment);
+  const base = new EX.ExperimentRunner(m, m.experiments[0], FPR.modelFingerprint(m)).runAll();
+  const changed = model(withExperiment.replace('simulation: {allow: "tcp/443"}', 'simulation: {allow: "tcp/8443"}'));
+  const now = new EX.ExperimentRunner(changed, changed.experiments[0], FPR.modelFingerprint(changed)).runAll();
+  const c = EX.compareRuns(base, now);
+  assert.equal(c.modelChanged, true);
+  const before = c.observations.find((x) => x.obs.target === 'before');
+  assert.deepEqual([before.before.outcome, before.after.outcome], ['met', 'not-met']);
+  assert.ok(c.diverge, 'the event sequences part');
+  assert.match(c.lines.join('\n'), /^Both runs on scenario time \(the simulated clock\), from a clean start, on different versions of the model\./);
+});
+
+test('experiments: validation, references that follow renames, and a round trip of the section', () => {
+  const errs = (y) => validate.loadModel(y).errors.map((e) => e.message).join(' | ');
+  const one = (body) => guardOnly + 'experiments:\n  - id: e\n    name: E\n' + body;
+  assert.match(errs(one('    actions: []\n')), /an experiment needs its duration/);
+  assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 10s, do: stream, target: pc}\n')), /"stream" is no action \(a stream runs on real time and is no experiment action\)/);
+  assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 40s, do: power_off, target: pc}\n')), /40s is after the end of the experiment \(30s\)/);
+  assert.match(errs(one('    duration: 30s\n    observe:\n      - {of: device, target: pc, expect: up}\n')), /A device’s state expects on or off/);
+  assert.match(errs(one('    duration: 30s\n    params: {warp: 2}\n')), /"warp" is no simulation parameter/);
+  const w = validate.loadModel(one('    duration: 30s\n    actions:\n      - {at: 1s, do: power_off, target: nowhere}\n')).warnings.map((x) => x.message).join(' | ');
+  assert.match(w, /"nowhere" is nothing of the model: this action can't be run/);
+  const ED = load('editor/document.js');
+  const d = ED.ModelDoc.fromText(withExperiment, 'x.yaml', 'file').doc;
+  assert.equal(d.exportText(), withExperiment, 'written back as it was');
+  d.renameEntity('device', d.findEntity('device', 'srv').index, 'web');
+  d.renameEntity('device', d.findEntity('device', 'fw').index, 'fw1');
+  const e = d.result.model.experiments[0];
+  assert.deepEqual(e.actions.map((a) => [a.target, a.to || '']), [['pc', 'web'], ['pc', 'web'], ['fw1', ''], ['pc', 'web']]);
+  assert.equal(e.observations.find((o) => o.of === 'device').target, 'fw1');
+});
