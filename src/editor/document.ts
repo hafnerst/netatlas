@@ -7,6 +7,7 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
+import type { SavedView } from '../model/views';
 import { POLICY_PROTOCOLS, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS } from '../model/routing-policy';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
@@ -672,6 +673,8 @@ export class ModelDoc {
     if (path.length === 0) return 'top';
     // (the analysis sections' entries)
     if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'experiments') return 'experiment';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'views') return 'savedView';
+    if (path.length === 3 && path[0] === 'views' && path[2] === 'focus') return 'viewFocus';
     if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'expectations') return 'expectation';
     if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'failure_domains') return 'failureDomain';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
@@ -1661,14 +1664,14 @@ export class ModelDoc {
   // ------------------------------------------------- failure domains and expectations
 
   /** The entries of an analysis section (`failure_domains`, `expectations`): index and id, in file order. */
-  analysisEntries(section: 'failure_domains' | 'expectations' | 'experiments'): Array<{ index: number; id: string }> {
+  analysisEntries(section: 'failure_domains' | 'expectations' | 'experiments' | 'views'): Array<{ index: number; id: string }> {
     const s = this.get([section]);
     if (!s || s.kind !== 'seq') return [];
     return s.items.map((_n, i) => ({ index: i, id: this.text([section, i, 'id']) || '' }));
   }
 
   /** An id for a new entry of an analysis section, unique there (failure domains: also among the model's other ids). */
-  private analysisId(section: 'failure_domains' | 'expectations' | 'experiments', base: string): string {
+  private analysisId(section: 'failure_domains' | 'expectations' | 'experiments' | 'views', base: string): string {
     const taken = new Set(this.analysisEntries(section).map((e) => e.id));
     if (section === 'failure_domains') this.allIds().forEach((x) => taken.add(x));
     return this.uniqueId(base, taken);
@@ -1867,6 +1870,41 @@ export class ModelDoc {
   addListEntry(listPath: Path, entries: Array<[string, string]>, what: string): void {
     this.change('Add ' + what, () => {
       this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode(entries.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true));
+    }, { layout: false });
+  }
+
+  /** Save a view (its entries as written: view, focus, filters, options, viewport); one undo step; returns its index. */
+  addView(name: string, v: Omit<SavedView, 'id' | 'name' | 'line'>): number {
+    const list = (xs: string[]): YNode => seqNode(xs.map((x) => strNode(x)), true);
+    const entries: Array<[string, YNode]> = [['view', strNode(v.view)]];
+    if (v.focus) {
+      const f: Array<[string, YNode]> = [['target', strNode(v.focus.target)]];
+      if (v.focus.hops !== undefined) f.push(['hops', numNode(v.focus.hops)]);
+      if (v.focus.context) f.push(['context', strNode(v.focus.context)]);
+      if (v.focus.vlan !== undefined) f.push(['vlan', numNode(v.focus.vlan)]);
+      if (v.focus.group) f.push(['group', strNode(v.focus.group)]);
+      entries.push(['focus', mapNode(f, true)]);
+    }
+    if (v.devices) entries.push(['devices', list(v.devices)]);
+    if (v.hideTypes.length) entries.push(['hide_types', list(v.hideTypes)]);
+    if (v.hideProtocols.length) entries.push(['hide_protocols', list(v.hideProtocols)]);
+    const opts = Object.keys(v.options) as Array<keyof SavedView['options']>;
+    if (opts.length) entries.push(['options', mapNode(opts.map((k) => [k, boolNode(v.options[k] as boolean)] as [string, YNode]), true)]);
+    if (v.viewport) entries.push(['viewport', mapNode([['x', numNode(v.viewport.x)], ['y', numNode(v.viewport.y)], ['zoom', numNode(v.viewport.zoom)]], true)]);
+    return this.change('Save view', () => {
+      const seq = this.ensureSeq(['views']);
+      const id = this.analysisId('views', (name || 'view').toLowerCase());
+      seq.items.push(mapNode(([['id', strNode(id)], ['name', strNode(name)]] as Array<[string, YNode]>).concat(entries)));
+      return seq.items.length - 1;
+    }, { layout: false });
+  }
+
+  /** Remove a saved view. One undo step. */
+  removeView(index: number): void {
+    this.change('Delete view', () => {
+      this.removeAt(['views', index]);
+      const s = this.get(['views']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['views']);
     }, { layout: false });
   }
 
@@ -2293,6 +2331,21 @@ export class ModelDoc {
         });
       }
     }
+    // a saved view: its devices and its focus target
+    const vs = this.root.entries.get('views');
+    if (vs && vs.value.kind === 'seq') {
+      vs.value.items.forEach((en, i) => {
+        if (en.kind !== 'map') return;
+        const dv = en.entries.get('devices');
+        if (kind === 'device' && iface === undefined && dv && dv.value.kind === 'seq') dv.value.items.forEach((x, k) => {
+          if (scalarText(x) === id) out.push(['views', i, 'devices', k]);
+        });
+        const fo = en.entries.get('focus');
+        const tg = fo && fo.value.kind === 'map' ? fo.value.entries.get('target') : undefined;
+        const t = tg ? scalarText(tg.value) : undefined;
+        if (t !== undefined && (kind === 'device' ? ends(t) || t === 'device:' + id : t === id || t === kind + ':' + id)) out.push(['views', i, 'focus', 'target']);
+      });
+    }
     return out;
   }
 
@@ -2318,6 +2371,13 @@ export class ModelDoc {
         else nt = (t.slice(0, c) === oldId ? newId : t.slice(0, c)) + ':' + (oldIf !== undefined && t.slice(c + 1) === oldIf ? (newIf as string) : t.slice(c + 1));
       } else if (inPolicy) {
         nt = newIf !== undefined ? newIf : t;
+      } else if (p[0] === 'views') {
+        // a view's device, or its focus target (device, device:interface, kind:id)
+        const k = t.indexOf(':');
+        const kinds = ['device', 'network', 'group', 'link', 'relation'];
+        if (k > 0 && kinds.indexOf(t.slice(0, k)) >= 0) nt = t.slice(0, k) + ':' + newId;
+        else if (k > 0) nt = (t.slice(0, k) === oldId ? newId : t.slice(0, k)) + ':' + (oldIf !== undefined && t.slice(k + 1) === oldIf ? (newIf as string) : t.slice(k + 1));
+        else nt = t === oldId ? newId : t;
       } else if (p[0] === 'failure_domains') {
         // a member: an id of a device, cable, relation or group
         nt = newId;

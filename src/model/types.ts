@@ -3,6 +3,7 @@ import type { ServiceRegistry } from './services';
 import type { RoutingPolicy } from './routing-policy';
 import type { NetPolicy } from './net-policy';
 import type { Experiment } from './experiments';
+import type { SavedView } from './views';
 import type { AppInstance } from './applications';
 import type { Ipv6Method, RaConfig } from './ipv6';
 
@@ -987,6 +988,8 @@ export interface Model {
   expectations: Expectation[];
   /** saved experiments (`experiments:`, model/experiments.ts) */
   experiments: Experiment[];
+  /** saved views (`views:`, model/views.ts): display state only */
+  views: SavedView[];
   /** a simulation's execution scope (analysis/exec-scope.ts): never read from a file; set on the sub-model a scoped simulation runs */
   execScope?: { label: string; boundary: Map<string, string> };
   index: ModelIndex;

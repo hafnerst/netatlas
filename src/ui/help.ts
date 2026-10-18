@@ -259,6 +259,16 @@ const MANUAL: Section[] = [
     figures: [['spof', 'The Single points of failure window for the enterprise WAN: the internet cloud and the uplinks first, with what each cuts off and the relations that go down.']],
   },
   {
+    id: 'views',
+    title: 'Save and open a view',
+    steps: [
+      'Choose **Find → Saved views…**. The window says what is on screen (the diagram, a focus, the filters, the zoom).',
+      'Type a name and press **Save current view** (or `Enter`): the view is written to the model (one undo step), with the diagram, the focus, the devices and device types shown, the protocols drawn, the display options and the zoom.',
+      '**Open** shows a saved view again. It changes what is drawn only: the model, the analyses and a running simulation are not touched. **Delete** removes it (Ctrl+Z brings it back).',
+    ],
+    notes: ['The format is in docs/FORMAT.md (views). A view whose device or focus target is gone opens without it.'],
+  },
+  {
     id: 'experiments',
     title: 'Run a saved experiment',
     steps: [

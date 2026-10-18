@@ -1316,3 +1316,25 @@ test('execution scopes: the scoped simulation runs only the scope; traffic out o
   const notes = sim.engine.log.map((e) => e.detail).join('\n');
   assert.match(notes, /leaves the execution scope at (r1:b|s2:p2): r2 is outside it/);
 });
+
+// ------------------------------------------------------------------ saved views
+
+test('saved views: validated (diagram, focus, filters, viewport), display state only, references follow renames', () => {
+  const base = guardOnly + 'views:\n  - id: fw-close\n    name: The firewall\n    view: logical\n    focus: {target: fw, hops: 2}\n    devices: [pc, fw, srv]\n    hide_types: [switch]\n    options: {labels: false}\n    viewport: {x: 100, y: 50, zoom: 1.5}\n';
+  const m = model(base);
+  const v = m.views[0];
+  assert.deepEqual([v.view, v.focus.target, v.focus.hops, v.devices.join(), v.hideTypes.join(), v.options.labels, v.viewport.zoom], ['logical', 'fw', 2, 'pc,fw,srv', 'switch:l2,switch:l3', false, 1.5], 'a type stands for each of its kinds');
+  const errs = (y) => validate.loadModel(y).errors.map((e) => e.message).join(' | ');
+  const one = (body) => guardOnly + 'views:\n  - id: v\n    name: V\n' + body;
+  assert.match(errs(one('')), /a saved view needs its diagram: physical or logical/);
+  assert.match(errs(one('    view: logical\n    focus: {target: fw, context: vlan}\n')), /a VLAN focus needs its VLAN/);
+  assert.match(errs(one('    view: logical\n    hide_types: [toaster]\n')), /"toaster" is no device type/);
+  assert.match(errs(one('    view: logical\n    viewport: {x: 1, y: 2, zoom: 9}\n')), /"9" is no zoom \(0\.05 to 6\)/);
+  assert.match(validate.loadModel(one('    view: logical\n    focus: {target: nowhere}\n')).warnings.map((w) => w.message).join(), /"nowhere" is nothing of the model: the view opens without its focus/);
+  const ED = load('editor/document.js');
+  const d = ED.ModelDoc.fromText(base, 'x.yaml', 'file').doc;
+  assert.equal(d.exportText(), base, 'written back as it was');
+  d.renameEntity('device', d.findEntity('device', 'fw').index, 'fw1');
+  const w = d.result.model.views[0];
+  assert.deepEqual([w.focus.target, w.devices.join()], ['fw1', 'pc,fw1,srv']);
+});

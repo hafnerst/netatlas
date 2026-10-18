@@ -45,6 +45,9 @@ import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { portL2 } from '../model/derive';
 import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
 import { scopeChooser } from './scope-ui';
+import { viewsBody } from './views-ui';
+import { SavedView, viewSummary } from '../model/views';
+import { focusRef } from '../validation/views';
 import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns } from '../analysis/sim/experiment';
 import { ExperimentsView, experimentText, experimentsBody } from './experiments';
 import { EXP_OBSERVE } from '../model/experiments';
@@ -3364,6 +3367,9 @@ export class App {
       case 'experiments':
         this.renderExperiments();
         break;
+      case 'views':
+        this.renderViews();
+        break;
 
     }
   }
@@ -4562,6 +4568,133 @@ export class App {
     this.refreshDesignChecks();
     const b = this.doc.getElementById('dc-add');
     if (b) b.focus();
+    return true;
+  }
+
+  // ------------------------------------------------------------ saved views
+
+  /** Find → Saved views…: the model's saved views, Open and Delete, and Save current view. */
+  openSavedViews(): void {
+    if (!this.session) return;
+    this.openWindow({ id: 'views', title: 'Saved views', body: this.viewsWindowBody(), width: 640, height: 480, focus: '#vw-name' });
+  }
+
+  private renderViews(): void {
+    if (this.toolWindow() === 'views' && this.session) this.replaceWindowBody(this.viewsWindowBody());
+  }
+
+  private viewsWindowBody(): HTMLElement {
+    const s = this.session as Session;
+    const current = viewSummary({ id: '', name: '', line: 0, ...this.currentViewFields() });
+    return viewsBody(this.doc, s.model.views, current, this.editLock(), {
+      save: (name) => void this.saveCurrentView(name),
+      open: (id) => void this.openSavedView(id),
+      remove: (id) => void this.removeSavedView(id),
+    });
+  }
+
+  /** The view on screen, as a saved view has it. */
+  private currentViewFields(): Omit<SavedView, 'id' | 'name' | 'line'> {
+    const s = this.session as Session;
+    const st = s.state;
+    const out: Omit<SavedView, 'id' | 'name' | 'line'> = { view: st.view === 'logical' ? 'logical' : 'physical', hideTypes: Array.from(st.hiddenTypes).sort(), hideProtocols: Array.from(st.hiddenProtocols).sort(), options: {} };
+    if (st.devices) out.devices = s.model.devices.filter((d) => (st.devices as Set<string>).has(d.id)).map((d) => d.id);
+    if (st.focus) {
+      const [kind, id] = splitRef(st.focus.ref);
+      const target = kind === 'device' || kind === 'iface' ? id : `${kind}:${id}`;
+      const c = st.focus.context;
+      out.focus = c ? (c.kind === 'vlan' ? { target, context: 'vlan', vlan: c.vlan } : c.kind === 'multicast' ? { target, context: 'multicast', group: c.group } : { target, context: c.kind === 'app' ? 'dependencies' : 'timing' }) : { target, hops: st.focus.hops };
+    }
+    if (!st.showLabels) out.options.labels = false;
+    if (!st.showGroups) out.options.groups = false;
+    if (!st.showNetworks) out.options.networks = false;
+    if (!st.showRoutes) out.options.routes = false;
+    const W = this.svg.clientWidth || 1000;
+    const H = this.svg.clientHeight || 700;
+    const k = this.zoom.k;
+    out.viewport = { x: Math.round((W / 2 - this.zoom.tx) / k), y: Math.round((H / 2 - this.zoom.ty) / k), zoom: Math.round(k * 100) / 100 };
+    return out;
+  }
+
+  /** Save the view on screen in the model (one undo step); a name is needed. */
+  saveCurrentView(name: string): boolean {
+    const d = this.mdoc;
+    if (!this.session || !d || this.editLock()) return false;
+    if (!name) {
+      this.toast('Give the view a name first.');
+      const n = this.doc.getElementById('vw-name') as HTMLElement | null;
+      if (n) n.focus();
+      return false;
+    }
+    const v = this.currentViewFields();
+    try {
+      d.addView(name, v);
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.afterEdit(`The view “${name}” was saved.`);
+    return true;
+  }
+
+  /**
+   * Open a saved view: its diagram, filters, options, focus and zoom (fitted
+   * when it has none). Display only: the model, an analysis and a running
+   * simulation are not touched. What it names that is gone is left out.
+   */
+  openSavedView(id: string): boolean {
+    const s = this.session;
+    if (!s) return false;
+    const v = s.model.views.find((x) => x.id === id);
+    if (!v) return false;
+    if (s.state.focus) this.exitFocus();
+    s.setView(v.view);
+    s.state.showLabels = v.options.labels !== false;
+    s.state.showGroups = v.options.groups !== false;
+    s.state.showNetworks = v.options.networks !== false;
+    s.state.showRoutes = v.options.routes !== false;
+    if (s.state.hiddenTypes.size) s.setTypesVisible(Array.from(s.state.hiddenTypes), true);
+    if (v.hideTypes.length) s.setTypesVisible(v.hideTypes, false);
+    for (const p of Array.from(s.state.hiddenProtocols)) s.toggleProtocol(p, true);
+    for (const p of v.hideProtocols) s.toggleProtocol(p, false);
+    s.setDevices(v.devices || s.model.devices.map((d) => d.id));
+    this.cancelConnection();
+    this.render();
+    this.renderOutline();
+    this.layoutFilters();
+    this.updateChrome();
+    const ref = v.focus ? focusRef(s.model, v.focus.target) : null;
+    if (v.focus && ref) {
+      this.select(ref, true);
+      const f = v.focus;
+      const ok = f.context ? this.enterContextFocus(f.context === 'vlan' ? { kind: 'vlan', vlan: f.vlan as number } : f.context === 'multicast' ? { kind: 'multicast', group: f.group as string } : f.context === 'dependencies' ? { kind: 'app', device: splitRef(ref)[1] } : { kind: 'timing', device: splitRef(ref)[1] }) : this.enterFocus(ref, f.hops || 1);
+      if (!ok) this.toast(`The view’s focus on ${f.target} can’t be shown now; the rest of the view is.`);
+    }
+    if (v.viewport) {
+      const W = this.svg.clientWidth || 1000;
+      const H = this.svg.clientHeight || 700;
+      const k = v.viewport.zoom;
+      this.zoom = { k, tx: W / 2 - v.viewport.x * k, ty: H / 2 - v.viewport.y * k };
+      this.applyZoom();
+    } else this.fit();
+    this.renderViews();
+    this.toast(`Showing the view “${v.name}”.`);
+    return true;
+  }
+
+  /** Delete a saved view (one undo step; no confirmation: it is display state, and Ctrl+Z brings it back). */
+  removeSavedView(id: string): boolean {
+    const d = this.mdoc;
+    if (!d || this.editLock()) return false;
+    const e = d.analysisEntries('views').find((x) => x.id === id);
+    if (!e) return false;
+    try {
+      d.removeView(e.index);
+    } catch (err) {
+      this.refusedEdit(err);
+      return false;
+    }
+    this.afterEdit('The view was deleted (Ctrl+Z brings it back).');
     return true;
   }
 

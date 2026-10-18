@@ -4787,8 +4787,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const viaArrow = !(q('#find-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#find-menu') as HTMLElement).contains(doc.activeElement);
       const entries = textsOf('#find-menu button');
       check(
-        'Find menu next to Export: Find in diagram… (/), Filter object list… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
-        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
+        'Find menu next to Export: Find in diagram… (/), Filter object list…, Saved views… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Saved views… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
           /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );
@@ -6240,6 +6240,47 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.undo();
       await tick();
       check('… undo removes it', app.exportText() === before);
+      app.closeToolWindow();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- saved views: the diagram, focus, filters, options and zoom as one named view; display state only
+    {
+      const vwYaml = 'netatlas: 1\ntitle: View check\ndevices:\n  - {id: a, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: sw, type: switch, interfaces: [{id: p1}, {id: p2}, {id: p3}]}\n  - {id: b, type: server, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\n  - {id: c, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.3/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "sw:p1"}\n  - {id: l2, a: "b:e0", b: "sw:p2"}\n  - {id: l3, a: "c:e0", b: "sw:p3"}\n';
+      app.loadText(vwYaml, 'view-check.yaml', 'file');
+      await tick();
+      const s = app.session!;
+      app.setView('logical');
+      app.setTypeVisible('server', false);
+      app.select('device:sw', true);
+      app.enterFocus('device:sw', 2);
+      s.state.showLabels = false;
+      app.render();
+      await tick();
+      app.openSavedViews();
+      await tick();
+      check('Find → Saved views…: a window with the view on screen described, a name to save it under, no saved views yet', app.toolWindow() === 'views' && /On screen: Logical view · focus sw \(2 hops\) · 1 type hidden/.test(q('#toolwin')!.textContent || '') && !!q('#vw-empty'));
+      const before = app.exportText();
+      (q('#vw-name') as HTMLInputElement).value = 'Switch close-up';
+      (q('#vw-save') as HTMLElement).click();
+      await tick();
+      const y = app.exportText();
+      check('… Save current view writes it to the model (one undo step): its diagram, focus, filters, options and viewport', s.model.views.length === 1 && /views:\n {2}- id: switch-close-up\n {4}name: Switch close-up\n {4}view: logical\n {4}focus: \{target: sw, hops: 2\}\n {4}hide_types: \[server\]\n {4}options: \{labels: false\}\n {4}viewport: \{x: -?\d+, y: -?\d+, zoom: [\d.]+\}/.test(y), y.slice(y.indexOf('views:')));
+      app.exitFocus();
+      app.setView('physical');
+      app.setTypeVisible('server', true);
+      s.state.showLabels = true;
+      app.render();
+      await tick();
+      (q('#toolwin [data-vw="open"][data-id="switch-close-up"]') as HTMLElement).click();
+      await tick();
+      check('… Open shows it again: the logical diagram, the server type hidden, labels off, the focus on sw with 2 hops; the model unchanged, no simulation started', s.state.view === 'logical' && s.state.hiddenTypes.has('server') && !s.state.showLabels && !!s.state.focus && s.state.focus.ref === 'device:sw' && s.state.focus.hops === 2 && app.exportText() === y && !app.simulationOn());
+      app.exitFocus();
+      app.undo();
+      await tick();
+      check('… undo removes the saved view', app.exportText() === before && s.model.views.length === 0);
+      app.setTypeVisible('server', true);
+      s.state.showLabels = true;
       app.closeToolWindow();
       app.mdoc!.markSaved();
     }

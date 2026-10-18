@@ -46,6 +46,7 @@ demands: [...]         # optional: traffic demands (traced; never change the net
 failure_domains: [...] # optional: components that fail together (what-if conditions)
 expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
 experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
+views: [...]           # optional: saved views (display state: diagram, focus, filters, zoom)
 checks: {...}          # optional: switch consistency checks off or change their severity
 layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
@@ -2537,6 +2538,38 @@ parameter and a duplicate id are **errors**; a target that names nothing of
 the model is a **warning** (that step can't be run). At most 200
 experiments, 200 actions and 200 observations each. Renaming a device,
 cable or relation updates the targets.
+
+## `views` (saved views)
+
+Optional. A named way of looking at the model (Find → **Saved views…**):
+display state only. Opening one changes what is drawn — never the
+network, an analysis or a simulation (a running one goes on). **Save
+current view** writes the one on screen.
+
+```yaml
+views:
+  - id: iot-vlan                       # required, unique among the views
+    name: The IoT VLAN                 # required
+    view: logical                      # required: physical or logical
+    focus: {target: core-sw, context: vlan, vlan: 30}   # optional
+    devices: [core-sw, ap1, cam1, cam2]                 # optional: only these (left out: every device)
+    hide_types: [server, switch:l2]    # optional: device types left out (a type stands for each of its kinds)
+    hide_protocols: [ospf]             # optional: protocols not drawn
+    options: {labels: false}           # optional: labels, groups, networks, routes (each on when left out)
+    viewport: {x: 420, y: 180, zoom: 1.25}   # optional: the diagram's centre and zoom; left out: fitted
+    description: …
+```
+
+`focus`: `target` (a device, `device:interface`, or `network:…`,
+`group:…`, `link:…`) with `hops` (1–3), or a contextual focus with
+`context`: `vlan` (with `vlan`), `dependencies`, `multicast` (with
+`group`), `timing` — as Analyze → Focus has them.
+
+Validation: unknown keys, a missing `name` or `view`, an unknown device
+type, context or option, a zoom outside 0.05–6, hops outside 1–3 and a
+duplicate id are **errors**; a device or focus target that names nothing of
+the model is a **warning** (the view opens without it). Renaming a device
+or interface updates its views.
 
 ## Simulation parameters and device attributes
 

@@ -27,6 +27,7 @@ import { checkRaPrefixes, readIpv6 } from './ipv6';
 import { ipConfigured } from '../model/ipv6';
 import { PolicyNodes, checkNetPolicies, readNetPolicy } from './policy';
 import { readExperiments } from './experiments';
+import { readViews } from './views';
 import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS, RouteFilterRule, RoutingPolicy } from '../model/routing-policy';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -1217,12 +1218,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     failureDomains: [],
     expectations: [],
     experiments: [],
+    views: [],
     index,
   };
   model.demands = readDemands(r, c, top, model);
   model.failureDomains = readFailureDomains(r, c, top, model);
   model.expectations = readExpectations(r, c, top, model, model.failureDomains);
   model.experiments = readExperiments(r, c, top, model, model.failureDomains);
+  model.views = readViews(r, c, top, model);
   // the objects' simulation attributes: does each apply to its object (with the whole model known)?
   checkObjectBlocks(c, model, simBlocks);
   // the servers' scopes and zones with the whole model (ranges, gateways, overlaps, records)

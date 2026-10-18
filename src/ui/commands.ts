@@ -328,6 +328,14 @@ export function buildCommands(): Command[] {
       run: (app) => void app.openStartDialog(),
     },
     {
+      id: 'view.saved',
+      label: 'Saved views…',
+      group: 'Find',
+      keywords: 'view saved save named viewport focus filters bookmark layout display',
+      state: (app) => needDiagram(app, 'A window with the model’s saved views: open one, or save the diagram, focus, filters and zoom on screen as one'),
+      run: (app) => app.openSavedViews(),
+    },
+    {
       id: 'sim.experiments',
       label: 'Experiments…',
       group: 'Simulate',

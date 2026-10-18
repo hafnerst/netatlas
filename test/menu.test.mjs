@@ -192,7 +192,7 @@ test('Find menu: next to Export, with Find in diagram… (/) and Filter object l
   assert.match(header, /<span id="view-title" class="tool-group-title">View<\/span>/, 'the View group of Physical / Logical keeps its name');
   const view = /<div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   const entries = [...view.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…']], 'both disabled until a model is open');
+  assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…'], ['btn-views', 'Saved views…']], 'disabled until a model is open');
   // the labels say what each one works on: Find searches the diagram, the filter narrows the object list (not the diagram)
   assert.ok(!/Filter outline…|>Find…</.test(html), 'the old labels are gone');
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
