@@ -73,6 +73,54 @@ export function deviceListeners(d: Device | undefined): Listener[] {
   return serviceListeners(d).concat(appListeners(d));
 }
 
+/**
+ * A service a device offers, as a communication check names it
+ * ("ntp-1/ntp", "core/dns"): its id, what it is called, and the transport
+ * and port clients use. The DNS and DHCP servers are network services
+ * (`services: dns / dhcp`); the others are the registry services that
+ * listen (serviceListeners). A service with several ports (storage, PTP)
+ * gives one entry per port; the first has the service's id.
+ */
+export interface NamedService {
+  id: string;
+  label: string;
+  proto: 'tcp' | 'udp';
+  port: number;
+  /** listens on this address only (a DNS server's `listen`) */
+  address?: string;
+}
+
+const SERVICE_IDS: Array<[string, string]> = [
+  ['NTP', 'ntp'],
+  ['AAA', 'aaa'],
+  ['Syslog collector', 'syslog'],
+  ['Proxy', 'proxy'],
+  ['Load balancing', 'load_balancing'],
+  ['Wireless controller', 'wireless_controller'],
+  ['Storage service', 'storage'],
+  ['MQTT broker', 'mqtt_broker'],
+  ['PTP (event messages)', 'ptp'],
+  ['PTP (general messages)', 'ptp-general'],
+];
+
+/** The services of a device a communication check can name, in a fixed order (DNS, DHCP, then the registry's). */
+export function namedServices(d: Device | undefined): NamedService[] {
+  const out: NamedService[] = [];
+  if (!d) return out;
+  const ns = d.netServices;
+  if (ns && ns.dns) out.push(ns.dns.listen ? { id: 'dns', label: 'DNS server', proto: 'udp', port: 53, address: ns.dns.listen } : { id: 'dns', label: 'DNS server', proto: 'udp', port: 53 });
+  if (ns && ns.dhcp) out.push({ id: 'dhcp', label: 'DHCP server', proto: 'udp', port: 67 });
+  const seen = new Set<string>();
+  for (const l of serviceListeners(d)) {
+    const m = SERVICE_IDS.find(([owner]) => owner === l.owner);
+    let id = m ? m[1] : l.owner.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    if (seen.has(id)) id = `${id}-${l.port}`;
+    seen.add(id);
+    out.push({ id, label: l.owner, proto: l.proto, port: l.port });
+  }
+  return out;
+}
+
 /** Two listeners claim the same transport, port and address (both on all addresses, or one on all, or the same interface)? */
 export function listenersConflict(a: Listener, b: Listener): boolean {
   return a.proto === b.proto && a.port === b.port && (a.bind === undefined || b.bind === undefined || a.bind === b.bind);

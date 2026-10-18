@@ -46,12 +46,13 @@
 import { IpAddr, parseAddress, parsePrefix } from '../../model/ip';
 import { Device, DhcpScope, Model, deviceInterfaces } from '../../model/types';
 import { compareAddr, formatAddr, inPrefix, networkOf, prefixText } from '../ipmath';
-import { DEFAULT_LEASE, derivedRecords, inRange, inZone, recordFqdn } from '../../model/netservices';
+import { DEFAULT_LEASE, inRange, inZone } from '../../model/netservices';
 import { durationText, ifaceRef, scopeRef, zoneRef } from './params';
 import { L3Iface, Lease, SimAddr } from './net';
 import { ProtocolSim } from './protocols';
 import { Msg, Pkt } from './types';
 import { dnsNameKey } from '../../model/dns';
+import { zoneRecords } from '../names';
 
 const BROADCAST = parseAddress('255.255.255.255') as IpAddr;
 const ZERO = parseAddress('0.0.0.0') as IpAddr;
@@ -707,12 +708,7 @@ export class NetServicesSim {
 
   /** A server's zone: the model's DNS names in it (A / AAAA), and its own records. */
   zoneRecords(dev: string, zone: string): Array<{ name: string; type: string; value: string; source: string }> {
-    const d = this.P.m.index.devices.get(dev);
-    const z = d && d.netServices && d.netServices.dns ? d.netServices.dns.zones.find((x) => x.name === zone) : undefined;
-    if (!z) return [];
-    const out = derivedRecords(this.P.m, zone).map((r) => ({ name: r.fqdn, type: r.type as string, value: r.value, source: r.source }));
-    for (const r of z.records) out.push({ name: recordFqdn(zone, r.name), type: r.type, value: r.value, source: 'zone record' });
-    return out;
+    return zoneRecords(this.P.m, dev, zone);
   }
 
   // ------------------------------------------------------------ tables
