@@ -5669,7 +5669,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
       check(
         'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Services, Simulation with its count, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Services\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Network policy\|Services\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');
@@ -6230,6 +6230,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.undo();
       await tick();
       check('… undo removes it (one step)', app.exportText() === before);
+      // a network policy: none on the router until its default action is chosen
+      const np = q('#side-body .np-box') as HTMLDetailsElement | null;
+      check('a network policy is one collapsed line too: none written, it forwards everything it routes', !!np && !np.open && /^Network policy · none: it forwards everything it routes$/.test(np.querySelector('summary')!.textContent || ''), np ? np.querySelector('summary')!.textContent || '' : 'no box');
+      const start = q('#side-body .np-box select[data-t="np-add"]') as HTMLSelectElement;
+      start.value = 'deny';
+      start.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… choosing its default action starts it (policy: {default: deny}), the box stays open with its rule table', /policy:\n\s+default: deny/.test(app.exportText()) && (q('#side-body .np-box') as HTMLDetailsElement).open && !!q('#side-body .np-box [data-rules="policy"] [data-act="rule-add"][data-v="permit"]'));
+      (q('#side-body .np-box [data-act="rule-add"][data-v="permit"]') as HTMLElement).click();
+      await tick();
+      const src = q('#side-body .np-box .rule-table tbody tr input[data-t="csv"]') as HTMLInputElement;
+      src.value = 'hq-core1, hq-core2';
+      src.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… a rule: action, source (a short list as text), in order', /rules:\n\s+- \{action: permit, source: \[hq-core1, hq-core2\]\}/.test(app.exportText()), app.exportText().slice(app.exportText().indexOf('policy:'), app.exportText().indexOf('policy:') + 120));
+      app.undo();
+      app.undo();
+      app.undo();
+      await tick();
+      check('… undo, step by step, back to no policy', app.exportText() === before);
       app.select(null);
       app.mdoc!.markSaved();
     }

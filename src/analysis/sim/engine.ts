@@ -2580,8 +2580,8 @@ export class Engine {
     }
     // a VPN gateway forwards only to and from its VPN
     if (came && sd.caps.vpnOnlyTransit && !this.vpnTransit(sd, came.l3, out, pkt)) return;
-    // a firewall applies its policy to what it forwards (it logs and rejects itself)
-    if (came && sd.caps.firewallPolicy && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
+    // a firewall, or a router with a network policy, applies it to what it forwards (it logs and rejects itself)
+    if (came && (sd.caps.firewallPolicy || !!sd.dev.policy) && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
     // then source NAT on the way out (its policy saw the packet as it came, its sessions stay those of the inside addresses):
     // a container bridge's masquerade, a NAT service's PAT / SNAT, the reply of a port forward
     if (came) pkt = this.snat(dev, came.l3, out, pkt);

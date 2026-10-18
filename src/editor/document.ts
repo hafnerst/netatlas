@@ -677,6 +677,9 @@ export class ModelDoc {
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
+    if (path.length === 3 && path[0] === 'devices' && path[2] === 'policy') return 'netPolicy';
+    if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'rules') return 'policyRule';
+    if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'zones') return 'policyZone';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'port_pairs') return 'portPair';
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
@@ -1819,6 +1822,26 @@ export class ModelDoc {
     });
   }
 
+  /**
+   * A short list written as comma-separated text (a policy rule's sources,
+   * its interfaces): one item stays a scalar, several a flow list, none
+   * removes the key. One undo step.
+   */
+  setTextList(path: Path, text: string): void {
+    const items = text.split(',').map((x) => x.trim()).filter((x) => x);
+    this.change('Edit ' + this.label(path), () => {
+      if (!items.length) this.removeAt(path);
+      else this.setAt(path, items.length === 1 ? strNode(items[0]) : seqNode(items.map((x) => strNode(x)), true), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** A device's network policy, started with the default action chosen (`policy: {default: …}`); one undo step. */
+  addNetPolicy(devIndex: number, def: 'permit' | 'deny'): void {
+    this.change('Add network policy', () => {
+      this.setAt(['devices', devIndex, 'policy'], mapNode([['default', strNode(def)]]), this.orderFor(['devices', devIndex]));
+    });
+  }
+
   /** Append an empty value, group or list to a list. */
   pushItem(listPath: Path, kind: 'value' | 'group' | 'list'): void {
     this.change('Add item', () => {
@@ -2152,6 +2175,39 @@ export class ModelDoc {
       return t === `${id}:${iface}`;
     };
     if ((kind === 'device' || kind === 'link' || kind === 'relation' || kind === 'group') && iface === undefined) scalarRefs('failure_domains', 'members', (t) => t === id);
+    // a network policy: a rule's source and destination (a device, device:interface, a network), its in and out, a zone's interfaces (its own device's)
+    if (kind === 'device' || kind === 'network') {
+      const devs = this.root.entries.get('devices');
+      if (devs && devs.value.kind === 'seq') {
+        devs.value.items.forEach((dn, di) => {
+          const pol = dn.kind === 'map' ? dn.entries.get('policy') : undefined;
+          if (!pol || pol.value.kind !== 'map') return;
+          const own = dn.kind === 'map' && scalarText((dn.entries.get('id') || { value: nullNode() }).value) === id;
+          const scan = (n: YNode | undefined, p: Path, match: (t: string) => boolean): void => {
+            if (!n) return;
+            if (n.kind === 'scalar') {
+              const t = scalarText(n);
+              if (t !== undefined && match(t)) out.push(p);
+            } else if (n.kind === 'seq') n.items.forEach((x, k) => scan(x, p.concat(k), match));
+          };
+          const obj = (t: string): boolean => (kind === 'network' ? t === id : iface === undefined ? t === id || t.split(':')[0] === id : t === `${id}:${iface}`);
+          const rules = pol.value.entries.get('rules');
+          if (rules && rules.value.kind === 'seq') {
+            rules.value.items.forEach((rn, k) => {
+              if (rn.kind !== 'map') return;
+              for (const key of ['source', 'destination']) scan((rn.entries.get(key) || { value: undefined }).value, ['devices', di, 'policy', 'rules', k, key], obj);
+              if (kind === 'device' && own && iface !== undefined) for (const key of ['in', 'out']) scan((rn.entries.get(key) || { value: undefined }).value, ['devices', di, 'policy', 'rules', k, key], (t) => t === iface);
+            });
+          }
+          const zones = pol.value.entries.get('zones');
+          if (kind === 'device' && own && iface !== undefined && zones && zones.value.kind === 'seq') {
+            zones.value.items.forEach((zn, k) => {
+              if (zn.kind === 'map') scan((zn.entries.get('interfaces') || { value: undefined }).value, ['devices', di, 'policy', 'zones', k, 'interfaces'], (t) => t === iface);
+            });
+          }
+        });
+      }
+    }
     if (kind === 'device' && iface === undefined) {
       // a routing policy's filter rule that names the device as its peer
       const devs = this.root.entries.get('devices');
@@ -2195,7 +2251,16 @@ export class ModelDoc {
       let nt = t;
       const last = p[p.length - 1];
       const inExpectation = p[0] === 'expectations' && (last === 'from' || last === 'to' || last === 'boundary' || p[p.length - 2] === 'failure' || last === 'failure');
-      if (p[0] === 'failure_domains') {
+      // a network policy: an object (device, device:interface, network) in source or destination; an interface of its own device in in, out or a zone
+      const inPolicy = p[0] === 'devices' && p[2] === 'policy';
+      const polKey = inPolicy ? String(typeof last === 'number' ? p[p.length - 2] : last) : '';
+      if (inPolicy && (polKey === 'source' || polKey === 'destination')) {
+        const c = t.indexOf(':');
+        if (c < 0) nt = t === oldId ? newId : t;
+        else nt = (t.slice(0, c) === oldId ? newId : t.slice(0, c)) + ':' + (oldIf !== undefined && t.slice(c + 1) === oldIf ? (newIf as string) : t.slice(c + 1));
+      } else if (inPolicy) {
+        nt = newIf !== undefined ? newIf : t;
+      } else if (p[0] === 'failure_domains') {
         // a member: an id of a device, cable, relation or group
         nt = newId;
       } else if (inExpectation) {

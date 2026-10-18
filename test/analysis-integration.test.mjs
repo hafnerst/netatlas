@@ -982,3 +982,133 @@ test('routing policy: the simulation installs the same routes (one routing compu
   const hq = d.result.model.devices.find((x) => x.id === 'hq');
   assert.equal(hq.services.find((x) => x.id === 'bgp').policy.export[0].peer, 'branch1');
 });
+
+// ------------------------------------------------------------------ network policy
+
+const PO = load('analysis/policy.js');
+
+// pc — r1 (an ACL) — srv; the server listens on SSH and HTTPS
+const acl = (policy) => `netatlas: 1
+title: Router ACL
+devices:
+  - id: pc
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.1.0.10/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: pc2
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.1.0.20/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
+  - id: r1
+    type: router
+    interfaces: [{id: lan, ip: 10.1.0.1/24}, {id: wan, ip: 10.9.0.1/24}]
+${policy}
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/22, tcp/443"}
+    interfaces: [{id: eth0, ip: 10.9.0.10/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]
+links:
+  - {id: l-pc, a: pc:eth0, b: sw:p1}
+  - {id: l-pc2, a: pc2:eth0, b: sw:p2}
+  - {id: l-r1, a: r1:lan, b: sw:p3}
+  - {id: l-srv, a: srv:eth0, b: r1:wan}
+networks:
+  - {id: users, cidr: 10.1.0.0/24}
+`;
+const sshAcl = acl(`    policy:
+      default: permit
+      rules:
+        - {name: admin ssh, action: permit, source: pc2, destination: srv, proto: tcp, dport: 22}
+        - {action: deny, source: users, destination: srv, proto: tcp, dport: "22"}`);
+
+test('network policy: a router ACL in order (first match wins, an explicit default); the tracer names the rule', () => {
+  const m = model(sshAcl);
+  const ssh = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/22' });
+  assert.equal(ssh.verdict, 'violated');
+  assert.match(ssh.layers.find((l) => l.id === 'policy').text, /^Denied at r1: r1 denies tcp\/22 from pc to srv: rule 2 \(deny tcp users → srv dport 22\)/);
+  const admin = C.checkCommunication(m, { from: 'pc2', to: 'srv', service: 'tcp/22' });
+  assert.equal(admin.verdict, 'satisfied');
+  assert.match(admin.layers.find((l) => l.id === 'policy').detail.join(), /r1 permits tcp\/22 from pc2 to srv: rule 1 \(admin ssh: permit tcp pc2 → srv dport 22\)/);
+  const https = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/443' });
+  assert.equal(https.verdict, 'satisfied');
+  assert.match(https.layers.find((l) => l.id === 'policy').detail.join(), /no rule matches \(its default action, permit\)/);
+  // without a service the decision is said to depend on it, never guessed
+  const any = C.checkCommunication(m, { from: 'pc', to: 'srv' });
+  assert.equal(any.layers.find((l) => l.id === 'policy').verdict, 'indeterminate');
+  // an enforcement requirement is met by the ACL's denial, named with its rule
+  const e = E.evaluateExpectation(m, { id: 'x', name: 'x', expect: 'blocked', from: 'pc', to: 'srv', service: 'tcp/22', enforce: 'policy', failure: [], line: 0 });
+  assert.equal(e.verdict, 'satisfied');
+  assert.match(e.reason, /Denied by policy on the evaluated path: r1 — r1 denies tcp\/22 from pc to srv: rule 2/);
+});
+
+test('network policy: the simulation applies the same rules (one engine)', () => {
+  const m = model(sshAcl);
+  const s = new S.Simulation(m);
+  s.runTo(15000);
+  s.sendPlan({ delivery: 'unicast', from: 'pc', to: 'srv', toIface: 'eth0', toAddr: '10.9.0.10', kind: 'tcp', port: 22 });
+  s.runTo(40000);
+  const denied = s.testRuns()[0].tests[0];
+  assert.equal(denied.ok, false);
+  assert.ok(s.events().some((x) => x.kind === 'drop' && /^r1 drops TCP 10\.1\.0\.10:\d+ → 10\.9\.0\.10:22 .*rule 2 \(deny tcp users → srv dport 22\)/.test(x.detail)), 'the drop names the rule');
+  s.sendPlan({ delivery: 'unicast', from: 'pc2', to: 'srv', toIface: 'eth0', toAddr: '10.9.0.10', kind: 'tcp', port: 22 });
+  s.runTo(60000);
+  assert.equal(s.testRuns()[0].tests[0].ok, true, 'rule 1 permits pc2; the router is stateless and its default permits the answers');
+});
+
+test('network policy: zones and a stateful firewall; stateless, the return direction needs its own rule', () => {
+  const fwPolicy = (stateful) => acl(`    policy:
+      default: deny${stateful === undefined ? '' : '\n      stateful: ' + stateful}
+      zones:
+        - {name: inside, interfaces: [lan]}
+        - {name: outside, interfaces: wan}
+      rules:
+        - {action: permit, from_zone: inside, to_zone: outside, proto: tcp, dport: 443}`).replace('  - id: r1\n    type: router', '  - id: r1\n    type: firewall');
+  const m = model(fwPolicy());
+  const there = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/443' });
+  assert.equal(there.verdict, 'satisfied');
+  const back = C.checkCommunication(m, { from: 'srv', to: 'pc', service: 'tcp/443' });
+  assert.equal(back.verdict, 'violated', 'statically each direction is decided by the rules: outside → inside is not permitted');
+  // the simulation: a firewall's sessions let the answers back; stateless they are dropped
+  const run = (mm) => {
+    const s = new S.Simulation(mm);
+    s.runTo(15000);
+    s.sendPlan({ delivery: 'unicast', from: 'pc', to: 'srv', toIface: 'eth0', toAddr: '10.9.0.10', kind: 'tcp', port: 443 });
+    s.runTo(60000);
+    return s.testRuns()[0].tests[0];
+  };
+  assert.equal(run(m).ok, true, 'stateful (a firewall’s sessions): the answer belongs to the session');
+  const stateless = run(model(fwPolicy(false)));
+  assert.equal(stateless.ok, false, 'stateless: the answer from outside to inside matches no rule');
+  assert.equal(PO.policyStateful(model(fwPolicy(false)).devices.find((d) => d.id === 'r1'), true), false);
+});
+
+test('network policy: validation and renames', () => {
+  const errs = (policy) => validate.loadModel(acl(policy)).errors.map((e) => e.message).join(' | ');
+  assert.match(errs('    policy:\n      rules: [{action: deny}]'), /a policy needs its default action: permit or deny/);
+  assert.match(errs('    policy:\n      default: deny\n      rules: [{action: permit, proto: icmp, dport: 8}]'), /dport goes with tcp or udp/);
+  assert.match(errs('    policy:\n      default: deny\n      rules: [{action: permit, in: ge-9}]'), /"r1" has no interface "ge-9"/);
+  assert.match(errs('    policy:\n      default: deny\n      rules: [{action: permit, source: nowhere}]'), /"nowhere" is no prefix, address, device, network or device:interface/);
+  assert.match(errs('    policy:\n      default: deny\n      rules: [{action: permit, from_zone: dmz}]'), /the policy defines no zone "dmz"/);
+  assert.match(errs('    policy:\n      default: deny\n      rules: [{action: permit, proto: tcp, dport: 70000}]'), /out of 1–65535/);
+  const sw = validate.loadModel(acl('').replace("    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]", "    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]\n    policy: {default: deny}"));
+  assert.match(sw.errors.map((e) => e.message).join(), /"sw" forwards no IP: a network policy applies on a router, a Layer 3 switch or a firewall/);
+  const ED = load('editor/document.js');
+  const d = ED.ModelDoc.fromText(sshAcl.replace('rules:', 'zones: [{name: in, interfaces: [lan]}]\n      rules:'), 'x.yaml', 'file').doc;
+  d.renameEntity('device', d.findEntity('device', 'srv').index, 'server1');
+  d.renameEntity('device', d.findEntity('device', 'pc2').index, 'admin-pc');
+  const r1i = d.findEntity('device', 'r1').index;
+  d.renameInterface(['devices', r1i, 'interfaces', 0], 'lan0');
+  const pol = d.result.model.devices.find((x) => x.id === 'r1').policy;
+  assert.deepEqual(pol.rules.map((r) => [r.source, r.destination]), [[['admin-pc'], ['server1']], [['users'], ['server1']]]);
+  assert.deepEqual(pol.zones[0].interfaces, ['lan0']);
+  // the editor starts a policy with the default chosen, and writes a short list as text
+  const d2 = ED.ModelDoc.fromText(acl(''), 'y.yaml', 'file').doc;
+  d2.addNetPolicy(d2.findEntity('device', 'r1').index, 'deny');
+  d2.addRule(['devices', d2.findEntity('device', 'r1').index, 'policy', 'rules'], 'permit');
+  d2.setTextList(['devices', d2.findEntity('device', 'r1').index, 'policy', 'rules', 0, 'source'], 'pc, pc2');
+  assert.match(d2.exportText(), /policy:\n\s+default: deny\n\s+rules:\n\s+- \{action: permit, source: \[pc, pc2\]\}/);
+});

@@ -50,6 +50,7 @@
  * session timeouts. Pure and deterministic.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
+import { PolicyDecision, policyDecision, policyStateful } from '../policy';
 import { Relation, relationDevices, TRANSFER_PROFILES, ServiceInstance, Device, Model } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
@@ -1804,13 +1805,14 @@ export class Transport {
   }
 
   private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
-    void to;
     const l4 = pkt.l4;
+    const dd = this.P.m.index.devices.get(dev);
     // the model's relations (and its demands) are the firewall's policy; protocols without a transport header (and IGMP) pass
     if (pkt.msg.relation || pkt.rides.length || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
     const proto = l4.proto as 'tcp' | 'udp' | 'icmp';
     const tab = this.fwTable(dev);
-    const stateful = this.e.params.get('fw-stateful', dev).value === 'on';
+    // (a written policy says whether it is stateful; a firewall's sessions otherwise; a router's policy is stateless)
+    const stateful = dd ? policyStateful(dd, capabilities(dd).firewallPolicy && this.e.params.get('fw-stateful', dev).value === 'on') : false;
     // traffic between the endpoints of a service relation on its port (a test of it, and its answers) is the relation's
     const rel = this.relationFor(pkt);
     const sp = proto === 'icmp' ? l4.echoId || 0 : l4.sport || 0;
@@ -1845,11 +1847,35 @@ export class Transport {
         return true;
       }
     }
+    const opening = proto !== 'tcp' || (flags.indexOf('SYN') >= 0 && flags.indexOf('ACK') < 0);
+    const echoReq = proto !== 'icmp' || l4.icmpType === 8 || l4.icmpType === 128;
+    // a written network policy: its rules decide each packet (analysis/policy.ts, the engine the path tracer uses)
+    if (dd && dd.policy) {
+      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev: this.e.ownerOf(pkt.src), dstDev: this.e.ownerOf(pkt.dst), inIface: from.id, outIface: to.id }) as PolicyDecision;
+      // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
+      if (d.permit && (!stateful || (opening && echoReq))) {
+        if (stateful) {
+          const s: FwSession = { key: fwd, proto, flow: `${formatAddr(pkt.src)}${proto === 'icmp' ? '' : ':' + sp} → ${formatAddr(pkt.dst)}${proto === 'icmp' ? ' (echo ' + sp + ')' : ':' + dp}`, state: proto === 'tcp' ? 'SYN' : 'ACTIVE', created: this.e.now, last: this.e.now, rule: d.ruleText || 'default permit', timeout: proto === 'tcp' ? 'fw-half-open' : proto === 'udp' ? 'fw-udp' : 'fw-icmp' };
+          tab.set(fwd, s);
+          this.e.note('table', proto, dev, '', 'session opened', s.state, `${dev} opens a session ${s.flow} (${s.rule}, in ${from.id})`);
+        }
+        return true;
+      }
+      const what0 = `${proto === 'icmp' ? (pkt.dst.version === 4 ? 'ICMP' : 'ICMPv6') + ' ' + (l4.icmpName || '') : proto.toUpperCase() + ' ' + formatAddr(pkt.src) + ':' + l4.sport + ' → ' + formatAddr(pkt.dst) + ':' + l4.dport}`;
+      const why0 = d.permit ? 'it belongs to no session it knows (a stateful policy)' : d.text.replace(/^\S+ denies [^:]*: /, '');
+      const fwAct = capabilities(dd).firewallPolicy ? this.e.params.get('fw-action', dev) : null;
+      const reject = !!fwAct && fwAct.value === 'reject';
+      this.e.note('drop', proto, dev, '', reject ? 'rejected' : 'dropped', '', `${dev} ${reject ? 'rejects' : 'drops'} ${what0} (${pkt.msg.label}): ${why0}`);
+      if (reject) {
+        if (proto === 'tcp') {
+          if (flags.indexOf('RST') < 0) this.segment(dev, { local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, vrf: pkt.vrf }, ['RST', 'ACK'], 0, `rejected by ${dev}`, pkt.dst);
+        } else this.e.icmpError(dev, pkt, 'admin', { from });
+      }
+      return false;
+    }
     const allow = parsePorts(String(this.e.params.get('fw-allow', dev).value) || 'none');
     const rules = 'list' in allow ? allow.list : [];
     const port = proto === 'icmp' ? 0 : (l4.dport as number);
-    const opening = proto !== 'tcp' || (flags.indexOf('SYN') >= 0 && flags.indexOf('ACK') < 0);
-    const echoReq = proto !== 'icmp' || l4.icmpType === 8 || l4.icmpType === 128;
     if (rel && (!stateful || !opening)) return true;
     if ((rel || portsMatch(rules, proto, port)) && (!stateful || (opening && echoReq))) {
       const rule = rel ? `relation ${rel}` : `allow ${proto === 'icmp' ? 'icmp' : proto + '/' + port}`;

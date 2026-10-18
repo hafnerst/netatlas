@@ -1,6 +1,7 @@
 /** Validated, typed network model produced from the YAML input. */
 import type { ServiceRegistry } from './services';
 import type { RoutingPolicy } from './routing-policy';
+import type { NetPolicy } from './net-policy';
 import type { AppInstance } from './applications';
 import type { Ipv6Method, RaConfig } from './ipv6';
 
@@ -253,6 +254,8 @@ export interface Device {
   applications?: AppInstance[];
   /** a Security gateway's built-in Domain separation (`services.separation`) */
   separation?: SeparationService;
+  /** its network policy (`policy:`, model/net-policy.ts): an ordered Layer 3/4 rule base of a router, Layer 3 switch or firewall */
+  policy?: NetPolicy;
   /**
    * A switch that routes (`layer3: true`): a Layer 3 switch with the full
    * Layer 3+ feature set. Without it a switch is a Layer 2 switch: it

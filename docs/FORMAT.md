@@ -333,6 +333,56 @@ failure analysis use only the protocols a device enables: a routing
 adjacency forms only between devices that both enable its protocol. The
 diagram writes the router ID and the AS number only where they apply.
 
+### Network policy (`policy`)
+
+A router, a Layer 3 switch or a firewall may carry an ordered Layer 3/4
+rule base, `policy:`, after its lists. One engine evaluates it for Trace
+path, the communication checks and the simulation. Without one, a router
+forwards everything it routes and a firewall keeps its implicit policy (the
+model's relations through it and its `allow` list, default deny), now
+evaluated by the same engine. A Security gateway's Domain separation is its
+own policy (a `policy:` there is an error).
+
+```yaml
+- id: edge-fw
+  type: firewall
+  interfaces: [{id: lan, ip: 10.1.0.1/24}, {id: dmz, ip: 10.9.0.1/24}, {id: wan, ip: 203.0.113.2/30}]
+  policy:
+    default: deny                       # required: permit or deny, what no rule matches gets
+    stateful: true                      # optional; without it a firewall keeps sessions, a router is stateless
+    zones:
+      - {name: inside, interfaces: [lan]}
+      - {name: dmz, interfaces: dmz}
+    rules:                              # first match wins
+      - {name: web, action: permit, from_zone: inside, to_zone: dmz, proto: tcp, dport: "80,443"}
+      - {action: permit, source: admin-pc, destination: dmz-web, proto: tcp, dport: 22}
+      - {action: deny, source: 10.1.0.0/16, destination: [mgmt, 10.200.0.0/24]}
+```
+
+| Key of a rule | Meaning |
+|---|---|
+| `action` | required: `permit` or `deny` |
+| `source`, `destination` | one or a list of: a prefix or address, `any`, a device (its addresses), a network (its prefix), `device:interface`; none: any |
+| `proto` | `tcp`, `udp`, `icmp` or `any` (the default) |
+| `sport`, `dport` | with tcp or udp: ports and ranges, `"443"`, `"8000-8080"`, `"80,443"` |
+| `in`, `out` | the device's interfaces it comes in at, leaves by (one or a list) |
+| `from_zone`, `to_zone` | zones of the policy (their interfaces) |
+| `name` | a label |
+
+Semantics: the first rule whose conditions all hold decides; none: the
+default action. A router's or Layer 3 switch's policy applies to what it
+routes (not to what it bridges within a VLAN); a transparent firewall's to
+what it bridges. Statically, Trace path decides one direction for the
+service given (without one, a decision that depends on it is said, not
+guessed); the simulation decides each packet: stateful, a permitted packet
+that opens a flow opens a session and the replies pass by it; stateless,
+each direction needs its own rule. The trace's hop evidence and the
+simulation's drop name the rule. Validation: a missing or unknown
+`default` or `action`, ports without tcp or udp, an interface, zone or
+object the model doesn't have, and a policy on a device that forwards no IP
+are errors. Not modeled: application identification, TLS inspection, user
+identities, time ranges, NAT rules (the NAT service's), vendor rule syntax.
+
 ### Device types
 
 | Display name | `type` | Kinds (`kind`) | Modes (`mode`) | What it does |
@@ -2990,9 +3040,11 @@ README's limitations):
   also on the ports it passes requests on to; a protocol break on its
   transfer profiles' ports). A request of a
   relation to a port its `listening` leaves out is refused like any other.
-- **Firewalls** (routing ones): the traffic of the model's relations (and
-  of its demands, and tests between a service relation's endpoints on its
-  port) is their policy and passes; anything else passes when it belongs to
+- **Firewalls** (routing ones) and devices with a network policy: a
+  written `policy:` decides each packet by its rules (see *Network policy*),
+  keeping sessions when it is stateful. Without one, a firewall's policy
+  is the traffic of the model's relations (and of its demands, and tests
+  between a service relation's endpoints on its port), which passes; anything else passes when it belongs to
   a session (stateful: replies, and ICMP errors about them) or when their
   `allow` list permits it (which opens a session), else the default action
   drops it, or rejects it (TCP RST from the destination's address, else

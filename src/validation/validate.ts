@@ -25,6 +25,7 @@ import { AppNodes, checkApplications } from './applications';
 import { checkPtp } from './ptp';
 import { checkRaPrefixes, readIpv6 } from './ipv6';
 import { ipConfigured } from '../model/ipv6';
+import { PolicyNodes, checkNetPolicies, readNetPolicy } from './policy';
 import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS, RouteFilterRule, RoutingPolicy } from '../model/routing-policy';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -292,6 +293,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const devNodes = new Map<string, { node: YMap; path: string }>();
   const ifaceNodes = new Map<string, YMap>();
   const routeNodes = new Map<string, { node: YMap; path: string }>();
+  const policyNodes: PolicyNodes[] = [];
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
     const path = `devices[${i}]`;
     const m = r.map(n, path);
@@ -637,6 +639,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
     });
     dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
     dev.routes = readRoutes(r, c, m, dpath, dev, routeNodes);
+    const pol = readNetPolicy(r, c, m, dpath, dev, policyNodes);
+    if (pol) dev.policy = pol;
     // the router IDs: the device's (shared by its protocols) and a protocol's own; applicable only with a protocol that uses one
     const ridNode = get(m, 'router_id');
     const ridText = r.field(m, 'router_id', dpath, 64);
@@ -1220,6 +1224,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   checkObjectBlocks(c, model, simBlocks);
   // the servers' scopes and zones with the whole model (ranges, gateways, overlaps, records)
   checkNetServices(c, model, svcNodes);
+  // the network policies' interfaces, zones and objects
+  checkNetPolicies(c, model, policyNodes);
   // the services' references, the Wi-Fi networks against the uplinks, the wireless connections, the controllers
   checkServices(c, model, svcBlocks, linkNodes);
   checkApplications(c, model, svcBlocks.map((b) => b.apps).filter((x): x is AppNodes => !!x));

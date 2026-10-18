@@ -44,7 +44,7 @@ import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
-import { firewallDecision } from './fw-policy';
+import { PolicyFlow, policyDecision, policyKind, undecided } from './policy';
 import type { Verdict } from './result';
 import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
 import { deviceTypeInText, deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
@@ -1059,32 +1059,46 @@ function crossing(dev: Device, inPort: string | undefined, outPort: string | und
   return cross ? cross(dev, inPort, outPort, notes) : null;
 }
 
-/** A Layer 2 crossing the walk's traffic is not permitted: a filtering bridge's policy. */
+/** A Layer 2 crossing the walk's traffic is not permitted: a filtering bridge's policy, a transparent firewall's (the same engine as a routed hop's). */
 function crossDenied(w: Walk, dev: Device, inPort: string | undefined, outPort: string | undefined, notes: string[]): string | null {
   const c = capabilities(dev);
-  if (!c.securityGateway || inPort === undefined || outPort === undefined) return null;
-  return policyDenied(w, dev, inPort, outPort, notes);
+  if (inPort === undefined || outPort === undefined) return null;
+  if (c.securityGateway) return policyDenied(w, dev, inPort, outPort, notes);
+  // (a router's or Layer 3 switch's policy applies to what it routes, not to what it bridges within a VLAN)
+  return c.firewallPolicy ? networkPolicyDenied(w, dev, inPort, outPort, notes) : null;
+}
+
+/**
+ * A device's network policy on the walk's traffic (analysis/policy.ts, the
+ * engine the simulation uses): an explicit `policy:` or a firewall's
+ * implicit one. Without a service, a decision that depends on one is said,
+ * not guessed.
+ */
+function networkPolicyDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
+  if (!policyKind(w.model, dev)) return null;
+  const owner = (a: IpAddr | undefined): string | null => {
+    if (!a) return null;
+    const h = holders(w.model, a, w.ctx, null);
+    return h.length ? h[0].device : null;
+  };
+  const flow: PolicyFlow = { src: w.src, dst: w.dest, proto: w.svc ? (w.svc.proto as PolicyFlow['proto']) : 'other', srcDev: owner(w.src), dstDev: owner(w.dest), inIface, outIface };
+  if (w.svc && w.svc.proto !== 'icmp') flow.dport = w.svc.port;
+  const d = policyDecision(w.model, dev, flow, !!w.svc);
+  if (!d) return null;
+  if (undecided(d) || d.permit) {
+    notes.push(d.text);
+    return null;
+  }
+  return d.text;
 }
 
 /** A routed hop the walk's traffic may not take: a filtering router's policy, a VPN gateway's tunnels. */
 function forwardDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
   const c = capabilities(dev);
   if (c.securityGateway) return policyDenied(w, dev, inIface, outIface, notes);
-  // a firewall: its policy (the relations through it, its allow list), as the simulation applies it
-  if (c.firewallPolicy) {
-    if (!w.svc) {
-      notes.push(`${dev.id} filters what it forwards (the relations through it, its allow list): give a service to trace its decision`);
-      return null;
-    }
-    const owner = (a: IpAddr | undefined): string | null => {
-      if (!a) return null;
-      const h = holders(w.model, a, w.ctx, null);
-      return h.length ? h[0].device : null;
-    };
-    const d = firewallDecision(w.model, dev, owner(w.src), owner(w.dest), { proto: w.svc.proto, port: w.svc.port || 0 });
-    if (!d.ok) return d.text;
-    notes.push(d.text);
-  }
+  // a network policy: a router's or Layer 3 switch's `policy:`, a firewall's (explicit, or its relations and allow list), as the simulation applies it
+  const np = networkPolicyDenied(w, dev, inIface, outIface, notes);
+  if (np) return np;
   if (c.vpnOnlyTransit && dev.vpn) {
     const v = dev.vpn;
     const tunnel = v.tunnels.indexOf(inIface) >= 0 || v.tunnels.indexOf(outIface) >= 0;

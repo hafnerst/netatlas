@@ -176,20 +176,28 @@ routes, resolution through a default route).
 
 ## Policy, NAT and boundaries
 
-**Implemented.** A firewall's policy, a Security gateway's domain
+**Implemented.** One network-policy engine for the path tracer, the
+communication checks and the simulation: a router's, Layer 3 switch's or
+firewall's ordered Layer 3/4 rules (`policy:`: addresses and objects,
+protocol, ports, interfaces and zones, an explicit default action,
+stateful or stateless), and, without one, a firewall's implicit policy (its
+relations and allow list). Besides it: a Security gateway's domain
 separation (filtering bridge, filtering router, protocol break), a VPN
-gateway's tunnels and an IDS/IPS's inspection, in the path tracer and the
-simulation. NAT: the NAT service (PAT, source NAT, port forwarding) and a
+gateway's tunnels and an IDS/IPS's inspection. NAT: the NAT service (PAT, source NAT, port forwarding) and a
 load balancer's source NAT in the simulation; container bridges' NAT (SNAT
 to the host's address, DNAT for published ports) in both.
 
 **Simplifications.**
 
-* **A firewall's policy has no zones or directions:** it is the model's
-  relations through it (each permits its protocol's port between its
-  devices, both ways) and its `allow` list (a service from anywhere to
-  anywhere), with stateful replies and a default action. The path tracer
-  applies it when a service is given.
+* **Static analysis decides one direction.** The path tracer evaluates the
+  rules for the service given (without one, a decision that depends on it
+  is said, not guessed); a stateful return decision is the simulation's,
+  never claimed statically. A firewall without a written policy keeps its
+  implicit one: the model's relations through it (each permits its
+  protocol's port between its devices, both ways) and its `allow` list (a
+  service from anywhere to anywhere), default deny.
+* **A router's policy filters what it routes**, not what it bridges within
+  a VLAN (no VLAN ACLs); it is stateless unless written stateful.
 * **NAT is one translation per flow** (no port exhaustion, no hairpin NAT);
   the path tracer names a container's published ports without checking the
   port numbers, and does not apply the NAT service (the simulation does).
@@ -210,9 +218,10 @@ larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
 Big, and the sender learns the path MTU (PMTUD); TCP segments by it. TCP
 options, jumbo-frame negotiation and PLPMTUD are not modelled.
 
-**Not supported.** Router ACLs, rule bases with zones and address objects,
-application identification, TLS inspection, NAT ALGs and port-block
-allocation; the contents of what a Security gateway transfers.
+**Not supported.** Application identification, TLS inspection, user
+identities, time ranges, NAT rules in a policy (the NAT service translates),
+VLAN ACLs, vendor rule syntax, NAT ALGs and port-block allocation; the
+contents of what a Security gateway transfers.
 
 ## Multicast
 

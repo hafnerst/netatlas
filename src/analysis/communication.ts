@@ -413,7 +413,7 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   out.info = resultInfo(
     context,
     ['Routing, layer 2 and the modeled policies decide as the path tracer does (a model-based approximation).'].concat(svc ? [`The service is ${svcText(svc)} (${serviceSource}).`] : []),
-    ['Router ACLs are not modeled.', 'Runtime behaviour: authentication, protocol acceptance, service health and completion.'].concat(out.outcome && out.outcome.truncated ? ['Equal-cost paths beyond the evaluated ones.'] : []),
+    ['A policy decides by its rules for this direction; a stateful return decision is the simulation’s.', 'Runtime behaviour: authentication, protocol acceptance, service health and completion.'].concat(out.outcome && out.outcome.truncated ? ['Equal-cost paths beyond the evaluated ones.'] : []),
   );
   // (the simulation handoff is made from the check's identity: analysis/comm-identity.ts)
   return out;
@@ -465,12 +465,12 @@ function policyLayer(model: Model, t: Trace, o: TraceOutcome, svc: TraceService 
       const d = model.index.devices.get(h.device);
       if (!d || k === 0) return;
       const c = capabilities(d);
-      if (!(c.firewallPolicy || c.securityGateway || c.vpnOnlyTransit)) return;
+      if (!(c.firewallPolicy || c.securityGateway || c.vpnOnlyTransit || !!d.policy)) return;
       filters.add(h.device);
       for (const x of h.why ? h.why.policy : []) {
         const line = `${h.device}: ${x}`;
         if (said.indexOf(line) < 0) said.push(line);
-        if (/give a service/.test(x)) unknown = true;
+        if (/give a service|give a source/.test(x)) unknown = true;
       }
     });
     for (const h of p.hops) for (const l2 of h.l2) {
@@ -478,7 +478,7 @@ function policyLayer(model: Model, t: Trace, o: TraceOutcome, svc: TraceService 
       if (d && capabilities(d).securityGateway) filters.add(l2);
     }
   }
-  if (!filters.size) return { id: 'policy', verdict: 'satisfied', text: 'No modeled policy on the path (router ACLs are not modeled)', detail: [], refs: [] };
+  if (!filters.size) return { id: 'policy', verdict: 'satisfied', text: 'No modeled policy on the path', detail: [], refs: [] };
   if (unknown || (!svc && filters.size)) return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} filter${filters.size === 1 ? 's' : ''} by service: give a service (or an application) to evaluate the decision`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
   return { id: 'policy', verdict: 'satisfied', text: `Permitted by ${Array.from(filters).join(', ')}`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
 }
