@@ -244,7 +244,8 @@ export class ExperimentRunner {
           log(false, why);
           return;
         }
-        const rec = s.actApp(a.target.slice(0, sl), a.target.slice(sl + 1));
+        // on scenario time (a Network event's application repeats on real time, which a run never waits for)
+        const rec = s.actApp(a.target.slice(0, sl), a.target.slice(sl + 1), 'start');
         this.apps.set(a.id || a.target, rec);
         log(!rec.error, rec.error || `started ${a.target}`);
         return;
@@ -265,7 +266,19 @@ export class ExperimentRunner {
     switch (o.of) {
       case 'send':
       case 'app': {
-        const tests = o.of === 'send' ? (this.sends.get(o.target) || { tests: [] }).tests : ((this.apps.get(o.target) || { app: undefined }).app || { tests: [] }).tests;
+        // an MQTT client keeps its own counts: its publication rounds against those due, and what a closed connection lost
+        const run = o.of === 'app' ? (this.apps.get(o.target) || { app: undefined }).app : undefined;
+        const mq = run ? (run as { mqtt?: { published: number; rounds: number; lost: number; inflight: Map<number, unknown>; state: string } }).mqtt : undefined;
+        if (run && mq && run.app.publish.length) {
+          const due = run.interval ? Math.floor((t - run.t0) / run.interval) + 1 : 1;
+          const want = run.count !== null ? Math.min(run.count, due) : due;
+          if (!mq.rounds) return out('indeterminate', `nothing published yet (its connection: ${mq.state})`);
+          const missed = Math.max(0, want - mq.rounds);
+          const ok = !missed && !mq.lost;
+          const qos = run.app.qos ? `, ${mq.inflight.size} not acknowledged yet` : ' (QoS 0: the broker acknowledges nothing)';
+          return expect(ok ? 'delivered' : 'failed', true, `${ok ? 'delivered' : 'failed'}: ${mq.rounds} of ${want} publication rounds sent${missed ? ` (${missed} not: no connection to the broker then)` : ''}, ${mq.lost} lost with a closed connection${qos}`);
+        }
+        const tests = o.of === 'send' ? (this.sends.get(o.target) || { tests: [] }).tests : (run || { tests: [] }).tests;
         if (!tests.length) return out('indeterminate', `nothing was sent by “${o.target}”${o.of === 'send' && !this.sends.has(o.target) ? ' (no send action with that id ran)' : ''}`);
         const done = tests.filter((x) => x.done);
         if (!done.length) return out('indeterminate', 'still on its way');

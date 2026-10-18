@@ -194,6 +194,13 @@ function ntpChains(model: Model, dev: string, ctx: RoutingCtx | undefined, path:
       out.push({ upstream: up, state: 'no-ntp', chain: path.concat([owner]), text: `${up} (${owner}) runs no NTP service` });
       continue;
     }
+    // an upstream whose interface is down (a failure condition: its device failed) is unavailable, never beyond the model
+    const od = model.index.devices.get(owner);
+    const oif = od ? od.interfaces.concat(od.logical).find((i) => i.addresses.some((a) => a.split('/')[0] === up)) : undefined;
+    if (ctx && ctx.up && oif && !ctx.up(owner, oif.id)) {
+      out.push({ upstream: up, state: 'unreachable', chain: path.concat([owner]), text: `${up} (${owner}:${oif.id}) is down under this failure condition` });
+      continue;
+    }
     const c = checkCommunication(model, { from: dev, to: up, service: 'udp/123' }, null, 'Selected endpoints', 1, ctx);
     if (c.verdict !== 'satisfied') {
       out.push({ upstream: up, state: c.verdict === 'indeterminate' || c.verdict === 'beyond' ? 'unknown' : 'unreachable', chain: path.concat([owner]), text: `${dev} → ${owner} (${up}, UDP 123): ${c.headline}` });

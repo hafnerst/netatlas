@@ -316,14 +316,15 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   const srcChoices = endpointChoices(model, srcEnd, ctx).filter((c) => fam === undefined || c.version === fam);
   const addr: CommLayer = { id: 'address', verdict: 'satisfied', text: '', detail: [], refs: ['device:' + fromDev] };
   layers.unshift(addr);
-  const famText = fam ? `IPv${fam}` : 'an';
+  // ("has no IPv4 address", or "has no address" when the family is open)
+  const famText = fam ? `IPv${fam} ` : '';
   /** an end without an address: indeterminate where one is assigned at runtime (the configured model), else violated */
   const noAddress = (dev: string, what: string, bind?: string): void => {
     // (in a failure: the interfaces that have an address may be down)
     const down = connectedIn(model, dev, ctx).filter((c) => (fam === undefined || c.addr.version === fam) && (bind === undefined || c.iface === bind) && !!ctx.up && !ctx.up(dev, c.iface));
     if (down.length) {
       addr.verdict = 'violated';
-      addr.detail.push(`${dev}:${down.map((c) => c.iface).filter((x, k, a) => a.indexOf(x) === k).join(', ')} ${down.length === 1 ? 'is' : 'are'} down: ${dev} has no ${famText} address that is up`);
+      addr.detail.push(`${dev}:${down.map((c) => c.iface).filter((x, k, a) => a.indexOf(x) === k).join(', ')} ${down.length === 1 ? 'is' : 'are'} down: ${dev} has no ${famText}address that is up`);
       addr.refs.push(`iface:${dev}:${down[0].iface}`);
       return;
     }
@@ -334,7 +335,7 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
       addr.refs.push(`iface:${dev}:${auto[0]}`);
     } else {
       addr.verdict = 'violated';
-      addr.detail.push(snap && auto.length ? `${dev}:${auto[0]} has no ${famText} address at the snapshot (not acquired yet)` : bind !== undefined ? `${dev}:${bind}, the bind interface of ${to.text}, has no ${famText} address` : `${dev} has no ${famText} address${what === 'source' && from.kind === 'end' && from.end.kind === 'iface' ? ' on ' + from.end.iface : ''}`);
+      addr.detail.push(snap && auto.length ? `${dev}:${auto[0]} has no ${famText}address at the snapshot (not acquired yet)` : bind !== undefined ? `${dev}:${bind}, the bind interface of ${to.text}, has no ${famText}address` : `${dev} has no ${famText}address${what === 'source' && from.kind === 'end' && from.end.kind === 'iface' ? ' on ' + from.end.iface : ''}`);
     }
   };
   if (!srcChoices.length) noAddress(fromDev, 'source');

@@ -524,8 +524,9 @@ export class Simulation {
   }
 
   /** Start application (Network events): a client application's messages, one event until they are done or Stop. */
-  actApp(dev: string, id: string): ActionRecord {
-    const r = this.apps.start(dev, id, 'event');
+  actApp(dev: string, id: string, how: 'event' | 'start' = 'event'): ActionRecord {
+    // (an experiment starts it on scenario time, as the scenario's own applications run: a Network event's repeats on real time)
+    const r = this.apps.start(dev, id, how);
     const a = this.apps.app(dev, id);
     const target = `${dev}/${id}${a && a.peer ? ' → ' + a.peer : a && a.broker ? ' → ' + a.broker : ''}`;
     if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, error: r });
