@@ -913,6 +913,8 @@ export interface Expectation {
   /** "tcp/443", "udp/53", "icmp"; none: from the applications */
   service?: string;
   vrf?: string;
+  /** the address family (none: the ends' own, or the client application's) */
+  family?: 4 | 6;
   /** what fails first: devices, cables, relations, interfaces (device:interface), failure domains */
   failure: string[];
   description?: string;

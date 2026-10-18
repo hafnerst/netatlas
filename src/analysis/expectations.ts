@@ -144,7 +144,7 @@ export function evaluateExpectation(model: Model, e: Expectation, snap: Analysis
       return out;
     }
   }
-  const req = { from: e.from, to: e.to, service: e.service, vrf: e.vrf };
+  const req = { from: e.from, to: e.to, service: e.service, vrf: e.vrf, family: e.family };
   const c = checkCommunication(model, req, snap, 'Saved expectations', 0, ctx);
   out.check = c;
   if (c.error) {

@@ -74,6 +74,20 @@ title: New network
 const MAX_UNDO = 100;
 
 /** An edit was refused: the model is locked (a simulation is on). */
+/** The fields of a saved expectation as the editor writes them (an empty value removes the key; KEY_ORDER puts them in order). */
+export interface ExpectationFields {
+  name?: string;
+  expect?: string;
+  from?: string;
+  to?: string;
+  service?: string;
+  vrf?: string;
+  /** "4" or "6" */
+  family?: string;
+  failure?: string[];
+  description?: string;
+}
+
 export class EditLocked extends Error {
   constructor(reason: string) {
     super(reason);
@@ -1719,20 +1733,20 @@ export class ModelDoc {
   }
 
   /** Add an expectation; returns its index. One undo step. */
-  addExpectation(fields: { name: string; expect: string; from: string; to?: string; service?: string; vrf?: string; failure?: string[]; description?: string }): number {
+  addExpectation(fields: ExpectationFields & { name: string; expect: string; from: string }): number {
     return this.change('Add expectation', () => {
       const list = this.ensureSeq(['expectations']);
       const id = this.analysisId('expectations', (fields.name || 'expectation').toLowerCase());
       list.items.push(mapNode([['id', strNode(id)]]));
       const i = list.items.length - 1;
-      this.writeAnalysisFields(['expectations', i], 'expectation', { name: fields.name, expect: fields.expect, from: fields.from, to: fields.to, service: fields.service, vrf: fields.vrf, failure: fields.failure, description: fields.description });
+      this.writeAnalysisFields(['expectations', i], 'expectation', { ...fields });
       return i;
     }, { layout: false });
   }
 
   /** Change an expectation's fields (an empty value removes the key). One undo step. */
-  updateExpectation(index: number, fields: { name?: string; expect?: string; from?: string; to?: string; service?: string; vrf?: string; failure?: string[]; description?: string }): void {
-    this.change('Edit expectation', () => this.writeAnalysisFields(['expectations', index], 'expectation', fields), { layout: false });
+  updateExpectation(index: number, fields: ExpectationFields): void {
+    this.change('Edit expectation', () => this.writeAnalysisFields(['expectations', index], 'expectation', { ...fields }), { layout: false });
   }
 
   /** Remove an expectation. One undo step. */

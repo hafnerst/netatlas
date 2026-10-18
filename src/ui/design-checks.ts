@@ -29,16 +29,18 @@ export interface ExpectForm {
   failure: string;
   service: string;
   vrf: string;
+  /** '' (the ends'), '4' or '6' */
+  family: string;
   description: string;
   error: string;
 }
 
 export function newExpectForm(): ExpectForm {
-  return { index: -1, name: '', expect: 'available', from: '', to: '', failure: '', service: '', vrf: '', description: '', error: '' };
+  return { index: -1, name: '', expect: 'available', from: '', to: '', failure: '', service: '', vrf: '', family: '', description: '', error: '' };
 }
 
 export function formOf(e: Expectation, index: number): ExpectForm {
-  return { index, name: e.name, expect: e.expect, from: e.from, to: e.to || '', failure: e.failure.join(', '), service: e.service || '', vrf: e.vrf || '', description: e.description || '', error: '' };
+  return { index, name: e.name, expect: e.expect, from: e.from, to: e.to || '', failure: e.failure.join(', '), service: e.service || '', vrf: e.vrf || '', family: e.family ? String(e.family) : '', description: e.description || '', error: '' };
 }
 
 /** A finding of the window: as presented, and its index in the Problems list (for Go to). */
@@ -243,7 +245,7 @@ function formBox(doc: Document, model: Model, f: ExpectForm, act: DesignActions)
   field('to', 'Destination', { list: 'dc-ends', placeholder: f.expect === 'timing' ? 'optional: the timing source' : 'device, address, device/application or device/service' });
   field('failure', 'After failure of', { list: 'dc-fail', placeholder: 'optional: failure domain, devices, cables (comma-separated)' });
   form.appendChild(grid);
-  const adv = el(doc, 'details', { class: 'dc-adv' }, [el(doc, 'summary', {}, ['Advanced: service, VRF, description'])]);
+  const adv = el(doc, 'details', { class: 'dc-adv' }, [el(doc, 'summary', {}, ['Advanced: service, VRF, family, description'])]);
   const g2 = el(doc, 'div', { class: 'tf-grid' });
   const field2 = (k: keyof ExpectForm, label: string, ph: string): void => {
     const i = el(doc, 'input', { id: 'dc-f-' + k, type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: ph }) as HTMLInputElement;
@@ -253,9 +255,14 @@ function formBox(doc: Document, model: Model, f: ExpectForm, act: DesignActions)
   };
   field2('service', 'Service', 'from the application, or tcp/22, udp/53, icmp');
   field2('vrf', 'VRF', 'the source interface’s');
+  const fam = el(doc, 'select', { id: 'dc-f-family' }) as HTMLSelectElement;
+  for (const [v, t] of [['', 'The ends’ (or the application’s)'], ['4', 'IPv4'], ['6', 'IPv6']]) fam.appendChild(el(doc, 'option', { value: v }, [t]));
+  fam.value = f.family;
+  fam.addEventListener('change', () => act.formInput('family', fam.value));
+  g2.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'dc-f-family' }, ['Family']), fam]));
   field2('description', 'Note', 'why it is required');
   adv.appendChild(g2);
-  if (f.service || f.vrf || f.description) adv.setAttribute('open', '');
+  if (f.service || f.vrf || f.family || f.description) adv.setAttribute('open', '');
   form.appendChild(adv);
   if (f.error) form.appendChild(el(doc, 'p', { class: 'trace-error', id: 'dc-f-error', role: 'alert' }, [f.error]));
   const save = el(doc, 'button', { type: 'submit', class: 'primary', id: 'dc-f-save' }, [f.index < 0 ? 'Add' : 'Save']);

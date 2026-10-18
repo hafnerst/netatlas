@@ -2315,6 +2315,7 @@ expectations:
     to: "ap-b:mgmt"                     # available, blocked: a device, interface, address, device/application or device/service
     service: tcp/22                     # optional: tcp/<port>, udp/<port> or icmp (else from the applications)
     vrf: guest                          # optional: the source's table (else the source interface's)
+    family: 4                           # optional: 4 or 6, the address family (else the ends' own, or the client application's)
     failure: [basement-power]           # optional: what fails first: devices, cables, relations, device:interface, failure domains
     description: …                      # optional
 ```
@@ -2339,8 +2340,8 @@ condition evaluated on a simulation snapshot, which would blend two
 states; a dependency expectation without a client application).
 
 Validation: unknown keys, a missing `name`, `expect` or `from`, an
-unknown `expect`, an unreadable `service`, no `to` where it is needed and a
-duplicate id are **errors**; an end or a failure entry that names nothing of
+unknown `expect`, an unreadable `service`, a `family` other than 4 or 6, no
+`to` where it is needed and a duplicate id are **errors**; an end or a failure entry that names nothing of
 the model is a **warning** (the expectation evaluates as indeterminate). At
 most 1000 expectations and 64 entries per failure condition. Renaming a
 device, an interface, an application or a failure domain updates the

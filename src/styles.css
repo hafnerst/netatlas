@@ -927,6 +927,10 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 .man-keys { border-collapse: collapse; }
 .man-keys th { text-align: left; font-weight: 400; padding: 3px 14px 3px 0; white-space: nowrap; vertical-align: top; }
 .man-keys td { padding: 3px 0; }
+.tf-pair { display: flex; gap: 6px; min-width: 0; }
+.tf-pair > select { flex: 1 1 auto; min-width: 0; }
+.trace-compare { margin-top: 8px; }
+.trace-compare h4 { margin: 4px 0; }
 .man-support-area { margin: 6px 0; }
 .man-support-area > summary { cursor: pointer; font-weight: 600; }
 .man-support { border-collapse: collapse; width: 100%; margin: 6px 0 10px; font-size: 12.5px; table-layout: fixed; }

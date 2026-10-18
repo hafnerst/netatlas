@@ -127,22 +127,10 @@ export interface CommRequest {
   /** "tcp/443", "udp/53", "icmp"; none: from the applications, else not given */
   service?: string;
   vrf?: string;
+  /** the address family asked for (none: the ends', or the client application's) */
+  family?: 4 | 6;
   /** also the reverse direction (reverse routing and symmetry) */
   back?: boolean;
-}
-
-/** A prefilled simulation action (offered, never run by the check). */
-export interface Handoff {
-  kind: 'send' | 'app';
-  device: string;
-  iface?: string;
-  /** the destination address (send) */
-  target?: string;
-  proto?: 'tcp' | 'udp' | 'icmp';
-  port?: number;
-  /** the application to start (app) */
-  app?: string;
-  text: string;
 }
 
 export interface CommCheck {
@@ -165,7 +153,6 @@ export interface CommCheck {
   reverse?: { trace: Trace; outcome: TraceOutcome; symmetry: 'symmetric' | 'asymmetric' | 'not comparable'; lines: string[] };
   /** separate legs: a broker's subscribers (each over its own connection), a host name's DNS query */
   legs: Array<{ label: string; check: CommCheck }>;
-  handoff?: Handoff;
   info: ResultInfo;
 }
 
@@ -261,8 +248,16 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
     serviceSource = `the port of ${clientApp.text}`;
   }
   if (to.kind === 'app' && !to.profile.listener) return failed(req, `Destination: ${to.text} is a ${to.profile.short}, not a listener: nothing connects to it`, context);
+  // an address written as an address has its family: a different one asked for is a contradiction
+  if (req.family) {
+    for (const [what, e] of [['Source', from], ['Destination', to]] as Array<[string, typeof from]>) {
+      const a = e.kind === 'end' && e.end.kind === 'address' ? parseAddress(e.end.address) : null;
+      if (a && a.version !== req.family) return failed(req, `${what}: ${e.text} is an IPv${a.version} address, not IPv${req.family}`, context);
+    }
+  }
   // ---- the address family: the client's (ip_version, an address peer), else what the ends have
   const famOf = (): 4 | 6 | undefined => {
+    if (req.family) return req.family;
     if (clientApp) {
       const pa = clientApp.app.peer ? parseAddress(clientApp.app.peer) : null;
       return pa ? pa.version : clientApp.app.ipVersion || 4;
@@ -420,13 +415,7 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
     ['Routing, layer 2 and the modeled policies decide as the path tracer does (a model-based approximation).'].concat(svc ? [`The service is ${svcText(svc)} (${serviceSource}).`] : []),
     ['Router ACLs are not modeled.', 'Runtime behaviour: authentication, protocol acceptance, service health and completion.'].concat(out.outcome && out.outcome.truncated ? ['Equal-cost paths beyond the evaluated ones.'] : []),
   );
-  // ---- the handoff: the same exchange, prefilled in the simulation's Network events
-  // (the destination address: the application's or service's, else the one the trace resolved)
-  const target = toAddr || (out.to ? out.to.address : undefined);
-  if (out.from && out.from.address && target) {
-    if (clientApp) out.handoff = { kind: 'app', device: fromDev, app: clientApp.app.id, text: `Start ${clientApp.text} in the simulation (Network events → Start application)` };
-    else out.handoff = { kind: 'send', device: fromDev, iface: out.from.iface, target, proto: svc ? svc.proto : 'icmp', port: svc ? svc.port : undefined, text: `Send ${svc ? svcText(svc) : 'a ping'} from ${fromDev} to ${target} in the simulation (Network events → Send network packets)` };
-  }
+  // (the simulation handoff is made from the check's identity: analysis/comm-identity.ts)
   return out;
 }
 

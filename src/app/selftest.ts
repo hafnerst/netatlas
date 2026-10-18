@@ -6159,11 +6159,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('the handoff prepares the same exchange in Network events, prefilled, nothing sent', !!q('#trace-handoff') && !(q('#trace-handoff') as HTMLButtonElement).disabled && (() => {
         const before = ctl.sim.actions().length;
         (q('#trace-handoff') as HTMLElement).click();
-        return ctl.sim.actions().length === before && (q('#sim-t-addr') as HTMLInputElement).value === '192.168.10.1' && (q('#sim-t-port') as HTMLInputElement).value === '22';
-      })(), `${q('#trace-handoff') ? (q('#trace-handoff') as HTMLButtonElement).disabled + ' ' + q('#trace-handoff')!.getAttribute('title') : 'no button'} | addr ${(q('#sim-t-addr') as HTMLInputElement | null)?.value} port ${(q('#sim-t-port') as HTMLInputElement | null)?.value} to ${(q('#sim-t-to') as HTMLSelectElement | null)?.value} kind ${(q('#sim-t-kind') as HTMLSelectElement | null)?.value}`);
+        // (the same destination interface, its effective address when sent; the same source interface and port)
+        return ctl.sim.actions().length === before && (q('#sim-t-to') as HTMLSelectElement).value === 'core' && /\|192\.168\.10\.1$/.test((q('#sim-t-toif') as HTMLSelectElement).value) && (q('#sim-t-port') as HTMLInputElement).value === '22' && (q('#sim-t-kind') as HTMLSelectElement).value === 'tcp';
+      })(), `${q('#trace-handoff') ? (q('#trace-handoff') as HTMLButtonElement).disabled + ' ' + q('#trace-handoff')!.getAttribute('title') : 'no button'} | toif ${(q('#sim-t-toif') as HTMLSelectElement | null)?.value} port ${(q('#sim-t-port') as HTMLInputElement | null)?.value} to ${(q('#sim-t-to') as HTMLSelectElement | null)?.value} kind ${(q('#sim-t-kind') as HTMLSelectElement | null)?.value}`);
+      check('what the simulation gets is said under the result: carried over, and what is not', !!q('#trace-carry') && /Source: guest-phone/.test(q('#trace-carry')!.textContent || '') && /Not carried over: Expected outcome/.test(q('#trace-carry')!.textContent || ''));
+      check('nothing to compare before a send of it (said, nothing sent)', !!q('#trace-compare') && !app.compareTrace() && !q('#trace-compare-res') && /send it first/.test(q('#toast')!.textContent || ''));
+      // the user sends it; the comparison is then offered, and agrees (blocked statically, not delivered)
+      (q('#sim-t-send') as HTMLElement).click();
+      ctl.runTo(ctl.sim.now + 30000);
+      ctl.refresh(true);
+      app.redrawTrace();
+      await tick();
+      check('after the send: Compare with simulation sets the static result beside it', !!q('#trace-compare') && !(q('#trace-compare') as HTMLButtonElement).disabled && app.compareTrace() && !!q('#trace-compare-res') && q('#trace-compare-res [data-agree]')!.getAttribute('data-agree') === 'yes' && /They agree/.test(q('#trace-compare-res')!.textContent || ''), q('#trace-compare-res') ? q('#trace-compare-res')!.textContent || '' : 'no comparison');
+      check('while the simulation runs the model is locked: Save as expectation… says so', (q('#trace-save-exp') as HTMLButtonElement).disabled && !app.traceToExpectation());
+      app.exitSimulation();
+      await tick();
+      app.redrawTrace();
+      await tick();
+      check('Save as expectation… opens Design checks with the fields of the check, nothing saved yet', !(q('#trace-save-exp') as HTMLButtonElement).disabled && app.traceToExpectation() && app.toolWindow() === 'checks' && (q('#dc-f-from') as HTMLInputElement).value === 'guest-phone' && (q('#dc-f-to') as HTMLInputElement).value === 'core' && (q('#dc-f-service') as HTMLInputElement).value === 'tcp/22' && (q('#dc-f-expect') as HTMLSelectElement).value === 'blocked' && app.session!.model.expectations.length === 4);
       app.exitTrace();
       app.closeToolWindow();
-      app.exitSimulation();
       await tick();
       app.mdoc!.markSaved();
     }

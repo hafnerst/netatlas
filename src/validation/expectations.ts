@@ -173,6 +173,11 @@ export function readExpectations(r: Reader, c: Ctx, top: YMap, model: Model, dom
     if (service !== undefined && service.trim()) e.service = service.trim();
     const vrf = r.field(m, 'vrf', epath, 64);
     if (vrf !== undefined) e.vrf = vrf;
+    const fam = r.field(m, 'family', epath, 8);
+    if (fam !== undefined) {
+      if (fam !== '4' && fam !== '6') c.error(get(m, 'family') as YNode, epath + '.family', `"${fam}" is no address family: use 4 (IPv4) or 6 (IPv6)`);
+      else e.family = fam === '4' ? 4 : 6;
+    }
     const desc = r.field(m, 'description', epath, 2000);
     if (desc !== undefined) e.description = desc;
     out.push(e);

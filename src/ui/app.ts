@@ -39,6 +39,7 @@ import { FocusContext, contextFocus, focusContexts, focusSeeds } from '../analys
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
 import { CommRequest, checkCommunication } from '../analysis/communication';
+import { commIdentity, compareRun, expectationFields, handoffOf, planMatches, staleProblem } from '../analysis/comm-identity';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
 import { modelFingerprint } from '../model/fingerprint';
@@ -3800,7 +3801,9 @@ export class App {
     const trace: Trace = check.trace || { request: treq, paths: [], truncated: false, error: check.error || check.headline };
     let back: Trace | null = null;
     if (req.back) back = check.reverse ? check.reverse.trace : { request: { from: treq.to, to: treq.from }, paths: [], truncated: false, error: check.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
-    return { req: trace.request, check, trace, back };
+    // the communication's identity: the handoff, the comparison and a saved expectation carry it on (nothing chosen again)
+    const identity = commIdentity(model, check);
+    return { req: trace.request, check, trace, back, identity, handoff: identity ? handoffOf(model, identity) : null, compare: null };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -3837,6 +3840,11 @@ export class App {
     this.renderTraceWindow();
   }
 
+  /** Draw the Trace window again (the check stays as computed). */
+  redrawTrace(): void {
+    this.renderTraceWindow();
+  }
+
   private renderTraceWindow(): void {
     if (this.toolWindow() === 'trace' && this.session) this.replaceWindowBody(this.traceBody());
   }
@@ -3844,9 +3852,9 @@ export class App {
   private traceBody(): HTMLElement {
     const s = this.session as Session;
     const r = this.traceRun;
-    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), canHandoff: !!this.simCtl && !!r && !!r.check.handoff };
+    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock() };
     return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
-      input: (field: 'from' | 'to' | 'vrf' | 'service' | 'back', value: string | boolean) => {
+      input: (field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
         else this.traceForm[field] = String(value);
         if (this.traceError && (field === 'from' || field === 'to')) {
@@ -3872,6 +3880,8 @@ export class App {
       refresh: () => void this.runTrace(true),
       source: (src) => this.setAnalysisSource(src),
       handoff: () => this.traceHandoff(),
+      compare: () => void this.compareTrace(),
+      saveExpectation: () => this.traceToExpectation(),
       pick: (field, value) => {
         this.traceForm[field] = value;
         this.runTrace();
@@ -3923,14 +3933,67 @@ export class App {
     return true;
   }
 
-  /** Prepare the same exchange in the running simulation: its Network events form, prefilled; nothing is sent. */
+  /** Why the check on screen can't be prepared in the simulation now ('' it can). */
+  private traceHandoffBlocked(): string {
+    const r = this.traceRun;
+    if (!r || !r.handoff || !r.identity) return 'Nothing to prepare: the check names no source and destination it could resolve';
+    if (!this.simCtl) return 'Start a simulation first (Simulate → Start simulation…)';
+    if (this.traceOutdated()) return 'The model changed since this check: press Refresh first';
+    return staleProblem(this.simCtl.sim.model, r.identity) || '';
+  }
+
+  /** Why there is nothing to compare the check with ('' there is). */
+  private traceCompareBlocked(): string {
+    const r = this.traceRun;
+    if (!r || !r.identity || !r.handoff || r.handoff.kind !== 'send') return 'Only a send of the simulation can be compared';
+    return this.simCtl ? '' : 'No simulation runs';
+  }
+
+  /** Prepare the same exchange in the running simulation: its Network events form, prefilled with the check's own choices; nothing is sent. */
   traceHandoff(): boolean {
     const r = this.traceRun;
-    const h = r ? r.check.handoff : undefined;
-    if (!this.simCtl || !h) return false;
+    const h = r ? r.handoff : undefined;
+    const blocked = this.traceHandoffBlocked();
+    if (!this.simCtl || !h || blocked) {
+      if (blocked) this.toast(blocked + '.');
+      return false;
+    }
     if (h.kind === 'app' && h.app) this.simCtl.appFrom(h.device);
-    else if (h.target) this.simCtl.prefillSend({ from: h.device, via: h.iface, address: h.target, kind: h.proto || 'icmp', port: h.port });
+    else if (h.prefill) this.simCtl.prefillSend(h.prefill);
     this.toast(`${h.text}: prefilled in Network events, not sent.`);
+    return true;
+  }
+
+  /** The check beside the simulation's latest send that carries it, with what explains a difference. */
+  compareTrace(): boolean {
+    const r = this.traceRun;
+    if (!r || !r.identity || !this.simCtl || this.traceCompareBlocked()) return false;
+    const id = r.identity;
+    // (the newest send that carries it: testRuns lists the newest first)
+    const run = this.simCtl.sim.testRuns().find((x) => planMatches(id, x.plan));
+    if (!run) {
+      this.toast('Nothing to compare yet: prepare it in the simulation and send it first.');
+      return false;
+    }
+    r.compare = compareRun(r.model, r.check, run, this.simCtl.snapshot());
+    this.renderTraceWindow();
+    const sec = this.doc.getElementById('trace-compare-res');
+    if (sec) {
+      sec.setAttribute('tabindex', '-1');
+      sec.focus();
+    }
+    return true;
+  }
+
+  /** Keep the check on screen as a saved expectation: Design checks with its form prefilled (nothing entered again, nothing saved yet). */
+  traceToExpectation(): boolean {
+    const r = this.traceRun;
+    if (!r || !r.identity || this.editLock()) return false;
+    const f = expectationFields(r.identity);
+    this.dcForm = { ...newExpectForm(), expect: f.expect, from: f.from, to: f.to || '', service: f.service || '', vrf: f.vrf !== undefined ? f.vrf : '', family: f.family ? String(f.family) : '' };
+    this.openDesignChecks();
+    const n = this.doc.getElementById('dc-f-name');
+    if (n) n.focus();
     return true;
   }
 
@@ -4368,7 +4431,7 @@ export class App {
       trace: (id) => {
         const e = s.model.expectations.find((x) => x.id === id);
         if (!e) return;
-        this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', back: false };
+        this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', family: e.family ? String(e.family) : '', back: false };
         this.openTrace();
         this.runTrace();
       },
@@ -4418,7 +4481,7 @@ export class App {
       if (bad) bad.focus();
       return false;
     }
-    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
+    const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, family: f.family, failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
     try {
       if (f.index < 0) d.addExpectation(fields);
       else d.updateExpectation(f.index, fields);

@@ -343,3 +343,144 @@ test('support: one catalog for the manual and docs/SUPPORT.md; no statement cont
     assert.ok(!/VLAN separation on one switch is not taken into account/.test(t), 'the VLAN-scoped segment is not denied');
   }
 });
+
+// ------------------------------------------------------------------ communication identity
+
+const I = load('analysis/comm-identity.js');
+const C = load('analysis/communication.js');
+const ex = (name) => model(readFileSync(join(root, 'test', 'examples', name), 'utf8'));
+
+// a dual-stack host with two interfaces, a router, a server whose application listens on eth0 (bound), a DHCP client
+const dual = `netatlas: 1
+title: Dual-stack identity
+devices:
+  - id: h1
+    type: endpoint
+    interfaces:
+      - {id: eth0, ip: [10.0.0.10/24, "2001:db8::10/64"]}
+      - {id: eth1, ip: 10.0.1.10/24}
+    routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}, {prefix: "::/0", via: "2001:db8::1"}]
+  - id: r
+    type: router
+    interfaces:
+      - {id: a, ip: [10.0.0.1/24, "2001:db8::1/64"]}
+      - {id: b, ip: [10.9.0.1/24, "2001:db8:9::1/64"]}
+      - {id: c, ip: 10.0.1.1/24}
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: [10.9.0.10/24, "2001:db8:9::10/64"]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}, {prefix: "::/0", via: "2001:db8:9::1"}]
+    services:
+      applications:
+        - {id: api, name: API, profile: tcp_server, port: 8443, bind: eth0}
+  - id: dh
+    type: endpoint
+    interfaces: [{id: eth0, ipv4: dhcp}]
+links:
+  - {id: l1, a: h1:eth0, b: r:a}
+  - {id: l2, a: srv:eth0, b: r:b}
+  - {id: l3, a: h1:eth1, b: r:c}
+`;
+
+test('identity: the check’s own choices (source interface, family, destination, port) are what the handoff carries', () => {
+  const m = model(dual);
+  const c = C.checkCommunication(m, { from: 'h1:eth0', to: 'srv/api', family: 6 });
+  assert.equal(c.verdict, 'satisfied', c.headline);
+  const id = I.commIdentity(m, c);
+  assert.deepEqual([id.source.device, id.source.iface, id.source.address, id.family], ['h1', 'eth0', '2001:db8::10', 6]);
+  assert.deepEqual([id.destination.device, id.destination.iface, id.destination.address, id.destination.binding, id.destination.app], ['srv', 'eth0', '2001:db8:9::10', 'interface', 'srv/api']);
+  assert.deepEqual(id.service, { proto: 'tcp', port: 8443 });
+  const h = I.handoffOf(m, id);
+  assert.deepEqual(h.prefill, { from: 'h1', kind: 'tcp', via: 'eth0', port: 8443, to: 'srv', toIface: 'eth0', toAddr: '2001:db8:9::10' }, 'nothing chosen again');
+  // the family asked for decides; an address of the other family is a contradiction, said so
+  assert.equal(I.commIdentity(m, C.checkCommunication(m, { from: 'h1:eth0', to: 'srv/api', family: 4 })).destination.address, '10.9.0.10');
+  assert.match(C.checkCommunication(m, { from: 'h1', to: '10.9.0.10', family: 6 }).error, /Destination: 10\.9\.0\.10 is an IPv4 address, not IPv6/);
+  // a VRF the simulation can't take for a send is said, not dropped silently
+  const v = I.handoffOf(m, I.commIdentity(m, C.checkCommunication(m, { from: 'h1:eth0', to: 'srv/api', vrf: '' })));
+  assert.ok(!v.notTransferred.some((t) => /^VRF/.test(t)), 'the source interface’s own VRF is carried as it is');
+  const blue = I.handoffOf(m, I.commIdentity(m, C.checkCommunication(m, { from: 'h1:eth0', to: 'srv/api', vrf: 'blue' })));
+  assert.ok(blue.notTransferred.some((t) => /^VRF: the simulation sends in the VRF of h1:eth0 \(the default table\); the VRF chosen here \(blue\)/.test(t)), blue.notTransferred.join(' | '));
+});
+
+test('identity: a written address is that exact address, a device or interface follows its effective address (a lease too), a name is resolved when sent', () => {
+  const m = model(dual);
+  const fixed = I.handoffOf(m, I.commIdentity(m, C.checkCommunication(m, { from: 'h1', to: '10.9.0.10', service: 'tcp/8443' })));
+  assert.equal(fixed.prefill.target, '10.9.0.10');
+  assert.equal(fixed.prefill.to, undefined);
+  const lease = I.commIdentity(m, C.checkCommunication(m, { from: 'h1:eth1', to: 'dh' }));
+  assert.equal(lease.destination.binding, 'interface');
+  assert.match(lease.destination.note, /dh:eth0 takes its address at runtime/);
+  const lp = I.handoffOf(m, lease).prefill;
+  assert.deepEqual([lp.to, lp.toIface, lp.toAddr], ['dh', 'eth0', 'dhcp'], 'its lease when the message is sent');
+  // the source a lease gives: the interface, never an address picked by the analysis
+  const camp = ex('campus-services.yaml');
+  const src = I.commIdentity(camp, C.checkCommunication(camp, { from: 'pc2', to: 'web', service: 'tcp/443' }));
+  assert.deepEqual([src.source.iface, src.source.address], ['eth0', undefined]);
+  assert.equal(I.handoffOf(camp, src).prefill.via, 'eth0');
+  // a host name is resolved when sent
+  const byName = I.commIdentity(camp, C.checkCommunication(camp, { from: 'pc1', to: 'www.campus.example', service: 'tcp/443' }));
+  assert.equal(byName.destination.binding, 'name');
+  assert.equal(I.handoffOf(camp, byName).prefill.target, 'www.campus.example');
+  // a client application is started with its own configuration
+  const app = model(dual.replace('        - {id: api, name: API, profile: tcp_server, port: 8443, bind: eth0}', '        - {id: api, name: API, profile: tcp_server, port: 8443, bind: eth0}\n  - id: cl\n    type: endpoint\n    interfaces: [{id: eth0, ip: 10.0.0.30/24}]\n    routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]\n    services:\n      applications:\n        - {id: poll, name: Poll, profile: tcp_client, peer: srv/api}'));
+  const ha = I.handoffOf(app, I.commIdentity(app, C.checkCommunication(app, { from: 'cl/poll' })));
+  assert.deepEqual([ha.kind, ha.device, ha.app], ['app', 'cl', 'poll']);
+});
+
+test('identity: a stale reference stops the handoff; a saved expectation takes the fields without entering them again', () => {
+  const m = model(dual);
+  const id = I.commIdentity(m, C.checkCommunication(m, { from: 'h1:eth0', to: 'srv/api' }));
+  assert.equal(I.staleProblem(m, id), null);
+  const renamed = model(dual.split('srv').join('server2'));
+  assert.match(I.staleProblem(renamed, id), /^The destination srv is not in the model the simulation runs/);
+  const noIf = model(dual.replace('{id: eth1, ip: 10.0.1.10/24}', '{id: eth9, ip: 10.0.1.10/24}').replace('a: h1:eth1', 'a: h1:eth9'));
+  const id1 = I.commIdentity(m, C.checkCommunication(m, { from: 'h1:eth1', to: 'srv' }));
+  assert.match(I.staleProblem(noIf, id1), /^h1 has no interface eth1/);
+  assert.deepEqual(I.expectationFields(id), { from: 'h1:eth0', to: 'srv/api', expect: 'available', service: 'tcp/8443' });
+  const v4 = I.commIdentity(m, C.checkCommunication(m, { from: 'h1', to: 'srv', family: 4 }));
+  assert.equal(I.expectationFields(v4).family, 4);
+});
+
+test('identity: the static result beside the simulation’s send, a difference explained from recorded state only', () => {
+  // DHCP: the configured model has no source address (indeterminate); the simulation delivered with its lease
+  const camp = ex('campus-services.yaml');
+  const c = C.checkCommunication(camp, { from: 'pc2', to: 'web', service: 'tcp/443' });
+  const id = I.commIdentity(camp, c);
+  const s = new S.Simulation(camp);
+  s.runTo(1000);
+  const h = I.handoffOf(camp, id);
+  assert.equal(s.testRuns().length, 0, 'preparing a handoff sends nothing');
+  s.sendPlan({ delivery: 'unicast', ...h.prefill });
+  s.runTo(60000);
+  const run = s.testRuns()[0];
+  assert.ok(I.planMatches(id, run.plan));
+  const k = I.compareRun(camp, c, run, s.snapshot());
+  assert.deepEqual([k.expected, k.runtime, k.agree], ['indeterminate', 'delivered', false]);
+  assert.match(k.lines[0], /^Address acquired at runtime: the configured model has none to check with; at t = 60\.0 s pc2:eth0 has 10\.10\.20\.\d+ \(DHCPv4, bound\)/);
+  // a route the configured model has but the simulation had not learned yet when the message was sent
+  const ospf = ex('ospf-reroute.yaml');
+  const c2 = C.checkCommunication(ospf, { from: 'w-host', to: 'e-srv' });
+  assert.equal(c2.verdict, 'satisfied');
+  const s2 = new S.Simulation(ospf);
+  const p2 = I.handoffOf(ospf, I.commIdentity(ospf, c2)).prefill;
+  s2.sendPlan({ delivery: 'unicast', ...p2 });
+  s2.runTo(40000);
+  const k2 = I.compareRun(ospf, c2, s2.testRuns()[0], s2.snapshot());
+  assert.deepEqual([k2.runtime, k2.agree], ['failed', false]);
+  assert.match(k2.lines[0], /^Route not there when sent \(t = 0\.0 s\): w-host had no route to 10\.2\.0\.10; the configured model routes it, and the simulation’s state at t = 40\.0 s does too: it was learned after the send/);
+  // a later send agrees
+  s2.sendPlan({ delivery: 'unicast', ...p2 });
+  s2.runTo(60000);
+  const k3 = I.compareRun(ospf, c2, s2.testRuns()[0], s2.snapshot());
+  assert.deepEqual([k3.runtime, k3.agree, k3.lines], ['delivered', true, []]);
+});
+
+test('identity: an expectation’s address family is saved, validated and evaluated', () => {
+  const m = model(dual + 'expectations:\n  - {id: v6, name: IPv6 to the API, expect: available, from: h1, to: srv/api, family: 6}\n');
+  assert.equal(m.expectations[0].family, 6);
+  const r = E.evaluateExpectation(m, m.expectations[0]);
+  assert.equal(r.verdict, 'satisfied');
+  assert.equal(r.check.from.address, '2001:db8::10');
+  const bad = validate.loadModel(dual + 'expectations:\n  - {id: v5, name: x, expect: available, from: h1, to: srv, family: 5}\n');
+  assert.match(bad.errors.map((e) => e.message).join('|'), /"5" is no address family: use 4 \(IPv4\) or 6 \(IPv6\)/);
+});

@@ -43,6 +43,7 @@
  * happens. Nothing here changes the model or adds an undo step (a device's
  * Simulation settings are edited in the Actions panel, see modelChanged).
  */
+import type { SendPrefill } from '../analysis/comm-identity';
 import { virtBridgeId } from '../model/virtual';
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
@@ -1694,7 +1695,7 @@ export class SimController implements SimulationMode {
   // ------------------------------------------------------------ Send test
 
   /** An analysis's handoff: Send network packets, open and prefilled (nothing is sent until Send). */
-  prefillSend(p: { from: string; via?: string; address: string; kind: TestKind; port?: number }): void {
+  prefillSend(p: SendPrefill): void {
     if (!this.testForm) return;
     this.openSection('sim-ne-send');
     this.testForm.prefill(p);

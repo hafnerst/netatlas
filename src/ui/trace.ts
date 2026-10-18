@@ -18,6 +18,7 @@
 import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, HopWhy, Path, Trace, TraceRequest, encapText, endStatus, endText, outcomeLines, traceOutcome, traceText } from '../analysis/trace';
 import { CommCheck, CommLayer, CommRequest, LAYER_LABEL, commText } from '../analysis/communication';
+import { CommIdentity, Handoff, RunComparison } from '../analysis/comm-identity';
 import { namedServices } from '../analysis/listeners';
 import { deviceVrfs } from '../analysis/routing';
 import { Verdict, exportFooter, exportHeader, verdictMark, verdictText } from '../analysis/result';
@@ -33,11 +34,13 @@ export interface TraceForm {
   vrf: string;
   /** what is sent ("tcp/443", "udp/53", "icmp"; empty: from the applications, else not given) */
   service: string;
+  /** '' (the ends', or the client application's), '4' or '6' */
+  family: string;
   back: boolean;
 }
 
 export function newTraceForm(): TraceForm {
-  return { from: '', to: '', vrf: 'auto', service: '', back: false };
+  return { from: '', to: '', vrf: 'auto', service: '', family: '', back: false };
 }
 
 /** A check on screen: the request, the communication check, its trace and (when asked for) the return trace. */
@@ -46,6 +49,12 @@ export interface TraceRun {
   check: CommCheck;
   trace: Trace;
   back: Trace | null;
+  /** the communication's identity (what the handoff, the comparison and a saved expectation carry on) */
+  identity?: CommIdentity | null;
+  /** the simulation handoff made from it */
+  handoff?: Handoff | null;
+  /** the static result beside a send of the simulation that carries it */
+  compare?: RunComparison | null;
 }
 
 /** The request a form makes. */
@@ -54,12 +63,13 @@ export function formRequest(f: TraceForm): CommRequest {
   if (f.to.trim()) req.to = f.to.trim();
   if (f.vrf !== 'auto') req.vrf = f.vrf;
   if (f.service.trim()) req.service = f.service.trim();
+  if (f.family === '4' || f.family === '6') req.family = f.family === '4' ? 4 : 6;
   if (f.back) req.back = true;
   return req;
 }
 
 export interface TracePanelActions extends ContextBarActions {
-  input(field: 'from' | 'to' | 'vrf' | 'service' | 'back', value: string | boolean): void;
+  input(field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean): void;
   submit(): void;
   swap(): void;
   exit(): void;
@@ -67,6 +77,10 @@ export interface TracePanelActions extends ContextBarActions {
   save(): void;
   /** prefill the simulation's action (never sends) */
   handoff(): void;
+  /** compare the result with the simulation's send of it */
+  compare(): void;
+  /** keep it as a saved expectation (the Design checks form, prefilled) */
+  saveExpectation(): void;
   /** take another of the end's addresses */
   pick(field: 'from' | 'to', value: string): void;
 }
@@ -92,8 +106,12 @@ export function traceSummary(t: Trace): string {
 export interface TraceViewState {
   formError: string;
   bar: ContextBarState;
-  /** the handoff can be prepared (a simulation runs) */
-  canHandoff: boolean;
+  /** why the handoff can't be prepared now ('' it can): no simulation, an outdated result, a stale reference */
+  handoffBlocked: string;
+  /** why there is nothing to compare with ('' there is: a send of the simulation carries it) */
+  compareBlocked: string;
+  /** why the model can't be edited now ('' it can) */
+  locked: string;
 }
 
 /** The window's content: the form, and the result when there is one. */
@@ -148,7 +166,12 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
   if (form.vrf !== 'auto' && !Array.prototype.some.call(vrf.options, (o: HTMLOptionElement) => o.value === form.vrf)) vrf.appendChild(el(doc, 'option', { value: form.vrf }, ['VRF ' + form.vrf]));
   vrf.value = form.vrf;
   vrf.addEventListener('change', () => act.input('vrf', vrf.value));
-  grid.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'trace-vrf' }, ['VRF']), vrf]));
+  // the address family: the ends' own unless one is chosen (an end with both families: the tracer's choice)
+  const fam = el(doc, 'select', { id: 'trace-family', 'aria-label': 'Address family', 'data-t': 'trace', 'data-p': 'family', 'data-k': '' }) as HTMLSelectElement;
+  for (const [v, t] of [['', 'Any family'], ['4', 'IPv4'], ['6', 'IPv6']]) fam.appendChild(el(doc, 'option', { value: v }, [t]));
+  fam.value = form.family || '';
+  fam.addEventListener('change', () => act.input('family', fam.value));
+  grid.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'trace-vrf' }, ['VRF']), el(doc, 'span', { class: 'tf-pair' }, [vrf, fam])]));
   // what is sent: from the applications, or given (a firewall's or a Security gateway's policy decides by it)
   const svc = el(doc, 'input', { id: 'trace-service', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'from the application, or tcp/443, udp/53, icmp', 'aria-describedby': 'trace-service-help', 'data-t': 'trace', 'data-p': 'service', 'data-k': '' }) as HTMLInputElement;
   svc.value = form.service;
@@ -265,13 +288,50 @@ function resultBody(doc: Document, model: Model, run: TraceRun, view: TraceViewS
   const save = el(doc, 'button', { type: 'button', id: 'trace-save' }, ['Save as text']);
   save.addEventListener('click', () => act.save());
   const acts = el(doc, 'div', { class: 'tf-actions' }, [copy, save]);
-  if (c.handoff) {
-    const h = el(doc, 'button', { type: 'button', id: 'trace-handoff', title: view.canHandoff ? c.handoff.text + ': prefilled, not sent' : 'Start a simulation first (Simulate → Start simulation…)' }, ['Prepare in simulation']) as HTMLButtonElement;
-    h.disabled = !view.canHandoff;
+  const ho = run.handoff;
+  if (ho) {
+    const h = el(doc, 'button', { type: 'button', id: 'trace-handoff', title: view.handoffBlocked || ho.text + ': prefilled, not sent' }, ['Prepare in simulation']) as HTMLButtonElement;
+    h.disabled = !!view.handoffBlocked;
     h.addEventListener('click', () => act.handoff());
     acts.appendChild(h);
+    if (ho.kind === 'send') {
+      const cmp = el(doc, 'button', { type: 'button', id: 'trace-compare', title: view.compareBlocked || 'Compare this result with the simulation’s send of it' }, ['Compare with simulation']) as HTMLButtonElement;
+      cmp.disabled = !!view.compareBlocked;
+      cmp.addEventListener('click', () => act.compare());
+      acts.appendChild(cmp);
+    }
+  }
+  if (run.identity && !c.error) {
+    const sx = el(doc, 'button', { type: 'button', id: 'trace-save-exp', title: view.locked || 'Keep this communication as a design requirement (Design checks)' }, ['Save as expectation…']) as HTMLButtonElement;
+    sx.disabled = !!view.locked;
+    sx.addEventListener('click', () => act.saveExpectation());
+    acts.appendChild(sx);
   }
   res.appendChild(acts);
+  // what the handoff carries over, and what it can't
+  if (ho) {
+    const d = el(doc, 'details', { class: 'layer-ev', id: 'trace-carry' }, [el(doc, 'summary', {}, ['What the simulation gets'])]);
+    const ul = el(doc, 'ul', { class: 'small' });
+    for (const t of ho.carried) ul.appendChild(el(doc, 'li', {}, [t]));
+    for (const t of ho.notTransferred) ul.appendChild(el(doc, 'li', { class: 'muted' }, [el(doc, 'strong', {}, ['Not carried over: ']), t]));
+    const id = run.identity;
+    if (id) for (const e of [id.source, id.destination]) if (e.note) ul.appendChild(el(doc, 'li', { class: 'muted' }, [e.note]));
+    d.appendChild(ul);
+    res.appendChild(d);
+  }
+  // the static result beside the simulation's
+  if (run.compare) {
+    const k = run.compare;
+    const sec = el(doc, 'section', { class: 'trace-compare', id: 'trace-compare-res', 'aria-label': 'Compared with the simulation' });
+    sec.appendChild(el(doc, 'h4', {}, ['Compared with the simulation']));
+    sec.appendChild(el(doc, 'p', { class: 'small', 'data-agree': k.agree ? 'yes' : 'no' }, [el(doc, 'strong', {}, [k.runtime === 'pending' ? 'Not finished: ' : k.agree ? 'They agree: ' : 'They differ: ']), `static analysis ${verdictText(k.expected, 'reach').toLowerCase()}; the simulation ${k.runtime === 'delivered' ? 'delivered it' : k.runtime === 'failed' ? 'did not deliver it' : k.runtime === 'mixed' ? 'delivered some messages' : 'is still sending'}.`]));
+    const ul = el(doc, 'ul', { class: 'small' });
+    for (const l of k.lines) ul.appendChild(el(doc, 'li', {}, [l]));
+    if (k.unexplained) ul.appendChild(el(doc, 'li', { class: 'muted' }, [k.unexplained]));
+    for (const r of k.results) ul.appendChild(el(doc, 'li', { class: 'muted' }, [r]));
+    sec.appendChild(ul);
+    res.appendChild(sec);
+  }
   res.appendChild(
     el(doc, 'p', { class: 'trace-key small' }, [
       'In the diagram: ',
