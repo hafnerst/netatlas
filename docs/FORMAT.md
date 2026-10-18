@@ -2117,7 +2117,7 @@ A redundancy group's virtual address is not a relation attribute: it is the
 `virtual_ip` of each member interface's group (`protocols: {vrrp: {group:
 10, virtual_ip: 10.10.10.1}}`), compared with the interface's subnets.
 
-**Parameters the path tracer reads.** The [path tracer](../README.md#path-tracer)
+**Parameters the path tracer reads.** The path tracer (**Analyze → Trace path…**, see *Trace a path* in Help → User Manual)
 learns routes over the relations of the routing protocols (`ospf`, `isis`,
 `eigrp`, `rip`, `bgp` and their aliases) and reads a few more keys, each a
 single value or per device:
