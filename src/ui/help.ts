@@ -272,6 +272,7 @@ const MANUAL: Section[] = [
       'A large model: select a group (or a device in it) and choose **Collapse in diagram** in the Inspector, or **Collapse group** in the command palette. The group is drawn as one box that says how many devices and cables it holds; every cable and relation that leaves the group ends on the box. Selecting the box selects the group; **Expand** draws its devices again. Collapsing is display state, like a filter: a saved view keeps it.',
       'The format is in docs/FORMAT.md (views). A view whose device or focus target is gone opens without it.',
     ],
+    figures: [['views', 'Find → Saved views…: the private house’s two views, and a name to save the one on screen.']],
   },
   {
     id: 'experiments',
@@ -283,6 +284,7 @@ const MANUAL: Section[] = [
       '**Edit** opens the short editor: the name and duration, the actions (a time, what it does, its target; the destination or group beside it, the rest under **More**) and the observations (a time or the end, what it reads, its target, the outcome expected). **+ action…** and **+ observation…** add one; each change is one undo step.',
       'In Trace path, **Use in experiment…** adds an experiment that sends the traced communication and observes its delivery, without entering it again.',
     ],
+    figures: [['experiments', 'Simulate → Experiments…: the OT cell’s cabinet outage after Run — each observation met, with what was found and when; the steps and events behind expansions.']],
     notes: ['Experiments run on scenario time only: a stream of Network events runs on real time, so it is no experiment action. They observe states and deliveries, not convergence time, throughput or synchronization accuracy. The model format is in docs/FORMAT.md (experiments).'],
   },
   {
@@ -314,7 +316,7 @@ const MANUAL: Section[] = [
       'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters.',
       'Everything happens inside NetAtlas: simulated packets travel only through the model on screen. Nothing is sent to a real network, and the page makes no network connections.',
     ],
-    figures: [['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
+    figures: [['sim-scope', 'The execution scope in Start simulation: Building A of the campus runs 11 of 12 devices, its DHCP and DNS servers and the switches between included; the cable to the controller is its boundary.'], ['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
   },
   {
     id: 'sim-layout',

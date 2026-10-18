@@ -637,6 +637,46 @@ async function main() {
       await save('checks', { x: side.x, y, w: side.w, h: Math.min(side.y + side.h, y + 270) - y }, { quality: 70 });
     }
 
+    // a saved experiment run: the OT cell's cabinet outage, its observations met
+    {
+      await page.eval('netatlas.loadExampleNamed("ot-network.yaml"), netatlas.setView("physical"), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`localStorage.removeItem('netatlas.window.experiments'), netatlas.openExperiments(), netatlas.runExperimentNow('cabinet-outage'), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      {
+        // the window down to its experiment (no empty space below)
+        const w = await page.rect('#toolwin');
+        const c = await page.rect('#toolwin .ex-card');
+        await save('experiments', { x: w.x - 6, y: w.y - 6, w: w.w + 12, h: c.y + c.h + 14 - (w.y - 6) }, { scale: 0.8, quality: 30 });
+      }
+      await page.eval('netatlas.closeToolWindow(), true');
+    }
+    // the saved views of the private house
+    {
+      await page.eval('netatlas.loadExampleNamed("private-house.yaml"), netatlas.setView("physical"), true');
+      await page.eval(`localStorage.removeItem('netatlas.window.views'), netatlas.openSavedViews(), true`);
+      await page.settle(250);
+      {
+        const w = await page.rect('#toolwin');
+        const l = await page.rect('#toolwin .vw-list');
+        await save('views', { x: w.x - 6, y: w.y - 6, w: w.w + 12, h: l.y + l.h + 14 - (w.y - 6) }, { scale: 0.8, quality: 34 });
+      }
+      await page.eval('netatlas.closeToolWindow(), true');
+    }
+    // the execution scope in Start simulation: a group of the campus
+    {
+      await page.eval('netatlas.loadExampleNamed("enterprise-campus.yaml"), netatlas.setView("physical"), netatlas.select("group:bldg-a"), true');
+      await page.eval(`sessionStorage.clear(), netatlas.openStartDialog(), true`);
+      await page.settle(200);
+      await page.eval(`(() => { const s = document.getElementById('sim-pd-scope'); const o = Array.from(s.options).find((x) => /group/.test(x.textContent)); s.value = o ? o.value : '0'; s.dispatchEvent(new Event('change')); document.getElementById('sim-pd-scope-detail').open = true; s.focus(); return true; })()`);
+      await page.settle(200);
+      await save('sim-scope', around([await page.rect('#modal .sim-pd-scope')], 8), { scale: 0.85, quality: 38 });
+      await page.key('Escape', 'Escape', 27);
+      await page.settle(100);
+    }
+
     // the theme switch with its tooltip, in the dark theme (the default)
     await page.hover('#theme-btn');
     await page.settle(150);

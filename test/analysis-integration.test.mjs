@@ -1296,7 +1296,9 @@ test('execution scopes: a communication runs its evaluated paths (every alternat
 
 test('execution scopes: a group, a VLAN and a failure domain; an empty one says it can’t run', () => {
   const m = model(guardOnly.replace('title: Isolation under failures\n', 'title: Isolation under failures\ngroups:\n  - {id: site, label: Site}\n  - {id: dmz, parent: site}\n').replace('  - id: srv\n    type: server\n', '  - id: srv\n    type: server\n    group: dmz\n').replace('  - id: fw\n    type: firewall\n', '  - id: fw\n    type: firewall\n    group: site\n') + 'failure_domains:\n  - {id: cab, label: Cabinet, kind: rack, members: [r2, s2]}\n');
-  assert.deepEqual(Array.from(XS.groupScope(m, 'site').devices).sort(), ['fw', 'srv'], 'its subgroups too');
+  const site = XS.groupScope(m, 'site');
+  assert.deepEqual(Array.from(site.devices).sort(), ['fw', 's2', 'srv'], 'its subgroups too, and the switch between them');
+  assert.deepEqual(site.included.map((x) => x.device + ': ' + x.why), ['s2: bridges fw:b to its neighbours in the scope'], 'what was added is said');
   assert.deepEqual(Array.from(XS.domainScope(m, 'cab').devices).sort(), ['r2', 's2']);
   assert.ok(XS.vlanScope(m, 1).devices.has('s2'));
   assert.match(XS.vlanScope(m, 77).cannot.join(), /no device carries VLAN 77/);
