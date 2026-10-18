@@ -597,11 +597,18 @@ const MANUAL: Section[] = [
     id: 'arrange',
     title: 'Use Auto-arrange',
     steps: [
-      '**Auto-arrange** in the toolbar lays out the whole model in the view on screen: **Default** (`A`), **Compact** (less empty space) or **Spacious** (more room for labels). The other view is not changed. All three place devices by their rows and groups and order each row to keep cables short and uncrossed; a cable that has to go around a device takes the side that crosses no other cable when there is one. Some cabling (two spines to four leaves, a ring) can’t be drawn without crossings.',
-      'The option the view is arranged with is highlighted. If you moved objects by hand, NetAtlas asks before replacing their positions; `Ctrl+Z` undoes the arrangement.',
-      'Drag a device or network to move it. Its position is saved in the model, except in a filtered view.',
+      '**Auto-arrange** in the toolbar lays out the whole model in the view on screen, in one of three ways. The other view is not changed.',
+      '**Default** (`A`) is the balanced layout every model starts with: devices in rows by tier, groups placed by their cabling, each row ordered to keep cables short and uncrossed. A cable that has to go around a device takes the side that crosses no other cable when there is one.',
+      '**Compact** packs the same rows tighter: less empty space inside and between groups, long rows of leaf devices (the clients under a switch) folded onto a second line, and unconnected groups side by side. Nothing is made smaller and nothing overlaps; where Default is already tight, Compact gives the same positions.',
+      '**Structured** puts devices on a grid in rows and columns, each aligned with what it is connected to, and draws every cable and relation with horizontal and vertical lines and right-angle bends only. Lines that share a corridor run side by side, never on top of each other.',
+      'The option the view is arranged with is highlighted. If you moved objects by hand, NetAtlas asks before replacing their positions; `Ctrl+Z` undoes the arrangement (positions and line style together).',
+      'Drag a device or network to move it. Its position is saved in the model, except in a filtered view. After **Structured**, a moved object’s lines are routed again, still at right angles, and nothing else is rearranged. **Default** or **Compact** brings back the standard lines.',
     ],
-    figures: [['toolbar-groups', 'The View, Auto-arrange and Filters groups of the toolbar.']],
+    notes: ['Some cabling (two spines to four leaves, a ring) can’t be drawn without crossings in any of the three.'],
+    figures: [
+      ['toolbar-groups', 'The View, Auto-arrange and Filters groups of the toolbar.'],
+      ['arrange-structured', 'The private house arranged with Structured: rows and columns, every line horizontal or vertical.'],
+    ],
   },
 ];
 
