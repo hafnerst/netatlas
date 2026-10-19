@@ -68,7 +68,7 @@ test('package check: the committed release passes; a test module, an internal ex
   assert.match(inspectRelease(dist.replace('</head>', '<script src="https://cdn.example/x.js"></script></head>'), {}).join(), /2 <script> elements/);
   assert.match(inspectRelease(dist.replace('</head>', '<link rel="stylesheet" href="https://fonts.example/f.css"></head>'), {}).join(), /<link> element/);
   assert.match(inspectRelease(dist.replace("connect-src 'none'", "connect-src https:"), {}).join(), /lacks connect-src 'none'/);
-  assert.match(inspectRelease(dist, { version: '9.9.9' }).join(), new RegExp(`says version ${pkg.version.replace(/\./g, '\\.')}, not 9\\.9\\.9`));
+  assert.match(inspectRelease(dist, { version: '9.9.9' }).join(), new RegExp(`says version ${pkg.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, not 9\\.9\\.9`));
   assert.match(inspectRelease(dist, { budget: 1000 }).join(), /over the budget of 1000 bytes/);
   assert.ok(Buffer.byteLength(dist) <= SIZE_BUDGET);
 });

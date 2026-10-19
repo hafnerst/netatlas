@@ -13,7 +13,7 @@
 // output is hashed: src/generated/*.ts, build/js (tsc), docs/SUPPORT.md,
 // dist/netatlas.html and the test build build/netatlas-test.html.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -45,11 +45,20 @@ function build() {
 
 function hashes() {
   const out = new Map();
-  const add = (abs) => {
-    if (statSync(abs).isDirectory()) for (const e of readdirSync(abs).sort()) add(join(abs, e));
-    else out.set(relative(root, abs).replace(/\\/g, '/'), createHash('sha256').update(readFileSync(abs)).digest('hex'));
+  // (each file is read once, without a separate check before: a directory is known from its listing)
+  const file = (abs) => out.set(relative(root, abs).replace(/\\/g, '/'), createHash('sha256').update(readFileSync(abs)).digest('hex'));
+  const dir = (abs) => {
+    for (const e of readdirSync(abs, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) (e.isDirectory() ? dir : file)(join(abs, e.name));
   };
-  for (const g of GENERATED) if (existsSync(join(root, g.path))) add(join(root, g.path));
+  for (const g of GENERATED) {
+    const abs = join(root, g.path);
+    try {
+      dir(abs);
+    } catch (e) {
+      if (e.code === 'ENOTDIR') file(abs);
+      else if (e.code !== 'ENOENT') throw e;
+    }
+  }
   return out;
 }
 

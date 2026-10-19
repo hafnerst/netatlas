@@ -61,7 +61,8 @@ export function inspectRelease(html, { version, internal = [], budget = SIZE_BUD
   const scripts = [...html.matchAll(/<script([^>]*)>/gi)];
   if (scripts.length !== 1) problems.push(`has ${scripts.length} <script> elements, not one inline script`);
   else if (scripts[0][1].trim()) problems.push(`its script has attributes (${scripts[0][1].trim()}): it must be inline`);
-  const markup = html.replace(/<script([^>]*)>[\s\S]*?<\/script>/gi, '<script$1></script>');
+  // the markup without the script's body (any end tag form, such as "</script >"); the body is checked by the build audit
+  const markup = html.replace(/<script([^>]*)>[\s\S]*?<\/script[^>]*>/gi, '<script$1></script>');
   if (/<link\b/i.test(markup)) problems.push('has a <link> element (an external style, font or icon)');
   if (/<(img|iframe|object|embed|audio|video|source)\b[^>]*\ssrc=["']?(?!data:)/i.test(markup)) problems.push('loads an external image or media element');
   if (/@import|url\(\s*['"]?(?!data:)[a-z]+:/i.test(markup)) problems.push('its stylesheet loads an external resource');
