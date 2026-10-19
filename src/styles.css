@@ -1456,9 +1456,14 @@ table.sim-table tr[data-kind="wait"] td:nth-child(5), table.sim-table tr[data-ki
 
 /* ---------------- Start simulation… : protocols first, the parameters collapsed below; only the protocol list scrolls */
 dialog#modal.sim-start-dialog { max-width: 680px; }
-dialog#modal.sim-start-dialog .modal-body { max-height: none; display: flex; flex-direction: column; gap: 10px; overflow: auto; overscroll-behavior: contain; }
+dialog#modal.sim-start-dialog .modal-body { max-height: none; display: flex; flex-direction: column; gap: 8px; overflow: auto; overscroll-behavior: contain; }
 dialog#modal.sim-start-dialog .modal-body > * { flex: none; }
 dialog#modal.sim-start-dialog .modal-body > .pp { flex: 0 1 auto; min-height: 140px; }
+/* the execution scope in one row: its name, the choice and what it runs (the details of a scope wrap below) */
+.sim-pd-scope { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.sim-pd-scope > legend { float: left; padding: 0; font-weight: 600; }
+#sim-pd-scope-info { flex: 1 1 14em; min-width: 0; }
+#sim-pd-scope-info > p { margin: 0; }
 .sim-start-dialog .pp-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); column-gap: 14px; }
 .sim-start-dialog .sim-pd-intro { margin: 0; }
 .sim-start-dialog .psecs { margin: 0; }
@@ -1614,9 +1619,10 @@ button.sp-bulk:disabled { opacity: .38; cursor: default; }
 .snd-icon .icon { stroke: currentColor; stroke-width: 1.8; }
 .snd-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .snd-badge { flex: none; font-size: 10px; font-weight: 700; padding: 0 3px; border: 1px solid var(--frame); border-radius: 3px; color: var(--text); }
-dialog#modal.sim-start-dialog .modal-body > .snd { flex: 0 1 auto; min-height: 150px; }
+/* never below what the senders need (heading, filter, quick choices, two rows of the list): squeezed further, they spilled onto the parameters */
+dialog#modal.sim-start-dialog .modal-body > .snd { flex: 0 1 auto; min-height: auto; }
 dialog#modal.sim-start-dialog .snd-body { flex: 1 1 auto; }
-dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
+dialog#modal.sim-start-dialog .snd-list { flex: 1 1 60px; min-height: 60px; }
 /* a sender's badge in the diagram: a framed ▶ on its box's top left corner (shape, not colour, says it), never over a text */
 .layer-sim-senders, .layer-sim-senders * { pointer-events: none; }
 /* a device's lifecycle: powered off, booting (symbol and word, never the colour alone) */

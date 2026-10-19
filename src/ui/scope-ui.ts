@@ -9,7 +9,8 @@ import { ExecScope } from '../analysis/exec-scope';
 import { el } from './dom';
 
 export function scopeChooser(doc: Document, scopes: ExecScope[]): { el: HTMLElement; selected(): ExecScope | undefined } {
-  const sel = el(doc, 'select', { id: 'sim-pd-scope', 'aria-describedby': 'sim-pd-scope-help' }) as HTMLSelectElement;
+  const help = 'What runs: not what is drawn (the filters), nor what an analysis evaluates.';
+  const sel = el(doc, 'select', { id: 'sim-pd-scope', 'aria-describedby': 'sim-pd-scope-help', title: help }) as HTMLSelectElement;
   scopes.forEach((s, k) => sel.appendChild(el(doc, 'option', { value: String(k) }, [s.label])));
   const info = el(doc, 'div', { id: 'sim-pd-scope-info', class: 'small' });
   const total = scopes.length ? scopes[0].devices.size : 0;
@@ -32,6 +33,8 @@ export function scopeChooser(doc: Document, scopes: ExecScope[]): { el: HTMLElem
   };
   sel.addEventListener('change', show);
   show();
-  const box = el(doc, 'fieldset', { class: 'sim-pd-scope' }, [el(doc, 'legend', {}, ['Execution scope']), el(doc, 'p', { id: 'sim-pd-scope-help', class: 'muted small' }, ['What runs: not what is drawn (the filters), nor what an analysis evaluates.']), sel, info]);
+  // one row: the name, the choice and what it runs (the dialog has no height to spare); the explanation is the
+  // choice's description for assistive technology and its tooltip
+  const box = el(doc, 'fieldset', { class: 'sim-pd-scope' }, [el(doc, 'legend', {}, ['Execution scope']), el(doc, 'p', { id: 'sim-pd-scope-help', class: 'sr-only' }, [help]), sel, info]);
   return { el: box, selected: () => scopes[Number(sel.value) || 0] };
 }

@@ -2123,8 +2123,9 @@ export class SimController implements SimulationMode {
     if (note && note.parentNode && !setup!.querySelector('#sim-shapes'))
       note.parentNode.insertBefore(el(doc, 'p', { class: 'sim-shapes small', id: 'sim-shapes' }, [el(doc, 'span', {}, [shape('unicast'), ' unicast']), el(doc, 'span', {}, [shape('broadcast'), ' broadcast']), el(doc, 'span', {}, [shape('multicast'), ' multicast']), el(doc, 'span', { class: 'muted' }, ['A dot opens the packet inspector.'])]), note.nextSibling);
     box.appendChild(el(doc, 'p', { id: 'sim-storm', class: 'sim-storm', role: 'alert', hidden: '' }, ['']));
-    // what runs: the execution scope (evaluated and not run), and a note when the simulation can't keep up
-    box.appendChild(el(doc, 'p', { id: 'sim-scope', class: 'small muted' }, [this.scopeText()]));
+    // what runs: a narrowed execution scope (what it runs and what not), and a note when the simulation can't keep
+    // up; the entire model, the default, takes no line (the panel keeps its three rows of each table)
+    box.appendChild(el(doc, 'p', { id: 'sim-scope', class: 'small muted', ...(this.scope ? {} : { hidden: '' }) }, [this.scopeText()]));
     box.appendChild(el(doc, 'p', { id: 'sim-behind', class: 'small', role: 'status', hidden: '' }, ['']));
     // the narrow layout shows one side at a time: tabs
     const tabS = el(doc, 'button', { type: 'button', role: 'tab', id: 'sd-tab-status', 'aria-controls': 'sd-status', 'aria-selected': 'true' }, ['Status']);

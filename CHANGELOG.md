@@ -78,6 +78,21 @@ applications on host-capable devices, IPv6 host
   (`docs/rulesets/`), and the applied state as read on 2026-10-19
   (docs/REPOSITORY-SETTINGS.md).
 
+### Fixed (CI and release verification)
+
+- **Start simulation fits a 1366 × 768 window again.** Since execution
+  scopes, the scope's box took 110 px and the dialog scrolled with the
+  parameters collapsed; squeezed, the senders also spilled over the
+  parameters' heading. The scope is one row (its name, the choice and what
+  it runs; the explanation is the choice's description and tooltip), and
+  the senders never shrink below their own controls and two rows of the
+  list.
+- **The simulation panel shows three rows of each table at 200 % again.**
+  The line "Execution scope: Entire model" cost the tables a row; the line
+  is now shown only for a narrowed scope, where it says what does not run.
+- Two browser tests expected the Start dialog's protocols first; the
+  execution scope comes first since execution scopes.
+
 ### Changed (CI and release verification)
 
 - **Node.js 22 or later** is required to build and test (`engines`); CI and
