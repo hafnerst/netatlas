@@ -9919,7 +9919,8 @@ exports.BUILTIN_SERVICES = [
         params: [
             int('process', 'Process ID', 'device', 1, 65535, { suggest: ['1'], help: 'Only where the platform numbers its OSPF processes.' }),
             { key: 'area', label: 'Area', type: 'area', scope: 'endpoint', suggest: ['0.0.0.0'], help: 'A number or a dotted area id (0 and 0.0.0.0 are the backbone).' },
-            { key: 'network-type', label: 'Network type', type: 'enum', scope: 'endpoint', values: ['broadcast', 'point-to-point', 'non-broadcast', 'point-to-multipoint'] },
+            { key: 'network-type', label: 'Network type', type: 'enum', scope: 'endpoint', values: ['broadcast', 'point-to-point', 'non-broadcast', 'point-to-multipoint'], help: 'Broadcast unless written (a tunnel: point-to-point); broadcast and non-broadcast elect a DR and BDR.' },
+            int('priority', 'Router priority', 'endpoint', 0, 255, { suggest: ['1'], help: 'DR / BDR election on broadcast and non-broadcast networks (default 1); 0: never DR or BDR.' }),
             int('hello', 'Hello interval (s)', 'endpoint', 1, 65535, { suggest: ['10'] }),
             int('dead', 'Dead interval (s)', 'endpoint', 1, 65535, { suggest: ['40'] }),
             COST(65535),
@@ -70590,6 +70591,7 @@ exports.bfdDown = bfdDown;
 const ip_1 = __req("model/ip");
 const services_1 = __req("model/services");
 const ipmath_1 = __req("analysis/ipmath");
+const checks_more_1 = __req("analysis/checks-more");
 const routing_1 = __req("analysis/routing");
 const engine_1 = __req("analysis/sim/engine");
 const params_1 = __req("analysis/sim/params");
@@ -70644,6 +70646,201 @@ function bfdDown(P, dev, peer) {
             b.down(P, s, 'BFD session down');
     }
 }
+function ospfType(s) {
+    const v = ((0, routing_1.relParam)(s.rel, 'network-type', s.dev) || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+    if (v === 'point-to-point' || v === 'non-broadcast' || v === 'point-to-multipoint' || v === 'broadcast')
+        return v;
+    return s.local.l3.kind === 'tunnel' ? 'point-to-point' : 'broadcast';
+}
+/** Does a network type elect a DR and BDR (broadcast and non-broadcast multi-access networks)? */
+function elects(t) {
+    return t === 'broadcast' || t === 'non-broadcast';
+}
+/** The router priority of a device on a relation (`priority.<device>`, else `priority`; 0–255; 0: never DR or BDR). Default 1. */
+function ospfPrio(s) {
+    const v = (0, routing_1.relParam)(s.rel, 'priority', s.dev);
+    if (v === undefined || !/^\s*[0-9]+\s*$/.test(v))
+        return 1;
+    const n = Number(v);
+    return n <= 255 ? n : 1;
+}
+function ospfArea(s) {
+    return (0, checks_more_1.areaKey)((0, routing_1.relParam)(s.rel, 'area', s.dev) || '0');
+}
+/** The device's OSPF sessions on one interface, every relation (the segment's neighbours as that router sees them). */
+function onIface(P, dev, iface) {
+    return Array.from(P.sessions.values())
+        .filter((o) => o.dev === dev && o.protocol === 'ospf' && o.local.l3.id === iface)
+        .sort((a, b) => cmp(a.key, b.key));
+}
+function ospfIf(P, s) {
+    const k = `ospf-if|${s.dev}|${s.local.l3.id}`;
+    let f = P.shared.get(k);
+    if (!f) {
+        f = { dev: s.dev, iface: s.local.l3.id, type: ospfType(s), state: 'Down', dr: '', bdr: '', drDev: '', bdrDev: '', gen: 0 };
+        P.shared.set(k, f);
+    }
+    return f;
+}
+/**
+ * The interface comes up (RFC 2328 §9.3 InterfaceUp): point-to-point and
+ * point-to-multipoint at once; a broadcast or non-broadcast one waits —
+ * Waiting, for the Wait timer (the router dead interval) unless a Hello
+ * shows a DR or BDR already there (BackupSeen) — before its first election.
+ */
+function ospfIfUp(P, s) {
+    const f = ospfIf(P, s);
+    if (f.state !== 'Down')
+        return;
+    f.gen++;
+    f.dr = f.bdr = f.drDev = f.bdrDev = '';
+    if (!elects(f.type)) {
+        f.state = 'Point-to-point';
+        return;
+    }
+    f.state = 'Waiting';
+    const dead = P.timer(s, s.profile, 'dead');
+    const g = f.gen;
+    P.e.note('state', 'ospf', s.dev, '', 'Waiting', 'Waiting', `OSPF ${s.dev}:${f.iface} (${f.type}): Waiting — no DR election before the Wait timer (${dead.text}) expires or a Hello shows a DR or BDR already elected`);
+    P.e.after(dead.ms, () => {
+        if (f.gen !== g || f.state !== 'Waiting')
+            return;
+        ospfElect(P, s.dev, f.iface, `the Wait timer expired (${dead.text})`, true);
+    });
+}
+function ospfIfDown(P, dev, iface) {
+    const f = P.shared.get(`ospf-if|${dev}|${iface}`);
+    if (!f || f.state === 'Down')
+        return;
+    f.gen++;
+    f.state = 'Down';
+    f.dr = f.bdr = f.drDev = f.bdrDev = '';
+}
+const ridCmp = (a, b) => {
+    const x = (0, ip_1.parseAddress)(a);
+    const y = (0, ip_1.parseAddress)(b);
+    return x && y ? (0, ipmath_1.compareAddr)(x, y) : cmp(a, b);
+};
+/**
+ * The DR election of one interface (RFC 2328 §9.4): among this router and
+ * its neighbours in 2-Way or more with a priority above 0. The BDR is the
+ * best of those that do not declare themselves DR (those declaring
+ * themselves BDR first); the DR the best of those declaring themselves DR,
+ * else the BDR. Highest priority, then highest router ID. Non-preemptive:
+ * a router already declared DR or BDR keeps the role when a better one
+ * appears. No eligible router: no DR at all (and no adjacencies beyond
+ * 2-Way on the segment). The adjacencies follow the result (AdjOK?).
+ */
+function ospfElect(P, dev, iface, why, endWait = false) {
+    const sessions = onIface(P, dev, iface);
+    if (!sessions.length)
+        return;
+    const s0 = sessions[0];
+    const f = ospfIf(P, s0);
+    if (f.state === 'Down' || !elects(f.type))
+        return;
+    // a Waiting interface elects only when its Wait ends (the Wait timer, BackupSeen); a neighbour change waits with it
+    if (f.state === 'Waiting' && !endWait)
+        return;
+    const first = f.state === 'Waiting';
+    if (first)
+        f.state = 'DROther';
+    const me = routerId(P, dev, 'ospf');
+    const self = { dev, rid: me, prio: ospfPrio(s0), declDr: f.dr === me, declBdr: f.bdr === me };
+    const others = [];
+    for (const o of sessions) {
+        const x = o.x;
+        if (!x.peerRid || ['Down', 'Init'].indexOf(o.state) >= 0 || others.some((c) => c.rid === x.peerRid))
+            continue;
+        others.push({ dev: o.peer, rid: x.peerRid, prio: x.peerPrio === undefined ? 1 : x.peerPrio, declDr: x.peerDr === x.peerRid, declBdr: x.peerBdr === x.peerRid });
+    }
+    const best = (list) => list.slice().sort((a, b) => b.prio - a.prio || ridCmp(b.rid, a.rid))[0] || null;
+    const round = () => {
+        const elig = [self].concat(others).filter((c) => c.prio > 0);
+        const noDr = elig.filter((c) => !c.declDr);
+        const bdr = best(noDr.some((c) => c.declBdr) ? noDr.filter((c) => c.declBdr) : noDr);
+        const declared = elig.filter((c) => c.declDr);
+        const dr = declared.length ? best(declared) : bdr;
+        return { dr, bdr: bdr && dr && bdr.rid === dr.rid ? null : bdr };
+    };
+    let r = round();
+    // this router's own role changed: it declares the new one, and the election runs again (§9.4 step 4)
+    for (let i = 0; i < 3; i++) {
+        const isDr = !!r.dr && r.dr.rid === me;
+        const isBdr = !!r.bdr && r.bdr.rid === me;
+        if (isDr === self.declDr && isBdr === self.declBdr)
+            break;
+        self.declDr = isDr;
+        self.declBdr = isBdr;
+        r = round();
+    }
+    // (a BDR promoted to DR here leaves no BDR until that router's own election, which runs again as DR, names one in its Hellos)
+    const was = `${f.dr}|${f.bdr}`;
+    f.dr = r.dr ? r.dr.rid : '';
+    f.drDev = r.dr ? r.dr.dev : '';
+    f.bdr = r.bdr ? r.bdr.rid : '';
+    f.bdrDev = r.bdr ? r.bdr.dev : '';
+    f.state = f.drDev === dev ? 'DR' : f.bdrDev === dev ? 'Backup' : 'DROther';
+    if (first || was !== `${f.dr}|${f.bdr}`) {
+        const res = f.dr ? `DR ${f.dr} (${f.drDev})${f.bdr ? `, BDR ${f.bdr} (${f.bdrDev})` : ', no BDR'}` : 'no DR: no router on the segment has a priority above 0';
+        P.e.note('state', 'ospf', dev, '', f.state, f.state, `OSPF ${dev}:${iface} DR election (${why}): ${res}; this router is ${f.state === 'Backup' ? 'BDR' : f.state}`);
+    }
+    for (const o of sessions)
+        ospfAdjOk(P, o);
+}
+/** Should the router form an adjacency with this neighbour (RFC 2328 §10.4)? */
+function ospfShouldAdj(P, s) {
+    const f = ospfIf(P, s);
+    if (!elects(f.type))
+        return true;
+    if (f.state === 'Waiting' || f.state === 'Down')
+        return false;
+    return [f.drDev, f.bdrDev].some((d) => !!d && (d === s.dev || d === s.peer));
+}
+/** AdjOK?: a neighbour in 2-Way becomes adjacent (ExStart) when it should; one that should no longer goes back to 2-Way. */
+function ospfAdjOk(P, s) {
+    const x = s.x;
+    if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
+        P.setState(s, 'ExStart', false, 'master / slave negotiation');
+        ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, router ID ${x.rid}`, { phase: 'init' }, 'ExStart'));
+    }
+    else if (['ExStart', 'Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0 && !ospfShouldAdj(P, s)) {
+        P.restart(s);
+        x.sent = false;
+        const f = ospfIf(P, s);
+        P.setState(s, '2-Way', false, `no adjacency any more: neither is DR or BDR (DR ${f.dr || 'none'}, BDR ${f.bdr || 'none'})`);
+        ospfRearm(P, s);
+        ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
+    }
+    ospfDetail(P, s);
+}
+/**
+ * Send a packet of the database exchange, and again every retransmit
+ * interval while the neighbour stays in that state (RFC 2328 §10.8: an
+ * unanswered DBD or LSR is sent again).
+ */
+function ospfRetransmit(P, s, state, send) {
+    send();
+    const g = s.gen;
+    const again = () => {
+        if (s.gen !== g || s.state !== state)
+            return;
+        send();
+        P.later(s, P.timer(s, s.profile, 'rxmt').ms, again);
+    };
+    P.later(s, P.timer(s, s.profile, 'rxmt').ms, again);
+}
+/** A restart forgets the session's timers: its dead timer again (the neighbour is still heard). */
+function ospfRearm(P, s) {
+    const dead = P.timer(s, s.profile, 'dead');
+    deadCheck(P, s, dead.ms, () => ospfDown(P, s, `dead interval expired (${dead.text}): no Hello from ${s.peer}`));
+}
+function ospfDetail(P, s) {
+    const f = ospfIf(P, s);
+    const x = s.x;
+    const role = elects(f.type) ? (f.state === 'Waiting' ? ' · Waiting (no DR yet)' : f.dr ? ` · DR ${f.dr}${f.bdr ? ', BDR ' + f.bdr : ''}${f.state === 'DR' ? ' (this router is DR)' : f.state === 'Backup' ? ' (this router is BDR)' : ''}` : ' · no DR (no eligible router)') : ` · ${f.type}`;
+    s.x.detail = `router ID ${x.rid}, priority ${ospfPrio(s)}${role}`;
+}
 /** Hellos go out once per device, relation and interface (all its neighbours there hear them). */
 function ospfHellos(P, s) {
     const key = `ospf-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
@@ -70651,61 +70848,49 @@ function ospfHellos(P, s) {
         return;
     P.shared.set(key, true);
     const group = addr(s.local.addr.version === 4 ? s.profile.group4 : s.profile.group6);
-    const rid = routerId(P, s.dev, 'ospf');
-    const prio = Number(relPrio(s)) || 1;
     P.periodic(() => true, () => P.timer(s, s.profile, 'hello').ms, () => {
+        if (!P.e.isL3Up(s.dev, s.local.l3.id) || !P.e.deviceOn(s.dev))
+            return;
+        const f = ospfIf(P, s);
+        if (f.state === 'Down')
+            ospfIfUp(P, s);
+        const rid = routerId(P, s.dev, 'ospf');
+        const prio = ospfPrio(s);
         const hello = P.timer(s, s.profile, 'hello');
         const dead = P.timer(s, s.profile, 'dead');
-        const mine = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.local.l3.id === s.local.l3.id);
-        const seen = mine.filter((o) => o.state !== 'Down').map((o) => o.x.peerRid).filter((x) => !!x);
-        const dr = drOf(P, s);
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) {
-            P.multicast(s, group, 'Hello', `router ID ${rid}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${dr ? ', DR ' + dr.dr + (dr.bdr ? ', BDR ' + dr.bdr : '') : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms });
-        }
+        const seen = Array.from(new Set(onIface(P, s.dev, s.local.l3.id).filter((o) => o.state !== 'Down').map((o) => o.x.peerRid).filter((x) => !!x)));
+        const area = ospfArea(s);
+        P.multicast(s, group, 'Hello', `router ID ${rid}, area ${(0, routing_1.relParam)(s.rel, 'area', s.dev) || '0'}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, ${f.type}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${elects(f.type) ? `, DR ${f.dr || '0.0.0.0'}, BDR ${f.bdr || '0.0.0.0'}` : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms, area, type: f.type, dr: f.dr, bdr: f.bdr });
     });
 }
-function relPrio(s) {
-    const own = s.rel.attrs.find(([k]) => k === 'priority.' + s.dev) || s.rel.attrs.find(([k]) => k === 'priority');
-    return own ? own[1] : '1';
-}
-/** The routers of a relation on the same segment (the same local interface): three or more make it multi-access (DR and BDR are elected). */
-function segment(P, s) {
-    return (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.local.l3.id === s.local.l3.id);
-}
-function multiAccess(P, s) {
-    return segment(P, s).length >= 2;
-}
-/** The DR and BDR of the segment (highest priority, then highest router ID) among this router and its neighbours in 2-Way or more. */
-function drOf(P, s) {
-    if (!multiAccess(P, s))
-        return null;
-    const cands = [{ dev: s.dev, rid: routerId(P, s.dev, 'ospf'), prio: Number(relPrio(s)) || 1 }];
-    for (const o of segment(P, s)) {
-        const x = o.x;
-        if (o.state === 'Down' || o.state === 'Init' || !x.peerRid)
-            continue;
-        cands.push({ dev: o.peer, rid: x.peerRid, prio: x.peerPrio || 1 });
-    }
-    const live = cands.filter((c) => c.prio > 0).sort((a, b) => b.prio - a.prio || (0, ipmath_1.compareAddr)(addr(b.rid) || addr('0.0.0.0'), addr(a.rid) || addr('0.0.0.0')));
-    if (!live.length)
-        return null;
-    return { dr: live[0].rid, drDev: live[0].dev, bdr: live[1] ? live[1].rid : '', bdrDev: live[1] ? live[1].dev : '' };
-}
-function ospfShouldAdj(P, s) {
-    const d = drOf(P, s);
-    if (!d)
-        return true;
-    return [d.drDev, d.bdrDev].indexOf(s.dev) >= 0 || [d.drDev, d.bdrDev].indexOf(s.peer) >= 0;
+/** Why a neighbour's Hello can't make an adjacency (RFC 2328 §10.5: the intervals and the area must match; the network types too, in the simulation); '' when it can. */
+function ospfMismatch(P, s, d) {
+    const hello = P.timer(s, s.profile, 'hello');
+    const dead = P.timer(s, s.profile, 'dead');
+    if (d.hello !== undefined && d.hello !== hello.ms)
+        return `hello interval ${(0, engine_1.fmtSec)(d.hello)} in its Hello, ${hello.text} here`;
+    if (d.dead !== undefined && d.dead !== dead.ms)
+        return `dead interval ${(0, engine_1.fmtSec)(d.dead)} in its Hello, ${dead.text} here`;
+    if (d.area !== undefined && d.area !== ospfArea(s))
+        return `area ${d.area} in its Hello, ${ospfArea(s)} here`;
+    const t = ospfIf(P, s).type;
+    if (d.type !== undefined && d.type !== t)
+        return `network type ${d.type} there, ${t} here`;
+    return '';
 }
 function ospfDown(P, s, why) {
     if (s.state === 'Down')
         return;
+    const was = s.state;
     P.restart(s);
     const x = s.x;
     x.sent = false;
-    x.seenUs = false;
     P.setState(s, 'Down', false, why);
-    ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
+    if (was !== 'Init')
+        ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
+    // a neighbour lost (NeighborChange): the segment's DR and BDR again
+    if (['Init', 'Down'].indexOf(was) < 0)
+        ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is gone`);
 }
 /** The router floods an LSU with its new router LSA to its other Full neighbours (reconvergence). */
 function ospfFlood(P, s, what) {
@@ -70719,8 +70904,19 @@ const ospf = {
     start(P, s) {
         const x = s.x;
         x.rid = routerId(P, s.dev, 'ospf');
-        x.prio = Number(relPrio(s)) || 1;
-        s.x.detail = `router ID ${x.rid}`;
+        if (!P.shared.has('ospf-hooks')) {
+            P.shared.set('ospf-hooks', true);
+            // a device powered off: its interfaces' elections are gone (it starts over when it boots)
+            P.deviceHooks.push((dev, up) => {
+                if (up)
+                    return;
+                for (const k of Array.from(P.shared.keys()))
+                    if (k.indexOf(`ospf-if|${dev}|`) === 0)
+                        ospfIfDown(P, dev, k.split('|')[2]);
+            });
+        }
+        ospfIfUp(P, s);
+        ospfDetail(P, s);
         ospfHellos(P, s);
     },
     rx(P, s, msg) {
@@ -70730,51 +70926,91 @@ const ospf = {
             case 'Hello': {
                 if (!P.e.isL3Up(s.dev, s.local.l3.id))
                     return;
+                const bad = ospfMismatch(P, s, d);
+                if (bad) {
+                    // RFC 2328 §10.5: the Hello is discarded; no state is kept from it (an adjacency up so far dies by its dead interval)
+                    if (x.mismatch !== bad) {
+                        x.mismatch = bad;
+                        P.e.note('drop', 'ospf', s.dev, s.peer, 'Hello ignored', s.state, `OSPF ${s.rel.id}: ${s.dev} discards ${s.peer}'s Hello: ${bad} — no adjacency`);
+                    }
+                    return;
+                }
+                x.mismatch = undefined;
+                const f = ospfIf(P, s);
+                if (f.state === 'Down')
+                    ospfIfUp(P, s);
+                const prioWas = x.peerPrio;
+                const declWas = `${x.peerDr}|${x.peerBdr}`;
                 x.peerRid = d.rid;
-                x.peerPrio = d.prio;
-                const dead = P.timer(s, s.profile, 'dead');
-                deadCheck(P, s, dead.ms, () => ospfDown(P, s, `dead interval expired (${dead.text}): no Hello from ${s.peer}`));
+                x.peerPrio = typeof d.prio === 'number' ? d.prio : 1;
+                x.peerDr = d.dr || '';
+                x.peerBdr = d.bdr || '';
+                ospfRearm(P, s);
                 if (s.state === 'Down')
                     P.setState(s, 'Init', false, `Hello from ${s.peer} (router ID ${d.rid})`);
                 const seesUs = (d.seen || []).indexOf(x.rid) >= 0;
-                if (seesUs && s.state === 'Init')
+                let change = false;
+                if (seesUs && s.state === 'Init') {
                     P.setState(s, '2-Way', false, `${s.peer}'s Hello lists us`);
+                    change = true;
+                }
                 if (!seesUs && s.state !== 'Init' && s.state !== 'Down') {
-                    ospfDown(P, s, `${s.peer}'s Hello no longer lists us`);
+                    // 1-WayReceived: back to Init (the neighbour no longer lists this router)
+                    P.restart(s);
+                    x.sent = false;
+                    const was = s.state;
+                    P.setState(s, 'Init', false, `${s.peer}'s Hello no longer lists us`);
+                    ospfRearm(P, s);
+                    if (was !== '2-Way')
+                        ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
+                    ospfElect(P, s.dev, s.local.l3.id, `${s.peer} no longer lists this router`);
                     return;
                 }
-                const role = drOf(P, s);
-                s.x.detail = `router ID ${x.rid}${role ? ` · DR ${role.dr}${role.bdr ? ', BDR ' + role.bdr : ''}${role.drDev === s.dev ? ' (this router is DR)' : role.bdrDev === s.dev ? ' (this router is BDR)' : ''}` : ''}`;
-                if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
-                    P.setState(s, 'ExStart', false, 'master / slave negotiation');
-                    P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, router ID ${x.rid}`, { phase: 'init' }, 'ExStart');
+                if (elects(f.type) && s.state !== 'Init') {
+                    // BackupSeen (RFC 2328 §10.5): the neighbour declares itself BDR, or DR with no BDR — the Wait is over
+                    const backupSeen = (x.peerBdr === x.peerRid) || (x.peerDr === x.peerRid && !x.peerBdr);
+                    if (f.state === 'Waiting' && backupSeen)
+                        ospfElect(P, s.dev, s.local.l3.id, `${s.peer}'s Hello shows the segment's ${x.peerBdr === x.peerRid ? 'BDR' : 'DR'}`, true);
+                    else if (f.state !== 'Waiting' && (change || prioWas !== x.peerPrio || declWas !== `${x.peerDr}|${x.peerBdr}`))
+                        ospfElect(P, s.dev, s.local.l3.id, change ? `${s.peer} is 2-Way` : `${s.peer}'s Hello changed its priority or the DR / BDR it declares`);
                 }
+                ospfAdjOk(P, s);
                 return;
             }
             case 'DBD':
                 if (s.state === 'Down')
                     return;
+                if (s.state === 'Init') {
+                    // RFC 2328 §10.6: a DBD in Init is a 2-WayReceived (the neighbour has seen this router's Hello)
+                    P.setState(s, '2-Way', false, `a DBD from ${s.peer}: it has seen this router's Hello`);
+                    ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is 2-Way`);
+                    ospfAdjOk(P, s);
+                }
                 if (d.phase === 'init') {
-                    if (!x.sent && ['Init', '2-Way', 'ExStart'].indexOf(s.state) >= 0) {
+                    if (!x.sent && ['2-Way', 'ExStart'].indexOf(s.state) >= 0 && ospfShouldAdj(P, s)) {
                         x.sent = true;
                         P.setState(s, 'Exchange', false, `${s.peer} started the exchange`);
                         P.unicast(s, 'DBD', 'Exchange: the LSA headers of the database', { phase: 'summary' }, 'Exchange');
                     }
                     return;
                 }
+                if (['ExStart', 'Exchange'].indexOf(s.state) < 0)
+                    return;
                 if (!x.sent) {
                     x.sent = true;
                     P.unicast(s, 'DBD', 'Exchange: the LSA headers of the database', { phase: 'summary' }, 'Exchange');
                 }
-                if (s.state !== 'Full' && s.state !== 'Loading') {
-                    P.setState(s, 'Loading', false, 'database summaries exchanged');
-                    P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading');
-                }
+                P.setState(s, 'Loading', false, 'database summaries exchanged');
+                ospfRetransmit(P, s, 'Loading', () => P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading'));
                 return;
             case 'LSR':
+                if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0)
+                    return;
                 P.unicast(s, 'LSU', 'the requested LSAs', { reply: true });
                 return;
             case 'LSU':
+                if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0)
+                    return;
                 if (d.flood) {
                     // a flooded LSA: acknowledged, and flooded on once
                     P.unicast(s, 'LSAck', `acknowledges ${d.flood}`);
@@ -70798,19 +71034,24 @@ const ospf = {
         }
     },
     iface(P, s, up) {
-        if (!up)
-            ospfDown(P, s, `interface ${s.local.l3.id} went down`);
+        if (up) {
+            // InterfaceUp: Waiting again (or point-to-point at once); the Hellos find the neighbours again
+            if (s.x.started)
+                ospfIfUp(P, s);
+            return;
+        }
+        // the interface first (no election on an interface going down), then its neighbours
+        ospfIfDown(P, s.dev, s.local.l3.id);
+        ospfDown(P, s, `interface ${s.local.l3.id} went down`);
     },
     adjUp(P, s) {
         if (s.state === 'Full')
             return true;
-        if (s.state !== '2-Way' || !multiAccess(P, s))
+        const f = ospfIf(P, s);
+        if (s.state !== '2-Way' || !elects(f.type) || !f.drDev)
             return false;
         // two DROthers: they reach each other through the DR's network LSA once both are Full with it
-        const d = drOf(P, s);
-        if (!d)
-            return false;
-        const full = (dev) => dev === d.drDev || (P.byRel.get(s.rel.id) || []).some((o) => o.dev === dev && o.peer === d.drDev && o.state === 'Full');
+        const full = (dev) => dev === f.drDev || Array.from(P.sessions.values()).some((o) => o.protocol === 'ospf' && o.dev === dev && o.peer === f.drDev && o.state === 'Full');
         return full(s.dev) && full(s.peer);
     },
     down: ospfDown,

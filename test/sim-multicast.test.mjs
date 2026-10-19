@@ -75,9 +75,9 @@ links:
   - {id: g, a: "r1:g2", b: "r3:g0"}
   - {id: h, a: "r3:g1", b: "r2:g2"}
 relations:
-  - {id: o12, protocol: ospf, endpoints: ["r1:g1", "r2:g0"], attrs: {area: 0, cost: 10}}
-  - {id: o13, protocol: ospf, endpoints: ["r1:g2", "r3:g0"], attrs: {area: 0, cost: 20}}
-  - {id: o23, protocol: ospf, endpoints: ["r3:g1", "r2:g2"], attrs: {area: 0, cost: 20}}
+  - {id: o12, protocol: ospf, endpoints: ["r1:g1", "r2:g0"], attrs: {network-type: point-to-point, area: 0, cost: 10}}
+  - {id: o13, protocol: ospf, endpoints: ["r1:g2", "r3:g0"], attrs: {network-type: point-to-point, area: 0, cost: 20}}
+  - {id: o23, protocol: ospf, endpoints: ["r3:g1", "r2:g2"], attrs: {network-type: point-to-point, area: 0, cost: 20}}
   - {id: p12, protocol: pim, endpoints: ["r1:g1", "r2:g0"]}
   - {id: p13, protocol: pim, endpoints: ["r1:g2", "r3:g0"]}
   - {id: p23, protocol: pim, endpoints: ["r3:g1", "r2:g2"]}${x.rels || ''}

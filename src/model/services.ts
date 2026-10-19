@@ -104,7 +104,8 @@ export const BUILTIN_SERVICES: readonly ServiceDef[] = [
     params: [
       int('process', 'Process ID', 'device', 1, 65535, { suggest: ['1'], help: 'Only where the platform numbers its OSPF processes.' }),
       { key: 'area', label: 'Area', type: 'area', scope: 'endpoint', suggest: ['0.0.0.0'], help: 'A number or a dotted area id (0 and 0.0.0.0 are the backbone).' },
-      { key: 'network-type', label: 'Network type', type: 'enum', scope: 'endpoint', values: ['broadcast', 'point-to-point', 'non-broadcast', 'point-to-multipoint'] },
+      { key: 'network-type', label: 'Network type', type: 'enum', scope: 'endpoint', values: ['broadcast', 'point-to-point', 'non-broadcast', 'point-to-multipoint'], help: 'Broadcast unless written (a tunnel: point-to-point); broadcast and non-broadcast elect a DR and BDR.' },
+      int('priority', 'Router priority', 'endpoint', 0, 255, { suggest: ['1'], help: 'DR / BDR election on broadcast and non-broadcast networks (default 1); 0: never DR or BDR.' }),
       int('hello', 'Hello interval (s)', 'endpoint', 1, 65535, { suggest: ['10'] }),
       int('dead', 'Dead interval (s)', 'endpoint', 1, 65535, { suggest: ['40'] }),
       COST(65535),

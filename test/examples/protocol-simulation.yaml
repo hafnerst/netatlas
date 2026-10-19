@@ -391,16 +391,32 @@ relations:
     endpoints: ["core1:Vlan10", "core2:Vlan10"]
     over: net-users
     attrs: {area: 0, cost: 20}
-  - {id: ospf-core1-r1, protocol: ospf, endpoints: ["core1:ge1", "r1:ge0"], over: l-core1-r1, attrs: {area: 0, cost: 10}}
-  - {id: ospf-core2-r2, protocol: ospf, endpoints: ["core2:ge1", "r2:ge0"], over: l-core2-r2, attrs: {area: 0, cost: 10}}
+  - id: ospf-core1-r1
+    protocol: ospf
+    endpoints: ["core1:ge1", "r1:ge0"]
+    over: l-core1-r1
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
+  - id: ospf-core2-r2
+    protocol: ospf
+    endpoints: ["core2:ge1", "r2:ge0"]
+    over: l-core2-r2
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
   - id: ospf-r1-r3
     protocol: ospf
     label: preferred
     endpoints: ["r1:ge2", "r3:ge0"]
     over: [l-r1-carrier, l-carrier-r3]
-    attrs: {area: 0, cost: 10}
-  - {id: ospf-r1-r2, protocol: ospf, endpoints: ["r1:ge1", "r2:ge1"], over: l-r1-r2, attrs: {area: 0, cost: 20}}
-  - {id: ospf-r2-r3, protocol: ospf, endpoints: ["r2:ge2", "r3:ge1"], over: l-r2-r3, attrs: {area: 0, cost: 20}}
+    attrs: {area: 0, cost: 10, network-type: point-to-point}
+  - id: ospf-r1-r2
+    protocol: ospf
+    endpoints: ["r1:ge1", "r2:ge1"]
+    over: l-r1-r2
+    attrs: {network-type: point-to-point, area: 0, cost: 20}
+  - id: ospf-r2-r3
+    protocol: ospf
+    endpoints: ["r2:ge2", "r3:ge1"]
+    over: l-r2-r3
+    attrs: {network-type: point-to-point, area: 0, cost: 20}
   - {id: bfd-r1-r2, protocol: bfd, endpoints: ["r1:ge1", "r2:ge1"], over: l-r1-r2, attrs: {interval: 300ms, multiplier: 3}}
   - {id: ibgp-r1-r3, protocol: bgp, label: iBGP loopbacks, endpoints: ["r1:lo0", "r3:lo0"]}
   - {id: ipsec-br, protocol: ipsec, label: IKEv2, endpoints: ["r2:wan", "br:wan"], over: [l-r2-inet, l-inet-br]}
@@ -414,7 +430,11 @@ relations:
   - {id: pim-r2-r3, protocol: pim, endpoints: ["r2:ge2", "r3:ge1"], over: l-r2-r3}
   - {id: pim-br, protocol: pim, endpoints: ["r2:Tunnel1", "br:Tunnel1"], over: gre-br}
   - {id: igmp-rx, protocol: igmp, endpoints: ["rx:eth0", "r3:ge2"], over: net-siteb, attrs: {group: 239.1.1.1}}
-  - {id: ospf-r3-fw1, protocol: ospf, endpoints: ["r3:ge3", "fw1:outside"], over: l-r3-fw1, attrs: {area: 0, cost: 10}}
+  - id: ospf-r3-fw1
+    protocol: ospf
+    endpoints: ["r3:ge3", "fw1:outside"]
+    over: l-r3-fw1
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
   - {id: telemetry-cam, protocol: telemetry, direction: unidirectional, endpoints: ["cam:eth0", "srv:eth0"]}
 
 demands:
