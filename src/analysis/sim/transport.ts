@@ -56,6 +56,7 @@ import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
+import { isLinkLocal6 } from './engine';
 import { L3Iface } from './net';
 import { Seg, StreamMark, TcpStream, initialSeq } from './tcp';
 import { ParamValue, PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
@@ -73,6 +74,8 @@ import type { AppInstance } from '../../model/applications';
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** RFC 6298 §2.5 allows a maximum of at least 60 s; Linux TCP_RTO_MAX is 120 s. */
 const RTO_MAX = 120000;
+/** A learned path MTU ages out after this (RFC 1191 §6.3 suggests 10 min; Linux mtu_expires 600 s). */
+const PMTU_EXPIRES = 600000;
 /** Data segments are sent again at most this often before the connection is reset (Linux tcp_retries2). */
 const DATA_RETRIES = 15;
 /** TIME_WAIT: 2 × MSL (Linux 60 s). */
@@ -322,7 +325,8 @@ export class Transport {
   private nextPort = new Map<string, number>();
   /** a protocol break's UDP leg 2 waiting for its answer: by gateway and its source port, the client on leg 1 */
   private udpRelays = new Map<string, { client: IpAddr; cport: number; local: IpAddr; lport: number; vrf: string; test?: number; profile: string }>();
-  private pmtu = new Map<string, Map<string, number>>();
+  /** learned path MTUs: by device, then "VRF|destination" */
+  private pmtu = new Map<string, Map<string, { mtu: number; at: number; via: string }>>();
   readonly tests: Test[] = [];
   private series = new Map<string, Test>();
   private fw = new Map<string, Map<string, FwSession>>();
@@ -395,36 +399,99 @@ export class Transport {
 
   // ------------------------------------------------------------ addresses and ports
 
-  /** The address a device sends from towards a destination: the egress interface's (else its first of the family), and the VRF. */
-  sourceFor(dev: string, dst: IpAddr, via?: string): { src: IpAddr; vrf: string; l3: L3Iface | null } | null {
+  /** The address a device sends from towards a destination, and its VRF and interface; null when there is none (pickSource says why). */
+  sourceFor(dev: string, dst: IpAddr, via?: string, vrf?: string): { src: IpAddr; vrf: string; l3: L3Iface | null } | null {
+    const r = this.pickSource(dev, dst, via, vrf);
+    return 'why' in r ? null : r;
+  }
+
+  /**
+   * The source of a device's own packet (RFC 6724 / Linux's choice, in the
+   * simulation's terms), after the route:
+   *   an interface chosen (Send test… from an interface): its address of
+   *     the family — the interface must be up; its VRF;
+   *   a broadcast or group: the interface whose subnet it is (a group: the
+   *     first interface with an address of the family);
+   *   else the routing context: the VRF given, else the default table
+   *     (an unbound sender), else the one VRF with a route when there is
+   *     exactly one (several: ambiguous, nothing is sent); the route's
+   *     egress interface (the first of equal-cost next hops) gives the
+   *     address — a link-local one only for a link-local destination —
+   *     else (an unnumbered egress) an address of the device in the same
+   *     VRF, loopbacks first.
+   * Never an address of another VRF.
+   */
+  pickSource(dev: string, dst: IpAddr, via?: string, vrf?: string): { src: IpAddr; vrf: string; l3: L3Iface | null; how?: string } | { why: string; transient?: boolean } {
     const sd = this.P.sd(dev);
-    if (!sd) return null;
-    // an interface chosen as the source: its address of the family (its lease), in its VRF
+    if (!sd) return { why: `${dev} is not a device of the simulation` };
+    const fam = `IPv${dst.version}`;
+    const ll = isLinkLocalAddr(dst);
+    const usable = (l: L3Iface, x: { addr: IpAddr }): boolean => x.addr.version === dst.version && (ll || !isLinkLocalAddr(x.addr) || l.kind === 'loopback');
     if (via !== undefined) {
       const l = sd.l3.get(via);
-      const a = l ? l.addrs.find((x) => x.addr.version === dst.version && (!this.e.isBroadcastAddr(dst) || isMulticastIp(dst) || inNet(x, dst) || formatAddr(dst) === '255.255.255.255')) || l.addrs.find((x) => x.addr.version === dst.version) : undefined;
-      return l && a ? { src: a.addr, vrf: l.vrf, l3: l } : null;
+      if (!l) return { why: `${dev} has no interface ${via} with an IP address` };
+      if (!this.e.isL3Up(dev, via)) return { why: `${dev}:${via} is down`, transient: true };
+      const a = l.addrs.find((x) => usable(l, x) && (!this.e.isBroadcastAddr(dst) || isMulticastIp(dst) || inNet(x, dst) || formatAddr(dst) === '255.255.255.255')) || l.addrs.find((x) => usable(l, x)) || (ll && l.ll ? l.ll : undefined);
+      return a ? { src: a.addr, vrf: l.vrf, l3: l } : { why: `${dev}:${via} has no ${fam} address to send from` };
     }
     const ifs = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
-    // a broadcast or a group: the first interface with an address of the family (a subnet broadcast: that subnet's)
-    for (const l of ifs) {
-      const a = l.addrs.find((x) => x.addr.version === dst.version && inNet(x, dst));
-      if (a && l.kind !== 'loopback') return { src: a.addr, vrf: l.vrf, l3: l };
+    if (isMulticastIp(dst) || this.e.isBroadcastAddr(dst)) {
+      // a broadcast or a group: the interface whose subnet it is, else the first with an address of the family
+      for (const l of ifs) {
+        const a = l.addrs.find((x) => x.addr.version === dst.version && inNet(x, dst));
+        if (a && l.kind !== 'loopback') return { src: a.addr, vrf: l.vrf, l3: l };
+      }
+      for (const l of ifs) {
+        const a = l.addrs.find((x) => usable(l, x));
+        if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf)) return { src: a.addr, vrf: l.vrf, l3: l };
+      }
+      return { why: `${dev} has no ${fam} address to send from` };
     }
-    if (!isMulticastIp(dst) && !this.e.isBroadcastAddr(dst)) {
-      for (const vrf of Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp)) {
-        const d = lookup(this.P.m, dev, vrf, dst, this.e.ctx(dev));
-        if (d.kind !== 'forward' || !d.hops.length) continue;
-        const l = sd.l3.get(d.hops[0].iface);
-        const a = l ? l.addrs.find((x) => x.addr.version === dst.version) : undefined;
-        if (l && a) return { src: a.addr, vrf, l3: l };
+    const vrfs = Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp);
+    const routed = (v: string): { l3: L3Iface | null; local: boolean } | null => {
+      const d = lookup(this.P.m, dev, v, dst, this.e.ctx(dev));
+      if (d.kind === 'local') return { l3: ifs.find((l) => l.vrf === v && l.addrs.some((x) => compareAddr(x.addr, dst) === 0)) || null, local: true };
+      if (d.kind !== 'forward' || !d.hops.length) return null;
+      return { l3: sd.l3.get(d.hops[0].iface) || null, local: false };
+    };
+    let ctx = vrf;
+    let how: string | undefined;
+    if (ctx === undefined) {
+      if (vrfs.indexOf('') >= 0 && routed('')) ctx = '';
+      else {
+        const others = vrfs.filter((v) => v !== '' && !!routed(v));
+        if (others.length > 1) return { why: `${dev} reaches ${formatAddr(dst)} in VRFs ${others.join(', ')} and not in its default table: ambiguous — choose a source interface (its VRF)` };
+        if (others.length === 1) {
+          ctx = others[0];
+          how = `in VRF ${ctx}, the only one with a route to ${formatAddr(dst)}`;
+        }
       }
     }
-    for (const l of ifs) {
-      const a = l.addrs.find((x) => x.addr.version === dst.version);
-      if (a && l.kind !== 'tunnel') return { src: a.addr, vrf: l.vrf, l3: l };
+    if (ctx === undefined) {
+      // no route anywhere: an address of the default table (the packet fails at the route lookup, which says why)
+      for (const l of ifs) {
+        const a = l.addrs.find((x) => usable(l, x));
+        if (a && l.kind !== 'tunnel' && l.vrf === '') return { src: a.addr, vrf: '', l3: l };
+      }
+      for (const l of ifs) {
+        const a = l.addrs.find((x) => usable(l, x));
+        if (a && l.kind !== 'tunnel') return { src: a.addr, vrf: l.vrf, l3: l };
+      }
+      return { why: `${dev} has no ${fam} address to send from` };
     }
-    return null;
+    const r = routed(ctx);
+    const out = r ? r.l3 : null;
+    if (out) {
+      const a = out.addrs.find((x) => usable(out, x)) || (ll && out.ll ? out.ll : undefined);
+      if (a) return { src: a.addr, vrf: ctx, l3: out, how };
+    }
+    // an unnumbered egress (or none): an address of the device in the same VRF, loopbacks first
+    const same = ifs.filter((l) => l.vrf === ctx && l.kind !== 'tunnel').sort((a, b) => Number(b.kind === 'loopback') - Number(a.kind === 'loopback') || cmp(a.id, b.id));
+    for (const l of same) {
+      const a = l.addrs.find((x) => usable(l, x));
+      if (a) return { src: a.addr, vrf: ctx, l3: out || l, how };
+    }
+    return { why: `${dev} has no ${fam} address in ${ctx ? 'VRF ' + ctx : 'its default table'} to send from` };
   }
 
   private ephemeral(dev: string): number {
@@ -564,26 +631,47 @@ export class Transport {
 
   // ------------------------------------------------------------ path MTU
 
-  private pathMtu(dev: string, dst: IpAddr): number | null {
+  /**
+   * The path MTU a device learned towards a destination in a VRF (PMTUD,
+   * RFC 1191 / RFC 8201), while it is valid: it ages out after 10 min
+   * (RFC 1191 §6.3, Linux mtu_expires; then the interface MTU is tried
+   * again), and a change of the route's egress interface forgets it (a new
+   * path is learned anew).
+   */
+  private pathMtu(dev: string, vrf: string, dst: IpAddr): number | null {
     const m = this.pmtu.get(dev);
-    const v = m ? m.get(formatAddr(dst)) : undefined;
-    return v !== undefined ? v : null;
+    const k = vrf + '|' + formatAddr(dst);
+    const v = m ? m.get(k) : undefined;
+    if (!v) return null;
+    if (this.e.now - v.at >= PMTU_EXPIRES || this.egressOf(dev, vrf, dst) !== v.via) {
+      (m as Map<string, { mtu: number; at: number; via: string }>).delete(k);
+      this.e.note('table', 'icmp', dev, '', 'path MTU', '', `${dev}: the path MTU to ${formatAddr(dst)}${vrf ? ' (VRF ' + vrf + ')' : ''} (${v.mtu} bytes) is forgotten: ${this.e.now - v.at >= PMTU_EXPIRES ? 'it aged out (10 min)' : 'the route leaves by another interface now'}`);
+      return null;
+    }
+    return v.mtu;
   }
 
-  private learnMtu(dev: string, dst: IpAddr, mtu: number, how: string): void {
+  /** The interface a device's route to a destination leaves by now ('' none). */
+  private egressOf(dev: string, vrf: string, dst: IpAddr): string {
+    const d = lookup(this.P.m, dev, vrf, dst, this.e.ctx(dev));
+    return d.kind === 'forward' && d.hops.length ? d.hops[0].iface : '';
+  }
+
+  private learnMtu(dev: string, vrf: string, dst: IpAddr, mtu: number, how: string): void {
     let m = this.pmtu.get(dev);
     if (!m) {
       m = new Map();
       this.pmtu.set(dev, m);
     }
-    const k = formatAddr(dst);
-    const was = m.get(k);
-    if (was !== undefined && was <= mtu) return;
-    m.set(k, mtu);
-    this.e.note('table', 'icmp', dev, '', 'path MTU', '', `${dev}: the path MTU to ${k} is ${mtu} bytes now (${how}); its next packets there fit (PMTUD)`);
+    const k = vrf + '|' + formatAddr(dst);
+    const was = this.pathMtu(dev, vrf, dst);
+    // (RFC 8201 §5.1: never below the IPv6 minimum of 1280; RFC 1191 §3: an IPv4 path is at least 68)
+    const floor = dst.version === 6 ? 1280 : 68;
+    const v = Math.max(floor, mtu);
+    if (was !== null && was <= v) return;
+    m.set(k, { mtu: v, at: this.e.now, via: this.egressOf(dev, vrf, dst) });
+    this.e.note('table', 'icmp', dev, '', 'path MTU', '', `${dev}: the path MTU to ${formatAddr(dst)}${vrf ? ' (VRF ' + vrf + ')' : ''} is ${v} bytes now (${how}); its next packets there fit (PMTUD)`);
   }
-
-  // ------------------------------------------------------------ sending
 
   private msg(protocol: 'icmp' | 'tcp' | 'udp', type: string, label: string, detail: string, data: { [k: string]: unknown }): Msg {
     return { protocol, type, label, detail, data: { from: '', ...data } };
@@ -596,6 +684,10 @@ export class Transport {
     pkt.len = len;
     pkt.df = df;
     pkt.flow = `${formatAddr(src)}:${l4.sport || l4.echoId || 0}>${formatAddr(dst)}:${l4.dport || 0}/${l4.proto}`;
+    if (dst.version === 6 && !df) {
+      const pm = this.pathMtu(dev, vrf, dst);
+      if (pm) pkt.pmtu = pm;
+    }
     if (l4.proto === 'tcp') (m.data as { tcp?: boolean }).tcp = true;
     this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
     // a group goes out of the interface it is sent from (a host sends it on its own segment)
@@ -649,8 +741,9 @@ export class Transport {
     if (o.via !== undefined && !sd.l3.get(o.via)) return `${dev} has no interface ${o.via} with an IP address or DHCP`;
     // (a DHCP client without its lease yet: the test waits for it; a host name: for its answer)
     const waits = this.leaseWait(dev, o.via, o.name ? o.qtype === 'AAAA' : o.dst.version === 6);
-    const s = o.name || waits ? null : this.sourceFor(dev, o.dst, o.via);
-    if (!s && !o.name && !waits) return `${o.via !== undefined ? dev + ':' + o.via : dev} has no IPv${o.dst.version} address to send from`;
+    const pick = o.name || waits ? null : this.pickSource(dev, o.dst, o.via);
+    // (an interface that is down now: the test is made, and fails saying so)
+    if (pick && 'why' in pick && !pick.transient) return pick.why;
     const kind = o.kind;
     const port = kind === 'icmp' ? 0 : o.port || (kind === 'tcp' ? DEFAULT_TCP_PORT : DEFAULT_UDP_PORT);
     const series = o.series || `${o.via !== undefined ? dev + ':' + o.via : dev} → ${o.target} ${kind === 'icmp' ? 'ICMP echo' : kind + '/' + port}`;
@@ -761,11 +854,13 @@ export class Transport {
       });
       return;
     }
-    const s = this.sourceFor(dev, t.dst, t.via);
-    if (!s) {
-      this.finish(t, false, `not sent: ${t.via !== undefined ? dev + ':' + t.via : dev} has no IPv${t.dst.version} address to send from`);
+    const pick = this.pickSource(dev, t.dst, t.via);
+    if ('why' in pick) {
+      this.finish(t, false, `not sent: ${pick.why}`);
       return;
     }
+    const s = pick;
+    if (s.how) this.e.note('note', t.kind, dev, '', 'source', '', `Test ${t.series}: from ${formatAddr(s.src)} ${s.how}`);
     const o = { dst: t.dst };
     const kind = t.kind;
     const bcast = this.e.isBroadcastAddr(o.dst) || isMulticastIp(o.dst);
@@ -821,7 +916,7 @@ export class Transport {
   // ------------------------------------------------------------ ICMP
 
   private ping(t: Test, src: IpAddr, vrf: string): void {
-    const pm = this.pathMtu(t.from, t.dst);
+    const pm = this.pathMtu(t.from, vrf, t.dst);
     const v = t.dst.version;
     const name = v === 4 ? 'ICMP' : 'ICMPv6';
     const m = this.msg('icmp', 'Echo Request', `${name} Echo → ${formatAddr(t.dst)}`, `${name} Echo Request from ${formatAddr(src)} to ${formatAddr(t.dst)}, id ${t.id}, seq 1, ${t.size} bytes of data${t.df ? ', DF' : ''}${pm ? ' (path MTU ' + pm + ')' : ''}`, { test: t.id });
@@ -873,7 +968,12 @@ export class Transport {
     const what = `${pkt.msg.type} from ${from}`;
     const dst = parseAddress(q.dst);
     if (l4.mtu && dst) {
-      this.learnMtu(dev, dst, l4.mtu, `${what}`);
+      // (only about a packet this device sent: the quoted source is its own)
+      if (!this.e.ownerOf(parseAddress(q.src) as IpAddr) || this.e.ownerOf(parseAddress(q.src) as IpAddr) !== dev) {
+        this.e.note('drop', 'icmp', dev, '', pkt.msg.type, '', `${dev} ignores ${what}: it quotes ${q.src}, not one of its addresses`);
+        return;
+      }
+      this.learnMtu(dev, pkt.vrf, dst, l4.mtu, `${what}`);
       // a TCP connection sends what is not acknowledged again, in smaller segments
       const c = this.connByFlow(dev, pkt.vrf, q);
       if (c && !c.tcp.idle) this.resend(c, `${what}: path MTU ${l4.mtu}`);
@@ -899,7 +999,7 @@ export class Transport {
   /** A packet a device sent itself could not go: its test or connection fails at once (no ICMP on the wire). */
   private localError(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void {
     const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(pkt.id) >= 0);
-    if (kind === 'frag' && mtu) this.learnMtu(dev, pkt.dst, mtu, `its own interface: ${text}`);
+    if (kind === 'frag' && mtu) this.learnMtu(dev, pkt.vrf, pkt.dst, mtu, `its own interface: ${text}`);
     if (t) {
       this.finish(t, false, `not sent: ${text}`);
       return;
@@ -1128,8 +1228,8 @@ export class Transport {
   }
 
   private mss(c: Conn): number {
-    const pm = this.pathMtu(c.dev, c.remote);
-    const l3 = this.sourceFor(c.dev, c.remote);
+    const pm = this.pathMtu(c.dev, c.vrf, c.remote);
+    const l3 = this.sourceFor(c.dev, c.remote, undefined, c.vrf);
     const own = l3 && l3.l3 ? Number(this.e.mtu(c.dev, l3.l3).value) : 1500;
     const mtu = Math.min(own, pm || own);
     return Math.max(8, mtu - (c.remote.version === 4 ? 40 : 60));
@@ -2000,15 +2100,16 @@ export class Transport {
     const rel = this.relationFor(pkt);
     const sp = proto === 'icmp' ? l4.echoId || 0 : l4.sport || 0;
     const dp = proto === 'icmp' ? l4.echoId || 0 : l4.dport || 0;
-    const fwd = `${proto}|${formatAddr(pkt.src)}:${sp}>${formatAddr(pkt.dst)}:${dp}`;
-    const rev = `${proto}|${formatAddr(pkt.dst)}:${dp}>${formatAddr(pkt.src)}:${sp}`;
+    // (a session is its opening packet's ingress VRF's: overlapping addresses in two VRFs are two sessions; a reply leaves by that VRF)
+    const fwd = `${from.vrf}|${proto}|${formatAddr(pkt.src)}:${sp}>${formatAddr(pkt.dst)}:${dp}`;
+    const rev = `${to.vrf}|${proto}|${formatAddr(pkt.dst)}:${dp}>${formatAddr(pkt.src)}:${sp}`;
     const flags = l4.flags || [];
     if (stateful) {
       // an ICMP error about a session's packet belongs to it
       if (proto === 'icmp' && l4.quote) {
         const q = l4.quote;
-        const qk = `${q.proto}|${q.src}:${q.sport || 0}>${q.dst}:${q.dport || 0}`;
-        const qr = `${q.proto}|${q.dst}:${q.dport || 0}>${q.src}:${q.sport || 0}`;
+        const qk = `${to.vrf}|${q.proto}|${q.src}:${q.sport || 0}>${q.dst}:${q.dport || 0}`;
+        const qr = `${from.vrf}|${q.proto}|${q.dst}:${q.dport || 0}>${q.src}:${q.sport || 0}`;
         if (tab.has(qk) || tab.has(qr)) return true;
       }
       const s = tab.get(fwd) || tab.get(rev);
@@ -2159,6 +2260,11 @@ export class Transport {
   manualTests(): Test[] {
     return this.tests.filter((t) => t.source === 'manual').reverse();
   }
+}
+
+/** An IPv6 link-local address (fe80::/10), or IPv4 169.254/16. */
+function isLinkLocalAddr(a: IpAddr): boolean {
+  return a.version === 6 ? isLinkLocal6(a) : a.bytes[0] === 169 && a.bytes[1] === 254;
 }
 
 function inNet(a: { net: IpAddr & { prefix: number } }, ip: IpAddr): boolean {

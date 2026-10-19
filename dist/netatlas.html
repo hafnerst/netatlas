@@ -37143,6 +37143,7 @@ const ipmath_1 = __req("analysis/ipmath");
 const routing_1 = __req("analysis/routing");
 const engine_1 = __req("analysis/sim/engine");
 const mac_1 = __req("analysis/sim/mac");
+const engine_2 = __req("analysis/sim/engine");
 const tcp_1 = __req("analysis/sim/tcp");
 const params_1 = __req("analysis/sim/params");
 const dns_1 = __req("model/dns");
@@ -37154,6 +37155,8 @@ const listeners_1 = __req("analysis/listeners");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** RFC 6298 §2.5 allows a maximum of at least 60 s; Linux TCP_RTO_MAX is 120 s. */
 const RTO_MAX = 120000;
+/** A learned path MTU ages out after this (RFC 1191 §6.3 suggests 10 min; Linux mtu_expires 600 s). */
+const PMTU_EXPIRES = 600000;
 /** Data segments are sent again at most this often before the connection is reset (Linux tcp_retries2). */
 const DATA_RETRIES = 15;
 /** TIME_WAIT: 2 × MSL (Linux 60 s). */
@@ -37249,6 +37252,7 @@ class Transport {
         this.nextPort = new Map();
         /** a protocol break's UDP leg 2 waiting for its answer: by gateway and its source port, the client on leg 1 */
         this.udpRelays = new Map();
+        /** learned path MTUs: by device, then "VRF|destination" */
         this.pmtu = new Map();
         this.tests = [];
         this.series = new Map();
@@ -37332,41 +37336,111 @@ class Transport {
         }
     }
     // ------------------------------------------------------------ addresses and ports
-    /** The address a device sends from towards a destination: the egress interface's (else its first of the family), and the VRF. */
-    sourceFor(dev, dst, via) {
+    /** The address a device sends from towards a destination, and its VRF and interface; null when there is none (pickSource says why). */
+    sourceFor(dev, dst, via, vrf) {
+        const r = this.pickSource(dev, dst, via, vrf);
+        return 'why' in r ? null : r;
+    }
+    /**
+     * The source of a device's own packet (RFC 6724 / Linux's choice, in the
+     * simulation's terms), after the route:
+     *   an interface chosen (Send test… from an interface): its address of
+     *     the family — the interface must be up; its VRF;
+     *   a broadcast or group: the interface whose subnet it is (a group: the
+     *     first interface with an address of the family);
+     *   else the routing context: the VRF given, else the default table
+     *     (an unbound sender), else the one VRF with a route when there is
+     *     exactly one (several: ambiguous, nothing is sent); the route's
+     *     egress interface (the first of equal-cost next hops) gives the
+     *     address — a link-local one only for a link-local destination —
+     *     else (an unnumbered egress) an address of the device in the same
+     *     VRF, loopbacks first.
+     * Never an address of another VRF.
+     */
+    pickSource(dev, dst, via, vrf) {
         const sd = this.P.sd(dev);
         if (!sd)
-            return null;
-        // an interface chosen as the source: its address of the family (its lease), in its VRF
+            return { why: `${dev} is not a device of the simulation` };
+        const fam = `IPv${dst.version}`;
+        const ll = isLinkLocalAddr(dst);
+        const usable = (l, x) => x.addr.version === dst.version && (ll || !isLinkLocalAddr(x.addr) || l.kind === 'loopback');
         if (via !== undefined) {
             const l = sd.l3.get(via);
-            const a = l ? l.addrs.find((x) => x.addr.version === dst.version && (!this.e.isBroadcastAddr(dst) || (0, mac_1.isMulticastIp)(dst) || inNet(x, dst) || (0, ipmath_1.formatAddr)(dst) === '255.255.255.255')) || l.addrs.find((x) => x.addr.version === dst.version) : undefined;
-            return l && a ? { src: a.addr, vrf: l.vrf, l3: l } : null;
+            if (!l)
+                return { why: `${dev} has no interface ${via} with an IP address` };
+            if (!this.e.isL3Up(dev, via))
+                return { why: `${dev}:${via} is down`, transient: true };
+            const a = l.addrs.find((x) => usable(l, x) && (!this.e.isBroadcastAddr(dst) || (0, mac_1.isMulticastIp)(dst) || inNet(x, dst) || (0, ipmath_1.formatAddr)(dst) === '255.255.255.255')) || l.addrs.find((x) => usable(l, x)) || (ll && l.ll ? l.ll : undefined);
+            return a ? { src: a.addr, vrf: l.vrf, l3: l } : { why: `${dev}:${via} has no ${fam} address to send from` };
         }
         const ifs = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
-        // a broadcast or a group: the first interface with an address of the family (a subnet broadcast: that subnet's)
-        for (const l of ifs) {
-            const a = l.addrs.find((x) => x.addr.version === dst.version && inNet(x, dst));
-            if (a && l.kind !== 'loopback')
-                return { src: a.addr, vrf: l.vrf, l3: l };
+        if ((0, mac_1.isMulticastIp)(dst) || this.e.isBroadcastAddr(dst)) {
+            // a broadcast or a group: the interface whose subnet it is, else the first with an address of the family
+            for (const l of ifs) {
+                const a = l.addrs.find((x) => x.addr.version === dst.version && inNet(x, dst));
+                if (a && l.kind !== 'loopback')
+                    return { src: a.addr, vrf: l.vrf, l3: l };
+            }
+            for (const l of ifs) {
+                const a = l.addrs.find((x) => usable(l, x));
+                if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf))
+                    return { src: a.addr, vrf: l.vrf, l3: l };
+            }
+            return { why: `${dev} has no ${fam} address to send from` };
         }
-        if (!(0, mac_1.isMulticastIp)(dst) && !this.e.isBroadcastAddr(dst)) {
-            for (const vrf of Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp)) {
-                const d = (0, routing_1.lookup)(this.P.m, dev, vrf, dst, this.e.ctx(dev));
-                if (d.kind !== 'forward' || !d.hops.length)
-                    continue;
-                const l = sd.l3.get(d.hops[0].iface);
-                const a = l ? l.addrs.find((x) => x.addr.version === dst.version) : undefined;
-                if (l && a)
-                    return { src: a.addr, vrf, l3: l };
+        const vrfs = Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp);
+        const routed = (v) => {
+            const d = (0, routing_1.lookup)(this.P.m, dev, v, dst, this.e.ctx(dev));
+            if (d.kind === 'local')
+                return { l3: ifs.find((l) => l.vrf === v && l.addrs.some((x) => (0, ipmath_1.compareAddr)(x.addr, dst) === 0)) || null, local: true };
+            if (d.kind !== 'forward' || !d.hops.length)
+                return null;
+            return { l3: sd.l3.get(d.hops[0].iface) || null, local: false };
+        };
+        let ctx = vrf;
+        let how;
+        if (ctx === undefined) {
+            if (vrfs.indexOf('') >= 0 && routed(''))
+                ctx = '';
+            else {
+                const others = vrfs.filter((v) => v !== '' && !!routed(v));
+                if (others.length > 1)
+                    return { why: `${dev} reaches ${(0, ipmath_1.formatAddr)(dst)} in VRFs ${others.join(', ')} and not in its default table: ambiguous — choose a source interface (its VRF)` };
+                if (others.length === 1) {
+                    ctx = others[0];
+                    how = `in VRF ${ctx}, the only one with a route to ${(0, ipmath_1.formatAddr)(dst)}`;
+                }
             }
         }
-        for (const l of ifs) {
-            const a = l.addrs.find((x) => x.addr.version === dst.version);
-            if (a && l.kind !== 'tunnel')
-                return { src: a.addr, vrf: l.vrf, l3: l };
+        if (ctx === undefined) {
+            // no route anywhere: an address of the default table (the packet fails at the route lookup, which says why)
+            for (const l of ifs) {
+                const a = l.addrs.find((x) => usable(l, x));
+                if (a && l.kind !== 'tunnel' && l.vrf === '')
+                    return { src: a.addr, vrf: '', l3: l };
+            }
+            for (const l of ifs) {
+                const a = l.addrs.find((x) => usable(l, x));
+                if (a && l.kind !== 'tunnel')
+                    return { src: a.addr, vrf: l.vrf, l3: l };
+            }
+            return { why: `${dev} has no ${fam} address to send from` };
         }
-        return null;
+        const r = routed(ctx);
+        const out = r ? r.l3 : null;
+        if (out) {
+            const a = out.addrs.find((x) => usable(out, x)) || (ll && out.ll ? out.ll : undefined);
+            if (a)
+                return { src: a.addr, vrf: ctx, l3: out, how };
+        }
+        // an unnumbered egress (or none): an address of the device in the same VRF, loopbacks first
+        const same = ifs.filter((l) => l.vrf === ctx && l.kind !== 'tunnel').sort((a, b) => Number(b.kind === 'loopback') - Number(a.kind === 'loopback') || cmp(a.id, b.id));
+        for (const l of same) {
+            const a = l.addrs.find((x) => usable(l, x));
+            if (a)
+                return { src: a.addr, vrf: ctx, l3: out || l, how };
+        }
+        return { why: `${dev} has no ${fam} address in ${ctx ? 'VRF ' + ctx : 'its default table'} to send from` };
     }
     ephemeral(dev) {
         const n = this.nextPort.get(dev);
@@ -37501,25 +37575,47 @@ class Transport {
         this.e.icmpError(dev, pkt, 'port', { from: l3 });
     }
     // ------------------------------------------------------------ path MTU
-    pathMtu(dev, dst) {
+    /**
+     * The path MTU a device learned towards a destination in a VRF (PMTUD,
+     * RFC 1191 / RFC 8201), while it is valid: it ages out after 10 min
+     * (RFC 1191 §6.3, Linux mtu_expires; then the interface MTU is tried
+     * again), and a change of the route's egress interface forgets it (a new
+     * path is learned anew).
+     */
+    pathMtu(dev, vrf, dst) {
         const m = this.pmtu.get(dev);
-        const v = m ? m.get((0, ipmath_1.formatAddr)(dst)) : undefined;
-        return v !== undefined ? v : null;
+        const k = vrf + '|' + (0, ipmath_1.formatAddr)(dst);
+        const v = m ? m.get(k) : undefined;
+        if (!v)
+            return null;
+        if (this.e.now - v.at >= PMTU_EXPIRES || this.egressOf(dev, vrf, dst) !== v.via) {
+            m.delete(k);
+            this.e.note('table', 'icmp', dev, '', 'path MTU', '', `${dev}: the path MTU to ${(0, ipmath_1.formatAddr)(dst)}${vrf ? ' (VRF ' + vrf + ')' : ''} (${v.mtu} bytes) is forgotten: ${this.e.now - v.at >= PMTU_EXPIRES ? 'it aged out (10 min)' : 'the route leaves by another interface now'}`);
+            return null;
+        }
+        return v.mtu;
     }
-    learnMtu(dev, dst, mtu, how) {
+    /** The interface a device's route to a destination leaves by now ('' none). */
+    egressOf(dev, vrf, dst) {
+        const d = (0, routing_1.lookup)(this.P.m, dev, vrf, dst, this.e.ctx(dev));
+        return d.kind === 'forward' && d.hops.length ? d.hops[0].iface : '';
+    }
+    learnMtu(dev, vrf, dst, mtu, how) {
         let m = this.pmtu.get(dev);
         if (!m) {
             m = new Map();
             this.pmtu.set(dev, m);
         }
-        const k = (0, ipmath_1.formatAddr)(dst);
-        const was = m.get(k);
-        if (was !== undefined && was <= mtu)
+        const k = vrf + '|' + (0, ipmath_1.formatAddr)(dst);
+        const was = this.pathMtu(dev, vrf, dst);
+        // (RFC 8201 §5.1: never below the IPv6 minimum of 1280; RFC 1191 §3: an IPv4 path is at least 68)
+        const floor = dst.version === 6 ? 1280 : 68;
+        const v = Math.max(floor, mtu);
+        if (was !== null && was <= v)
             return;
-        m.set(k, mtu);
-        this.e.note('table', 'icmp', dev, '', 'path MTU', '', `${dev}: the path MTU to ${k} is ${mtu} bytes now (${how}); its next packets there fit (PMTUD)`);
+        m.set(k, { mtu: v, at: this.e.now, via: this.egressOf(dev, vrf, dst) });
+        this.e.note('table', 'icmp', dev, '', 'path MTU', '', `${dev}: the path MTU to ${(0, ipmath_1.formatAddr)(dst)}${vrf ? ' (VRF ' + vrf + ')' : ''} is ${v} bytes now (${how}); its next packets there fit (PMTUD)`);
     }
-    // ------------------------------------------------------------ sending
     msg(protocol, type, label, detail, data) {
         return { protocol, type, label, detail, data: { from: '', ...data } };
     }
@@ -37530,6 +37626,11 @@ class Transport {
         pkt.len = len;
         pkt.df = df;
         pkt.flow = `${(0, ipmath_1.formatAddr)(src)}:${l4.sport || l4.echoId || 0}>${(0, ipmath_1.formatAddr)(dst)}:${l4.dport || 0}/${l4.proto}`;
+        if (dst.version === 6 && !df) {
+            const pm = this.pathMtu(dev, vrf, dst);
+            if (pm)
+                pkt.pmtu = pm;
+        }
         if (l4.proto === 'tcp')
             m.data.tcp = true;
         this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
@@ -37592,9 +37693,10 @@ class Transport {
             return `${dev} has no interface ${o.via} with an IP address or DHCP`;
         // (a DHCP client without its lease yet: the test waits for it; a host name: for its answer)
         const waits = this.leaseWait(dev, o.via, o.name ? o.qtype === 'AAAA' : o.dst.version === 6);
-        const s = o.name || waits ? null : this.sourceFor(dev, o.dst, o.via);
-        if (!s && !o.name && !waits)
-            return `${o.via !== undefined ? dev + ':' + o.via : dev} has no IPv${o.dst.version} address to send from`;
+        const pick = o.name || waits ? null : this.pickSource(dev, o.dst, o.via);
+        // (an interface that is down now: the test is made, and fails saying so)
+        if (pick && 'why' in pick && !pick.transient)
+            return pick.why;
         const kind = o.kind;
         const port = kind === 'icmp' ? 0 : o.port || (kind === 'tcp' ? exports.DEFAULT_TCP_PORT : exports.DEFAULT_UDP_PORT);
         const series = o.series || `${o.via !== undefined ? dev + ':' + o.via : dev} → ${o.target} ${kind === 'icmp' ? 'ICMP echo' : kind + '/' + port}`;
@@ -37708,11 +37810,14 @@ class Transport {
             });
             return;
         }
-        const s = this.sourceFor(dev, t.dst, t.via);
-        if (!s) {
-            this.finish(t, false, `not sent: ${t.via !== undefined ? dev + ':' + t.via : dev} has no IPv${t.dst.version} address to send from`);
+        const pick = this.pickSource(dev, t.dst, t.via);
+        if ('why' in pick) {
+            this.finish(t, false, `not sent: ${pick.why}`);
             return;
         }
+        const s = pick;
+        if (s.how)
+            this.e.note('note', t.kind, dev, '', 'source', '', `Test ${t.series}: from ${(0, ipmath_1.formatAddr)(s.src)} ${s.how}`);
         const o = { dst: t.dst };
         const kind = t.kind;
         const bcast = this.e.isBroadcastAddr(o.dst) || (0, mac_1.isMulticastIp)(o.dst);
@@ -37779,7 +37884,7 @@ class Transport {
     }
     // ------------------------------------------------------------ ICMP
     ping(t, src, vrf) {
-        const pm = this.pathMtu(t.from, t.dst);
+        const pm = this.pathMtu(t.from, vrf, t.dst);
         const v = t.dst.version;
         const name = v === 4 ? 'ICMP' : 'ICMPv6';
         const m = this.msg('icmp', 'Echo Request', `${name} Echo → ${(0, ipmath_1.formatAddr)(t.dst)}`, `${name} Echo Request from ${(0, ipmath_1.formatAddr)(src)} to ${(0, ipmath_1.formatAddr)(t.dst)}, id ${t.id}, seq 1, ${t.size} bytes of data${t.df ? ', DF' : ''}${pm ? ' (path MTU ' + pm + ')' : ''}`, { test: t.id });
@@ -37834,7 +37939,12 @@ class Transport {
         const what = `${pkt.msg.type} from ${from}`;
         const dst = (0, ip_1.parseAddress)(q.dst);
         if (l4.mtu && dst) {
-            this.learnMtu(dev, dst, l4.mtu, `${what}`);
+            // (only about a packet this device sent: the quoted source is its own)
+            if (!this.e.ownerOf((0, ip_1.parseAddress)(q.src)) || this.e.ownerOf((0, ip_1.parseAddress)(q.src)) !== dev) {
+                this.e.note('drop', 'icmp', dev, '', pkt.msg.type, '', `${dev} ignores ${what}: it quotes ${q.src}, not one of its addresses`);
+                return;
+            }
+            this.learnMtu(dev, pkt.vrf, dst, l4.mtu, `${what}`);
             // a TCP connection sends what is not acknowledged again, in smaller segments
             const c = this.connByFlow(dev, pkt.vrf, q);
             if (c && !c.tcp.idle)
@@ -37863,7 +37973,7 @@ class Transport {
     localError(dev, pkt, kind, text, mtu) {
         const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(pkt.id) >= 0);
         if (kind === 'frag' && mtu)
-            this.learnMtu(dev, pkt.dst, mtu, `its own interface: ${text}`);
+            this.learnMtu(dev, pkt.vrf, pkt.dst, mtu, `its own interface: ${text}`);
         if (t) {
             this.finish(t, false, `not sent: ${text}`);
             return;
@@ -38086,8 +38196,8 @@ class Transport {
         this.armRtx(c);
     }
     mss(c) {
-        const pm = this.pathMtu(c.dev, c.remote);
-        const l3 = this.sourceFor(c.dev, c.remote);
+        const pm = this.pathMtu(c.dev, c.vrf, c.remote);
+        const l3 = this.sourceFor(c.dev, c.remote, undefined, c.vrf);
         const own = l3 && l3.l3 ? Number(this.e.mtu(c.dev, l3.l3).value) : 1500;
         const mtu = Math.min(own, pm || own);
         return Math.max(8, mtu - (c.remote.version === 4 ? 40 : 60));
@@ -38996,15 +39106,16 @@ class Transport {
         const rel = this.relationFor(pkt);
         const sp = proto === 'icmp' ? l4.echoId || 0 : l4.sport || 0;
         const dp = proto === 'icmp' ? l4.echoId || 0 : l4.dport || 0;
-        const fwd = `${proto}|${(0, ipmath_1.formatAddr)(pkt.src)}:${sp}>${(0, ipmath_1.formatAddr)(pkt.dst)}:${dp}`;
-        const rev = `${proto}|${(0, ipmath_1.formatAddr)(pkt.dst)}:${dp}>${(0, ipmath_1.formatAddr)(pkt.src)}:${sp}`;
+        // (a session is its opening packet's ingress VRF's: overlapping addresses in two VRFs are two sessions; a reply leaves by that VRF)
+        const fwd = `${from.vrf}|${proto}|${(0, ipmath_1.formatAddr)(pkt.src)}:${sp}>${(0, ipmath_1.formatAddr)(pkt.dst)}:${dp}`;
+        const rev = `${to.vrf}|${proto}|${(0, ipmath_1.formatAddr)(pkt.dst)}:${dp}>${(0, ipmath_1.formatAddr)(pkt.src)}:${sp}`;
         const flags = l4.flags || [];
         if (stateful) {
             // an ICMP error about a session's packet belongs to it
             if (proto === 'icmp' && l4.quote) {
                 const q = l4.quote;
-                const qk = `${q.proto}|${q.src}:${q.sport || 0}>${q.dst}:${q.dport || 0}`;
-                const qr = `${q.proto}|${q.dst}:${q.dport || 0}>${q.src}:${q.sport || 0}`;
+                const qk = `${to.vrf}|${q.proto}|${q.src}:${q.sport || 0}>${q.dst}:${q.dport || 0}`;
+                const qr = `${from.vrf}|${q.proto}|${q.dst}:${q.dport || 0}>${q.src}:${q.sport || 0}`;
                 if (tab.has(qk) || tab.has(qr))
                     return true;
             }
@@ -39174,6 +39285,10 @@ class Transport {
     }
 }
 exports.Transport = Transport;
+/** An IPv6 link-local address (fe80::/10), or IPv4 169.254/16. */
+function isLinkLocalAddr(a) {
+    return a.version === 6 ? (0, engine_2.isLinkLocal6)(a) : a.bytes[0] === 169 && a.bytes[1] === 254;
+}
 function inNet(a, ip) {
     if (a.net.version !== ip.version)
         return false;
@@ -39379,6 +39494,7 @@ const device_types_1 = __req("model/device-types");
 const virtual_1 = __req("model/virtual");
 const ipmath_1 = __req("analysis/ipmath");
 const routing_1 = __req("analysis/routing");
+const identity_1 = __req("analysis/identity");
 const trace_1 = __req("analysis/trace");
 const mac_1 = __req("analysis/sim/mac");
 const net_1 = __req("analysis/sim/net");
@@ -39594,7 +39710,10 @@ class Engine {
         this.virtActive = new Map();
         // ------------------------------------------------------------ container NAT
         /** translations of container hosts: "host|outside src|remote|proto|port" → the container's address */
+        /** source translations: by "device|outside address|remote|protocol|outside port", the inside address, port and VRF they stand for */
         this.natTable = new Map();
+        /** the next outside port a PAT tries on a collision, per device */
+        this.patNext = new Map();
         /** published-port translations: "host|container addr|container port|remote|remote port" → the host's address and port the client used */
         this.dnatTable = new Map();
         /** "VLAN mismatch" notes already written: "<device>:<port>|<from>|<to>" → the time (at most one every 10 s per pair). */
@@ -41497,6 +41616,37 @@ class Engine {
             this.transmit(sd.id, member, { src: m.mac, dst: mac_1.BROADCAST, msg }, c === 'tagged' ? vlan : null, this.now, undefined, new Set([sd.id]));
         }
     }
+    /**
+     * A source translation: the outside port is the inside one unless that is
+     * taken towards the same remote end by another inside address or VRF
+     * (PAT then gives the next free one, from 1024): two inside hosts never
+     * share a translation, and the reply goes back to the one it belongs to.
+     */
+    translate(dev, to, pkt, vrf, pat) {
+        const proto = pkt.l4 ? pkt.l4.proto : '';
+        const sport = pkt.l4 ? pkt.l4.sport : undefined;
+        const base = `${dev}|${(0, ipmath_1.formatAddr)(to)}|${(0, ipmath_1.formatAddr)(pkt.dst)}|${proto}|`;
+        const mine = (e) => !!e && (0, ipmath_1.compareAddr)(e.inside, pkt.src) === 0 && e.port === sport && e.vrf === vrf;
+        let port = sport;
+        if (pat && sport !== undefined) {
+            const cur = this.natTable.get(base + sport);
+            if (cur && !mine(cur)) {
+                // the same flow translated before keeps its port
+                const again = Array.from(this.natTable).find(([k, e]) => k.indexOf(base) === 0 && mine(e));
+                if (again)
+                    port = Number(again[0].slice(base.length));
+                else {
+                    let n = this.patNext.get(dev) || 1024;
+                    while (this.natTable.has(base + n))
+                        n = n >= 65535 ? 1024 : n + 1;
+                    this.patNext.set(dev, n >= 65535 ? 1024 : n + 1);
+                    port = n;
+                }
+            }
+        }
+        this.natTable.set(base + (port !== undefined ? port : ''), { inside: pkt.src, port: sport, vrf });
+        return port;
+    }
     /** The container network a host interface is the bridge of (docker0), with NAT or not. */
     bridgeNet(dev, l3) {
         const i = this.model.index.interfaces.get((0, types_1.ifaceKey)(dev, l3.id));
@@ -41523,10 +41673,11 @@ class Engine {
             const own = out.addrs.find((x) => x.addr.version === pkt.src.version);
             const to = rule && typeof rule.to === 'string' ? (0, ip_1.parseAddress)(rule.to) : own ? own.addr : null;
             if (rule && to) {
-                const port = pkt.l4 ? pkt.l4.sport : undefined;
-                this.natTable.set(`${dev}|${(0, ipmath_1.formatAddr)(to)}|${(0, ipmath_1.formatAddr)(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
-                this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${(0, ipmath_1.formatAddr)(pkt.src)} → ${(0, ipmath_1.formatAddr)(to)} (${pkt.msg.label})`, this.now, pkt.msg);
-                return { ...pkt, src: to };
+                const sport = pkt.l4 ? pkt.l4.sport : undefined;
+                const port = this.translate(dev, to, pkt, from.vrf, rule.type === 'pat');
+                const moved = port !== sport && port !== undefined;
+                this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${(0, ipmath_1.formatAddr)(pkt.src)}${moved ? ':' + sport : ''} → ${(0, ipmath_1.formatAddr)(to)}${moved ? ':' + port + ' (its port is taken towards ' + (0, ipmath_1.formatAddr)(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+                return { ...pkt, src: to, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
             }
         }
         const b = this.bridgeNet(dev, from);
@@ -41535,10 +41686,11 @@ class Engine {
         const a = out.addrs.find((x) => x.addr.version === pkt.src.version);
         if (!a)
             return pkt;
-        const port = pkt.l4 ? pkt.l4.sport : undefined;
-        this.natTable.set(`${dev}|${(0, ipmath_1.formatAddr)(a.addr)}|${(0, ipmath_1.formatAddr)(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
-        this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${(0, ipmath_1.formatAddr)(pkt.src)} → ${(0, ipmath_1.formatAddr)(a.addr)} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
-        return { ...pkt, src: a.addr };
+        const sport = pkt.l4 ? pkt.l4.sport : undefined;
+        const port = this.translate(dev, a.addr, pkt, from.vrf, true);
+        const moved = port !== sport && port !== undefined;
+        this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${(0, ipmath_1.formatAddr)(pkt.src)}${moved ? ':' + sport : ''} → ${(0, ipmath_1.formatAddr)(a.addr)}${moved ? ':' + port : ''} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
     }
     /** A packet to a container host's own address: the reply to a translated packet, or to a published port, goes on to its container. */
     dnat(dev, pkt) {
@@ -41551,8 +41703,9 @@ class Engine {
         const k = `${dev}|${(0, ipmath_1.formatAddr)(pkt.dst)}|${(0, ipmath_1.formatAddr)(pkt.src)}|${proto}|${dport !== undefined ? dport : ''}`;
         const back = this.natTable.get(k);
         if (back) {
-            this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${(0, ipmath_1.formatAddr)(pkt.dst)} → ${(0, ipmath_1.formatAddr)(back.inside)} (${pkt.msg.label})`, this.now, pkt.msg);
-            return { ...pkt, dst: back.inside };
+            const moved = back.port !== undefined && back.port !== dport;
+            this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${(0, ipmath_1.formatAddr)(pkt.dst)}${moved ? ':' + dport : ''} → ${(0, ipmath_1.formatAddr)(back.inside)}${moved ? ':' + back.port : ''}${back.vrf ? ' in VRF ' + back.vrf : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+            return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? { ...pkt.l4, dport: back.port } : pkt.l4 };
         }
         // a published port: on to the container (TCP and UDP); a NAT service's port forward: on to its inside address
         if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined)
@@ -41899,9 +42052,10 @@ class Engine {
      * of 8 bytes but the last); a fragment is cut again the same way.
      */
     fragment(pkt, mtu) {
-        const hdr = 20;
+        // IPv4: its 20-byte header; IPv6: its 40 bytes and an 8-byte fragment header
+        const hdr = pkt.dst.version === 6 ? 48 : 20;
         const per = Math.max(8, Math.floor((mtu - hdr) / 8) * 8);
-        const total = ipLen(pkt) - hdr;
+        const total = ipLen(pkt) - (pkt.frag && pkt.dst.version === 6 ? 48 : pkt.dst.version === 6 ? 40 : 20);
         const base = pkt.frag ? pkt.frag.offset : 0;
         const whole = pkt.frag ? pkt.frag.whole : total;
         const n = Math.ceil(total / per);
@@ -41968,7 +42122,8 @@ class Engine {
         if (came)
             pkt = this.snat(dev, came.l3, out, pkt);
         // a next hop outside the model (no device has it): a tunnel's outer packet takes its declared underlay; anything else leaves the model
-        if (hop.gateway && !this.ownerOf(hop.gateway)) {
+        // (a redundancy group's virtual address is the model's even while no member holds it: ARP for it goes unanswered then)
+        if (hop.gateway && !this.ownerOf(hop.gateway) && !(0, identity_1.virtualGateways)(this.model).some((g) => (0, ipmath_1.compareAddr)(g.address, hop.gateway) === 0)) {
             if (!came && this.viaUnderlay(dev, pkt))
                 return;
             this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `leaves the model at ${dev}: the next hop ${(0, ipmath_1.formatAddr)(hop.gateway)} is outside it (${pkt.msg.label})`);
@@ -41999,7 +42154,14 @@ class Engine {
         const mtu = this.mtu(dev, out);
         const size = ipLen(pkt);
         let pkts = [pkt];
-        if (size > Number(mtu.value)) {
+        // an IPv6 sender fragments its own packet (a fragment header each) to its interface's MTU or the path MTU it learned; routers never do
+        const own6 = !came && pkt.dst.version === 6 && !pkt.df && !pkt.frag;
+        const limit = own6 && pkt.pmtu ? Math.min(Number(mtu.value), pkt.pmtu) : Number(mtu.value);
+        if (own6 && size > limit) {
+            pkts = this.fragment(pkt, limit);
+            this.note('route', pkt.msg.protocol, dev, '', 'fragmented', '', `${dev} fragments its own ${pkt.msg.label} (${size} bytes) into ${pkts.length} for ${pkt.pmtu && pkt.pmtu < Number(mtu.value) ? 'the path MTU it learned, ' + pkt.pmtu : 'the MTU of ' + out.id + ', ' + (0, params_1.resolvedText)(mtu)} (IPv6: the sender fragments): ${pkts.map((p) => p.len + 48).join(' + ')} bytes`);
+        }
+        else if (size > Number(mtu.value)) {
             if (pkt.dst.version === 6 || pkt.df) {
                 const text = `${pkt.msg.label} (${size} bytes${pkt.dst.version === 4 ? ', DF set' : ''}) is larger than the MTU of ${dev}:${out.id}, ${(0, params_1.resolvedText)(mtu)}`;
                 this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${text}${pkt.dst.version === 6 ? ' (IPv6 routers never fragment)' : ''}`);
@@ -43621,7 +43783,8 @@ class Engine {
 exports.Engine = Engine;
 /** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
 function ipLen(p) {
-    const hdr = p.dst.version === 4 ? 20 : 40;
+    // (an IPv6 fragment has its 8-byte fragment header besides)
+    const hdr = p.dst.version === 4 ? 20 : p.frag ? 48 : 40;
     if (p.inner)
         return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
     if (p.len !== undefined)
@@ -65528,6 +65691,7 @@ exports.expectationFields = expectationFields;
  */
 const applications_1 = __req("model/applications");
 const ip_1 = __req("model/ip");
+const ipmath_1 = __req("analysis/ipmath");
 const ipv6_1 = __req("model/ipv6");
 const types_1 = __req("model/types");
 const communication_1 = __req("analysis/communication");
@@ -65775,7 +65939,15 @@ function compareRun(model, check, run, snap) {
         const sent = `t = ${(t.started / 1000).toFixed(1)} s`;
         const drop = /dropped at ([^:]+): ([^(;]+)/.exec(t.result);
         const nowOk = now.verdict === 'satisfied';
-        if (drop && /no route|no default route|unresolved|no ARP|no neighbo/i.test(drop[2])) {
+        const downAt = /^not sent: (\S+) is down/.exec(t.result);
+        const unreach = /^Net Unreachable from \S+ \(([^)]+)\)/.exec(t.result);
+        if (unreach) {
+            out.lines.push(`Route not there when sent (${sent}): ${unreach[1]} had no route to ${(0, ipmath_1.formatAddr)(t.dst)} and answered Net Unreachable; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency that was not up yet)` : ''}`);
+        }
+        else if (downAt) {
+            out.lines.push(`Interface down when sent (${sent}): ${downAt[1]} was not up (a link coming up, shut, or failed); the configured model routes from it${nowOk ? `, and the simulation’s state at ${at} does too` : ''}`);
+        }
+        else if (drop && /no route|no default route|unresolved|no ARP|no neighbo/i.test(drop[2])) {
             out.lines.push(`Route not there when sent (${sent}): ${drop[1].trim()} had ${drop[2].trim()}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency or a redundancy group that was not up yet)` : ''}`);
         }
         else if (/larger than the MTU|too big for the path|Packet Too Big|Frag Needed/i.test(t.result)) {

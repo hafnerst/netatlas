@@ -26,6 +26,7 @@
  */
 import { appProfile } from '../model/applications';
 import { parseAddress } from '../model/ip';
+import { formatAddr } from './ipmath';
 import { autoIpv6 } from '../model/ipv6';
 import { Model, deviceInterfaces } from '../model/types';
 import { CommCheck, LAYER_LABEL, checkCommunication, parseCommEnd } from './communication';
@@ -315,7 +316,13 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
     const sent = `t = ${(t.started / 1000).toFixed(1)} s`;
     const drop = /dropped at ([^:]+): ([^(;]+)/.exec(t.result);
     const nowOk = now.verdict === 'satisfied';
-    if (drop && /no route|no default route|unresolved|no ARP|no neighbo/i.test(drop[2])) {
+    const downAt = /^not sent: (\S+) is down/.exec(t.result);
+    const unreach = /^Net Unreachable from \S+ \(([^)]+)\)/.exec(t.result);
+    if (unreach) {
+      out.lines.push(`Route not there when sent (${sent}): ${unreach[1]} had no route to ${formatAddr(t.dst)} and answered Net Unreachable; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency that was not up yet)` : ''}`);
+    } else if (downAt) {
+      out.lines.push(`Interface down when sent (${sent}): ${downAt[1]} was not up (a link coming up, shut, or failed); the configured model routes from it${nowOk ? `, and the simulation’s state at ${at} does too` : ''}`);
+    } else if (drop && /no route|no default route|unresolved|no ARP|no neighbo/i.test(drop[2])) {
       out.lines.push(`Route not there when sent (${sent}): ${drop[1].trim()} had ${drop[2].trim()}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency or a redundancy group that was not up yet)` : ''}`);
     } else if (/larger than the MTU|too big for the path|Packet Too Big|Frag Needed/i.test(t.result)) {
       out.lines.push(`Packet too big when sent (${sent}): ${t.result}. The static path MTU is in the Path MTU section: a packet larger than it, with Don’t fragment (or IPv6), is dropped with Fragmentation Needed / Packet Too Big, and the sender learns the path MTU (PMTUD)`);

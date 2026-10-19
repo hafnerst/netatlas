@@ -85,6 +85,7 @@ import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
 import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { Connected, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
@@ -2261,7 +2262,40 @@ export class Engine {
   // ------------------------------------------------------------ container NAT
 
   /** translations of container hosts: "host|outside src|remote|proto|port" → the container's address */
-  private natTable = new Map<string, { inside: IpAddr; port?: number }>();
+  /** source translations: by "device|outside address|remote|protocol|outside port", the inside address, port and VRF they stand for */
+  private natTable = new Map<string, { inside: IpAddr; port?: number; vrf: string }>();
+  /** the next outside port a PAT tries on a collision, per device */
+  private patNext = new Map<string, number>();
+
+  /**
+   * A source translation: the outside port is the inside one unless that is
+   * taken towards the same remote end by another inside address or VRF
+   * (PAT then gives the next free one, from 1024): two inside hosts never
+   * share a translation, and the reply goes back to the one it belongs to.
+   */
+  private translate(dev: string, to: IpAddr, pkt: Pkt, vrf: string, pat: boolean): number | undefined {
+    const proto = pkt.l4 ? pkt.l4.proto : '';
+    const sport = pkt.l4 ? pkt.l4.sport : undefined;
+    const base = `${dev}|${formatAddr(to)}|${formatAddr(pkt.dst)}|${proto}|`;
+    const mine = (e: { inside: IpAddr; port?: number; vrf: string } | undefined): boolean => !!e && compareAddr(e.inside, pkt.src) === 0 && e.port === sport && e.vrf === vrf;
+    let port = sport;
+    if (pat && sport !== undefined) {
+      const cur = this.natTable.get(base + sport);
+      if (cur && !mine(cur)) {
+        // the same flow translated before keeps its port
+        const again = Array.from(this.natTable).find(([k, e]) => k.indexOf(base) === 0 && mine(e));
+        if (again) port = Number(again[0].slice(base.length));
+        else {
+          let n = this.patNext.get(dev) || 1024;
+          while (this.natTable.has(base + n)) n = n >= 65535 ? 1024 : n + 1;
+          this.patNext.set(dev, n >= 65535 ? 1024 : n + 1);
+          port = n;
+        }
+      }
+    }
+    this.natTable.set(base + (port !== undefined ? port : ''), { inside: pkt.src, port: sport, vrf });
+    return port;
+  }
 
   /** The container network a host interface is the bridge of (docker0), with NAT or not. */
   private bridgeNet(dev: string, l3: L3Iface): { name: string; nat: boolean } | null {
@@ -2292,20 +2326,22 @@ export class Engine {
       const own = out.addrs.find((x) => x.addr.version === pkt.src.version);
       const to = rule && typeof rule.to === 'string' ? parseAddress(rule.to) : own ? own.addr : null;
       if (rule && to) {
-        const port = pkt.l4 ? pkt.l4.sport : undefined;
-        this.natTable.set(`${dev}|${formatAddr(to)}|${formatAddr(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
-        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)} → ${formatAddr(to)} (${pkt.msg.label})`, this.now, pkt.msg);
-        return { ...pkt, src: to };
+        const sport = pkt.l4 ? pkt.l4.sport : undefined;
+        const port = this.translate(dev, to, pkt, from.vrf, rule.type === 'pat');
+        const moved = port !== sport && port !== undefined;
+        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(to)}${moved ? ':' + port + ' (its port is taken towards ' + formatAddr(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, src: to, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
       }
     }
     const b = this.bridgeNet(dev, from);
     if (!b || !b.nat || out.id === from.id || this.bridgeNet(dev, out)) return pkt;
     const a = out.addrs.find((x) => x.addr.version === pkt.src.version);
     if (!a) return pkt;
-    const port = pkt.l4 ? pkt.l4.sport : undefined;
-    this.natTable.set(`${dev}|${formatAddr(a.addr)}|${formatAddr(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
-    this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)} → ${formatAddr(a.addr)} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
-    return { ...pkt, src: a.addr };
+    const sport = pkt.l4 ? pkt.l4.sport : undefined;
+    const port = this.translate(dev, a.addr, pkt, from.vrf, true);
+    const moved = port !== sport && port !== undefined;
+    this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(a.addr)}${moved ? ':' + port : ''} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
+    return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
   }
 
   /** A packet to a container host's own address: the reply to a translated packet, or to a published port, goes on to its container. */
@@ -2318,8 +2354,9 @@ export class Engine {
     const k = `${dev}|${formatAddr(pkt.dst)}|${formatAddr(pkt.src)}|${proto}|${dport !== undefined ? dport : ''}`;
     const back = this.natTable.get(k);
     if (back) {
-      this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)} → ${formatAddr(back.inside)} (${pkt.msg.label})`, this.now, pkt.msg);
-      return { ...pkt, dst: back.inside };
+      const moved = back.port !== undefined && back.port !== dport;
+      this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)}${moved ? ':' + dport : ''} → ${formatAddr(back.inside)}${moved ? ':' + back.port : ''}${back.vrf ? ' in VRF ' + back.vrf : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+      return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? { ...pkt.l4, dport: back.port } : pkt.l4 };
     }
     // a published port: on to the container (TCP and UDP); a NAT service's port forward: on to its inside address
     if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined) return null;
@@ -2643,9 +2680,10 @@ export class Engine {
    * of 8 bytes but the last); a fragment is cut again the same way.
    */
   private fragment(pkt: Pkt, mtu: number): Pkt[] {
-    const hdr = 20;
+    // IPv4: its 20-byte header; IPv6: its 40 bytes and an 8-byte fragment header
+    const hdr = pkt.dst.version === 6 ? 48 : 20;
     const per = Math.max(8, Math.floor((mtu - hdr) / 8) * 8);
-    const total = ipLen(pkt) - hdr;
+    const total = ipLen(pkt) - (pkt.frag && pkt.dst.version === 6 ? 48 : pkt.dst.version === 6 ? 40 : 20);
     const base = pkt.frag ? pkt.frag.offset : 0;
     const whole = pkt.frag ? pkt.frag.whole : total;
     const n = Math.ceil(total / per);
@@ -2702,7 +2740,8 @@ export class Engine {
     // a container bridge's masquerade, a NAT service's PAT / SNAT, the reply of a port forward
     if (came) pkt = this.snat(dev, came.l3, out, pkt);
     // a next hop outside the model (no device has it): a tunnel's outer packet takes its declared underlay; anything else leaves the model
-    if (hop.gateway && !this.ownerOf(hop.gateway)) {
+    // (a redundancy group's virtual address is the model's even while no member holds it: ARP for it goes unanswered then)
+    if (hop.gateway && !this.ownerOf(hop.gateway) && !virtualGateways(this.model).some((g) => compareAddr(g.address, hop.gateway as IpAddr) === 0)) {
       if (!came && this.viaUnderlay(dev, pkt)) return;
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `leaves the model at ${dev}: the next hop ${formatAddr(hop.gateway)} is outside it (${pkt.msg.label})`);
       return;
@@ -2730,7 +2769,13 @@ export class Engine {
     const mtu = this.mtu(dev, out);
     const size = ipLen(pkt);
     let pkts = [pkt];
-    if (size > Number(mtu.value)) {
+    // an IPv6 sender fragments its own packet (a fragment header each) to its interface's MTU or the path MTU it learned; routers never do
+    const own6 = !came && pkt.dst.version === 6 && !pkt.df && !pkt.frag;
+    const limit = own6 && pkt.pmtu ? Math.min(Number(mtu.value), pkt.pmtu) : Number(mtu.value);
+    if (own6 && size > limit) {
+      pkts = this.fragment(pkt, limit);
+      this.note('route', pkt.msg.protocol, dev, '', 'fragmented', '', `${dev} fragments its own ${pkt.msg.label} (${size} bytes) into ${pkts.length} for ${pkt.pmtu && pkt.pmtu < Number(mtu.value) ? 'the path MTU it learned, ' + pkt.pmtu : 'the MTU of ' + out.id + ', ' + resolvedText(mtu)} (IPv6: the sender fragments): ${pkts.map((p) => (p.len as number) + 48).join(' + ')} bytes`);
+    } else if (size > Number(mtu.value)) {
       if (pkt.dst.version === 6 || pkt.df) {
         const text = `${pkt.msg.label} (${size} bytes${pkt.dst.version === 4 ? ', DF set' : ''}) is larger than the MTU of ${dev}:${out.id}, ${resolvedText(mtu)}`;
         this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${text}${pkt.dst.version === 6 ? ' (IPv6 routers never fragment)' : ''}`);
@@ -4221,7 +4266,8 @@ export class Engine {
 
 /** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
 export function ipLen(p: Pkt): number {
-  const hdr = p.dst.version === 4 ? 20 : 40;
+  // (an IPv6 fragment has its 8-byte fragment header besides)
+  const hdr = p.dst.version === 4 ? 20 : p.frag ? 48 : 40;
   if (p.inner) return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
   if (p.len !== undefined) return hdr + p.len;
   const d = p.msg.data as { size?: unknown } | undefined;
