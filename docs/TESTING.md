@@ -128,7 +128,10 @@ failed job uploads `test-results/` (7 days). On the Ubuntu 24.04 runners
 the jobs allow the user namespaces Chrome's sandbox needs (rather than
 `--no-sandbox`), and set the UI font to Liberation Sans
 (`.github/fontconfig/fonts.conf`): the runners' default, DejaVu Sans, is
-wider than the label sizes assume (docs/LIMITATIONS.md, "Labels"). A newer push to a pull request
+wider than the label sizes assume (docs/LIMITATIONS.md, "Labels"). Every
+test browser is given a mouse (`(hover: hover)`, `(pointer: fine)`) through
+Blink's settings, because the runners have no pointing device; touch is
+emulated explicitly where a test wants it. A newer push to a pull request
 cancels its older run; runs on `dev` and `main` are not cancelled.
 
 `.github/workflows/security.yml` runs CodeQL and, on pull requests, a
