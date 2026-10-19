@@ -534,10 +534,10 @@ const custom: Behaviour = {
 
 // ------------------------------------------------------------------ PIM and IGMP
 
-/** The RP of the any-source groups (multicast.ts decides it), null: none. */
-function rpOf(P: ProtocolSim): { dev: string; addr: IpAddr } | null {
-  const m = P.shared.get('multicast') as { rp(): { dev: string; addr: IpAddr } | null } | undefined;
-  return m ? m.rp() : null;
+/** The RP a router uses for the any-source groups of an address family (multicast.ts decides it, in that router's context), null: none. */
+function rpOf(P: ProtocolSim, dev: string, v: 4 | 6): { dev: string; addr: IpAddr } | null {
+  const m = P.shared.get('multicast') as { rp(dev: string, group: string): { dev: string; addr: IpAddr } | null } | undefined;
+  return m ? m.rp(dev, v === 4 ? '239.0.0.0' : 'ff0e::') : null;
 }
 
 const pim: Behaviour = {
@@ -554,7 +554,7 @@ const pim: Behaviour = {
       },
     );
     // the RP announces itself (BSR) every bootstrap period
-    const rp = rpOf(P);
+    const rp = rpOf(P, s.dev, s.local.addr.version);
     const bkey = 'pim-bsr|' + s.dev;
     if (rp && rp.dev === s.dev && !P.shared.has(bkey)) {
       P.shared.set(bkey, 0);

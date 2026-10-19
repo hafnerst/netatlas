@@ -168,7 +168,7 @@ devices:
       ospf: {}
       bgp: {asn: 65001}
       bfd: {}
-      pim: {mode: sparse}
+      pim: {mode: sparse, candidate_rp: yes}
     interfaces:
       - {id: ge0, ip: 10.0.1.2/30, mac: "02:00:00:01:00:00"}
       - {id: ge1, ip: 10.0.12.1/30, mac: "02:00:00:01:00:01"}
