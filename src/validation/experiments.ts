@@ -12,7 +12,7 @@
  * duration of at most an hour of scenario time.
  */
 import { stepTimes } from '../model/experiments';
-import { EXP_ACTIONS, EXP_MAX_DURATION, EXP_MAX_STEPS, EXP_OBSERVE, EXP_SCOPE_KEYS, ExpAction, ExpActionKind, ExpObservation, ExpObserveKind, ExpScope, Experiment, StepField, TargetKind, actionDef, observeDef } from '../model/experiments';
+import { EXP_ACTIONS, EXP_MAX_DURATION, EXP_MAX_STEPS, EXP_OBSERVE, EXP_SCOPE_KEYS, FIELD_CHOICES, ExpAction, ExpActionKind, ExpObservation, ExpObserveKind, ExpScope, Experiment, StepField, TargetKind, actionDef, observeDef } from '../model/experiments';
 import { FailureDomain, Model, ifaceKey } from '../model/types';
 import { PARAMS, parseValue } from '../analysis/sim/params';
 import { parseService } from '../analysis/trace';
@@ -110,22 +110,33 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
       problems.push('its duration is invalid');
       duration = null;
     } else if (dText === undefined) todo(m, epath + '.duration', 'the experiment needs its duration (e.g. 120s): it always ends');
-    const e: Experiment = { id, name: (name || id).trim(), duration: duration || 0, settle: 0, scope: { kind: 'entire', value: '' }, params: [], actions: [], observations: [], problems, line: m.line };
+    const e: Experiment = { id, name: (name || id).trim(), duration: duration || 0, settle: 0, start: 'booted', scope: { kind: 'entire', value: '' }, params: [], actions: [], observations: [], problems, line: m.line };
     const desc = r.field(m, 'description', epath, 2000);
     if (desc !== undefined) e.description = desc;
+    // the starting state: booted (the default; settle: runs that long first), or cold (every device off, then booting)
+    const start = r.field(m, 'start', epath, 20);
+    if (start !== undefined) {
+      if (start === 'cold' || start === 'booted') e.start = start;
+      else c.error(get(m, 'start') as YNode, epath + '.start', `"${start}" is no start: booted (the default) or cold`);
+    }
     const sText = r.field(m, 'settle', epath, 20);
     if (sText !== undefined) {
       const v = expDuration(sText);
       if (v === null || v > EXP_MAX_DURATION) c.error(get(m, 'settle') as YNode, epath + '.settle', `"${sText}" is no duration of up to an hour (e.g. 30s)`);
+      else if (e.start === 'cold' && v > 0) c.error(get(m, 'settle') as YNode, epath + '.settle', 'a cold start boots at the start: it does not settle first (leave settle out, or start booted)');
       else e.settle = v;
     }
-    // the execution scope: one of group, vlan, domain, device (entire when left out)
+    // the execution scope: targets (the steps' targets and their dependencies), or one of group, vlan, domain, device (entire when left out)
     const sn = get(m, 'scope');
-    if (sn && !isNull(sn)) {
+    const sScalar = sn && sn.kind === 'scalar' ? scalarText(sn) : undefined;
+    if (sScalar !== undefined && !isNull(sn as YNode)) {
+      if (sScalar === 'targets') e.scope = { kind: 'targets', value: '' };
+      else if (sScalar !== 'entire') c.error(sn as YNode, epath + '.scope', `"${sScalar}" is no scope: targets, entire, or one of group, vlan, domain or device with its value`);
+    } else if (sn && !isNull(sn)) {
       const sm = r.map(sn, epath + '.scope');
       if (sm) {
         r.keys(sm, SCHEMA.expScope, epath + '.scope');
-        const set = EXP_SCOPE_KEYS.filter((k) => get(sm, k) !== undefined);
+        const set = EXP_SCOPE_KEYS.filter((k) => k !== 'targets' && get(sm, k) !== undefined);
         if (set.length !== 1) c.error(sm, epath + '.scope', 'a scope is one of group, vlan, domain or device');
         else {
           const v = r.field(sm, set[0], epath + '.scope', 64);
@@ -170,14 +181,21 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
     /** a step's other fields, by its kind's definition: what is written, and what is required but missing */
     const fields = (sm: YMap, p2: string, req: StepField[], opt: StepField[], step: ExpAction | ExpObservation, label: string): void => {
       const s = step as unknown as { [k: string]: unknown; missing: string[] };
-      for (const key of ['to', 'service', 'group'] as const) {
+      for (const key of ['to', 'service', 'group', 'topic'] as const) {
         const v = r.field(sm, key, p2, 200);
         if (v !== undefined && v.trim()) s[key] = v.trim();
       }
-      for (const key of ['count', 'port', 'size'] as const) {
+      for (const key of ['family', 'protocol'] as const) {
+        const v = r.field(sm, key, p2, 20);
+        if (v === undefined || !v.trim()) continue;
+        const ok = (FIELD_CHOICES[key] as string[]).indexOf(v.trim().toLowerCase()) >= 0;
+        if (!ok) c.error(get(sm, key) as YNode, `${p2}.${key}`, `"${v}" is no ${key === 'family' ? 'address family: ipv4 or ipv6' : 'protocol the simulation reports sessions of: ' + (FIELD_CHOICES.protocol as string[]).join(', ')}`);
+        else s[key] = v.trim().toLowerCase();
+      }
+      for (const key of ['count', 'port', 'size', 'min'] as const) {
         const v = r.field(sm, key, p2, 8);
         if (v === undefined) continue;
-        const max = key === 'count' ? 1000 : key === 'port' ? 65535 : 9000;
+        const max = key === 'count' ? 1000 : key === 'port' ? 65535 : key === 'min' ? 100000 : 9000;
         if (!/^[0-9]+$/.test(v) || Number(v) < 1 || Number(v) > max) c.error(get(sm, key) as YNode, `${p2}.${key}`, `${key} is a whole number, 1 to ${max}`);
         else s[key] = Number(v);
       }
@@ -187,10 +205,16 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
         if (v === null || v < 10) c.error(get(sm, 'interval') as YNode, p2 + '.interval', `"${iv}" is no interval (10ms or more)`);
         else s.interval = v;
       }
+      const fv = r.field(sm, 'for', p2, 20);
+      if (fv !== undefined) {
+        const v = expDuration(fv);
+        if (v === null || v <= 0 || v > EXP_MAX_DURATION) c.error(get(sm, 'for') as YNode, p2 + '.for', `"${fv}" is no duration of up to an hour (e.g. 30s)`);
+        else s.for = v;
+      }
       const sv = s.service as string | undefined;
       if (sv !== undefined && typeof parseService(sv) === 'string') c.error(get(sm, 'service') as YNode, p2 + '.service', parseService(sv) as string);
       // what the kind does not take
-      for (const key of ['to', 'service', 'group', 'count', 'interval', 'port', 'size'] as StepField[]) if (s[key] !== undefined && req.indexOf(key) < 0 && opt.indexOf(key) < 0) c.warn(get(sm, key) as YNode, `${p2}.${key}`, `${label} has no ${key}: it is not used`);
+      for (const key of ['to', 'service', 'group', 'count', 'interval', 'port', 'size', 'for', 'family', 'protocol', 'topic', 'min'] as StepField[]) if (s[key] !== undefined && req.indexOf(key) < 0 && opt.indexOf(key) < 0) c.warn(get(sm, key) as YNode, `${p2}.${key}`, `${label} has no ${key}: it is not used`);
       for (const key of req)
         if (s[key] === undefined) {
           s.missing.push(key);
@@ -276,6 +300,11 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
         o.missing.push('expect');
       }
       fields(om, op, def.required, def.optional, o, label);
+      if (o.to && (o.of === 'neighbor' || o.of === 'route' || o.of === 'session')) {
+        const why = o.of === 'session' ? (model.index.devices.has(o.to) ? '' : `"${o.to}" is no device of the model`) : targetProblem(model, domains, 'source', o.to, e);
+        if (why) todo(get(om, 'to') as YNode, op + '.to', `${label}: ${why}`);
+      }
+      if (o.of === 'timing' && o.protocol && o.protocol !== 'ptp' && o.protocol !== 'ntp') c.error(get(om, 'protocol') as YNode, op + '.protocol', 'a timing state is of ptp or ntp');
       e.observations.push(o);
     });
     // the times, with their "after" chains: within the duration, no cycle, no unknown action
@@ -285,6 +314,7 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
         const am = amaps[k];
         if (typeof x === 'string') todo(get(am, 'after') || am, `${epath}.actions[${k}].after`, `action ${k + 1}: ${x}`);
         else if (x > duration) c.error(get(am, 'at') || am, `${epath}.actions[${k}].at`, `action ${k + 1} comes at ${x / 1000} s, after the end of the experiment (${dText})`);
+        else if (e.actions[k].for && x + (e.actions[k].for as number) > duration) c.warn(get(am, 'for') || am, `${epath}.actions[${k}].for`, `action ${k + 1} would be undone at ${(x + (e.actions[k].for as number)) / 1000} s, after the end of the experiment: it is not undone in a run`);
       });
       t.observations.forEach((x, k) => {
         const o = e.observations[k];
