@@ -9,6 +9,7 @@
  */
 import { IpAddr, parseAddress } from '../../model/ip';
 import { simProfile } from '../../model/sim-profiles';
+import { bpsText, representativeText } from '../../model/speed';
 import { Relation, deviceInterfaces, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { parseTraceEnd } from '../trace';
@@ -802,9 +803,12 @@ export function installBootGarp(P: ProtocolSim): void {
   });
 }
 
-/** The model's demands: data packets from the source to the destination, at a rate that grows with the bandwidth; delivered or lost. */
+/** A demand's representative packet's size on the wire (its IP packet: engine.ts ipLen of a demand's data). */
+const DEMAND_BYTES = 1420;
+
+/** The model's demands: representative data packets from the source to the destination, more often for more bandwidth; delivered or lost. */
 export function installDemands(P: ProtocolSim): void {
-  type D = { id: string; label: string; dev: string; src: IpAddr; dst: IpAddr; every: number; sent: number; got: number; last: number; multicast: boolean };
+  type D = { id: string; label: string; dev: string; src: IpAddr; dst: IpAddr; every: number; sent: number; got: number; last: number; multicast: boolean; bps: number };
   const list: D[] = [];
   for (const dm of P.m.demands.slice().sort((a, b) => cmp(a.id, b.id))) {
     const se = parseTraceEnd(P.m, dm.source);
@@ -820,14 +824,14 @@ export function installDemands(P: ProtocolSim): void {
     // a multicast demand is a stream (multicast.ts)
     if (isMulticastIp(dstAddr)) continue;
     const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
-    list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: isMulticastIp(dstAddr) });
+    list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: isMulticastIp(dstAddr), bps: dm.bps });
   }
   if (!list.length) return;
   P.bootHooks.push(() => {
     for (const x of list) {
       const tick = (): void => {
         x.sent++;
-        const msg: Msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): data packet ${x.sent} from ${x.dev} (${formatAddr(x.src)}) to ${formatAddr(x.dst)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: formatAddr(x.src) } };
+        const msg: Msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): representative data packet ${x.sent} from ${x.dev} (${formatAddr(x.src)}) to ${formatAddr(x.dst)} — it shows the demand's way, not its ${bpsText(x.bps)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: formatAddr(x.src) } };
         const pkt = P.e.newPacket(x.src, x.dst, '', msg, []);
         // the transport of a load test (iperf's default port)
         pkt.l4 = { proto: 'udp', num: 17, sport: 5001, dport: 5001 };
@@ -858,7 +862,7 @@ export function installDemands(P: ProtocolSim): void {
   P.extraStatus.push((): SessionStatus[] =>
     list.map((x) => {
       const lost = x.sent - x.got;
-      return { protocol: 'demand', name: `${x.id}: ${x.dev} → ${formatAddr(x.dst)}`, device: x.dev, peer: '', state: x.multicast ? 'multicast' : x.got && P.e.now - x.last < 3 * x.every + 3000 ? 'Delivered' : x.sent ? 'Lost' : 'Waiting', detail: `${x.got} of ${x.sent} packets delivered${lost > 0 ? ` (${lost} lost or on their way)` : ''}; one every ${fmtSec(x.every)}`, up: x.multicast || (x.got > 0 && P.e.now - x.last < 3 * x.every + 3000) };
+      return { protocol: 'demand', name: `${x.id}: ${x.dev} → ${formatAddr(x.dst)}`, device: x.dev, peer: '', state: x.multicast ? 'multicast' : x.got && P.e.now - x.last < 3 * x.every + 3000 ? 'Delivered' : x.sent ? 'Lost' : 'Waiting', detail: `${x.got} of ${x.sent} representative packets delivered${lost > 0 ? ` (${lost} lost or on their way)` : ''}; ${representativeText(x.bps, x.every, DEMAND_BYTES)}`, up: x.multicast || (x.got > 0 && P.e.now - x.last < 3 * x.every + 3000) };
     }),
   );
 }

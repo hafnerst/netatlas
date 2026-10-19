@@ -16787,8 +16787,24 @@ __defs["model/speed"] = function (module, exports) {
 "use strict";
 /** Speeds and bandwidths as written in the model: "10G", "100M", "1 Gbps", "400GbE". */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.bpsText = bpsText;
+exports.representativeText = representativeText;
 exports.parseSpeed = parseSpeed;
 /** Parse "10G", "100M", "1 Gbps", "400GbE" into bits per second (null: not a speed). */
+/** A bit rate in words ("1.5 Gbit/s", "200 Mbit/s", "800 bit/s"). */
+function bpsText(b) {
+    return b >= 1e9 ? `${+(b / 1e9).toFixed(2)} Gbit/s` : b >= 1e6 ? `${+(b / 1e6).toFixed(2)} Mbit/s` : b >= 1e3 ? `${+(b / 1e3).toFixed(2)} kbit/s` : `${Math.round(b)} bit/s`;
+}
+/**
+ * What a demand's simulated packets are: representative ones, one every
+ * so often (more often for a larger demand), that show its way and whether
+ * it gets through — never its stated bandwidth, which only capacity
+ * analysis uses (no cable is loaded or queued by it in the simulation).
+ */
+function representativeText(bps, everyMs, bytes) {
+    const wire = ((bytes + 18) * 8 * 1000) / everyMs;
+    return `representative packets: one of ${bytes} bytes every ${+(everyMs / 1000).toFixed(1)} s (about ${bpsText(wire)} on the wire); the demand states ${bpsText(bps)}, which capacity analysis uses — the simulation does not carry that load`;
+}
 function parseSpeed(s) {
     if (!s)
         return null;
@@ -69479,7 +69495,7 @@ const ENTRY_SUPPORT = {
     icmp: { level: 'modeled', does: 'Echo requests and replies, and the ICMP errors routers and hosts send (unreachable, time exceeded, fragmentation needed with path MTU discovery).', not: 'ICMP redirects, router discovery over ICMPv4.' },
     tcp: { level: 'modeled', does: 'The three-way handshake, segments by the path MTU, retransmission with backoff, RST, FIN and TIME_WAIT, keepalive probes, firewall sessions.', not: 'congestion control and windows: no throughput is computed.' },
     udp: { level: 'modeled', does: 'Datagrams to open ports and their answers; ICMP port unreachable from a closed port.', not: 'payload contents.' },
-    demand: { level: 'modeled', does: 'Each demand’s packets along the path routing gives it, rerouted after failures.', not: 'bandwidth: no link is loaded or congested.' },
+    demand: { level: 'modeled', does: 'Representative packets of each demand (one every 1–4 s, more often for more bandwidth) along the path routing gives it, rerouted after failures: they show its way and whether it gets through.', not: 'its bandwidth: the stated rate is capacity analysis’s; no cable is loaded, queued or congested by it, and no throughput or latency under load is concluded.' },
     mcast: { level: 'modeled', does: 'Each stream’s datagrams, replicated by snooping switches and multicast routing to the members.', not: 'bandwidth and rate limits.' },
     dhcpv6: { level: 'modeled', does: 'Stateful (Solicit, Advertise, Request, Reply; Renew at T1, Rebind at T2, expiry) and stateless (Information-request, Reply) DHCPv6 between a client and a server on its link, with DNS servers and duplicate address detection of the address.', not: 'prefix delegation, relay agents, Decline and Release, DUID types other than DUID-LL, authentication.' },
 };
@@ -70898,6 +70914,7 @@ exports.installCustomL2 = installCustomL2;
  */
 const ip_1 = __req("model/ip");
 const sim_profiles_1 = __req("model/sim-profiles");
+const speed_1 = __req("model/speed");
 const types_1 = __req("model/types");
 const ipmath_1 = __req("analysis/ipmath");
 const trace_1 = __req("analysis/trace");
@@ -71703,7 +71720,9 @@ function installBootGarp(P) {
         }
     });
 }
-/** The model's demands: data packets from the source to the destination, at a rate that grows with the bandwidth; delivered or lost. */
+/** A demand's representative packet's size on the wire (its IP packet: engine.ts ipLen of a demand's data). */
+const DEMAND_BYTES = 1420;
+/** The model's demands: representative data packets from the source to the destination, more often for more bandwidth; delivered or lost. */
 function installDemands(P) {
     const list = [];
     for (const dm of P.m.demands.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -71725,7 +71744,7 @@ function installDemands(P) {
         if ((0, mac_1.isMulticastIp)(dstAddr))
             continue;
         const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
-        list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: (0, mac_1.isMulticastIp)(dstAddr) });
+        list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: (0, mac_1.isMulticastIp)(dstAddr), bps: dm.bps });
     }
     if (!list.length)
         return;
@@ -71733,7 +71752,7 @@ function installDemands(P) {
         for (const x of list) {
             const tick = () => {
                 x.sent++;
-                const msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): data packet ${x.sent} from ${x.dev} (${(0, ipmath_1.formatAddr)(x.src)}) to ${(0, ipmath_1.formatAddr)(x.dst)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: (0, ipmath_1.formatAddr)(x.src) } };
+                const msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): representative data packet ${x.sent} from ${x.dev} (${(0, ipmath_1.formatAddr)(x.src)}) to ${(0, ipmath_1.formatAddr)(x.dst)} — it shows the demand's way, not its ${(0, speed_1.bpsText)(x.bps)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: (0, ipmath_1.formatAddr)(x.src) } };
                 const pkt = P.e.newPacket(x.src, x.dst, '', msg, []);
                 // the transport of a load test (iperf's default port)
                 pkt.l4 = { proto: 'udp', num: 17, sport: 5001, dport: 5001 };
@@ -71768,7 +71787,7 @@ function installDemands(P) {
     });
     P.extraStatus.push(() => list.map((x) => {
         const lost = x.sent - x.got;
-        return { protocol: 'demand', name: `${x.id}: ${x.dev} → ${(0, ipmath_1.formatAddr)(x.dst)}`, device: x.dev, peer: '', state: x.multicast ? 'multicast' : x.got && P.e.now - x.last < 3 * x.every + 3000 ? 'Delivered' : x.sent ? 'Lost' : 'Waiting', detail: `${x.got} of ${x.sent} packets delivered${lost > 0 ? ` (${lost} lost or on their way)` : ''}; one every ${(0, engine_1.fmtSec)(x.every)}`, up: x.multicast || (x.got > 0 && P.e.now - x.last < 3 * x.every + 3000) };
+        return { protocol: 'demand', name: `${x.id}: ${x.dev} → ${(0, ipmath_1.formatAddr)(x.dst)}`, device: x.dev, peer: '', state: x.multicast ? 'multicast' : x.got && P.e.now - x.last < 3 * x.every + 3000 ? 'Delivered' : x.sent ? 'Lost' : 'Waiting', detail: `${x.got} of ${x.sent} representative packets delivered${lost > 0 ? ` (${lost} lost or on their way)` : ''}; ${(0, speed_1.representativeText)(x.bps, x.every, DEMAND_BYTES)}`, up: x.multicast || (x.got > 0 && P.e.now - x.last < 3 * x.every + 3000) };
     }));
 }
 function ownerOf(P, a) {
@@ -73104,6 +73123,7 @@ const mac_1 = __req("analysis/sim/mac");
 const params_1 = __req("analysis/sim/params");
 const proto_routing_1 = __req("analysis/sim/proto-routing");
 const pim_rp_1 = __req("analysis/pim-rp");
+const speed_1 = __req("model/speed");
 const snooping_1 = __req("model/snooping");
 const derive_1 = __req("model/derive");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -73118,6 +73138,8 @@ const SG_KEEPALIVE = 210000;
 const FLOOD = Number.MAX_SAFE_INTEGER;
 class Multicast {
     constructor(P) {
+        /** a multicast demand's stated bandwidth, by "source device|group" (its stream is representative, never that load) */
+        this.demandBps = new Map();
         /** joined groups by "dev|iface" */
         this.hosts = new Map();
         /** router interfaces running IGMP / MLD, by "dev|iface" */
@@ -73270,6 +73292,7 @@ class Multicast {
                 continue;
             const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
             this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(), dm.label || dm.id);
+            this.demandBps.set(sd.id + '|' + dm.destination, dm.bps);
         }
     }
     /** Does a device route multicast (it runs PIM)? */
@@ -74826,7 +74849,7 @@ class Multicast {
             st.gap = this.e.now - st.lastAt;
         st.lastAt = this.e.now;
         const demand = st.origin === 'demand';
-        const msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', ' : ''}datagram ${st.sent} from ${st.dev} (${(0, ipmath_1.formatAddr)(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: (0, ipmath_1.formatAddr)(h.addr) } };
+        const msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', representative ' : ''}datagram ${st.sent} from ${st.dev} (${(0, ipmath_1.formatAddr)(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: (0, ipmath_1.formatAddr)(h.addr) } };
         const pkt = this.e.newPacket(h.addr, g, h.l3.vrf, msg, [], 0);
         pkt.l4 = { proto: 'udp', num: 17, sport: st.sport, dport: st.port };
         pkt.len = 8 + st.size;
@@ -75094,8 +75117,11 @@ class Multicast {
     }
     status() {
         const out = [];
-        for (const st of this.streams)
-            out.push({ protocol: st.origin === 'demand' ? 'demand' : 'mcast', name: `${st.dev} → ${st.group}:${st.port}`, device: st.dev, peer: '', state: !st.running ? 'Stopped' : st.sent ? 'Sending' : 'Waiting', detail: `${st.sent} datagrams of ${st.size} bytes, one every ${(0, params_1.durationText)(st.interval)}${st.origin === 'event' ? ' (Start stream)' : st.origin === 'demand' ? ' (demand ' + st.label + ')' : ''}`, up: st.running && st.sent > 0 });
+        for (const st of this.streams) {
+            const bps = st.origin === 'demand' ? this.demandBps.get(st.dev + '|' + st.group) : undefined;
+            const what = bps !== undefined ? `demand ${st.label}: ${st.sent} sent; ${(0, speed_1.representativeText)(bps, st.interval, st.size + 28)}` : `${st.sent} datagrams of ${st.size} bytes, one every ${(0, params_1.durationText)(st.interval)}${st.origin === 'event' ? ' (Start stream)' : ''}`;
+            out.push({ protocol: st.origin === 'demand' ? 'demand' : 'mcast', name: `${st.dev} → ${st.group}:${st.port}`, device: st.dev, peer: '', state: !st.running ? 'Stopped' : st.sent ? 'Sending' : 'Waiting', detail: what, up: st.running && st.sent > 0 });
+        }
         for (const [k, m] of Array.from(this.hosts).sort((a, b) => cmp(a[0], b[0]))) {
             const dev = k.slice(0, k.indexOf('|'));
             for (const hg of Array.from(m.values()).sort((a, b) => cmp(a.group, b.group))) {
@@ -81183,9 +81209,8 @@ exports.compareCapacity = compareCapacity;
  */
 const applications_1 = __req("model/applications");
 const speed_1 = __req("model/speed");
+Object.defineProperty(exports, "bpsText", { enumerable: true, get: function () { return speed_1.bpsText; } });
 const trace_1 = __req("analysis/trace");
-const bpsText = (b) => (b >= 1e9 ? `${+(b / 1e9).toFixed(2)} Gbit/s` : b >= 1e6 ? `${+(b / 1e6).toFixed(2)} Mbit/s` : b >= 1e3 ? `${+(b / 1e3).toFixed(2)} kbit/s` : `${Math.round(b)} bit/s`);
-exports.bpsText = bpsText;
 /** The traffic the model states (see the module comment), sorted by id. */
 function capacityDemands(model) {
     const out = [];
@@ -81338,10 +81363,10 @@ function capacityAnalysis(model, ctx = {}) {
         const top = own[0];
         const out = { demand: d, connectivity: 'retained', verdict: top ? top.verdict : 'fits', text: '', paths: reached.length };
         const r = top ? top.resource : null;
-        out.text = !top ? 'fits (no cable on its way)' : top.verdict === 'unknown' ? `insufficient information: ${r.what} has no speed written` : `${top.verdict === 'fits' ? 'fits' : top.verdict === 'exceeds' ? 'exceeds' : 'depends on the distribution at'} ${r.what}: ${bpsText(top.equal)} split equally, ${bpsText(top.worst)} on one path, of ${bpsText(r.capacity)}`;
+        out.text = !top ? 'fits (no cable on its way)' : top.verdict === 'unknown' ? `insufficient information: ${r.what} has no speed written` : `${top.verdict === 'fits' ? 'fits' : top.verdict === 'exceeds' ? 'exceeds' : 'depends on the distribution at'} ${r.what}: ${(0, speed_1.bpsText)(top.equal)} split equally, ${(0, speed_1.bpsText)(top.worst)} on one path, of ${(0, speed_1.bpsText)(r.capacity)}`;
         const lag = resources.find((x) => x.perFlow !== undefined && d.bps > x.perFlow);
         if (lag)
-            out.perFlow = `${bpsText(d.bps)} is more than one member of ${lag.what} carries (${bpsText(lag.perFlow)}): it fits only as several flows`;
+            out.perFlow = `${(0, speed_1.bpsText)(d.bps)} is more than one member of ${lag.what} carries (${(0, speed_1.bpsText)(lag.perFlow)}): it fits only as several flows`;
         return out;
     });
     const n = (v) => results.filter((x) => x.verdict === v).length;

@@ -74,6 +74,7 @@ import { routerId } from './proto-routing';
 import { RpChoice, RpEnv, pimDomain, rpFor, staticRp } from '../pim-rp';
 import { ProtocolSim, Sess } from './protocols';
 import { RealTimeScheduler } from './realtime';
+import { representativeText } from '../../model/speed';
 import { SnoopingChoice, snoopingChoice, switchedVlans } from '../../model/snooping';
 import { vlanRangesShown } from '../../model/derive';
 import { GridTable, L4, McPort, Msg, NetEvent, Pkt, SessionStatus, SnoopResult, TableTimer } from './types';
@@ -320,6 +321,8 @@ interface Rx {
 }
 
 export class Multicast {
+  /** a multicast demand's stated bandwidth, by "source device|group" (its stream is representative, never that load) */
+  private demandBps = new Map<string, number>();
   readonly P: ProtocolSim;
   /** joined groups by "dev|iface" */
   private hosts = new Map<string, Map<string, HostGroup>>();
@@ -452,6 +455,7 @@ export class Multicast {
       if (!l3) continue;
       const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
       this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(), dm.label || dm.id);
+      this.demandBps.set(sd.id + '|' + dm.destination, dm.bps);
     }
   }
 
@@ -1912,7 +1916,7 @@ export class Multicast {
     if (st.lastAt !== undefined) st.gap = this.e.now - st.lastAt;
     st.lastAt = this.e.now;
     const demand = st.origin === 'demand';
-    const msg: Msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', ' : ''}datagram ${st.sent} from ${st.dev} (${formatAddr(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: formatAddr(h.addr) } };
+    const msg: Msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', representative ' : ''}datagram ${st.sent} from ${st.dev} (${formatAddr(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: formatAddr(h.addr) } };
     const pkt = this.e.newPacket(h.addr, g, h.l3.vrf, msg, [], 0);
     pkt.l4 = { proto: 'udp', num: 17, sport: st.sport, dport: st.port };
     pkt.len = 8 + st.size;
@@ -2151,7 +2155,11 @@ export class Multicast {
 
   private status(): SessionStatus[] {
     const out: SessionStatus[] = [];
-    for (const st of this.streams) out.push({ protocol: st.origin === 'demand' ? 'demand' : 'mcast', name: `${st.dev} → ${st.group}:${st.port}`, device: st.dev, peer: '', state: !st.running ? 'Stopped' : st.sent ? 'Sending' : 'Waiting', detail: `${st.sent} datagrams of ${st.size} bytes, one every ${durationText(st.interval)}${st.origin === 'event' ? ' (Start stream)' : st.origin === 'demand' ? ' (demand ' + st.label + ')' : ''}`, up: st.running && st.sent > 0 });
+    for (const st of this.streams) {
+      const bps = st.origin === 'demand' ? this.demandBps.get(st.dev + '|' + st.group) : undefined;
+      const what = bps !== undefined ? `demand ${st.label}: ${st.sent} sent; ${representativeText(bps, st.interval, st.size + 28)}` : `${st.sent} datagrams of ${st.size} bytes, one every ${durationText(st.interval)}${st.origin === 'event' ? ' (Start stream)' : ''}`;
+      out.push({ protocol: st.origin === 'demand' ? 'demand' : 'mcast', name: `${st.dev} → ${st.group}:${st.port}`, device: st.dev, peer: '', state: !st.running ? 'Stopped' : st.sent ? 'Sending' : 'Waiting', detail: what, up: st.running && st.sent > 0 });
+    }
     for (const [k, m] of Array.from(this.hosts).sort((a, b) => cmp(a[0], b[0]))) {
       const dev = k.slice(0, k.indexOf('|'));
       for (const hg of Array.from(m.values()).sort((a, b) => cmp(a.group, b.group))) {
