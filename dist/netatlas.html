@@ -39688,6 +39688,8 @@ class Engine {
         this.leases = new Map();
         /** the routing contexts of learned states, by their signature (routers that learned the same share one) */
         this.viewCtxs = new Map();
+        /** guarded ports noted root-inconsistent ("vlan|dev|port") */
+        this.rootGuardNoted = new Set();
         // ------------------------------------------------------------ layer 2: sending and forwarding frames
         /** the emission being planned: its sender and time (for the logical view's dots of messages without a relation) */
         this.emitting = null;
@@ -40546,6 +40548,17 @@ class Engine {
             tr.loops.sort(cmp);
             t = tr;
             this.stp.set(vlan, t);
+            // root guard: a guarded port with a better root behind it is blocked — said once, whenever the tree is computed with it
+            for (const k of Array.from(tr.inconsistent).sort(cmp)) {
+                const nk = vlan + '|' + k;
+                if (this.rootGuardNoted.has(nk))
+                    continue;
+                this.rootGuardNoted.add(nk);
+                this.note('link', 'stp', k.split('|')[0], '', 'Root guard', 'blocked', `${k.replace('|', ':')} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
+            }
+            for (const nk of Array.from(this.rootGuardNoted))
+                if (nk.indexOf(vlan + '|') === 0 && !tr.inconsistent.has(nk.slice(nk.indexOf('|') + 1)))
+                    this.rootGuardNoted.delete(nk);
         }
         return t;
     }
@@ -40775,10 +40788,6 @@ class Engine {
                 });
             }
             this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map((k) => k.replace('|', ':')).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
-            // root guard: a better root behind a guarded port blocks it
-            for (const k of Array.from(n.inconsistent).sort(cmp))
-                if (!t.inconsistent || !t.inconsistent.has(k))
-                    this.note('link', 'stp', k.split('|')[0], '', 'Root guard', 'blocked', `${k.replace('|', ':')} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
             for (const tab of this.macs.values()) {
                 for (const [k, e] of Array.from(tab))
                     if (e.type === 'dynamic' && e.vlan === vlan)
@@ -40830,7 +40839,11 @@ class Engine {
     emit(dev, l3, frame, t = this.now) {
         this.mark(frame.msg, dev);
         const was = this.emitting;
-        this.emitting = { dev, l3, t, net: frame.msg.relation ? null : this.networkOf(l3, frame), first: null };
+        const net = frame.msg.relation ? null : this.networkOf(l3, frame);
+        this.emitting = { dev, l3, t, net, first: null };
+        // the logical view: a message without a relation goes from its sender to its network now (on to each receiver when it arrives there)
+        if (net && this.emitting)
+            this.emitting.first = this.flight(t, t + this.hopTime() / 2, frame.msg, 'logical', { ref: 'network:' + net, from: dev, to: 'net' }, undefined, frameEncap(frame)).id;
         try {
             this.emitFrame(dev, l3, frame, t);
         }
@@ -41068,9 +41081,35 @@ class Engine {
             this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (${w.impaired ? 'an impairment of the test' : 'packet loss ' + (0, params_1.resolvedText)(r)}): ${frame.msg.label}`);
             return;
         }
-        this.arrive(o.device, o.port, frame, tag, w.end, f.id, seen);
+        // it arrives when it arrives: the next device decides then, with its state then (a port shut, a spanning tree
+        // changed, the device off, its MAC table aged meanwhile) — never in advance at the moment the frame was sent
+        // (in the context it was sent in: its emission, its cause, its Send test — as if it had all happened at once)
+        const ctx = { em: this.emitting, cause: this.cause, causeMsg: this.causeMsg, test: this.testCtx, flight: this.causeFlight };
+        const go = (at) => {
+            this.at(at, () => {
+                if (f.dropped !== undefined || f.hidden)
+                    return;
+                const was = { em: this.emitting, cause: this.cause, causeMsg: this.causeMsg, test: this.testCtx, flight: this.causeFlight };
+                this.emitting = ctx.em;
+                this.cause = ctx.cause;
+                this.causeMsg = ctx.causeMsg;
+                this.testCtx = ctx.test;
+                this.causeFlight = ctx.flight;
+                try {
+                    this.arrive(o.device, o.port, frame, tag, at, f.id, seen);
+                }
+                finally {
+                    this.emitting = was.em;
+                    this.cause = was.cause;
+                    this.causeMsg = was.causeMsg;
+                    this.testCtx = was.test;
+                    this.causeFlight = was.flight;
+                }
+            });
+        };
+        go(w.end);
         if (w.dup)
-            this.arrive(o.device, o.port, frame, tag, w.end + 0.001, f.id, seen);
+            go(w.end + 0.001);
     }
     /** A flight's shape (unicast, broadcast, multicast) and the frame's headers for the inspector; the message's log line gets them too (as first sent). */
     inspectable(f, frame, tag) {
@@ -41766,11 +41805,9 @@ class Engine {
     deliverL3(dev, l3, frame, t, flight) {
         // the logical view: a message without a relation goes from its sender to the network and on to this receiver
         const em = this.emitting;
-        if (em && em.net && em.dev !== dev && t > em.t) {
-            const mid = em.t + (t - em.t) / 2;
-            if (em.first === null)
-                em.first = this.flight(em.t, mid, frame.msg, 'logical', { ref: 'network:' + em.net, from: em.dev, to: 'net' }, undefined, frameEncap(frame)).id;
-            this.flight(mid, t, frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame));
+        if (em && em.net && em.dev !== dev && t > em.t && em.first !== null) {
+            const mid = Math.min(em.t + this.hopTime() / 2, t);
+            this.flight(mid, Math.max(t, mid), frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame));
         }
         const d = { dev, l3, frame, flight, cancelled: false };
         this.pending.push(d);
