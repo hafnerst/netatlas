@@ -358,6 +358,8 @@ export class Engine {
   v6Hook: {
     /** a DAD probe (an NS from ::) for a target arrived */
     dadProbe(dev: string, l3: L3Iface, target: IpAddr): void;
+    /** is an address of the interface tentative (or a duplicate): it answers no solicitation for it (RFC 4862 §5.4) */
+    unusable(dev: string, l3: L3Iface, target: IpAddr): boolean;
     /** a Neighbor Advertisement for a target arrived */
     advert(dev: string, l3: L3Iface, target: IpAddr, lladdr: string): void;
     connected(dev: string): Connected[];
@@ -3153,7 +3155,7 @@ export class Engine {
   private ndReceive(dev: string, l3: L3Iface, frame: Frame, nd: NdPdu): void {
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     if (nd.op === 'NS') {
-      const own = this.hasOwn(l3, nd.target);
+      const own = this.hasOwn(l3, nd.target) && !(this.v6Hook && this.v6Hook.unusable(dev, l3, nd.target));
       const vip = this.protocols ? this.protocols.owns(dev, l3.id).find((o) => compareAddr(o.addr, nd.target) === 0) : undefined;
       if (nd.dad) {
         // duplicate address detection by another node: the owner defends its address (an NA to all-nodes, RFC 4861 §7.2.4);

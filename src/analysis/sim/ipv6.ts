@@ -143,6 +143,16 @@ interface RouterIf {
   answering: boolean;
 }
 
+/** An interface with static IPv6 addresses only (no automatic method, no advertisements): its IPv6 is on, with a link-local address of its own. */
+interface PlainIf {
+  dev: string;
+  iface: string;
+  l3: L3Iface;
+  ll?: V6Addr;
+  gen: number;
+  disabled?: string;
+}
+
 interface Scope6 {
   dev: string;
   index: number;
@@ -175,6 +185,8 @@ const left = (ms: number): string => (ms === Infinity ? 'infinite' : durationTex
 export class Ipv6Sim {
   readonly hosts = new Map<string, HostIf>();
   readonly routers = new Map<string, RouterIf>();
+  /** interfaces with static IPv6 addresses only */
+  readonly plain = new Map<string, PlainIf>();
   private scopes: Scope6[] = [];
   private xid = 0;
 
@@ -188,6 +200,8 @@ export class Ipv6Sim {
         const k = d.id + ':' + i.id;
         if (autoIpv6(i.ipv6)) this.hosts.set(k, { dev: d.id, iface: i.id, method: i.ipv6 as Ipv6Method, l3, addrs: [], routers: new Map(), onlink: new Map(), dns: new Map(), rs: 0, gen: 0, ra: false });
         if (i.ra && sd.caps.l3Forward) this.routers.set(k, { dev: d.id, iface: i.id, l3, ra: i.ra, sent: 0, last: -Infinity, gen: 0, answering: false });
+        // static IPv6 alone enables IPv6 on the interface: its link-local address (RFC 4291 §2.1), no advertisements or autoconfiguration needed
+        if (!this.hosts.has(k) && !this.routers.has(k) && l3.kind !== 'loopback' && l3.kind !== 'tunnel' && i.addresses.some((t) => t.indexOf(':') >= 0)) this.plain.set(k, { dev: d.id, iface: i.id, l3, gen: 0 });
       }
       d.netServices && d.netServices.dhcp && d.netServices.dhcp.scopes.forEach((s, index) => {
         const n = s.network ? P.m.networks.find((x) => x.id === s.network) : undefined;
@@ -196,10 +210,14 @@ export class Ipv6Sim {
         this.scopes.push({ dev: d.id, index, net: networkOf(p), start: s.start ? (parseAddress(s.start) as IpAddr) : undefined, end: s.end ? (parseAddress(s.end) as IpAddr) : undefined, dns: s.dns.map((x) => parseAddress(x) as IpAddr), domain: s.domain, lease: s.lease || DEFAULT_LEASE, exclude: new Set(s.exclude), leases: new Map() });
       });
     }
-    if (!this.hosts.size && !this.routers.size && !this.scopes.length) return;
+    if (!this.hosts.size && !this.routers.size && !this.plain.size && !this.scopes.length) return;
     const self = this;
     P.e.v6Hook = {
       dadProbe: (dev, l3, target) => self.heardProbe(dev, l3, target),
+      unusable: (dev, l3, target) => {
+        const x = self.holderOf(dev, l3, target);
+        return !!x && (x.a.state === 'tentative' || x.a.state === 'duplicate');
+      },
       advert: (dev, l3, target) => self.heardAdvert(dev, l3, target),
       connected: (dev) => self.connected(dev),
       routes: (dev, vrf) => self.routes(dev, vrf),
@@ -213,23 +231,31 @@ export class Ipv6Sim {
       const k = dev + ':' + l3.id;
       const h = this.hosts.get(k);
       const r = this.routers.get(k);
+      const q = this.plain.get(k);
       if (!up) {
         if (h) this.resetHost(h, 'its interface went down');
         if (r) this.resetRouter(r);
+        if (q) this.resetPlain(q);
         return;
       }
       if (h && !h.ll) this.startHost(h, 'its link is up');
       if (r && !r.ll) this.startRouter(r, 'its link is up');
+      if (q && !q.ll) this.startPlain(q, 'its link is up');
     });
     P.deviceHooks.push((dev, up) => {
       if (up) return;
       for (const h of this.hosts.values()) if (h.dev === dev) this.resetHost(h, `${dev} was powered off`);
       for (const r of this.routers.values()) if (r.dev === dev) this.resetRouter(r);
+      for (const q of this.plain.values()) if (q.dev === dev) {
+        this.resetPlain(q);
+        q.disabled = undefined;
+      }
       for (const s of this.scopes) if (s.dev === dev) s.leases.clear();
     });
     P.bootHooks.push(() => {
       for (const h of this.hosts.values()) if (P.e.isL3Up(h.dev, h.iface)) this.startHost(h, 'it starts');
       for (const r of this.routers.values()) if (P.e.isL3Up(r.dev, r.iface)) this.startRouter(r, 'it starts');
+      for (const q of this.plain.values()) if (P.e.isL3Up(q.dev, q.iface)) this.startPlain(q, 'it starts');
     });
   }
 
@@ -272,12 +298,14 @@ export class Ipv6Sim {
   }
 
   /** Whose tentative address is this (or one it holds)? */
-  private holderOf(dev: string, l3: L3Iface, target: IpAddr): { owner: HostIf | RouterIf; a: V6Addr } | null {
+  private holderOf(dev: string, l3: L3Iface, target: IpAddr): { owner: HostIf | RouterIf | PlainIf; a: V6Addr } | null {
     const k = dev + ':' + l3.id;
     const h = this.hosts.get(k);
     if (h) for (const a of (h.ll ? [h.ll] : []).concat(h.addrs, h.dhcp && h.dhcp.addr ? [h.dhcp.addr] : [])) if (compareAddr(a.sa.addr, target) === 0) return { owner: h, a };
     const r = this.routers.get(k);
     if (r && r.ll && compareAddr(r.ll.sa.addr, target) === 0) return { owner: r, a: r.ll };
+    const q = this.plain.get(k);
+    if (q && q.ll && compareAddr(q.ll.sa.addr, target) === 0) return { owner: q, a: q.ll };
     return null;
   }
 
@@ -291,15 +319,46 @@ export class Ipv6Sim {
     if (x && x.a.state === 'tentative') this.duplicate(x.owner, x.a, 'a Neighbor Advertisement says another node has it');
   }
 
-  private duplicate(owner: HostIf | RouterIf, a: V6Addr, why: string): void {
+  private duplicate(owner: HostIf | RouterIf | PlainIf, a: V6Addr, why: string): void {
     a.state = 'duplicate';
     this.note('state', 'ndp', owner.dev, '', 'duplicate address', 'duplicate', `${owner.dev}:${owner.l3.id}: ${a.sa.text} is a duplicate (${why}): it is not used${a.kind === 'link-local' ? '; the interface’s IPv6 stops (RFC 4862 §5.4.5: a duplicate link-local address needs a manual fix)' : ''}`);
     if (a.kind === 'link-local') {
-      if ('method' in owner) owner.disabled = `duplicate link-local address ${formatAddr(a.sa.addr)}`;
+      if ('method' in owner || !('ra' in owner)) (owner as HostIf | PlainIf).disabled = `duplicate link-local address ${formatAddr(a.sa.addr)}`;
       owner.gen++;
       this.e.setLinkLocal(owner.dev, owner.iface, null);
     }
     if ('method' in owner) this.apply(owner);
+  }
+
+  /** An interface's link-local address: one written in the model (fe80::/10), else from its MAC (modified EUI-64). */
+  private linkLocal(dev: string, iface: string, mac: string): { a: SimAddr; how: string } {
+    const i = this.P.m.index.interfaces.get(dev + ':' + iface);
+    for (const t of i ? i.addresses : []) {
+      const pp = parsePrefix(t, false);
+      if (pp && pp.version === 6 && pp.bytes[0] === 0xfe && (pp.bytes[1] & 0xc0) === 0x80) return { a: simAddr({ version: 6, bytes: pp.bytes.slice() }, 64), how: 'written in the model' };
+    }
+    return { a: simAddr(addrIn([0xfe, 0x80, 0, 0, 0, 0, 0, 0], mac), 64), how: `from its MAC ${mac}` };
+  }
+
+  // ------------------------------------------------------------ interfaces with static IPv6 addresses only
+
+  /** The interface's IPv6 starts: its link-local address, tentative until duplicate address detection passes. */
+  private startPlain(q: PlainIf, why: string): void {
+    if (!this.e.deviceOn(q.dev) || q.disabled) return;
+    q.gen++;
+    const ll = this.linkLocal(q.dev, q.iface, q.l3.mac);
+    const a: V6Addr = { sa: ll.a, kind: 'link-local', state: 'tentative', preferredUntil: Infinity, validUntil: Infinity, gen: 0 };
+    q.ll = a;
+    this.note('table', 'ndp', q.dev, '', 'link-local address', 'tentative', `${q.dev}:${q.iface}: link-local address ${a.sa.text} (${ll.how}) is tentative until duplicate address detection passes (${why}; its static IPv6 addresses enable IPv6 on it)`);
+    this.dad(q, a, true, (ok) => {
+      if (ok) this.e.setLinkLocal(q.dev, q.iface, a.sa);
+    });
+  }
+
+  private resetPlain(q: PlainIf): void {
+    q.gen++;
+    q.ll = undefined;
+    this.e.setLinkLocal(q.dev, q.iface, null);
   }
 
   // ------------------------------------------------------------ the router side
@@ -308,9 +367,10 @@ export class Ipv6Sim {
     if (!this.e.deviceOn(r.dev)) return;
     r.gen++;
     r.sent = 0;
-    const a: V6Addr = { sa: simAddr(addrIn([0xfe, 0x80, 0, 0, 0, 0, 0, 0], r.l3.mac), 64), kind: 'link-local', state: 'tentative', preferredUntil: Infinity, validUntil: Infinity, gen: 0 };
+    const ll = this.linkLocal(r.dev, r.iface, r.l3.mac);
+    const a: V6Addr = { sa: ll.a, kind: 'link-local', state: 'tentative', preferredUntil: Infinity, validUntil: Infinity, gen: 0 };
     r.ll = a;
-    this.note('table', 'ndp', r.dev, '', 'link-local address', 'tentative', `${r.dev}:${r.iface}: link-local address ${a.sa.text} (from its MAC ${r.l3.mac}) is tentative until duplicate address detection passes (${why})`);
+    this.note('table', 'ndp', r.dev, '', 'link-local address', 'tentative', `${r.dev}:${r.iface}: link-local address ${a.sa.text} (${ll.how}) is tentative until duplicate address detection passes (${why})`);
     this.dad(r, a, true, (ok) => {
       if (!ok) return;
       this.e.setLinkLocal(r.dev, r.iface, a.sa);
@@ -387,9 +447,10 @@ export class Ipv6Sim {
     h.gen++;
     h.rs = 0;
     h.ra = false;
-    const a: V6Addr = { sa: simAddr(addrIn([0xfe, 0x80, 0, 0, 0, 0, 0, 0], h.l3.mac), 64), kind: 'link-local', state: 'tentative', preferredUntil: Infinity, validUntil: Infinity, gen: 0 };
+    const ll = this.linkLocal(h.dev, h.iface, h.l3.mac);
+    const a: V6Addr = { sa: ll.a, kind: 'link-local', state: 'tentative', preferredUntil: Infinity, validUntil: Infinity, gen: 0 };
     h.ll = a;
-    this.note('table', 'ndp', h.dev, '', 'link-local address', 'tentative', `${h.dev}:${h.iface}: link-local address ${a.sa.text} (from its MAC ${h.l3.mac}) is tentative until duplicate address detection passes (${why})`);
+    this.note('table', 'ndp', h.dev, '', 'link-local address', 'tentative', `${h.dev}:${h.iface}: link-local address ${a.sa.text} (${ll.how}) is tentative until duplicate address detection passes (${why})`);
     this.dad(h, a, true, (ok) => {
       if (!ok) return;
       this.e.setLinkLocal(h.dev, h.iface, a.sa);
@@ -561,6 +622,7 @@ export class Ipv6Sim {
     const out: SnapAddr[] = [];
     const owners: Array<{ dev: string; iface: string; l3: L3Iface; ll?: V6Addr; addrs: V6Addr[] }> = Array.from(this.hosts.values());
     for (const r of this.routers.values()) owners.push({ dev: r.dev, iface: r.iface, l3: r.l3, ll: r.ll, addrs: [] });
+    for (const q of this.plain.values()) owners.push({ dev: q.dev, iface: q.iface, l3: q.l3, ll: q.ll, addrs: [] });
     for (const h of owners) {
       for (const a of (h.ll ? [h.ll] : []).concat(h.addrs)) {
         const s: SnapAddr = {

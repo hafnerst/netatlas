@@ -897,7 +897,8 @@ export class ProtocolSim implements Protocols {
     }
     for (const h of this.ifaceHooks) h(dev, l3, up);
     // an interface that comes up again announces itself
-    if (up && l3.kind !== 'tunnel' && l3.kind !== 'loopback') for (const a of l3.addrs) this.e.gratuitous(dev, l3, a.addr, l3.mac, `${l3.id} came up`);
+    // (never a tentative IPv6 address: duplicate address detection is still deciding whether it may be used, RFC 4862 §5.4)
+    if (up && l3.kind !== 'tunnel' && l3.kind !== 'loopback') for (const a of l3.addrs) if (!(this.e.v6Hook && this.e.v6Hook.unusable(dev, l3, a.addr))) this.e.gratuitous(dev, l3, a.addr, l3.mac, `${l3.id} came up`);
   }
 
   linkChange(ref: string, up: boolean): void {
