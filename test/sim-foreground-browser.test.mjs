@@ -2,11 +2,11 @@
 // the DevTools protocol; skipped without one), the busy internal example,
 // both themes: the scenario bundled (a few exchanges as dots, lit cables with
 // counts for the rest); a stream started: its dots in front, a datagram
-// every real second in Readable pacing too, the clock in real time, the
+// every simulated second (the scenario's clock, whatever the pacing), the
 // scenario's dots still moving behind, grey and not clickable (no data-flight,
 // pointer-events none, never the hit test's packet), the panel says so, a dot
-// of the stream opens the inspector; Real time pacing: the clock and the
-// stream with the real seconds; Next exchange.
+// of the stream opens the inspector; Real time pacing: the clock with the
+// real seconds, the stream on it; Next exchange.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -40,15 +40,15 @@ for (const theme of ['light', 'dark']) {
       assert.equal(u.pace, 'Readable · 3 s per hop · 1×');
       // a stream from pc1: in front; the scenario behind as cable activity
       await page.eval(`netatlas.simController().startStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500), true`);
-      const s0 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, performance.now()]`);
+      const s0 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);
       await wait(3000);
       u = await ui();
-      assert.match(u.pace, /^Readable · 3 s per hop · 1× · streams in real time( · behind)?$/);
+      assert.equal(u.pace, 'Readable · 3 s per hop · 1× · your events in front');
       assert.ok(u.fgDots > 0, 'the stream’s dots');
-      // a datagram every real second, Readable pacing or not (the first at once): within a frame or two of the real seconds
-      const s1 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, performance.now()]`);
+      // a datagram every simulated second (the first at once), whatever the pacing
+      const s1 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);
       const secs = (s1[1] - s0[1]) / 1000;
-      assert.ok(s1[0] >= Math.floor(secs) && s1[0] <= Math.floor(secs) + 2, `${s1[0]} datagrams in ${secs.toFixed(2)} s`);
+      assert.ok(s1[0] >= Math.floor(secs) && s1[0] <= Math.floor(secs) + 2, `${s1[0]} datagrams in ${secs.toFixed(2)} s of simulated time`);
       // the scenario behind it: its dots go on moving, grey, nothing to point at
       const bg = await page.eval(`(() => { const c = netatlas.simController(); const p = c.pacer; const els = Array.from(document.querySelectorAll('#canvas .layer-sim .sim-bg'));
         return { items: p.items.filter((it) => it.drawn && it.f.view === 'physical' && it.f.test === undefined && p.state(it).phase === 'moving').every((it) => p.background(it)), els: els.length,
@@ -77,14 +77,15 @@ for (const theme of ['light', 'dark']) {
       await page.settle(60);
       assert.equal(await page.eval(`netatlas.simController().playing`), false);
       assert.ok((await ui()).t >= before);
-      // Real time: the clock and the stream with the real seconds
+      // Real time: the clock with the real seconds, and the stream on that clock
       await page.eval(`(() => { const s = document.getElementById('sim-pace'); s.value = 'realtime'; s.dispatchEvent(new Event('change')); netatlas.simController().setPlaying(true); return true; })()`);
       const r0 = await page.eval(`[netatlas.simController().t, netatlas.simController().sim.actions()[0].progress.done, performance.now()]`);
       await wait(4000);
       const r1 = await page.eval(`[netatlas.simController().t, netatlas.simController().sim.actions()[0].progress.done, performance.now()]`);
       const real = r1[2] - r0[2];
       assert.ok(r1[0] - r0[0] <= real + 200 && r1[0] - r0[0] > real * 0.5, `${r1[0] - r0[0]} ms simulated in ${real} ms`);
-      assert.ok(r1[1] - r0[1] >= 2 && r1[1] - r0[1] <= Math.ceil(real / 1000) + 1, `${r1[1] - r0[1]} datagrams in ${real} ms`);
+      const sim = (r1[0] - r0[0]) / 1000;
+      assert.ok(r1[1] - r0[1] >= Math.floor(sim) - 1 && r1[1] - r0[1] <= Math.ceil(sim) + 1, `${r1[1] - r0[1]} datagrams in ${sim.toFixed(2)} s of simulated time`);
       assert.match((await ui()).pace, /^Real time · 1×( · behind)? · your events in front$/);
       // stopped: the scenario is in front again
       await page.eval(`document.querySelector('#sim-events li[data-kind="stream"] button[data-op="stop"]').click(), true`);

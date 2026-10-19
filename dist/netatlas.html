@@ -49288,7 +49288,7 @@ const MANUAL = [
             'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself when you close the inspector (**×**, `Esc`), or it is gone from the window — not when you click or tab elsewhere, or another window covers it for a while (**Play** resumes at once). If you paused it yourself, it stays paused; the state’s tooltip says who paused it and what ends it. **Follow message** keeps that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) always drawn, plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
             '**Step** moves to the next message event: a message arrives, or the next one starts at its sender. **Next exchange** moves on to the end of the exchange first on screen (an ARP request and its reply, a ping and its echo, a hello), or of the next one to start.',
             '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join until it is recorded, a leave until its cleanup settles, flapping), and until its last dots have arrived, its traffic is the foreground: everything it causes — its messages, their copies, the answers, the ARP it needs — is drawn normally, labelled and clickable. The scenario goes on underneath as the background: its dots keep moving, but **grey**, each kind with a short grey label (*IGMP Query*, *ARP*, *DHCP*, *UDP* — one per cable and kind, only where there is room), and the pointer goes through them and their labels (no outline, no inspector; the event log and the tables have them all). Several of your actions at once are all in front. A finished event, the membership a join leaves behind, or a card kept in Active events mutes nothing. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
-            '**Streams in real time.** A stream you start under **Network events** sends one datagram at once and then one every interval of **real time** (1 s: every second, 2 s: every two seconds), whatever the pacing, the speed, the size of the model or the scenario. Several streams run side by side, each on its own schedule from its own start: two 1 s streams each send every second, never taking turns, and starting or stopping one never changes another. While one runs, the simulated clock runs with real time too (as in **Real time** pacing, times the speed), so its datagrams are forwarded at once and the scenario goes on at its own pace behind them; the dots keep the pacing’s hop time, so in Readable pacing several datagrams of a stream are on their way at once. Multicast data is shown as a **flow**: each copy is on its cable from the moment it is forwarded, on every cable of its way at once — so a join or a leave shows with the next datagram, not after the earlier ones have crawled along the whole way. The panel says *· streams in real time*. Paused (or with the tab hidden), the streams stand too and go on from there; nothing is caught up. A reply of a send is drawn after the message it answers has arrived on screen.',
+            '**Streams.** A stream you start under **Network events** sends one datagram at once and then one every interval of **simulated time** (1 s: every simulated second), as the model’s own streams do: the pacing, the speed and how busy the page is change only how fast its datagrams are shown, never which ones exist or when they are sent in the scenario. Several streams run side by side, each on its own interval from its own start: two 1 s streams each send every simulated second, and starting or stopping one never changes another. In Readable pacing a simulated second takes longer than a real one while dots are on their way, so a stream’s datagrams follow one another more slowly on screen; **Real time** pacing shows them a real second apart (times the speed). Multicast data is shown as a **flow**: each copy is on its cable from the moment it is forwarded, on every cable of its way at once — so a join or a leave shows with the next datagram, not after the earlier ones have crawled along the whole way. Paused, nothing is sent (the simulated clock stands). A reply of a send is drawn after the message it answers has arrived on screen.',
             'The scenario is **bundled**: at most 6 of its exchanges are drawn as dots at once, each to its end — and a few more for protocols with nothing else on screen, so a burst of DHCP and ARP never hides an IGMP query or a Hello — the others as **cable activity** (a cable lit with a short count, *OSPF ×3 · ARP ×1*). An exchange whose next hop would show more than 15 s after it happened is cable activity too, so the dots stay close to what is happening. So many things at once stay followable, a few at a time.',
             '**Pacing: Real time (1 s = 1 s)** runs the simulated clock with the real one (times the speed): a 1 s interval of a send is a real second. Every hop shows briefly as a sign of its traffic, bundled as above, and idle time is never skipped. In every pacing, when the simulation has more work than a frame allows, it falls behind and says so (*· behind*), and goes on from there instead of catching up in a burst: the page stays responsive.',
         ],
@@ -49296,8 +49296,7 @@ const MANUAL = [
             'The pacing, the speed and skipping only change how the simulation is shown: what happens, and in which order, is the same with every setting.',
             'Every hop gets the same time on screen from the very first one: the clock starts with the first frame drawn, a slow frame counts at most 0.1 s (the dots slow down for a moment instead of jumping), and a hidden tab stops it.',
             'A moving dot’s label is placed when the dot appears, where it touches nothing, and keeps that place beside its dot all the way: it moves with the dot and may pass over a name or another label for a moment instead of jumping away. At most 48 messages are drawn at once, and at most 6 of the scenario’s exchanges; the panel says how many more are shown as cable activity, and the event log lists every message.',
-            'Intervals of a send’s messages and of flapping are simulated time: results such as round trips, timeouts and aging stay right and the same every time; in Readable and Real time pacing a simulated second takes a real second. A stream of Network events is the exception: its interval is real time (see above), so its datagrams’ simulated times depend on how the simulation was played. The streams of the model (its `multicast:` blocks and multicast demands) belong to the scenario and keep to simulated time.',
-            'The streams’ schedule counts the page’s own clock, computed from each stream’s start, so a late frame never adds up to drift. Browsers aren’t hard real time: a datagram goes in the first frame at or after its moment (within about a frame, 1/60 s), a busy page can be later, and a stall longer than the interval (the browser suspended) sends one datagram, not a burst; the stream’s **Details** count the ones left out.',
+            'Every interval is simulated time — a send’s messages, flapping, a stream, an application’s repetitions: results such as round trips, timeouts and aging stay right and the same every time, whatever the pacing; in Real time pacing a simulated second takes a real second.',
             'With reduced motion set in your system, each message is a still arrow with its label, shown for the same paced time; **Step** moves one message at a time.',
         ],
     },
@@ -49505,7 +49504,7 @@ const MANUAL = [
         id: 'sim-multicast',
         title: 'Join a group and follow a multicast stream',
         steps: [
-            'Groups and streams belong to an interface: in the model (its `multicast:` block, with `join` and `streams`), or during a simulation from **Join multicast group** and **Start multicast stream** under **Network events** (a host’s menu opens them with the host filled in). Choose the host and its interface (each as *name - address*), write the group (and, for a source-specific group in 232.0.0.0/8, its **Sources**, which appear only then) and, for a stream, its **UDP port**, interval and size; then **Join group** or **Start stream**. The button stays disabled, with the reason under it, until the simulation can carry it out. A stream’s **Interval** is real time: its first datagram goes at once, then one every interval of playing time (see *Follow the messages: pacing and speed*). Start several: each has its own schedule, its own event and its own traffic (its UDP port, its id in the packet inspector and the event’s details).',
+            'Groups and streams belong to an interface: in the model (its `multicast:` block, with `join` and `streams`), or during a simulation from **Join multicast group** and **Start multicast stream** under **Network events** (a host’s menu opens them with the host filled in). Choose the host and its interface (each as *name - address*), write the group (and, for a source-specific group in 232.0.0.0/8, its **Sources**, which appear only then) and, for a stream, its **UDP port**, interval and size; then **Join group** or **Start stream**. The button stays disabled, with the reason under it, until the simulation can carry it out. A stream’s **Interval** is simulated time: its first datagram goes at once, then one every interval (see *Follow the messages: pacing and speed*). Start several: each has its own schedule, its own event and its own traffic (its UDP port, its id in the packet inspector and the event’s details).',
             'The routers elect an IGMP querier per subnet, the hosts report their groups, the switches learn the member ports, and the PIM routers build the tree from the source (through the rendezvous point for any-source groups). The stream’s dots are diamonds and split where it is replicated.',
             '**IGMP / MLD snooping is each switch’s own setting**, chosen per VLAN in its **Edit** tab (**IGMP / MLD snooping**: *Enabled*, *Disabled*, or *Not configured* — an error until you choose; in the file `igmp_mld_snooping`). Enabled, each port of the VLAN has a role for a group: a **member port** (a member of that group reported there), a **multicast router port** (a query or PIM Hello came in there: a multicast router or the VLAN’s querier is behind it — it gets every group, members or not, and is no membership; an uplink or a Layer 3 device behind a port does not make it one), the **ingress port** (never sent back), or none. A group goes to its member ports and the router ports. A group nobody joined (unregistered) goes by the VLAN’s **Unregistered multicast** setting (in the file `unregistered_multicast`): **To the router ports only** (the default, as RFC 4541 requires: nothing to the hosts, and nowhere if the VLAN has no router port) or **Flooded to every port** (which the RFC allows). Disabled (or not configured), multicast is flooded in the VLAN. Reports go to the router ports only, so each switch on the way to the querier learns the port its member’s report came in on — nothing is copied between switches; queries and routing protocols’ link-local groups are always flooded. A membership applies to the very next packet. **Without a querier**, a snooping VLAN learns no router port: a stream stays at the first switch and a member’s report never leaves the switch it reached — give the VLAN a querier (a multicast router, or a switch’s snooping querier). Snooping never routes: on a Layer 3 switch, multicast crosses into another VLAN only with PIM and a member there.',
             '**The querier election** starts by itself with the simulation. Every querier candidate — a router’s interface with IGMP / MLD (its `igmp_querier` on, the default), a switch’s VLAN with the snooping querier on, snooping enabled and an address there — queries at once, taking itself for the querier for now, and sends its **startup queries** (robustness of them, a quarter of the query interval apart). Whoever hears a query from a **lower address** stops: the lowest address of each LAN wins and, once its startup queries are sent, queries every query interval. A non-querier takes over when it hears nothing from the querier for the other querier present interval (robustness × query interval + response interval ÷ 2); a querier powered on again (or its interface back) starts afresh and wins again if its address is lower. Only the queries that reach a candidate count: two LANs with the same VLAN ID elect apart, and a router can be the querier on one interface and not on another. Enabling snooping makes no candidate.',
@@ -49516,9 +49515,9 @@ const MANUAL = [
             '**Why a packet went where it went:** open a multicast dot in the packet inspector. *Switching at dist (sent this hop)* and *Switching at core (where it arrived)* list each port: **→ up: sent — multicast router port (4 min 50 s left)**, **✕ ap1: not sent — no member and no multicast router port**, **✕ ap2: not sent — ingress port**; a Layer 3 switch adds *Routing at core* (its outgoing interfaces, or why none, e.g. it runs no PIM). The snooping table tells router ports (*every group goes there … not a membership*) from member ports (*member port: IGMPv3 …*).',
             'The tables, from a device’s menu, in the simulation panel (they update while they are open): a host’s **Show group memberships** (its own groups, version, filter and what it received; who queries its LAN), a router’s or a switch’s **Show querier election**, a switch’s **Show snooping table** (per VLAN its router ports and each group’s member ports with version, sources, reporter and time left; under it each VLAN’s setting and what it means), a router’s **Show IGMP / MLD groups** (its interfaces’ members, the querier) and **Show multicast routes**. The Status table shows each stream and each member (*Receiving* or *Lost*).',
             'Their packets are drawn like those of **Send network packets**, whatever protocols and senders are ticked (a model without multicast has none to tick): the join’s IGMP / MLD reports from the host’s interface (and what they cause at once: a multicast router’s PIM Join towards the source or RP, its group-specific query after a leave), the stream’s datagrams from its source and each copy the switches and routers make, as far as the simulation forwards them. Where they stop (a router that runs no PIM, a switch whose snooping knows no member and no router port, a VLAN’s end), the stream’s event says so. A dot opens the packet inspector; the event’s **Details** open its first message; the event log marks them **Test**.',
-            'Both are listed under **Active events**. A join is *In progress* until a multicast router records the membership (*membership recorded by core1:Vlan10*), or until its reports are sent without any router recording it (*a member on its own segment only*); then it is *Completed*, and the membership stays, with **Leave group**. A stream is *In progress* (*Paused* while the simulation is) until **Stop stream**, which cancels its later datagrams; its line says its interval (*every 1 s of real time*), counts the datagrams its source sent (the copies multicast makes are not counted) and, apart from them, those each member received. Its source powered off, it sends nothing (*not sending: srv is off*) until it is up again. A host’s menu also leaves its groups and stops its streams, those of the model too. Fail a link on the tree: the routers’ RPF interfaces change, they join the new way and prune the old, and the members receive again.',
+            'Both are listed under **Active events**. A join is *In progress* until a multicast router records the membership (*membership recorded by core1:Vlan10*), or until its reports are sent without any router recording it (*a member on its own segment only*); then it is *Completed*, and the membership stays, with **Leave group**. A stream is *In progress* (*Paused* while the simulation is) until **Stop stream**, which cancels its later datagrams; its line says its interval (*every 1 s of simulated time*), counts the datagrams its source sent (the copies multicast makes are not counted) and, apart from them, those each member received. Its source powered off, it sends nothing (*not sending: srv is off*) until it is up again. A host’s menu also leaves its groups and stops its streams, those of the model too. Fail a link on the tree: the routers’ RPF interfaces change, they join the new way and prune the old, and the members receive again.',
         ],
-        notes: ['The election follows RFC 3376 / RFC 3810 (IGMPv2 / v3, MLDv1 / v2): the lowest address wins, the startup queries and the other querier present interval as specified; IGMPv1 is not simulated. All IGMP / MLD timers run on the simulated clock (in Real time pacing, or while a stream of Network events runs, it follows real time).', 'The consistency checks report a switch VLAN without a snooping choice (an error), receivers without a querier in their subnet, sparse-mode groups without a rendezvous point, and a router whose route towards a source has no PIM neighbour.', 'Snooping forwards by group: an IGMPv3 / MLDv2 member’s sources are shown in the snooping table but not filtered at the switch. A switch’s snooping querier sends IGMP queries only; IPv6 members are learned from their own reports. Memberships age in simulated time (robustness × query interval + response interval).'],
+        notes: ['The election follows RFC 3376 / RFC 3810 (IGMPv2 / v3, MLDv1 / v2): the lowest address wins, the startup queries and the other querier present interval as specified; IGMPv1 is not simulated. All IGMP / MLD timers run on the simulated clock (in Real time pacing it follows real time).', 'The consistency checks report a switch VLAN without a snooping choice (an error), receivers without a querier in their subnet, sparse-mode groups without a rendezvous point, and a router whose route towards a source has no PIM neighbour.', 'Snooping forwards by group: an IGMPv3 / MLDv2 member’s sources are shown in the snooping table but not filtered at the switch. A switch’s snooping querier sends IGMP queries only; IPv6 members are learned from their own reports. Memberships age in simulated time (robustness × query interval + response interval).'],
         figures: [
             ['querier', 'The querier election in the internal example multicast-querier.yaml: q1 (10.5.0.1) is the elected querier of VLAN 10 (its mark beside its status); q2, a candidate with a higher address, is on standby.'],
             ['mroutes', 'r1’s multicast routes in the simulation panel: the RP, the shared tree (*, 239.1.1.1) and the sources’ trees, each with its incoming and outgoing interfaces.'],
@@ -49529,7 +49528,7 @@ const MANUAL = [
         title: 'Start applications and follow MQTT',
         steps: [
             'Applications send nothing by themselves. In **Network events**, open **Start application**, choose a **Device** (a device with only listeners is listed as *listeners only*) and its **Application**, and press **Start application**; one with *Starts: With the simulation* starts 3 s after the senders.',
-            'A client connects, sends its request and waits for the answer, with its timeout and retries; a periodic sender repeats every interval of real time, its count or until stopped. **Active events** shows each start as one entry with what each message came to, and its **Stop**.',
+            'A client connects, sends its request and waits for the answer, with its timeout and retries; a periodic sender repeats every interval of simulated time, its count or until stopped. **Active events** shows each start as one entry with what each message came to, and its **Stop**.',
             'In ot-network.yaml start hmi-1’s *Temperatures* and plc-1’s *Telemetry*: the PLC connects to edge-1, the broker, and publishes its temperature and its pressure every 5 s; the broker forwards the temperature to the HMI (its filter *plant/cell1/+/temperature*) and the pressure to nobody. eng-ws’s *Alarm log* subscribes to a filter nothing matches and receives nothing.',
             'On the broker, **Show MQTT sessions** lists its clients and their subscriptions; on a client, **Show MQTT clients** its state, publications and what it received by topic. A message’s dot opens its inspection: its type, topic, QoS and packet id, and its payload’s size, never its contents.',
         ],
@@ -68145,7 +68144,7 @@ const secs = (ms) => `${(ms / 1000).toFixed(1)} s`;
 /** The actions that need their device up to be submitted (the others act on its power or state themselves). */
 const NEEDS_DEVICE = new Set(['send', 'shut', 'no_shut', 'flap', 'stop_flap', 'join', 'leave', 'start_stream', 'stop_stream', 'start_app', 'stop_app']);
 class ExperimentRunner {
-    constructor(model, exp, fingerprint, opts = {}) {
+    constructor(model, exp, fingerprint) {
         this.exp = exp;
         this.gen = ++generation;
         this.sends = new Map();
@@ -68162,7 +68161,7 @@ class ExperimentRunner {
         const params = {};
         for (const p of exp.params)
             params[p.key] = p.value;
-        this.sim = new simulation_1.Simulation(this.model, { params, realClock: opts.realClock });
+        this.sim = new simulation_1.Simulation(this.model, { params });
         const n = model.devices.length;
         // (what the scope leaves out that can change the outcome is said with it: its results are the scope's, not the entire model's)
         const scopeLine = !scope ? `Entire model (${n} device${n === 1 ? '' : 's'})` : `${(0, experiments_1.scopeText)(exp.scope)}: ${scope.devices.size} of ${n} devices run${scope.caveats.length ? ` — may differ from the entire model: ${scope.caveats.join('; ')}` : ''}`;
@@ -69471,7 +69470,6 @@ const failure_1 = __req("analysis/failure");
 const routing_1 = __req("analysis/routing");
 const ipmath_1 = __req("analysis/ipmath");
 const engine_1 = __req("analysis/sim/engine");
-const realtime_1 = __req("analysis/sim/realtime");
 const proto_other_1 = __req("analysis/sim/proto-other");
 const proto_routing_1 = __req("analysis/sim/proto-routing");
 const protocols_1 = __req("analysis/sim/protocols");
@@ -69552,7 +69550,6 @@ class Simulation {
         this.actSeq = 0;
         this.model = model;
         this.engine = new engine_1.Engine(model, opts);
-        this.realtime = new realtime_1.RealTimeScheduler(opts.realClock);
         this.protocols = new protocols_1.ProtocolSim(this.engine, { ...proto_routing_1.ROUTING_BEHAVIOURS, ...proto_other_1.OTHER_BEHAVIOURS });
         (0, proto_other_1.installBootGarp)(this.protocols);
         (0, proto_other_1.installFhrp)(this.protocols);
@@ -69561,7 +69558,6 @@ class Simulation {
         (0, proto_other_1.installDemands)(this.protocols);
         (0, proto_other_1.installCustomL2)(this.protocols);
         this.multicast = new multicast_1.Multicast(this.protocols);
-        this.multicast.realtime = this.realtime;
         this.multicast.install();
         this.netsvc = new netsvc_1.NetServicesSim(this.protocols);
         this.ipv6 = new ipv6_2.Ipv6Sim(this.protocols);
@@ -69574,9 +69570,7 @@ class Simulation {
         this.multicast.onMember = (rdev, riface, group, reporter) => this.memberRecorded(rdev, riface, group, reporter);
         this.transport.install();
         this.apps = new apps_1.AppSim(this.protocols, this.transport);
-        this.apps.realtime = this.realtime;
         this.mqtt = new mqtt_1.MqttSim(this.protocols, this.transport, this.apps);
-        this.mqtt.realtime = this.realtime;
         this.ntp = new ntp_1.NtpSim(this.protocols);
         this.ntp.install();
         this.ptp = new ptp_1.PtpSim(this.protocols, this.multicast);
@@ -69586,25 +69580,9 @@ class Simulation {
     get now() {
         return this.engine.now;
     }
-    /**
-     * The real-time schedule's turn (once an animation frame, before the clock moves): the streams of
-     * Network events send what is due now, at the current simulated time; returns how many datagrams.
-     */
-    pumpRealTime() {
-        return this.realtime.pump();
-    }
-    /** Is anything on the real-time schedule (a stream of Network events running)? */
-    realtimeActive() {
-        return this.realtime.active();
-    }
-    /** The simulation plays or pauses (a hidden tab pauses it too): the real-time schedule with it. */
-    setRealTimeRunning(on) {
-        this.realtime.setRunning(on);
-    }
     /** The simulation is closed (Exit simulation, another model): nothing scheduled sends again. */
     close() {
-        this.realtime.clear();
-        this.realtime.setRunning(false);
+        // (everything it schedules is on the simulated clock, and nothing drives that clock any more: nothing to cancel)
     }
     /** A device's lifecycle as the diagram, its menu and the events say it (the state packet processing reads). */
     deviceState(dev) {
@@ -69806,11 +69784,10 @@ class Simulation {
                 return null;
             },
             shut: (d, i) => this.engine.isShut(d, i),
-            rtPaused: !this.realtime.running,
             deviceOn: (d) => this.engine.deviceOn(d),
             appView: (a) => {
                 const c = a.app ? this.mqtt.clientOf(a.app) : undefined;
-                return c ? this.mqtt.view(a, c, !this.realtime.running) : null;
+                return c ? this.mqtt.view(a, c) : null;
             },
             flapCycles: this.engine.params.num('flap-cycles'),
             flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,
@@ -70765,130 +70742,6 @@ function protocolEntriesOf(model) {
     const order = (g) => exports.ENTRY_GROUPS.indexOf(g);
     return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 }
-
-};
-__defs["analysis/sim/realtime"] = function (module, exports) {
-"use strict";
-/**
- * The real-time schedule of Network events: what a user started that
- * repeats at an interval of real time (a multicast stream), independent of
- * the simulated clock. DOM-free; its clock is injected (the browser's
- * `performance.now`, a test's fake), so tests never sleep.
- *
- * Its time is the clock's while it runs: paused (the simulation paused,
- * its tab hidden, the simulation closed) its time stands, and resuming goes
- * on from there, so a pause shifts every deadline by its length and sends
- * nothing it missed.
- *
- * Each entry keeps its own grid: the first send at once when it is added
- * (the streams' convention: the first datagram goes when the stream
- * starts), the n-th at start + n × interval of the schedule's time. A
- * deadline is computed from the start, never from when the last send
- * happened, so a late frame doesn't add up to drift. `pump()` (once an
- * animation frame) sends what is due: entries with the same deadline in the
- * order they were added; a frame late by less than an interval sends the
- * one due and keeps the grid; one later than that (a stall) sends one for
- * the latest deadline and counts the others as skipped, never a burst.
- * Every entry is due on its own grid in the same pump: two streams of 1 s
- * each send every second, never taking turns.
- *
- * Entries are removed by `remove` (Stop) and all of them by `clear`
- * (closing the simulation); a removed entry's callback never runs again,
- * even from a pump already under way.
- */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.RealTimeScheduler = void 0;
-class RealTimeScheduler {
-    constructor(
-    /** real ms, monotonic (performance.now in the browser) */
-    clock = () => Date.now(), running = true) {
-        this.clock = clock;
-        this.entries = [];
-        this.seq = 0;
-        /** schedule time = clock − offset while running; while paused it stands at `pausedAt` */
-        this.offset = 0;
-        this.pausedAt = running ? null : this.clock();
-    }
-    /** The schedule's own time (real ms that it ran). */
-    now() {
-        return (this.pausedAt !== null ? this.pausedAt : this.clock()) - this.offset;
-    }
-    get running() {
-        return this.pausedAt === null;
-    }
-    /** Run or pause (the simulation's play state; a hidden tab counts as paused). */
-    setRunning(on) {
-        if (on === this.running)
-            return;
-        if (on) {
-            this.offset += this.clock() - this.pausedAt;
-            this.pausedAt = null;
-        }
-        else
-            this.pausedAt = this.clock();
-    }
-    /** Add an entry: its first send now, then every interval; returns it (its id removes it). */
-    add(interval, fire) {
-        const e = { id: ++this.seq, interval: Math.max(1, interval), start: this.now(), next: 1, skipped: 0, fire };
-        this.entries.push(e);
-        fire(0);
-        return e;
-    }
-    remove(id) {
-        const n = this.entries.length;
-        this.entries = this.entries.filter((e) => e.id !== id);
-        return this.entries.length < n;
-    }
-    /** Remove every entry (the simulation closed or started again). */
-    clear() {
-        this.entries = [];
-    }
-    get(id) {
-        return this.entries.find((e) => e.id === id);
-    }
-    /** Is anything scheduled? */
-    active() {
-        return this.entries.length > 0;
-    }
-    /** How many entries are scheduled. */
-    get size() {
-        return this.entries.length;
-    }
-    /** When an entry's next send is due (schedule time), or null. */
-    due(id) {
-        const e = this.get(id);
-        return e ? e.start + e.next * e.interval : null;
-    }
-    /** Send what is due now; returns how many sends were made. */
-    pump() {
-        if (!this.running || !this.entries.length)
-            return 0;
-        const now = this.now();
-        const due = [];
-        for (const e of this.entries) {
-            const at = e.start + e.next * e.interval;
-            if (at > now)
-                continue;
-            // the latest deadline passed; those before it (a stall longer than an interval) are skipped
-            const last = Math.floor((now - e.start) / e.interval);
-            e.skipped += last - e.next;
-            due.push({ e, at: e.start + last * e.interval, n: last });
-            e.next = last + 1;
-        }
-        // the same deadline: in the order added (stable); each entry once per pump
-        due.sort((a, b) => a.at - b.at || a.e.id - b.e.id);
-        let sent = 0;
-        for (const d of due) {
-            // (removed meanwhile, by an earlier send's consequences: never again)
-            if (this.entries.indexOf(d.e) < 0)
-                continue;
-            d.e.fire(d.n);
-            sent++;
-        }
-        return sent;
-    }
-}
-exports.RealTimeScheduler = RealTimeScheduler;
 
 };
 __defs["analysis/sim/proto-other"] = function (module, exports) {
@@ -73156,8 +73009,6 @@ class Multicast {
         this.events = [];
         this.seq = 0;
         this.noted = new Map();
-        /** the real-time schedule of Network events (a stream of Network events sends on it; null: on the simulated clock) */
-        this.realtime = null;
         /** a test's datagram reached a member: the transport layer's callback */
         this.onTestReceived = null;
         /** Called when a multicast router's interface records a member's report (Network events follow joins by it). */
@@ -74815,26 +74666,19 @@ class Multicast {
         this.runStream(st, first);
         return st;
     }
+    /**
+     * Every stream on the simulated clock (the scenario's time): one datagram
+     * every interval of simulated time, the first at `first` (a stream of
+     * Network events: at once). What exists never depends on the frame rate,
+     * the pacing or a stalled page — only how fast it is shown does.
+     */
     runStream(st, first) {
         const gen = ++st.gen;
-        // a stream of Network events: every interval of real time, on its own grid (the first datagram at once)
-        if (st.origin === 'event' && this.realtime) {
-            const rt = this.realtime;
-            const e = rt.add(st.interval, () => {
-                if (st.gen !== gen || !st.running)
-                    return;
-                const r = rt.get(st.rt);
-                st.skipped = r ? r.skipped : st.skipped;
-                this.sendStream(st);
-            });
-            st.rt = e.id;
-            return;
-        }
         this.P.periodic(() => st.gen === gen && st.running, () => st.interval, () => this.sendStream(st), first);
     }
     sendStream(st) {
         if (!this.e.deviceOn(st.dev)) {
-            if (st.rt !== undefined)
+            if (st.origin === 'event')
                 st.offMissed = (st.offMissed || 0) + 1;
             return;
         }
@@ -74873,8 +74717,6 @@ class Multicast {
         st.stoppedAt = this.e.now;
         st.gen++;
         // its future sends are cancelled
-        if (st.rt !== undefined && this.realtime)
-            this.realtime.remove(st.rt);
         const i = this.events.findIndex((x) => x.kind === 'stream' && x.ref === `iface:${dev}:${iface}` && x.group === st.group);
         if (i >= 0)
             this.events.splice(i, 1);
@@ -76164,8 +76006,6 @@ class AppSim {
         this.T = T;
         this.seq = 0;
         this.runs = [];
-        /** the real-time schedule of Network events (the runs started there repeat on it) */
-        this.realtime = null;
         /** An MQTT client's start and stop, by mqtt.ts (it keeps a session, not a series of tests). */
         this.mqttProblem = null;
         this.mqttStart = null;
@@ -76286,33 +76126,21 @@ class AppSim {
             if (run.stopped || (run.count !== null && n >= run.count))
                 return;
             this.message(run, p, n + 1, 0);
-            if (run.count !== null && run.sent >= run.count)
-                this.unschedule(run);
         };
-        if (interval && how === 'event' && this.realtime) {
-            // a run of Network events repeats in real time, as a stream does: its first message now
-            run.rt = this.realtime.add(interval, fire).id;
-        }
-        else {
-            fire(0);
-            const next = (n) => {
-                if (!interval || run.stopped || (run.count !== null && n >= run.count))
+        // the first message now, then every interval of simulated time (the scenario's; never the page's frames)
+        fire(0);
+        const next = (n) => {
+            if (!interval || run.stopped || (run.count !== null && n >= run.count))
+                return;
+            this.e.at(run.t0 + n * interval, () => {
+                if (run.stopped)
                     return;
-                this.e.at(run.t0 + n * interval, () => {
-                    if (run.stopped)
-                        return;
-                    fire(n);
-                    next(n + 1);
-                });
-            };
-            next(1);
-        }
+                fire(n);
+                next(n + 1);
+            });
+        };
+        next(1);
         return run;
-    }
-    unschedule(run) {
-        if (run.rt !== undefined && this.realtime)
-            this.realtime.remove(run.rt);
-        run.rt = undefined;
     }
     /** Stop a run: no more messages (those on their way finish); an MQTT client unsubscribes and disconnects. */
     stop(run) {
@@ -76322,7 +76150,6 @@ class AppSim {
             return false;
         run.stopped = true;
         run.stoppedAt = this.e.now;
-        this.unschedule(run);
         for (const t of run.tests)
             this.T.cancel(t, 'not sent: cancelled (Stop)');
         return true;
@@ -76470,7 +76297,7 @@ function appSummaryText(r, o = appOutcome(r)) {
 function appCadence(r) {
     if (!r.interval)
         return 'one message';
-    return `every ${(0, params_1.durationText)(r.interval)}${r.rt !== undefined || r.how === 'event' ? ' of real time' : ''}${r.count !== null ? `, ${r.count} message${r.count === 1 ? '' : 's'}` : ', until stopped'}`;
+    return `every ${(0, params_1.durationText)(r.interval)}${r.count !== null ? `, ${r.count} message${r.count === 1 ? '' : 's'}` : ', until stopped'}`;
 }
 /** The address the run's last message went to, for the details. */
 function lastDst(r) {
@@ -76504,7 +76331,6 @@ class MqttSim {
         this.A = A;
         this.brokers = new Map();
         this.clients = [];
-        this.realtime = null;
         for (const d of P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
             const svc = d.appServices ? d.appServices.get('mqtt_broker') : undefined;
             if (!svc)
@@ -76711,12 +76537,12 @@ class MqttSim {
         };
         this.later(c, Math.max(1000, ka / 4), tick);
     }
-    /** Publications: one to each topic now, then every interval (real time for Network events, as a stream). */
+    /** Publications: one to each topic now, then every interval of simulated time. */
     startPublishing(c) {
         const r = c.run;
         if (!r.app.publish.length || (r.count !== null && c.rounds >= r.count))
             return;
-        if (r.rt !== undefined || (c.rounds > 0 && r.interval))
+        if (c.rounds > 0 && r.interval)
             return;
         const round = () => {
             if (c.state !== 'Connected' || r.stopped || (r.count !== null && c.rounds >= r.count))
@@ -76726,16 +76552,11 @@ class MqttSim {
             for (const t of r.app.publish)
                 this.publish(c, t);
             if (r.count !== null && c.rounds >= r.count) {
-                this.unschedule(c);
                 // a publisher without subscriptions is done when its last publications are acknowledged
                 if (!r.app.subscribe.length)
                     this.finishWhenAcked(c);
             }
         };
-        if (r.interval && r.how === 'event' && this.realtime) {
-            r.rt = this.realtime.add(r.interval, () => this.as(c, round)).id;
-            return;
-        }
         round();
         if (!r.interval)
             return;
@@ -76750,11 +76571,6 @@ class MqttSim {
             });
         };
         next();
-    }
-    unschedule(c) {
-        if (c.run.rt !== undefined && this.realtime)
-            this.realtime.remove(c.run.rt);
-        c.run.rt = undefined;
     }
     publish(c, topic) {
         const s = c.sock;
@@ -76800,7 +76616,6 @@ class MqttSim {
     }
     disconnect(c, s) {
         this.send(c, s, 'DISCONNECT', c.clientId, `MQTT DISCONNECT from ${c.clientId}: it ends its session`, packetBytes(0), {});
-        this.unschedule(c);
         c.state = 'Stopped';
         c.gen++;
         this.note(c, 'disconnected', 'Stopped', `${this.name(c)} disconnects from ${c.broker}`);
@@ -76814,7 +76629,6 @@ class MqttSim {
             return false;
         run.stopped = true;
         run.stoppedAt = this.e.now;
-        this.unschedule(c);
         this.as(c, () => {
             const s = c.sock;
             if (s && s.open && c.state === 'Connected') {
@@ -76854,7 +76668,6 @@ class MqttSim {
         c.lost += c.inflight.size;
         c.inflight.clear();
         c.granted.clear();
-        this.unschedule(c);
         this.note(c, 'connection closed', 'Disconnected', `${this.name(c)}: ${was === 'Connecting' ? 'could not connect' : 'its connection is gone'} (${why})${retry ? `; it connects again in ${(0, params_1.durationText)(exports.RECONNECT_DELAY)}` : ''}`);
         if (retry)
             this.reconnectSoon(c, why);
@@ -77077,10 +76890,10 @@ class MqttSim {
         return out;
     }
     /** A client's run as an event of Active events. */
-    view(a, c, rtPaused) {
+    view(a, c) {
         const r = c.run;
         const going = c.state !== 'Stopped';
-        const status = going ? (r.rt !== undefined && rtPaused ? 'paused' : 'running') : r.stopped && r.count !== null && c.rounds >= r.count ? 'completed' : 'stopped';
+        const status = going ? 'running' : r.stopped && r.count !== null && c.rounds >= r.count ? 'completed' : 'stopped';
         const ka = this.keepalive(c);
         const details = [
             `${r.dev}/${r.app.id} (${r.app.name}): MQTT 3.1.1 ${(0, applications_1.mqttRole)(r.app)} of the broker ${c.broker}:${c.port}, client identifier ${c.clientId}, clean session, keep alive ${ka ? (0, params_1.durationText)(ka) : 'off'}; started ${atText(a.at)}.`,
@@ -79248,8 +79061,7 @@ function appView(a, c) {
     const p = (0, applications_1.appProfile)(r.app.profile);
     const o = (0, apps_1.appOutcome)(r);
     const active = (!r.stopped && (r.count === null || r.sent < r.count)) || r.tests.some((t) => !t.done);
-    const realPaused = r.rt !== undefined && !!c.rtPaused;
-    const status = active ? (realPaused ? 'paused' : 'running') : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
+    const status = active ? 'running' : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
     let ended;
     if (!active) {
         ended = r.stoppedAt !== undefined ? r.stoppedAt : r.t0;
@@ -79343,11 +79155,10 @@ function actionView(a, c) {
         const got = rx.reduce((n, x) => n + x[1], 0);
         // where its copies stop (a router without multicast routing, no member behind a snooping switch …): from the log
         const stop = a.traffic !== undefined ? c.lastDrop(a.traffic) : null;
-        const real = st.rt !== undefined;
         const off = st.running && c.deviceOn ? !c.deviceOn(st.dev) : false;
-        const status = !st.running ? 'stopped' : real && c.rtPaused ? 'paused' : 'running';
-        const every = `every ${sec(st.interval)}${real ? ' of real time' : ''}`;
-        const left = (st.skipped || 0) + (st.offMissed || 0);
+        const status = !st.running ? 'stopped' : 'running';
+        const every = `every ${sec(st.interval)} of simulated time`;
+        const left = st.offMissed || 0;
         return {
             ...base,
             status,
@@ -79357,9 +79168,9 @@ function actionView(a, c) {
             controls: st.running ? [{ op: 'stop', label: 'Stop stream' }] : [],
             details: [
                 `Stream #${st.id}: UDP to ${st.group}:${st.port} from source port ${st.sport}, ${st.size} bytes ${every} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`,
-                ...(real ? ['The interval is real time: the first datagram at the start, then one every interval of playing time (a pause shifts the schedule; the playback speed and the scenario don’t change it). Each datagram goes at the simulated time it is due.'] : []),
+                'The interval is simulated time (the scenario’s): the first datagram at the start, then one every interval — the same datagrams whatever the pacing, the speed or the page’s frame rate; those only change how fast they are shown.',
                 `Generated: ${st.sent} datagram${st.sent === 1 ? '' : 's'} at the source (the copies multicast replicates are not counted). Received: ${got} in all, counted at the members (a member's copy is one).`,
-                ...(left ? [`Not sent: ${left}${st.offMissed ? ` (${st.offMissed} while ${st.dev} was off)` : ''}${st.skipped ? ` (${st.skipped} the page was too late for: the browser was busy or suspended)` : ''}.`] : []),
+                ...(left ? [`Not sent: ${left} while ${st.dev} was off.`] : []),
                 'Who receives it: the members of the group (Join multicast group) in its VLAN — a switch with IGMP / MLD snooping enabled sends it only to ports where a member reported it, and to its multicast router ports — and in other subnets those multicast routing (PIM) reaches.',
                 ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : []),
             ],
@@ -82453,11 +82264,9 @@ class SimController {
         /** what the panel's height is measured from (a key of heights), to measure it again when it changes */
         this.rowH = -1;
         const o = Array.isArray(opts) ? { protocols: opts } : opts;
-        // the real-time schedule (a stream's interval) counts the page's own clock
-        const win = host.doc.defaultView;
         // an execution scope runs a model of its own (the devices outside are not run at all; display and analysis are not changed by it)
         this.scope = o.scope && o.scope.kind !== 'entire' ? o.scope : null;
-        this.sim = o.simulation || new simulation_1.Simulation(this.scope ? (0, exec_scope_1.scopedModel)(host.model(), this.scope) : host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+        this.sim = o.simulation || new simulation_1.Simulation(this.scope ? (0, exec_scope_1.scopedModel)(host.model(), this.scope) : host.model(), { params: o.params });
         this.experiment = o.experiment || null;
         this.anim = new sim_anim_1.SimAnimator(host.doc, (t) => this.trackEnds(t));
         this.tables = new sim_tables_1.TablePanels(host.doc);
@@ -82487,7 +82296,6 @@ class SimController {
             length: (f) => this.trackLength(f),
             testRunning: () => this.testRunning(),
             foreground: () => !this.experiment && this.sim.foregroundActive(),
-            realtime: () => this.sim.realtimeActive(),
             until: () => (this.experiment ? this.experiment.until() : null),
             notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
         }, sim_anim_1.MAX_DOTS);
@@ -82617,7 +82425,6 @@ class SimController {
     /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
     schedule() {
         // the real-time schedule runs while the simulation does (paused, hidden or closed: it stands)
-        this.sim.setRealTimeRunning(this.running());
         const w = this.host.doc.defaultView;
         if (!w)
             return;
@@ -82648,9 +82455,6 @@ class SimController {
     }
     /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
     advance(wallMs) {
-        // the streams of Network events first: what is due now goes at the current simulated time
-        if (this.sim.pumpRealTime())
-            this.actionsKey = '';
         this.pacer.frame(wallMs);
     }
     /** Play or pause (the user's Play / Pause, and the tests). A pause by the user is never resumed by anything else. */
@@ -84918,8 +84722,6 @@ class Pacer {
         this.convLimit = exports.CONV_LIMIT;
         /** a Network event's traffic is the foreground now (refreshed as the clock moves) */
         this.fgNow = false;
-        /** a stream of Network events runs on the real-time schedule: the clock runs in real time, held by nothing */
-        this.rtNow = false;
         /** the scenario's hops are muted while Network events hold the front (an experiment: off, everything shown is its own) */
         this.mute = true;
         /** a hop waits on screen only for a shown hop it continues or was caused by (an experiment: hidden traffic holds nothing) */
@@ -84943,8 +84745,6 @@ class Pacer {
         const sp = `${this.speed}×`;
         const behind = this.behind > 0 ? ' · behind' : '';
         const base = this.mode === 'readable' ? `Readable · ${exports.HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
-        if (this.rtNow && this.mode !== 'realtime')
-            return `${base} · streams in real time${behind}`;
         return this.fgNow ? `${base} · your events in front` : base;
     }
     /** The display time of a hop of `lat` simulated ms in a view. */
@@ -85022,7 +84822,6 @@ class Pacer {
     /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
     refreshForeground() {
         this.fgNow = !!this.host.foreground && this.host.foreground();
-        this.rtNow = !!this.host.realtime && this.host.realtime();
     }
     drawnShown(it) {
         return it.drawn && !it.f.hidden && this.host.shown(it.f);
@@ -85164,7 +84963,7 @@ class Pacer {
     }
     /** Simulated ms per display ms: 1 in Readable and Real time (and while a stream of Network events runs), 1 ÷ the scale in Proportional. */
     rate() {
-        return this.mode === 'proportional' && !this.rtNow ? 1 / this.scale : 1;
+        return this.mode === 'proportional' ? 1 / this.scale : 1;
     }
     /**
      * Run the simulation with the display clock at its rate, held by nothing.
@@ -85198,7 +84997,7 @@ class Pacer {
             this.rt.left = e.now;
         }
         // idle: nothing on screen (nothing still to come on it): on to the next message that will be shown (never in Real time, nor while a stream keeps real time)
-        if (!this.skipIdle || this.mode === 'realtime' || this.rtNow || this.busy() || this.behind > 0)
+        if (!this.skipIdle || this.mode === 'realtime' || this.busy() || this.behind > 0)
             return;
         if (this.clock < this.restUntil)
             return;

@@ -96,30 +96,31 @@ test('publish through the broker: exact and wildcard subscribers get it, a nonma
   for (const [d, x] of [['hmi', 'view'], ['logger', 'hum'], ['logger', 'all']]) assert.ok(!s.actApp(d, x).error);
   settle(s, 3000);
   const pub = s.actApp('sensor', 'temp');
+  // (5.5 s of simulated time: publications at 0, 1, 2, 3, 4 and 5 s — the simulated clock, as every repeating thing)
   s.play(3500);
   settle(s, 2000);
   const p = client(s, 'sensor', 'temp');
   const hmi = client(s, 'hmi', 'view');
   const hum = client(s, 'logger', 'hum');
   const all = client(s, 'logger', 'all');
-  assert.equal(p.published, 4, 'one at once, then one a second');
-  assert.equal(p.pubacked, 4, 'QoS 1: each PUBACKed by the broker');
-  assert.equal(hmi.received.get('sensors/room1/temperature'), 4);
-  assert.equal(all.received.get('sensors/room1/temperature'), 4, '# matches too');
+  assert.equal(p.published, 6, 'one at once, then one a second');
+  assert.equal(p.pubacked, 6, 'QoS 1: each PUBACKed by the broker');
+  assert.equal(hmi.received.get('sensors/room1/temperature'), 6);
+  assert.equal(all.received.get('sensors/room1/temperature'), 6, '# matches too');
   assert.equal(hum.received.size, 0, 'the humidity filter does not match: nothing reaches it');
   // the subscriber acknowledges its QoS 1 deliveries; the QoS 0 subscriber (all) gets QoS 0
   const b = s.mqtt.brokers.get('broker');
-  assert.equal(b.received, 4);
-  assert.equal(b.delivered, 8);
+  assert.equal(b.received, 6);
+  assert.equal(b.delivered, 12);
   const hmiSess = b.sessions.get('hmi-view');
-  assert.equal(hmiSess.acked, 4);
+  assert.equal(hmiSess.acked, 6);
   assert.equal(b.sessions.get('logger-all').subs.get('sensors/#'), 0);
   // broker-mediated: every publication goes to the broker, never straight to a subscriber; no IGMP membership
   const pubs = s.events().filter((e) => e.what === 'MQTT PUBLISH' && e.device === 'sensor');
   assert.ok(pubs.length >= 4);
   assert.ok(s.events().some((e) => /the publication of sensor-temp to sensors\/room1\/temperature goes to hmi-view \(QoS 1\), logger-all \(QoS 0\)/.test(e.detail)));
   assert.equal(s.multicast.joined('hmi').length, 0, 'a subscription is no IGMP membership');
-  assert.match(view(s, pub.id).summary, /^connected · 4 published \(4 acknowledged\)$/);
+  assert.match(view(s, pub.id).summary, /^connected · 6 published \(6 acknowledged\)$/);
 });
 
 test('QoS 1 without PUBACK: sent again with DUP after the retry interval, by the client and by the broker; lost with a connection that closes', () => {
@@ -267,5 +268,6 @@ test('ot-network.yaml: the PLC publishes telemetry; the HMI subscribed to the te
   const hmi = s.mqttClientTable('hmi').rows[0];
   assert.match(hmi[5], /^plant\/cell1\/plc-1\/temperature: \d+$/, 'only the temperature reaches the dashboard');
   assert.equal(s.mqttClientTable('eng-ws').rows[0][5], '—', 'nothing matches plant/cell1/+/alarm');
-  assert.ok(s.status().some((x) => x.name === 'hmi/poll → plc/registers tcp/502' && x.state === 'Answered'));
+  // the HMI's polls of the PLC are answered (the newest may be on its way when the clock stops)
+  assert.ok(s.actions().some((a) => /poll/.test(a.target) && /^(\d+) answered/.test(a.summary) && Number(/^(\d+)/.exec(a.summary)[1]) >= 5), JSON.stringify(s.actions().map((a) => a.summary)));
 });

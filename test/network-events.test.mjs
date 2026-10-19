@@ -170,7 +170,7 @@ test('a stream runs until Stop stream: datagrams generated and those received pe
   let v = view(s, a.id);
   assert.equal(v.status, 'running');
   assert.deepEqual(v.progress, { done: 6, total: null, unit: 'datagrams sent' });
-  assert.match(v.summary, /^6 datagrams sent, every 1 s of real time · received by h1 \(6\)$/);
+  assert.match(v.summary, /^6 datagrams sent, every 1 s of simulated time · received by h1 \(6\)$/);
   assert.equal(a.stream.rx.has('h2'), false, 'not a member: nothing counted');
   assert.equal(s.actionControl(a.id, 'stop'), true);
   const sent = a.stream.sent;

@@ -236,14 +236,13 @@ export class ExperimentRunner {
     model: Model,
     private exp: Experiment,
     fingerprint: string,
-    opts: { realClock?: () => number } = {},
   ) {
     const scope = exp.scope.kind === 'entire' ? null : experimentScope(model, exp);
     this.execScope = scope;
     this.model = scope && !scope.cannot.length ? scopedModel(model, scope) : model;
     const params: { [k: string]: number | string } = {};
     for (const p of exp.params) params[p.key] = p.value;
-    this.sim = new Simulation(this.model, { params, realClock: opts.realClock });
+    this.sim = new Simulation(this.model, { params });
     const n = model.devices.length;
     // (what the scope leaves out that can change the outcome is said with it: its results are the scope's, not the entire model's)
     const scopeLine = !scope ? `Entire model (${n} device${n === 1 ? '' : 's'})` : `${scopeText(exp.scope)}: ${scope.devices.size} of ${n} devices run${scope.caveats.length ? ` — may differ from the entire model: ${scope.caveats.join('; ')}` : ''}`;

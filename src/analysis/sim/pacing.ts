@@ -71,10 +71,9 @@
  * conversation is cable activity (a cable lit, "OSPF ×3"; `notDrawn` counts them for a note). At
  * most `limit` hops are on screen at once whatever their conversations.
  *
- * Streams of Network events in real time. A stream started from Network
- * events sends on the real-time schedule (realtime.ts), every interval of
- * real time, whatever the pacing; while one runs (`host.realtime`) the
- * simulated clock runs at 1 s per second in Proportional pacing too.
+ * Streams and repeating applications, started from Network events or the
+ * model, run on the simulated clock: the pacing changes how fast they are
+ * shown, never which datagrams exist.
  *
  * Next exchange (paused): on to the end of the exchange that is first on
  * screen (all its hops arrived), or of the next one to start.
@@ -232,8 +231,6 @@ export interface PacerHost {
   testRunning?(): boolean;
   /** is a Network event running with traffic of its own (a send, a stream, a join)? Its traffic is then the foreground. */
   foreground?(): boolean;
-  /** is a stream of Network events on the real-time schedule? The clock then runs in real time. */
-  realtime?(): boolean;
   /** the simulated time the clock never runs past (an experiment's end); null or none: no end */
   until?(): number | null;
   /** the next moment after `t` an idle jump stops at and rests (an experiment's step, a boot's end); null or none: none */
@@ -268,8 +265,6 @@ export class Pacer {
   convLimit = CONV_LIMIT;
   /** a Network event's traffic is the foreground now (refreshed as the clock moves) */
   fgNow = false;
-  /** a stream of Network events runs on the real-time schedule: the clock runs in real time, held by nothing */
-  rtNow = false;
   /** the scenario's hops are muted while Network events hold the front (an experiment: off, everything shown is its own) */
   mute = true;
   /** a hop waits on screen only for a shown hop it continues or was caused by (an experiment: hidden traffic holds nothing) */
@@ -300,7 +295,6 @@ export class Pacer {
     const sp = `${this.speed}×`;
     const behind = this.behind > 0 ? ' · behind' : '';
     const base = this.mode === 'readable' ? `Readable · ${HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
-    if (this.rtNow && this.mode !== 'realtime') return `${base} · streams in real time${behind}`;
     return this.fgNow ? `${base} · your events in front` : base;
   }
 
@@ -382,7 +376,6 @@ export class Pacer {
   /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
   private refreshForeground(): void {
     this.fgNow = !!this.host.foreground && this.host.foreground();
-    this.rtNow = !!this.host.realtime && this.host.realtime();
   }
 
   private drawnShown(it: PaceItem): boolean {
@@ -523,7 +516,7 @@ export class Pacer {
 
   /** Simulated ms per display ms: 1 in Readable and Real time (and while a stream of Network events runs), 1 ÷ the scale in Proportional. */
   rate(): number {
-    return this.mode === 'proportional' && !this.rtNow ? 1 / this.scale : 1;
+    return this.mode === 'proportional' ? 1 / this.scale : 1;
   }
 
   /**
@@ -557,7 +550,7 @@ export class Pacer {
       this.rt.left = e.now;
     }
     // idle: nothing on screen (nothing still to come on it): on to the next message that will be shown (never in Real time, nor while a stream keeps real time)
-    if (!this.skipIdle || this.mode === 'realtime' || this.rtNow || this.busy() || this.behind > 0) return;
+    if (!this.skipIdle || this.mode === 'realtime' || this.busy() || this.behind > 0) return;
     if (this.clock < this.restUntil) return;
     const from = e.now;
     if (from >= cap - EPS) return;

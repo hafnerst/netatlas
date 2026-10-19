@@ -4,7 +4,9 @@
 // traffic is the foreground (drawn, inspectable) and the scenario the
 // background: its dots go on moving, muted and not clickable. A finished
 // event, a join's lasting membership or a card kept in the list mute
-// nothing. A stream of Network events sends every interval of real time.
+// nothing. A stream of Network events sends every interval of simulated
+// time, like the model's: the pacing changes how fast it is shown, never
+// which datagrams exist.
 // At most CONV_LIMIT of the scenario's conversations are drawn as dots at
 // once, the rest are cable activity. Real time: the clock runs with the
 // display, falling behind (said) rather than catching up in a burst. Next
@@ -18,19 +20,16 @@ const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
 const PS = example('protocol-simulation.yaml');
 
-/** The pacing over the busy example, with a fake real clock for the real-time schedule; `frame(ms)` is the page's animation frame (the schedule's turn, then the display's). */
+/** The pacing over the busy example; `frame(ms)` is the page's animation frame. */
 function paced(set = {}, fg = true) {
   const sim = withClock(new S.Simulation(model(PS)));
   const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr };
   if (fg) {
     host.foreground = () => sim.foregroundActive();
-    host.realtime = () => sim.realtimeActive();
   }
   const p = new P.Pacer(host, 48);
   Object.assign(p, set);
   const frame = (ms) => {
-    sim.clock.t += ms;
-    sim.pumpRealTime();
     p.frame(ms);
   };
   return { sim, p, frame };
@@ -42,7 +41,6 @@ function streamRun(ms = 20000, set = {}) {
   for (let t = 0; t < 3000; t += 50) frame(50);
   const a = sim.actStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500);
   const t0 = sim.now;
-  const r0 = sim.clock.t;
   let together = 0;
   let activity = 0;
   for (let t = 0; t < ms; t += 50) {
@@ -52,31 +50,31 @@ function streamRun(ms = 20000, set = {}) {
     const going = new Set(p.items.filter((it) => it.f.test === a.traffic && it.drawn && p.state(it).phase === 'moving').map((it) => it.f.t0));
     together = Math.max(together, going.size);
   }
-  return { sim, p, a, frame, t0, real: sim.clock.t - r0, together, activity };
+  return { sim, p, a, frame, t0, together, activity };
 }
 
-test('a stream of Network events in Readable pacing: a datagram every second of real time; several on their way at once, each hop readable; the clock runs in real time, held by nothing', () => {
-  const { sim, p, a, t0, real, together } = streamRun(20000);
-  // the first at once, then one every second of real time: 0 … 20 s
-  assert.equal(real, 20000);
-  assert.equal(a.stream.sent, 21);
-  assert.equal(p.rtNow, true);
-  assert.match(p.describe(), /^Readable · 3 s per hop · 1× · streams in real time( · behind)?$/);
-  // the clock with real time (never ahead; behind only when a frame's work ran out, and then said)
-  assert.ok(sim.now - t0 <= 20000 + 1 && (sim.now - t0 > 15000 || p.behind > 0), `${sim.now - t0} ms simulated in 20 s`);
-  // the dots keep their readable time: a datagram's path takes longer than its interval, so several are on their way at once
+test('a stream of Network events in Readable pacing: one datagram every second of simulated time — the same datagrams as without any display; each hop readable; the clock held by nothing', () => {
+  const { sim, p, a, t0 } = streamRun(20000);
+  // on the simulated clock: the first at once, then one every simulated second
+  const sends = sim.events().filter((e) => e.test === a.traffic && e.kind === 'message' && /^multicast datagram \d+ from/.test(e.detail)).map((e) => e.t);
+  // (the log lists a stream's datagrams 1, 10, 20 …)
+  assert.equal(a.stream.sent, Math.floor((sim.now - t0 - 5) / 1000) + 1, `${a.stream.sent} datagrams in ${sim.now - t0} ms of simulated time`);
+  assert.doesNotMatch(p.describe(), /real time/);
+  // the dots keep their readable time
   assert.ok(p.items.filter((it) => it.f.test === a.traffic).every((it) => it.hop >= P.HOP_MIN));
-  assert.ok(together >= 3, `${together} datagrams on their way at once`);
-  // each datagram at the simulated time it was due: about a second apart (the clock ran with real time)
-  // (the log has datagrams 1, 10, 20 …)
-  const sends = sim.events().filter((e) => e.test === a.traffic && e.kind === 'message' && /^multicast datagram (1|10) from/.test(e.detail)).map((e) => e.t);
-  assert.ok(sends.length === 2 && sends[1] - sends[0] > 6000 && sends[1] - sends[0] <= 9001, `datagrams 1 and 10: ${sends.join(', ')}`);
+  // the same stream without a display, run to the same simulated time: the same datagrams at the same times
+  const bare = new S.Simulation(model(PS));
+  bare.runTo(t0);
+  const b = bare.actStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500);
+  bare.runTo(sim.now);
+  const bareSends = bare.events().filter((e) => e.test === b.traffic && e.kind === 'message' && /^multicast datagram \d+ from/.test(e.detail)).map((e) => e.t);
+  assert.deepEqual(bareSends, sends, 'the pacing changes nothing of what is sent');
 });
 
 test('while a Network event runs, the scenario is the background: its dots go on moving, muted (not clickable); the event’s own are the foreground; stopped, all of it is the foreground again', () => {
   const { sim, p, a, frame } = streamRun(30000);
   assert.equal(p.fgNow, true);
-  assert.match(p.describe(), /· streams in real time( · behind)?$/);
+  assert.match(p.describe(), /· your events in front$/);
   // the scenario goes on (one clock, one network): drawn, moving, the background
   const scenario = p.items.filter((it) => it.f.view === 'physical' && it.f.test === undefined && it.drawn);
   assert.ok(scenario.length > 0, 'the scenario still drawn');
@@ -90,7 +88,6 @@ test('while a Network event runs, the scenario is the background: its dots go on
   for (let t = 0; t < 20000; t += 50) frame(50);
   assert.equal(a.stream.sent, n, 'its future sends cancelled');
   assert.equal(p.fgNow, false);
-  assert.equal(p.rtNow, false);
   assert.equal(p.fgActive(), false);
   assert.ok(p.items.every((it) => !p.background(it)));
   assert.doesNotMatch(p.describe(), /in front|real time/);
@@ -145,7 +142,7 @@ test('bundling: a conversation takes a place while a hop of it is on its way; ne
   assert.ok(Math.abs(sim.now - q.sim.now) < 1000 || sim.now >= 40000 - 50, `${sim.now} vs ${q.sim.now}`);
 });
 
-test('real time: the simulated clock runs with the display (× the speed); a 1 s stream sends one datagram a second, at 2× too; too much work: behind, said, no burst', () => {
+test('real time: the simulated clock runs with the display (× the speed); a 1 s stream sends one datagram a simulated second, twice as many at 2×; too much work: behind, said, no burst', () => {
   const { sim, p, frame } = paced({ mode: 'realtime' }, true);
   assert.match(p.describe(), /^Real time · 1×/);
   for (let t = 0; t < 5000; t += 50) frame(50);
@@ -155,15 +152,16 @@ test('real time: the simulated clock runs with the display (× the speed); a 1 s
   const t0 = sim.now;
   for (let t = 0; t < 10000; t += 50) frame(50);
   assert.ok(sim.now - t0 <= 10100 && (sim.now - t0 > 8000 || p.behind > 0), String(sim.now - t0));
-  // a datagram per second of real time: the first at once, then 10
-  assert.equal(a.stream.sent, 11);
+  // a datagram per second of simulated time: the first at once, then one a second (the timers' jitter aside)
+  const due = (since) => Math.floor((sim.now - since - 5) / 1000) + 1;
+  assert.equal(a.stream.sent, due(t0));
   assert.ok(p.items.every((it) => it.hop === P.RT_HOP));
-  // 2×: the clock twice as far; the stream still one a second of real time (the speed is the scenario's)
+  // 2×: the clock twice as far, and the stream with it (it is on the simulated clock: the speed changes how fast it is shown)
   p.speed = 2;
   const t1 = sim.now;
   for (let t = 0; t < 2000; t += 50) frame(50);
   assert.ok(sim.now - t1 <= 4150 && (sim.now - t1 > 3000 || p.behind > 0), String(sim.now - t1));
-  assert.equal(a.stream.sent, 13);
+  assert.equal(a.stream.sent, due(t0));
   // a slow machine: every frame's work cut short; it falls behind and says so, then goes on from there (no catching up in a burst)
   p.speed = 1;
   const real = Date.now;

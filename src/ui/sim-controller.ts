@@ -223,11 +223,9 @@ export class SimController implements SimulationMode {
     opts: SimStartOptions | string[] = {},
   ) {
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
-    // the real-time schedule (a stream's interval) counts the page's own clock
-    const win = host.doc.defaultView;
     // an execution scope runs a model of its own (the devices outside are not run at all; display and analysis are not changed by it)
     this.scope = o.scope && o.scope.kind !== 'entire' ? o.scope : null;
-    this.sim = o.simulation || new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+    this.sim = o.simulation || new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params });
     this.experiment = o.experiment || null;
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
@@ -252,7 +250,6 @@ export class SimController implements SimulationMode {
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
         foreground: () => !this.experiment && this.sim.foregroundActive(),
-        realtime: () => this.sim.realtimeActive(),
         until: () => (this.experiment ? this.experiment.until() : null),
         notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
       },
@@ -390,7 +387,6 @@ export class SimController implements SimulationMode {
   /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
   schedule(): void {
     // the real-time schedule runs while the simulation does (paused, hidden or closed: it stands)
-    this.sim.setRealTimeRunning(this.running());
     const w = this.host.doc.defaultView;
     if (!w) return;
     if (this.raf) w.cancelAnimationFrame(this.raf);
@@ -418,8 +414,6 @@ export class SimController implements SimulationMode {
 
   /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
   advance(wallMs: number): void {
-    // the streams of Network events first: what is due now goes at the current simulated time
-    if (this.sim.pumpRealTime()) this.actionsKey = '';
     this.pacer.frame(wallMs);
   }
 

@@ -73,7 +73,6 @@ import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, 
 import { routerId } from './proto-routing';
 import { RpChoice, RpEnv, pimDomain, rpFor, staticRp } from '../pim-rp';
 import { ProtocolSim, Sess } from './protocols';
-import { RealTimeScheduler } from './realtime';
 import { representativeText } from '../../model/speed';
 import { SnoopingChoice, snoopingChoice, switchedVlans } from '../../model/snooping';
 import { vlanRangesShown } from '../../model/derive';
@@ -287,12 +286,9 @@ export interface Stream {
   tag?: number;
   /** when it was stopped (Stop stream) */
   stoppedAt?: number;
-  /** started by Network events: on the real-time schedule (its entry), its interval real time, not simulated */
-  rt?: number;
-  /** real time: sends left out because the page was late by more than an interval (a stall), and those due while its source was off */
-  skipped?: number;
+  /** started by Network events: datagrams due while its source was off (not sent, counted) */
   offMissed?: number;
-  /** the simulated time of its last datagram, and between the last two (real time: what a receiver may expect) */
+  /** the simulated time of its last datagram, and between the last two (what a receiver may expect) */
   lastAt?: number;
   gap?: number;
 }
@@ -342,8 +338,6 @@ export class Multicast {
   private events: NetEvent[] = [];
   private seq = 0;
   private noted = new Map<string, number>();
-  /** the real-time schedule of Network events (a stream of Network events sends on it; null: on the simulated clock) */
-  realtime: RealTimeScheduler | null = null;
   /** a test's datagram reached a member: the transport layer's callback */
   onTestReceived: ((test: number, dev: string, from: IpAddr) => void) | null = null;
 
@@ -1882,20 +1876,14 @@ export class Multicast {
     return st;
   }
 
+  /**
+   * Every stream on the simulated clock (the scenario's time): one datagram
+   * every interval of simulated time, the first at `first` (a stream of
+   * Network events: at once). What exists never depends on the frame rate,
+   * the pacing or a stalled page — only how fast it is shown does.
+   */
   private runStream(st: Stream, first: number): void {
     const gen = ++st.gen;
-    // a stream of Network events: every interval of real time, on its own grid (the first datagram at once)
-    if (st.origin === 'event' && this.realtime) {
-      const rt = this.realtime;
-      const e = rt.add(st.interval, () => {
-        if (st.gen !== gen || !st.running) return;
-        const r = rt.get(st.rt as number);
-        st.skipped = r ? r.skipped : st.skipped;
-        this.sendStream(st);
-      });
-      st.rt = e.id;
-      return;
-    }
     this.P.periodic(
       () => st.gen === gen && st.running,
       () => st.interval,
@@ -1906,7 +1894,7 @@ export class Multicast {
 
   private sendStream(st: Stream): void {
     if (!this.e.deviceOn(st.dev)) {
-      if (st.rt !== undefined) st.offMissed = (st.offMissed || 0) + 1;
+      if (st.origin === 'event') st.offMissed = (st.offMissed || 0) + 1;
       return;
     }
     const g = A(st.group);
@@ -1942,7 +1930,6 @@ export class Multicast {
     st.stoppedAt = this.e.now;
     st.gen++;
     // its future sends are cancelled
-    if (st.rt !== undefined && this.realtime) this.realtime.remove(st.rt);
     const i = this.events.findIndex((x) => x.kind === 'stream' && x.ref === `iface:${dev}:${iface}` && x.group === st.group);
     if (i >= 0) this.events.splice(i, 1);
     else this.events.push({ kind: 'stopped', ref: `iface:${dev}:${iface}`, group: st.group, since: this.e.now, state: `stream to ${st.group} stopped` });

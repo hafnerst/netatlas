@@ -19,12 +19,10 @@ const P = load('analysis/sim/pacing.js');
 /** A simulation with its pacer, as the page has them; `frame(ms)`: one animation frame (the real-time schedule's turn, then the display's). */
 function paced(name, set = {}) {
   const sim = withClock(new S.Simulation(model(example(name))));
-  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, foreground: () => sim.foregroundActive(), realtime: () => sim.realtimeActive() };
+  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, foreground: () => sim.foregroundActive() };
   const p = new P.Pacer(host, 48);
   Object.assign(p, set);
   const frame = (ms = 50) => {
-    sim.clock.t += ms;
-    sim.pumpRealTime();
     p.frame(ms);
   };
   return { sim, p, frame };

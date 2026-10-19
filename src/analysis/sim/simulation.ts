@@ -18,7 +18,6 @@ import { lookup } from '../routing';
 import { formatAddr } from '../ipmath';
 import type { AnalysisSnapshot, SnapTiming } from '../snapshot';
 import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
-import { RealTimeScheduler } from './realtime';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
@@ -151,7 +150,7 @@ export function runActive(r: TestRun): boolean {
 const DHCP_STATE: { [k: string]: string } = { INIT: 'about to ask', SELECTING: 'asking (DHCPDISCOVER)', REQUESTING: 'requesting the offered address', RENEWING: 'renewing', REBINDING: 'rebinding' };
 
 /** What a Simulation takes: the engine's options, and the real-time schedule's clock (real ms; the tests' fake). */
-export type SimOptions = EngineOptions & { realClock?: () => number };
+export type SimOptions = EngineOptions;
 
 /**
  * A device's lifecycle in words: the state, a short label (the diagram's
@@ -194,7 +193,6 @@ export class Simulation {
   readonly netsvc: NetServicesSim;
   readonly model: Model;
   /** the real-time schedule of Network events (a stream's datagrams); its clock injected for the tests */
-  readonly realtime: RealTimeScheduler;
   /** the applications: listeners answer, clients run when started (apps.ts) */
   readonly apps: AppSim;
   /** MQTT: the brokers and their clients (mqtt.ts) */
@@ -208,7 +206,6 @@ export class Simulation {
   constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
     this.engine = new Engine(model, opts);
-    this.realtime = new RealTimeScheduler(opts.realClock);
     this.protocols = new ProtocolSim(this.engine, { ...ROUTING_BEHAVIOURS, ...OTHER_BEHAVIOURS });
     installBootGarp(this.protocols);
     installFhrp(this.protocols);
@@ -217,7 +214,6 @@ export class Simulation {
     installDemands(this.protocols);
     installCustomL2(this.protocols);
     this.multicast = new Multicast(this.protocols);
-    this.multicast.realtime = this.realtime;
     this.multicast.install();
     this.netsvc = new NetServicesSim(this.protocols);
     this.ipv6 = new Ipv6Sim(this.protocols);
@@ -230,9 +226,7 @@ export class Simulation {
     this.multicast.onMember = (rdev, riface, group, reporter) => this.memberRecorded(rdev, riface, group, reporter);
     this.transport.install();
     this.apps = new AppSim(this.protocols, this.transport);
-    this.apps.realtime = this.realtime;
     this.mqtt = new MqttSim(this.protocols, this.transport, this.apps);
-    this.mqtt.realtime = this.realtime;
     this.ntp = new NtpSim(this.protocols);
     this.ntp.install();
     this.ptp = new PtpSim(this.protocols, this.multicast);
@@ -244,28 +238,9 @@ export class Simulation {
     return this.engine.now;
   }
 
-  /**
-   * The real-time schedule's turn (once an animation frame, before the clock moves): the streams of
-   * Network events send what is due now, at the current simulated time; returns how many datagrams.
-   */
-  pumpRealTime(): number {
-    return this.realtime.pump();
-  }
-
-  /** Is anything on the real-time schedule (a stream of Network events running)? */
-  realtimeActive(): boolean {
-    return this.realtime.active();
-  }
-
-  /** The simulation plays or pauses (a hidden tab pauses it too): the real-time schedule with it. */
-  setRealTimeRunning(on: boolean): void {
-    this.realtime.setRunning(on);
-  }
-
   /** The simulation is closed (Exit simulation, another model): nothing scheduled sends again. */
   close(): void {
-    this.realtime.clear();
-    this.realtime.setRunning(false);
+    // (everything it schedules is on the simulated clock, and nothing drives that clock any more: nothing to cancel)
   }
 
   /** A device's lifecycle as the diagram, its menu and the events say it (the state packet processing reads). */
@@ -469,11 +444,10 @@ export class Simulation {
         return null;
       },
       shut: (d, i) => this.engine.isShut(d, i),
-      rtPaused: !this.realtime.running,
       deviceOn: (d) => this.engine.deviceOn(d),
       appView: (a) => {
         const c = a.app ? this.mqtt.clientOf(a.app) : undefined;
-        return c ? this.mqtt.view(a, c, !this.realtime.running) : null;
+        return c ? this.mqtt.view(a, c) : null;
       },
       flapCycles: this.engine.params.num('flap-cycles'),
       flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,

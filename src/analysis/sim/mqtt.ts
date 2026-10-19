@@ -43,7 +43,6 @@ import { formatAddr } from '../ipmath';
 import { AppRun, AppSim } from './apps';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
-import { RealTimeScheduler } from './realtime';
 import { AppMessage, AppSocket, Transport } from './transport';
 import { GridTable, SessionStatus } from './types';
 import type { ActionView } from './actions';
@@ -127,7 +126,6 @@ export interface MqttRun {
 export class MqttSim {
   readonly brokers = new Map<string, Broker>();
   readonly clients: MqttRun[] = [];
-  realtime: RealTimeScheduler | null = null;
 
   constructor(
     private P: ProtocolSim,
@@ -336,26 +334,21 @@ export class MqttSim {
     this.later(c, Math.max(1000, ka / 4), tick);
   }
 
-  /** Publications: one to each topic now, then every interval (real time for Network events, as a stream). */
+  /** Publications: one to each topic now, then every interval of simulated time. */
   private startPublishing(c: MqttRun): void {
     const r = c.run;
     if (!r.app.publish.length || (r.count !== null && c.rounds >= r.count)) return;
-    if (r.rt !== undefined || (c.rounds > 0 && r.interval)) return;
+    if (c.rounds > 0 && r.interval) return;
     const round = (): void => {
       if (c.state !== 'Connected' || r.stopped || (r.count !== null && c.rounds >= r.count)) return;
       c.rounds++;
       r.sent = c.rounds;
       for (const t of r.app.publish) this.publish(c, t);
       if (r.count !== null && c.rounds >= r.count) {
-        this.unschedule(c);
         // a publisher without subscriptions is done when its last publications are acknowledged
         if (!r.app.subscribe.length) this.finishWhenAcked(c);
       }
     };
-    if (r.interval && r.how === 'event' && this.realtime) {
-      r.rt = this.realtime.add(r.interval, () => this.as(c, round)).id;
-      return;
-    }
     round();
     if (!r.interval) return;
     const g = c.gen;
@@ -367,11 +360,6 @@ export class MqttSim {
       });
     };
     next();
-  }
-
-  private unschedule(c: MqttRun): void {
-    if (c.run.rt !== undefined && this.realtime) this.realtime.remove(c.run.rt);
-    c.run.rt = undefined;
   }
 
   private publish(c: MqttRun, topic: string): void {
@@ -416,7 +404,6 @@ export class MqttSim {
 
   private disconnect(c: MqttRun, s: AppSocket): void {
     this.send(c, s, 'DISCONNECT', c.clientId, `MQTT DISCONNECT from ${c.clientId}: it ends its session`, packetBytes(0), {});
-    this.unschedule(c);
     c.state = 'Stopped';
     c.gen++;
     this.note(c, 'disconnected', 'Stopped', `${this.name(c)} disconnects from ${c.broker}`);
@@ -430,7 +417,6 @@ export class MqttSim {
     if (!c || c.state === 'Stopped') return false;
     run.stopped = true;
     run.stoppedAt = this.e.now;
-    this.unschedule(c);
     this.as(c, () => {
       const s = c.sock;
       if (s && s.open && c.state === 'Connected') {
@@ -465,7 +451,6 @@ export class MqttSim {
     c.lost += c.inflight.size;
     c.inflight.clear();
     c.granted.clear();
-    this.unschedule(c);
     this.note(c, 'connection closed', 'Disconnected', `${this.name(c)}: ${was === 'Connecting' ? 'could not connect' : 'its connection is gone'} (${why})${retry ? `; it connects again in ${durationText(RECONNECT_DELAY)}` : ''}`);
     if (retry) this.reconnectSoon(c, why);
   }
@@ -674,10 +659,10 @@ export class MqttSim {
   }
 
   /** A client's run as an event of Active events. */
-  view(a: { id: number; at: number }, c: MqttRun, rtPaused: boolean): ActionView {
+  view(a: { id: number; at: number }, c: MqttRun): ActionView {
     const r = c.run;
     const going = c.state !== 'Stopped';
-    const status: ActionView['status'] = going ? (r.rt !== undefined && rtPaused ? 'paused' : 'running') : r.stopped && r.count !== null && c.rounds >= r.count ? 'completed' : 'stopped';
+    const status: ActionView['status'] = going ? 'running' : r.stopped && r.count !== null && c.rounds >= r.count ? 'completed' : 'stopped';
     const ka = this.keepalive(c);
     const details = [
       `${r.dev}/${r.app.id} (${r.app.name}): MQTT 3.1.1 ${mqttRole(r.app)} of the broker ${c.broker}:${c.port}, client identifier ${c.clientId}, clean session, keep alive ${ka ? durationText(ka) : 'off'}; started ${atText(a.at)}.`,

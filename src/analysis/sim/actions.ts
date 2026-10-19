@@ -235,8 +235,6 @@ export interface ActionContext {
   /** the flapping cycles in effect (0: until stopped), its down and up times */
   flapCycles: number;
   flapTimes: string;
-  /** the real-time schedule stands (the simulation paused) */
-  rtPaused?: boolean;
   /** is a device on (a stream's source) */
   deviceOn?(dev: string): boolean;
   /** an MQTT client's session has a view of its own (mqtt.ts) */
@@ -257,8 +255,7 @@ export function appView(a: ActionRecord, c: ActionContext): ActionView {
   const p = appProfile(r.app.profile);
   const o = appOutcome(r);
   const active = (!r.stopped && (r.count === null || r.sent < r.count)) || r.tests.some((t) => !t.done);
-  const realPaused = r.rt !== undefined && !!c.rtPaused;
-  const status: ActionStatus = active ? (realPaused ? 'paused' : 'running') : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
+  const status: ActionStatus = active ? 'running' : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
   let ended: number | undefined;
   if (!active) {
     ended = r.stoppedAt !== undefined ? r.stoppedAt : r.t0;
@@ -344,11 +341,10 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
     const got = rx.reduce((n, x) => n + x[1], 0);
     // where its copies stop (a router without multicast routing, no member behind a snooping switch …): from the log
     const stop = a.traffic !== undefined ? c.lastDrop(a.traffic) : null;
-    const real = st.rt !== undefined;
     const off = st.running && c.deviceOn ? !c.deviceOn(st.dev) : false;
-    const status: ActionStatus = !st.running ? 'stopped' : real && c.rtPaused ? 'paused' : 'running';
-    const every = `every ${sec(st.interval)}${real ? ' of real time' : ''}`;
-    const left = (st.skipped || 0) + (st.offMissed || 0);
+    const status: ActionStatus = !st.running ? 'stopped' : 'running';
+    const every = `every ${sec(st.interval)} of simulated time`;
+    const left = st.offMissed || 0;
     return {
       ...base,
       status,
@@ -358,9 +354,9 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
       controls: st.running ? [{ op: 'stop', label: 'Stop stream' }] : [],
       details: [
         `Stream #${st.id}: UDP to ${st.group}:${st.port} from source port ${st.sport}, ${st.size} bytes ${every} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`,
-        ...(real ? ['The interval is real time: the first datagram at the start, then one every interval of playing time (a pause shifts the schedule; the playback speed and the scenario don’t change it). Each datagram goes at the simulated time it is due.'] : []),
+        'The interval is simulated time (the scenario’s): the first datagram at the start, then one every interval — the same datagrams whatever the pacing, the speed or the page’s frame rate; those only change how fast they are shown.',
         `Generated: ${st.sent} datagram${st.sent === 1 ? '' : 's'} at the source (the copies multicast replicates are not counted). Received: ${got} in all, counted at the members (a member's copy is one).`,
-        ...(left ? [`Not sent: ${left}${st.offMissed ? ` (${st.offMissed} while ${st.dev} was off)` : ''}${st.skipped ? ` (${st.skipped} the page was too late for: the browser was busy or suspended)` : ''}.`] : []),
+        ...(left ? [`Not sent: ${left} while ${st.dev} was off.`] : []),
         'Who receives it: the members of the group (Join multicast group) in its VLAN — a switch with IGMP / MLD snooping enabled sends it only to ports where a member reported it, and to its multicast router ports — and in other subnets those multicast routing (PIM) reaches.',
         ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : []),
       ],

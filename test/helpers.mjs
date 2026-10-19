@@ -61,21 +61,13 @@ export function byRef(v, ref) {
 }
 
 /**
- * A fake real clock for a simulation's real-time schedule (the streams of
- * Network events send on it): `s.clock.t` is the real time (ms), and
- * `s.play(ms, frame)` moves real and simulated time on together, a frame at
- * a time, as the page's animation frames do at 1×. No test sleeps.
+ * Play a simulation as the page does, a frame at a time: `s.play(ms, frame)`
+ * moves the simulated clock on in frames (everything it runs, streams of
+ * Network events included, is on that clock). No test sleeps.
  */
 export function withClock(s) {
-  const clock = { t: 0 };
-  s.realtime.clock = () => clock.t;
-  s.clock = clock;
   s.play = (ms, frame = 50) => {
-    for (let d = 0; d < ms - 1e-9; d += frame) {
-      clock.t += frame;
-      s.pumpRealTime();
-      s.runTo(s.now + frame);
-    }
+    for (let d = 0; d < ms - 1e-9; d += frame) s.runTo(s.now + frame);
   };
   return s;
 }
