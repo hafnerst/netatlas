@@ -324,7 +324,7 @@ export function buildCommands(): Command[] {
       mode: true,
       keywords: 'start protocol simulation ospf bgp arp hello packets messages simulate window layer 2',
       // the same three states in the menu and the palette: no model; a model, nothing running; a simulation running
-      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.simulationOn() ? off('A simulation is already running') : on('Choose the protocols and start the protocol simulation: a freshly booted network, its messages as labelled dots')),
+      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.experimentRunning() ? off('An experiment is running: stop it first (Experiments → Stop)') : app.simulationOn() ? off('A simulation is already running') : on('Choose the protocols and start the protocol simulation: a freshly booted network, its messages as labelled dots')),
       run: (app) => void app.openStartDialog(),
     },
     {

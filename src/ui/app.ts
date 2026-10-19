@@ -54,7 +54,8 @@ import { SavedView, viewSummary } from '../model/views';
 import { focusRef } from '../validation/views';
 import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns, experimentScope } from '../analysis/sim/experiment';
 import { ExpSelection, ExpWsActions, ExpWsView, experimentRefs, experimentText, experimentsDock, experimentsLeft, experimentsRight, targetRefs } from './experiments';
-import { ExpAction, ExpObservation, actionDef, observeDef } from '../model/experiments';
+import { ExpAction, ExpObservation, actionDef, durText, durationYaml, observeDef } from '../model/experiments';
+import { resetDurationDrafts } from './duration-input';
 import { ANALYZE_TOOLS, AnalyzeTool, WORKSPACES, Workspace, applyPanels, inWorkspacePanel } from './workspace';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
@@ -70,7 +71,7 @@ import { DomainForm, SpofRow, SpofSort, SpofView, WhatIfForm, newSpofViewState, 
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
-import { SimController, SimStartOptions } from './sim-controller';
+import { SPEEDS, SimController, SimStartOptions } from './sim-controller';
 import { protocolPicker } from './sim-protocols-ui';
 import { sendersPicker } from './sim-senders-ui';
 import { paramEditor } from './sim-params-ui';
@@ -109,6 +110,14 @@ export interface LoadOutcome {
   ok: boolean;
   errors: Issue[];
   warnings: Issue[];
+}
+
+/** A run in progress: its runner, the experiment, the document it belongs to, and its playback in the diagram (null: none). */
+interface ExpSlot {
+  runner: ExperimentRunner;
+  id: string;
+  doc: ModelDoc | null;
+  ctl: SimController | null;
 }
 
 export class App {
@@ -1016,6 +1025,7 @@ export class App {
       e.classList.toggle('ws-ok', wm.indexOf('ws-ok') >= 0);
       e.classList.toggle('ws-bad', wm.indexOf('ws-bad') >= 0);
       e.classList.toggle('ws-sel', wm.indexOf('ws-sel') >= 0);
+      e.classList.toggle('ws-act', wm.indexOf('ws-act') >= 0);
       e.classList.toggle('bc-on', !!dom && dom.has(ref));
       e.classList.toggle('bc-off', !!dom && !dom.has(ref) && (ref.indexOf('device:') === 0 || ref.indexOf('link:') === 0 || ref.indexOf('relation:') === 0 || ref.indexOf('network:') === 0));
     }
@@ -2751,6 +2761,8 @@ export class App {
    * of the same model is not this: its results stay, marked outdated.
    */
   private resetModelResults(): void {
+    // the duration controls' units and unwritten drafts were the old model's
+    resetDurationDrafts();
     // the report's background work and its result
     const j = this.spofJob;
     if (j) {
@@ -2775,7 +2787,11 @@ export class App {
     this.anSelRefs = [];
     this.anFocus = false;
     // the experiments: a run in progress is the old model's (its slot is let go: nothing of it is kept)
-    if (this.expRunner) this.expRunner.runner.cancel();
+    if (this.expRunner) {
+      // its playback goes with it (the old model's simulation)
+      this.expRunner.runner.cancel();
+      this.endPlayback(this.expRunner);
+    }
     this.expRunner = null;
     this.expRuns.clear();
     this.expCompare.clear();
@@ -5029,7 +5045,7 @@ export class App {
     if (switching) this.leaveTool(this.anTool);
     if (this.ws !== 'analyze') {
       this.analyzeFrom = this.ws;
-      if (this.ws === 'simulate' && this.simCtl && this.simCtl.playState() === 'Playing') this.simCtl.setPlaying(false, 'analyze');
+      if ((this.ws === 'simulate' || this.ws === 'experiments') && this.simCtl && this.simCtl.playState() === 'Playing') this.simCtl.setPlaying(false, 'analyze');
       this.closeToolWindow();
     }
     if (switching || this.anTool !== tool) this.anSel = '';
@@ -5058,10 +5074,10 @@ export class App {
   async exitAnalyze(): Promise<boolean> {
     if (this.ws !== 'analyze') return false;
     this.leaveAnalyze();
-    const back: Workspace = this.analyzeFrom === 'simulate' && this.simCtl ? 'simulate' : this.analyzeFrom === 'experiments' ? 'experiments' : 'edit';
+    const back: Workspace = this.analyzeFrom === 'simulate' && this.simCtl && !this.simCtl.experiment ? 'simulate' : this.analyzeFrom === 'experiments' ? 'experiments' : 'edit';
     this.analyzeFrom = 'edit';
     this.showWorkspace(back);
-    if (back === 'simulate' && this.simCtl && this.simCtl.pausedBy === 'analyze') this.simCtl.setPlaying(true);
+    if ((back === 'simulate' || back === 'experiments') && this.simCtl && this.simCtl.pausedBy === 'analyze') this.simCtl.setPlaying(true);
     this.updateModeBanner();
     (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
     return true;
@@ -5329,7 +5345,7 @@ export class App {
   /** the runs and comparisons of this model's experiments (this session; never saved): cleared when another model is loaded */
   private expRuns = new Map<string, ExpRunResult[]>();
   private expCompare = new Map<string, RunCompare>();
-  private expRunner: { runner: ExperimentRunner; id: string; doc: ModelDoc | null } | null = null;
+  private expRunner: ExpSlot | null = null;
   /** the panels' last drawing of a run's progress (progress is drawn at most every 250 ms) */
   private expDrawn = 0;
 
@@ -5368,21 +5384,38 @@ export class App {
 
   /**
    * Run the selected (or the given) experiment: a new runner from its
-   * defined start, advanced in slices of the page's time so the page stays
-   * responsive; Stop cancels it. A runner replaced, stopped or belonging to
-   * a model that is no longer loaded is never advanced again and its result
-   * is never kept (its slot, compared on every slice).
+   * defined start, played through the diagram (the simulation's own pacing,
+   * dots and inspector, only the experiment's traffic shown), or, without a
+   * page to draw on or when asked (`headless`), advanced in slices of the
+   * page's time. Both reach the same result: every step is an event of the
+   * simulation's clock. Stop cancels it. A runner replaced, stopped or
+   * belonging to a model that is no longer loaded is never advanced again
+   * and its result is never kept (its slot, compared on every tick).
    */
-  runExperiment(id: string | null = this.expSel.exp): boolean {
+  runExperiment(id: string | null = this.expSel.exp, opts: { headless?: boolean } = {}): boolean {
     const s = this.session;
     if (!s || !id) return false;
     const e = s.model.experiments.find((x) => x.id === id);
     if (!e || e.problems.length) return false;
     if (this.expRunner) this.stopExperiment();
+    // a simulation of the user's ends first (the transitions ask before; one simulation at a time)
+    if (this.simulation) this.exitSimulation();
     const runner = new ExperimentRunner(s.model, e, modelFingerprint(s.model));
-    const slot = { runner, id, doc: this.mdoc };
+    const slot: ExpSlot = { runner, id, doc: this.mdoc, ctl: null };
     this.expRunner = slot;
     this.expCompare.delete(id);
+    runner.prepare();
+    const win = this.doc.defaultView;
+    if (!win || runner.over) {
+      runner.runAll();
+      this.finishExperiment(slot);
+      return true;
+    }
+    if (!opts.headless) {
+      this.playExperiment(slot);
+      this.renderExperimentsWs();
+      return true;
+    }
     const tick = (): void => {
       if (this.expRunner !== slot) return;
       if (this.mdoc !== slot.doc) {
@@ -5399,30 +5432,146 @@ export class App {
           this.expDrawn = now;
           this.renderExperimentsDock();
         }
-        if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
+        win.setTimeout(tick, 0);
       }
     };
     this.renderExperimentsWs();
-    if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
-    else {
-      runner.runAll();
-      this.finishExperiment(slot);
-    }
+    win.setTimeout(tick, 0);
     return true;
+  }
+
+  /**
+   * Play a prepared run in the diagram: the simulation controller of
+   * Simulate with the experiment's simulation, only its traffic shown, its
+   * clock stopping at the end; no panels of its own (the bottom panel shows
+   * the run). Its ticks advance nothing themselves: they draw the progress
+   * and end the run when its last event has happened.
+   */
+  private playExperiment(slot: ExpSlot): void {
+    const self = this;
+    const r = slot.runner;
+    const ctl = new SimController(
+      {
+        doc: this.doc,
+        model: () => (self.session as Session).model,
+        scene: () => self.viewport.querySelector('.scene'),
+        view: () => (self.session ? self.session.state.view : 'physical'),
+        reduce: () => self.reducedMotion(),
+        changed: () => self.simChanged(),
+        rectOf: (ref) => {
+          const n = self.viewport.querySelector(`.node[data-ref="${ref.replace(/["\\]/g, '\\$&')}"]`);
+          if (!n) return null;
+          const b = n.getBoundingClientRect();
+          return { x: b.left, y: b.top, w: b.width, h: b.height };
+        },
+        toast: (t) => self.toast(t),
+        tick: () => self.experimentTick(slot),
+        selected: () => (self.session ? self.session.state.selected : null),
+        select: (ref) => self.select(ref, !!ref),
+      },
+      { simulation: r.simulation, experiment: { relevant: (f) => r.relevance.classify(f) !== null, until: () => r.endTime, notable: (t) => r.notable(t) } },
+    );
+    const stop = ctl.stop.bind(ctl);
+    ctl.stop = (): void => {
+      stop();
+      if (self.simCtl === ctl) self.simCtl = null;
+      if (self.session && self.session.setPlacement(null)) self.render();
+      self.doc.body.removeAttribute('data-sim');
+    };
+    slot.ctl = ctl;
+    this.simCtl = ctl;
+    this.doc.body.setAttribute('data-sim', 'on');
+    this.startSimulation(ctl);
+  }
+
+  /** A playing run's tick (about four a second): its end, or its progress drawn. */
+  private experimentTick(slot: ExpSlot): void {
+    if (this.expRunner !== slot) return;
+    if (this.mdoc !== slot.doc) {
+      this.stopExperiment();
+      return;
+    }
+    if (slot.runner.over) {
+      this.finishExperiment(slot);
+      return;
+    }
+    // the panel again when something it lists changed (a step, a verdict, what it waits for, play / pause); else the progress only
+    const r = slot.runner.result();
+    const c = slot.ctl;
+    const key = `${r.actions.map((x) => x.state).join()}|${r.observations.length}|${slot.runner.status().join('|')}|${c ? c.playing : ''}|${c ? c.speed : ''}`;
+    if (key !== this.expTickKey) {
+      this.expTickKey = key;
+      this.renderExperimentsDock();
+      this.applyHighlight();
+    } else {
+      const p = this.doc.getElementById('ex-progress');
+      const t = `${c ? (c.playing ? 'Playing' : 'Paused') : 'Running'} on scenario time: t = ${(Math.max(0, r.reached) / 1000).toFixed(1)} s of ${durText(r.duration)}`;
+      if (p && p.textContent !== t) p.textContent = t;
+      const bar = this.doc.getElementById('ex-progress-bar') as HTMLProgressElement | null;
+      if (bar) bar.value = Math.max(0, Math.min(r.duration, r.reached));
+      // (the action in progress is marked for a few seconds of scenario time)
+      if (this.expActKey !== this.expActNow(r)) this.applyHighlight();
+    }
+    this.updateModeBanner();
+  }
+
+  /** what the panels last showed of a playing run (redrawn when it changes) */
+  private expTickKey = '';
+  private expActKey = '';
+
+  /** The actions submitted in the last 3 s of scenario time (marked in the diagram as the action in progress). */
+  private expActNow(r: ExpRunResult): string {
+    return r.actions.filter((x) => (x.state === 'submitted' || x.state === 'undone' || x.state === 'waiting') && r.reached - x.at <= 3000 && r.reached >= x.at).map((x) => x.index).join(',');
   }
 
   /** Run an experiment to its end at once (the self-test, small models). */
   runExperimentNow(id: string | null = this.expSel.exp): ExpRunResult | null {
-    if (!this.runExperiment(id) || !this.expRunner) return null;
+    if (!this.runExperiment(id, { headless: true }) || !this.expRunner) return null;
     const slot = this.expRunner;
     slot.runner.runAll();
     this.finishExperiment(slot);
     return slot.runner.result();
   }
 
-  private finishExperiment(slot: { runner: ExperimentRunner; id: string; doc: ModelDoc | null }): void {
+  /** Skip to the result: the rest of a playing run at once (the same events, not shown). */
+  skipExperiment(): boolean {
+    const slot = this.expRunner;
+    if (!slot) return false;
+    slot.runner.runAll();
+    this.finishExperiment(slot);
+    return true;
+  }
+
+  /** Play or pause a playing run (its clock); false when none plays. */
+  pauseExperiment(on: boolean): boolean {
+    const slot = this.expRunner;
+    if (!slot || !slot.ctl) return false;
+    slot.ctl.setPlaying(!on, 'user');
+    this.renderExperimentsDock();
+    return true;
+  }
+
+  /** The runner of the run in progress (tests: its relevance and status). */
+  experimentRunner(): ExperimentRunner | null {
+    return this.expRunner ? this.expRunner.runner : null;
+  }
+
+  /** The playback's controller while a run plays (tests, the dock's speed). */
+  experimentPlayback(): SimController | null {
+    return this.expRunner ? this.expRunner.ctl : null;
+  }
+
+  /** The end of a playing run's display: its dots and states go, the model's state is shown again. */
+  private endPlayback(slot: ExpSlot): void {
+    if (slot.ctl && this.simulation === slot.ctl) this.exitSimulation();
+    else if (slot.ctl) slot.ctl.stop();
+    slot.ctl = null;
+  }
+
+  private finishExperiment(slot: ExpSlot): void {
     if (this.expRunner !== slot || this.mdoc !== slot.doc) return;
     this.expRunner = null;
+    this.endPlayback(slot);
     const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
     this.expRuns.set(slot.id, list);
     this.renderExperimentsWs();
@@ -5430,17 +5579,19 @@ export class App {
     this.toast(`Experiment ${slot.id}: ${slot.runner.result().summary}.`);
   }
 
-  /** Stop the running experiment: it keeps what it observed and says what was not reached. */
+  /** Stop the running experiment: it keeps what it observed and says what was not reached; nothing of it runs on. */
   stopExperiment(): boolean {
     const slot = this.expRunner;
     if (!slot) return false;
     slot.runner.cancel();
     this.expRunner = null;
+    this.endPlayback(slot);
     if (this.mdoc === slot.doc) {
       const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
       this.expRuns.set(slot.id, list);
     }
     this.renderExperimentsWs();
+    this.applyHighlight();
     return true;
   }
 
@@ -5497,7 +5648,8 @@ export class App {
       sel: this.expSel,
       index: new Map<string, number>(d.analysisEntries('experiments').map((x) => [x.id, x.index] as [string, number])),
       runs: this.expRuns,
-      running: run ? { id: run.id, reached: run.runner.result().reached, duration: run.runner.result().duration, settle: run.runner.result().settle } : null,
+      running: run ? { id: run.id, reached: run.runner.result().reached, duration: run.runner.result().duration, settle: run.runner.result().settle, playback: !!run.ctl, playing: !!run.ctl && run.ctl.playing, speed: run.ctl ? run.ctl.speed : 1, status: run.runner.status(), live: run.runner.result() } : null,
+      speeds: SPEEDS,
       compare: this.expCompare,
       outdated: (r) => r.fingerprint !== modelFingerprint(s.model),
       locked: this.editLock(),
@@ -5543,6 +5695,13 @@ export class App {
         this.expNote = '';
         edit(() => (kind === 'int' ? d().setInteger(p, value) : d().setText(p, value)));
       },
+      setDuration: (path, ms) => {
+        // the model keeps one canonical value; the unit shown is the control's
+        const p = JSON.parse(path) as Path;
+        this.expNote = '';
+        edit(() => d().setText(p, ms === null ? '' : durationYaml(ms)));
+      },
+      setStart: (start) => void edit(() => d().setExperimentStart(k(), start)),
       setKind: (list, n, kind) => {
         let cleared: string[] = [];
         if (!edit(() => (cleared = d().setStepKind(k(), list, n, kind)))) return;
@@ -5581,6 +5740,13 @@ export class App {
       },
       deleteExperiment: (id) => void this.removeExperiment(id),
       run: () => void this.runExperiment(),
+      pause: (on) => void this.pauseExperiment(on),
+      speed: (x) => {
+        const c = this.experimentPlayback();
+        if (c) c.setSpeed(x);
+        this.renderExperimentsDock();
+      },
+      skip: () => void this.skipExperiment(),
       stop: () => void this.stopExperiment(),
       reset: () => void this.resetExperiment(),
       compare: () => void this.compareExperiment(),
@@ -5644,7 +5810,18 @@ export class App {
     const out = new Map<string, string>();
     for (const r of experimentRefs(s.model, e)) out.set(r, 'ws-target');
     const runs = this.expRuns.get(e.id) || [];
-    const last = runs[runs.length - 1];
+    const playing = this.expRunner && this.expRunner.id === e.id ? this.expRunner.runner.result() : null;
+    const last = playing || runs[runs.length - 1];
+    if (playing) {
+      // the action in progress (submitted or waiting in the last 3 s of scenario time)
+      const now = this.expActNow(playing);
+      this.expActKey = now;
+      for (const k of now ? now.split(',').map(Number) : []) {
+        const a = e.actions[k];
+        const def = a ? actionDef(a.do) : undefined;
+        for (const r of def ? targetRefs(s.model, def.target, a.target, e) : []) out.set(r, 'ws-act');
+      }
+    }
     if (last)
       for (const o of last.observations) {
         const def = observeDef(o.obs.of);
@@ -5660,8 +5837,9 @@ export class App {
     const e = s && this.expSel.exp ? s.model.experiments.find((x) => x.id === this.expSel.exp) : undefined;
     if (!e) return 'Experiments: nothing runs until Run; the model is edited as usual.';
     const runs = this.expRuns.get(e.id) || [];
-    const st = this.expRunner && this.expRunner.id === e.id ? 'running' : e.problems.length ? 'not runnable yet' : runs.length ? 'run' : 'ready, not run';
-    return `Experiments: ${e.name} — ${st}. Nothing runs until Run.`;
+    const run = this.expRunner && this.expRunner.id === e.id ? this.expRunner : null;
+    const st = run ? `${run.ctl ? (run.ctl.playing ? 'playing' : 'paused') : 'running'} at t = ${(Math.max(0, run.runner.result().reached) / 1000).toFixed(1)} s, only its traffic shown` : e.problems.length ? 'not runnable yet' : runs.length ? 'run' : 'ready, not run';
+    return `Experiments: ${e.name} — ${st}.${run ? "" : " Nothing runs until Run."}`;
   }
 
   /** Delete an experiment after a confirmation. */

@@ -35,6 +35,16 @@
  * banner's text (with a broadcast storm's warning), what is down, a
  * highlighted broadcast domain, and Exit.
  *
+ * An experiment plays with the same controller (the Experiments workspace,
+ * analysis/sim/experiment.ts): it adopts the experiment's simulation
+ * (`simulation`), shows only the experiment's traffic (`experiment.relevant`:
+ * the rest runs, hidden, and neither waits on screen nor holds the clock),
+ * mutes nothing, stops its clock at the experiment's end, offers no
+ * in-diagram events (the experiment's actions are its events) and has no
+ * panels of its own (the workspace's bottom panel shows the run). The dots,
+ * their labels and hit areas, the packet inspector, Follow, the device
+ * states and the reduced-motion arrows are the same.
+ *
  * The checkboxes only choose what is shown (dots and event log): the
  * simulation always computes every protocol, so changing them never
  * restarts it or changes its time, and the tables keep filling. Parameters
@@ -133,6 +143,10 @@ export interface SimStartOptions {
   params?: { [key: string]: ParamValue };
   /** what it runs (analysis/exec-scope.ts): the entire model when left out */
   scope?: ExecScope;
+  /** a simulation to show instead of a new one (an experiment's) */
+  simulation?: Simulation;
+  /** an experiment playing: which flights are its own (the only ones shown), and the simulated time it ends at */
+  experiment?: { relevant(f: Flight): boolean; until(): number; notable?(t: number): number | null };
 }
 
 const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c' };
@@ -213,7 +227,8 @@ export class SimController implements SimulationMode {
     const win = host.doc.defaultView;
     // an execution scope runs a model of its own (the devices outside are not run at all; display and analysis are not changed by it)
     this.scope = o.scope && o.scope.kind !== 'entire' ? o.scope : null;
-    this.sim = new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+    this.sim = o.simulation || new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+    this.experiment = o.experiment || null;
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
     // closing the packet inspector ends the pause it caused
@@ -236,11 +251,21 @@ export class SimController implements SimulationMode {
         headers: (f) => f.hdr,
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
-        foreground: () => this.sim.foregroundActive(),
+        foreground: () => !this.experiment && this.sim.foregroundActive(),
         realtime: () => this.sim.realtimeActive(),
+        until: () => (this.experiment ? this.experiment.until() : null),
+        notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
       },
       MAX_DOTS,
     );
+    if (this.experiment) {
+      // everything shown is the experiment's: nothing muted, nothing hidden holding it, its exchanges drawn rather than bundled
+      this.pacer.mute = false;
+      this.pacer.hiddenHoldsNothing = true;
+      this.pacer.convLimit = 40;
+      // its starting state is seen before anything is skipped
+      this.pacer.rest();
+    }
     host.doc.addEventListener('visibilitychange', this.onVis);
     this.schedule();
   }
@@ -590,8 +615,14 @@ export class SimController implements SimulationMode {
     return this.shown.has(protocol);
   }
 
-  /** A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and their sender is chosen. */
-  private flightShown = (f: Flight): boolean => f.test !== undefined || ((this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f));
+  /** an experiment playing (only its traffic shown), or null */
+  readonly experiment: { relevant(f: Flight): boolean; until(): number; notable?(t: number): number | null } | null;
+
+  /**
+   * A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and
+   * their sender is chosen. An experiment's: its own traffic only.
+   */
+  private flightShown = (f: Flight): boolean => (this.experiment ? this.experiment.relevant(f) : f.test !== undefined || ((this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f)));
 
   // ------------------------------------------------------------ senders
 
@@ -1611,6 +1642,8 @@ export class SimController implements SimulationMode {
 
   /** A click in the diagram during the simulation: a short menu at that spot for a cable, a relation, a device or an interface. */
   diagramClick(ref: string | null, x: number, y: number): boolean {
+    // an experiment's events are its actions: no menu of events in the diagram
+    if (this.experiment) return false;
     if (!ref) return false;
     const items = this.itemsFor(ref, x, y);
     if (!items.length) return false;
