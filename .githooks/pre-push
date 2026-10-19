@@ -1,0 +1,14 @@
+#!/bin/sh
+# Optional: the quick checks before a push (about a minute; no browser).
+# Enable for this clone with:   git config core.hooksPath .githooks
+# Disable with:                 git config --unset core.hooksPath
+# Skip once with:               git push --no-verify
+# CI runs these and the browser suites on every pull request; this hook only
+# finds the same problems earlier.
+set -e
+echo "pre-push: type check, generated files, unit tests (git push --no-verify skips this)"
+npm run --silent typecheck
+npm run --silent check:dist
+# the committed files are current, so this changes none of them; it refreshes build/ for the tests
+npm run --silent build > /dev/null
+node scripts/run-tests.mjs unit

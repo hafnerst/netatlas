@@ -1,0 +1,32 @@
+{
+  "name": "dev and main: required checks",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/dev", "refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "Source and generated files", "integration_id": 15368 },
+          { "context": "Model and analysis tests", "integration_id": 15368 },
+          { "context": "Compatibility (Node 22 on Linux)", "integration_id": 15368 },
+          { "context": "Compatibility (Node 24 on Windows)", "integration_id": 15368 },
+          { "context": "Browser regression tests", "integration_id": 15368 },
+          { "context": "Public artifact", "integration_id": 15368 },
+          { "context": "Viewport checks", "integration_id": 15368 },
+          { "context": "Workflow lint", "integration_id": 15368 },
+          { "context": "Release PR source", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}

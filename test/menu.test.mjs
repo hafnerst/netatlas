@@ -160,7 +160,9 @@ test('packaging: dist/netatlas.html carries the public examples and none of the 
   for (const e of EXAMPLES.concat(INTERNAL_EXAMPLES, FIXTURES)) assert.ok(testBuild.includes(piece(e)), `${e.name} is in the test build`);
   for (const m of ['generated/test-examples', 'app/selftest', 'app/viewport-check']) assert.ok(testBuild.includes(`__defs[${JSON.stringify(m)}]`), `${m} is in the test build`);
   // the build refuses a release that would contain a test-only module
-  assert.match(read(join(root, 'scripts', 'build.mjs'), 'utf8'), /const TEST_ONLY = \['generated\/test-examples', 'app\/selftest', 'app\/viewport-check', 'app\/main-test'\];[\s\S]*if \(leaked\.length\) throw/);
+  // (the list is shared with the release package check, scripts/release-check.mjs)
+  assert.match(read(join(root, 'scripts', 'release-check.mjs'), 'utf8'), /export const TEST_ONLY = \['generated\/test-examples', 'app\/selftest', 'app\/viewport-check', 'app\/main-test'\];/);
+  assert.match(read(join(root, 'scripts', 'build.mjs'), 'utf8'), /import \{ TEST_ONLY \} from '\.\/release-check\.mjs';[\s\S]*if \(leaked\.length\) throw/);
   // build/ is never committed
   assert.match(read(join(root, '.gitignore'), 'utf8'), /^build\/$/m);
 });

@@ -1,0 +1,38 @@
+# Scheduled, grouped dependency updates as pull requests into dev. They are
+# reviewed and merged like any other pull request: nothing merges itself.
+#
+# npm: lockfile-only, so the ranges in package.json (TypeScript ~5.9) stay as
+# they are and an update within them is proposed; a new TypeScript minor or
+# major version is a deliberate change to package.json, made by hand.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: monthly
+    # a release is proposed only after it has been out for a week (a bad release is often withdrawn by then)
+    cooldown:
+      default-days: 7
+    versioning-strategy: lockfile-only
+    open-pull-requests-limit: 2
+    groups:
+      npm:
+        patterns: ['*']
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: monthly
+    # a release is proposed only after it has been out for a week (a bad release is often withdrawn by then)
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
