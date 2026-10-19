@@ -4,15 +4,22 @@
   "description": "Offline, single-file network architecture diagram tool (YAML in, interactive SVG out)",
   "private": true,
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node scripts/gen-examples.mjs && node scripts/gen-help.mjs && tsc -p tsconfig.json && node scripts/gen-support.mjs && node scripts/build.mjs",
-    "test": "npm run build && node --test test/",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:dist": "node scripts/gen-examples.mjs --check && node scripts/gen-help.mjs --check && tsc -p tsconfig.json && node scripts/gen-support.mjs --check && node scripts/build.mjs --check",
+    "test": "npm run build && node scripts/run-tests.mjs all",
+    "test:unit": "node scripts/run-tests.mjs unit",
+    "test:browser": "node scripts/run-tests.mjs browser",
+    "test:public": "node scripts/run-tests.mjs public",
+    "test:viewport": "node scripts/run-tests.mjs viewport",
     "selftest:browser": "node scripts/browser-selftest.mjs",
     "selftest:public": "node scripts/browser-selftest.mjs --public",
     "selftest:viewport": "node scripts/browser-selftest.mjs --viewport",
-    "screenshots:manual": "node scripts/manual-screenshots.mjs",
-    "typecheck": "node scripts/gen-examples.mjs && node scripts/gen-help.mjs && tsc -p tsconfig.json --noEmit",
-    "check:dist": "node scripts/gen-examples.mjs --check && node scripts/gen-help.mjs --check && tsc -p tsconfig.json && node scripts/gen-support.mjs --check && node scripts/build.mjs --check"
+    "screenshots:manual": "node scripts/manual-screenshots.mjs"
   },
   "devDependencies": {
     "typescript": "~5.9.2"

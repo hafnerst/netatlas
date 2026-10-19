@@ -1,6 +1,7 @@
 // Runs an in-page self-test in a headless Chromium-based browser (Chrome,
 // Edge or Chromium) with DNS resolution disabled, and reports the results.
 // Exit code 0 = all checks passed, 2 = no browser found (skipped), 1 = failures.
+// With --strict (or NETATLAS_REQUIRE_BROWSER=1, as in CI) a missing browser is a failure (exit code 1).
 //
 //   node scripts/browser-selftest.mjs            the full self-test on the test build (build/netatlas-test.html#selftest:
 //                                                public and internal examples)
@@ -11,7 +12,10 @@
 //
 // "npm run build" writes both pages.
 //
-// Set NETATLAS_BROWSER=/path/to/chrome to choose the browser explicitly.
+// Set NETATLAS_BROWSER=/path/to/chrome to choose the browser explicitly
+// (NETATLAS_BROWSER=none: as if none were installed). With
+// NETATLAS_DIAG_DIR set (scripts/run-tests.mjs), every result is also written
+// there as JSON, for a failed test.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
@@ -24,9 +28,12 @@ export const releaseHtml = resolve(root, 'dist', 'netatlas.html');
 /** The test build: the application with the internal examples, the full self-test and the viewport check. */
 export const testHtml = resolve(root, 'build', 'netatlas-test.html');
 const html = testHtml;
+const strict = process.argv.includes('--strict') || process.env.NETATLAS_REQUIRE_BROWSER === '1';
 
 export function findBrowser() {
   const env = process.env.NETATLAS_BROWSER;
+  // "none": behave as if no browser were installed (to try what a machine without one does)
+  if (env === 'none') return null;
   if (env && existsSync(env)) return env;
   const pf = process.env['ProgramFiles'] || 'C:\Program Files';
   const pf86 = process.env['ProgramFiles(x86)'] || 'C:\Program Files (x86)';
@@ -94,11 +101,19 @@ function runPage(hash, extra, page = testHtml) {
   if (!existsSync(page)) throw new Error(`${page} not found — run "npm run build" first`);
   const dom = run(browser, pathToFileURL(page).href + '#' + hash, [...extra, '--dump-dom']);
   const m = /<pre id="selftest"[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
+  let res;
   if (!m || !m[1].trim()) {
     const last = /data-selftest-last="([^"]*)"/.exec(dom);
-    return { browser, pass: false, error: 'the page produced no result' + (last ? `; the last finished check was ${last[1]}` : ''), raw: dom.slice(0, 2000) };
+    res = { browser, pass: false, error: 'the page produced no result' + (last ? `; the last finished check was ${last[1]}` : ''), raw: dom.slice(0, 2000) };
+  } else res = { browser, ...JSON.parse(decode(m[1])) };
+  const diag = process.env.NETATLAS_DIAG_DIR;
+  if (diag) {
+    // the result without the captured downloads (large, and the run's own output)
+    mkdirSync(diag, { recursive: true });
+    const name = `${page === releaseHtml ? 'public' : 'test'}-${hash}-${(extra.find((x) => x.startsWith('--window-size=')) || '').slice(14).replace(',', 'x')}.json`;
+    writeFileSync(join(diag, name), JSON.stringify({ ...res, downloads: res.downloads ? res.downloads.map((d) => d.name) : undefined }, null, 1));
   }
-  return { browser, ...JSON.parse(decode(m[1])) };
+  return res;
 }
 
 export function runSelfTest() {
@@ -142,8 +157,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   for (const v of VIEWPORTS) {
     const res = runViewportCheck(v);
     if (res.skipped) {
-      console.log('SKIPPED: no Chrome/Edge/Chromium found (set NETATLAS_BROWSER=/path/to/browser)');
-      process.exit(2);
+      console.log(`${strict ? 'FAIL' : 'SKIPPED'}: no Chrome/Edge/Chromium found (set NETATLAS_BROWSER=/path/to/browser)`);
+      process.exit(strict ? 1 : 2);
     }
     const bad = res.error ? [{ name: res.error, detail: '' }] : res.failed;
     console.log(`${bad.length ? 'FAIL' : 'ok  '}  ${v.name} (window ${v.size.replace(',', 'x')}, page viewport ${res.window || '?'}): ${res.total || 0} states`);
@@ -155,8 +170,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 } else if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const res = process.argv.includes('--public') ? runPublicSelfTest() : runSelfTest();
   if (res.skipped) {
-    console.log('SKIPPED: no Chrome/Edge/Chromium found (set NETATLAS_BROWSER=/path/to/browser)');
-    process.exit(2);
+    console.log(`${strict ? 'FAIL' : 'SKIPPED'}: no Chrome/Edge/Chromium found (set NETATLAS_BROWSER=/path/to/browser)`);
+    process.exit(strict ? 1 : 2);
   }
   console.log(`browser: ${res.browser}`);
   if (res.error) {
