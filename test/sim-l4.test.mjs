@@ -141,9 +141,20 @@ test('ICMP: fragmentation needed with DF (PMTUD lowers the path MTU), fragments 
   assert.ok(ev(s, (x) => x.what === 'reassembled' && x.device === 'srv').length === 1);
   // the fragments' dots say so
   assert.ok(s.engine.flights.some((f) => / \(fragment 2\/2\)$/.test(f.label)));
-  // TCP: srv's full-size answer is too big for the path; the Frag Needed makes it send smaller segments
-  const tcp = run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
-  assert.equal(tcp.result, 'refused' === 'x' ? '' : tcp.result);
+  // TCP to a written listener: srv's full-size answer (1460 bytes, DF) is too big for the 1400-byte path;
+  // r2's Frag Needed lowers srv's path MTU and the unacknowledged answer goes again in two segments over the same range
+  const l = sim(CHAIN({ mtu: 1400, srv: ', simulation: {listening: tcp/80}' }));
+  l.runTo(2500);
+  const tcp = run(l, { from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
+  assert.equal(tcp.ok, true);
+  assert.equal(tcp.result, 'connected and answered (1460 bytes)');
+  assert.ok(ev(l, (x) => x.what === 'path MTU' && x.device === 'srv' && /10\.0\.1\.10 is 1400 bytes now \(Frag Needed from 10\.0\.2\.1 \(r2\)\)/.test(x.detail)).length === 1);
+  const again = ev(l, (x) => x.device === 'srv' && x.protocol === 'tcp' && /sent again in smaller segments/.test(x.detail));
+  assert.deepEqual(again.map((x) => /, (\d+) bytes:/.exec(x.detail)[1]), ['1360', '100']);
+  assert.equal(ev(l, (x) => x.device === 'pc' && x.what === 'Test answered').length, 1, 'answered once');
+  // port 81 is not in the listener: refused by a RST, not by PMTUD
+  const closed = run(l, { from: 'pc', to: 'srv', kind: 'tcp', port: 81 });
+  assert.equal(closed.result, 'connection refused: RST from 10.0.2.10 (srv)');
 });
 
 test('ICMP: port unreachable from a closed UDP port; none about a broadcast; the rate limit; Send ICMP errors off', () => {

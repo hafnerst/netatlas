@@ -1509,7 +1509,7 @@ export class Engine {
    * before it has been sent (one at a time), is on the wire for its
    * serialization time and arrives a propagation delay later.
    */
-  private wire(link: string, end: 'a' | 'b', frame: Frame, t: number): { start: number; end: number; lost: boolean } {
+  private wire(link: string, end: 'a' | 'b', frame: Frame, t: number): { start: number; end: number; lost: boolean; dup: boolean; impaired: boolean } {
     const key = link + '>' + end;
     const free = this.cableFree.get(key) || 0;
     const start = Math.max(t, free);
@@ -1517,8 +1517,16 @@ export class Engine {
     this.cableFree.set(key, start + ser);
     const loss = Number(this.loss(link).value);
     const lost = loss > 0 && this.lossRandom() * 100 < loss;
-    return { start, end: start + ser + Number(this.latency(link).value), lost };
+    const imp = this.impair ? this.impair(link, frame) : null;
+    return { start, end: start + ser + Number(this.latency(link).value) + (imp && imp.delay ? imp.delay : 0), lost: lost || !!(imp && imp.lose), dup: !!(imp && imp.dup), impaired: !!(imp && imp.lose) && !lost };
   }
+
+  /**
+   * A test's impairment of one frame on a cable (never set by the
+   * application): lose it, deliver it twice, or delay it (so that what was
+   * sent after it overtakes it). Null: none.
+   */
+  impair: ((link: string, frame: Frame) => { lose?: boolean; dup?: boolean; delay?: number } | null) | null = null;
 
   /**
    * A small seeded jitter (ms) for a start or a periodic message: less than
@@ -1646,10 +1654,11 @@ export class Engine {
       f.dropped = (w.start + w.end) / 2;
       f.t1 = f.dropped;
       const r = this.loss(e.link);
-      this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (packet loss ${resolvedText(r)}): ${frame.msg.label}`);
+      this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (${w.impaired ? 'an impairment of the test' : 'packet loss ' + resolvedText(r)}): ${frame.msg.label}`);
       return;
     }
     this.arrive(o.device, o.port, frame, tag, w.end, f.id, seen);
+    if (w.dup) this.arrive(o.device, o.port, frame, tag, w.end + 0.001, f.id, seen);
   }
 
   /** A flight's shape (unicast, broadcast, multicast) and the frame's headers for the inspector; the message's log line gets them too (as first sent). */

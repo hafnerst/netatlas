@@ -36946,6 +36946,7 @@ const ipmath_1 = __req("analysis/ipmath");
 const routing_1 = __req("analysis/routing");
 const engine_1 = __req("analysis/sim/engine");
 const mac_1 = __req("analysis/sim/mac");
+const tcp_1 = __req("analysis/sim/tcp");
 const params_1 = __req("analysis/sim/params");
 const dns_1 = __req("model/dns");
 const protocols_1 = __req("analysis/sim/protocols");
@@ -36960,6 +36961,11 @@ const RTO_MAX = 120000;
 const DATA_RETRIES = 15;
 /** TIME_WAIT: 2 × MSL (Linux 60 s). */
 const TIME_WAIT = 60000;
+/** FIN_WAIT_2 without the peer's FIN: given up after this (Linux tcp_fin_timeout 60 s). */
+const FIN_TIMEOUT = 60000;
+/** A SYN-ACK is sent again at most this often (Linux tcp_synack_retries); a FIN (tcp_orphan_retries, 0 meaning 8). */
+const SYNACK_RETRIES = 5;
+const FIN_RETRIES = 8;
 /** Keepalive probes: 9, 75 s apart (Linux tcp_keepalive_probes / tcp_keepalive_intvl). */
 const KA_PROBES = 9;
 const KA_INTERVAL = 75000;
@@ -36983,9 +36989,6 @@ class AppSocket {
         this.c = c;
         this.h = h;
         this.closedWhy = null;
-        /** the messages it delivered (a retransmitted segment is not delivered twice) */
-        this.seen = new Set();
-        this.seq = 0;
     }
     get dev() {
         return this.c.dev;
@@ -37013,6 +37016,14 @@ class AppSocket {
     close(why) {
         this.T.appClose(this, why);
     }
+    /** reset it (RST): gone at once on both ends */
+    reset(why) {
+        this.T.appReset(this, why);
+    }
+    /** the connection's table row: its state and sequence numbers (for an application's status) */
+    get state() {
+        return this.c.state;
+    }
 }
 exports.AppSocket = AppSocket;
 /** The transport of a profile ("TCP 443", "UDP 2055 / 4739", "IP 89"): its protocol and its ports. */
@@ -37030,6 +37041,9 @@ function profileTransport(proto) {
 class Transport {
     constructor(P) {
         this.seq = 0;
+        /** connections opened so far (each one's initial sequence number differs) and the retransmission timers' tokens */
+        this.issCount = 0;
+        this.rtxTok = 0;
         this.conns = new Map();
         this.nextPort = new Map();
         /** a protocol break's UDP leg 2 waiting for its answer: by gateway and its source port, the client on leg 1 */
@@ -37045,9 +37059,11 @@ class Transport {
         /** DHCP and DNS (the resolver for host names) */
         this.netsvc = null;
         this.relCache = new Map();
-        // ------------------------------------------------------------ applications' own connections (MQTT)
+        // ------------------------------------------------------------ applications' own connections (MQTT, BGP)
         /** the listeners of the applications' own protocols, by "device|port" */
         this.appListening = new Map();
+        /** the last packet emit sent (a retransmitted SYN's, for its test) */
+        this.lastPkt = 0;
         this.probeState = new Map();
         this.P = P;
     }
@@ -37246,7 +37262,7 @@ class Transport {
             if ((l4.flags || []).indexOf('RST') >= 0)
                 return;
             this.e.note('drop', 'tcp', dev, '', pkt.msg.type, '', `${what}: it answers with a RST (${pkt.msg.label})`);
-            this.segment(dev, { local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, vrf: pkt.vrf }, ['RST', 'ACK'], 0, `refused: port ${l4.dport} is closed`, pkt.dst);
+            this.rstFor(dev, pkt, `refused: port ${l4.dport} is closed`);
             return;
         }
         this.e.note('drop', 'udp', dev, '', pkt.msg.type, '', `${what}: ${(0, mac_1.isMulticastIp)(pkt.dst) || this.e.isBroadcastAddr(pkt.dst) ? 'no ICMP error to a broadcast or multicast' : 'it answers with ICMP port unreachable'} (${pkt.msg.label})`);
@@ -37289,17 +37305,6 @@ class Transport {
         return pkt;
     }
     /** A TCP segment from a connection's end (or a RST for a closed port: `src` its address). */
-    segment(dev, c, flags, bytes, what, src, conn) {
-        const to = `${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport}`;
-        const f = flags.join(',');
-        const type = f === 'SYN' ? 'TCP SYN' : f === 'SYN,ACK' ? 'TCP SYN-ACK' : flags.indexOf('RST') >= 0 ? 'TCP RST' : flags.indexOf('FIN') >= 0 ? 'TCP FIN' : bytes > 0 ? 'TCP data' : what === 'keepalive' ? 'TCP keepalive' : 'TCP ACK';
-        const label = type === 'TCP SYN' ? `TCP SYN → ${to}` : type === 'TCP data' ? `TCP data → ${to} (${bytes} B)` : type;
-        const peer = this.e.ownerOf(c.remote) || '';
-        const m = this.msg('tcp', type, label, `TCP ${(0, ipmath_1.formatAddr)(src || c.local)}:${c.lport} → ${to} [${f}]${bytes ? ' ' + bytes + ' bytes' : ''}: ${what}`, {});
-        const seq = conn ? conn.got + 1000 : 0;
-        const l4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags, seq, ack: flags.indexOf('ACK') >= 0 ? seq + 1 : undefined };
-        return this.sendPkt(dev, src || c.local, c.remote, c.vrf, m, l4, 20 + bytes, true, peer);
-    }
     // ------------------------------------------------------------ tests
     /** A device's tests run against a target: its address and the test (a target's own, else the test type in effect). */
     resolveTarget(dev, t, kind) {
@@ -37597,9 +37602,9 @@ class Transport {
         if (l4.mtu && dst) {
             this.learnMtu(dev, dst, l4.mtu, `${what}`);
             // a TCP connection sends what is not acknowledged again, in smaller segments
-            const c = this.connByFlow(dev, q);
-            if (c && c.unacked.length)
-                this.retransmit(c, true);
+            const c = this.connByFlow(dev, pkt.vrf, q);
+            if (c && !c.tcp.idle)
+                this.resend(c, `${what}: path MTU ${l4.mtu}`);
             const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(q.pkt) >= 0);
             if (t && t.kind !== 'tcp')
                 this.finish(t, false, `${what}: ${t.df ? 'the packet is too big for the path and DF is set' : 'too big'} (path MTU ${l4.mtu})`);
@@ -37610,7 +37615,7 @@ class Transport {
             this.finish(t, false, what);
             return;
         }
-        const c = this.connByFlow(dev, q);
+        const c = this.connByFlow(dev, pkt.vrf, q);
         if (c && (c.state === 'SYN_SENT' || c.state === 'SYN_RCVD')) {
             // a hard error while connecting ends the attempt (Linux: tcp_v4_err)
             this.closeConn(c, `connection failed: ${what}`);
@@ -37632,11 +37637,11 @@ class Transport {
         const l4 = pkt.l4;
         if (!l4 || l4.proto !== 'tcp')
             return;
-        const c = this.conn(dev, pkt.src, l4.sport, pkt.dst, l4.dport);
+        const c = this.conn(dev, pkt.vrf, pkt.src, l4.sport, pkt.dst, l4.dport);
         if (!c)
             return;
         if (kind === 'frag') {
-            this.retransmit(c, true);
+            this.resend(c, `${text}: its own interface`);
             return;
         }
         if (c.state === 'SYN_SENT') {
@@ -37713,20 +37718,21 @@ class Transport {
             answer();
     }
     // ------------------------------------------------------------ TCP
-    connKey(local, lport, remote, rport) {
-        return `${(0, ipmath_1.formatAddr)(local)}:${lport}>${(0, ipmath_1.formatAddr)(remote)}:${rport}`;
+    /** A connection's key on its device: its VRF and both ends (overlapping addresses in two VRFs are two connections). */
+    connKey(vrf, local, lport, remote, rport) {
+        return `${vrf}|${(0, ipmath_1.formatAddr)(local)}:${lport}>${(0, ipmath_1.formatAddr)(remote)}:${rport}`;
     }
-    conn(dev, local, lport, remote, rport) {
+    conn(dev, vrf, local, lport, remote, rport) {
         const m = this.conns.get(dev);
-        return m ? m.get(this.connKey(local, lport, remote, rport)) : undefined;
+        return m ? m.get(this.connKey(vrf, local, lport, remote, rport)) : undefined;
     }
-    connByFlow(dev, q) {
+    connByFlow(dev, vrf, q) {
         const m = this.conns.get(dev);
         if (!m || q.sport === undefined || q.dport === undefined)
             return undefined;
         const a = (0, ip_1.parseAddress)(q.src);
         const b = (0, ip_1.parseAddress)(q.dst);
-        return a && b ? m.get(this.connKey(a, q.sport, b, q.dport)) : undefined;
+        return a && b ? m.get(this.connKey(vrf, a, q.sport, b, q.dport)) : undefined;
     }
     addConn(c) {
         let m = this.conns.get(c.dev);
@@ -37740,20 +37746,32 @@ class Transport {
         c.state = state;
         c.since = this.e.now;
     }
-    /** An application listens on a TCP port of its device (an MQTT broker): each connection gets a socket. */
+    /** A new connection end (its initial sequence number from its identity and a counter). */
+    newConn(o) {
+        const key = this.connKey(o.vrf, o.local, o.lport, o.remote, o.rport);
+        const iss = (0, tcp_1.initialSeq)(o.dev + '|' + key, ++this.issCount);
+        return { key, dev: o.dev, proto: 'tcp', local: o.local, lport: o.lport, remote: o.remote, rport: o.rport, vrf: o.vrf, state: o.state, role: o.role, since: this.e.now, heard: this.e.now, timer: null, tries: 0, rtx: 0, gen: 0, what: o.what, test: o.test, tcp: new tcp_1.TcpStream(iss), keep: !!o.keep, probes: 0 };
+    }
+    /** An application listens on a TCP port of its device (an MQTT broker, a BGP speaker): each connection gets a socket. */
     appListen(dev, port, what, h) {
         this.appListening.set(dev + '|' + port, { h, what });
     }
+    /** It stops listening (a BGP speaker going Idle): new connections to the port are refused again. */
+    appUnlisten(dev, port) {
+        this.appListening.delete(dev + '|' + port);
+    }
     /**
-     * An application opens a connection (an MQTT client to its broker): SYN with its retransmissions;
-     * `open` when it is established, `closed` when it is refused or times out. A text when it can't send.
+     * An application opens a connection (an MQTT client to its broker, a BGP
+     * speaker to its peer): SYN with its retransmissions; `open` when it is
+     * established, `closed` when it is refused or times out. A text when it
+     * can't send. `from`: the source address (BGP's update source), else the
+     * one the route gives; `vrf` with it.
      */
-    appConnect(dev, dst, port, what, h) {
-        const s = this.sourceFor(dev, dst);
+    appConnect(dev, dst, port, what, h, from) {
+        const s = from || this.sourceFor(dev, dst);
         if (!s)
             return `${dev} has no IPv${dst.version} address to connect from`;
-        const lport = this.ephemeral(dev);
-        const c = { key: this.connKey(s.src, lport, dst, port), dev, proto: 'tcp', local: s.src, lport, remote: dst, rport: port, vrf: s.vrf, state: 'SYN_SENT', role: 'client', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what, got: 0, unacked: [], keep: false, probes: 0 };
+        const c = this.newConn({ dev, vrf: s.vrf, local: s.src, lport: this.ephemeral(dev), remote: dst, rport: port, state: 'SYN_SENT', role: 'client', what });
         const sock = new AppSocket(this, c, h);
         c.sock = sock;
         this.addConn(c);
@@ -37762,93 +37780,31 @@ class Transport {
     }
     /** Send an application's message over its connection (segments by the path MTU, retransmitted until acknowledged). */
     appSend(sock, m) {
-        const c = sock.c;
         if (!sock.open)
             return false;
-        const id = ++sock.seq;
-        const mss = this.mss(c);
-        const parts = [];
-        for (let left = Math.max(1, m.bytes); left > 0; left -= mss)
-            parts.push({ flags: left <= mss ? ['PSH', 'ACK'] : ['ACK'], bytes: Math.min(mss, left), what: m.detail, app: left <= mss ? m : undefined, id: left <= mss ? id : undefined });
-        const fresh = !c.unacked.length;
-        for (const p of parts)
-            c.unacked.push(p);
-        parts.forEach((p, i) => this.appSegment(c, p, i, parts.length));
-        if (fresh) {
-            c.tries = 0;
-            this.armRetransmit(c);
-        }
+        this.write(sock.c, m.bytes, m.detail, { kind: 'app', app: m });
+        m.sent = this.e.now;
         return true;
     }
-    /** One segment of an application's message: drawn as the message (its protocol, type and label), its last one carrying it. */
-    appSegment(c, p, i, n) {
-        const m = p.app;
-        const proto = m ? m.protocol : 'tcp';
-        const label = m ? m.label + (c.tries ? ' (TCP retransmission)' : '') : `TCP data → ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport}`;
-        const detail = `${m ? m.detail : p.what}${n > 1 ? ` (segment ${i + 1} of ${n})` : ''} — TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} [${p.flags.join(',')}] ${p.bytes} bytes${c.tries ? `, retransmission ${c.tries}` : ''}`;
-        const msg = { protocol: proto, type: m ? m.type : 'TCP data', label, detail, data: { from: '', ...(m ? m.data : {}), appMsg: p.id, appType: m ? m.type : undefined } };
-        const seq = c.got + 1000;
-        const l4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: p.flags, seq, ack: seq + 1 };
-        this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + p.bytes, true, this.e.ownerOf(c.remote) || '');
-        if (m && i === n - 1)
-            m.sent = this.e.now;
-    }
-    /** The retransmission timer of an application's connection: what is unacknowledged goes again, doubling, until the retries are spent. */
-    armRetransmit(c) {
-        const g = ++c.gen;
-        const wait = this.rto(c);
-        c.timer = this.e.now + wait;
-        this.later(wait, () => {
-            if (c.gen !== g || !c.unacked.length || !c.sock || !c.sock.open)
-                return;
-            if (c.tries >= DATA_RETRIES) {
-                this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
-                return;
-            }
-            c.tries++;
-            const n = c.unacked.length;
-            c.unacked.forEach((p, i) => this.appSegment(c, p, i, n));
-            this.armRetransmit(c);
-        });
-    }
-    /** A segment of an application's connection arrived: acknowledged; a whole message goes to its socket. */
-    sockData(c, pkt, bytes) {
-        const l4 = pkt.l4;
-        const flags = l4.flags || [];
-        // (cumulative: what this end sent is acknowledged by what comes back)
-        if (flags.indexOf('ACK') >= 0 && c.unacked.length) {
-            c.unacked = [];
-            c.tries = 0;
-            c.gen++;
-            c.timer = null;
-        }
-        if (bytes <= 0)
-            return;
-        c.got += bytes;
-        this.segment(c.dev, c, ['ACK'], 0, `acknowledges ${bytes} bytes`, undefined, c);
-        const d = (pkt.msg.data || {});
-        const sock = c.sock;
-        if (flags.indexOf('PSH') < 0 || d.appMsg === undefined || sock.seen.has(d.appMsg))
-            return;
-        sock.seen.add(d.appMsg);
-        const m = { protocol: pkt.msg.protocol, type: pkt.msg.type, label: pkt.msg.label, detail: pkt.msg.detail, bytes, data: pkt.msg.data || {} };
-        sock.h.message(sock, m);
-    }
-    /** Close an application's connection from its end (FIN); it is told at once. */
+    /** Close an application's connection from its end (FIN after what it sent); it is told at once. */
     appClose(sock, why) {
         const c = sock.c;
         this.sockClosed(sock, why);
-        if (c.state === 'ESTABLISHED') {
-            this.setState(c, 'FIN_WAIT_1');
-            this.segment(c.dev, c, ['FIN', 'ACK'], 0, `closes the connection (${why})`, undefined, c);
-            const g = ++c.gen;
-            this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
-                if (c.gen === g && c.state === 'FIN_WAIT_1')
-                    this.closeConn(c, 'closed (no answer to the FIN)');
-            });
-        }
-        else if (c.state === 'SYN_SENT' || c.state === 'SYN_RCVD')
+        if (c.state === 'ESTABLISHED')
+            this.close(c, `closes the connection (${why})`);
+        else if (c.state === 'SYN_SENT' || c.state === 'SYN_RCVD') {
+            if (c.state === 'SYN_RCVD')
+                this.rst(c, why);
             this.closeConn(c, why);
+        }
+    }
+    /** Reset an application's connection (BGP's NOTIFICATION, then the session goes): RST, gone at once. */
+    appReset(sock, why) {
+        const c = sock.c;
+        this.sockClosed(sock, why);
+        if (c.state !== 'SYN_SENT')
+            this.rst(c, why);
+        this.closeConn(c, why);
     }
     /** Tell a socket its connection is gone (once). */
     sockClosed(sock, why) {
@@ -37859,8 +37815,7 @@ class Transport {
     }
     /** Open a connection for a test: SYN, retransmitted with backoff until answered or the SYN retries are spent. */
     connect(t, src, vrf) {
-        const lport = this.ephemeral(t.from);
-        const c = { key: this.connKey(src, lport, t.dst, t.port), dev: t.from, proto: 'tcp', local: src, lport, remote: t.dst, rport: t.port, vrf, state: 'SYN_SENT', role: 'client', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what: t.source === 'upstream' ? `upstream for ${t.series}` : t.source === 'health' ? 'health check' : `test ${t.series}`, test: t, got: 0, unacked: [], keep: t.keep, probes: 0 };
+        const c = this.newConn({ dev: t.from, vrf, local: src, lport: this.ephemeral(t.from), remote: t.dst, rport: t.port, state: 'SYN_SENT', role: 'client', what: t.source === 'upstream' ? `upstream for ${t.series}` : t.source === 'health' ? 'health check' : `test ${t.series}`, test: t, keep: t.keep });
         t.conn = c;
         this.addConn(c);
         this.sendSyn(c);
@@ -37869,34 +37824,30 @@ class Transport {
         return Math.min(RTO_MAX, this.e.params.num('tcp-rto', c.dev) * Math.pow(2, c.tries));
     }
     sendSyn(c) {
-        const p = this.segment(c.dev, c, ['SYN'], 0, c.tries ? `retransmission ${c.tries} (timeout ${(0, params_1.durationText)(this.rto({ ...c, tries: c.tries - 1 }))})` : `opens a connection (${c.what})`, undefined, c);
+        const s = c.tcp.syn(`opens a connection (${c.what})`);
+        const p = this.emit(c, s);
         if (c.test)
             c.test.pktIds.push(p.id);
-        const g = ++c.gen;
-        const wait = this.rto(c);
-        c.timer = this.e.now + wait;
-        this.later(wait, () => {
-            if (c.gen !== g || c.state !== 'SYN_SENT')
-                return;
-            const max = this.e.params.get('tcp-syn-retries', c.dev);
-            if (c.tries >= Number(max.value)) {
-                this.closeConn(c, `connection timed out: no answer to the SYN and its ${c.tries} retransmissions (TCP SYN retries ${(0, params_1.resolvedText)(max)})`);
-                if (c.test)
-                    this.finish(c.test, false, `TCP connect timed out after ${c.tries} retransmissions`);
-                return;
-            }
-            c.tries++;
-            this.sendSyn(c);
-        });
+        this.armRtx(c);
     }
-    /** Send data (split into segments that fit the path MTU) and wait for its acknowledgement. */
+    /** Send data as one message of the connection (the request, the answer): segments of the MSS, the last marked. */
     sendData(c, bytes, what) {
-        const mss = this.mss(c);
-        c.unacked = [];
-        for (let left = bytes; left > 0; left -= mss)
-            c.unacked.push({ flags: left <= mss ? ['PSH', 'ACK'] : ['ACK'], bytes: Math.min(mss, left), what });
-        c.tries = 0;
-        this.retransmit(c, false);
+        this.write(c, bytes, what, { kind: c.role === 'server' ? 'response' : 'request', bytes });
+    }
+    /** Write a message: its segments go out at once (no window), the retransmission timer runs while anything is unacknowledged. */
+    write(c, bytes, what, msg) {
+        const segs = c.tcp.write(bytes, this.mss(c), what, msg);
+        const n = segs.length;
+        segs.forEach((s, i) => this.emit(c, s, n > 1 ? ` (segment ${i + 1} of ${n})` : ''));
+        if (c.rtx === 0)
+            this.armRtx(c);
+    }
+    /** Close this end (FIN after its data): FIN_WAIT_1 (the client, an application) or LAST_ACK (it answers the peer's FIN). */
+    close(c, what) {
+        const s = c.tcp.fin(what);
+        this.setState(c, c.tcp.finIn ? 'LAST_ACK' : 'FIN_WAIT_1');
+        this.emit(c, s);
+        this.armRtx(c);
     }
     mss(c) {
         const pm = this.pathMtu(c.dev, c.remote);
@@ -37905,36 +37856,77 @@ class Transport {
         const mtu = Math.min(own, pm || own);
         return Math.max(8, mtu - (c.remote.version === 4 ? 40 : 60));
     }
-    /** (Re)send what is unacknowledged; again after the retransmission timeout, doubling, until acknowledged or the retries are spent. */
-    retransmit(c, resize) {
-        if (!c.unacked.length)
+    /**
+     * The path MTU went down (Fragmentation Needed / Packet Too Big): what is
+     * unacknowledged is split for the new MSS over the same sequence range and
+     * sent again at once (as Linux's tcp_simple_retransmit), the timer anew.
+     */
+    resend(c, why) {
+        c.tcp.resegment(this.mss(c));
+        const n = c.tcp.out.length;
+        c.tcp.out.forEach((s, i) => {
+            s.sent++;
+            this.emit(c, s, `${n > 1 ? ` (segment ${i + 1} of ${n})` : ''}, sent again in smaller segments (${why})`);
+        });
+        this.armRtx(c);
+    }
+    /**
+     * The retransmission timer (RFC 6298): one per connection while anything
+     * sent is unacknowledged; when it runs out the earliest unacknowledged
+     * segment goes again and the timeout doubles (at most 120 s), until the
+     * retries are spent — the SYN retries for a SYN, 5 for a SYN-ACK
+     * (Linux tcp_synack_retries), 8 for a FIN (tcp_orphan_retries), else 15
+     * (tcp_retries2): then the connection is given up.
+     */
+    armRtx(c) {
+        const tok = ++this.rtxTok;
+        c.rtx = tok;
+        if (c.tcp.idle) {
+            c.rtx = 0;
+            if (c.timer !== null && c.state !== 'TIME_WAIT' && c.state !== 'FIN_WAIT_2' && !c.keep)
+                c.timer = null;
             return;
-        if (resize) {
-            // smaller segments for a smaller path MTU
-            const total = c.unacked.reduce((n, s) => n + s.bytes, 0);
-            const what = c.unacked[0].what;
-            c.unacked = [];
-            const mss = this.mss(c);
-            for (let left = total; left > 0; left -= mss)
-                c.unacked.push({ flags: left <= mss ? ['PSH', 'ACK'] : ['ACK'], bytes: Math.min(mss, left), what });
         }
-        const n = c.unacked.length;
-        c.unacked.forEach((s, i) => this.segment(c.dev, c, s.flags, s.bytes, `${s.what}${n > 1 ? ` (segment ${i + 1} of ${n})` : ''}${c.tries ? `, retransmission ${c.tries}` : ''}`, undefined, c));
-        const g = ++c.gen;
         const wait = this.rto(c);
         c.timer = this.e.now + wait;
         this.later(wait, () => {
-            if (c.gen !== g || !c.unacked.length)
+            if (c.rtx !== tok || c.tcp.idle)
                 return;
-            if (c.tries >= DATA_RETRIES) {
-                this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
-                if (c.test)
-                    this.finish(c.test, false, 'connection lost: the data was never acknowledged');
+            const s = c.tcp.earliest();
+            const max = s.syn && c.state === 'SYN_SENT' ? Number(this.e.params.get('tcp-syn-retries', c.dev).value) : s.syn ? SYNACK_RETRIES : s.fin ? FIN_RETRIES : DATA_RETRIES;
+            if (c.tries >= max) {
+                this.gaveUp(c, s);
                 return;
             }
             c.tries++;
-            this.retransmit(c, false);
+            s.sent++;
+            this.emit(c, s, `, retransmission ${c.tries} (timeout ${(0, params_1.durationText)(this.rto({ ...c, tries: c.tries - 1 }))})`);
+            if (s.syn && c.test && c.state === 'SYN_SENT')
+                c.test.pktIds.push(this.lastPkt);
+            this.armRtx(c);
         });
+    }
+    /** The retries are spent: the connection is given up (and its test or socket told). */
+    gaveUp(c, s) {
+        if (s.syn && c.state === 'SYN_SENT') {
+            const max = this.e.params.get('tcp-syn-retries', c.dev);
+            this.closeConn(c, `connection timed out: no answer to the SYN and its ${c.tries} retransmissions (TCP SYN retries ${(0, params_1.resolvedText)(max)})`);
+            if (c.test)
+                this.finish(c.test, false, `TCP connect timed out after ${c.tries} retransmissions`);
+            return;
+        }
+        if (s.syn) {
+            this.closeConn(c, `the handshake was not completed: no ACK to the SYN-ACK and its ${c.tries} retransmissions`);
+            return;
+        }
+        if (s.fin) {
+            this.closeConn(c, `closed: no acknowledgement of the FIN after ${c.tries} retransmissions`);
+            return;
+        }
+        this.rst(c, 'no acknowledgement: given up');
+        this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
+        if (c.test)
+            this.finish(c.test, false, 'connection lost: the data was never acknowledged');
     }
     closeConn(c, why) {
         if (c.sock)
@@ -37943,6 +37935,7 @@ class Transport {
         if (m && m.get(c.key) === c)
             m.delete(c.key);
         c.gen++;
+        c.rtx = -1;
         c.timer = null;
         this.e.note('table', 'tcp', c.dev, this.e.ownerOf(c.remote) || '', 'connection closed', 'CLOSED', `${c.dev} ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} ↔ ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} (${c.what}): ${why}`);
         // a proxy's two sides go together
@@ -37955,12 +37948,86 @@ class Transport {
                 other.upstream = undefined;
         }
     }
+    /** Is a connection still in its device's table (not closed)? */
+    alive(c) {
+        const m = this.conns.get(c.dev);
+        return !!m && m.get(c.key) === c;
+    }
+    /**
+     * One segment of a connection on the wire: its sequence number, the
+     * acknowledgment (RCV.NXT) once the peer's SYN is known, its flags, its
+     * bytes; a message's last segment carries the message (its protocol,
+     * type and label when it is an application's).
+     */
+    emit(c, s, more = '') {
+        const synced = c.tcp.irs !== null;
+        const flags = s.syn ? (synced ? ['SYN', 'ACK'] : ['SYN']) : s.fin ? ['FIN', 'ACK'] : s.mark ? ['PSH', 'ACK'] : ['ACK'];
+        const app = s.mark && s.mark.msg.kind === 'app' ? s.mark.msg.app : undefined;
+        const to = `${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport}`;
+        const f = flags.join(',');
+        const type = s.syn ? (synced ? 'TCP SYN-ACK' : 'TCP SYN') : s.fin ? 'TCP FIN' : s.len > 0 ? 'TCP data' : 'TCP ACK';
+        const retx = s.sent > 0 ? ' (TCP retransmission)' : '';
+        const label = app ? app.label + retx : type === 'TCP SYN' ? `TCP SYN → ${to}${retx}` : type === 'TCP data' ? `TCP data → ${to} (${s.len} B)${retx}` : type + retx;
+        const seqText = `seq ${s.seq}${synced ? ', ack ' + c.tcp.ackNo : ''}`;
+        const detail = `${app ? app.detail + ' — ' : ''}TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${to} [${f}] ${seqText}${s.len ? ', ' + s.len + ' bytes' : ''}: ${s.what}${more}`;
+        const data = { from: '', ...(app ? app.data : {}) };
+        if (s.mark)
+            data.tcpMark = { id: s.mark.id, end: s.mark.end, kind: s.mark.msg.kind, bytes: s.mark.msg.kind === 'app' ? s.mark.msg.app.bytes : s.mark.msg.bytes };
+        if (app)
+            data.appType = app.type;
+        const msg = { protocol: (app ? app.protocol : 'tcp'), type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : undefined };
+        const l4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags, seq: s.seq, ack: synced ? c.tcp.ackNo : undefined };
+        const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + s.len, true, this.e.ownerOf(c.remote) || '');
+        this.lastPkt = p.id;
+        return p;
+    }
+    /** A segment without data: an acknowledgment (seq SND.NXT, ack RCV.NXT), or a keepalive probe (seq SND.NXT − 1). */
+    ackSeg(c, what, probe = false) {
+        const to = `${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport}`;
+        const seq = probe ? c.tcp.sndNxt - 1 : c.tcp.sndNxt;
+        const type = probe ? 'TCP keepalive' : 'TCP ACK';
+        const m = this.msg('tcp', type, type, `TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${to} [ACK] seq ${seq}, ack ${c.tcp.ackNo}: ${what}`, {});
+        this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: ['ACK'], seq, ack: c.tcp.ackNo }, 20, true, this.e.ownerOf(c.remote) || '');
+    }
+    /** A RST of a connection (seq SND.NXT). */
+    rst(c, what) {
+        const to = `${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport}`;
+        const m = this.msg('tcp', 'TCP RST', 'TCP RST', `TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${to} [RST,ACK] seq ${c.tcp.sndNxt}, ack ${c.tcp.ackNo}: ${what}`, {});
+        this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: ['RST', 'ACK'], seq: c.tcp.sndNxt, ack: c.tcp.ackNo }, 20, true, this.e.ownerOf(c.remote) || '');
+    }
+    /**
+     * A RST answering a segment that belongs to no connection (a closed port,
+     * a firewall's reject, a stale segment; RFC 9293 §3.10.7.1): its
+     * sequence number is the segment's acknowledgment, else 0 with the
+     * acknowledgment of everything it carried. `src`: the address it is sent
+     * from (a firewall answers for the destination).
+     */
+    rstFor(dev, pkt, what, src) {
+        const l4 = pkt.l4;
+        const flags = l4.flags || [];
+        if (flags.indexOf('RST') >= 0)
+            return;
+        const hasAck = flags.indexOf('ACK') >= 0;
+        const space = Math.max(0, (pkt.len || 20) - 20) + (flags.indexOf('SYN') >= 0 ? 1 : 0) + (flags.indexOf('FIN') >= 0 ? 1 : 0);
+        const seq = hasAck ? l4.ack || 0 : 0;
+        const ack = (l4.seq || 0) + space;
+        const to = `${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}`;
+        const m = this.msg('tcp', 'TCP RST', 'TCP RST', `TCP ${(0, ipmath_1.formatAddr)(src || pkt.dst)}:${l4.dport} → ${to} [RST,ACK] seq ${seq}, ack ${ack}: ${what}`, {});
+        this.sendPkt(dev, src || pkt.dst, pkt.src, pkt.vrf, m, { proto: 'tcp', num: 6, sport: l4.dport, dport: l4.sport, flags: ['RST', 'ACK'], seq, ack }, 20, true, this.e.ownerOf(pkt.src) || '');
+    }
+    /** Is a RST acceptable for a connection (RFC 9293 §3.10.7, RFC 5961: its sequence number at RCV.NXT; in SYN_SENT one that acknowledges the SYN)? */
+    rstOk(c, l4) {
+        if (c.state === 'SYN_SENT')
+            return (l4.flags || []).indexOf('ACK') >= 0 && l4.ack === c.tcp.sndNxt;
+        return c.tcp.rcvNxt === null || l4.seq === c.tcp.rcvNxt;
+    }
     tcpIn(dev, l3, pkt) {
         const l4 = pkt.l4;
         const flags = l4.flags || [];
         const has = (f) => flags.indexOf(f) >= 0;
-        const c = this.conn(dev, pkt.dst, l4.dport, pkt.src, l4.sport);
-        const bytes = (pkt.len || 20) - 20;
+        const vrf = l3.vrf;
+        const c = this.conn(dev, vrf, pkt.dst, l4.dport, pkt.src, l4.sport);
+        const bytes = Math.max(0, (pkt.len || 20) - 20);
         if (!c) {
             if (has('RST'))
                 return;
@@ -37969,25 +38036,30 @@ class Transport {
                     this.refuse(dev, l3, pkt, this.listenText(dev, 'tcp', l4.dport, pkt.dst));
                     return;
                 }
-                const sc = { key: this.connKey(pkt.dst, l4.dport, pkt.src, l4.sport), dev, proto: 'tcp', local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, vrf: pkt.vrf, state: 'SYN_RCVD', role: 'server', since: this.e.now, heard: this.e.now, timer: null, tries: 0, gen: 0, what: `serves ${(0, ipmath_1.formatAddr)(pkt.src)}`, got: 0, unacked: [], keep: false, probes: 0 };
+                const sc = this.newConn({ dev, vrf, local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, state: 'SYN_RCVD', role: 'server', what: `serves ${(0, ipmath_1.formatAddr)(pkt.src)}` });
                 const lh = this.appListening.get(dev + '|' + l4.dport);
                 if (lh) {
                     sc.sock = new AppSocket(this, sc, lh.h);
                     sc.what = `${lh.what}: a client at ${(0, ipmath_1.formatAddr)(pkt.src)}`;
                 }
+                sc.tcp.synIn(l4.seq || 0);
                 this.addConn(sc);
-                this.segment(dev, sc, ['SYN', 'ACK'], 0, 'accepts the connection', undefined, sc);
-                this.idle(sc);
+                this.emit(sc, sc.tcp.syn('accepts the connection'));
+                this.armRtx(sc);
                 return;
             }
             // a segment of no connection it knows
             this.e.note('drop', 'tcp', dev, '', pkt.msg.type, '', `${dev} has no connection ${(0, ipmath_1.formatAddr)(pkt.dst)}:${l4.dport} ↔ ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}: it answers with a RST (${pkt.msg.label})`);
-            this.segment(dev, { local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, vrf: pkt.vrf }, ['RST'], 0, 'no such connection');
+            this.rstFor(dev, pkt, 'no such connection');
             return;
         }
         c.heard = this.e.now;
         c.probes = 0;
         if (has('RST')) {
+            if (!this.rstOk(c, l4)) {
+                this.e.note('drop', 'tcp', dev, '', 'TCP RST', c.state, `${dev} ignores a RST with sequence number ${l4.seq} on ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} ↔ ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} (expected ${c.state === 'SYN_SENT' ? 'an acknowledgment of its SYN' : c.tcp.rcvNxt})`);
+                return;
+            }
             const was = c.state;
             if (c.sock)
                 this.sockClosed(c.sock, was === 'SYN_SENT' ? `connection refused: RST from ${(0, ipmath_1.formatAddr)(pkt.src)}` : `connection reset by ${(0, ipmath_1.formatAddr)(pkt.src)}`);
@@ -37999,21 +38071,24 @@ class Transport {
             return;
         }
         if (c.state === 'SYN_SENT') {
-            if (!has('SYN') || !has('ACK'))
+            // only a SYN-ACK that acknowledges this SYN opens it
+            if (!has('SYN') || !has('ACK') || l4.ack !== c.tcp.sndNxt)
                 return;
-            this.setState(c, 'ESTABLISHED');
+            c.tcp.synIn(l4.seq || 0);
+            c.tcp.ack(l4.ack);
             c.tries = 0;
-            c.gen++;
-            this.e.note('table', 'tcp', dev, this.e.ownerOf(c.remote) || '', 'connection established', 'ESTABLISHED', `${dev} ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} established (${c.what})`);
+            this.armRtx(c);
+            this.setState(c, 'ESTABLISHED');
+            this.e.note('table', 'tcp', dev, this.e.ownerOf(c.remote) || '', 'connection established', 'ESTABLISHED', `${dev} ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} established (${c.what}; ISS ${c.tcp.iss}, IRS ${c.tcp.irs})`);
             const t = c.test;
             if (t && t.source === 'health') {
                 // a TCP health check: the handshake is the answer; closed again with a RST
-                this.segment(dev, c, ['RST', 'ACK'], 0, 'health check done: closes at once', undefined, c);
+                this.rst(c, 'health check done: closes at once');
                 this.closeConn(c, 'health check done');
                 this.finish(t, true, 'the handshake completed');
                 return;
             }
-            this.segment(dev, c, ['ACK'], 0, 'the connection is open', undefined, c);
+            this.ackSeg(c, 'the connection is open');
             if (c.sock) {
                 if (c.sock.h.open)
                     c.sock.h.open(c.sock);
@@ -38028,110 +38103,151 @@ class Transport {
             return;
         }
         if (c.state === 'SYN_RCVD') {
-            if (!has('ACK') || has('SYN'))
+            // the client's SYN again (the SYN-ACK was lost): the SYN-ACK goes again
+            if (has('SYN') && !has('ACK')) {
+                const s = c.tcp.earliest();
+                if (s && s.syn) {
+                    s.sent++;
+                    this.emit(c, s, ' (the client sent its SYN again)');
+                }
                 return;
+            }
+            if (!has('ACK') || l4.ack !== c.tcp.sndNxt)
+                return;
+            c.tcp.ack(l4.ack);
+            c.tries = 0;
+            this.armRtx(c);
             this.setState(c, 'ESTABLISHED');
             this.idle(c);
             if (c.sock && c.sock.h.accept)
                 c.sock.h.accept(c.sock);
         }
-        switch (c.state) {
-            case 'ESTABLISHED':
-                if (c.sock && !has('FIN')) {
-                    this.sockData(c, pkt, bytes);
-                    return;
-                }
-                if (has('FIN')) {
-                    // the peer closes: acknowledge and close our side (FIN and ACK in one segment)
-                    if (c.sock)
-                        this.sockClosed(c.sock, `closed by ${(0, ipmath_1.formatAddr)(pkt.src)} (FIN)`);
-                    this.setState(c, 'LAST_ACK');
-                    this.segment(dev, c, ['FIN', 'ACK'], 0, 'closes its side as well', undefined, c);
-                    const g = ++c.gen;
-                    this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
-                        if (c.gen === g && c.state === 'LAST_ACK')
-                            this.closeConn(c, 'closed (the last ACK did not come)');
-                    });
-                    return;
-                }
-                if (bytes > 0 && c.role === 'server') {
-                    this.serverData(c, bytes, pkt);
-                    return;
-                }
-                this.clientAck(c, pkt);
-                return;
-            case 'TIME_WAIT':
-                if (bytes > 0 || has('FIN'))
-                    this.segment(dev, c, ['ACK'], 0, 'acknowledges again', undefined, c);
-                return;
-            case 'FIN_WAIT_1':
-                if (bytes > 0 && !has('FIN'))
-                    this.segment(dev, c, ['ACK'], 0, 'acknowledges again', undefined, c);
-                if (has('FIN')) {
-                    this.segment(dev, c, ['ACK'], 0, 'acknowledges the close', undefined, c);
-                    this.setState(c, 'TIME_WAIT');
-                    const g = ++c.gen;
-                    c.timer = this.e.now + TIME_WAIT;
-                    this.later(TIME_WAIT, () => {
-                        if (c.gen === g)
-                            this.closeConn(c, `TIME_WAIT over (${(0, params_1.durationText)(TIME_WAIT)})`);
-                    });
-                }
-                return;
-            case 'LAST_ACK':
-                if (has('ACK'))
-                    this.closeConn(c, 'closed');
-                return;
-        }
-    }
-    /** The client: data from the server (the response), or an acknowledgement. */
-    clientAck(c, pkt) {
-        const bytes = (pkt.len || 20) - 20;
-        if (c.unacked.length) {
-            c.unacked = [];
+        // an acknowledgment: what it covers leaves the retransmission queue (the timer starts again for the rest)
+        if (has('ACK') && l4.ack !== undefined && c.tcp.ack(l4.ack)) {
             c.tries = 0;
-            c.gen++;
-            c.timer = null;
+            this.armRtx(c);
+            if (c.tcp.finAcked) {
+                if (c.state === 'FIN_WAIT_1')
+                    this.finWait2(c);
+                else if (c.state === 'CLOSING')
+                    this.timeWait(c);
+                else if (c.state === 'LAST_ACK') {
+                    this.closeConn(c, 'closed');
+                    return;
+                }
+            }
         }
-        if (bytes <= 0) {
-            // a keepalive's answer
-            if (c.keep)
+        const fin = has('FIN');
+        if (bytes === 0 && !fin) {
+            // a keepalive probe (its sequence number is one below RCV.NXT): it is answered
+            if (c.tcp.rcvNxt !== null && l4.seq !== undefined && l4.seq < c.tcp.rcvNxt)
+                this.ackSeg(c, 'answers the keepalive');
+            if (c.keep && c.state === 'ESTABLISHED')
                 this.idle(c);
             return;
         }
-        c.got += bytes;
-        // the answer is complete with its last segment (PSH)
-        if (c.role === 'client' && pkt.l4.flags && pkt.l4.flags.indexOf('PSH') >= 0) {
-            this.segment(c.dev, c, ['ACK'], 0, `acknowledges the answer (${c.got} bytes)`, undefined, c);
-            const t = c.test;
-            if (c.front) {
-                // an upstream connection: the answer goes back to the client
-                const front = c.front;
-                this.e.note('message', 'tcp', c.dev, this.e.ownerOf(front.remote) || '', 'relayed', '', `${c.dev} passes the answer of ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} back to ${(0, ipmath_1.formatAddr)(front.remote)}:${front.rport}`);
-                this.sendData(front, c.got, `the answer of ${(0, ipmath_1.formatAddr)(c.remote)}`);
-                this.idle(front);
-            }
-            if (t)
-                this.finish(t, true, `connected and answered (${c.got} bytes)`);
-            if (c.keep && t && t.source === 'manual') {
-                this.idle(c);
-                return;
-            }
-            // the client closes
-            this.setState(c, 'FIN_WAIT_1');
-            this.segment(c.dev, c, ['FIN', 'ACK'], 0, 'closes the connection', undefined, c);
-            const g = ++c.gen;
-            this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
-                if (c.gen === g && c.state === 'FIN_WAIT_1')
-                    this.closeConn(c, 'closed (no answer to the FIN)');
-            });
+        const d = (pkt.msg.data || {});
+        let mark;
+        if (d.tcpMark) {
+            const k = d.tcpMark;
+            const msg = k.kind === 'app' ? { kind: 'app', app: { protocol: pkt.msg.protocol, type: pkt.msg.type, label: pkt.msg.label.replace(/ \(TCP retransmission\)$/, ''), detail: pkt.msg.detail.replace(/ — TCP .*$/, ''), bytes: k.bytes, data: pkt.msg.data || {}, relation: pkt.msg.relation } } : { kind: k.kind, bytes: k.bytes };
+            mark = { id: k.id, end: k.end, msg };
+        }
+        const r = c.tcp.receive({ seq: l4.seq || 0, len: bytes, fin, mark });
+        if (r.dup || r.outOfOrder) {
+            // a duplicate (already delivered, never again) or a segment after a gap (kept): the acknowledgment says what is still missing
+            this.ackSeg(c, r.dup ? `a duplicate (seq ${l4.seq}): acknowledges again, delivers nothing` : `out of order (seq ${l4.seq}, expected ${c.tcp.rcvNxt}): kept, acknowledges what is still missing`);
             return;
+        }
+        if (r.bytes > 0 || r.fin) {
+            if (c.state === 'ESTABLISHED' || c.state === 'FIN_WAIT_1' || c.state === 'FIN_WAIT_2') {
+                if (!r.fin)
+                    this.ackSeg(c, `acknowledges ${r.bytes} bytes`);
+            }
+            else if (c.state === 'TIME_WAIT')
+                this.ackSeg(c, 'acknowledges again');
+        }
+        for (const m of r.msgs) {
+            if (!this.alive(c))
+                break;
+            this.delivered(c, m.msg, pkt);
+        }
+        if (r.fin)
+            this.finIn(c, pkt);
+    }
+    /** The peer's FIN arrived in order: acknowledged; the side that had not closed closes too (FIN and ACK in one segment). */
+    finIn(c, pkt) {
+        if (c.state === 'ESTABLISHED') {
+            if (c.sock)
+                this.sockClosed(c.sock, `closed by ${(0, ipmath_1.formatAddr)(pkt.src)} (FIN)`);
+            this.close(c, 'closes its side as well');
+            return;
+        }
+        if (c.state === 'FIN_WAIT_1') {
+            this.ackSeg(c, 'acknowledges the close');
+            if (c.tcp.finAcked)
+                this.timeWait(c);
+            else
+                this.setState(c, 'CLOSING');
+            return;
+        }
+        if (c.state === 'FIN_WAIT_2') {
+            this.ackSeg(c, 'acknowledges the close');
+            this.timeWait(c);
         }
     }
-    /** The server end got the request: it answers after its service response time; a load balancer or proxy passes it on. */
+    finWait2(c) {
+        this.setState(c, 'FIN_WAIT_2');
+        const g = ++c.gen;
+        c.timer = this.e.now + FIN_TIMEOUT;
+        this.later(FIN_TIMEOUT, () => {
+            if (c.gen === g && c.state === 'FIN_WAIT_2')
+                this.closeConn(c, `FIN_WAIT_2 timeout (${(0, params_1.durationText)(FIN_TIMEOUT)}): the peer never closed`);
+        });
+    }
+    timeWait(c) {
+        this.setState(c, 'TIME_WAIT');
+        const g = ++c.gen;
+        c.timer = this.e.now + TIME_WAIT;
+        this.later(TIME_WAIT, () => {
+            if (c.gen === g)
+                this.closeConn(c, `TIME_WAIT over (${(0, params_1.durationText)(TIME_WAIT)})`);
+        });
+    }
+    /** A whole message arrived (once, in order): an application's goes to its socket; a request to the server's logic; an answer to the client's. */
+    delivered(c, m, pkt) {
+        if (m.kind === 'app') {
+            if (c.sock && c.sock.closedWhy === null)
+                c.sock.h.message(c.sock, m.app);
+            return;
+        }
+        if (c.role === 'server')
+            this.serverData(c, m.bytes, pkt);
+        else
+            this.answered(c);
+    }
+    /** The client got the whole answer: the test is answered; the client closes (unless kept open); an upstream passes it back. */
+    answered(c) {
+        const t = c.test;
+        const got = c.tcp.received;
+        if (c.front) {
+            // an upstream connection: the answer goes back to the client
+            const front = c.front;
+            this.e.note('message', 'tcp', c.dev, this.e.ownerOf(front.remote) || '', 'relayed', '', `${c.dev} passes the answer of ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} back to ${(0, ipmath_1.formatAddr)(front.remote)}:${front.rport}`);
+            this.sendData(front, got, `the answer of ${(0, ipmath_1.formatAddr)(c.remote)}`);
+            this.idle(front);
+        }
+        if (t)
+            this.finish(t, true, `connected and answered (${got} bytes)`);
+        if (c.keep && t && t.source === 'manual') {
+            this.idle(c);
+            return;
+        }
+        this.close(c, 'closes the connection');
+    }
+    /** The server end got the whole request: it answers after its service response time; a load balancer or proxy passes it on. */
     serverData(c, bytes, pkt) {
-        c.got += bytes;
-        this.segment(c.dev, c, ['ACK'], 0, `acknowledges ${bytes} bytes`, undefined, c);
+        void bytes;
         this.idle(c);
         if (c.answered)
             return;
@@ -38162,11 +38278,12 @@ class Transport {
         else
             answer();
     }
-    /** Keepalive (a connection kept open): the idle timer of an open connection. */
+    /** Keepalive (a connection kept open): the idle timer of an open connection; its probes carry SND.NXT − 1, which the peer answers. */
     idle(c) {
         const g = ++c.gen;
         if (!c.keep) {
-            c.timer = null;
+            if (c.rtx === 0)
+                c.timer = null;
             return;
         }
         const ka = this.e.params.get('tcp-keepalive', c.dev);
@@ -38176,15 +38293,14 @@ class Transport {
             if (c.gen !== g || c.state !== 'ESTABLISHED')
                 return;
             if (c.probes >= KA_PROBES) {
-                this.segment(c.dev, c, ['RST'], 0, 'keepalive: the peer is gone', undefined, c);
+                this.rst(c, 'keepalive: the peer is gone');
                 this.closeConn(c, `reset: none of ${KA_PROBES} keepalive probes answered`);
                 return;
             }
             c.probes++;
-            this.segment(c.dev, c, ['ACK'], 0, 'keepalive', undefined, c);
+            this.ackSeg(c, 'keepalive', true);
             this.e.note('table', 'tcp', c.dev, '', 'keepalive', '', `${c.dev} probes the idle connection to ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} (probe ${c.probes} of ${KA_PROBES}; keepalive time ${(0, params_1.resolvedText)(ka)}, then every ${(0, params_1.durationText)(KA_INTERVAL)})`);
             const probes = c.probes;
-            c.gen++;
             this.idle(c);
             c.probes = probes;
         });
@@ -38341,7 +38457,7 @@ class Transport {
         if (!at || !d || !d.ok || !d.forward) {
             if (!at)
                 this.e.note('drop', 'tcp', dev, '', 'denied', '', `${dev}: no transfer profile listens at ${l3 ? l3.id : (0, ipmath_1.formatAddr)(front.local)} port ${front.lport}: leg 1 ends here, no leg 2 is started`);
-            this.segment(dev, front, ['RST', 'ACK'], 0, 'not a permitted transfer', undefined, front);
+            this.rst(front, 'not a permitted transfer');
             this.closeConn(front, 'not a permitted transfer');
             return;
         }
@@ -38357,7 +38473,7 @@ class Transport {
             const t = this.run({ from: dev, target, dst: fwd.address, kind: 'tcp', port: fwd.port, source: 'upstream', series: `${dev} leg 2 (${at.profile.id})`, front, timeout: { value: 3600000 } });
             if (typeof t === 'string') {
                 this.e.note('drop', 'tcp', dev, '', 'leg 2 failed', '', `${dev} can't start leg 2: ${t}`);
-                this.segment(dev, front, ['RST', 'ACK'], 0, 'leg 2 failed', undefined, front);
+                this.rst(front, 'leg 2 failed');
                 this.closeConn(front, 'leg 2 failed');
                 return;
             }
@@ -38680,8 +38796,7 @@ class Transport {
             this.e.note('drop', proto, dev, '', reject ? 'rejected' : 'dropped', '', `${dev} ${reject ? 'rejects' : 'drops'} ${what0} (${pkt.msg.label}): ${why0}`);
             if (reject) {
                 if (proto === 'tcp') {
-                    if (flags.indexOf('RST') < 0)
-                        this.segment(dev, { local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, vrf: pkt.vrf }, ['RST', 'ACK'], 0, `rejected by ${dev}`, pkt.dst);
+                    this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst);
                 }
                 else
                     this.e.icmpError(dev, pkt, 'admin', { from });
@@ -38714,8 +38829,7 @@ class Transport {
         if (action.value !== 'reject')
             return false;
         if (proto === 'tcp') {
-            if (flags.indexOf('RST') < 0)
-                this.segment(dev, { local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, vrf: pkt.vrf }, ['RST', 'ACK'], 0, `rejected by ${dev}`, pkt.dst);
+            this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst);
         }
         else
             this.e.icmpError(dev, pkt, 'admin', { from });
@@ -39204,6 +39318,12 @@ class Engine {
         // ------------------------------------------------------------ layer 2: sending and forwarding frames
         /** the emission being planned: its sender and time (for the logical view's dots of messages without a relation) */
         this.emitting = null;
+        /**
+         * A test's impairment of one frame on a cable (never set by the
+         * application): lose it, deliver it twice, or delay it (so that what was
+         * sent after it overtakes it). Null: none.
+         */
+        this.impair = null;
         /**
          * The multicast forwarding decisions, by the flight that brought the
          * packet (the packet inspector: what the device it arrived at did with
@@ -40339,7 +40459,8 @@ class Engine {
         this.cableFree.set(key, start + ser);
         const loss = Number(this.loss(link).value);
         const lost = loss > 0 && this.lossRandom() * 100 < loss;
-        return { start, end: start + ser + Number(this.latency(link).value), lost };
+        const imp = this.impair ? this.impair(link, frame) : null;
+        return { start, end: start + ser + Number(this.latency(link).value) + (imp && imp.delay ? imp.delay : 0), lost: lost || !!(imp && imp.lose), dup: !!(imp && imp.dup), impaired: !!(imp && imp.lose) && !lost };
     }
     /**
      * A small seeded jitter (ms) for a start or a periodic message: less than
@@ -40477,10 +40598,12 @@ class Engine {
             f.dropped = (w.start + w.end) / 2;
             f.t1 = f.dropped;
             const r = this.loss(e.link);
-            this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (packet loss ${(0, params_1.resolvedText)(r)}): ${frame.msg.label}`);
+            this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (${w.impaired ? 'an impairment of the test' : 'packet loss ' + (0, params_1.resolvedText)(r)}): ${frame.msg.label}`);
             return;
         }
         this.arrive(o.device, o.port, frame, tag, w.end, f.id, seen);
+        if (w.dup)
+            this.arrive(o.device, o.port, frame, tag, w.end + 0.001, f.id, seen);
     }
     /** A flight's shape (unicast, broadcast, multicast) and the frame's headers for the inspector; the message's log line gets them too (as first sent). */
     inspectable(f, frame, tag) {
@@ -43483,6 +43606,228 @@ function what(p) {
     if (l4.proto === 'icmp')
         return `ICMP ${l4.icmpName || ''} ${(0, ipmath_1.formatAddr)(p.src)} → ${(0, ipmath_1.formatAddr)(p.dst)}`.replace(/\s+/g, ' ');
     return `${l4.proto.toUpperCase()} ${(0, ipmath_1.formatAddr)(p.src)}:${l4.sport} → ${(0, ipmath_1.formatAddr)(p.dst)}:${l4.dport}`;
+}
+
+};
+__defs["analysis/sim/tcp"] = function (module, exports) {
+"use strict";
+/**
+ * The byte stream of one TCP connection end (RFC 9293 §3.3): its send and
+ * receive sequence state, what a segment carries, what an acknowledgment
+ * covers, and when a message the application wrote has arrived whole.
+ * Pure and DOM-free; transport.ts sends and receives the segments.
+ *
+ * Send side: ISS, SND.UNA (the oldest unacknowledged sequence number) and
+ * SND.NXT (the next one to send). The SYN and the FIN take one sequence
+ * number each; data takes one per byte. Every segment keeps the sequence
+ * range it was first sent with: a retransmission sends the same range
+ * again (a smaller path MTU splits it, never moves it). An acknowledgment
+ * is cumulative: it covers everything below its number; one of something
+ * never sent, or one at or below SND.UNA, acknowledges nothing new.
+ *
+ * Receive side: IRS and RCV.NXT (the next sequence number expected). A
+ * segment below RCV.NXT is a duplicate (acknowledged again, delivered
+ * never); one above it waits in the out-of-order queue until the gap is
+ * filled; the acknowledgment always says RCV.NXT. A message the
+ * application wrote (an MQTT packet, a BGP UPDATE, a request) is marked at
+ * its last byte: it is delivered once, in order, when RCV.NXT passes that
+ * byte — never twice, never before its bytes have all arrived.
+ *
+ * Simplified (the simulation's abstraction, docs/LIMITATIONS.md): no
+ * receive window or flow control and no congestion control — every
+ * segment of a write is sent at once; no fast retransmit or SACK (a lost
+ * segment waits for the retransmission timer, which sends the earliest
+ * unacknowledged segment); no urgent data or options other than the MSS
+ * the path MTU gives; sequence numbers do not wrap (the ISS is below 2^31
+ * and a simulated connection carries far less than 2 GB).
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TcpStream = void 0;
+exports.segSpace = segSpace;
+exports.initialSeq = initialSeq;
+/** The sequence space a segment takes: its bytes, and one each for SYN and FIN. */
+function segSpace(s) {
+    return s.len + (s.syn ? 1 : 0) + (s.fin ? 1 : 0);
+}
+class TcpStream {
+    constructor(iss) {
+        this.irs = null;
+        this.rcvNxt = null;
+        /** sent, not yet entirely acknowledged, in sequence order */
+        this.out = [];
+        /** received beyond RCV.NXT */
+        this.ooo = [];
+        /** messages delivered (their ids): nothing is delivered twice */
+        this.delivered = new Set();
+        /** the data bytes received in order */
+        this.received = 0;
+        /** the FIN of the peer arrived in order; this end's FIN was sent / acknowledged */
+        this.finIn = false;
+        this.finOut = false;
+        this.finAcked = false;
+        this.nextMsg = 0;
+        this.iss = iss;
+        this.sndUna = iss;
+        this.sndNxt = iss;
+    }
+    /** This end's SYN (the first segment it sends, sequence ISS): sent once, retransmitted as it is. */
+    syn(what) {
+        if (this.out.length && this.out[0].syn)
+            return this.out[0];
+        const s = { seq: this.iss, len: 0, syn: true, what, sent: 0 };
+        this.out.push(s);
+        this.sndNxt = this.iss + 1;
+        return s;
+    }
+    /** The peer's SYN arrived: its ISN is the receive side's start. */
+    synIn(seq) {
+        if (this.irs !== null)
+            return;
+        this.irs = seq;
+        this.rcvNxt = seq + 1;
+    }
+    /** Data the application writes: segments of at most `mss` bytes from SND.NXT, the last marked with the message. */
+    write(bytes, mss, what, msg) {
+        const out = [];
+        const n = Math.max(1, Math.floor(bytes));
+        const end = this.sndNxt + n;
+        const mark = msg !== undefined ? { id: ++this.nextMsg, end, msg } : undefined;
+        for (let left = n; left > 0; left -= mss) {
+            const len = Math.min(mss, left);
+            const s = { seq: this.sndNxt, len, what, sent: 0 };
+            if (left <= mss && mark)
+                s.mark = mark;
+            this.sndNxt += len;
+            out.push(s);
+            this.out.push(s);
+        }
+        return out;
+    }
+    /** This end closes: a FIN after its data (one sequence number). */
+    fin(what) {
+        const s = { seq: this.sndNxt, len: 0, fin: true, what, sent: 0 };
+        this.sndNxt += 1;
+        this.finOut = true;
+        this.out.push(s);
+        return s;
+    }
+    /** The acknowledgment number this end sends (RCV.NXT), 0 before it has the peer's SYN. */
+    get ackNo() {
+        return this.rcvNxt === null ? 0 : this.rcvNxt;
+    }
+    /**
+     * An acknowledgment arrived: SND.UNA moves up to it (never down, never
+     * past SND.NXT); what it covers entirely leaves the retransmission queue.
+     * True when it acknowledged something new.
+     */
+    ack(a) {
+        if (a <= this.sndUna || a > this.sndNxt)
+            return false;
+        this.sndUna = a;
+        this.out = this.out.filter((s) => s.seq + segSpace(s) > a);
+        if (this.finOut && a === this.sndNxt)
+            this.finAcked = true;
+        return true;
+    }
+    /** Everything sent is acknowledged. */
+    get idle() {
+        return this.sndUna === this.sndNxt;
+    }
+    /** The earliest unacknowledged segment (what the retransmission timer sends again). */
+    earliest() {
+        return this.out.length ? this.out[0] : null;
+    }
+    /**
+     * A smaller path MTU: the unacknowledged data is split into segments of
+     * at most `mss` bytes over the same sequence range (the marks stay at the
+     * same bytes).
+     */
+    resegment(mss) {
+        const out = [];
+        for (const s of this.out) {
+            if (s.len <= mss) {
+                out.push(s);
+                continue;
+            }
+            // (a segment's part already acknowledged is not sent again)
+            const from = Math.max(s.seq, this.sndUna);
+            const end = s.seq + s.len;
+            for (let q = from; q < end; q += mss) {
+                const len = Math.min(mss, end - q);
+                const p = { seq: q, len, what: s.what, sent: s.sent };
+                if (q + len === end && s.mark)
+                    p.mark = s.mark;
+                out.push(p);
+            }
+        }
+        this.out = out;
+    }
+    /**
+     * A segment arrived (its SYN handled by synIn): in order its data and
+     * FIN advance RCV.NXT, and what waited out of order after it follows;
+     * below RCV.NXT it is a duplicate; beyond it it waits.
+     */
+    receive(seg) {
+        const res = { dup: false, outOfOrder: false, ack: this.ackNo, msgs: [], fin: false, bytes: 0 };
+        if (this.rcvNxt === null)
+            return res;
+        const space = seg.len + (seg.fin ? 1 : 0);
+        if (space === 0)
+            return res;
+        if (seg.seq + space <= this.rcvNxt) {
+            res.dup = true;
+            return res;
+        }
+        if (seg.seq > this.rcvNxt) {
+            if (!this.ooo.some((o) => o.seq === seg.seq && o.len === seg.len))
+                this.ooo.push({ seq: seg.seq, len: seg.len, fin: seg.fin, mark: seg.mark, what: '', sent: 0 });
+            this.ooo.sort((a, b) => a.seq - b.seq);
+            res.outOfOrder = true;
+            return res;
+        }
+        this.take(seg, res);
+        // what waited for this gap
+        for (;;) {
+            const i = this.ooo.findIndex((o) => o.seq <= this.rcvNxt);
+            if (i < 0)
+                break;
+            const o = this.ooo.splice(i, 1)[0];
+            if (o.seq + segSpace(o) > this.rcvNxt)
+                this.take(o, res);
+        }
+        res.ack = this.ackNo;
+        return res;
+    }
+    /** In order (it starts at or before RCV.NXT and reaches past it): its new bytes, its mark, its FIN. */
+    take(seg, res) {
+        const nxt = this.rcvNxt;
+        const end = seg.seq + seg.len;
+        if (end > nxt) {
+            res.bytes += end - nxt;
+            this.received += end - nxt;
+            this.rcvNxt = end;
+        }
+        if (seg.mark && seg.mark.end <= this.rcvNxt && !this.delivered.has(seg.mark.id)) {
+            this.delivered.add(seg.mark.id);
+            res.msgs.push(seg.mark);
+        }
+        if (seg.fin && end === this.rcvNxt && !this.finIn) {
+            this.finIn = true;
+            this.rcvNxt = end + 1;
+            res.fin = true;
+        }
+    }
+}
+exports.TcpStream = TcpStream;
+/** An initial sequence number from a connection's identity and a counter (deterministic, below 2^31; RFC 6528's are random). */
+function initialSeq(key, n) {
+    let h = 2166136261;
+    const s = key + '#' + n;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h & 0x3fffffff;
 }
 
 };
