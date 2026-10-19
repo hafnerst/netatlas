@@ -17,6 +17,9 @@ import { findBrowser } from './browser-selftest.mjs';
 
 let pages = 0;
 
+/** A mouse, as on a desktop, also where the machine has no pointing device (CI's Linux runners): (hover: hover), (pointer: fine). */
+export const MOUSE = '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4';
+
 /** The browser's product and version (e.g. "Chrome/141.0.7390.54"), from the DevTools protocol; fails after 30 s. */
 export async function browserVersion() {
   const b = launch();
@@ -37,7 +40,7 @@ function launch() {
   const profile = mkdtempSync(join(tmpdir(), 'netatlas-cdp-'));
   const proc = spawn(
     browser,
-    ['--headless=new', '--remote-debugging-pipe', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--hide-scrollbars', '--host-resolver-rules=MAP * ~NOTFOUND', `--user-data-dir=${profile}`, 'about:blank'],
+    ['--headless=new', '--remote-debugging-pipe', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--hide-scrollbars', '--host-resolver-rules=MAP * ~NOTFOUND', MOUSE, `--user-data-dir=${profile}`, 'about:blank'],
     { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] },
   );
   const toBrowser = proc.stdio[3];

@@ -73,6 +73,8 @@ export function run(browser, url, extra) {
         '--disable-sync',
         // any DNS lookup fails: proves nothing on the page needs the network
         '--host-resolver-rules=MAP * ~NOTFOUND',
+        // a mouse, as on a desktop, also on a machine without a pointing device (CI's Linux runners)
+        '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
         `--user-data-dir=${profile}`,
         // the self-test's waits run on virtual time; under a loaded machine (the whole test suite at once) it needs more than 2 minutes of it
         '--virtual-time-budget=180000',
