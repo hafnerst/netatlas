@@ -22,6 +22,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # the browser of the browser checks: Chrome for Testing, this exact version
+  # (browser-actions/setup-chrome downloads it from Google's Chrome for Testing channel)
+  CHROME_VERSION: '155.0.8059.84'
   # a missing browser or a skipped browser test fails (scripts/run-tests.mjs --strict)
   NETATLAS_REQUIRE_BROWSER: '1'
 
@@ -126,6 +129,95 @@ jobs:
         if: failure()
         with:
           name: compat-results-${{ matrix.os }}-node${{ matrix.node }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  browser:
+    name: Browser regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
+        id: chrome
+        with:
+          chrome-version: ${{ env.CHROME_VERSION }}
+          install-dependencies: true
+      # the test build (build/netatlas-test.html): the application with the internal examples and the full self-test
+      - run: npm run build
+      - run: node scripts/run-tests.mjs browser --strict
+        env:
+          NETATLAS_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: browser-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  public:
+    name: Public artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
+        id: chrome
+        with:
+          chrome-version: ${{ env.CHROME_VERSION }}
+          install-dependencies: true
+      # no install and no build: the committed dist/netatlas.html, exactly as it is shipped
+      - run: node scripts/run-tests.mjs public --strict
+        env:
+          NETATLAS_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: public-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  viewport:
+    name: Viewport checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
+        id: chrome
+        with:
+          chrome-version: ${{ env.CHROME_VERSION }}
+          install-dependencies: true
+      - run: npm run build
+      - run: node scripts/run-tests.mjs viewport --strict
+        env:
+          NETATLAS_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: viewport-results
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore

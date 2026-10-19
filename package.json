@@ -17,6 +17,7 @@
     "test:browser": "node scripts/run-tests.mjs browser",
     "test:public": "node scripts/run-tests.mjs public",
     "test:viewport": "node scripts/run-tests.mjs viewport",
+    "release:check": "node scripts/release-check.mjs",
     "selftest:browser": "node scripts/browser-selftest.mjs",
     "selftest:public": "node scripts/browser-selftest.mjs --public",
     "selftest:viewport": "node scripts/browser-selftest.mjs --viewport",
