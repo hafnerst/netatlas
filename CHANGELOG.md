@@ -12,6 +12,12 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Correctness of the Layer 1–4 simulation: one causally connected stack —
+routes learned from the advertisements each router received, a real TCP
+byte stream that BGP and LDP use, the OSPF election of RFC 2328, each
+router's own RP and VRF-local state, the IPv6 link-local lifecycle,
+execution scopes closed over to a fixed point, and every repetition on the
+simulated clock.
 Continuous integration and release verification: required checks on every
 pull request, the shipped HTML verified before anything rebuilds it, a
 strict browser run, the offline contract observed from outside the page,
@@ -25,6 +31,61 @@ context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Fixed (Layer 1–4 simulation)
+
+- **Routing is learned.** A session coming up taught a router every prefix
+  behind its neighbour at once, from the model as a whole; the LSUs and
+  UPDATEs drawn were decoration. Each router now computes its routes from
+  the records its neighbours' advertisements brought it; a lost
+  advertisement or withdrawal delays the routers behind it (OSPF, IS-IS
+  and EIGRP send it again after 5 s, BGP's TCP retransmits, RIP waits for
+  its next Response). Analysis snapshots use each router's installed
+  routes.
+- **OSPF.** Priority 0 was read as 1; the DR was re-ranked at every Hello
+  with no Waiting state or incumbency, and whether a segment elects was
+  guessed from its number of routers. Now the RFC 2328 election per
+  interface (`network-type`, broadcast unless written; `priority` 0–255),
+  and Hellos with other intervals, area or network type make no adjacency.
+- **TCP.** Sequence and acknowledgement numbers were invented. A connection
+  is now a byte stream: SYN and FIN take a number each, cumulative
+  acknowledgements, retransmissions keep their range, duplicates and
+  out-of-order segments, every message delivered once after its last byte,
+  connection tables per VRF.
+- **BGP, LDP, HTTPS and SSL VPN over the common TCP.** They imitated TCP
+  themselves. BGP's OPEN checks the peer AS and the hold time (the smaller
+  one; 0 for none; 1 and 2 refused) and answers with a NOTIFICATION; a
+  device without an AS runs no speaker, and port 179 / 646 is open only
+  where one runs.
+- **Multicast: each router's own RP**, of the group's address family; the
+  first static RP of the whole model no longer serves every router, and
+  routers that disagree are said (new check *multicast-rp-conflict*).
+- **VRF-local state.** The path MTU (per VRF and destination, aged after
+  10 min, forgotten on a path change), firewall sessions and NAT
+  translations are per VRF; the source address follows the route in its
+  VRF (an ambiguous unbound send is refused). PAT gave two inside hosts the
+  same translation; an IPv6 sender fragments its own packets to the path
+  MTU it learned.
+- **IPv6.** Static IPv6 addresses enable IPv6 on an interface with its
+  link-local address and duplicate address detection; a tentative address
+  is never announced or answered for.
+- **Execution scopes** close over dependencies to a fixed point, keep a
+  relation with more than two endpoints with those inside, and say where
+  their results may differ from the entire model's.
+- **Layer 2 per hop.** A frame is decided at each device when it arrives
+  there, with its state then.
+- **Streams and repeating applications of Network events** run on the
+  simulated clock (they ran on the page's clock and skipped datagrams when
+  it stalled).
+- **Demands** say that their simulated packets are representative, apart
+  from the stated bandwidth that only capacity analysis uses.
+- **Simulation UI.** The Senders choose what is shown, never what is
+  generated; the protocol list is *Protocol traffic shown*; the count of a
+  Send test is named for its protocol; the inspector's pause lasts until it
+  is closed; the packet inspector says what is computed, left out and
+  described; a senders list no longer leaves a listener on the document
+  each time it is built. A redundancy group's virtual address no longer
+  'leaves the model' before a member holds it.
 
 ### Added (CI and release verification)
 
