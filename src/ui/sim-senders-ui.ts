@@ -7,8 +7,9 @@
  * devices grouped by type or by group / site (the user switches between the
  * two), each with its type's icon, its name and, for a switch, its L2 / L3
  * badge. Every group folds and says how many of its devices are chosen
- * ("Routers (2 of 5)"). Nothing here changes the model; the simulation
- * decides what the choice means (sim-controller.ts).
+ * ("Routers (2 of 5)"). Nothing here changes the model, and nothing here
+ * changes what the simulation runs or generates: the choice is what is
+ * drawn and listed (sim-controller.ts).
  */
 import { DEVICE_TYPES, deviceTypeLabel } from '../model/device-types';
 import { Model } from '../model/types';

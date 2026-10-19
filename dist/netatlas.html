@@ -38975,8 +38975,8 @@ class Transport {
             // all endpoints together, once the network had time to come up
             const first = 3000 + this.e.jitter();
             this.P.periodic(() => true, () => this.e.params.num('test-interval', dev), () => {
-                // optional traffic: from the chosen senders only
-                if (this.e.params.str('test-traffic', dev) !== 'on' || !this.e.deviceOn(dev) || !this.e.isSender(dev))
+                // optional traffic: where its parameter says so (the Senders choose what is shown, never what is generated)
+                if (this.e.params.str('test-traffic', dev) !== 'on' || !this.e.deviceOn(dev))
                     return;
                 for (const x of this.targets(dev)) {
                     if (typeof x === 'string')
@@ -39674,10 +39674,10 @@ class Engine {
          */
         this.cause = null;
         /**
-         * The devices chosen as senders (null: every device). Only the optional
-         * traffic depends on it (an endpoint's test traffic is sent by senders
-         * only); every protocol still runs everywhere. What is shown is the
-         * screen's business (sim-controller.ts).
+         * The devices chosen as senders (null: every device): what is shown is
+         * the screen's business (sim-controller.ts). Nothing the network does
+         * depends on it — every protocol runs everywhere, and optional traffic
+         * is generated where its own settings say (test traffic, applications).
          */
         this.senders = null;
         /**
@@ -39908,11 +39908,7 @@ class Engine {
             this.testCtx = was;
         }
     }
-    /** Is a device a sender? */
-    isSender(dev) {
-        return !this.senders || this.senders.has(dev);
-    }
-    /** Choose the senders (null: every device), at the current time; logged. */
+    /** Choose the senders (null: every device), at the current time; logged. They choose what is shown, never what runs or is generated. */
     setSenders(s, text) {
         this.senders = s ? new Set(s) : null;
         this.note('note', '', '', '', 'Senders', '', `Senders changed: ${text}`);
@@ -49271,7 +49267,7 @@ const MANUAL = [
         id: 'sim-layout',
         title: 'Work in the simulation layout',
         steps: [
-            'While a simulation runs, the window has three parts around the diagram. On the left, **Simulation setup**: the **Protocols** shown (as in the dialog; a change never restarts anything, the simulation keeps running every protocol), the **Senders** (collapsed; its heading sums them up), the **Layer 1–4 parameters** (a change applies at once and is written to the event log), and the **Table timers** scale.',
+            'While a simulation runs, the window has three parts around the diagram. On the left, **Simulation setup**: the **Protocol traffic shown** (as in the dialog; a change never restarts anything, the simulation keeps running every protocol), the **Senders** (collapsed; its heading sums them up), the **Layer 1–4 parameters** (a change applies at once and is written to the event log), and the **Table timers** scale.',
             'On the right, **Actions**: **Network events**, six actions each with its own form: **Send network packets**, **Join multicast group**, **Leave multicast group**, **Start multicast stream**, **Interface actions** and **Start application** (each chooses its device and interface itself; nothing needs to be selected first). The two buttons beside the **Network events** heading, **Expand all** and **Collapse all**, open or close those six forms at once (not Active events, not a form’s **More options**); hiding a form keeps what you typed and stops nothing; a button that would change nothing is disabled. Below them **Active events**, everything they started with its state and result, and the other changes in effect (a failed cable, a device powered off); then the selected device’s **Simulation** settings. A click in the diagram opens a menu for that object: **Fail link**, **Power off**, its tables, its broadcast domain, and the four actions with that device filled in.',
             'Under them, the **simulation panel**, by default its header and exactly three rows of the status and three of the log (also its lowest; measured, so it fits the theme and zoom): **Play / Pause**, **Step**, the state (*Playing*, *Paused*, *Paused: inspecting packet*), the **Speed**, the **Pacing**, **Skip idle time**, the simulated time and **Exit simulation**; on the left the **Status** of the protocols’ sessions, or a table of the selected device; on the right the **Event log**, filtered by text, layer, cast and protocol, and **Show all senders**. While you point at the log or use it, new events wait, so that a row doesn’t move under your click. Drag the line above the panel to change its height (or focus it and use `↑` `↓`, `Enter` for the default; double-click it for the default); it is remembered.',
             '`F6` moves the keyboard between the setup, the diagram, the actions and the simulation panel (`Shift+F6` back).',
@@ -49309,8 +49305,8 @@ const MANUAL = [
         steps: [
             'Every device of a network talks; to follow some of them, choose them as **Senders**: in **Start simulation…** (open), or in the **Simulation setup** (collapsed; its heading says who, e.g. *Senders (3 of 23): hq-rtr1, muc-rtr, client-1…*).',
             'Type in the filter box to find devices, or use **All**, **None**, **Selected in diagram**, **By type ▾** (only the devices of a type) and **By group / site ▾**. The list is grouped by **Type** or by **Group / site**; each group folds and says how many of its devices are chosen (*Routers (2 of 5)*).',
-            'Only the senders’ messages, and the exchanges they start (ARP and NDP replies, a TCP handshake’s answers, ACKs and RSTs, ICMP errors, a protocol’s replies, the copies routers forward), are drawn and listed in the event log. The log says how many messages of other devices it leaves out; **Show all senders** lists them. Endpoint test traffic comes from senders only.',
-            'Every protocol still runs on every device, so adjacencies and tables are exactly as without the choice: OSPF reaches Full even when one neighbour is not a sender.',
+            'Only the senders’ messages, and the exchanges they start (ARP and NDP replies, a TCP handshake’s answers, ACKs and RSTs, ICMP errors, a protocol’s replies, the copies routers forward), are drawn and listed in the event log. The log says how many messages of other devices it leaves out; **Show all senders** lists them.',
+            'The choice is what you see, never what runs: every protocol still runs on every device, so adjacencies and tables are exactly as without it (OSPF reaches Full even when one neighbour is not a sender), and every device generates what its own settings say — its optional test traffic (the Layer 4 parameter **Test traffic**) and its applications that start with the simulation.',
             'During the simulation, a device’s menu offers **Use as sender** or **Stop as sender**; a change applies at once and is written to the event log. While not every device is a sender, the senders have a small ▶ badge at their box’s corner.',
         ],
         notes: ['The choice is remembered for the next start in this browser session; it is never written to the model.'],
@@ -76386,7 +76382,7 @@ class AppSim {
         else
             run.tests.push(t);
     }
-    /** The applications that start with the simulation: from the chosen senders, once the network had time to come up. */
+    /** The applications that start with the simulation (their own start setting; the Senders choose only what is shown), once the network had time to come up. */
     startConfigured() {
         for (const d of this.P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
             for (const a of d.applications || []) {
@@ -76396,8 +76392,6 @@ class AppSim {
                 if (!p || !p.client)
                     continue;
                 this.e.at(3000 + this.e.jitter(), () => {
-                    if (!this.e.isSender(d.id))
-                        return;
                     const r = this.start(d.id, a.id, 'start');
                     if (typeof r === 'string')
                         this.e.note('note', p.transport, d.id, '', 'application not started', '', `${d.id}/${a.id} (${a.name}) does not start with the simulation: ${r}`);
@@ -87388,8 +87382,9 @@ exports.sendersPicker = sendersPicker;
  * devices grouped by type or by group / site (the user switches between the
  * two), each with its type's icon, its name and, for a switch, its L2 / L3
  * badge. Every group folds and says how many of its devices are chosen
- * ("Routers (2 of 5)"). Nothing here changes the model; the simulation
- * decides what the choice means (sim-controller.ts).
+ * ("Routers (2 of 5)"). Nothing here changes the model, and nothing here
+ * changes what the simulation runs or generates: the choice is what is
+ * drawn and listed (sim-controller.ts).
  */
 const device_types_1 = __req("model/device-types");
 const icons_1 = __req("diagram/icons");
@@ -87872,8 +87867,11 @@ function protocolPicker(doc, o) {
     const count = (0, dom_1.el)(doc, 'span', { class: 'pp-count' }, ['']);
     const all = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: o.id + '-all' }, ['Select all']);
     const none = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: o.id + '-none' }, ['Clear']);
-    const head = (0, dom_1.el)(doc, 'div', { class: 'pp-head' }, [(0, dom_1.el)(doc, o.heading || 'h3', { class: 'pp-title', id: titleId }, ['Protocols ', count]), (0, dom_1.el)(doc, 'span', { class: 'pp-tools' }, [all, none])]);
-    const list = (0, dom_1.el)(doc, 'div', { class: 'pp-list', role: 'group', 'aria-labelledby': titleId, id: o.id + '-list' });
+    // (what is shown, never what runs: every protocol of the model runs whatever is ticked here)
+    const hint = 'What is drawn and listed. Every protocol of the model runs whatever is ticked: clearing one hides its traffic, it does not stop it.';
+    const head = (0, dom_1.el)(doc, 'div', { class: 'pp-head' }, [(0, dom_1.el)(doc, o.heading || 'h3', { class: 'pp-title', id: titleId, title: hint }, ['Protocol traffic shown ', count]), (0, dom_1.el)(doc, 'span', { class: 'pp-tools' }, [all, none])]);
+    const hintEl = (0, dom_1.el)(doc, 'p', { class: 'sr-only', id: o.id + '-hint' }, [hint]);
+    const list = (0, dom_1.el)(doc, 'div', { class: 'pp-list', role: 'group', 'aria-labelledby': titleId, 'aria-describedby': o.id + '-hint', id: o.id + '-list' });
     const groups = [];
     const boxes = new Map();
     for (const g of simulation_1.ENTRY_GROUPS) {
@@ -87904,7 +87902,7 @@ function protocolPicker(doc, o) {
         list.appendChild(fs);
         groups.push({ g, ids: es.map((e) => e.id), count: gc, all: ga, none: gn });
     }
-    const root = (0, dom_1.el)(doc, 'section', { class: 'pp', id: o.id, 'aria-labelledby': titleId }, [head, list]);
+    const root = (0, dom_1.el)(doc, 'section', { class: 'pp', id: o.id, 'aria-labelledby': titleId }, [head, hintEl, list]);
     const sync = () => {
         for (const [id, cb] of boxes)
             cb.checked = sel.has(id);

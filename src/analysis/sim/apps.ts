@@ -284,7 +284,7 @@ export class AppSim {
     else run.tests.push(t);
   }
 
-  /** The applications that start with the simulation: from the chosen senders, once the network had time to come up. */
+  /** The applications that start with the simulation (their own start setting; the Senders choose only what is shown), once the network had time to come up. */
   private startConfigured(): void {
     for (const d of this.P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
       for (const a of d.applications || []) {
@@ -292,7 +292,6 @@ export class AppSim {
         const p = appProfile(a.profile);
         if (!p || !p.client) continue;
         this.e.at(3000 + this.e.jitter(), () => {
-          if (!this.e.isSender(d.id)) return;
           const r = this.start(d.id, a.id, 'start');
           if (typeof r === 'string') this.e.note('note', p.transport, d.id, '', 'application not started', '', `${d.id}/${a.id} (${a.name}) does not start with the simulation: ${r}`);
         });

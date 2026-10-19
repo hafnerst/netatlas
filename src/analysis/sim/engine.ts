@@ -579,10 +579,10 @@ export class Engine {
   cause: string | null = null;
 
   /**
-   * The devices chosen as senders (null: every device). Only the optional
-   * traffic depends on it (an endpoint's test traffic is sent by senders
-   * only); every protocol still runs everywhere. What is shown is the
-   * screen's business (sim-controller.ts).
+   * The devices chosen as senders (null: every device): what is shown is
+   * the screen's business (sim-controller.ts). Nothing the network does
+   * depends on it — every protocol runs everywhere, and optional traffic
+   * is generated where its own settings say (test traffic, applications).
    */
   senders: Set<string> | null = null;
 
@@ -608,12 +608,7 @@ export class Engine {
     }
   }
 
-  /** Is a device a sender? */
-  isSender(dev: string): boolean {
-    return !this.senders || this.senders.has(dev);
-  }
-
-  /** Choose the senders (null: every device), at the current time; logged. */
+  /** Choose the senders (null: every device), at the current time; logged. They choose what is shown, never what runs or is generated. */
   setSenders(s: Set<string> | null, text: string): void {
     this.senders = s ? new Set(s) : null;
     this.note('note', '', '', '', 'Senders', '', `Senders changed: ${text}`);
