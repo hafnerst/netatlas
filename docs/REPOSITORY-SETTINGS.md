@@ -272,7 +272,7 @@ Actions → General*):
 |---|---|---|
 | Dependabot **version updates** (`.github/dependabot.yml`) | in this file: monthly, grouped, into `dev`, at most 2 PRs per ecosystem, a week's cooldown; npm lockfile-only (the `~5.9` range stays) | they work without any setting; each PR is reviewed like any other |
 | Dependabot **alerts** and security updates | off (API: "Dependabot alerts are disabled") | turn on (*Settings → Advanced Security*); the only dependency is TypeScript, a build tool |
-| Dependency graph | public repositories have it; not readable | keep it on: the Dependency review job needs it, and fails with a message saying so without it |
+| Dependency graph | **off** for this repository: the review's API answers 403 and the first CI run said "Dependency review is not supported on this repository" | turn it on (*Settings → Advanced Security → Dependency graph*). Until then the Dependency review job skips the review with a notice saying so, and passes |
 | Code scanning | the CodeQL job in `.github/workflows/security.yml` (advanced setup); default setup not readable | keep **default setup off**: with default setup on, GitHub rejects the workflow's uploads and the CodeQL job fails. If you prefer default setup, delete the `codeql` job instead |
 | Secret scanning, push protection | free for public repositories; not readable | turn both on (*Settings → Advanced Security*). The workflows use no secrets |
 | Private vulnerability reporting | off | optional: turn on to receive reports privately |

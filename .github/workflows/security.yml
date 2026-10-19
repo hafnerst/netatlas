@@ -2,7 +2,8 @@
 # changes in pull requests. Advisory: neither is a required check, because both
 # depend on repository features (code scanning, the dependency graph) that
 # the repository settings decide; see docs/REPOSITORY-SETTINGS.md, "Security
-# features". Their findings appear in the run and under Security.
+# features". Their findings appear in the run and under Security. Without the
+# dependency graph the review is skipped with a notice, not failed.
 name: Security
 
 on:
@@ -55,8 +56,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # The review needs the repository's dependency graph (Settings → Advanced Security). Without it the
+      # job says so and passes, rather than failing every pull request over a setting
+      # (docs/REPOSITORY-SETTINGS.md, "Security features").
+      - name: Is the dependency graph enabled?
+        id: graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh api "repos/$REPO/dependency-graph/sbom" --silent 2> graph-error.txt; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            why="$(tr -s '[:space:]' ' ' < graph-error.txt)"
+            echo "::notice title=Dependency review skipped::The dependency graph is not available for this repository (${why}). Enable it under Settings → Advanced Security to review dependency changes."
+          fi
       # changed dependencies with known vulnerabilities or a license other than these fail the review
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - if: steps.graph.outputs.enabled == 'true'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
           allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD
