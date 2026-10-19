@@ -126,7 +126,8 @@ test('ICMP: TTL exceeded in a routing loop; host unreachable when ARP fails (fro
   assert.equal(host.result, 'Host Unreachable from 10.0.12.2 (r2)');
   // pc's own neighbour does not answer: no ICMP on the wire, the test fails at pc
   const own = run(s, { from: 'pc', to: '10.0.1.77', kind: 'icmp' }, 8000);
-  assert.match(own.result, /^(not sent: 10\.0\.1\.77 does not answer ARP \(host unreachable\)|no answer within 5 s.*)$/);
+  // (ARP gives up after its retries, 3 × 1 s, before the application's 5 s timeout: the sender's own error)
+  assert.equal(own.result, 'not sent: 10.0.1.77 does not answer ARP (host unreachable)');
 });
 
 test('ICMP: fragmentation needed with DF (PMTUD lowers the path MTU), fragments without DF reassembled at the destination', () => {

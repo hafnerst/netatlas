@@ -169,7 +169,9 @@ test('real time: the simulated clock runs with the display (× the speed); a 1 s
   Date.now = () => (clock += 30);
   try {
     p.frame(50);
-    assert.ok(p.behind >= 0);
+    p.frame(50);
+    assert.ok(p.behind > 0, 'it falls behind');
+    assert.match(p.describe(), /behind/, 'and says so');
     const before = sim.now;
     p.frame(50);
     assert.ok(sim.now - before <= 100 + 1e-6, 'never more than its frames’ worth at once');

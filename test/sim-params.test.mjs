@@ -242,6 +242,9 @@ test('Layer 1: a cable that goes dark is noticed after the loss-of-signal detect
   s.fail('link:l');
   assert.deepEqual(s.downRefs(), ['link:l']);
   assert.equal(s.engine.linkUp('l'), true, 'not noticed yet');
+  // a ping meanwhile: onto the dark cable, lost there (the ports have not noticed)
+  s.runTo(10100);
+  s.sendTest({ from: 'h1', to: '10.0.0.2', kind: 'icmp' });
   s.runTo(10400);
   assert.equal(s.engine.portUp('h1', 'eth0'), true);
   s.runTo(10600);
@@ -265,7 +268,7 @@ test('Layer 1: a cable that goes dark is noticed after the loss-of-signal detect
   assert.ok(events(q, (e) => /is up again before its ports noticed the loss/.test(e.detail)).length);
   assert.ok(!events(q, (e) => /lost carrier/.test(e.detail)).length);
   // during the detection time frames are dropped where the cable is
-  assert.ok(events(s, (e) => e.kind === 'drop' && /its ports have not noticed yet/.test(e.detail)).length >= 0);
+  assert.ok(events(s, (e) => e.kind === 'drop' && /its ports have not noticed yet/.test(e.detail)).length > 0, 'frames dropped on the dark cable before its ports noticed');
 });
 
 // ------------------------------------------------------------------ network events

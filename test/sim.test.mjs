@@ -278,7 +278,7 @@ test('determinism: the same model and the same actions give the same timeline', 
   assert.deepEqual(run(), run());
 });
 
-test('a failure: dropped packets marked where they were lost, the dead interval, reconvergence, and the full handshake after the restore', () => {
+test('a failure: the far end’s own news reroutes before the dead interval, the dead interval, reconvergence, and the full handshake after the restore', () => {
   const s = sim(pe);
   s.runTo(60000);
   s.fail('link:l-carrier-r3');
@@ -291,7 +291,9 @@ test('a failure: dropped packets marked where they were lost, the dead interval,
   assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /(adjacencies or interfaces changed|learned from \S+) \(?.*: \S+#\d+/.test(e.detail)).length > 2, 'LSU flooding');
   // the users' traffic now goes via r2
   assert.ok(events(s, (e) => e.t > t0 + 2000 && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail)).length);
-  assert.ok(s.engine.flights.length >= 0);
+  // r3 noticed its own interface at once and flooded its new record: r1 learned it (through r2) long before its own dead interval
+  const learned = events(s, (e) => e.t >= t0 && e.device === 'r1' && e.what === 'learned' && /r3 sequence/.test(e.detail))[0];
+  assert.ok(learned && learned.t < dead.t - 20000, `learned at ${learned && learned.t}, dead at ${dead.t}`);
   s.restore('link:l-carrier-r3');
   const t1 = s.now;
   s.runTo(t1 + 60000);
