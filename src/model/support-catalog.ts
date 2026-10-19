@@ -79,8 +79,8 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   {
     id: 'experiments',
     name: 'Saved experiments',
-    does: 'A declarative sequence run from a clean start on scenario time: sends prepared from the communication’s identity, failures and restores, interface and power actions, joins and leaves, applications; observations of delivery, state, membership and the static check of a communication at a time; a run compared with the previous one.',
-    not: 'real-time streams (they run on browser time); convergence time, throughput and synchronization accuracy; a scripting language.',
+    does: 'An explicitly configured sequence run on the shared engine from its defined start (freshly booted or settled; the entire model or a scope), on scenario time: sends prepared from the communication’s identity, failures and restores, interface and power actions, joins and leaves, scenario-time multicast streams, applications; steps after an earlier action’s submission; observations of delivery, reception, state, membership, a communication and the saved expectations, each over its window; a run compared with the previous one.',
+    not: 'real-time streams of Network events (they run on browser time); requirements it was not given (it never checks the architecture as a whole by itself); convergence time, throughput and synchronization accuracy; a scripting language.',
   },
   {
     id: 'snapshot',

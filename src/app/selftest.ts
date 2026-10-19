@@ -24,6 +24,9 @@ import { EXAMPLES } from '../generated/examples';
 import { FIXTURES, INTERNAL_EXAMPLES } from '../generated/test-examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
+import type { Experiment } from '../model/experiments';
+import { SimAnimator } from '../ui/sim-anim';
+import type { Activity } from '../analysis/sim/pacing';
 import { contrast } from '../diagram/palette';
 import { drawnProblems as drawnProblemsOf } from './drawn-check';
 import { outlineStability } from './outline-check';
@@ -1204,20 +1207,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       entry.click();
       await tick();
       const dlgOpen = (): boolean => app.addressingOpen;
-      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#toolwin .addr-row')) as HTMLElement[];
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll(':is(#toolwin, [data-an-root]) .addr-row')) as HTMLElement[];
       const m = app.session!.model;
       const ov = addressingOverview(m);
       const listings = ov.vrfs.reduce((s, g) => s + g.networks.length, 0);
       check(
         'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, hosts, allocation, the next unallocated address and the unallocated ranges; the context line says what it evaluates; the filter has the focus',
-        dlgOpen() && rows().length === listings && doc.querySelectorAll('#toolwin .addr-vrf').length === ov.vrfs.length && /Default table/.test(q('#toolwin .addr-vrf h3')!.textContent || '') &&
-          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Hosts', 'Allocated', 'Next unallocated', 'Unallocated in model'].every((h) => (q('#toolwin .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
-          /^Context: Configured model · Entire architecture$/.test(q('#toolwin .an-ctx-line')!.textContent || '') &&
-          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#toolwin .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /1\.2 %/.test(q('#toolwin .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#toolwin .addr-row[data-addr-net="corp6"]')!.textContent || ''),
+        dlgOpen() && rows().length === listings && doc.querySelectorAll(':is(#toolwin, [data-an-root]) .addr-vrf').length === ov.vrfs.length && /Default table/.test(q(':is(#toolwin, [data-an-root]) .addr-vrf h3')!.textContent || '') &&
+          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Hosts', 'Allocated', 'Next unallocated', 'Unallocated in model'].every((h) => (q(':is(#toolwin, [data-an-root]) .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
+          /^Context: Configured model · Entire architecture$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') &&
+          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /1\.2 %/.test(q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp6"]')!.textContent || ''),
         `${rows().length} rows / ${listings}`,
       );
       // utilization is text, not only a bar
-      check('utilization is written as text (the bar is only decoration)', rows().every((r) => /%|\/64|\/\d+/.test((r.querySelector('.addr-util') as HTMLElement).textContent || '')) && Array.from(doc.querySelectorAll('#toolwin .addr-bar')).every((b) => b.getAttribute('aria-hidden') === 'true'));
+      check('utilization is written as text (the bar is only decoration)', rows().every((r) => /%|\/64|\/\d+/.test((r.querySelector('.addr-util') as HTMLElement).textContent || '')) && Array.from(doc.querySelectorAll(':is(#toolwin, [data-an-root]) .addr-bar')).every((b) => b.getAttribute('aria-hidden') === 'true'));
       // filter
       const filter = q('#addr-filter') as HTMLInputElement;
       filter.value = 'srv';
@@ -1229,21 +1232,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
       // sort
-      (q('#toolwin [data-addr-sort="util"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) [data-addr-sort="util"]') as HTMLElement).click();
       await tick();
-      const th = (q('#toolwin [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      const th = (q(':is(#toolwin, [data-an-root]) [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
       const firstAsc = rows()[0].getAttribute('data-addr-net');
-      (q('#toolwin [data-addr-sort="util"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) [data-addr-sort="util"]') as HTMLElement).click();
       await tick();
-      const th2 = (q('#toolwin [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      const th2 = (q(':is(#toolwin, [data-an-root]) [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
       check(
         'a column header sorts (aria-sort ascending, then descending on a second press), and keeps the focus',
-        th.getAttribute('aria-sort') === 'ascending' && th2.getAttribute('aria-sort') === 'descending' && rows()[0].getAttribute('data-addr-net') !== firstAsc && doc.activeElement === q('#toolwin [data-addr-sort="util"]'),
+        th.getAttribute('aria-sort') === 'ascending' && th2.getAttribute('aria-sort') === 'descending' && rows()[0].getAttribute('data-addr-net') !== firstAsc && doc.activeElement === q(':is(#toolwin, [data-an-root]) [data-addr-sort="util"]'),
       );
-      (q('#toolwin [data-addr-sort="prefix"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) [data-addr-sort="prefix"]') as HTMLElement).click();
       await tick();
       // members
-      const tog = q('#toolwin .addr-row[data-addr-net="corp"] [data-addr-toggle]') as HTMLElement;
+      const tog = q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp"] [data-addr-toggle]') as HTMLElement;
       const mrow = doc.getElementById(tog.getAttribute('aria-controls') as string) as HTMLElement;
       const hiddenBefore = mrow.hidden;
       tog.click();
@@ -1254,17 +1257,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       tog.click();
       await tick();
-      check('duplicates, overlaps and addresses in no network are listed', !!q('#toolwin [data-addr-list="duplicates"]') && !!q('#toolwin [data-addr-list="overlaps"]') && doc.querySelectorAll('#toolwin [data-addr-list="orphans"] li').length === ov.orphans.length && ov.orphans.length > 0);
+      check('duplicates, overlaps and addresses in no network are listed', !!q(':is(#toolwin, [data-an-root]) [data-addr-list="duplicates"]') && !!q(':is(#toolwin, [data-an-root]) [data-addr-list="overlaps"]') && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [data-addr-list="orphans"] li').length === ov.orphans.length && ov.orphans.length > 0);
       // the page does not scroll sideways (the tables do, inside their region)
-      check('the window fits the browser window: no sideways scrolling of the page', doc.documentElement.scrollWidth <= doc.documentElement.clientWidth + 1 && !!q('#toolwin .addr-scroll[role="region"][aria-label]'));
+      check('the window fits the browser window: no sideways scrolling of the page', doc.documentElement.scrollWidth <= doc.documentElement.clientWidth + 1 && !!q(':is(#toolwin, [data-an-root]) .addr-scroll[role="region"][aria-label]'));
       // CSV
       const csv = addressingCsv(ov);
       check('the table as CSV: a header and a line per listing', csv.split('\r\n').length === listings + 2 && /^vrf,prefix,vlan,name,network_id/.test(csv));
       // a click on a network selects it in the diagram beside the window, which stays open
-      (q('#toolwin .addr-row[data-addr-net="corp"] [data-addr-goto="network:corp"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp"] [data-addr-goto="network:corp"]') as HTMLElement).click();
       await tick();
-      check('clicking a network selects it in the diagram; the overview stays open beside it (a tool window, not a modal dialog)', dlgOpen() && app.session!.state.selected === 'network:corp' && !(q('#modal') as HTMLDialogElement).open && q('#toolwin')!.getAttribute('role') === 'dialog' && !q('#toolwin')!.hasAttribute('aria-modal'));
-      app.closeToolWindow();
+      check('clicking a network selects it in the diagram; Analyze stays in front beside it (its panels, not a modal dialog)', dlgOpen() && app.session!.state.selected === 'network:corp' && !(q('#modal') as HTMLDialogElement).open && app.workspace() === 'analyze' && doc.body.getAttribute('data-workspace') === 'analyze');
+      // a row selected: its members, allocation and unallocated ranges on the right, the network marked in the diagram
+      (q('[data-an-root] .addr-row[data-addr-net="corp"] td:nth-child(2)') as HTMLElement).click();
+      await tick();
+      check('Analyze workspace: a network’s row selected shows its details on the right (members, allocation, unallocated) and marks it in the diagram', app.analyzeSelection() === 'net:|corp' && /Members/.test(q('#ws-an-right #an-detail')!.textContent || '') && /10.10.10.3/.test(q('#ws-an-right #an-detail')!.textContent || '') && !!q('#viewport [data-ref="network:corp"].ws-sel'), app.analyzeSelection());
+      await app.exitWorkspace();
       await tick();
       // the key I opens it again, with its state; Esc closes it and the focus returns
       app.select(null);
@@ -1274,16 +1281,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('the key I opens the overview', dlgOpen());
       (q('#addr-filter') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('Esc closes it; the model is unchanged and no undo step was added', !dlgOpen() && app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled === undoBefore);
+      check('Esc inside the panels (here: the filter) never leaves Analyze', dlgOpen());
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc in the diagram leaves it (the editing panels again); the model is unchanged and no undo step was added', !dlgOpen() && app.workspace() === 'edit' && !!q('#outline-body') && app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled === undoBefore);
       // both themes: the overview is drawn with the theme's colours
       for (const theme of ['light', 'dark']) {
         app.theme.set(theme as 'light' | 'dark');
         void app.openAddressing();
         await tick();
-        const cs = doc.defaultView!.getComputedStyle(q('#toolwin') as HTMLElement);
-        const link = doc.defaultView!.getComputedStyle(q('#toolwin .addr-row .ref') as HTMLElement).color;
+        const cs = doc.defaultView!.getComputedStyle(q('#sim-dock') as HTMLElement);
+        const link = doc.defaultView!.getComputedStyle(q(':is(#toolwin, [data-an-root]) .addr-row .ref') as HTMLElement).color;
         check(`${theme} theme: the overview uses the theme’s background and link colours`, cs.backgroundColor !== '' && link !== cs.backgroundColor && dlgOpen());
-        app.closeToolWindow();
+        await app.exitWorkspace();
         await tick();
       }
       // the Inspector offers the next free address
@@ -1430,16 +1441,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
-        'Esc exits focus: every device is back, at the positions it had; the banner is gone; the selection stays',
-        banner.hidden && all() === total && JSON.stringify(Array.from(app.session!.positionsFor('physical'))) === posBefore && app.session!.state.selected === 'device:hq-fw' && !app.session!.state.focus,
+        'Esc exits focus (Analyze stays: a focus ends before it does): every device is back, at the positions it had; the focus banner row is gone; the selection stays',
+        (q('#mb-focus') as HTMLElement).hidden && app.analyzeTool() === 'focus' && all() === total && JSON.stringify(Array.from(app.session!.positionsFor('physical'))) === posBefore && app.session!.state.selected === 'device:hq-fw' && !app.session!.state.focus,
       );
       // through the palette as well
       app.runCommand('focus.enter');
       await tick();
-      const viaCommand = !banner.hidden;
+      const viaCommand = !(q('#mb-focus') as HTMLElement).hidden;
       app.runCommand('focus.exit');
       await tick();
-      check('Focus… and Exit focus are commands (menu, palette)', viaCommand && banner.hidden && !!q('#btn-focus[data-command="focus.window"]') && !!q('#btn-focus-exit[data-command="focus.exit"]'));
+      check('Focus… and Exit focus are commands (menu, palette)', viaCommand && (q('#mb-focus') as HTMLElement).hidden && !!q('#btn-focus[data-command="focus.window"]') && !!q('#btn-focus-exit[data-command="focus.exit"]'));
       // the Focus window: the selection, 1–3 hops, Focus and Exit focus
       app.select('device:hq-fw');
       click('#analyze-btn');
@@ -1447,15 +1458,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check(
         'Analyze → Focus… opens the Focus window: the selected object, the hops as a radio group (the hops in effect checked), Focus and Exit focus; with a selection it focuses at once',
-        app.toolWindow() === 'focus' && /hq-fw/.test(q('#toolwin .focus-sel')!.textContent || '') && doc.querySelectorAll('#toolwin [role="radio"][data-focus-hops]').length === 3 && doc.querySelectorAll('#toolwin [role="radio"][aria-checked="true"]').length === 1 && new RegExp('^' + q('#toolwin [role="radio"][aria-checked="true"]')!.getAttribute('data-focus-hops') + ' hops?$').test(q('#focus-hops')!.textContent || '') && !banner.hidden && !(q('#focus-exit-w') as HTMLButtonElement).disabled,
+        app.analyzeTool() === 'focus' && /hq-fw/.test(q(':is(#toolwin, [data-an-root]) .focus-sel')!.textContent || '') && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [role="radio"][data-focus-hops]').length === 3 && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [data-focus-hops][aria-checked="true"]').length === 1 && new RegExp('^' + q(':is(#toolwin, [data-an-root]) [data-focus-hops][aria-checked="true"]')!.getAttribute('data-focus-hops') + ' hops?$').test(q('#focus-hops')!.textContent || '') && !banner.hidden && !(q('#focus-exit-w') as HTMLButtonElement).disabled,
       );
-      (q('#toolwin [data-focus-hops="1"]') as HTMLElement).focus();
-      (q('#toolwin [data-focus-hops="1"]') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      (q(':is(#toolwin, [data-an-root]) [data-focus-hops="1"]') as HTMLElement).focus();
+      (q(':is(#toolwin, [data-an-root]) [data-focus-hops="1"]') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
       await tick();
-      check('→ in the hops: 2 hops, at once in the diagram and the banner (the focus stays on the radio group)', /2 hops/.test(q('#focus-hops')!.textContent || '') && q('#toolwin [data-focus-hops="2"]')!.getAttribute('aria-checked') === 'true' && doc.activeElement === q('#toolwin [data-focus-hops="2"]'));
+      check('→ in the hops: 2 hops, at once in the diagram and the banner (the focus stays on the radio group)', /2 hops/.test(q('#focus-hops')!.textContent || '') && q(':is(#toolwin, [data-an-root]) [data-focus-hops="2"]')!.getAttribute('aria-checked') === 'true' && doc.activeElement === q(':is(#toolwin, [data-an-root]) [data-focus-hops="2"]'));
       (q('#focus-exit-w') as HTMLElement).click();
       await tick();
-      check('Exit focus in the window: the complete diagram; the window stays and says focus mode is off', banner.hidden && app.toolWindow() === 'focus' && /Focus mode is off/.test(q('#toolwin .focus-now')!.textContent || ''));
+      check('Exit focus in the window: the complete diagram; the Focus tool stays and says focus mode is off', (q('#mb-focus') as HTMLElement).hidden && app.analyzeTool() === 'focus' && /Focus mode is off/.test(q(':is(#toolwin, [data-an-root]) .focus-now')!.textContent || ''));
       app.closeToolWindow();
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
@@ -1480,7 +1491,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const from = q('#trace-from') as HTMLInputElement;
       check(
         'T opens the Trace path window with its form: the selection fills From, the keyboard is in To',
-        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && app.toolWindow() === 'trace' && /^Trace path$/.test(q('#tw-title')!.textContent || '') && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]') && !!q('label[for="trace-back"]'),
+        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && app.analyzeTool() === 'trace' && q('[data-an-tool="trace"]')!.getAttribute('aria-checked') === 'true' && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]') && !!q('label[for="trace-back"]'),
       );
       // an end that is not in the model: the form says why, nothing is traced
       const to = q('#trace-to') as HTMLInputElement;
@@ -1488,7 +1499,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       to.dispatchEvent(new Event('input', { bubbles: true }));
       (q('#trace-go') as HTMLElement).click();
       await tick();
-      check('an unknown destination is refused with the reason, at the field', /Destination: “nowhere” is no device/.test(q('#trace-error') ? q('#trace-error')!.textContent || '' : '') && (q('#trace-to') as HTMLElement).getAttribute('aria-invalid') === 'true' && (q('#mode-banner') as HTMLElement).hidden);
+      check('an unknown destination is refused with the reason, at the field', /Destination: “nowhere” is no device/.test(q('#trace-error') ? q('#trace-error')!.textContent || '' : '') && (q('#trace-to') as HTMLElement).getAttribute('aria-invalid') === 'true' && (q('#mb-trace') as HTMLElement).hidden);
       // a real trace, with the return path
       app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: true });
       (q('#trace-go') as HTMLElement).click();
@@ -1499,7 +1510,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !(q('#mode-banner') as HTMLElement).hidden && !(q('#mb-trace') as HTMLElement).hidden && /Path trace: muc-rtr:lan0 → hq-log · Reachable within scope: 2 evaluated paths reach hq-log:eno1/.test(text) && /return path: Reachable within scope: 1 evaluated path reaches muc-rtr:lan0/.test(text),
         text,
       );
-      const mainSec = q('#toolwin [data-trace-path="trace-main"]') as HTMLElement;
+      const mainSec = q(':is(#toolwin, [data-an-root]) [data-trace-path="trace-main"]') as HTMLElement;
       const hops = Array.from(mainSec.querySelectorAll('tr.hop-row:not(.hop-under)')) as HTMLElement[];
       const cells = (r: HTMLElement): string[] => Array.from(r.children).map((c) => (c.textContent || '').trim());
       const heads = Array.from(mainSec.querySelectorAll('thead th')).map((h) => h.textContent);
@@ -1526,7 +1537,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const cssOf = (ref: string): CSSStyleDeclaration => doc.defaultView!.getComputedStyle(q(`#viewport [data-ref="${ref}"] .dev-box`) as Element);
       check('the path is marked by line style and width, not by colour alone: solid and thick; the alternative dashed', cssOf('device:hq-core1').strokeDasharray === 'none' && parseFloat(cssOf('device:hq-core1').strokeWidth) >= 3.5 && cssOf('device:hq-core2').strokeDasharray !== 'none', `${cssOf('device:hq-core2').strokeDasharray}`);
       // the alternative in its own section
-      check('the alternative’s hops are in their section (through hq-core2)', /hq-core2/.test(q('#toolwin [data-trace-path="trace-alt-1"]')!.textContent || '') && !/hq-core2/.test(Array.from(mainSec.querySelectorAll('tr.hop-row')).map((r) => r.textContent).join(' ')));
+      check('the alternative’s hops are in their section (through hq-core2)', /hq-core2/.test(q(':is(#toolwin, [data-an-root]) [data-trace-path="trace-alt-1"]')!.textContent || '') && !/hq-core2/.test(Array.from(mainSec.querySelectorAll('tr.hop-row')).map((r) => r.textContent).join(' ')));
       // the logical view: the relations used
       click('[data-view-btn="logical"]');
       await tick();
@@ -1552,24 +1563,24 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app as unknown as { afterEdit(n?: string): void }).afterEdit();
       await tick();
       // an edit does not compute it again behind the user's back: the result is marked outdated; Refresh computes it on the model as it is now
-      check('after an edit the result is marked outdated (the banner and the window say so), not computed again', /outdated: the model changed/.test(q('#trace-text')!.textContent || '') && !!q('#toolwin .an-outdated [data-an-refresh]') && /return path: Reachable within scope/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
-      (q('#toolwin [data-an-refresh]') as HTMLElement).click();
+      check('after an edit the result is marked outdated (the banner and the window say so), not computed again', /outdated: the model changed/.test(q('#trace-text')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .an-outdated [data-an-refresh]') && /return path: Reachable within scope/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      (q(':is(#toolwin, [data-an-root]) [data-an-refresh]') as HTMLElement).click();
       await tick();
-      check('Refresh computes it again: without its default route the server has no way back', /return path: Blocked: 1 evaluated path stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || '') && !q('#toolwin .an-outdated'), q('#trace-text')!.textContent || '');
+      check('Refresh computes it again: without its default route the server has no way back', /return path: Blocked: 1 evaluated path stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || '') && !q(':is(#toolwin, [data-an-root]) .an-outdated'), q('#trace-text')!.textContent || '');
       app.undo();
       await tick();
       // Esc ends it; the form keeps what was typed
       (q('#canvas') as unknown as HTMLElement).focus();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('Esc in the diagram ends the trace: nothing is marked, the banner is gone; the window keeps the form and its values', (q('#mode-banner') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && app.toolWindow() === 'trace' && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
-      // the path stays marked only while the window is open
+      check('Esc in the diagram ends the trace first: nothing is marked, its banner row is gone; Analyze stays with the form and its values', (q('#mb-trace') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && app.analyzeTool() === 'trace' && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
+      // the path stays marked only while Analyze is in front
       (q('#trace-go') as HTMLElement).click();
       await tick();
       const markedOpen = traced('trace-main').length > 0;
-      (q('#toolwin .tw-close') as HTMLElement).click();
+      (q('#ws-exit-banner') as HTMLElement).click();
       await tick();
-      check('closing the window removes the path from the diagram', markedOpen && traced('trace-main').length === 0 && !app.currentTrace() && !app.toolWindowOpen());
+      check('Exit Analyze removes the path from the diagram (a temporary overlay) and brings the editing panels back', markedOpen && traced('trace-main').length === 0 && !app.currentTrace() && app.workspace() === 'edit' && !!q('#outline-body'));
       check('Trace path… and Exit path trace are commands of the Analyze menu', !!q('#btn-trace[data-command="trace.open"]') && !!q('#btn-trace-exit[data-command="trace.exit"]') && (q('#btn-trace-exit') as HTMLButtonElement).disabled);
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
@@ -2216,45 +2227,48 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       for (const key of ['x', '[', ']']) doc.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       await tick();
       check('X, [ and ] do nothing: there is no way to fail objects outside a simulation, and no scenarios', !app.simulationOn() && (q('#mode-banner') as HTMLElement).hidden && !app.commands.some((c) => /^sim\.(add|prev|next|save|templates|traffic)/.test(c.id)) && app.exportText() === yamlBefore);
-      // the Single points of failure window
+      // Single points of failure: in the Analyze workspace
       click('#analyze-btn');
       (q('#btn-spof') as HTMLElement).click();
       await tick();
-      const win = q('#toolwin') as HTMLElement;
-      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#toolwin .spof-table tbody tr')) as HTMLElement[];
+      const left = q('#ws-an-left') as HTMLElement;
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('[data-an-root] .spof-table tbody tr')) as HTMLElement[];
       check(
-        'Analyze → Single points of failure… opens a tool window: role dialog without aria-modal, labelled by its title, with a close button; the filter has the focus; the diagram stays usable',
-        app.toolWindow() === 'spof' && win.getAttribute('role') === 'dialog' && !win.hasAttribute('aria-modal') && win.getAttribute('aria-labelledby') === 'tw-title' && q('#tw-title')!.textContent === 'Single points of failure' && !!q('#toolwin .tw-close[aria-label]') && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open,
+        'Analyze → Single points of failure… enters the Analyze workspace: its panels named (Analyze, Details, Analysis results), the banner with Exit Analyze, Analyze marked in the menu bar; the filter has the focus; no modal dialog',
+        app.analyzeTool() === 'spof' && app.workspace() === 'analyze' && q('#sim-setup-title')!.textContent === 'Analyze' && q('#sim-actions-title')!.textContent === 'Details' && q('#sim-dock-title')!.textContent === 'Analysis results' && !(q('#mb-ws') as HTMLElement).hidden && /Exit Analyze/.test(q('#ws-exit-banner')!.textContent || '') && q('#analyze-btn')!.getAttribute('aria-current') === 'true' && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open && q('[data-an-tool="spof"]')!.getAttribute('aria-checked') === 'true',
       );
       // the service impact is checked in steps (the page stays usable): wait for it
       for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
-      const heads = Array.from(doc.querySelectorAll('#toolwin .spof-table thead th')).map((h) => (h.textContent || '').replace(/[▲▼]/g, '').trim());
+      const heads = Array.from(doc.querySelectorAll('[data-an-root] .spof-table thead th')).map((h) => (h.textContent || '').replace(/[▲▼]/g, '').trim());
       check(
-        'what counts as a single point of failure is explained; the table: element, type, cuts off, relations down, structural impact (most first), service impact, Show in diagram',
-        /cuts devices off, brings down relations/.test(win.textContent || '') && /an object count, not a business criticality or a probability/.test(win.textContent || '') && heads.slice(0, 6).join('|') === 'Element|Type|Cuts off|Relations down|Structural impact|Service impact' && app.spofServiceDone() && rows().length > 5 && q('#toolwin [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')),
+        'what counts as a single point of failure is explained (on the left); the table at the bottom: element, type, cuts off, relations down, structural impact (most first), service impact, Show in diagram',
+        /cuts devices off, brings down relations/.test(left.textContent || '') && /an object count, not a business criticality or a probability/.test(left.textContent || '') && heads.slice(0, 6).join('|') === 'Element|Type|Cuts off|Relations down|Structural impact|Service impact' && app.spofServiceDone() && rows().length > 5 && q('[data-an-root] [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')) && !!q('#ws-an-dock .spof-table'),
         heads.join('|'),
       );
       const impacts = rows().map((r) => parseInt((r.querySelector('td.num') as HTMLElement).textContent || '0', 10));
       check('most impact first', impacts.every((v, i) => i === 0 || impacts[i - 1] >= v), impacts.join(','));
-      (q('#toolwin [data-spof-sort="element"]') as HTMLElement).click();
+      (q('[data-an-root] [data-spof-sort="element"]') as HTMLElement).click();
       await tick();
       const names = rows().map((r) => (r.firstElementChild as HTMLElement).textContent || '');
-      check('a header sorts (aria-sort), and keeps the focus', q('#toolwin [data-spof-sort="element"]')!.closest('th')!.getAttribute('aria-sort') === 'ascending' && names.join('\n') === names.slice().sort((x, y) => (x.toLowerCase() < y.toLowerCase() ? -1 : x.toLowerCase() > y.toLowerCase() ? 1 : 0)).join('\n') && doc.activeElement === q('#toolwin [data-spof-sort="element"]'));
+      check('a header sorts (aria-sort), and keeps the focus', q('[data-an-root] [data-spof-sort="element"]')!.closest('th')!.getAttribute('aria-sort') === 'ascending' && names.join('\n') === names.slice().sort((x, y) => (x.toLowerCase() < y.toLowerCase() ? -1 : x.toLowerCase() > y.toLowerCase() ? 1 : 0)).join('\n') && doc.activeElement === q('[data-an-root] [data-spof-sort="element"]'));
       const filter = q('#spof-filter') as HTMLInputElement;
       filter.focus();
       filter.value = 'hq-fw';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
       check('the filter narrows the rows and says how many are shown; the focus stays in it', rows().length >= 1 && rows().length < impacts.length && rows().every((r) => /hq-fw/.test(r.textContent || '')) && / of \d+ single points of failure shown/.test(q('#spof-status')!.textContent || '') && doc.activeElement === filter);
-      (q('#toolwin tr[data-spof="device:hq-fw"] [data-spof-show]') as HTMLElement).click();
+      (q('[data-an-root] tr[data-spof="device:hq-fw"] [data-spof-show]') as HTMLElement).click();
       await tick();
-      check('Show in diagram selects it in the diagram; the window stays', app.session!.state.selected === 'device:hq-fw' && app.toolWindow() === 'spof');
+      check('Show in diagram selects it in the diagram; Analyze stays', app.session!.state.selected === 'device:hq-fw' && app.analyzeTool() === 'spof');
+      (q('[data-an-root] tr[data-spof="device:hq-fw"] [data-spof-whatif]') as HTMLElement).click();
+      await tick();
+      check('What if on a row: the comparison in the Details panel, its failed objects marked in the diagram', !!q('#ws-an-right #an-detail #wi-summary') && /hq-fw/.test(q('#ws-an-right #an-detail')!.textContent || '') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel'));
       filter.value = '';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
       const csv = spofCsv(spofRows(app.session!.model, singlePointsOfFailure(app.session!.model)));
       check('the table as CSV: a header and a line per structural single point', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,context\n/.test(csv) && csv.trim().split('\n').length === singlePointsOfFailure(app.session!.model).length + 1);
-      // F6 / Shift+F6: the focus region by region: the left panel, the diagram, the right panel, the tool window
+      // F6 / Shift+F6: the focus region by region: the right panel, the bottom panel, the left panel, the diagram
       (q('#canvas') as unknown as HTMLElement).focus();
       const regionOf = (): string => (['outline', 'canvas-wrap', 'side', 'sim-dock', 'toolwin'].find((id) => (q('#' + id) as HTMLElement).contains(doc.activeElement)) || 'none');
       const f6 = (shift = false): string => {
@@ -2263,14 +2277,29 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
       const seq = [f6(), f6(), f6(), f6()];
       const back = f6(true);
-      f6();
-      f6();
-      f6();
-      const inWin = win.contains(doc.activeElement);
-      f6();
-      check('F6 moves the keyboard focus region by region (the right panel, the tool window, the left panel, the diagram), Shift+F6 back; into the window where its focus was', seq.join() === 'side,toolwin,outline,canvas-wrap' && back === 'outline' && inWin && regionOf() === 'outline', seq.join() + ' / ' + back);
+      check('F6 moves the keyboard focus region by region in the workspace (the right panel, the results, the left panel, the diagram), Shift+F6 back', seq.join() === 'side,sim-dock,outline,canvas-wrap' && back === 'outline', seq.join() + ' / ' + back);
       (q('#canvas') as unknown as HTMLElement).focus();
-      // collapse, dock, move: remembered
+      // Esc in the diagram leaves Analyze: the editing panels again, the focus not lost
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc in the diagram leaves Analyze: the Objects list and the Inspector again; the focus not lost on the page', app.workspace() === 'edit' && !doc.body.hasAttribute('data-workspace') && !!q('#outline-body') && (q('#sim-dock') as HTMLElement).hidden && doc.activeElement !== doc.body && q('#analyze-btn')!.getAttribute('aria-current') !== 'true');
+      check('nothing of this changes the model or adds an undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // both themes: the workspace's panels and frame
+      for (const theme of ['light', 'dark'] as const) {
+        app.theme.set(theme);
+        app.openSpof();
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(q('#sim-dock') as Element);
+        const th = doc.defaultView!.getComputedStyle(q('[data-an-root] .spof-table th') as Element);
+        const frame = doc.defaultView!.getComputedStyle(q('#canvas-wrap') as Element, '::after');
+        check(`${theme} theme: the workspace has the theme’s panel colours, and the frame inside the diagram`, cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && th.color !== cs.backgroundColor && /inset/.test(frame.boxShadow || ''));
+      }
+      await app.exitWorkspace();
+      // ---- the tool windows that remain (Saved views here): collapse, move, resize, dock, one at a time, Esc
+      app.openSavedViews();
+      await tick();
+      const win = q('#toolwin') as HTMLElement;
+      check('a tool window (Saved views): role dialog without aria-modal, labelled by its title, with a close button', app.toolWindow() === 'views' && win.getAttribute('role') === 'dialog' && !win.hasAttribute('aria-modal') && win.getAttribute('aria-labelledby') === 'tw-title' && q('#tw-title')!.textContent === 'Saved views' && !!q('#toolwin .tw-close[aria-label]'));
       (q('#toolwin .tw-collapse') as HTMLElement).click();
       await tick();
       check('Collapse folds it to its title bar (aria-expanded false); Expand opens it again', (q('#tw-body') as HTMLElement).hidden && q('#toolwin .tw-collapse')!.getAttribute('aria-expanded') === 'false');
@@ -2282,11 +2311,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const g1 = app.windows()!.geometry()!;
       check('the move handle and the resize grip work with the arrow keys (Shift: further)', g1.x === g0.x - 64 && g1.h === g0.h + 16, `${g0.x},${g0.h} → ${g1.x},${g1.h}`);
-      // one at a time: Trace path replaces it; reopening remembers its place
-      app.openTrace();
+      app.openBrowse();
       await tick();
-      check('opening another window replaces it (one at a time)', app.toolWindow() === 'trace' && doc.querySelectorAll('#toolwin').length === 1);
-      app.openSpof();
+      check('opening another window replaces it (one at a time)', app.toolWindow() === 'browse' && doc.querySelectorAll('#toolwin').length === 1);
+      app.openSavedViews();
       await tick();
       const g2 = app.windows()!.geometry()!;
       check('… and the window opens again where it was left, at its size (local storage)', g2.x === g1.x && g2.h === g1.h && g2.w === g1.w);
@@ -2297,20 +2325,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('Dock: a full-width panel at the bottom, under the diagram (it takes room, it covers nothing); the page doesn’t scroll', doc.body.classList.contains('tw-docked') && Math.abs(r.width - doc.documentElement.clientWidth) < 2 && r.top >= canvasR.bottom - 1 && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1 && q('#toolwin .tw-dock')!.getAttribute('aria-pressed') === 'true');
       (q('#toolwin .tw-dock') as HTMLElement).click();
       await tick();
-      // Esc closes it; the focus goes back
-      (q('#spof-filter') as HTMLElement).focus();
-      (q('#spof-filter') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      (q('#vw-name') as HTMLElement).focus();
+      (q('#vw-name') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check('Esc closes the window; the focus goes back to the main window (not lost on the page)', !app.toolWindowOpen() && win.hidden && doc.activeElement !== doc.body && !win.contains(doc.activeElement));
-      check('nothing of this changes the model or adds an undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
-      // both themes
       for (const theme of ['light', 'dark'] as const) {
         app.theme.set(theme);
-        app.openSpof();
+        app.openSavedViews();
         await tick();
         const cs = doc.defaultView!.getComputedStyle(win);
-        const th = doc.defaultView!.getComputedStyle(q('#toolwin .spof-table th') as Element);
-        check(`${theme} theme: the window has the theme’s panel colours and a border`, cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && th.color !== cs.backgroundColor && cs.borderTopStyle !== 'none');
+        check(`${theme} theme: a tool window has the theme’s panel colours and a border`, cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.borderTopStyle !== 'none');
       }
       app.closeToolWindow();
       app.theme.set('dark');
@@ -5894,6 +5918,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         leg ? leg.textContent || '' : 'no leg',
       );
       app.exitTrace();
+      await app.exitWorkspace();
       await tick(10);
       // changing a type asks first, lists what goes, cancels or does it in one undo step
       app.loadExampleNamed('device-types.yaml');
@@ -6026,7 +6051,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       for (const theme of ['light', 'dark']) {
         html.setAttribute('data-theme', theme);
         const why = await outlineStability(app, doc);
-        check(`${theme}: Objects list: folding and unfolding a section (empty, populated, with a problem badge; by a click and by the keyboard; all at once) moves no heading; focus stays on it and takes no room`, !why.length, why.slice(0, 4).join('; '));
+        check(`${theme}: Objects list: folding and unfolding a section (empty, populated, with a problem badge; by a click and by the keyboard; all at once) moves no heading; focus stays on it and takes no room`, !why.length, why.slice(0, 4).join('; ') + ` [workspace ${app.workspace()}, active ${doc.activeElement ? doc.activeElement.tagName + '#' + doc.activeElement.id : ''}]`);
         app.mdoc!.markSaved();
       }
       if (before === null) html.removeAttribute('data-theme');
@@ -6044,14 +6069,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.runTrace();
       await tick();
       const verdict = q('#trace-verdict') as HTMLElement | null;
-      const layers = Array.from(doc.querySelectorAll('#toolwin .comm-layers > li[data-layer]')).map((l) => `${l.getAttribute('data-layer')}:${(l.className.match(/v-(\w+)/) || [])[1]}`);
+      const layers = Array.from(doc.querySelectorAll(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer]')).map((l) => `${l.getAttribute('data-layer')}:${(l.className.match(/v-(\w+)/) || [])[1]}`);
       check(
         'Trace path: an application end takes its peer’s transport and port; the verdict comes first (a mark and words), then the layers: addresses, path, policy, listener, and runtime behaviour as not established',
-        !!verdict && verdict.getAttribute('data-verdict') === 'satisfied' && verdict.getAttribute('role') === 'status' && /Reachable within scope/.test(verdict.textContent || '') && layers.join(' ') === 'address:satisfied path:satisfied policy:satisfied listener:satisfied runtime:unsupported' && /TCP 502 \(the listener plc\/registers\)/.test(q('#toolwin .trace-ends')!.textContent || ''),
+        !!verdict && verdict.getAttribute('data-verdict') === 'satisfied' && verdict.getAttribute('role') === 'status' && /Reachable within scope/.test(verdict.textContent || '') && layers.join(' ') === 'address:satisfied path:satisfied policy:satisfied listener:satisfied runtime:unsupported' && /TCP 502 \(the listener plc\/registers\)/.test(q(':is(#toolwin, [data-an-root]) .trace-ends')!.textContent || ''),
         layers.join(' '),
       );
       // "Why this hop?": the evidence row opens under its hop, said by aria-expanded
-      const why = q('#toolwin [data-trace-path="trace-main"] [data-why]') as HTMLButtonElement | null;
+      const why = q(':is(#toolwin, [data-an-root]) [data-trace-path="trace-main"] [data-why]') as HTMLButtonElement | null;
       const row = why ? doc.getElementById(why.getAttribute('aria-controls') as string) : null;
       const closedBefore = !!row && row.hidden;
       if (why) why.click();
@@ -6061,15 +6086,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.setTraceForm({ from: 'hmi', to: 'plc', service: 'tcp/9999' });
       app.runTrace();
       await tick();
-      check('a reachable address without a listener is not a success: the listener layer is violated, the path satisfied', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Reachable, but nothing listens on TCP 9999 at plc/.test(q('#trace-verdict')!.textContent || '') && !!q('#toolwin .comm-layers > li[data-layer="path"].v-satisfied') && !!q('#toolwin .comm-layers > li[data-layer="listener"].v-violated'));
-      check('the context line says the configured model; no simulation was started by a check', /^Context: Configured model · Selected endpoints$/.test(q('#toolwin .an-ctx-line')!.textContent || '') && !app.simulationOn() && app.exportText() === yamlBefore);
+      check('a reachable address without a listener is not a success: the listener layer is violated, the path satisfied', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Reachable, but nothing listens on TCP 9999 at plc/.test(q('#trace-verdict')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="path"].v-satisfied') && !!q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="listener"].v-violated'));
+      check('the context line says the configured model; no simulation was started by a check', /^Context: Configured model · Selected endpoints$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') && !app.simulationOn() && app.exportText() === yamlBefore);
       // both themes: the verdicts' marks in the theme's colours, never colour alone (a mark and words)
       for (const theme of ['light', 'dark']) {
         app.theme.set(theme as 'light' | 'dark');
         await tick();
         const bg = doc.defaultView!.getComputedStyle(q('#toolwin') as Element).backgroundColor;
-        const mark = q('#toolwin .comm-layers > li[data-layer="listener"] .v-mark') as HTMLElement | null;
-        const ok = q('#toolwin .comm-layers > li[data-layer="path"] .v-mark') as HTMLElement | null;
+        const mark = q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="listener"] .v-mark') as HTMLElement | null;
+        const ok = q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="path"] .v-mark') as HTMLElement | null;
         const col = mark ? doc.defaultView!.getComputedStyle(mark).color : bg;
         check(`${theme} theme: a verdict is a mark and words in the theme’s colours (✕ violated and ✓ satisfied differ from the background and from each other)`, !!mark && !!ok && /✕/.test(mark.textContent || '') && /✓/.test(ok.textContent || '') && col !== bg && col !== doc.defaultView!.getComputedStyle(ok).color && /Destination listener/.test(mark.parentElement!.textContent || ''));
       }
@@ -6082,7 +6107,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.select('device:plc');
       app.openFocusWindow();
       await tick();
-      const ctxBtn = q('#toolwin [data-focus-ctx*="\\"app\\""]') as HTMLElement | null;
+      const ctxBtn = q(':is(#toolwin, [data-an-root]) [data-focus-ctx*="\\"app\\""]') as HTMLElement | null;
       check('Focus: contextual actions that apply to the selection only (the PLC: its application and service dependencies)', !!ctxBtn && /Application and service dependencies/.test(ctxBtn.textContent || ''));
       if (ctxBtn) ctxBtn.click();
       await tick();
@@ -6095,7 +6120,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // Design checks: add an expectation with the form (one undo step), evaluate it statically
       app.openDesignChecks();
       await tick();
-      check('Analyze → Design checks… opens a tool window: the example’s saved expectations, not evaluated until Evaluate (nothing runs on its own), the consistency findings; Evaluate has the focus', app.toolWindow() === 'checks' && /^3 saved expectations, not evaluated yet.$/.test(q('#dc-status')!.textContent || '') && doc.activeElement === q('#dc-evaluate') && !!q('#dc-find-h') && !app.simulationOn());
+      check('Analyze → Design checks… opens a tool window: the example’s saved expectations, not evaluated until Evaluate (nothing runs on its own), the consistency findings; Evaluate has the focus', app.analyzeTool() === 'checks' && /^3 saved expectations, not evaluated yet.$/.test(q('#dc-status')!.textContent || '') && doc.activeElement === q('#dc-evaluate') && !!q('#dc-find-h') && !app.simulationOn());
       (q('#dc-add') as HTMLElement).click();
       await tick();
       const setF = (id: string, v: string): void => {
@@ -6103,12 +6128,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         i.value = v;
         i.dispatchEvent(new Event('input', { bubbles: true }));
       };
-      check('Add expectation: the basic form (name, outcome, source, destination, failure condition) with the rest collapsed under Advanced; the name has the focus', doc.activeElement === q('#dc-f-name') && !!q('#dc-f-expect') && !!q('#dc-f-from') && !!q('#dc-f-to') && !!q('#dc-f-failure') && !(q('#toolwin .dc-adv') as HTMLDetailsElement).open);
+      check('Add expectation: the basic form (name, outcome, source, destination, failure condition) with the rest collapsed under Advanced; the name has the focus', doc.activeElement === q('#dc-f-name') && !!q('#dc-f-expect') && !!q('#dc-f-from') && !!q('#dc-f-to') && !!q('#dc-f-failure') && !(q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open);
       setF('dc-f-name', 'Polling the PLC');
       setF('dc-f-from', 'hmi/poll');
       (q('#dc-f-save') as HTMLElement).click();
       await tick();
-      const rowE = q('#toolwin tr[data-exp="polling-the-plc"]') as HTMLElement | null;
+      const rowE = q(':is(#toolwin, [data-an-root]) tr[data-exp="polling-the-plc"]') as HTMLElement | null;
       check('saved with the model (one undo step) and evaluated: Satisfied, with its reason', /expectations:\n {2}- \{?id: polling-the-plc/.test(app.exportText()) || /id: polling-the-plc/.test(app.exportText()), app.exportText().slice(app.exportText().indexOf('expectations:'), app.exportText().indexOf('expectations:') + 160));
       check('… its row: the verdict chip (a mark and words), the expectation, the reason', !!rowE && /Satisfied/.test(rowE.textContent || '') && /hmi\/poll → its configured peer/.test(rowE.textContent || '') && /Reachable within scope/.test(rowE.textContent || ''));
       app.undo();
@@ -6121,12 +6146,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       expSel.value = 'blocked';
       expSel.dispatchEvent(new Event('change', { bubbles: true }));
       await tick();
-      check('a blocked expectation: Enforcement is under Advanced (Unreachable by default), no boundary field until one is asked for', /enforcement/.test(q('#toolwin .dc-adv summary')!.textContent || '') && !(q('#toolwin .dc-adv') as HTMLDetailsElement).open && (q('#dc-f-enforce') as HTMLSelectElement).value === '' && !q('#dc-f-boundary') && doc.activeElement === q('#dc-f-expect'));
+      check('a blocked expectation: Enforcement is under Advanced (Unreachable by default), no boundary field until one is asked for', /enforcement/.test(q(':is(#toolwin, [data-an-root]) .dc-adv summary')!.textContent || '') && !(q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open && (q('#dc-f-enforce') as HTMLSelectElement).value === '' && !q('#dc-f-boundary') && doc.activeElement === q('#dc-f-expect'));
       const enfSel = q('#dc-f-enforce') as HTMLSelectElement;
       enfSel.value = 'boundary';
       enfSel.dispatchEvent(new Event('change', { bubbles: true }));
       await tick();
-      check('… Denied at the selected boundary shows the boundary field, with its help', !!q('#dc-f-boundary') && /selected enforcement boundary must deny/.test(q('#dc-f-enforce-help')!.textContent || '') && (q('#toolwin .dc-adv') as HTMLDetailsElement).open);
+      check('… Denied at the selected boundary shows the boundary field, with its help', !!q('#dc-f-boundary') && /selected enforcement boundary must deny/.test(q('#dc-f-enforce-help')!.textContent || '') && (q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open);
       setF('dc-f-name', 'IT kept out at the gateway');
       setF('dc-f-from', 'eng-ws');
       setF('dc-f-to', 'plc/registers');
@@ -6136,7 +6161,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       setF('dc-f-boundary', 'pgw');
       (q('#dc-f-save') as HTMLElement).click();
       await tick();
-      const rowB = q('#toolwin tr[data-exp="it-kept-out-at-the-gateway"]') as HTMLElement | null;
+      const rowB = q(':is(#toolwin, [data-an-root]) tr[data-exp="it-kept-out-at-the-gateway"]') as HTMLElement | null;
       check('… saved with enforce and boundary, evaluated: violated, with the reason (the path reaches the PLC)', /enforce: boundary/.test(app.exportText()) && /boundary: pgw/.test(app.exportText()) && !!rowB && /\(denied at pgw\)/.test(rowB.textContent || '') && rowB.classList.contains('v-violated') && /Reachable: 1 of 1 evaluated path reaches plc/.test(rowB.textContent || ''), rowB ? rowB.textContent || '' : 'no row');
       app.undo();
       await tick();
@@ -6160,7 +6185,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#wi-go') as HTMLElement).click();
       await tick();
       check('… capacity: the applications with an interval are the stated traffic, evaluated (what the failure leaves without a path is said: not carried)', q('#wi-capacity')!.getAttribute('data-evaluated') === 'yes' && /^Capacity: \d+ demands?: \d+ fit.*\d+ not carried$/.test(q('#wi-capacity summary')!.textContent || ''), q('#wi-capacity summary')!.textContent || '');
-      check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q('#toolwin .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#wi-result .an-ctx-line')!.textContent || ''));
+      check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#wi-result .an-ctx-line')!.textContent || ''));
       app.undo();
       await tick();
       check('undo removes the domain; the what-if result is marked outdated, not computed again', app.exportText() === yamlBefore && !!q('#wi-result .an-outdated'));
@@ -6183,7 +6208,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.openTrace();
       app.runTrace();
       await tick();
-      check('a simulation snapshot (the default while one runs): the lease is the source, the firewall’s policy blocks SSH; the context says the snapshot’s time', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Blocked by policy/.test(q('#trace-verdict')!.textContent || '') && /DHCPv4/.test(q('#toolwin .comm-layers > li[data-layer="address"]')!.textContent || '') && /^Context: Simulation snapshot at t = \d+ s · Selected endpoints$/.test(q('#toolwin .an-ctx-line')!.textContent || '') && !!q('#toolwin [data-an-source="snapshot"][aria-checked="true"]'), `${(q('#trace-verdict') as HTMLElement).textContent} | ${(q('#toolwin .an-ctx-line') || { textContent: 'no context' }).textContent}`);
+      check('a simulation snapshot (the default while one runs): the lease is the source, the firewall’s policy blocks SSH; the context says the snapshot’s time', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Blocked by policy/.test(q('#trace-verdict')!.textContent || '') && /DHCPv4/.test(q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="address"]')!.textContent || '') && /^Context: Simulation snapshot at t = \d+ s · Selected endpoints$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) [data-an-source="snapshot"][aria-checked="true"]'), `${(q('#trace-verdict') as HTMLElement).textContent} | ${(q(':is(#toolwin, [data-an-root]) .an-ctx-line') || { textContent: 'no context' }).textContent}`);
       check('the handoff prepares the same exchange in Network events, prefilled, nothing sent', !!q('#trace-handoff') && !(q('#trace-handoff') as HTMLButtonElement).disabled && (() => {
         const before = ctl.sim.actions().length;
         (q('#trace-handoff') as HTMLElement).click();
@@ -6205,42 +6230,113 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       app.redrawTrace();
       await tick();
-      check('Save as expectation… opens Design checks with the fields of the check, nothing saved yet', !(q('#trace-save-exp') as HTMLButtonElement).disabled && app.traceToExpectation() && app.toolWindow() === 'checks' && (q('#dc-f-from') as HTMLInputElement).value === 'guest-phone' && (q('#dc-f-to') as HTMLInputElement).value === 'core' && (q('#dc-f-service') as HTMLInputElement).value === 'tcp/22' && (q('#dc-f-expect') as HTMLSelectElement).value === 'blocked' && app.session!.model.expectations.length === 4);
+      check('Save as expectation… opens Design checks with the fields of the check, nothing saved yet', !(q('#trace-save-exp') as HTMLButtonElement).disabled && app.traceToExpectation() && app.analyzeTool() === 'checks' && (q('#dc-f-from') as HTMLInputElement).value === 'guest-phone' && (q('#dc-f-to') as HTMLInputElement).value === 'core' && (q('#dc-f-service') as HTMLInputElement).value === 'tcp/22' && (q('#dc-f-expect') as HTMLSelectElement).value === 'blocked' && app.session!.model.expectations.length === 4);
       app.exitTrace();
       app.closeToolWindow();
       await tick();
       app.mdoc!.markSaved();
     }
 
-    // ---- saved experiments: a list, an explicit Run from a clean start on scenario time, the result, a compare, the editor
+    // ---- the Experiments workspace: the panels, an explicit Run, the step states and verdicts, Stop, Reset, the editor
     {
       const exYaml = 'netatlas: 1\ntitle: Experiment check\ndevices:\n  - {id: a, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.2/24}]}\nlinks:\n  - {id: l1, a: "a:e0", b: "b:e0"}\nexperiments:\n  - id: cut\n    name: The cable cut\n    duration: 40s\n    actions:\n      - {id: ping1, at: 5s, do: send, target: a, to: b}\n      - {at: 15s, do: fail, target: l1}\n      - {id: ping2, at: 20s, do: send, target: a, to: b}\n    observe:\n      - {at: 12s, of: send, target: ping1, expect: delivered}\n      - {of: send, target: ping2, expect: failed}\n      - {of: link, target: l1, expect: down}\n';
       const loaded = app.loadText(exYaml, 'experiment-check.yaml', 'file');
       await tick();
       const before = app.exportText();
-      app.openExperiments();
+      const undoBefore = app.mdoc!.canUndo();
+      await app.enterExperiments();
       await tick();
-      check('Simulate → Experiments… opens a window: the saved experiment with Run, nothing run yet (saving or opening never starts one)', loaded.ok && app.toolWindow() === 'experiments' && !!q('#toolwin .ex-card[data-exp="cut"] [data-ex="run"]') && !q('#toolwin .ex-result') && app.experimentRuns('cut').length === 0 && !app.simulationOn());
-      const r1 = app.runExperimentNow('cut');
-      await tick();
-      const obs = Array.from(doc.querySelectorAll('#toolwin .ex-card[data-exp="cut"] .ex-obs li')).map((x) => x.getAttribute('data-outcome')).join(',');
-      check('… Run: a clean start on scenario time, each observation met or not with what was found, the steps and events behind expansions', !!r1 && r1.state === 'done' && r1.timing === 'scenario' && obs === 'met,met,met' && /Last run: 3 observations: 3 met/.test(q('#toolwin .ex-result')!.textContent || '') && !app.simulationOn(), obs);
+      check('entering Experiments changes nothing in the model and adds no undo step', app.exportText() === before && app.mdoc!.canUndo() === undoBefore);
+      check(
+        'Simulate → Experiments… enters the Experiments workspace: its panels named (Experiments, Step, Experiment run), the banner with Exit Experiments, Simulate marked; the experiment selected; nothing has run (opening never starts one)',
+        loaded.ok && app.workspace() === 'experiments' && q('#sim-setup-title')!.textContent === 'Experiments' && q('#sim-actions-title')!.textContent === 'Step' && q('#sim-dock-title')!.textContent === 'Experiment run' && /Exit Experiments/.test(q('#ws-exit-banner')!.textContent || '') && q('#simulate-btn')!.getAttribute('aria-current') === 'true' && q('[data-an-root], .ex-item[data-exp="cut"]')!.getAttribute('aria-pressed') === 'true' && app.experimentRuns('cut').length === 0 && !app.simulationOn() && /Nothing has run: press Run/.test(q('#ex-progress')!.textContent || '') && !(q('#ex-run') as HTMLButtonElement).disabled,
+      );
+      check('… before a run, the bottom panel says what it will do, in order (its start, its scope, each step with its time)', /Start: a freshly booted network; scope: Entire model/.test(q('.ex-plan')!.textContent || '') && /At 5 s: Send from a → b/.test(q('.ex-plan')!.textContent || '') && /At 12 s: delivery of “ping1” — expect delivered/.test(q('.ex-plan')!.textContent || ''));
+      // Run, through its button: the run goes on in slices (the page stays responsive) until it is done
+      (q('#ex-run') as HTMLElement).click();
+      for (let k = 0; k < 400 && app.experimentRunning(); k++) await tick();
+      const obs = (): string => Array.from(doc.querySelectorAll('#ws-exp-dock .ex-obs li')).map((x) => x.getAttribute('data-outcome')).join(',');
+      const steps = Array.from(doc.querySelectorAll('#ws-exp-dock .ex-steplog li')).map((x) => x.getAttribute('data-state')).join(',');
+      check('Run: from a clean start on scenario time; each action submitted (or refused, with why), each observation’s verdict with what was found; the diagram marks the targets with their verdicts', app.experimentRuns('cut').length === 1 && app.experimentRuns('cut')[0].timing === 'scenario' && obs() === 'satisfied,satisfied,satisfied' && steps === 'submitted,submitted,submitted' && /Done: 3 observations: 3 satisfied/.test(q('#ex-progress')!.textContent || '') && !!q('#viewport [data-ref="link:l1"].ws-ok') && !app.simulationOn(), `${obs()} / ${steps}`);
       app.runExperimentNow('cut');
       await tick();
-      (q('#toolwin .ex-card[data-exp="cut"] [data-ex="compare"]') as HTMLElement).click();
+      (q('#ex-compare') as HTMLElement).click();
       await tick();
-      check('… a second run is the same (repeatable), and Compare with the previous run says so', /Every observation came out as before/.test(q('#ex-compare-cut')!.textContent || '') && /The event sequences are the same/.test(q('#ex-compare-cut')!.textContent || ''), q('#ex-compare-cut') ? q('#ex-compare-cut')!.textContent || '' : 'no comparison');
-      (q('#toolwin .ex-card[data-exp="cut"] [data-ex="toggle"]') as HTMLElement).click();
+      check('… run again from the same start: the same verdicts; Compare with the previous run says so', /Every observation came out as before/.test(q('#ex-compare-cut')!.textContent || '') && /The event sequences are the same/.test(q('#ex-compare-cut')!.textContent || ''), q('#ex-compare-cut') ? q('#ex-compare-cut')!.textContent || '' : 'no comparison');
+      // Stop: the run ends where it is, what was not reached is said; nothing of it goes on afterwards
+      (q('#ex-run') as HTMLElement).click();
+      (q('#ex-stop') as HTMLElement).click();
       await tick();
-      const addSel = q('#toolwin [data-ex-add="observe"]') as HTMLSelectElement;
-      addSel.value = 'device';
-      addSel.dispatchEvent(new Event('change', { bubbles: true }));
+      const runs3 = app.experimentRuns('cut').length;
+      for (let k = 0; k < 10; k++) await tick();
+      const last = app.experimentRuns('cut')[runs3 - 1];
+      check('Stop ends the run where it is: undecided observations say so; no callback of it runs afterwards (nothing more is added)', !app.experimentRunning() && !!last && last.state === 'stopped' && last.observations.some((o) => /not decided: the run was stopped/.test(o.actual)) && app.experimentRuns('cut').length === runs3 && /^Stopped/.test(q('#ex-progress')!.textContent || ''));
+      (q('#ex-reset') as HTMLElement).click();
       await tick();
-      check('… the editor: actions and observations in order; + observation adds one (one undo step), never runs anything', !!q('#toolwin .ex-steps[data-ex-list="actions"]') && /- \{of: device, target: "?"?, expect: on\}|of: device/.test(app.exportText()) && app.experimentRuns('cut').length === 2);
+      check('Reset results: the runs of this session are gone; what it will do is shown again', app.experimentRuns('cut').length === 0 && !!q('.ex-plan') && app.exportText() === before);
+      // ---- the editor: a new experiment, a step's kind chosen and kept while it is incomplete
+      (q('#ex-new') as HTMLElement).click();
+      await tick();
+      const sel = (id: string, v: string): void => {
+        const s = q('#' + id) as HTMLSelectElement;
+        s.focus();
+        s.value = v;
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const ex = (): Experiment => app.session!.model.experiments[1];
+      check('New experiment: added (one undo step) and selected, its name field focused; nothing runs', app.session!.model.experiments.length === 2 && app.experimentSelection().exp === ex().id && doc.activeElement === q('#ex-name') && !app.experimentRunning());
+      sel('ex-add-action', 'power_off');
+      await tick();
+      check('+ Add action: the step is added and selected at once, though its target is not configured yet; the entry says so (⚠) and Run says why it can’t run', ex().actions.length === 1 && app.experimentSelection().list === 'actions' && app.experimentSelection().index === 0 && (q('#ex-kind') as HTMLSelectElement).value === 'power_off' && /⚠/.test(q('[data-ex-step="actions:0"]')!.textContent || '') && (q('#ex-run') as HTMLButtonElement).disabled && /can’t run yet/.test((q('#ex-run') as HTMLElement).title));
+      sel('ex-kind', 'shut');
+      await tick();
+      check('choosing another action is accepted and kept after the panels are drawn again; the keyboard stays on the choice', (q('#ex-kind') as HTMLSelectElement).value === 'shut' && ex().actions[0].do === 'shut' && doc.activeElement === q('#ex-kind') && !!q('#ex-target-dev'));
+      sel('ex-target-dev', 'a');
+      await tick();
+      check('a device chosen for an interface target is kept as a draft (not written yet); its interfaces are offered', (q('#ex-target-dev') as HTMLSelectElement).value === 'a' && !(q('#ex-target-own') as HTMLSelectElement).disabled && ex().actions[0].target === '' && doc.activeElement === q('#ex-target-own'));
+      sel('ex-target-own', 'e0');
+      await tick();
+      check('… the interface completes it: written (a:e0), the step configured (✓)', ex().actions[0].target === 'a:e0' && !ex().actions[0].missing.length && /✓/.test(q('[data-ex-step="actions:0"]')!.textContent || ''));
+      sel('ex-kind', 'join');
+      await tick();
+      check('a kind that takes the same target keeps it; its own required field appears, said missing while the step stays editable', ex().actions[0].target === 'a:e0' && !!q('#ex-f-group') && (q('#ex-f-group') as HTMLElement).getAttribute('aria-invalid') === 'true' && ex().actions[0].missing.indexOf('group') >= 0 && !q('#ex-note'));
+      sel('ex-kind', 'power_off');
+      await tick();
+      check('a kind that can’t take the target clears it deliberately, and says what it cleared', ex().actions[0].target === '' && /Cleared: target/.test(q('#ex-note')!.textContent || ''));
+      sel('ex-target', 'b');
+      await tick();
+      sel('ex-add-observation', 'device');
+      await tick();
+      check('+ Add observation: selected at once with its expected outcome preset (on); its target still to choose', ex().observations.length === 1 && app.experimentSelection().list === 'observe' && (q('#ex-expect') as HTMLSelectElement).value === 'on' && ex().observations[0].missing.indexOf('target') >= 0);
+      sel('ex-target', 'b');
+      await tick();
+      sel('ex-expect', 'off');
+      await tick();
+      check('… configured: the experiment can run now (and still nothing ran)', !ex().problems.length && !(q('#ex-run') as HTMLButtonElement).disabled && app.experimentRuns(ex().id).length === 0);
+      const y1 = app.exportText();
       app.undo();
       await tick();
-      check('… undo removes it', app.exportText() === before);
-      app.closeToolWindow();
+      check('undo takes the last choice back (one step); the selection stays on the step', ex().observations[0].expect === 'on' && app.experimentSelection().list === 'observe' && (q('#ex-expect') as HTMLSelectElement).value === 'on');
+      app.redo();
+      await tick();
+      check('… redo brings it back', app.exportText() === y1 && (q('#ex-expect') as HTMLSelectElement).value === 'off');
+      // saved and loaded again: the steps as configured
+      const name = ex().name;
+      app.loadText(y1, 'experiment-check.yaml', 'file');
+      await tick();
+      const back = app.session!.model.experiments[1];
+      check('saved and loaded again: the steps as configured (the workspace stays, bound to the loaded model)', app.workspace() === 'experiments' && !!back && back.name === name && back.actions[0].do === 'power_off' && back.actions[0].target === 'b' && back.observations[0].expect === 'off' && app.experimentRuns('cut').length === 0);
+      // the saved expectations as an observation: what the model has, never invented
+      app.selectExperimentStep({ exp: back.id, list: null, index: -1 });
+      sel('ex-add-observation', 'expectations');
+      await tick();
+      check('an observation of the saved expectations offers what the model has: with none, it says so and the experiment can’t run (no requirement is invented)', /no saved expectations/.test(q('#ws-exp-right')!.textContent || '') && (q('#ex-run') as HTMLButtonElement).disabled);
+      // Exit: the editing panels again
+      const undoNow = app.mdoc!.canUndo();
+      const yNow = app.exportText();
+      (q('#ws-exit-banner') as HTMLElement).click();
+      await tick();
+      check('Exit Experiments: the Objects list and the Inspector again; nothing of entering or exiting is an undo step', app.workspace() === 'edit' && !!q('#outline-body') && (q('#sim-dock') as HTMLElement).hidden && app.mdoc!.canUndo() === undoNow && app.exportText() === yNow);
       app.mdoc!.markSaved();
     }
 
@@ -6272,7 +6368,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       s.state.showLabels = true;
       app.render();
       await tick();
-      (q('#toolwin [data-vw="open"][data-id="switch-close-up"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) [data-vw="open"][data-id="switch-close-up"]') as HTMLElement).click();
       await tick();
       check('… Open shows it again: the logical diagram, the server type hidden, labels off, the focus on sw with 2 hops; the model unchanged, no simulation started', s.state.view === 'logical' && s.state.hiddenTypes.has('server') && !s.state.showLabels && !!s.state.focus && s.state.focus.ref === 'device:sw' && s.state.focus.hops === 2 && app.exportText() === y && !app.simulationOn());
       app.exitFocus();
@@ -6285,6 +6381,155 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.mdoc!.markSaved();
     }
 
+    // ---- cable activity stands for the cable: one lane and one label side, whatever direction its traffic takes
+    {
+      app.loadExampleNamed('timing-ptp.yaml');
+      app.setView('physical');
+      await tick();
+      const ref = 'link:l-rt-swb';
+      const anim = new SimAnimator(doc);
+      // the activity as the pacing reports it: the track of the hop counted first, which alternates with two-way PTP
+      const act = (k: number): Activity[] => [{ ref, view: 'physical', track: { ref, from: k % 2 ? 'b' : 'a', to: k % 2 ? 'a' : 'b' }, counts: [['ptp', 1 + (k % 3)]] }];
+      const opts = (k: number) => ({ view: 'physical' as const, reduce: false, color: () => '#29ae76', activity: act(k) });
+      const sample = (): { d: string; side: number; x: number; y: number } => {
+        const line = q(`.sim-activity[data-activity="${ref}"]`) as SVGPathElement | null;
+        const lab = q(`.sim-activity-label[data-activity="${ref}"]`) as SVGGraphicsElement | null;
+        const cable = q(`g.cable[data-ref="${ref}"] path.cable-line`) as SVGPathElement | null;
+        if (!line || !lab || !cable) return { d: '', side: 0, x: NaN, y: NaN };
+        const a = cable.getPointAtLength(0);
+        const b = cable.getPointAtLength(cable.getTotalLength());
+        const bb = lab.getBBox();
+        const cx = bb.x + bb.width / 2;
+        const cy = bb.y + bb.height / 2;
+        const m = line.getPointAtLength(line.getTotalLength() / 2);
+        return { d: line.getAttribute('d') || '', side: Math.sign((b.x - a.x) * (cy - a.y) - (b.y - a.y) * (cx - a.x)), x: m.x, y: m.y };
+      };
+      const run = (from: number, n: number): Array<ReturnType<typeof sample>> => {
+        const out: Array<ReturnType<typeof sample>> = [];
+        anim.setScene(q('#viewport .scene'));
+        for (let k = from; k < from + n; k++) {
+          anim.draw([], opts(k));
+          out.push(sample());
+        }
+        return out;
+      };
+      const stable = (xs: Array<ReturnType<typeof sample>>): boolean => xs.every((x) => x.d && x.d === xs[0].d && x.side === xs[0].side && x.side !== 0);
+      const first = run(0, 12);
+      const cable = q(`g.cable[data-ref="${ref}"] path.cable-line`) as unknown as SVGPathElement;
+      const mid = cable.getPointAtLength(cable.getTotalLength() / 2);
+      check('cable activity (timing-ptp, rt–sw-b): the same lane and label side for 12 updates while the traffic’s direction alternates; along its cable, within the lane’s offset', stable(first) && Math.hypot(first[0].x - mid.x, first[0].y - mid.y) <= 6, first.map((x) => `${x.side}:${x.d.slice(0, 18)}`).join(' | '));
+      app.zoomBy(1.6);
+      app.panBy(40, -25);
+      await tick();
+      const zoomed = run(12, 4);
+      app.render();
+      await tick();
+      const redrawn = run(16, 4);
+      const theme = doc.documentElement.getAttribute('data-theme');
+      doc.documentElement.setAttribute('data-theme', theme === 'light' ? 'dark' : 'light');
+      app.render();
+      await tick();
+      const themed = run(20, 4);
+      if (theme) doc.documentElement.setAttribute('data-theme', theme);
+      check('… unchanged by pan and zoom, a redraw and a theme change (diagram coordinates, the same side)', stable(first.concat(zoomed, redrawn, themed)));
+      // a deliberate geometry change: rt dragged aside — a new place, then stable again
+      const pos = app.session!.positionsFor('physical').get('rt');
+      if (pos) app.session!.moveNode('device:rt', { x: pos.x + 160, y: pos.y });
+      app.render();
+      await tick();
+      const moved = run(24, 8);
+      check('… after the device is dragged: placed again along the moved cable, then stable (no oscillation)', stable(moved) && moved[0].d !== first[0].d, `${moved[0].d.slice(0, 30)} vs ${first[0].d.slice(0, 30)}`);
+      anim.setScene(null);
+      for (const l of Array.from(doc.querySelectorAll('#viewport .layer-sim, #viewport .layer-sim-labels'))) l.remove();
+      app.session!.resetPositions();
+      app.fit();
+      app.render();
+    }
+
+    // ---- workspace transitions: Analyze over a running simulation (paused, a snapshot), repeated transitions, evidence
+    {
+      app.loadExampleNamed('enterprise-wan.yaml');
+      await tick();
+      app.startProtocolSimulation();
+      for (let k = 0; k < 20; k++) await tick();
+      const ctl = app.simController()!;
+      ctl.setPlaying(true);
+      await tick();
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', service: '', vrf: 'auto', back: false });
+      app.runTrace();
+      await tick();
+      check('Analyze entered from a running simulation: the simulation pauses and stays (its panels kept, not shown); the trace reads its snapshot, and says so; the model is unchanged', app.workspace() === 'analyze' && app.simulationOn() && ctl.playState() === 'Paused' && ctl.pausedBy === 'analyze' && (q('#sim-setup-body') as HTMLElement).hidden && !!q('#sim-setup-body')!.firstChild && q('[data-an-root] .an-ctx-line')!.getAttribute('data-an-context') === 'snapshot' && /snapshot of the simulation/.test(q('#ws-text')!.textContent || ''));
+      // the evidence of a layer: selected, on the right
+      const pick = q('[data-an-root] [data-an-item^="layer:"]') as HTMLElement;
+      const key = pick.getAttribute('data-an-item') as string;
+      pick.click();
+      await tick();
+      check('a layer’s Evidence selected: its evidence on the right, the layer marked as selected in the results', app.analyzeSelection() === key && !!q('#ws-an-right #an-detail') && !!q('#ws-an-dock .an-selected[data-layer]'));
+      (q('#ws-exit-banner') as HTMLElement).click();
+      await tick();
+      check('Exit Analyze: back to the simulation, which resumes (it was paused by Analyze); its panels as they were; the trace overlay gone', app.workspace() === 'simulate' && ctl.playState() === 'Playing' && !(q('#sim-setup-body') as HTMLElement).hidden && !app.currentTrace() && app.simController() === ctl);
+      // repeated transitions: one handler and one loop each time (a sort toggles once, the simulation still runs once)
+      for (let k = 0; k < 4; k++) {
+        void app.openAddressing();
+        await tick();
+        await app.exitWorkspace();
+        await tick();
+      }
+      void app.openAddressing();
+      await tick();
+      (q('[data-an-root] [data-addr-sort="vlan"]') as HTMLElement).click();
+      await tick();
+      check('after repeated transitions a control acts once (a header sorts ascending, not toggled back and forth by duplicate handlers)', q('[data-an-root] [data-addr-sort="vlan"]')!.closest('th')!.getAttribute('aria-sort') === 'ascending');
+      await app.exitWorkspace();
+      await tick();
+      check('… and the simulation is the same one, playing once (no second controller, the frame loop resumed once)', app.simController() === ctl && ctl.playState() === 'Playing' && app.workspace() === 'simulate');
+      app.exitSimulation();
+      await tick();
+      app.mdoc!.markSaved();
+    }
+
+    // ---- model replacement: nothing of the old model's results, selections or pending work survives
+    {
+      app.loadExampleNamed('ot-network.yaml');
+      await tick();
+      app.openDesignChecks();
+      app.refreshDesignChecks();
+      await tick();
+      const a = q('#dc-status')!.textContent || '';
+      app.openSpof();
+      await tick();
+      const genA = app.modelGeneration();
+      const running = !app.spofServiceDone();
+      app.runCommand('analyze.checks');
+      await tick();
+      await app.enterExperiments();
+      app.runExperimentNow('cabinet-outage');
+      await app.exitWorkspace();
+      app.runCommand('analyze.checks');
+      await tick();
+      app.loadExampleNamed('timing-ptp.yaml');
+      await tick();
+      const b = q('#dc-status')!.textContent || '';
+      const rows = Array.from(doc.querySelectorAll('[data-an-root] tr[data-exp]')).map((r) => r.getAttribute('data-exp')).join(',');
+      check('another model loaded with Design checks in front: its own saved expectations, not evaluated yet (never model A’s verdicts); Analyze stays, bound to it; nothing ran on its own', /^3 expectations: 2 satisfied, 1 violated/.test(a) && /^4 saved expectations, not evaluated yet\./.test(b) && rows === 'plc-time,plc-time-gm-a,rt-ntp,rt-ntp-gm-a' && app.analyzeTool() === 'checks' && !app.simulationOn(), `${a} → ${b} [${rows}]`);
+      check('… the old model’s experiment runs, selections and pending work are gone (a new model generation; the report’s job is the new model’s or none)', app.modelGeneration() > genA && app.experimentRuns('cabinet-outage').length === 0 && app.analyzeSelection() === '' && app.experimentRunning() === null);
+      void running;
+      // the consistency findings are the new model's own
+      const findings = q('#dc-find-h') ? (q('#dc-find-h')!.closest('section') as HTMLElement).textContent || '' : '';
+      check('… and its consistency findings are its own (refreshed with the model)', !/eng-ws|plc\/registers/.test(findings));
+      // an ordinary edit is not a replacement: the result stays, marked outdated
+      app.refreshDesignChecks();
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      md.remove(['links', md.findEntity('link', 'l-drv')!.index], 'Remove cable');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('an ordinary edit keeps the evaluation, marked outdated (Refresh computes it again), never cleared', /4 expectations/.test(q('#dc-status')!.textContent || '') && !!q('[data-an-root] .an-outdated'));
+      app.undo();
+      await app.exitWorkspace();
+      md.markSaved();
+    }
+
     // ---- the representative architectures: each public example's workflow, end to end
     {
       // private house: a saved view with the upper floors collapsed; the VLAN view
@@ -6292,10 +6537,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       app.openSavedViews();
       await tick();
-      (q('#toolwin [data-vw="open"][data-id="basement"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) [data-vw="open"][data-id="basement"]') as HTMLElement).click();
       await tick();
       check('private house: the saved view collapses the upper floors (their uplinks to the basement kept); the IoT VLAN view focuses on VLAN 20', !!q('.node[data-ref="device:⊞floor1"]') && !!q('.node[data-ref="device:⊞floor2"]') && !!q('.node[data-ref="device:core"]') && !q('.node[data-ref="device:ap-1"]'));
-      (q('#toolwin [data-vw="open"][data-id="iot-vlan"]') as HTMLElement).click();
+      (q(':is(#toolwin, [data-an-root]) [data-vw="open"][data-id="iot-vlan"]') as HTMLElement).click();
       await tick();
       check('… the IoT VLAN view', !!app.session!.state.focus && app.session!.state.focus.context!.kind === 'vlan' && !app.session!.state.collapsed.size && !q('.node[data-ref="device:⊞floor1"]'));
       app.exitFocus();
@@ -6323,12 +6568,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // embedded / IoT: the repeatable failure experiment
       app.loadExampleNamed('ot-network.yaml');
       await tick();
-      app.openExperiments();
+      await app.enterExperiments();
       await tick();
       const run = app.runExperimentNow('cabinet-outage');
       await tick();
-      check('embedded / IoT: the cabinet outage experiment runs on scenario time; every observation met (the telemetry misses its rounds without the broker)', !!run && run.observations.every((o) => o.outcome === 'met') && /5 observations: 5 met/.test(q('#toolwin .ex-card[data-exp="cabinet-outage"] .ex-result')!.textContent || ''));
-      app.closeToolWindow();
+      check('embedded / IoT: the cabinet outage experiment runs on scenario time; every observation satisfied (the telemetry misses its rounds without the broker)', !!run && run.observations.every((o) => o.outcome === 'satisfied') && /5 observations: 5 satisfied/.test(q('#ex-progress')!.textContent || ''));
+      await app.exitWorkspace();
       // timing: the method is explicit; NTP and PTP apart
       app.loadExampleNamed('timing-ptp.yaml');
       await tick();
@@ -6336,7 +6581,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       (q('#dc-evaluate') as HTMLElement).click();
       for (let k = 0; k < 40 && /not evaluated/.test(q('#dc-status')!.textContent || ''); k++) await tick();
-      const ntp = q('#toolwin [data-exp-id="rt-ntp-gm-a"]') || Array.from(doc.querySelectorAll('#toolwin li, #toolwin tr')).find((x) => /NTP chain without grandmaster A/.test(x.textContent || '')) || null;
+      const ntp = q(':is(#toolwin, [data-an-root]) [data-exp-id="rt-ntp-gm-a"]') || Array.from(doc.querySelectorAll(':is(#toolwin, [data-an-root]) li, :is(#toolwin, [data-an-root]) tr')).find((x) => /NTP chain without grandmaster A/.test(x.textContent || '')) || null;
       check('timing: the router’s NTP chain without gm-a has no reference (its upstream is down), while the PLC’s PTP keeps gm-b', !!ntp && /violated/i.test(ntp.textContent || ''), ntp ? (ntp.textContent || '').slice(0, 200) : 'no row');
       app.closeToolWindow();
       app.mdoc!.markSaved();

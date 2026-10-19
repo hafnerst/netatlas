@@ -29,7 +29,7 @@ of real devices.
 | **Model** | Build devices (15 types, from routers and switches to PLCs and VMs) with their interfaces, addresses, VLANs, routes, services and applications; cables, IP networks, relations such as routing sessions and tunnels, and locations from sites down to racks. |
 | **Visualize** | Switch between the physical and the logical view, find and filter objects, focus on a neighbourhood, and arrange a view automatically (Default, Compact or Structured). |
 | **Analyze** | Check whether a client can use an application or service, review how the address space is allocated, find single points of failure and what a failed rack or room takes with it, keep design requirements with the model, and see consistency findings with what follows from them. |
-| **Simulate** | Start a protocol simulation, follow its messages and tables, send packets, join multicast groups, start streams and applications, and fail, shut or power off parts of the network. |
+| **Simulate** | Start a protocol simulation, follow its messages and tables, send packets, join multicast groups, start streams and applications, and fail, shut or power off parts of the network; build repeatable experiments with explicit observations. |
 | **Share** | Save the model as YAML, open it on any other machine, and export either view as a PNG or SVG picture in the light or dark theme. |
 
 It is meant for anyone who designs, documents, reviews or teaches networks:
@@ -88,7 +88,7 @@ MTU, and which settings contradict each other. Every result gives its verdict wi
 limits; it never changes the model and never sends anything, and a modeled
 result is no proof of production behaviour.
 
-![A path trace in the dark theme: the Trace path window with its verdict (reachable within scope), the layers it checked (addresses, network path, policy) and what static analysis does not establish, the start of the hop table, and the path marked in the physical view of a hybrid cloud](docs/img/readme-analysis.png)
+![A path trace in the dark theme, in the Analyze workspace: the request on the left, the evidence on the right, the verdict (reachable within scope), the layers it checked (addresses, network path, policy) and what static analysis does not establish, the start of the hop table, and the path marked in the physical view of a hybrid cloud](docs/img/readme-analysis.png)
 
 *Analyze → Trace path… on `hybrid-cloud.yaml`: the verdict first, then what it rests on (addresses, path, policy), what a static check does not establish, and each hop; the path marked in the diagram.*
 

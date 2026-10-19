@@ -425,3 +425,25 @@ export function addressingCsv(ov: AddressingOverview, context = 'Configured mode
   return lines.join('\r\n') + '\r\n';
 }
 
+
+/** A network's details (the Analyze workspace's right panel): its members, its gateways, its allocation, what is unallocated. */
+export function networkDetail(doc: Document, n: NetEntry): HTMLElement {
+  const box = el(doc, 'div', { class: 'addr-detail small' });
+  const dl = el(doc, 'dl', { class: 'trace-ends' });
+  const row = (k: string, v: Array<Node | string>): void => {
+    dl.appendChild(el(doc, 'dt', {}, [k]));
+    dl.appendChild(el(doc, 'dd', {}, v));
+  };
+  if (n.vlan !== undefined) row('VLAN', [String(n.vlan)]);
+  row('Hosts', [usedText(n), ` (${utilText(n)})`]);
+  row('Allocated', [allocText(n)]);
+  row('Gateway / VIP', [n.gateways.length ? n.gateways.map((g) => `${g.text} (${g.kind === 'vip' ? 'VIP' : 'gateway'}: ${g.source})`).join('; ') : '—']);
+  row('Next unallocated', [n.nextFree || 'none']);
+  box.appendChild(dl);
+  const free = freeCell(doc, n);
+  box.appendChild(el(doc, 'h4', {}, ['Unallocated in model']));
+  box.appendChild(el(doc, 'div', {}, Array.from(free.childNodes)));
+  box.appendChild(el(doc, 'h4', {}, ['Members']));
+  box.appendChild(membersBox(doc, n));
+  return box;
+}

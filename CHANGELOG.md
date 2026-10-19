@@ -12,11 +12,69 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Workspaces for Experiments and Analyze, stable simulation link indicators.
 Analyze as an architecture-validation workflow: shared verdicts with their
 context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Added (workspaces)
+
+- **Experiments workspace.** Simulate → Experiments… opens a workspace
+  in place of the Objects list and the Inspector. On the left are the
+  experiments and the selected one's name, duration, start (freshly booted
+  or **settled**) and **scope** (the entire model, a group, a VLAN, a
+  failure domain or a device's dependency slice), with its coverage. Below
+  them is the sequence, as readable entries marked ✓ (configured) or ⚠
+  (what is missing), with shortcuts for the diagram's selection. On the
+  right is the selected step: what it does or observes, **when** (after
+  the start, or after an earlier action is *submitted*), its target and
+  fields, and for an observation its expectation, window and the meaning
+  of each verdict. At the bottom are Run, Stop, Reset results, Compare and
+  Copy, the plan before a run, the progress, each action submitted or
+  refused, the verdicts, the events and the comparison. The diagram marks
+  the targets and, after a run, the verdicts.
+- **New experiment steps:** `start_stream` / `stop_stream` (multicast on
+  scenario time), `after` and `within` on steps, observations of a
+  receiver's multicast (`receive`), and of the model's own saved
+  expectations (`expectations`) on the run's state. Only implemented
+  observations are offered.
+- **Analyze workspace.** Every Analyze entry opens one workspace: the
+  tools, scope and request on the left, the evidence of what you select on
+  the right, verdicts, tables, coverage and exports at the bottom, and
+  highlighting in the diagram. A banner names the tool and what it reads,
+  with **Exit Analyze**. Analyze is marked in the menu bar, and the regions
+  have accessible names.
+- **One workspace lifecycle** shared by Edit, Simulate, Experiments and
+  Analyze: one at a time. Ending running work asks first. Analyze over a
+  running simulation pauses it, reads a snapshot, and resumes it on exit.
+  Exit restores the editing panels, the tab and the selection, and clears
+  the overlays. `Esc` in a panel never leaves a workspace.
+- An example experiment in `ot-network.yaml` uses `after` and an
+  observation window.
+
+### Fixed (workspaces)
+
+- **The simulation's cable-activity line and label jumped** between the
+  two sides of a cable, about every half second. The activity took the
+  direction of the oldest hop in its window, and the lanes are
+  directional. The line now uses the cable's canonical geometry, and the
+  label keeps its side until the geometry changes. It stays stable through
+  pause and resume, pan and zoom, theme changes and redraws.
+- **An experiment step's new action or observation was not kept.** An
+  incomplete step was an error and was dropped from the model, so the
+  editor redrew without it. Drafts are now kept with what they miss (a
+  warning). They stay editable and can't run until complete. Every change
+  is one undo step and survives navigation, saving and reloading.
+- **Design checks after loading another model** showed the old model's
+  verdicts. Loading or replacing a model now clears results, pending work
+  (a single-points-of-failure check, an experiment run), snapshots and
+  selections, and late callbacks of the old model are ignored. An edit
+  still marks a result **Outdated** instead.
+- An experiment run reported its sequence finishing as if it were a
+  result. Only observations give verdicts now, and Stop and Reset cancel
+  the work.
 
 ### Added (analysis integration)
 

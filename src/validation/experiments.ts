@@ -1,11 +1,18 @@
 /**
- * The model's saved experiments (`experiments:`, model/experiments.ts):
- * their syntax, and the references they make (an end, a cable, a failure
- * domain that names nothing is a warning: that step can't be run, the run
- * says so). Bounded: at most 200 actions and observations each, a duration
- * of at most an hour of scenario time.
+ * The model's saved experiments (`experiments:`, model/experiments.ts): their
+ * syntax, and what each step names.
+ *
+ * Two kinds of issue, kept apart so that an experiment can be built step by
+ * step: what is written wrong (an unknown action, a time that is no
+ * duration, a duplicate id) is an **error**; what is not configured yet (a
+ * step without its target or group, an experiment without a duration) or
+ * names nothing of the model is a **warning** — the step stays in the model
+ * with what it misses, and the experiment lists why it can't run
+ * (`problems`). Bounded: at most 200 actions and observations each, a
+ * duration of at most an hour of scenario time.
  */
-import { EXP_ACTIONS, EXP_MAX_DURATION, EXP_MAX_STEPS, EXP_OBSERVE, ExpAction, ExpActionKind, ExpObservation, ExpObserveKind, Experiment } from '../model/experiments';
+import { stepTimes } from '../model/experiments';
+import { EXP_ACTIONS, EXP_MAX_DURATION, EXP_MAX_STEPS, EXP_OBSERVE, EXP_SCOPE_KEYS, ExpAction, ExpActionKind, ExpObservation, ExpObserveKind, ExpScope, Experiment, StepField, TargetKind, actionDef, observeDef } from '../model/experiments';
 import { FailureDomain, Model, ifaceKey } from '../model/types';
 import { PARAMS, parseValue } from '../analysis/sim/params';
 import { parseService } from '../analysis/trace';
@@ -24,17 +31,50 @@ export function expDuration(raw: string): number | null {
   return Math.round(u === 'ms' ? v : u === 'min' || u === 'm' ? v * 60000 : u === 'h' ? v * 3600000 : v * 1000);
 }
 
-/** Does a text name something of the model an experiment can act on or observe? */
-function known(model: Model, domains: FailureDomain[], t: string): boolean {
-  if (model.index.devices.has(t) || model.index.links.has(t) || model.index.relations.has(t) || model.index.networks.has(t) || domains.some((d) => d.id === t)) return true;
-  const c = t.indexOf(':');
-  if (c > 0 && model.index.interfaces.has(ifaceKey(t.slice(0, c), t.slice(c + 1)))) return true;
-  const s = t.indexOf('/');
-  if (s > 0) {
-    const d = model.index.devices.get(t.slice(0, s));
-    return !!d && (d.applications || []).some((a) => a.id === t.slice(s + 1));
+/** Does a target name what its kind needs, in this model? ('' when it does, else why not.) */
+export function targetProblem(model: Model, domains: FailureDomain[], kind: TargetKind, t: string, e?: Experiment): string {
+  const ix = model.index;
+  const iface = (x: string): boolean => {
+    const c = x.indexOf(':');
+    return c > 0 && ix.interfaces.has(ifaceKey(x.slice(0, c), x.slice(c + 1)));
+  };
+  const app = (x: string): boolean => {
+    const s = x.indexOf('/');
+    const d = s > 0 ? ix.devices.get(x.slice(0, s)) : undefined;
+    return !!d && (d.applications || []).some((a) => a.id === x.slice(s + 1));
+  };
+  switch (kind) {
+    case 'source':
+      return ix.devices.has(t) || iface(t) || app(t) || /^[0-9a-f:.]+$/i.test(t) ? '' : `"${t}" is no device, interface, application or address of the model`;
+    case 'failable':
+      return ix.devices.has(t) || ix.links.has(t) || ix.relations.has(t) || domains.some((d) => d.id === t) ? '' : `"${t}" is no device, cable, relation or failure domain of the model`;
+    case 'iface':
+    case 'host-iface':
+      return iface(t) ? '' : `"${t}" is no device:interface of the model`;
+    case 'device':
+    case 'router':
+      return ix.devices.has(t) ? '' : `"${t}" is no device of the model`;
+    case 'app':
+      return app(t) ? '' : `"${t}" is no device/application of the model`;
+    case 'link':
+      return ix.links.has(t) ? '' : `"${t}" is no cable of the model`;
+    case 'step':
+      return (e && e.actions.some((a) => a.id === t)) || app(t) ? '' : `no action of the experiment has the id "${t}"`;
+    case 'expectations': {
+      if (t === '*') return model.expectations.length ? '' : 'the model has no saved expectations';
+      const bad = t.split(/[\s,]+/).filter((x) => x && !model.expectations.some((y) => y.id === x));
+      return bad.length ? `no saved expectation ${bad.map((x) => `"${x}"`).join(', ')}` : '';
+    }
   }
-  return false;
+}
+
+/** A scope's problem in this model ('' none). */
+export function scopeProblem(model: Model, domains: FailureDomain[], s: ExpScope): string {
+  if (s.kind === 'group') return model.index.groups.has(s.value) ? '' : `"${s.value}" is no group of the model`;
+  if (s.kind === 'domain') return domains.some((d) => d.id === s.value) ? '' : `"${s.value}" is no failure domain of the model`;
+  if (s.kind === 'device') return model.index.devices.has(s.value) ? '' : `"${s.value}" is no device of the model`;
+  if (s.kind === 'vlan') return /^[0-9]+$/.test(s.value) && Number(s.value) >= 1 && Number(s.value) <= 4094 ? '' : `"${s.value}" is no VLAN ID`;
+  return '';
 }
 
 export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, domains: FailureDomain[]): Experiment[] {
@@ -55,27 +95,52 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
       return;
     }
     seen.set(id, m.line);
+    const problems: string[] = [];
+    // not configured yet: a warning, and a reason it can't run
+    const todo = (node: YNode, p: string, msg: string): void => {
+      c.warn(node, p, msg);
+      problems.push(msg);
+    };
     const name = r.field(m, 'name', epath, 200);
-    if (!name || !name.trim()) {
-      c.error(get(m, 'name') || m, epath + '.name', 'an experiment needs a readable name', get(m, 'name') ? {} : { key: 'name' });
-      return;
-    }
+    if (!name || !name.trim()) todo(get(m, 'name') || m, epath + '.name', 'the experiment needs a name');
     const dText = r.field(m, 'duration', epath, 20);
-    const duration = dText === undefined ? null : expDuration(dText);
-    if (duration === null || duration <= 0 || duration > EXP_MAX_DURATION) {
-      c.error(get(m, 'duration') || m, epath + '.duration', dText === undefined ? 'an experiment needs its duration (e.g. 120s): it always ends' : `"${dText}" is no duration of up to an hour (e.g. 120s, 5min)`, get(m, 'duration') ? {} : { key: 'duration' });
-      return;
-    }
-    const e: Experiment = { id, name: name.trim(), duration, params: [], actions: [], observations: [], line: m.line };
+    let duration = dText === undefined ? null : expDuration(dText);
+    if (dText !== undefined && (duration === null || duration <= 0 || duration > EXP_MAX_DURATION)) {
+      c.error(get(m, 'duration') as YNode, epath + '.duration', `"${dText}" is no duration of up to an hour (e.g. 120s, 5min)`);
+      problems.push('its duration is invalid');
+      duration = null;
+    } else if (dText === undefined) todo(m, epath + '.duration', 'the experiment needs its duration (e.g. 120s): it always ends');
+    const e: Experiment = { id, name: (name || id).trim(), duration: duration || 0, settle: 0, scope: { kind: 'entire', value: '' }, params: [], actions: [], observations: [], problems, line: m.line };
     const desc = r.field(m, 'description', epath, 2000);
     if (desc !== undefined) e.description = desc;
+    const sText = r.field(m, 'settle', epath, 20);
+    if (sText !== undefined) {
+      const v = expDuration(sText);
+      if (v === null || v > EXP_MAX_DURATION) c.error(get(m, 'settle') as YNode, epath + '.settle', `"${sText}" is no duration of up to an hour (e.g. 30s)`);
+      else e.settle = v;
+    }
+    // the execution scope: one of group, vlan, domain, device (entire when left out)
+    const sn = get(m, 'scope');
+    if (sn && !isNull(sn)) {
+      const sm = r.map(sn, epath + '.scope');
+      if (sm) {
+        r.keys(sm, SCHEMA.expScope, epath + '.scope');
+        const set = EXP_SCOPE_KEYS.filter((k) => get(sm, k) !== undefined);
+        if (set.length !== 1) c.error(sm, epath + '.scope', 'a scope is one of group, vlan, domain or device');
+        else {
+          const v = r.field(sm, set[0], epath + '.scope', 64);
+          e.scope = { kind: set[0] as ExpScope['kind'], value: (v || '').trim() };
+          const why = scopeProblem(model, domains, e.scope);
+          if (why) todo(get(sm, set[0]) as YNode, epath + '.scope', why);
+        }
+      }
+    }
     // the simulation-wide parameters it sets (the keys of Start simulation)
     const pm = get(m, 'params');
     if (pm && !isNull(pm)) {
       const mm = r.map(pm, epath + '.params');
       if (mm)
         mm.entries.forEach((ent, key) => {
-          // (every parameter of Start simulation, as the simulation-wide default)
           const def = PARAMS.find((p) => p.yaml === key);
           if (!def) {
             c.error(mm, `${epath}.params.${key}`, `"${key}" is no simulation parameter (the parameters of Start simulation)`, { key, line: ent.keyLine });
@@ -87,12 +152,12 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
           else e.params.push({ key: def.key, value: v.value as number | string });
         });
     }
-    const atOf = (n2: YMap, p2: string): number | undefined | null => {
-      const t = r.field(n2, 'at', p2, 20);
+    const durationOf = (n2: YMap, key: string, p2: string): number | undefined | null => {
+      const t = r.field(n2, key, p2, 20);
       if (t === undefined) return undefined;
       const v = expDuration(t);
-      if (v === null || v > duration) {
-        c.error(get(n2, 'at') as YNode, p2 + '.at', v === null ? `"${t}" is no time after the start (e.g. 10s)` : `${t} is after the end of the experiment (${dText})`);
+      if (v === null) {
+        c.error(get(n2, key) as YNode, `${p2}.${key}`, `"${t}" is no duration (e.g. 10s)`);
         return null;
       }
       return v;
@@ -102,52 +167,73 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
       if (list.length > EXP_MAX_STEPS) c.error(list[EXP_MAX_STEPS], `${epath}.${key}`, `at most ${EXP_MAX_STEPS} entries`);
       return list.slice(0, EXP_MAX_STEPS);
     };
+    /** a step's other fields, by its kind's definition: what is written, and what is required but missing */
+    const fields = (sm: YMap, p2: string, req: StepField[], opt: StepField[], step: ExpAction | ExpObservation, label: string): void => {
+      const s = step as unknown as { [k: string]: unknown; missing: string[] };
+      for (const key of ['to', 'service', 'group'] as const) {
+        const v = r.field(sm, key, p2, 200);
+        if (v !== undefined && v.trim()) s[key] = v.trim();
+      }
+      for (const key of ['count', 'port', 'size'] as const) {
+        const v = r.field(sm, key, p2, 8);
+        if (v === undefined) continue;
+        const max = key === 'count' ? 1000 : key === 'port' ? 65535 : 9000;
+        if (!/^[0-9]+$/.test(v) || Number(v) < 1 || Number(v) > max) c.error(get(sm, key) as YNode, `${p2}.${key}`, `${key} is a whole number, 1 to ${max}`);
+        else s[key] = Number(v);
+      }
+      const iv = r.field(sm, 'interval', p2, 20);
+      if (iv !== undefined) {
+        const v = expDuration(iv);
+        if (v === null || v < 10) c.error(get(sm, 'interval') as YNode, p2 + '.interval', `"${iv}" is no interval (10ms or more)`);
+        else s.interval = v;
+      }
+      const sv = s.service as string | undefined;
+      if (sv !== undefined && typeof parseService(sv) === 'string') c.error(get(sm, 'service') as YNode, p2 + '.service', parseService(sv) as string);
+      // what the kind does not take
+      for (const key of ['to', 'service', 'group', 'count', 'interval', 'port', 'size'] as StepField[]) if (s[key] !== undefined && req.indexOf(key) < 0 && opt.indexOf(key) < 0) c.warn(get(sm, key) as YNode, `${p2}.${key}`, `${label} has no ${key}: it is not used`);
+      for (const key of req)
+        if (s[key] === undefined) {
+          s.missing.push(key);
+          todo(sm, `${p2}.${key}`, `${label}: ${key} is not configured yet`);
+        }
+    };
+    const amaps: YMap[] = [];
+    const omaps: YMap[] = [];
     steps('actions').forEach((an, k) => {
       const ap = `${epath}.actions[${k}]`;
       const am = r.map(an, ap);
       if (!am) return;
       r.keys(am, SCHEMA.expAction, ap);
       const kind = r.field(am, 'do', ap, 20);
-      if (!kind || !EXP_ACTIONS.some((x) => x.id === kind)) {
-        c.error(get(am, 'do') || am, ap + '.do', kind === undefined ? `an action needs what it does: ${EXP_ACTIONS.map((x) => x.id).join(', ')}` : `"${kind}" is no action (a stream runs on real time and is no experiment action): use ${EXP_ACTIONS.map((x) => x.id).join(', ')}`, get(am, 'do') ? {} : { key: 'do' });
+      const def = kind !== undefined ? actionDef(kind) : undefined;
+      if (!def) {
+        c.error(get(am, 'do') || am, ap + '.do', kind === undefined ? `an action needs what it does: ${EXP_ACTIONS.map((x) => x.id).join(', ')}` : `"${kind}" is no action: use ${EXP_ACTIONS.map((x) => x.id).join(', ')}`, get(am, 'do') ? {} : { key: 'do' });
         return;
       }
-      const at = atOf(am, ap);
-      if (at === null) return;
-      if (at === undefined) {
-        c.error(am, ap + '.at', 'an action needs its time after the start (at: 10s)', { key: 'at' });
-        return;
-      }
-      const target = r.field(am, 'target', ap, 200);
-      if (!target || !target.trim()) {
-        c.error(get(am, 'target') || am, ap + '.target', `an action needs its target: ${(EXP_ACTIONS.find((x) => x.id === kind) as { target: string }).target}`, get(am, 'target') ? {} : { key: 'target' });
-        return;
-      }
-      const a: ExpAction = { at, do: kind as ExpActionKind, target: target.trim(), line: am.line };
+      amaps.push(am);
+      const label = `action ${k + 1} (${def.label})`;
+      const at = durationOf(am, 'at', ap);
+      const a: ExpAction = { at: at || 0, do: kind as ExpActionKind, target: (r.field(am, 'target', ap, 200) || '').trim(), missing: [], line: am.line };
+      if (at === null) a.missing.push('at');
       const aid = r.field(am, 'id', ap, 64);
-      if (aid !== undefined) {
-        if (e.actions.some((x) => x.id === aid.trim())) c.error(get(am, 'id') as YNode, ap + '.id', `duplicate action id "${aid}"`);
+      if (aid !== undefined && aid.trim()) {
+        if (e.actions.some((x) => x.id === aid.trim())) c.error(get(am, 'id') as YNode, ap + '.id', `duplicate step id "${aid}"`);
         a.id = aid.trim();
       }
-      for (const key of ['to', 'service', 'group'] as const) {
-        const v = r.field(am, key, ap, 200);
-        if (v !== undefined && v.trim()) a[key] = v.trim();
+      const after = r.field(am, 'after', ap, 64);
+      if (after !== undefined && after.trim()) a.after = after.trim();
+      if (!a.target) {
+        a.missing.push('target');
+        todo(am, ap + '.target', `${label}: its target is not configured yet`);
+      } else {
+        const why = targetProblem(model, domains, def.target, a.target, e);
+        if (why) todo(get(am, 'target') as YNode, ap + '.target', `${label}: ${why}`);
       }
-      if (a.service !== undefined && typeof parseService(a.service) === 'string') c.error(get(am, 'service') as YNode, ap + '.service', parseService(a.service) as string);
-      if (kind === 'send' && !a.to) c.error(am, ap + '.to', 'a send needs its destination (to:)', { key: 'to' });
-      if ((kind === 'join' || kind === 'leave') && !a.group) c.error(am, ap + '.group', 'a join or leave needs its group', { key: 'group' });
-      const cnt = r.field(am, 'count', ap, 6);
-      if (cnt !== undefined) {
-        if (!/^[0-9]+$/.test(cnt) || Number(cnt) < 1 || Number(cnt) > 1000) c.error(get(am, 'count') as YNode, ap + '.count', 'count is a whole number of messages, 1 to 1000');
-        else a.count = Number(cnt);
+      fields(am, ap, def.required, def.optional, a, label);
+      if (a.to) {
+        const why = targetProblem(model, domains, 'source', a.to, e);
+        if (why && !/[a-z]\.[a-z]/i.test(a.to)) todo(get(am, 'to') as YNode, ap + '.to', `${label}: ${why}`);
       }
-      const iv = r.field(am, 'interval', ap, 20);
-      if (iv !== undefined) {
-        const v = expDuration(iv);
-        if (v === null || v < 10) c.error(get(am, 'interval') as YNode, ap + '.interval', `"${iv}" is no interval (10ms or more)`);
-        else a.interval = v;
-      }
-      for (const t of [a.target, a.to].filter((x): x is string => !!x)) if (!known(model, domains, t) && !/^[0-9a-f:.]+$/i.test(t)) c.warn(get(am, t === a.target ? 'target' : 'to') as YNode, ap, `"${t}" is nothing of the model: this action can't be run`);
       e.actions.push(a);
     });
     steps('observe').forEach((on, k) => {
@@ -156,34 +242,59 @@ export function readExperiments(r: Reader, c: Ctx, top: YMap, model: Model, doma
       if (!om) return;
       r.keys(om, SCHEMA.expObserve, op);
       const of = r.field(om, 'of', op, 20);
-      const def = EXP_OBSERVE.find((x) => x.id === of);
+      const def = of !== undefined ? observeDef(of) : undefined;
       if (!def) {
         c.error(get(om, 'of') || om, op + '.of', of === undefined ? `an observation needs what it reads: ${EXP_OBSERVE.map((x) => x.id).join(', ')}` : `"${of}" is nothing an experiment observes: use ${EXP_OBSERVE.map((x) => x.id).join(', ')}`, get(om, 'of') ? {} : { key: 'of' });
         return;
       }
-      const target = r.field(om, 'target', op, 200);
-      const expect = r.field(om, 'expect', op, 20);
-      if (!target || !target.trim()) {
-        c.error(get(om, 'target') || om, op + '.target', `an observation needs its target: ${def.target}`, get(om, 'target') ? {} : { key: 'target' });
-        return;
+      omaps.push(om);
+      const label = `observation ${k + 1} (${def.label})`;
+      const o: ExpObservation = { of: of as ExpObserveKind, target: (r.field(om, 'target', op, 400) || '').trim(), expect: (r.field(om, 'expect', op, 20) || '').trim(), missing: [], line: om.line };
+      const oid = r.field(om, 'id', op, 64);
+      if (oid !== undefined && oid.trim()) {
+        if (e.observations.some((x) => x.id === oid.trim()) || e.actions.some((x) => x.id === oid.trim())) c.error(get(om, 'id') as YNode, op + '.id', `duplicate step id "${oid}"`);
+        o.id = oid.trim();
       }
-      if (!expect || def.expect.indexOf(expect.trim()) < 0) {
-        c.error(get(om, 'expect') || om, op + '.expect', `${def.label} expects ${def.expect.join(' or ')}`, get(om, 'expect') ? {} : { key: 'expect' });
-        return;
+      const at = durationOf(om, 'at', op);
+      if (at !== undefined && at !== null) o.at = at;
+      const after = r.field(om, 'after', op, 64);
+      if (after !== undefined && after.trim()) o.after = after.trim();
+      const within = durationOf(om, 'within', op);
+      if (within !== undefined && within !== null) o.within = within;
+      if (!o.target) {
+        o.missing.push('target');
+        todo(om, op + '.target', `${label}: its target is not configured yet`);
+      } else {
+        const why = targetProblem(model, domains, def.target, o.target, e);
+        if (why) todo(get(om, 'target') as YNode, op + '.target', `${label}: ${why}`);
       }
-      const at = atOf(om, op);
-      if (at === null) return;
-      const o: ExpObservation = { of: of as ExpObserveKind, target: target.trim(), expect: expect.trim(), line: om.line };
-      if (at !== undefined) o.at = at;
-      for (const key of ['to', 'service', 'group'] as const) {
-        const v = r.field(om, key, op, 200);
-        if (v !== undefined && v.trim()) o[key] = v.trim();
+      if (!o.expect) {
+        o.missing.push('expect');
+        todo(om, op + '.expect', `${label}: its expected outcome is not configured yet (${def.expect.join(' or ')})`);
+      } else if (def.expect.indexOf(o.expect) < 0) {
+        c.error(get(om, 'expect') as YNode, op + '.expect', `${def.label} expects ${def.expect.join(' or ')}`);
+        o.missing.push('expect');
       }
-      if ((of === 'send' || of === 'app') && !e.actions.some((a) => a.id === o.target) && !(of === 'app' && known(model, domains, o.target))) c.warn(get(om, 'target') as YNode, op + '.target', `no action of the experiment has the id "${o.target}"`);
-      if (of === 'member' && !o.group) c.error(om, op + '.group', 'a membership observation needs its group', { key: 'group' });
-      if (of === 'reach' && !o.to) c.error(om, op + '.to', 'a communication observation needs its destination (to:)', { key: 'to' });
+      fields(om, op, def.required, def.optional, o, label);
       e.observations.push(o);
     });
+    // the times, with their "after" chains: within the duration, no cycle, no unknown action
+    if (duration) {
+      const t = stepTimes(e);
+      t.actions.forEach((x, k) => {
+        const am = amaps[k];
+        if (typeof x === 'string') todo(get(am, 'after') || am, `${epath}.actions[${k}].after`, `action ${k + 1}: ${x}`);
+        else if (x > duration) c.error(get(am, 'at') || am, `${epath}.actions[${k}].at`, `action ${k + 1} comes at ${x / 1000} s, after the end of the experiment (${dText})`);
+      });
+      t.observations.forEach((x, k) => {
+        const o = e.observations[k];
+        const om = omaps[k];
+        if (typeof x === 'string') todo(get(om, 'after') || om, `${epath}.observe[${k}].after`, `observation ${k + 1}: ${x}`);
+        else if (x + (o.within || 0) > duration) c.error(get(om, 'at') || get(om, 'within') || om, `${epath}.observe[${k}].at`, `observation ${k + 1} ends at ${(x + (o.within || 0)) / 1000} s, after the end of the experiment (${dText})`);
+      });
+    }
+    if (!e.actions.length && !e.observations.length) problems.push('it has no actions or observations yet');
+    else if (!e.observations.length) problems.push('it observes nothing: add an observation (what it should find)');
     out.push(e);
   });
   return out;

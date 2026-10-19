@@ -353,18 +353,29 @@ export class SimAnimator {
     for (const d of receivers) add(d, 'sim-rx');
   }
 
+  /** the label place of each cable's activity (its ref): the side it got first, kept while the cable's geometry stays */
+  private actSlots = new Map<string, { geom: string; slot: number }>();
+
   /**
    * Cable activity: each cable (relation, network line) with traffic not drawn as dots lately is lit
    * along its way, in its busiest protocol's colour, with a short count ("OSPF ×3 · ARP ×1") where a
    * label finds room. It never moves and holds nothing: a sign of what the scenario does meanwhile.
+   *
+   * It stands for the cable, not for a direction: its lane is that of the drawn line's own direction
+   * (never of the hop that happened to be counted first, which alternates with two-way traffic), and its
+   * label keeps the side it got when the cable lit up — chosen again only when the cable's geometry
+   * changes (a device dragged, another view).
    */
   private paintActivity(dots: SVGGElement, labels: SVGGElement, opts: DrawOptions, placed: BoxIndex): void {
     const scene = this.scene as Element;
     const name = opts.name || ((p: string): string => p);
+    const lit = new Set<string>();
     for (const a of opts.activity || []) {
       if (a.view !== opts.view || !a.counts.length) continue;
-      const geo = findTrack(scene, a.track);
-      if (!geo) continue;
+      const found = findTrack(scene, a.track);
+      if (!found) continue;
+      const geo: Geo = { path: found.path, len: found.len, dir: 1 };
+      lit.add(a.ref);
       const color = opts.color(a.counts[0][0]);
       const path = trail(this.doc, geo, 1, color);
       path.setAttribute('class', 'sim-activity');
@@ -373,7 +384,19 @@ export class SimAnimator {
       const text = a.counts.slice(0, 2).map(([p, n]) => `${name(p)} ×${n}`).join(' · ') + (a.counts.length > 2 ? ` +${a.counts.length - 2}` : '');
       const p = at(geo, 0.5);
       const w = textWidth(text, FONT) + 4;
-      const box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, FONT + 4, 1), this.obstacles, placed);
+      const cands = candidates(p.x, p.y, p.ux, p.uy, w, FONT + 4, 1);
+      const start = at(geo, 0);
+      const end = at(geo, 1);
+      const geom = `${a.view}|${Math.round(start.x)},${Math.round(start.y)}|${Math.round(end.x)},${Math.round(end.y)}|${Math.round(geo.len)}`;
+      let slot = this.actSlots.get(a.ref);
+      if (!slot || slot.geom !== geom) {
+        const k = placeIndex(cands, this.obstacles, placed);
+        // (no free place: no label this time, and the choice is made again next time)
+        if (k < 0) continue;
+        slot = { geom, slot: k };
+        this.actSlots.set(a.ref, slot);
+      }
+      const box = cands[slot.slot];
       if (!box) continue;
       placed.add(box);
       const lab = label(this.doc, text, box, false, color);
@@ -381,6 +404,8 @@ export class SimAnimator {
       lab.setAttribute('data-activity', a.ref);
       labels.appendChild(lab);
     }
+    // a cable that is dark again chooses its label's side afresh when it lights up next time
+    for (const ref of Array.from(this.actSlots.keys())) if (!lit.has(ref)) this.actSlots.delete(ref);
   }
 
   private paint(dots: SVGGElement, labels: SVGGElement, items: DrawItem[], opts: DrawOptions, arrows: boolean, live: boolean): DrawResult {

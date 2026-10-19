@@ -161,6 +161,8 @@
     <div id="sim-setup" class="sim-panel" hidden>
       <div class="ol-header"><h2 id="sim-setup-title" class="ol-heading">Simulation setup</h2></div>
       <div id="sim-setup-body" class="sp-body"></div>
+      <div id="ws-exp-left" class="sp-body ws-body" hidden></div>
+      <div id="ws-an-left" class="sp-body ws-body" hidden></div>
     </div>
   </aside>
   <section id="canvas-wrap">
@@ -193,6 +195,12 @@
         <span id="sim-short" class="mb-text mb-short" aria-hidden="true"></span>
 
         <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
+      </div>
+      <div id="mb-ws" class="mb-row" hidden>
+        <span id="ws-icon" class="mb-icon" aria-hidden="true"></span>
+        <span id="ws-text" class="mb-text" role="status"></span>
+        <span id="ws-short" class="mb-text mb-short" aria-hidden="true"></span>
+        <button id="ws-exit-banner" type="button" class="mini" data-command="ws.exit">Exit</button>
       </div>
       <div id="mb-trace" class="mb-row" hidden>
         <span class="mb-icon" aria-hidden="true">⇢</span>
@@ -238,7 +246,7 @@
       </div>
     </div>
     <div id="errors" class="overlay error-overlay"></div>
-    <div id="sim-badge" class="sim-badge" aria-hidden="true" hidden><span class="sim-badge-mark">◈</span> Simulation running</div>
+    <div id="sim-badge" class="sim-badge" aria-hidden="true" hidden><span id="sim-badge-mark" class="sim-badge-mark">◈</span> <span id="sim-badge-text">Simulation running</span></div>
     <div id="tooltip" role="tooltip" hidden></div>
     <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
@@ -257,6 +265,8 @@
     <div id="sim-actions" class="sim-panel" hidden>
       <div class="ol-header"><h2 id="sim-actions-title" class="ol-heading">Actions</h2></div>
       <div id="sim-actions-body" class="sp-body"></div>
+      <div id="ws-exp-right" class="sp-body ws-body" hidden></div>
+      <div id="ws-an-right" class="sp-body ws-body" hidden></div>
     </div>
     <details id="keys" class="keys" open>
       <summary>Mouse &amp; keyboard</summary>
@@ -293,6 +303,8 @@
     <div id="dock-splitter" class="dock-splitter" role="separator" aria-orientation="horizontal" aria-label="Height of the simulation panel" aria-controls="sim-dock" tabindex="0" title="Drag to change the height of the simulation panel; double-click to reset it. With the keyboard: ↑ taller, ↓ lower (Shift: faster), Enter resets"></div>
     <h2 id="sim-dock-title" class="sr-only">Simulation panel</h2>
     <div id="sim-dock-body" class="sd"></div>
+    <div id="ws-exp-dock" class="sd ws-dock" hidden></div>
+    <div id="ws-an-dock" class="sd ws-dock" hidden></div>
   </section>
 </main>
 <footer id="status" aria-live="polite"></footer>

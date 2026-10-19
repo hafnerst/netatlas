@@ -271,7 +271,8 @@ export interface Stream {
   port: number;
   interval: number;
   size: number;
-  origin: 'model' | 'event' | 'demand';
+  /** model: configured; event: Network events (real time); demand: a demand; experiment: an experiment's action (scenario time, checked as an event is) */
+  origin: 'model' | 'event' | 'demand' | 'experiment';
   label: string;
   running: boolean;
   since: number;
@@ -1840,7 +1841,7 @@ export class Multicast {
   }
 
   addStream(dev: string, iface: string, group: string, port: number, interval: number, size: number, origin: Stream['origin'], first = 0, label = '', tag?: number): Stream | string {
-    const bad = origin === 'event' ? this.streamProblem(dev, iface, group) : null;
+    const bad = origin === 'event' || origin === 'experiment' ? this.streamProblem(dev, iface, group) : null;
     if (bad) return bad;
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
@@ -1898,6 +1899,13 @@ export class Multicast {
   }
 
   /** Stop a stream (the end of a stream event, or Stop stream on one of the model). */
+  /** What a host received of a group (its datagrams counted at its interfaces): the count, the first and the last (scenario time), or null. */
+  received(dev: string, group: string): { count: number; first: number; last: number } | null {
+    const g = parseAddress(group.trim());
+    const r = g ? this.rx.get(dev + '|' + formatAddr(g)) : undefined;
+    return r ? { count: r.count, first: r.first, last: r.last } : null;
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
     const st = this.streams.find((x) => x.dev === dev && x.iface === iface && x.group === group && x.running);
     if (!st) return false;

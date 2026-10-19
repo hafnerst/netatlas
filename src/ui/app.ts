@@ -52,9 +52,10 @@ import { collapsedGroup } from '../model/collapse';
 import { viewsBody } from './views-ui';
 import { SavedView, viewSummary } from '../model/views';
 import { focusRef } from '../validation/views';
-import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns } from '../analysis/sim/experiment';
-import { ExperimentsView, experimentText, experimentsBody } from './experiments';
-import { EXP_OBSERVE } from '../model/experiments';
+import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns, experimentScope } from '../analysis/sim/experiment';
+import { ExpSelection, ExpWsActions, ExpWsView, experimentRefs, experimentText, experimentsDock, experimentsLeft, experimentsRight, targetRefs } from './experiments';
+import { ExpAction, ExpObservation, actionDef, observeDef } from '../model/experiments';
+import { ANALYZE_TOOLS, AnalyzeTool, WORKSPACES, Workspace, applyPanels, inWorkspacePanel } from './workspace';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
 import { modelFingerprint } from '../model/fingerprint';
@@ -80,7 +81,7 @@ import { TabOverflow } from './tab-overflow';
 import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
-import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
+import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, networkDetail, newAddrViewState, shownText } from './addressing';
 
 /** How a severity is named in the Problems tab's filter. */
 const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warnings', info: 'Info' };
@@ -286,6 +287,19 @@ export class App {
     this.render();
     this.fit();
     this.renderOutline();
+    // a workspace in front binds to the new model (Experiments: its first experiment; Analyze: the tool, nothing computed)
+    if (this.ws === 'experiments' && model && model.experiments.length) this.expSel = { exp: model.experiments[0].id, list: null, index: -1 };
+    if (this.ws === 'experiments' || this.ws === 'analyze') {
+      if (!this.session) this.showWorkspace('edit');
+      else {
+        this.renderWorkspace();
+        if (this.ws === 'analyze' && this.anTool === 'spof') {
+          const j = this.spofJobNow();
+          if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
+        }
+        this.applyHighlight();
+      }
+    }
     this.updateChrome();
   }
 
@@ -866,6 +880,7 @@ export class App {
     this.traceRun = null;
     this.traceError = '';
     this.endForNewModel();
+    if (this.ws !== 'edit') this.showWorkspace('edit');
     this.zoom = { k: 1, tx: 0, ty: 0 };
     this.bounds = { x: 0, y: 0, w: 1, h: 1 };
     this.closeFind();
@@ -966,6 +981,9 @@ export class App {
     const dom = this.simulation && this.simulation.highlighted ? this.simulation.highlighted() : null;
     // a device's lifecycle (powered off, booting): the simulation's own state, apart from what is down for other reasons
     const power = this.simulation && this.simulation.powerMarks ? this.simulation.powerMarks() : null;
+    // a workspace's marks: an experiment's targets and verdicts, an analysis's subjects
+    const wsm = this.ws === 'experiments' ? this.expMarks() : this.ws === 'analyze' ? this.anMarks() : null;
+    this.svg.classList.toggle('has-ws-marks', !!wsm && wsm.size > 0);
     this.svg.classList.toggle('has-selection', !!keep);
     this.svg.classList.toggle('has-trace', !!tr);
     this.svg.classList.toggle('has-sim', !!failed);
@@ -993,6 +1011,11 @@ export class App {
       const pw = power ? power.get(ref) : undefined;
       e.classList.toggle('sim-off', pw === 'off');
       e.classList.toggle('sim-booting', pw === 'booting');
+      const wm = wsm ? wsm.get(ref) || '' : '';
+      e.classList.toggle('ws-target', wm.indexOf('ws-target') >= 0);
+      e.classList.toggle('ws-ok', wm.indexOf('ws-ok') >= 0);
+      e.classList.toggle('ws-bad', wm.indexOf('ws-bad') >= 0);
+      e.classList.toggle('ws-sel', wm.indexOf('ws-sel') >= 0);
       e.classList.toggle('bc-on', !!dom && dom.has(ref));
       e.classList.toggle('bc-off', !!dom && !dom.has(ref) && (ref.indexOf('device:') === 0 || ref.indexOf('link:') === 0 || ref.indexOf('relation:') === 0 || ref.indexOf('network:') === 0));
     }
@@ -2418,6 +2441,7 @@ export class App {
     const was = s.state.focus;
     if (!was) this.zoomBeforeFocus = { k: this.zoom.k, tx: this.zoom.tx, ty: this.zoom.ty };
     if (!s.setFocus(ref, hops || (was ? was.hops : this.focusHops))) return false;
+    if (this.ws === 'analyze') this.anFocus = true;
     this.focusHops = (s.state.focus as { hops: number }).hops;
     this.render();
     this.updateChrome();
@@ -2442,6 +2466,7 @@ export class App {
     const was = s.state.focus;
     if (!was) this.zoomBeforeFocus = { k: this.zoom.k, tx: this.zoom.tx, ty: this.zoom.ty };
     if (!s.setFocus(ref, this.focusHops, c)) return false;
+    if (this.ws === 'analyze') this.anFocus = true;
     this.render();
     this.updateChrome();
     this.fit();
@@ -2457,13 +2482,13 @@ export class App {
   openFocusWindow(apply = false): void {
     const s = this.session;
     if (!s) return;
-    const opened = this.toolWindow() !== 'focus';
-    if (opened) this.openWindow({ id: 'focus', title: 'Focus', body: this.focusBody(), width: 380, height: 300, focus: '#focus-go' });
+    const opened = this.analyzeTool() !== 'focus';
+    if (opened) this.showAnalyze('focus');
     const sel = s.state.selected;
     if (apply && sel && this.canFocus(sel) && !(s.state.focus && s.state.focus.ref === sel)) this.enterFocus(sel, this.focusHops);
     else this.renderFocusWindow();
     // focused at once, Focus is unavailable now: the keyboard goes to the hops in effect, not lost on the page
-    const win = this.doc.getElementById('toolwin');
+    const win = this.doc.getElementById('ws-an-left');
     if (opened && win && !win.contains(this.doc.activeElement)) {
       const to = win.querySelector('[data-focus-hops][aria-checked="true"]') || win.querySelector('#focus-go:not([disabled])');
       if (to) (to as HTMLElement).focus();
@@ -2471,7 +2496,7 @@ export class App {
   }
 
   private renderFocusWindow(): void {
-    if (this.toolWindow() === 'focus' && this.session) this.replaceWindowBody(this.focusBody());
+    if (this.analyzeTool() === 'focus' && this.session) this.renderAnalyzeWs();
   }
 
   private focusBody(): HTMLElement {
@@ -2490,7 +2515,7 @@ export class App {
       const b = this.doc.querySelector(`[data-focus-hops="${n}"]`) as HTMLElement | null;
       if (b) b.focus();
     };
-    body.addEventListener('click', (e) => {
+    this.onRoot(body, 'click', (e) => {
       const t = e.target as Element;
       const h = t.closest('[data-focus-hops]');
       if (h) pick(Number(h.getAttribute('data-focus-hops')));
@@ -2504,7 +2529,8 @@ export class App {
       else if (t.closest('#focus-exit-w')) this.exitFocus();
     });
     // the hops are a radio group: the arrow keys move between them
-    body.addEventListener('keydown', (e) => {
+    this.onRoot(body, 'keydown', (ev) => {
+      const e = ev as KeyboardEvent;
       const h = (e.target as Element).closest('[data-focus-hops]');
       if (!h || ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) < 0) return;
       e.preventDefault();
@@ -2591,17 +2617,27 @@ export class App {
     const s = this.session;
     const f = s ? s.state.focus : null;
     const t = s ? this.currentTrace() : null;
-    const v = s ? this.simulation : null;
+    const v = s && this.ws === 'simulate' ? this.simulation : null;
+    const w = s && (this.ws === 'experiments' || this.ws === 'analyze') ? WORKSPACES[this.ws] : null;
     const banner = this.$('mode-banner');
-    banner.hidden = !f && !t && !v;
+    banner.hidden = !f && !t && !v && !w;
+    this.$('mb-ws').hidden = !w;
+    if (w) {
+      this.$('ws-icon').textContent = w.icon;
+      this.$('ws-text').textContent = this.ws === 'experiments' ? this.expNoteLine() : this.anNoteLine();
+      this.$('ws-short').textContent = w.name;
+      this.$('ws-exit-banner').textContent = `Exit ${w.name}`;
+    }
     this.$('mb-focus').hidden = !f;
     this.$('mb-trace').hidden = !t;
     this.$('mb-sim').hidden = !v;
-    this.doc.body.setAttribute('data-mode', [v ? 'simulation' : '', f ? 'focus' : '', t ? 'trace' : ''].filter((x) => x).join(' ') || 'none');
-    // the diagram says whose state it shows: the model's, or a simulated one
-    this.$('sim-badge').hidden = !v;
+    this.doc.body.setAttribute('data-mode', [v ? 'simulation' : '', w ? 'workspace' : '', f ? 'focus' : '', t ? 'trace' : ''].filter((x) => x).join(' ') || 'none');
+    // the diagram says whose state it shows: the model's, a simulated one, or a workspace's marks
+    this.$('sim-badge').hidden = !v && !w;
+    this.$('sim-badge-mark').textContent = w ? w.icon : '◈';
+    this.$('sim-badge-text').textContent = w ? w.name : 'Simulation running';
     this.svg.setAttribute('aria-label', v && s ? `Network diagram — simulated state: ${this.simNote().replace(/^Simulation: /, '')}` : 'Network diagram');
-    if (!s || (!f && !t && !v)) return;
+    if (!s || (!f && !t && !v && !w)) return;
     if (v) {
       this.$('sim-text').textContent = `${this.simNote()}. The model is unchanged; editing is paused.`;
       this.$('sim-short').textContent = `Simulation running · ${v.marker()}`;
@@ -2702,6 +2738,60 @@ export class App {
     if (this.mdoc) this.mdoc.lock = '';
     if (sim) sim.stop();
     if (this.tw) this.tw.close();
+    this.resetModelResults();
+  }
+
+  /**
+   * Another model replaces the one shown (or none is shown): what belonged
+   * to the old one goes — its analysis results, snapshots and selections,
+   * its pending work (cancelled; a callback that still comes does nothing),
+   * its experiment runs — and the workspaces bind to the new one. An open
+   * workspace stays open and shows the new model's (Design checks: its
+   * saved expectations, not evaluated yet; nothing runs on its own). An edit
+   * of the same model is not this: its results stay, marked outdated.
+   */
+  private resetModelResults(): void {
+    // the report's background work and its result
+    const j = this.spofJob;
+    if (j) {
+      j.cancelled = true;
+      j.running = false;
+      if (j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
+      j.timer = null;
+    }
+    this.spofJob = null;
+    this.wiRun = null;
+    this.wiForm = newWhatIfForm();
+    this.domForm = null;
+    // the evaluations and what was selected in them
+    this.dcRun = null;
+    this.dcOpen.clear();
+    this.dcForm = null;
+    this.addrRun = null;
+    this.addrState.open.clear();
+    // the trace's ends named the old model's objects (its options, as the VRF choice, are kept)
+    this.traceForm = { ...this.traceForm, from: '', to: '', service: '' };
+    this.anSel = '';
+    this.anSelRefs = [];
+    this.anFocus = false;
+    // the experiments: a run in progress is the old model's (its slot is let go: nothing of it is kept)
+    if (this.expRunner) this.expRunner.runner.cancel();
+    this.expRunner = null;
+    this.expRuns.clear();
+    this.expCompare.clear();
+    this.expSel = { exp: null, list: null, index: -1 };
+    this.expFocusRefs.clear();
+    this.expDraft.clear();
+    this.expNote = '';
+    this.modelGen++;
+  }
+
+  /** a new model's number: results computed for an earlier one are never shown for it */
+  private modelGen = 0;
+
+  /** The current model's generation (tests). */
+  modelGeneration(): number {
+    return this.modelGen;
   }
 
   /** the protocol simulation, while it runs */
@@ -2952,10 +3042,17 @@ export class App {
       if (self.simCtl === ctl) self.simCtl = null;
       // the VMs back where the model has them
       if (self.session && self.session.setPlacement(null)) self.render();
-      self.simLayout(false);
+      // its panels' content goes with it
+      for (const id of ['sim-setup-body', 'sim-actions-body', 'sim-dock-body']) {
+        const b = self.doc.getElementById(id) as HTMLElement;
+        while (b.firstChild) b.removeChild(b.firstChild);
+      }
+      if (self.analyzeFrom === 'simulate') self.analyzeFrom = 'edit';
+      if (self.ws === 'simulate') self.showWorkspace('edit');
+      else self.doc.body.removeAttribute('data-sim');
     };
     this.simCtl = ctl;
-    this.simLayout(true);
+    this.showWorkspace('simulate');
     ctl.mount();
     // now that the panel has its contents: its minimum and default are measured
     this.applyDockHeight();
@@ -2966,55 +3063,13 @@ export class App {
   }
 
   /**
-   * The simulation layout on (or off again): Simulation setup in place of
-   * the Objects list, Actions in place of the Inspector's tabs, and the
-   * simulation panel under the diagram. Off: the Objects list and the
-   * Inspector as they were (the same tab and selection), the panel gone;
-   * the diagram keeps its zoom and position.
-   */
-  private simLayout(on: boolean): void {
-    const d = this.doc;
-    const was = d.body.getAttribute('data-sim') === 'on';
-    if (on === was) return;
-    if (on) d.body.setAttribute('data-sim', 'on');
-    else d.body.removeAttribute('data-sim');
-    (d.getElementById('sim-setup') as HTMLElement).hidden = !on;
-    (d.getElementById('sim-actions') as HTMLElement).hidden = !on;
-    (d.getElementById('sim-dock') as HTMLElement).hidden = !on;
-    (d.getElementById('sim-paneltabs') as HTMLElement).hidden = !on;
-    const outline = this.$('outline');
-    outline.setAttribute('aria-labelledby', on ? 'sim-setup-title' : 'outline-title');
-    const side = this.$('side');
-    if (on) {
-      side.removeAttribute('aria-label');
-      side.setAttribute('aria-labelledby', 'sim-actions-title');
-    } else {
-      side.removeAttribute('aria-labelledby');
-      side.setAttribute('aria-label', 'Inspector');
-      for (const id of ['sim-setup-body', 'sim-actions-body', 'sim-dock-body']) {
-        const b = d.getElementById(id) as HTMLElement;
-        while (b.firstChild) b.removeChild(b.firstChild);
-      }
-    }
-    this.applyDockHeight();
-    // (a narrow and short window starts with the diagram, a narrow one with the actions under it)
-    this.simPanelTab(on && (d.getElementById('spt-diagram') as HTMLElement).getClientRects().length ? 'diagram' : 'actions', false);
-    // the Inspector comes back with its tab and the selection as they were
-    if (!on) {
-      this.renderOutline();
-      this.renderSide();
-    }
-    this.layoutFilters();
-  }
-
-  /**
    * The narrow layout's tabs above the simulation panel: Setup or Actions
    * under the diagram; in a narrow and short window Diagram, Setup or
    * Actions above the panel (one at a time).
    */
   private simPanelTab(which: 'diagram' | 'setup' | 'actions', focus = true): void {
     const d = this.doc;
-    d.body.setAttribute('data-sim-tab', which);
+    d.body.setAttribute('data-panel-tab', which);
     for (const k of ['diagram', 'setup', 'actions']) {
       const b = d.getElementById('spt-' + k) as HTMLElement;
       b.setAttribute('aria-selected', k === which ? 'true' : 'false');
@@ -3048,6 +3103,11 @@ export class App {
   dockBounds(): { dflt: number; min: number; max: number } {
     const main = this.doc.querySelector('main') as HTMLElement;
     const h = main.clientHeight || 600;
+    // Experiments and Analyze: their results take a fair share (no simulation tables to measure)
+    if (this.ws === 'experiments' || this.ws === 'analyze') {
+      const min = Math.min(120, Math.round(h * 0.3));
+      return { dflt: Math.max(min, Math.round(h * 0.38)), min, max: Math.max(min, Math.round(h * 0.65)) };
+    }
     const head = this.doc.querySelector('#sim-dock .sd-head') as HTMLElement | null;
     const need = this.dockNeed();
     // (the room the diagram and the panel share: the diagram's area and the panel, as they are now)
@@ -3186,7 +3246,7 @@ export class App {
       e.preventDefault();
       e.stopPropagation();
       const all = this.simTabs();
-      const cur = Math.max(0, all.indexOf(this.doc.body.getAttribute('data-sim-tab') as 'setup'));
+      const cur = Math.max(0, all.indexOf(this.doc.body.getAttribute('data-panel-tab') as 'setup'));
       const i = e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : (cur + (e.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length;
       this.simPanelTab(all[i]);
     });
@@ -3337,8 +3397,13 @@ export class App {
     return this.tw;
   }
 
+  /** Close the open tool window; with none open and Analyze in front: leave Analyze (its tool's UI is the workspace). */
   closeToolWindow(): boolean {
-    if (!this.tw || !this.tw.current()) return false;
+    if (!this.tw || !this.tw.current()) {
+      if (this.ws !== 'analyze') return false;
+      void this.exitAnalyze();
+      return true;
+    }
     this.tw.close();
     return true;
   }
@@ -3355,6 +3420,7 @@ export class App {
 
   /** After an edit, a new selection or a mode change: the open window shows the model as it is now. */
   private refreshWindow(): void {
+    this.renderWorkspace();
     switch (this.toolWindow()) {
       case 'trace':
         this.renderTraceWindow();
@@ -3370,9 +3436,6 @@ export class App {
         break;
       case 'checks':
         this.renderDesignChecks();
-        break;
-      case 'experiments':
-        this.renderExperiments();
         break;
       case 'views':
         this.renderViews();
@@ -3428,7 +3491,7 @@ export class App {
     const s = this.session as Session;
     const j = this.spofJob;
     // (an edit leaves the report as computed, marked outdated: Refresh, or another model, starts a new one)
-    if (j && (j.model === s.model || !this.outdatedSince(j.model) || this.toolWindow() === 'spof')) return j;
+    if (j && (j.model === s.model || !this.outdatedSince(j.model) || this.analyzeTool() === 'spof')) return j;
     if (j && j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
     const cands = spofCandidates(s.model);
     const spofs = singlePointsOfFailure(s.model);
@@ -3474,7 +3537,11 @@ export class App {
     if (j.next >= j.cands.length) {
       j.running = false;
       j.timer = null;
-    } else if (win) j.timer = win.setTimeout(() => this.stepSpofJob(), 0);
+    } else if (win)
+      j.timer = win.setTimeout(() => {
+        // (a callback of a job that was replaced — another model, Refresh — does nothing: no stale or duplicate work)
+        if (this.spofJob === j) this.stepSpofJob();
+      }, 0);
     else {
       // (no window: finish at once)
       this.stepSpofJob();
@@ -3513,21 +3580,23 @@ export class App {
   openSpof(): void {
     if (!this.session) return;
     const j = this.spofJobNow();
-    this.openWindow({ id: 'spof', title: 'Single points of failure', body: this.spofWindowBody(), width: 900, height: 600, focus: '#spof-filter', onClose: () => void this.stopSpofJob() });
+    this.showAnalyze('spof');
     if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
+    const f = this.doc.getElementById('spof-filter');
+    if (f) f.focus();
   }
 
   private renderSpofWindow(): void {
-    if (this.toolWindow() !== 'spof' || !this.session) return;
+    if (this.analyzeTool() !== 'spof' || !this.session) return;
     const j = this.spofJobNow();
-    this.replaceWindowBody(this.spofWindowBody());
+    this.renderAnalyzeWs();
     if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
   }
 
   /** Only the progress line and the table again (the service check's steps): the form and the focus stay. */
   private renderSpofTable(): void {
-    if (this.toolWindow() !== 'spof' || !this.session) return;
-    const body = this.tw ? this.tw.body() : null;
+    if (this.analyzeTool() !== 'spof' || !this.session) return;
+    const body = this.doc.getElementById('ws-an-dock');
     const old = body ? (body.querySelector('.spof-tables') as HTMLElement | null) : null;
     const prog = body ? (body.querySelector('#spof-progress') as HTMLElement | null) : null;
     if (!old || !prog) return;
@@ -3631,17 +3700,15 @@ export class App {
       },
       goto: (ref) => this.select(ref, true),
     });
-    const redraw = (): void => {
-      const old = body.querySelector('.spof-tables') as HTMLElement;
-      body.replaceChild(spofTable(this.doc, this.spofRowsNow(), st, this.spofView()), old);
-    };
-    body.addEventListener('input', (e) => {
+    // (laid out in the Analyze panels: the results drawn again there, the request's controls kept)
+    const redraw = (): void => this.renderAnalyzeWs('results');
+    this.onRoot(body, 'input', (e) => {
       const t = e.target as HTMLInputElement;
       if (!t.hasAttribute('data-spof-filter')) return;
       st.filter = t.value;
       redraw();
     });
-    body.addEventListener('click', (e) => {
+    this.onRoot(body, 'click', (e) => {
       const t = e.target as Element;
       const sort = t.closest('[data-spof-sort]');
       if (sort) {
@@ -3649,7 +3716,7 @@ export class App {
         st.desc = st.sort === k ? !st.desc : k === 'impact' || k === 'cuts' || k === 'relations' || k === 'service';
         st.sort = k;
         redraw();
-        const again = body.querySelector(`[data-spof-sort="${k}"]`) as HTMLElement | null;
+        const again = this.doc.querySelector(`[data-spof-sort="${k}"]`) as HTMLElement | null;
         if (again) again.focus();
         return;
       }
@@ -3696,7 +3763,7 @@ export class App {
     const reach = this.wiForm.reach === 'entire' ? ({ kind: 'entire' } as ReachScope) : this.wiForm.reach.indexOf('group:') === 0 ? ({ kind: 'group', group: this.wiForm.reach.slice(6) } as ReachScope) : undefined;
     const result = whatIf(s.model, entries.map((e) => e.replace(/^(device|link|relation):/, '')), { deps: j.deps, baseline: j.baseline, reach });
     this.wiRun = { model: s.model, result };
-    if (this.toolWindow() !== 'spof') this.openSpof();
+    if (this.analyzeTool() !== 'spof') this.openSpof();
     else this.renderSpofWindow();
     const r = this.doc.getElementById('wi-summary') || this.doc.getElementById('wi-result');
     if (r) {
@@ -3879,13 +3946,10 @@ export class App {
     if (end && !this.traceForm.from) this.traceForm.from = end;
     else if (end && !this.traceForm.to && this.traceForm.from !== end) this.traceForm.to = end;
     const id = !this.traceForm.from ? 'trace-from' : !this.traceForm.to ? 'trace-to' : 'trace-go';
-    if (this.toolWindow() === 'trace') {
-      this.renderTraceWindow();
-      const f = this.doc.getElementById(id) as HTMLElement | null;
-      if (f) f.focus();
-      return;
-    }
-    this.openWindow({ id: 'trace', title: 'Trace path', body: this.traceBody(), width: 880, height: 640, focus: '#' + id, onClose: () => void this.exitTrace() });
+    if (this.analyzeTool() === 'trace') this.renderTraceWindow();
+    else this.showAnalyze('trace');
+    const f = this.doc.getElementById(id) as HTMLElement | null;
+    if (f) f.focus();
   }
 
   /** Fill the Trace form (from the page or a test) without tracing. */
@@ -3900,7 +3964,7 @@ export class App {
   }
 
   private renderTraceWindow(): void {
-    if (this.toolWindow() === 'trace' && this.session) this.replaceWindowBody(this.traceBody());
+    if (this.analyzeTool() === 'trace' && this.session) this.renderAnalyzeWs();
   }
 
   private traceBody(): HTMLElement {
@@ -3958,7 +4022,7 @@ export class App {
   runTrace(again = false): boolean {
     const s = this.session;
     if (!s) return false;
-    if (this.toolWindow() !== 'trace') this.openTrace();
+    if (this.analyzeTool() !== 'trace') this.openTrace();
     const req = again && this.traceRun ? this.traceRun.request : formRequest(this.traceForm);
     const snap = this.analysisSnapshot();
     const run = this.computeTrace(req, snap);
@@ -4258,7 +4322,7 @@ export class App {
 
   /** Is the Addressing overview open? */
   get addressingOpen(): boolean {
-    return this.toolWindow() === 'addressing';
+    return this.analyzeTool() === 'addressing';
   }
 
   /**
@@ -4271,7 +4335,9 @@ export class App {
   openAddressing(): void {
     if (!this.session) return;
     this.computeAddressing();
-    this.openWindow({ id: 'addressing', title: 'Addressing overview', body: this.addressingWindowBody(), width: 1040, height: 660, focus: '#addr-filter' });
+    this.showAnalyze('addressing');
+    const f = this.doc.getElementById('addr-filter');
+    if (f) f.focus();
   }
 
   /** the overview on screen, and the model and snapshot it was computed on (computed again by opening the window or Refresh) */
@@ -4293,7 +4359,7 @@ export class App {
   }
 
   private renderAddressingWindow(): void {
-    if (this.toolWindow() === 'addressing' && this.session) this.replaceWindowBody(this.addressingWindowBody());
+    if (this.analyzeTool() === 'addressing' && this.session) this.renderAnalyzeWs();
   }
 
   private addressingWindowBody(): HTMLElement {
@@ -4303,21 +4369,17 @@ export class App {
     const st = this.addrState;
     const inner = addressingBody(this.doc, ov, st);
     const body = el(this.doc, 'div', { class: 'addr-window' }, [contextBar(this.doc, this.barState('addr', run.context, run.model), { refresh: () => this.refreshAddressing(), source: (src) => this.setAnalysisSource(src) }), inner]);
-    const redraw = (): void => {
-      const tables = inner.querySelector('.addr-tables') as HTMLElement;
-      inner.replaceChild(addressingTables(this.doc, ov, st), tables);
-      (body.querySelector('#addr-status') as HTMLElement).textContent = shownText(ov, st);
-      const all = body.querySelector('[data-addr-all]') as HTMLElement;
-      all.setAttribute('data-addr-all', st.open.size ? 'close' : 'open');
-      all.textContent = st.open.size ? 'Collapse all members' : 'Expand all members';
-    };
-    body.addEventListener('input', (e) => {
+    // (laid out in the Analyze panels: the results drawn again there, the request's controls kept)
+    const redraw = (): void => this.renderAnalyzeWs('results');
+    void addressingTables;
+    void shownText;
+    this.onRoot(body, 'input', (e) => {
       const t = e.target as HTMLInputElement;
       if (!t.hasAttribute('data-addr-filter')) return;
       st.filter = t.value;
       redraw();
     });
-    body.addEventListener('click', (e) => {
+    this.onRoot(body, 'click', (e) => {
       const t = e.target as Element;
       const go = t.closest('[data-addr-goto]');
       if (go) {
@@ -4330,7 +4392,7 @@ export class App {
         st.desc = st.sort === k ? !st.desc : false;
         st.sort = k;
         redraw();
-        const again = body.querySelector(`[data-addr-sort="${k}"]`) as HTMLElement | null;
+        const again = this.doc.querySelector(`[data-addr-sort="${k}"]`) as HTMLElement | null;
         if (again) again.focus();
         return;
       }
@@ -4345,7 +4407,7 @@ export class App {
         tog.textContent = tog.textContent!.replace(/^[▸▾]/, open ? '▾' : '▸');
         const row = this.doc.getElementById(tog.getAttribute('aria-controls') as string);
         if (row) row.hidden = !open;
-        const all = body.querySelector('[data-addr-all]') as HTMLElement;
+        const all = this.doc.querySelector('[data-addr-all]') as HTMLElement;
         all.setAttribute('data-addr-all', st.open.size ? 'close' : 'open');
         all.textContent = st.open.size ? 'Collapse all members' : 'Expand all members';
         return;
@@ -4355,7 +4417,7 @@ export class App {
         if (all.getAttribute('data-addr-all') === 'open') for (const g of ov.vrfs) for (const n of g.networks) st.open.add(g.vrf + '|' + n.id);
         else st.open.clear();
         redraw();
-        (body.querySelector('[data-addr-all]') as HTMLElement).focus();
+        (this.doc.querySelector('[data-addr-all]') as HTMLElement).focus();
         return;
       }
       const csvBtn = t.closest('[data-addr-csv]');
@@ -4412,11 +4474,13 @@ export class App {
    */
   openDesignChecks(): void {
     if (!this.session) return;
-    this.openWindow({ id: 'checks', title: 'Design checks', body: this.designWindowBody(), width: 900, height: 620, focus: '#dc-evaluate' });
+    this.showAnalyze('checks');
+    const f = this.doc.getElementById('dc-evaluate');
+    if (f) f.focus();
   }
 
   private renderDesignChecks(): void {
-    if (this.toolWindow() === 'checks' && this.session) this.replaceWindowBody(this.designWindowBody());
+    if (this.analyzeTool() === 'checks' && this.session) this.renderAnalyzeWs();
   }
 
   /** Evaluate the saved expectations now (on a snapshot of a running simulation, when one is chosen). */
@@ -4498,6 +4562,11 @@ export class App {
       },
       remove: (id) => void this.removeExpectation(id),
       toggle: (id) => {
+        // in the Analyze workspace: the expectation selected, its evidence on the right
+        if (this.ws === 'analyze') {
+          this.selectAnalysisItem(this.anSel === 'exp:' + id ? '' : 'exp:' + id);
+          return;
+        }
         if (this.dcOpen.has(id)) this.dcOpen.delete(id);
         else this.dcOpen.add(id);
         this.renderDesignChecks();
@@ -4820,44 +4889,495 @@ export class App {
     return true;
   }
 
+  // ------------------------------------------------------------ workspaces
+
+  /** the panel workspace presented now (one at a time): editing, a simulation, Experiments or Analyze */
+  private ws: Workspace = 'edit';
+  /** Analyze entered from another workspace (a paused simulation, Experiments): where Exit Analyze returns */
+  private analyzeFrom: Workspace = 'edit';
+
+  /** The workspace presented now. */
+  workspace(): Workspace {
+    return this.ws;
+  }
+
+  /**
+   * Present a workspace's panels (or the editing panels: 'edit'). Layout
+   * only: what runs is started and stopped by the transitions, never here.
+   */
+  private showWorkspace(ws: Workspace): void {
+    const d = this.doc;
+    const was = this.ws;
+    this.ws = ws;
+    applyPanels(d, ws);
+    if (this.simCtl) d.body.setAttribute('data-sim', 'on');
+    else d.body.removeAttribute('data-sim');
+    const on = ws !== 'edit';
+    this.$('outline').setAttribute('aria-labelledby', on ? 'sim-setup-title' : 'outline-title');
+    const side = this.$('side');
+    if (on) {
+      side.removeAttribute('aria-label');
+      side.setAttribute('aria-labelledby', 'sim-actions-title');
+    } else {
+      side.removeAttribute('aria-labelledby');
+      side.setAttribute('aria-label', 'Inspector');
+    }
+    this.applyDockHeight();
+    // (a narrow and short window starts with the diagram, a narrow one with the right panel under it)
+    if (on && was !== ws) this.simPanelTab((d.getElementById('spt-diagram') as HTMLElement).getClientRects().length ? 'diagram' : 'actions', false);
+    // the Inspector comes back with its tab and the selection as they were
+    if (!on) {
+      this.renderOutline();
+      this.renderSide();
+    }
+    this.layoutFilters();
+    this.renderWorkspace();
+    this.applyHighlight();
+    this.updateChrome();
+  }
+
+  /** The panels of the workspace in front, drawn again from the model (after an edit, a selection, a run's progress). */
+  private renderWorkspace(): void {
+    if (this.ws === 'experiments') this.renderExperimentsWs();
+    else if (this.ws === 'analyze') this.renderAnalyzeWs();
+  }
+
+  /** Ask before work in progress is ended by a transition (never silently); true: go on. */
+  private async confirmEnd(what: string, title: string, body: string): Promise<boolean> {
+    const a = await this.dialog({ title, body: [body], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: what, value: 'go', kind: 'danger' }] });
+    return a === 'go';
+  }
+
+  /**
+   * Simulate → Experiments…: the Experiments workspace. A running simulation
+   * ends first, after a confirmation (an experiment runs its own simulation
+   * from its defined start); from Analyze, its overlays are cleared. Opening
+   * it runs nothing.
+   */
+  async enterExperiments(): Promise<boolean> {
+    if (!this.session) return false;
+    if (this.ws === 'experiments') return true;
+    if (this.simulation) {
+      if (!(await this.confirmEnd('End simulation and open', 'Open Experiments?', 'The running simulation ends and its state is discarded. Experiments run their own simulation, from the start each experiment defines, only when you press Run.'))) return false;
+      this.exitSimulation();
+    }
+    if (this.ws === 'analyze') this.leaveAnalyze();
+    if (!this.expSel.exp || !this.session.model.experiments.some((x) => x.id === this.expSel.exp)) this.expSel = { exp: this.session.model.experiments.length ? this.session.model.experiments[0].id : null, list: null, index: -1 };
+    this.showWorkspace('experiments');
+    this.updateModeBanner();
+    const first = this.doc.querySelector('#ws-exp-left .ex-item[aria-pressed="true"], #ex-new') as HTMLElement | null;
+    if (first) first.focus();
+    return true;
+  }
+
+  /** Leave Experiments (Exit, Esc): a running experiment is stopped after a confirmation; its results stay for this model. */
+  async exitExperiments(): Promise<boolean> {
+    if (this.ws !== 'experiments') return false;
+    if (this.expRunner) {
+      if (!(await this.confirmEnd('Stop and exit', 'Stop the running experiment?', 'The run stops where it is; what it observed so far is kept with this model.'))) return false;
+      this.stopExperiment();
+    }
+    this.showWorkspace('edit');
+    this.updateModeBanner();
+    (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    return true;
+  }
+
+  /** The workspace's Exit (the banner's button, the command). */
+  async exitWorkspace(): Promise<boolean> {
+    if (this.ws === 'experiments') return this.exitExperiments();
+    if (this.ws === 'analyze') return this.exitAnalyze();
+    if (this.ws === 'simulate') return this.exitSimulation();
+    return false;
+  }
+
+  // ------------------------------------------------------------ the Analyze workspace
+
+  /** the tool in front in Analyze, and its selected result item ('' none: the tool's default) */
+  private anTool: AnalyzeTool = 'trace';
+  private anSel = '';
+  /** a focus entered from Analyze (cleared when Analyze is left; a focus from elsewhere is not Analyze's) */
+  private anFocus = false;
+  /** the root listeners of the tool's body (delegated): forwarded from the panels it is laid out in */
+  private anRoot: Array<{ type: string; fn: (e: Event) => void }> = [];
+
+  /** The tool in front in Analyze ('' when Analyze is not). */
+  analyzeTool(): AnalyzeTool | '' {
+    return this.ws === 'analyze' ? this.anTool : '';
+  }
+
+  /** The selected result item of the tool in front (tests). */
+  analyzeSelection(): string {
+    return this.anSel;
+  }
+
+  /** A root listener of a tool's body: on the body, and forwarded from the Analyze panels when it is laid out there. */
+  private onRoot(body: HTMLElement, type: string, fn: (e: Event) => void): void {
+    body.addEventListener(type, fn);
+    this.anRoot.push({ type, fn });
+  }
+
+  /**
+   * Enter Analyze with a tool (or switch to it there). From a simulation, the
+   * simulation pauses and stays: its snapshot is what Analyze can read; Exit
+   * Analyze returns to it and resumes it. From Experiments, a running
+   * experiment goes on. Entering changes nothing in the model.
+   */
+  private showAnalyze(tool: AnalyzeTool): void {
+    if (!this.session) return;
+    const switching = this.ws === 'analyze' && this.anTool !== tool;
+    if (switching) this.leaveTool(this.anTool);
+    if (this.ws !== 'analyze') {
+      this.analyzeFrom = this.ws;
+      if (this.ws === 'simulate' && this.simCtl && this.simCtl.playState() === 'Playing') this.simCtl.setPlaying(false, 'analyze');
+      this.closeToolWindow();
+    }
+    if (switching || this.anTool !== tool) this.anSel = '';
+    this.anTool = tool;
+    if (this.ws !== 'analyze') this.showWorkspace('analyze');
+    else this.renderAnalyzeWs();
+    this.updateModeBanner();
+  }
+
+  /** What a tool leaves when another takes its place: the trace's path, the report's background work. */
+  private leaveTool(tool: AnalyzeTool): void {
+    if (tool === 'trace' && this.traceRun) this.exitTrace();
+    if (tool === 'spof') this.stopSpofJob();
+  }
+
+  /** Analyze's overlays and work are cleared (the trace's path, a focus entered here, the report's background work). */
+  private leaveAnalyze(): void {
+    this.leaveTool('trace');
+    this.leaveTool('spof');
+    if (this.anFocus && this.session && this.session.state.focus) this.exitFocus();
+    this.anFocus = false;
+    this.anSel = '';
+  }
+
+  /** Exit Analyze: its overlays cleared; back to where it was entered from (a paused simulation resumes). */
+  async exitAnalyze(): Promise<boolean> {
+    if (this.ws !== 'analyze') return false;
+    this.leaveAnalyze();
+    const back: Workspace = this.analyzeFrom === 'simulate' && this.simCtl ? 'simulate' : this.analyzeFrom === 'experiments' ? 'experiments' : 'edit';
+    this.analyzeFrom = 'edit';
+    this.showWorkspace(back);
+    if (back === 'simulate' && this.simCtl && this.simCtl.pausedBy === 'analyze') this.simCtl.setPlaying(true);
+    this.updateModeBanner();
+    (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    return true;
+  }
+
+  /** Escape in Analyze: a selected result item is let go first (true: it was). */
+  private anEscape(): boolean {
+    if (this.anSel) {
+      this.anSel = '';
+      this.renderAnalyzeWs();
+      return true;
+    }
+    return false;
+  }
+
+  /** The Analyze banner's line: the tool, what it was computed on, that nothing is changed. */
+  private anNoteLine(): string {
+    const t = ANALYZE_TOOLS.find((x) => x.id === this.anTool) as { label: string };
+    const snap = this.simulation && this.anSource === 'snapshot' ? 'a snapshot of the simulation (paused while Analyze is in front)' : 'the configured model';
+    return `Analyze: ${t.label} — on ${snap}. The model is unchanged; nothing is sent.`;
+  }
+
+  /** The diagram's marks of Analyze: the selected item's objects (a layer's, a network's, a candidate's, an expectation's). */
+  private anMarks(): Map<string, string> | null {
+    if (this.ws !== 'analyze' || !this.anSelRefs.length) return null;
+    const out = new Map<string, string>();
+    for (const r of this.anSelRefs) out.set(r, 'ws-target ws-sel');
+    return out;
+  }
+
+  /** the selected item's objects (set when the panels are drawn) */
+  private anSelRefs: string[] = [];
+
+  /** Select a result item of the tool in front: its evidence on the right, its objects marked. */
+  selectAnalysisItem(key: string): void {
+    this.anSel = key;
+    this.renderAnalyzeWs();
+    this.applyHighlight();
+    const r = this.doc.getElementById('an-detail');
+    if (r) r.focus({ preventScroll: true });
+  }
+
+  /** Draw the Analyze panels again (after an edit, a result, a selection): the tool's body laid out in them. */
+  private renderAnalyzeWs(only?: 'results'): void {
+    if (this.ws !== 'analyze' || !this.session || !this.mdoc) return;
+    const doc = this.doc;
+    this.anRoot = [];
+    const parts = this.analyzeParts();
+    // only the results changed (a filter typed, a column sorted): the request's controls stay as they are (the caret, the
+    // focus); what they say of the results (a status line, a toggle's state) is taken over in place
+    if (only === 'results') {
+      const left = doc.getElementById('ws-an-left');
+      for (const n of parts.left) {
+        if (!(n instanceof Element)) continue;
+        for (const e of [n].concat(Array.from(n.querySelectorAll('[id], [data-addr-all]')))) {
+          const sel = e.id ? '#' + e.id : e.hasAttribute('data-addr-all') ? '[data-addr-all]' : '';
+          const cur = sel && left ? (left.querySelector(sel) as HTMLElement | null) : null;
+          if (!cur || e.children.length || cur === doc.activeElement) continue;
+          if (cur.textContent !== e.textContent) cur.textContent = e.textContent;
+          for (const a of ['data-addr-all']) if (e.hasAttribute(a)) cur.setAttribute(a, e.getAttribute(a) as string);
+        }
+      }
+      const wrap = (kids: Node[], cls: string): HTMLElement => {
+        const w = el(doc, 'div', { class: cls, 'data-an-root': this.anTool });
+        for (const k of kids) w.appendChild(k);
+        return w;
+      };
+      this.replacePanel('ws-an-dock', wrap(parts.bottom, 'an-dock'));
+      this.replacePanel('ws-an-right', wrap(parts.right, 'an-right'));
+      this.applyHighlight();
+      return;
+    }
+    const nav = el(doc, 'div', { class: 'an-tools', role: 'radiogroup', 'aria-label': 'Analysis tool' });
+    for (const t of ANALYZE_TOOLS) {
+      const on = t.id === this.anTool;
+      const b = el(doc, 'button', { type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-an-tool': t.id, title: t.help }, [t.label]);
+      b.addEventListener('click', () => this.runCommand(t.command));
+      nav.appendChild(b);
+    }
+    nav.addEventListener('keydown', (e) => {
+      const k = (e as KeyboardEvent).key;
+      if (['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].indexOf(k) < 0) return;
+      e.preventDefault();
+      const i = ANALYZE_TOOLS.findIndex((x) => x.id === this.anTool);
+      const n = ANALYZE_TOOLS[(i + (k === 'ArrowDown' || k === 'ArrowRight' ? 1 : ANALYZE_TOOLS.length - 1)) % ANALYZE_TOOLS.length];
+      this.runCommand(n.command);
+      const b = this.doc.querySelector(`[data-an-tool="${n.id}"]`) as HTMLElement | null;
+      if (b) b.focus();
+    });
+    const wrap = (kids: Node[], cls: string): HTMLElement => {
+      const w = el(doc, 'div', { class: cls, 'data-an-root': this.anTool });
+      for (const k of kids) w.appendChild(k);
+      return w;
+    };
+    this.replacePanel('ws-an-left', wrap([nav as Node].concat(parts.left), 'an-left'));
+    this.replacePanel('ws-an-dock', wrap(parts.bottom, 'an-dock'));
+    this.replacePanel('ws-an-right', wrap(parts.right, 'an-right'));
+    this.applyHighlight();
+    this.updateModeBanner();
+  }
+
+  /**
+   * The tool's body, laid out: its request (context, form, filters) on the
+   * left, its results (verdict, tables, coverage, exports) at the bottom,
+   * the selected item's evidence on the right.
+   */
+  private analyzeParts(): { left: Node[]; bottom: Node[]; right: Node[] } {
+    const doc = this.doc;
+    const kids = (e: Element): Element[] => Array.from(e.children);
+    const hint = (text: string): HTMLElement => el(doc, 'p', { class: 'muted small', id: 'an-detail', tabindex: '-1' }, [text]);
+    this.anSelRefs = [];
+    switch (this.anTool) {
+      case 'trace': {
+        const body = this.traceBody();
+        const result = body.querySelector('.trace-result');
+        const left = kids(body).filter((x) => x !== result);
+        if (!result) return { left, bottom: [el(doc, 'p', { class: 'muted' }, ['Trace a communication: its verdict, the layers it checked and its paths appear here.'])], right: [hint('The evidence of a layer appears here: select it in the results.')] };
+        // the layers' evidence goes to the right, for the layer selected (the first that is not satisfied, else the first)
+        const layers = Array.from(result.querySelectorAll('ul.comm-layers > li[data-layer]')) as HTMLElement[];
+        const first = layers.find((l) => !l.classList.contains('v-satisfied')) || layers[0];
+        const sel = this.anSel && this.anSel.indexOf('layer:') === 0 && layers.some((l) => 'layer:' + l.getAttribute('data-layer') === this.anSel) ? this.anSel : first ? 'layer:' + first.getAttribute('data-layer') : '';
+        let right: Node[] = [hint('Select a layer to see its evidence.')];
+        for (const l of layers) {
+          const key = 'layer:' + l.getAttribute('data-layer');
+          const ev = l.querySelector('details.layer-ev');
+          if (ev) ev.remove();
+          const b = el(doc, 'button', { type: 'button', class: 'mini an-pick', 'data-an-item': key, 'aria-pressed': key === sel ? 'true' : 'false', 'aria-controls': 'an-detail' }, ['Evidence']);
+          b.addEventListener('click', () => this.selectAnalysisItem(key));
+          l.appendChild(doc.createTextNode(' '));
+          l.appendChild(b);
+          if (key === sel) {
+            l.classList.add('an-selected');
+            const d = el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Evidence' }, [el(doc, 'h3', {}, [(l.querySelector('strong') as Element).textContent || 'Layer']), el(doc, 'p', { class: 'small' }, [Array.from(l.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()])]);
+            if (ev) for (const c of Array.from(ev.childNodes).slice(1)) d.appendChild(c);
+            else d.appendChild(el(doc, 'p', { class: 'muted small' }, ['No further evidence for this layer.']));
+            const refs = Array.from(d.querySelectorAll('[data-ref]')).map((x) => x.getAttribute('data-ref') as string);
+            this.anSelRefs = refs;
+            right = [d];
+          }
+        }
+        return { left, bottom: [result], right };
+      }
+      case 'addressing': {
+        const body = this.addressingWindowBody();
+        const inner = body.querySelector('.addr') as HTMLElement;
+        const tables = inner.querySelector('.addr-tables') as HTMLElement;
+        const left = kids(body).filter((x) => x !== inner).concat(kids(inner).filter((x) => x !== tables));
+        // a network (its row) selected: its members, allocation and free ranges on the right
+        const run = this.addrRun as NonNullable<App['addrRun']>;
+        let right: Node[] = [hint('Select a network (its row) to see its members, its allocation and the unallocated ranges.')];
+        for (const row of Array.from(tables.querySelectorAll('tr.addr-row')) as HTMLElement[]) {
+          const vrf = (row.closest('[data-addr-vrf]') as Element).getAttribute('data-addr-vrf') || '';
+          const key = `net:${vrf}|${row.getAttribute('data-addr-net')}`;
+          row.setAttribute('data-an-item', key);
+          row.tabIndex = 0;
+          if (key === this.anSel) {
+            row.classList.add('an-selected');
+            row.setAttribute('aria-current', 'true');
+            const g = run.ov.vrfs.find((x) => x.vrf === vrf);
+            const n = g ? g.networks.find((x) => x.id === row.getAttribute('data-addr-net')) : undefined;
+            if (n) {
+              right = [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': `Network ${n.text}` }, [el(doc, 'h3', {}, [`${n.label} — ${n.text}`]), networkDetail(doc, n)])];
+              this.anSelRefs = ['network:' + n.id].concat(n.members.map((m) => 'device:' + m.device));
+            }
+          }
+        }
+        this.anRoot.push({
+          type: 'click',
+          fn: (e) => {
+            const t = e.target as Element;
+            if (t.closest('button, a, input, [data-addr-goto]')) return;
+            const row = t.closest('tr[data-an-item]');
+            if (row) this.selectAnalysisItem(row.getAttribute('data-an-item') as string);
+          },
+        });
+        this.anRoot.push({
+          type: 'keydown',
+          fn: (e) => {
+            const ke = e as KeyboardEvent;
+            const row = (ke.target as Element).closest('tr[data-an-item]');
+            if (row && (ke.key === 'Enter' || ke.key === ' ') && ke.target === row) {
+              ke.preventDefault();
+              this.selectAnalysisItem(row.getAttribute('data-an-item') as string);
+            }
+          },
+        });
+        return { left, bottom: [tables], right };
+      }
+      case 'spof': {
+        const body = this.spofWindowBody();
+        const tables = body.querySelector('.spof-tables') as HTMLElement;
+        const prog = body.querySelector('#spof-progress') as HTMLElement;
+        const limits = Array.from(body.children).find((x) => x.classList.contains('an-limits')) || null;
+        const wi = body.querySelector('.wi-section') as HTMLElement;
+        const result = wi ? wi.querySelector('#wi-result') : null;
+        if (result) result.remove();
+        const left = kids(body).filter((x) => x !== tables && x !== prog && x !== limits);
+        const right: Node[] = result ? [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'What if' }, [el(doc, 'h3', {}, ['What if: the result']), result])] : [hint('What if a candidate fails: its What if button, or the What if form, shows the comparison here.')];
+        if (this.wiRun) this.anSelRefs = this.wiRun.result.refs.slice();
+        return { left, bottom: ([prog, tables, limits] as Array<Element | null>).filter((x): x is Element => !!x), right };
+      }
+      case 'checks': {
+        const body = this.designWindowBody();
+        const intro = body.firstElementChild as Element;
+        const bar = body.querySelector('.an-ctx') || intro.nextElementSibling;
+        const secs = Array.from(body.querySelectorAll(':scope > section.dc-section')) as HTMLElement[];
+        const exp = secs[0];
+        const form = exp ? exp.querySelector('form.dc-form, .dc-form') : null;
+        const tools = exp ? exp.querySelector(':scope > .tf-actions') : null;
+        const status = exp ? exp.querySelector('#dc-status') : null;
+        const left: Node[] = [intro, bar].filter((x): x is Element => !!x);
+        if (tools) left.push(tools);
+        if (status) left.push(status);
+        let right: Node[] = [hint('Select an expectation (Details) to see its evidence: its layers, the failure applied, the findings where it stops.')];
+        if (form) {
+          form.remove();
+          right = [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Expectation' }, [form])];
+        }
+        // each expectation's details: the selected one's on the right; the others stay out of the table
+        for (const row of Array.from(body.querySelectorAll('tr.dc-detail')) as HTMLElement[]) {
+          const id = row.id.replace(/^dc-d-/, '');
+          const key = 'exp:' + id;
+          if (key === this.anSel && !form) {
+            const cell = row.querySelector('td') as HTMLElement;
+            right = [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Evidence' }, [el(doc, 'h3', {}, [(body.querySelector(`tr[data-exp="${id}"] .dc-name`) as Element || { textContent: id }).textContent || id])].concat(Array.from(cell.childNodes) as HTMLElement[]))];
+            const r = this.dcRun ? this.dcRun.run.results.find((x) => x.id === id) : undefined;
+            this.anSelRefs = r ? r.refs.slice() : [];
+            const tr = body.querySelector(`tr[data-exp="${id}"]`);
+            if (tr) tr.classList.add('an-selected');
+          }
+          row.remove();
+        }
+        for (const t of Array.from(body.querySelectorAll('[data-dc="toggle"]')) as HTMLElement[]) {
+          const on = 'exp:' + t.getAttribute('data-id') === this.anSel;
+          t.setAttribute('aria-expanded', on ? 'true' : 'false');
+          t.setAttribute('aria-controls', 'an-detail');
+          t.textContent = 'Details';
+        }
+        const bottom: Node[] = [];
+        if (exp) for (const c of Array.from(exp.children)) if (c !== tools && c !== status) bottom.push(c);
+        for (const s2 of secs.slice(1)) bottom.push(s2);
+        return { left, bottom, right };
+      }
+      case 'focus': {
+        const body = this.focusBody();
+        const s = this.session as Session;
+        const shown = s.state.focus ? Array.from(s.shownDevices()).sort() : [];
+        const bottom: Node[] = [el(doc, 'p', { class: 'small', role: 'status', id: 'an-focus-shown' }, [s.state.focus ? `${this.focusNote()}: ${shown.length} device${shown.length === 1 ? '' : 's'} shown.` : 'Focus is off: the complete diagram is shown.'])];
+        if (shown.length) bottom.push(el(doc, 'p', { class: 'small muted' }, [shown.slice(0, 60).join(', ') + (shown.length > 60 ? ' …' : '')]));
+        const sel = s.state.selected;
+        const right: Node[] = sel ? [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Selection' }, [el(doc, 'h3', {}, [this.refName(sel)]), el(doc, 'p', { class: 'small muted' }, [focusContexts(s.model, sel).length ? `Contextual focus: ${focusContexts(s.model, sel).map((c) => c.label).join(', ')}.` : 'No contextual focus for it.'])])] : [hint('Select an object in the diagram or the object list to focus on it.')];
+        return { left: [body], bottom, right };
+      }
+    }
+    return { left: [], bottom: [], right: [] };
+  }
+
   // ------------------------------------------------------------ experiments
 
-  private expOpen = new Set<string>();
+  /** the entry selected in the Experiments workspace: the only selection state of its panels */
+  private expSel: ExpSelection = { exp: null, list: null, index: -1 };
+  /** a step's device chosen before its interface or application (a draft: not in the model) */
+  private expDraft = new Map<string, string>();
+  private expNote = '';
+  /** the runs and comparisons of this model's experiments (this session; never saved): cleared when another model is loaded */
   private expRuns = new Map<string, ExpRunResult[]>();
   private expCompare = new Map<string, RunCompare>();
   private expRunner: { runner: ExperimentRunner; id: string; doc: ModelDoc | null } | null = null;
-
-  /** Simulate → Experiments…: the saved experiments, each run on demand from a clean start (never by saving or editing). */
-  openExperiments(): void {
-    if (!this.session) return;
-    this.openWindow({ id: 'experiments', title: 'Experiments', body: this.experimentsWindowBody(), width: 900, height: 620, focus: '#ex-add' });
-  }
-
-  private renderExperiments(): void {
-    if (this.toolWindow() === 'experiments' && this.session) this.replaceWindowBody(this.experimentsWindowBody());
-  }
+  /** the panels' last drawing of a run's progress (progress is drawn at most every 250 ms) */
+  private expDrawn = 0;
 
   /** The runs of an experiment so far (the newest last). */
   experimentRuns(id: string): ExpRunResult[] {
     return this.expRuns.get(id) || [];
   }
 
-  /** Is an experiment running? */
+  /** Is an experiment running? Its id, or null. */
   experimentRunning(): string | null {
     return this.expRunner ? this.expRunner.id : null;
   }
 
-  /**
-   * Run an experiment: a new runner (a clean start), advanced in slices of
-   * the page's time so the page stays responsive; Stop cancels it. A runner
-   * replaced or stopped is never advanced again (no stale or duplicate
-   * work); a model replaced stops it.
-   */
-  runExperiment(id: string): boolean {
+  /** The Experiments workspace's selection (tests). */
+  experimentSelection(): ExpSelection {
+    return { ...this.expSel };
+  }
+
+  /** Select an experiment and, optionally, one of its steps (the panels and the diagram follow). */
+  selectExperimentStep(sel: ExpSelection): void {
+    this.expSel = sel;
+    this.expNote = '';
+    // the step's target in the diagram
     const s = this.session;
-    if (!s) return false;
+    const e = s && sel.exp ? s.model.experiments.find((x) => x.id === sel.exp) : undefined;
+    const step = e && sel.list ? (sel.list === 'actions' ? e.actions[sel.index] : e.observations[sel.index]) : undefined;
+    const def = step ? (sel.list === 'actions' ? actionDef((step as ExpAction).do) : observeDef((step as ExpObservation).of)) : undefined;
+    const refs = s && step && def ? targetRefs(s.model, def.target, step.target, e) : [];
+    this.expFocusRefs = new Set(refs);
+    this.renderExperimentsWs();
+    this.applyHighlight();
+  }
+
+  /** the selected step's targets (marked in the diagram) */
+  private expFocusRefs = new Set<string>();
+
+  /**
+   * Run the selected (or the given) experiment: a new runner from its
+   * defined start, advanced in slices of the page's time so the page stays
+   * responsive; Stop cancels it. A runner replaced, stopped or belonging to
+   * a model that is no longer loaded is never advanced again and its result
+   * is never kept (its slot, compared on every slice).
+   */
+  runExperiment(id: string | null = this.expSel.exp): boolean {
+    const s = this.session;
+    if (!s || !id) return false;
     const e = s.model.experiments.find((x) => x.id === id);
-    if (!e) return false;
+    if (!e || e.problems.length) return false;
     if (this.expRunner) this.stopExperiment();
     const runner = new ExperimentRunner(s.model, e, modelFingerprint(s.model));
     const slot = { runner, id, doc: this.mdoc };
@@ -4865,29 +5385,34 @@ export class App {
     this.expCompare.delete(id);
     const tick = (): void => {
       if (this.expRunner !== slot) return;
-      // a model replaced (another file) stops it
       if (this.mdoc !== slot.doc) {
-        this.stopExperiment();
+        // another model: this run is not its (nothing of it is kept)
+        slot.runner.cancel();
+        this.expRunner = null;
         return;
       }
       const done = runner.step(30);
-      const prog = this.doc.getElementById('ex-progress');
-      if (prog) prog.textContent = `Running on scenario time: t = ${(runner.result().reached / 1000).toFixed(0)} s of ${(e.duration / 1000).toFixed(0)} s`;
       if (done) this.finishExperiment(slot);
-      else if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
       else {
-        runner.runAll();
-        this.finishExperiment(slot);
+        const now = Date.now();
+        if (now - this.expDrawn > 250) {
+          this.expDrawn = now;
+          this.renderExperimentsDock();
+        }
+        if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
       }
     };
-    this.renderExperiments();
+    this.renderExperimentsWs();
     if (this.doc.defaultView) this.doc.defaultView.setTimeout(tick, 0);
-    else tick();
+    else {
+      runner.runAll();
+      this.finishExperiment(slot);
+    }
     return true;
   }
 
   /** Run an experiment to its end at once (the self-test, small models). */
-  runExperimentNow(id: string): ExpRunResult | null {
+  runExperimentNow(id: string | null = this.expSel.exp): ExpRunResult | null {
     if (!this.runExperiment(id) || !this.expRunner) return null;
     const slot = this.expRunner;
     slot.runner.runAll();
@@ -4895,12 +5420,13 @@ export class App {
     return slot.runner.result();
   }
 
-  private finishExperiment(slot: { runner: ExperimentRunner; id: string }): void {
-    if (this.expRunner !== slot) return;
+  private finishExperiment(slot: { runner: ExperimentRunner; id: string; doc: ModelDoc | null }): void {
+    if (this.expRunner !== slot || this.mdoc !== slot.doc) return;
     this.expRunner = null;
     const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
     this.expRuns.set(slot.id, list);
-    this.renderExperiments();
+    this.renderExperimentsWs();
+    this.applyHighlight();
     this.toast(`Experiment ${slot.id}: ${slot.runner.result().summary}.`);
   }
 
@@ -4910,23 +5436,35 @@ export class App {
     if (!slot) return false;
     slot.runner.cancel();
     this.expRunner = null;
-    const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
-    this.expRuns.set(slot.id, list);
-    this.renderExperiments();
+    if (this.mdoc === slot.doc) {
+      const list = (this.expRuns.get(slot.id) || []).concat([slot.runner.result()]).slice(-5);
+      this.expRuns.set(slot.id, list);
+    }
+    this.renderExperimentsWs();
+    return true;
+  }
+
+  /** Reset an experiment's results (the runs of this session): the next Run starts the history again. */
+  resetExperiment(id: string | null = this.expSel.exp): boolean {
+    if (!id || (this.expRunner && this.expRunner.id === id)) return false;
+    this.expRuns.delete(id);
+    this.expCompare.delete(id);
+    this.renderExperimentsWs();
+    this.applyHighlight();
     return true;
   }
 
   /** Compare an experiment's last two runs. */
-  compareExperiment(id: string): boolean {
-    const runs = this.expRuns.get(id) || [];
-    if (runs.length < 2) return false;
+  compareExperiment(id: string | null = this.expSel.exp): boolean {
+    const runs = id ? this.expRuns.get(id) || [] : [];
+    if (!id || runs.length < 2) return false;
     this.expCompare.set(id, compareRuns(runs[runs.length - 2], runs[runs.length - 1]));
-    this.renderExperiments();
+    this.renderExperimentsWs();
     return true;
   }
 
   /** Keep the traced communication as an experiment: a send and the observation of its delivery (one undo step; nothing runs). */
-  traceToExperiment(): boolean {
+  async traceToExperiment(): Promise<boolean> {
     const r = this.traceRun;
     const d = this.mdoc;
     if (!r || !r.identity || !d || this.editLock() || !r.handoff || r.handoff.kind !== 'send') return false;
@@ -4939,73 +5477,191 @@ export class App {
     const name = `${req.from} to ${req.to || 'its peer'}`;
     let k: number;
     try {
-      k = d.addExperiment(name, '60s', { actions: [send], observe: [[['of', 'send'], ['target', 'send'], ['expect', expect]]] });
+      k = d.addExperiment(name, '60s', { actions: [send], observe: [[['of', 'send'], ['target', 'send'], ['within', '10s'], ['expect', expect]]] });
     } catch (e) {
       this.refusedEdit(e);
       return false;
     }
     this.afterEdit('The experiment was added: press Run to run it.');
-    const id = (this.session as Session).model.experiments[k] ? (this.session as Session).model.experiments[k].id : '';
-    if (id) this.expOpen.add(id);
-    this.openExperiments();
-    return true;
+    const e = (this.session as Session).model.experiments[k];
+    if (e) this.expSel = { exp: e.id, list: null, index: -1 };
+    return this.enterExperiments();
   }
 
-  private experimentsWindowBody(): HTMLElement {
+  private expView(): ExpWsView {
     const s = this.session as Session;
     const d = this.mdoc as ModelDoc;
-    const index = new Map<string, number>(d.analysisEntries('experiments').map((x) => [x.id, x.index] as [string, number]));
     const run = this.expRunner;
-    const view: ExperimentsView = {
-      open: this.expOpen,
+    return {
+      model: s.model,
+      sel: this.expSel,
+      index: new Map<string, number>(d.analysisEntries('experiments').map((x) => [x.id, x.index] as [string, number])),
       runs: this.expRuns,
-      running: run ? { id: run.id, reached: run.runner.result().reached, duration: run.runner.result().duration } : null,
+      running: run ? { id: run.id, reached: run.runner.result().reached, duration: run.runner.result().duration, settle: run.runner.result().settle } : null,
       compare: this.expCompare,
       outdated: (r) => r.fingerprint !== modelFingerprint(s.model),
       locked: this.editLock(),
-      index,
+      scope: (e) => {
+        const sc = experimentScope(s.model, e);
+        return { run: sc.devices.size, total: s.model.devices.length, added: sc.included.map((x) => `${x.device}: ${x.why}`), boundary: sc.boundary.length, cannot: sc.cannot };
+      },
+      draft: this.expDraft,
+      note: this.expNote,
+      selected: s.state.selected,
     };
-    const edit = (f: () => void, note?: string): void => {
+  }
+
+  private expActions(): ExpWsActions {
+    const edit = (f: () => void, note?: string): boolean => {
       try {
         f();
       } catch (e) {
         this.refusedEdit(e);
-        return;
+        return false;
       }
       this.afterEdit(note);
+      return true;
     };
-    return experimentsBody(this.doc, s.model, view, {
-      add: () => {
-        const n = s.model.experiments.length + 1;
-        edit(() => {
-          const k = d.addExperiment(`Experiment ${n}`, '60s');
-          const id = (d.result.model as Model).experiments[k] ? (d.result.model as Model).experiments[k].id : '';
-          if (id) this.expOpen.add(id);
-        }, 'An experiment was added: give it actions and observations.');
+    const d = (): ModelDoc => this.mdoc as ModelDoc;
+    const k = (): number => {
+      const e = this.expSel.exp ? d().analysisEntries('experiments').find((x) => x.id === this.expSel.exp) : undefined;
+      return e ? e.index : -1;
+    };
+    return {
+      newExperiment: () => {
+        const n = (this.session as Session).model.experiments.length + 1;
+        let idx = -1;
+        if (!edit(() => (idx = d().addExperiment(`Experiment ${n}`, '60s')), 'An experiment was added: add its actions and observations.')) return;
+        const e = (this.session as Session).model.experiments[idx];
+        if (e) this.selectExperimentStep({ exp: e.id, list: null, index: -1 });
+        const name = this.doc.getElementById('ex-name') as HTMLInputElement | null;
+        if (name) name.focus();
       },
-      run: (id) => void this.runExperiment(id),
-      stop: () => void this.stopExperiment(),
-      compare: (id) => void this.compareExperiment(id),
-      toggle: (id) => {
-        if (this.expOpen.has(id)) this.expOpen.delete(id);
-        else this.expOpen.add(id);
-        this.renderExperiments();
-      },
-      remove: (id) => void this.removeExperiment(id),
+      select: (sel) => this.selectExperimentStep(sel),
       set: (path, kind, value) => {
         const p = JSON.parse(path) as Path;
-        edit(() => (kind === 'int' ? d.setInteger(p, value) : d.setText(p, value)));
+        this.expNote = '';
+        edit(() => (kind === 'int' ? d().setInteger(p, value) : d().setText(p, value)));
       },
-      addStep: (k, list, kind) => edit(() => d.addListEntry(['experiments', k, list], list === 'actions' ? [['at', '10s'], ['do', kind], ['target', '']] : [['of', kind], ['target', ''], ['expect', (EXP_OBSERVE.find((x) => x.id === kind) as { expect: string[] }).expect[0]]], list === 'actions' ? 'action' : 'observation')),
-      delStep: (path) => edit(() => d.remove(JSON.parse(path) as Path)),
-      upStep: (path) => edit(() => d.moveUp(JSON.parse(path) as Path)),
-      copy: (id) => {
+      setKind: (list, n, kind) => {
+        let cleared: string[] = [];
+        if (!edit(() => (cleared = d().setStepKind(k(), list, n, kind)))) return;
+        const def = list === 'actions' ? actionDef(kind) : observeDef(kind);
+        this.expNote = cleared.length ? `Cleared: ${cleared.join(', ')} — ${def ? def.label : kind} takes ${cleared.length === 1 ? 'it' : 'them'} differently or not at all.` : '';
+        this.renderExperimentsWs();
+      },
+      addStep: (list, kind, target) => {
+        let n = -1;
+        if (!edit(() => (n = d().addStep(k(), list, kind, target)))) return;
+        this.selectExperimentStep({ exp: this.expSel.exp, list, index: n });
+        const kindSel = this.doc.getElementById('ex-target') || this.doc.getElementById('ex-target-dev') || this.doc.getElementById('ex-kind');
+        if (kindSel) (kindSel as HTMLElement).focus();
+      },
+      moveStep: (list, n, delta) => {
+        if (edit(() => d().moveStep(k(), list, n, delta))) this.selectExperimentStep({ exp: this.expSel.exp, list, index: n + delta });
+      },
+      deleteStep: (list, n) => {
+        if (!edit(() => d().remove(['experiments', k(), list, n], 'Delete step'))) return;
+        const e = (this.session as Session).model.experiments.find((x) => x.id === this.expSel.exp);
+        const left = e ? (list === 'actions' ? e.actions.length : e.observations.length) : 0;
+        this.selectExperimentStep({ exp: this.expSel.exp, list: left ? list : null, index: left ? Math.min(n, left - 1) : -1 });
+      },
+      setAfter: (list, n, a) => void edit(() => d().setStepAfter(k(), list, n, a)),
+      setScope: (kind, value) => void edit(() => d().setExperimentScope(k(), kind, value)),
+      setDraft: (key, dev) => {
+        // a device alone is a draft: the interface or application completes the target
+        this.expDraft.set(key, dev);
+        const [, list, n] = key.split('|');
+        const p = ['experiments', k(), list, Number(n), 'target'];
+        const cur = d().text(p) || '';
+        if (cur && !cur.startsWith(dev + ':') && !cur.startsWith(dev + '/')) edit(() => d().setText(p, ''));
+        else this.renderExperimentsWs();
+        const own = this.doc.getElementById('ex-target-own') as HTMLElement | null;
+        if (own) own.focus();
+      },
+      deleteExperiment: (id) => void this.removeExperiment(id),
+      run: () => void this.runExperiment(),
+      stop: () => void this.stopExperiment(),
+      reset: () => void this.resetExperiment(),
+      compare: () => void this.compareExperiment(),
+      copy: () => {
+        const s = this.session as Session;
+        const id = this.expSel.exp;
         const e = s.model.experiments.find((x) => x.id === id);
-        const runs = this.expRuns.get(id) || [];
+        const runs = id ? this.expRuns.get(id) || [] : [];
         if (!e || !runs.length) return;
-        void this.copyText(experimentText({ title: s.model.title, version: this.appVersion() }, e, runs[runs.length - 1], this.expCompare.get(id)), 'The experiment’s result was copied as text.');
+        void this.copyText(experimentText({ title: s.model.title, version: this.appVersion() }, e, runs[runs.length - 1], this.expCompare.get(e.id)), 'The experiment’s result was copied as text.');
       },
-    });
+      showRef: (ref) => {
+        this.select(ref, true);
+        this.renderExperimentsWs();
+      },
+    };
+  }
+
+  /** Draw the Experiments panels again, keeping the keyboard focus on the same control and each panel's scroll. */
+  private renderExperimentsWs(): void {
+    if (this.ws !== 'experiments' || !this.session || !this.mdoc) return;
+    const v = this.expView();
+    const act = this.expActions();
+    this.replacePanel('ws-exp-left', experimentsLeft(this.doc, v, act));
+    this.replacePanel('ws-exp-right', experimentsRight(this.doc, v, act));
+    this.replacePanel('ws-exp-dock', experimentsDock(this.doc, v, act));
+    this.updateModeBanner();
+  }
+
+  private renderExperimentsDock(): void {
+    if (this.ws !== 'experiments' || !this.session || !this.mdoc) return;
+    this.replacePanel('ws-exp-dock', experimentsDock(this.doc, this.expView(), this.expActions()));
+    this.updateModeBanner();
+  }
+
+  /** Replace a panel body's content, keeping the focus on the same control (by id or data attribute) and the scroll. */
+  private replacePanel(id: string, content: HTMLElement): void {
+    const box = this.doc.getElementById(id);
+    if (!box) return;
+    const a = this.doc.activeElement as HTMLElement | null;
+    const key = a && box.contains(a) ? focusKey(a) : null;
+    const scroller = box.closest('.sim-panel, .sim-dock') as HTMLElement | null;
+    const scroll = scroller ? scroller.scrollTop : 0;
+    const top = box.scrollTop;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    box.appendChild(content);
+    box.scrollTop = top;
+    if (scroller) scroller.scrollTop = scroll;
+    if (key) {
+      const t = findFocusKey(box, key);
+      if (t) t.focus({ preventScroll: true });
+    }
+  }
+
+  /** The diagram's marks of the Experiments workspace: the selected experiment's targets, the selected step's, and after a run each observation's verdict. */
+  private expMarks(): Map<string, string> | null {
+    const s = this.session;
+    if (this.ws !== 'experiments' || !s || !this.expSel.exp) return null;
+    const e = s.model.experiments.find((x) => x.id === this.expSel.exp);
+    if (!e) return null;
+    const out = new Map<string, string>();
+    for (const r of experimentRefs(s.model, e)) out.set(r, 'ws-target');
+    const runs = this.expRuns.get(e.id) || [];
+    const last = runs[runs.length - 1];
+    if (last)
+      for (const o of last.observations) {
+        const def = observeDef(o.obs.of);
+        for (const r of def ? targetRefs(s.model, def.target, o.obs.target, e) : []) out.set(r, o.outcome === 'satisfied' ? 'ws-ok' : o.outcome === 'violated' ? 'ws-bad' : out.get(r) || 'ws-target');
+      }
+    for (const r of this.expFocusRefs) out.set(r, (out.get(r) || 'ws-target') + ' ws-sel');
+    return out;
+  }
+
+  /** The Experiments banner's line: the selected experiment and its state, said in words. */
+  private expNoteLine(): string {
+    const s = this.session;
+    const e = s && this.expSel.exp ? s.model.experiments.find((x) => x.id === this.expSel.exp) : undefined;
+    if (!e) return 'Experiments: nothing runs until Run; the model is edited as usual.';
+    const runs = this.expRuns.get(e.id) || [];
+    const st = this.expRunner && this.expRunner.id === e.id ? 'running' : e.problems.length ? 'not runnable yet' : runs.length ? 'run' : 'ready, not run';
+    return `Experiments: ${e.name} — ${st}. Nothing runs until Run.`;
   }
 
   /** Delete an experiment after a confirmation. */
@@ -5016,14 +5672,17 @@ export class App {
     if (!entry) return;
     const a = await this.dialog({ title: `Delete the experiment “${id}”?`, body: ['It is removed from the model with its actions and observations. You can undo this with Ctrl+Z.'], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }] });
     if (a !== 'go') return;
+    if (this.expRunner && this.expRunner.id === id) this.stopExperiment();
     try {
       d.removeExperiment(entry.index);
     } catch (e) {
       this.refusedEdit(e);
       return;
     }
-    this.expOpen.delete(id);
     this.expRuns.delete(id);
+    this.expCompare.delete(id);
+    const left = (this.session as Session).model.experiments;
+    this.expSel = { exp: left.length ? left[Math.min(entry.index, left.length - 1)].id : null, list: null, index: -1 };
     this.afterEdit('The experiment was deleted.');
   }
 
@@ -5407,6 +6066,15 @@ export class App {
 
     this.wireCanvas();
     this.wireConnect();
+    // the Analyze panels pass their events to the tool's own (delegated) listeners, wherever its parts are laid out
+    for (const id of ['ws-an-left', 'ws-an-dock', 'ws-an-right']) {
+      const box = doc.getElementById(id);
+      if (!box) continue;
+      for (const type of ['click', 'input', 'keydown', 'change']) box.addEventListener(type, (e) => {
+        if (this.ws !== 'analyze') return;
+        for (const h of this.anRoot.slice()) if (h.type === type) h.fn(e);
+      });
+    }
     this.tw = new ToolWindows(doc, () => {
       if (this.splitter) this.splitter.sync();
     });
@@ -5442,7 +6110,12 @@ export class App {
       if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === 'Escape') {
         if (this.conn) this.cancelConnection(true);
+        else if (this.ws === 'analyze' && this.anEscape()) return;
         else if (this.traceRun) this.exitTrace();
+        // (layered: a focus in Analyze ends before Analyze does)
+        else if (this.ws === 'analyze' && this.session && this.session.state.focus && !inWorkspacePanel(e.target)) this.exitFocus();
+        else if ((this.ws === 'experiments' || this.ws === 'analyze') && !inWorkspacePanel(e.target)) void this.exitWorkspace();
+        else if (this.ws === 'experiments' || this.ws === 'analyze') return;
         else if (this.simulation) this.exitSimulation();
         else if (this.session && this.session.state.focus) this.exitFocus();
         else this.select(null);

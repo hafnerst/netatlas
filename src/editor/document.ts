@@ -7,6 +7,8 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
+import { actionDef, observeDef } from '../model/experiments';
+import { targetProblem } from '../validation/experiments';
 import type { PortPlanRow } from '../model/bulk-ports';
 import type { SavedView } from '../model/views';
 import { POLICY_PROTOCOLS, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS } from '../model/routing-policy';
@@ -674,6 +676,7 @@ export class ModelDoc {
     if (path.length === 0) return 'top';
     // (the analysis sections' entries)
     if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'experiments') return 'experiment';
+    if (path.length === 3 && path[0] === 'experiments' && path[2] === 'scope') return 'expScope';
     if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'views') return 'savedView';
     if (path.length === 3 && path[0] === 'views' && path[2] === 'focus') return 'viewFocus';
     if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'expectations') return 'expectation';
@@ -1948,6 +1951,100 @@ export class ModelDoc {
       this.removeAt(['views', index]);
       const s = this.get(['views']);
       if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['views']);
+    }, { layout: false });
+  }
+
+  /**
+   * Add a step to an experiment: an action of a kind (at the start), or an
+   * observation of a kind (at the end, expecting its usual outcome) — its
+   * target and other fields still to be configured (the step stays in the
+   * model, marked incomplete). One undo step; returns its index.
+   */
+  addStep(expIndex: number, list: 'actions' | 'observe', kind: string, target?: string): number {
+    const entries: Array<[string, YNode]> = list === 'actions' ? [['at', strNode('0s')], ['do', strNode(kind)]] : [['of', strNode(kind)]];
+    if (target) entries.push(['target', strNode(target)]);
+    const od = list === 'observe' ? observeDef(kind) : undefined;
+    if (od) entries.push(['expect', strNode(od.expect[0])]);
+    return this.change(list === 'actions' ? 'Add action' : 'Add observation', () => {
+      const seq = this.ensureSeq(['experiments', expIndex, list], false, this.orderFor(['experiments', expIndex]));
+      seq.items.push(mapNode(entries, true));
+      return seq.items.length - 1;
+    }, { layout: false });
+  }
+
+  /**
+   * Change a step's kind (an action's `do`, an observation's `of`) in one undo
+   * step: what the new kind takes too is kept (its target when it names what
+   * the new kind needs, its fields, its time); what it does not take is
+   * removed, and returned so that it can be said. An observation's expected
+   * outcome becomes the new kind's usual one unless it has the same.
+   */
+  setStepKind(expIndex: number, list: 'actions' | 'observe', k: number, kind: string): string[] {
+    const path: Path = ['experiments', expIndex, list, k];
+    const m = this.get(path);
+    if (!m || m.kind !== 'map') return [];
+    const def = list === 'actions' ? actionDef(kind) : observeDef(kind);
+    if (!def) return [];
+    const model = this.result.model;
+    const keep = new Set<string>(['id', 'at', 'after', list === 'actions' ? 'do' : 'of', ...def.required, ...def.optional]);
+    if (list === 'observe') keep.add('within').add('expect');
+    const target = m.entries.get('target');
+    const t = target ? scalarText(target.value) : undefined;
+    if (t && model && !targetProblem(model, model.failureDomains, def.target, t, model.experiments[expIndex])) keep.add('target');
+    const cleared = Array.from(m.entries.keys()).filter((key) => !keep.has(key));
+    const od = list === 'observe' ? observeDef(kind) : undefined;
+    const ex = m.entries.get('expect');
+    const expect = ex ? scalarText(ex.value) : undefined;
+    this.change('Change step', () => {
+      for (const key of cleared) this.removeAt(path.concat(key));
+      this.setAt(path.concat(list === 'actions' ? 'do' : 'of'), strNode(kind), this.orderFor(path));
+      if (od && (!expect || od.expect.indexOf(expect) < 0)) this.setAt(path.concat('expect'), strNode(od.expect[0]), this.orderFor(path));
+    }, { layout: false });
+    return cleared;
+  }
+
+  /**
+   * Make a step come after an earlier action was submitted (null: after the
+   * start again), in one undo step: an action without an id gets one
+   * ("step-3") so that it can be named.
+   */
+  setStepAfter(expIndex: number, list: 'actions' | 'observe', k: number, action: number | null): void {
+    const path: Path = ['experiments', expIndex, list, k];
+    const model = this.result.model;
+    const e = model ? model.experiments[expIndex] : undefined;
+    this.change('Set when', () => {
+      if (action === null) {
+        this.removeAt(path.concat('after'));
+        return;
+      }
+      const ap: Path = ['experiments', expIndex, 'actions', action];
+      let id = e && e.actions[action] ? e.actions[action].id : undefined;
+      if (!id) {
+        const used = new Set<string>(e ? e.actions.map((x) => x.id || '').concat(e.observations.map((x) => x.id || '')) : []);
+        let n = action + 1;
+        while (used.has('step-' + n)) n++;
+        id = 'step-' + n;
+        this.setAt(ap.concat('id'), strNode(id), this.orderFor(ap));
+      }
+      this.setAt(path.concat('after'), strNode(id), this.orderFor(path));
+      if (!this.get(path.concat('at'))) this.setAt(path.concat('at'), strNode('0s'), this.orderFor(path));
+    }, { layout: false });
+  }
+
+  /** Move a step one place up (-1) or down (+1); one undo step. */
+  moveStep(expIndex: number, list: 'actions' | 'observe', k: number, delta: -1 | 1): boolean {
+    const seq = this.get(['experiments', expIndex, list]);
+    if (!seq || seq.kind !== 'seq' || k + delta < 0 || k + delta >= seq.items.length) return false;
+    this.change('Reorder', () => this.moveItem(['experiments', expIndex, list], k, k + delta), { layout: false });
+    return true;
+  }
+
+  /** An experiment's execution scope ('entire' removes it); one undo step. */
+  setExperimentScope(expIndex: number, kind: 'entire' | 'group' | 'vlan' | 'domain' | 'device', value: string): void {
+    const p: Path = ['experiments', expIndex, 'scope'];
+    this.change('Set scope', () => {
+      if (kind === 'entire') this.removeAt(p);
+      else this.setAt(p, mapNode([[kind, kind === 'vlan' && /^[0-9]+$/.test(value) ? numNode(Number(value)) : strNode(value)]], true), this.orderFor(p.slice(0, -1)));
     }, { layout: false });
   }
 

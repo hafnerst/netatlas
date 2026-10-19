@@ -679,6 +679,19 @@ export class Simulation {
     return null;
   }
 
+  /** An experiment's multicast stream: on scenario time (a Network event's runs on real time), the same checks; the error, or null. */
+  startExperimentStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): string | null {
+    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'experiment');
+    if (typeof st === 'string') return st;
+    this.engine.stateVersion++;
+    return null;
+  }
+
+  /** What a host received of a multicast group so far (Multicast tables' reception), or null. */
+  multicastReceived(dev: string, group: string): { count: number; first: number; last: number } | null {
+    return this.multicast.received(dev, group);
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
     return this.multicast.stopStream(dev, iface, group);
   }

@@ -362,11 +362,18 @@ the user.
   from them), so where route convergence dominates, a smaller scope gains
   little: the routes are computed again for each routing message's
   estimate, which grows with the domain.
-* **Saved experiments run on scenario time.** A run starts clean and is
-  repeatable; at one time, actions apply in the order written. A stream of
+* **Saved experiments run on scenario time.** A run starts from the
+  experiment's defined start (freshly booted, or settled) and is
+  repeatable; at one time, actions apply in the order written. A step after
+  an earlier action counts from its submission, not its effect. A stream of
   Network events (real time) is no experiment action. Observations read
-  states and deliveries: no convergence time, throughput or accuracy is
-  measured.
+  states and deliveries over their window: no convergence time, throughput
+  or accuracy is measured. A run is computed in the page and shown as its
+  result; its packets are not animated in the diagram (the simulation
+  workspace animates a simulation you start yourself).
+* **Analyze over a simulation reads a snapshot.** Entering Analyze pauses
+  a running simulation; its analyses read a frozen snapshot, never the live
+  state, and the simulation resumes when Analyze is left.
 
 **Not supported.** Real timing jitter, vendor-specific behaviour beyond the
 parameters, CPU limits, full TCP-stack fidelity.
