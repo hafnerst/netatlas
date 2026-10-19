@@ -40568,7 +40568,9 @@ class Engine {
                 if (this.rootGuardNoted.has(nk))
                     continue;
                 this.rootGuardNoted.add(nk);
-                this.note('link', 'stp', k.split('|')[0], '', 'Root guard', 'blocked', `${k.replace('|', ':')} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
+                const cut = k.indexOf('|');
+                const gDev = k.slice(0, cut);
+                this.note('link', 'stp', gDev, '', 'Root guard', 'blocked', `${gDev}:${k.slice(cut + 1)} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
             }
             for (const nk of Array.from(this.rootGuardNoted))
                 if (nk.indexOf(vlan + '|') === 0 && !tr.inconsistent.has(nk.slice(nk.indexOf('|') + 1)))

@@ -25,7 +25,7 @@ function outcome(text, o = {}) {
     s.runTo(120000);
   }
   const rename = o.rename || ((x) => x);
-  const states = s.status().filter((x) => !/^test traffic|Send test/.test(x.detail)).map((x) => `${x.protocol}|${rename(x.name)}|${x.state}`).sort();
+  const states = s.status().filter((x) => !/^(test traffic|Send test)/.test(x.detail)).map((x) => `${x.protocol}|${rename(x.name)}|${x.state}`).sort();
   return { states, tests: tests.map((t) => (typeof t === 'string' ? t : `${t.ok} ${t.result}`)), sim: s };
 }
 
