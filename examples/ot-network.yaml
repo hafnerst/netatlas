@@ -176,15 +176,23 @@ expectations:
   - {id: plc-telemetry, name: The PLC publishes its telemetry, expect: dependency, from: plc/telemetry}
   - {id: it-no-modbus, name: The IT side can't reach Modbus, expect: blocked, from: eng-ws, to: plc/registers}
 
-# A repeatable experiment (Simulate ▾ → Experiments…, Run): the PLC's
-# telemetry and the HMI's polling while the cell cabinet is down for 40 s.
-# The cabinet comes back 40 s after its failure was submitted; the HMI
+# Two repeatable experiments (Simulate ▾ → Experiments…, Run); each plays
+# in the diagram with only its own traffic shown.
+#
+# cabinet-outage: the PLC's telemetry and the HMI's polling while the cell
+# cabinet is down for 40 s. The cabinet comes back 40 s after its failure
+# was submitted; the HMI
 # reaches the PLC again only after the cell switch has booted and its ports
 # are up, so that observation has a window (it is satisfied as soon as the
 # communication is available within it). The telemetry misses the rounds
 # without a broker, so its delivery fails. It runs on scenario time from a
 # freshly booted network, so every run gives the same result; Compare with
 # the previous run says so (or what changed after an edit).
+#
+# dashboard: after the cell has settled for 30 s, the HMI's dashboard
+# subscribes and the PLC publishes for 40 s; the observation counts the
+# publications the dashboard received from the broker (published is not
+# delivered).
 experiments:
   - id: cabinet-outage
     name: Telemetry and polling while the cell cabinet is down
@@ -200,3 +208,20 @@ experiments:
       - {at: 20s, after: down, of: reach, target: hmi, to: plc/registers, expect: unavailable}
       - {id: recovered, at: 85s, within: 90s, of: reach, target: hmi, to: plc/registers, expect: available}
       - {of: app, target: tele, expect: failed}
+  - id: dashboard
+    name: The HMI's dashboard receives the PLC's temperatures by MQTT
+    duration: 60s
+    settle: 30s
+    actions:
+      - {id: dash, at: 0s, do: start_app, target: hmi/dashboard}
+      - {id: tele, at: 5s, do: start_app, target: plc/telemetry, for: 40s}
+    observe:
+      - {id: broker-arp, at: 0s, within: 10s, of: neighbor, target: hmi, to: edge, expect: resolved}
+      - id: temperatures
+        at: 5s
+        within: 30s
+        of: mqtt
+        target: hmi/dashboard
+        topic: plant/cell1/plc-1/temperature
+        min: 2
+        expect: delivered

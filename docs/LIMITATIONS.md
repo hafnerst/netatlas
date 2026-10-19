@@ -363,14 +363,42 @@ the user.
   little: the routes are computed again for each routing message's
   estimate, which grows with the domain.
 * **Saved experiments run on scenario time.** A run starts from the
-  experiment's defined start (freshly booted, or settled) and is
-  repeatable; at one time, actions apply in the order written. A step after
-  an earlier action counts from its submission, not its effect. A stream of
-  Network events (real time) is no experiment action. Observations read
-  states and deliveries over their window: no convergence time, throughput
-  or accuracy is measured. A run is computed in the page and shown as its
-  result; its packets are not animated in the diagram (the simulation
-  workspace animates a simulation you start yourself).
+  experiment's defined start (freshly booted, settled, or a cold start) and
+  is repeatable; at one time, actions apply in the order written. A step
+  after an earlier action counts from its submission, not its effect; an
+  action waits only for its own device to come up, never for the whole
+  network. A stream of Network events (real time) is no experiment action.
+  Observations read states and deliveries over their window: no
+  convergence time, throughput or accuracy is measured. A state's moment is
+  the evidence's own time where it has one (a boot's end, a lease's
+  binding, a first datagram), else when it was read (every 0.1 s of
+  scenario time; a communication and the saved expectations every second).
+  Not observed: membership learned by a snooping switch (a router's
+  membership is), and a state held for a period (a window says only whether
+  it was reached).
+* **A cold start boots what has a lifecycle.** Devices with a power
+  lifecycle start off and boot by their boot time; a VM starts with its
+  host, a container by its restart policy (one that does not restart stays
+  off). Cables, patch panels, TAPs and external networks have none: they are
+  never powered. Boot times are the simulation parameters' (a device's
+  boot-time), not a vendor's.
+* **An experiment shows only its own traffic.** While it plays, the diagram
+  shows its actions' messages and what they cause (forwarding, answers,
+  address resolution) and its devices' own prerequisite traffic (DHCP, DNS,
+  ARP, router discovery and duplicate address detection, a receiver's LAN's
+  IGMP / MLD queries, the sessions or clocks an observation reads). This is
+  attribution by cause and by device role, not proof: traffic of the
+  experiment's devices that it did not name (a host's other applications)
+  is hidden, and a shared resource's other users — load on a link — are
+  hidden too, though they run and may change a result. The rest runs and
+  never holds the run or its display back; the result is the same shown or
+  not.
+* **A narrower execution scope leaves activity out.** The **Targets and
+  their dependencies** scope (and a group, VLAN, domain or dependency
+  slice) runs fewer devices: what runs outside it — load on a shared link,
+  other hosts, a protocol domain it does not reach — is not modeled. A run
+  says how many devices of the model it ran; it does not claim the entire
+  model's result.
 * **Analyze over a simulation reads a snapshot.** Entering Analyze pauses
   a running simulation; its analyses read a frozen snapshot, never the live
   state, and the simulation resumes when Analyze is left.

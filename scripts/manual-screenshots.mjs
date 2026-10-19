@@ -632,17 +632,19 @@ async function main() {
       await save('checks', { x: side.x, y, w: side.w, h: Math.min(side.y + side.h, y + 270) - y }, { quality: 70 });
     }
 
-    // a saved experiment run: the OT cell's cabinet outage, its observations met
+    // an experiment playing: the private house's cold start, the TV booted and getting its address, only its traffic drawn
     {
-      await page.eval('netatlas.loadExampleNamed("ot-network.yaml"), netatlas.setView("physical"), true');
+      await page.eval('netatlas.loadExampleNamed("private-house.yaml"), netatlas.setView("physical"), netatlas.fit(), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`netatlas.enterExperiments().then(() => (netatlas.selectExperimentStep({ exp: 'cabinet-outage', list: 'observe', index: 3 }), netatlas.runExperimentNow('cabinet-outage'), true))`);
+      await page.eval(`netatlas.enterExperiments().then(() => (netatlas.selectExperimentStep({ exp: 'cold-tv', list: 'observe', index: 1 }), netatlas.runExperiment('cold-tv'), true))`);
+      // the clock on to the TV's first application messages (as frames would move it), then paused there so the picture is steady
+      await page.eval(`(() => { const c = netatlas.experimentPlayback(); for (let k = 0; k < 600 && !(netatlas.experimentRunner().result().observations.length >= 2 && c.pacer.items.some((it) => it.f.protocol === 'tcp' && it.drawn && c.pacer.state(it).phase === 'moving')); k++) c.advance(100); c.setPlaying(false); c.refresh(true); return true; })()`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.mouse('mouseMoved', 700, 890);
-      await page.settle(250);
-      // the workspace: the sequence on the left, the selected step on the right, the verdicts at the bottom
-      await save('experiments', await page.rect('main'), { scale: 0.55, quality: 34 });
-      await page.eval('netatlas.exitWorkspace().then(() => true)');
+      await page.settle(300);
+      // the workspace: the sequence and its start on the left, only the experiment's traffic in the diagram, the progress and verdicts at the bottom
+      await save('experiments', await page.rect('main'), { scale: 0.55, quality: 36 });
+      await page.eval('netatlas.stopExperiment(), netatlas.exitWorkspace().then(() => true)');
     }
     // the saved views of the private house
     {

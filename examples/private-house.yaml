@@ -370,6 +370,44 @@ expectations:
   - {id: laptop-nas, name: The laptop reaches the NAS, expect: available, from: laptop, to: nas, service: tcp/445}
   - {id: tv-control, name: The TV controls the thermostat, expect: dependency, from: tv/control}
 
+# Two repeatable experiments (Simulate ▾ → Experiments…, Run). They play
+# in the diagram with only their own traffic shown: the actions' messages and
+# what they need on the way (a host's DHCP, its ARP, the snooping querier's
+# queries); the rest of the house runs, hidden.
+#
+# cold-tv: a cold start. Every device is off and boots as it does (the
+# switches, the radio, the router, the hosts; boot time counts). The TV's
+# application waits for the TV to come up (said in the run, never skipped);
+# the observations say when the TV was operational, when it had its DHCP
+# lease, when it resolved the thermostat and whether the messages arrived.
+#
+# tv-stream: after the house has settled for a minute, the thermostat sends a
+# multicast stream for 50 s; the TV joins it, receives it, and leaves.
+experiments:
+  - id: cold-tv
+    name: Cold start — the TV gets an address and reaches the thermostat
+    duration: 2min
+    start: cold
+    actions:
+      - {id: control, at: 0s, do: start_app, target: tv/control}
+    observe:
+      - {id: tv-up, at: 0s, within: 60s, of: device, target: tv, expect: operational}
+      - {id: tv-lease, at: 0s, within: 90s, of: address, target: "tv:wlan0", family: ipv4, expect: acquired}
+      - {id: tv-arp, at: 0s, within: 110s, of: neighbor, target: tv, to: thermostat, expect: resolved}
+      - {id: delivered, of: app, target: control, expect: delivered}
+  - id: tv-stream
+    name: The TV joins the thermostat's stream, receives it, and leaves
+    duration: 60s
+    settle: 1min
+    scope: targets
+    actions:
+      - {id: stream, at: 2s, do: start_stream, target: "thermostat:wlan0", group: 239.20.1.1, interval: 1s, for: 50s}
+      - {id: join, at: 5s, do: join, target: "tv:wlan0", group: 239.20.1.1}
+      - {id: leave, at: 30s, do: leave, target: "tv:wlan0", group: 239.20.1.1}
+    observe:
+      - {id: receives, at: 1s, after: join, within: 20s, of: receive, target: "tv:wlan0", group: 239.20.1.1, min: 3, expect: received}
+      - {id: stops, at: 10s, after: leave, within: 10s, of: receive, target: "tv:wlan0", group: 239.20.1.1, expect: not received}
+
 # Saved views (Find ▾ → Saved views…): the IoT VLAN on its own (a VLAN
 # focus: the devices with a port or VLAN interface in it), and the house with
 # the two upper floors collapsed into one box each, their uplinks to the
