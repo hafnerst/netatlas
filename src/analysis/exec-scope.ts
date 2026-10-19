@@ -212,6 +212,23 @@ export function dependencyScope(model: Model, device: string): ExecScope {
   return finish(model, 'dependencies', `${EXEC_SCOPE_TEXT.dependencies}: ${device}`, devices, included, []);
 }
 
+/**
+ * Several scopes as one (an experiment's targets and their dependencies):
+ * the devices any of them runs, what each added and why, and what any of
+ * them can't run.
+ */
+export function unionScope(model: Model, label: string, scopes: ExecScope[]): ExecScope {
+  const devices = new Set<string>();
+  const included: ExecScope['included'] = [];
+  const cannot: string[] = [];
+  for (const s of scopes) {
+    s.devices.forEach((d) => devices.add(d));
+    for (const x of s.included) if (!included.some((y) => y.device === x.device)) included.push(x);
+    for (const c of s.cannot) if (cannot.indexOf(c) < 0) cannot.push(c);
+  }
+  return finish(model, 'dependencies', label, devices, included.filter((x) => devices.has(x.device)), cannot);
+}
+
 /** The devices of a group (and its subgroups). */
 export function groupScope(model: Model, group: string): ExecScope {
   const groups = new Set<string>([group]);

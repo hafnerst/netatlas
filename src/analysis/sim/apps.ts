@@ -41,7 +41,8 @@ export interface AppRun {
   dev: string;
   app: AppInstance;
   /** started from Network events (the foreground) or with the simulation (the scenario's) */
-  how: 'event' | 'start';
+  /** experiment: started by an experiment (scenario time, as the scenario's; its messages carry their ids: the experiment's traffic) */
+  how: 'event' | 'start' | 'experiment';
   /** "plc/registers", "10.0.0.30:5000", "nas.home.arpa:445" */
   target: string;
   t0: number;
@@ -167,7 +168,7 @@ export class AppSim {
 
   /** An MQTT client's start and stop, by mqtt.ts (it keeps a session, not a series of tests). */
   mqttProblem: ((dev: string, a: AppInstance) => string | null) | null = null;
-  mqttStart: ((dev: string, a: AppInstance, how: 'event' | 'start') => AppRun | string) | null = null;
+  mqttStart: ((dev: string, a: AppInstance, how: 'event' | 'start' | 'experiment') => AppRun | string) | null = null;
   mqttStop: ((run: AppRun) => boolean) | null = null;
 
   /** The id of a new run (an MQTT client's too). */
@@ -176,7 +177,7 @@ export class AppSim {
   }
 
   /** Start a client application: its first message now, then one every interval (its count, or until stopped). */
-  start(dev: string, id: string, how: 'event' | 'start'): AppRun | string {
+  start(dev: string, id: string, how: 'event' | 'start' | 'experiment'): AppRun | string {
     const why = this.problem(dev, id);
     if (why) return why;
     const a = this.app(dev, id) as AppInstance;
@@ -263,7 +264,7 @@ export class AppSim {
       kind: p.transport,
       port: peer.port,
       size,
-      source: run.how === 'event' ? 'manual' : 'traffic',
+      source: run.how === 'event' ? 'manual' : run.how === 'experiment' ? 'experiment' : 'traffic',
       series: `${name} → ${peer.target} ${p.transport}/${peer.port}`,
       run: run.id,
       msg: n,
@@ -275,7 +276,7 @@ export class AppSim {
         // a request without an answer in time: again, up to its retries (an error or a refusal is no reason to retry)
         if (x.ok || !p.answered || !/timed out/.test(x.result) || retry >= (a.retries || 0) || run.stopped) return;
         run.retried++;
-        this.e.withTest(run.how === 'event' ? x.id : null, () => this.e.note('message', p.transport, run.dev, '', 'retry', '', `${name}: message ${n} got no answer within its timeout: retry ${retry + 1} of ${a.retries}`));
+        this.e.withTest(run.how !== 'start' ? x.id : null, () => this.e.note('message', p.transport, run.dev, '', 'retry', '', `${name}: message ${n} got no answer within its timeout: retry ${retry + 1} of ${a.retries}`));
         this.message(run, p, n, retry + 1);
       },
     });
