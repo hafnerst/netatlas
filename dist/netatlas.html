@@ -9907,6 +9907,8 @@ exports.BUILTIN_SERVICES = [
         params: [
             int('asn', 'Local AS number', 'device', 1, 4294967295, { required: true, help: 'The device’s own AS (1–4294967295); iBGP or eBGP follows from both ends.' }),
             int('peer-as', 'Peer AS expected', 'endpoint', 1, 4294967295, { help: 'The AS this device expects the other end to be in.' }),
+            int('hold', 'Hold time (s)', 'endpoint', 0, 65535, { suggest: ['90'], help: 'The hold time this device proposes in its OPEN; the session uses the smaller of both. 0: no keepalives and no hold timer; 1 and 2 are refused by the peer.' }),
+            int('keepalive', 'Keepalive (s)', 'endpoint', 1, 21845, { suggest: ['30'], help: 'At most a third of the negotiated hold time is used.' }),
             DISTANCE,
         ],
     },
@@ -20029,7 +20031,7 @@ exports.SIM_PROFILES = [
         ],
         transport: 'TCP 179, unicast between the peers (often loopbacks, reached over the IGP)',
         proto: 'TCP 179',
-        timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10 (hold time / 3)'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10 (suggested)')],
+        timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)', 'hold'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10 (hold time / 3)', 'keepalive'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10 (suggested)')],
         states: ['Idle', 'Connect', 'Active', 'OpenSent', 'OpenConfirm', 'Established'],
         failure: 'KEEPALIVEs are lost; when the hold time expires the session sends NOTIFICATION and goes Idle, and UPDATEs withdraw its prefixes from the other peers. (With BFD, the session goes down as soon as BFD does.)',
         restore: 'Once the peer is reachable again: TCP handshake, OPEN, KEEPALIVE, Established, UPDATEs.',
@@ -20496,7 +20498,7 @@ exports.SIM_PROFILES = [
         ],
         transport: 'MP-BGP, TCP 179 between loopbacks',
         proto: 'TCP 179',
-        timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
+        timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)', 'hold'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10', 'keepalive'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
         states: ['Idle', 'Connect', 'Active', 'OpenSent', 'OpenConfirm', 'Established'],
         failure: 'The hold time expires: the session goes down and its MAC/IP routes are withdrawn.',
         restore: 'The session is re-established and the routes advertised again.',
@@ -20514,7 +20516,7 @@ exports.SIM_PROFILES = [
         ],
         transport: 'MP-BGP, TCP 179 between the PEs; traffic with an MPLS label stack',
         proto: 'TCP 179',
-        timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
+        timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)', 'hold'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10', 'keepalive'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
         states: ['Idle', 'Connect', 'Active', 'OpenSent', 'OpenConfirm', 'Established'],
         failure: 'The hold time expires: the VPN routes are withdrawn.',
         restore: 'The session is re-established and the VPN routes advertised again.',
@@ -37020,6 +37022,10 @@ class AppSocket {
     reset(why) {
         this.T.appReset(this, why);
     }
+    /** its segments (the handshake, the acknowledgments) are drawn and filtered as this protocol's, of this relation */
+    show(protocol, label, relation) {
+        this.c.shown = { protocol, label, relation };
+    }
     /** the connection's table row: its state and sequence numbers (for an application's status) */
     get state() {
         return this.c.state;
@@ -37059,6 +37065,7 @@ class Transport {
         /** DHCP and DNS (the resolver for host names) */
         this.netsvc = null;
         this.relCache = new Map();
+        this.sessionPortCache = new Map();
         // ------------------------------------------------------------ applications' own connections (MQTT, BGP)
         /** the listeners of the applications' own protocols, by "device|port" */
         this.appListening = new Map();
@@ -37090,6 +37097,9 @@ class Transport {
             if (pkt && l3)
                 this.udpIn(dev, l3, pkt);
         });
+        // a segment of a connection, whatever protocol it is drawn as (a BGP session's, an MQTT client's)
+        P.tcpHook = (dev, l3, pkt) => this.tcpIn(dev, l3, pkt);
+        P.transport = this;
         P.filterHook = (dev, pkt, from, to) => this.filter(dev, pkt, from, to);
         P.localErrorHook = (dev, pkt, kind, text, mtu) => this.localError(dev, pkt, kind, text, mtu);
         P.portHook = (dev, pkt, l3) => this.portOpen(dev, pkt, l3);
@@ -37196,6 +37206,12 @@ class Transport {
      * else listens on the port on all addresses (a service, a relation's server, an unbound application).
      */
     open(dev, proto, port, dst) {
+        // an application's own listener (an MQTT broker, a BGP speaker) listens while it runs
+        if (proto === 'tcp' && this.appListening.has(dev + '|' + port))
+            return true;
+        // a routing session's port (BGP 179, LDP 646) is open only while its speaker runs there (its relations alone open nothing)
+        if (proto === 'tcp' && this.sessionPorts(dev).has(port))
+            return false;
         const ls = this.listening(dev);
         if (!(0, params_1.portsMatch)(ls.rules, proto, port))
             return false;
@@ -37203,6 +37219,25 @@ class Transport {
             return true;
         const bound = this.boundOnly(dev, proto, port);
         return !bound || bound.some((b) => this.addrOn(dev, b, dst));
+    }
+    /** The TCP ports of a device's routing sessions (BGP, EVPN, L3VPN, LDP …): their speakers listen on them, not the relations. */
+    sessionPorts(dev) {
+        let s = this.sessionPortCache.get(dev);
+        if (s)
+            return s;
+        s = new Set();
+        for (const r of this.P.m.relations) {
+            if ((0, types_1.relationDevices)(r).indexOf(dev) < 0)
+                continue;
+            const prof = (0, protocols_1.relationProfile)(this.P.m, r);
+            if (prof.behaviour !== 'bgp' && prof.behaviour !== 'ldp')
+                continue;
+            const m = /\bTCP\s+([0-9]{1,5})/.exec(prof.proto);
+            if (m)
+                s.add(Number(m[1]));
+        }
+        this.sessionPortCache.set(dev, s);
+        return s;
     }
     /** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
     boundOnly(dev, proto, port) {
@@ -37215,6 +37250,8 @@ class Transport {
     }
     /** Why a port is closed, for the log: what listens, and where a bound application listens instead. */
     listenText(dev, proto, port, dst) {
+        if (proto === 'tcp' && this.sessionPorts(dev).has(port))
+            return `no ${port === 646 ? 'LDP' : 'BGP'} speaker runs on ${dev}: port ${port} is open only while one does`;
         const ls = this.listening(dev);
         const bound = (0, params_1.portsMatch)(ls.rules, proto, port) ? this.boundOnly(dev, proto, port) : null;
         if (bound)
@@ -37298,6 +37335,8 @@ class Transport {
         pkt.len = len;
         pkt.df = df;
         pkt.flow = `${(0, ipmath_1.formatAddr)(src)}:${l4.sport || l4.echoId || 0}>${(0, ipmath_1.formatAddr)(dst)}:${l4.dport || 0}/${l4.proto}`;
+        if (l4.proto === 'tcp')
+            m.data.tcp = true;
         this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
         // a group goes out of the interface it is sent from (a host sends it on its own segment)
         const out = (0, mac_1.isMulticastIp)(dst) ? this.sourceFor(dev, dst) : null;
@@ -37753,8 +37792,8 @@ class Transport {
         return { key, dev: o.dev, proto: 'tcp', local: o.local, lport: o.lport, remote: o.remote, rport: o.rport, vrf: o.vrf, state: o.state, role: o.role, since: this.e.now, heard: this.e.now, timer: null, tries: 0, rtx: 0, gen: 0, what: o.what, test: o.test, tcp: new tcp_1.TcpStream(iss), keep: !!o.keep, probes: 0 };
     }
     /** An application listens on a TCP port of its device (an MQTT broker, a BGP speaker): each connection gets a socket. */
-    appListen(dev, port, what, h) {
-        this.appListening.set(dev + '|' + port, { h, what });
+    appListen(dev, port, what, h, shown) {
+        this.appListening.set(dev + '|' + port, { h, what, shown });
     }
     /** It stops listening (a BGP speaker going Idle): new connections to the port are refused again. */
     appUnlisten(dev, port) {
@@ -37767,11 +37806,13 @@ class Transport {
      * can't send. `from`: the source address (BGP's update source), else the
      * one the route gives; `vrf` with it.
      */
-    appConnect(dev, dst, port, what, h, from) {
+    appConnect(dev, dst, port, what, h, from, shown) {
         const s = from || this.sourceFor(dev, dst);
         if (!s)
             return `${dev} has no IPv${dst.version} address to connect from`;
         const c = this.newConn({ dev, vrf: s.vrf, local: s.src, lport: this.ephemeral(dev), remote: dst, rport: port, state: 'SYN_SENT', role: 'client', what });
+        if (shown)
+            c.shown = shown;
         const sock = new AppSocket(this, c, h);
         c.sock = sock;
         this.addConn(c);
@@ -37967,7 +38008,8 @@ class Transport {
         const f = flags.join(',');
         const type = s.syn ? (synced ? 'TCP SYN-ACK' : 'TCP SYN') : s.fin ? 'TCP FIN' : s.len > 0 ? 'TCP data' : 'TCP ACK';
         const retx = s.sent > 0 ? ' (TCP retransmission)' : '';
-        const label = app ? app.label + retx : type === 'TCP SYN' ? `TCP SYN → ${to}${retx}` : type === 'TCP data' ? `TCP data → ${to} (${s.len} B)${retx}` : type + retx;
+        const sh = c.shown;
+        const label = app ? app.label + retx : sh ? `${sh.label} ${type}${retx}` : type === 'TCP SYN' ? `TCP SYN → ${to}${retx}` : type === 'TCP data' ? `TCP data → ${to} (${s.len} B)${retx}` : type + retx;
         const seqText = `seq ${s.seq}${synced ? ', ack ' + c.tcp.ackNo : ''}`;
         const detail = `${app ? app.detail + ' — ' : ''}TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${to} [${f}] ${seqText}${s.len ? ', ' + s.len + ' bytes' : ''}: ${s.what}${more}`;
         const data = { from: '', ...(app ? app.data : {}) };
@@ -37975,7 +38017,9 @@ class Transport {
             data.tcpMark = { id: s.mark.id, end: s.mark.end, kind: s.mark.msg.kind, bytes: s.mark.msg.kind === 'app' ? s.mark.msg.app.bytes : s.mark.msg.bytes };
         if (app)
             data.appType = app.type;
-        const msg = { protocol: (app ? app.protocol : 'tcp'), type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : undefined };
+        const msg = { protocol: (app ? app.protocol : sh ? sh.protocol : 'tcp'), type: app ? app.type : type, label, detail: sh && !app ? `${sh.label} ${detail}` : detail, data, relation: app && app.relation ? app.relation : sh ? sh.relation : undefined };
+        if (app && app.waited && s.sent === 0)
+            msg.waited = app.waited;
         const l4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags, seq: s.seq, ack: synced ? c.tcp.ackNo : undefined };
         const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + s.len, true, this.e.ownerOf(c.remote) || '');
         this.lastPkt = p.id;
@@ -37987,12 +38031,25 @@ class Transport {
         const seq = probe ? c.tcp.sndNxt - 1 : c.tcp.sndNxt;
         const type = probe ? 'TCP keepalive' : 'TCP ACK';
         const m = this.msg('tcp', type, type, `TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${to} [ACK] seq ${seq}, ack ${c.tcp.ackNo}: ${what}`, {});
+        this.shownAs(c, m);
         this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: ['ACK'], seq, ack: c.tcp.ackNo }, 20, true, this.e.ownerOf(c.remote) || '');
+    }
+    /** A connection's own segment drawn as its protocol's (a BGP session's ACK is BGP's). */
+    shownAs(c, m) {
+        const sh = c.shown;
+        if (!sh)
+            return;
+        m.protocol = sh.protocol;
+        m.label = `${sh.label} ${m.label}`;
+        m.detail = `${sh.label} ${m.detail}`;
+        if (sh.relation)
+            m.relation = sh.relation;
     }
     /** A RST of a connection (seq SND.NXT). */
     rst(c, what) {
         const to = `${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport}`;
         const m = this.msg('tcp', 'TCP RST', 'TCP RST', `TCP ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${to} [RST,ACK] seq ${c.tcp.sndNxt}, ack ${c.tcp.ackNo}: ${what}`, {});
+        this.shownAs(c, m);
         this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: ['RST', 'ACK'], seq: c.tcp.sndNxt, ack: c.tcp.ackNo }, 20, true, this.e.ownerOf(c.remote) || '');
     }
     /**
@@ -38041,6 +38098,8 @@ class Transport {
                 if (lh) {
                     sc.sock = new AppSocket(this, sc, lh.h);
                     sc.what = `${lh.what}: a client at ${(0, ipmath_1.formatAddr)(pkt.src)}`;
+                    if (lh.shown)
+                        sc.shown = { ...lh.shown };
                 }
                 sc.tcp.synIn(l4.seq || 0);
                 this.addConn(sc);
@@ -38221,6 +38280,7 @@ class Transport {
                 c.sock.h.message(c.sock, m.app);
             return;
         }
+        // (a test's request on a port an application listens on too: answered as any server's)
         if (c.role === 'server')
             this.serverData(c, m.bytes, pkt);
         else
@@ -43907,6 +43967,9 @@ class ProtocolSim {
         this.routesHooks = [];
         /** PIM messages of a session that multicast.ts handles (Join/Prune, Graft): true when it did */
         this.pimHook = null;
+        /** the transport (transport.ts): the connections of the protocols over TCP (proto-tcp.ts), and every TCP segment it receives */
+        this.transport = null;
+        this.tcpHook = null;
         this.periodics = [];
         /** the pairs of a relation that wait for a DHCP client's lease (their sessions are built when it has one) */
         this.deferred = [];
@@ -44525,6 +44588,11 @@ class ProtocolSim {
         this.dispatch(dev, l3, frame.msg, null, frame);
     }
     dispatch(dev, l3, msg, pkt, frame) {
+        // a TCP segment of the transport (a BGP session's, an application's, a test's): its connection takes it
+        if (pkt && l3 && pkt.l4 && pkt.l4.proto === 'tcp' && msg.data && msg.data.tcp && this.tcpHook) {
+            this.tcpHook(dev, l3, pkt);
+            return;
+        }
         const h = this.handlers.get(msg.protocol);
         if (h && h(dev, l3, msg, pkt, frame) !== false)
             return;
@@ -70036,6 +70104,7 @@ const engine_1 = __req("analysis/sim/engine");
 const mac_1 = __req("analysis/sim/mac");
 const net_1 = __req("analysis/sim/net");
 const params_1 = __req("analysis/sim/params");
+const proto_tcp_1 = __req("analysis/sim/proto-tcp");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s) => (0, ip_1.parseAddress)(s);
 /** Every `ms()` (from now), while the session's generation lasts; a parameter change reschedules it. */
@@ -70308,11 +70377,36 @@ function greSend(P, s, type, detail) {
     }
     P.e.send(s.dev, pkt);
 }
+/** Does a session's profile run over TCP (SSL VPN): its handshake starts with the connection of the common transport. */
+function overTcp(s) {
+    return /^TCP\b/.test(s.profile.proto);
+}
+/** The first step of a handshake after its TCP steps (the transport makes the connection). */
+function afterTcp(s) {
+    const h = s.profile.handshake || [];
+    let k = 0;
+    while (h[k] && /^TCP\b/.test(h[k].msg))
+        k++;
+    return k;
+}
 function sessionSend(P, s, type, detail, data = {}) {
     if (s.protocol === 'gre')
         greSend(P, s, type, detail);
+    else if (overTcp(s))
+        (0, proto_tcp_1.tcpSend)(P, s, type, detail, 64, data);
     else
         P.unicast(s, type, detail, data);
+}
+/** A handshake's steps from `k` that are this side's (sent one after the other). */
+function ownSteps(P, s, k) {
+    const p = s.profile;
+    const h = p.handshake || [];
+    const mine = s.initiator ? 'a' : 'b';
+    while (h[k] && h[k].from === mine) {
+        sessionSend(P, s, h[k].msg, `handshake step ${k + 1} of ${h.length}`, { step: k });
+        k++;
+    }
+    return k;
 }
 const session = {
     refresh(P, s) {
@@ -70323,7 +70417,15 @@ const session = {
         const p = s.profile;
         s.state = p.states[0];
         session.refresh(P, s);
-        if (s.initiator && p.handshake && p.handshake.length) {
+        if (overTcp(s)) {
+            // over TCP: the server listens, the client connects; the handshake goes on once the connection is open
+            (0, proto_tcp_1.tcpListen)(P, s);
+            if (s.initiator) {
+                (0, proto_tcp_1.tcpConnect)(P, s);
+                P.setState(s, p.states.length > 2 ? p.states[1] : p.states[0], false, 'handshake started: TCP connection');
+            }
+        }
+        else if (s.initiator && p.handshake && p.handshake.length) {
             const first = p.handshake[0];
             sessionSend(P, s, first.msg, 'starts the session', { step: 0 });
             P.setState(s, p.states.length > 2 ? p.states[1] : p.states[0], false, 'handshake started');
@@ -70339,9 +70441,14 @@ const session = {
                 return;
             if (!ka.both || s.up || !p.handshake || !p.handshake.length)
                 sessionSend(P, s, ka.msg, `${ka.reply ? 'expects ' + ka.reply : 'liveness'}`, { ka: true });
-            // a session that is down starts its handshake again
+            // a session that is down starts its handshake again (over TCP: a new connection)
             if (!s.up && s.initiator && p.handshake && p.handshake.length && P.e.now - s.since >= P.timer(s, p, 'dead').ms) {
-                sessionSend(P, s, p.handshake[0].msg, 'starts the session again', { step: 0 });
+                if (overTcp(s)) {
+                    (0, proto_tcp_1.tcpClose)(P, s, 'the session starts again', true);
+                    (0, proto_tcp_1.tcpConnect)(P, s);
+                }
+                else
+                    sessionSend(P, s, p.handshake[0].msg, 'starts the session again', { step: 0 });
                 s.since = P.e.now;
             }
         });
@@ -70355,6 +70462,19 @@ const session = {
             });
         };
         s.x.check = check;
+    },
+    tcp(P, s, ev, why) {
+        const p = s.profile;
+        if (ev === 'open') {
+            if (!s.initiator)
+                return;
+            const k = ownSteps(P, s, afterTcp(s));
+            if (k >= (p.handshake || []).length)
+                P.setState(s, p.states[p.states.length - 1], true, 'answered');
+            return;
+        }
+        if (s.up || s.state !== p.states[0])
+            P.setState(s, p.states[0], false, `its TCP connection ${why}`);
     },
     rx(P, s, msg) {
         const p = s.profile;
@@ -70372,13 +70492,8 @@ const session = {
             const next = p.handshake[d.step + 1];
             const mine = s.initiator ? 'a' : 'b';
             if (next && next.from === mine) {
-                sessionSend(P, s, next.msg, `handshake step ${d.step + 2} of ${p.handshake.length}`, { step: d.step + 1 });
-                // the rest of the handshake that is ours as well
-                let k = d.step + 2;
-                while (p.handshake[k] && p.handshake[k].from === mine) {
-                    sessionSend(P, s, p.handshake[k].msg, `handshake step ${k + 1} of ${p.handshake.length}`, { step: k });
-                    k++;
-                }
+                // this side's steps that follow (the rest of the handshake that is ours as well)
+                const k = ownSteps(P, s, d.step + 1);
                 if (k >= p.handshake.length)
                     up();
                 else if (s.state === p.states[0] && p.states.length > 2)
@@ -70405,12 +70520,14 @@ const service = {
     },
     start(P, s) {
         const p = s.profile;
-        // requests come from the clients (from the server for SNMP)
+        const tcp = /^TCP/.test(p.proto) && p.id !== 'radius';
+        // requests come from the clients (from the server for SNMP); over TCP the server listens for their connections
         const sender = p.fromServer ? !s.initiator : s.initiator;
+        if (tcp && !sender)
+            (0, proto_tcp_1.tcpListen)(P, s);
         if (!sender)
             return;
         service.refresh(P, s);
-        const tcp = /^TCP/.test(p.proto) && p.id !== 'radius';
         every(P, s, () => P.timer(s, p, 'hello').ms, () => {
             // SNMP: an agent that did not answer the last poll within the manager's timeout is not responding
             if (p.id === 'snmp') {
@@ -70425,42 +70542,50 @@ const service = {
                     }
                 });
             }
-            if (tcp && !s.x.open) {
-                P.unicast(s, 'TCP SYN', `to the server${p.id === 'https' ? ' port 443' : ''}`);
+            if (tcp && !(0, proto_tcp_1.tcpOpen)(s)) {
+                // no connection (yet, or it was lost): the common transport opens one; the requests go once it is open
+                (0, proto_tcp_1.tcpConnect)(P, s);
                 return;
             }
-            P.unicast(s, p.request, p.messages[0].does);
+            if (tcp && !s.x.open)
+                return;
+            svcSend(P, s, p.request, p.messages[0].does);
         });
+    },
+    tcp(P, s, ev, why) {
+        const p = s.profile;
+        if (ev === 'open') {
+            if (!(p.fromServer ? !s.initiator : s.initiator))
+                return;
+            if (p.id === 'https')
+                svcSend(P, s, 'TLS ClientHello', 'cipher suites, key share');
+            else {
+                s.x.open = true;
+                svcSend(P, s, p.request, p.messages[0].does);
+            }
+            return;
+        }
+        s.x.open = false;
+        if (s.up)
+            P.setState(s, p.states[0], false, `its TCP connection ${why}`);
     },
     rx(P, s, msg) {
         const p = s.profile;
         switch (msg.type) {
-            case 'TCP SYN':
-                P.unicast(s, 'TCP SYN-ACK', 'accepts');
-                return;
-            case 'TCP SYN-ACK':
-                P.unicast(s, 'TCP ACK', 'connection open');
-                if (p.id === 'https')
-                    P.unicast(s, 'TLS ClientHello', 'cipher suites, key share');
-                else {
-                    s.x.open = true;
-                    P.unicast(s, p.request, p.messages[0].does);
-                }
-                return;
             case 'TLS ClientHello':
-                P.unicast(s, 'TLS ServerHello', 'certificate, key share, Finished');
+                svcSend(P, s, 'TLS ServerHello', 'certificate, key share, Finished');
                 return;
             case 'TLS ServerHello':
                 s.x.open = true;
                 P.setState(s, 'Answered', true, 'TLS session established');
-                P.unicast(s, p.request, p.messages[0].does);
+                svcSend(P, s, p.request, p.messages[0].does);
                 return;
             default:
                 if (msg.type === p.request && p.response) {
                     // the server answers after its response time (its simulation attribute)
                     const rt = P.param('service-response', s.dev, (0, params_1.relRef)(s.rel.id));
                     const answer = () => {
-                        P.unicast(s, p.response, Number(rt.value) > 0 ? `the answer (after the response time ${P.paramText(rt)})` : 'the answer');
+                        svcSend(P, s, p.response, Number(rt.value) > 0 ? `the answer (after the response time ${P.paramText(rt)})` : 'the answer');
                         if (!s.up)
                             P.setState(s, p.states[p.states.length - 1], true, 'answers requests');
                     };
@@ -70479,6 +70604,13 @@ const service = {
         }
     },
 };
+/** A service's message: over its TCP connection for a TCP profile (HTTPS), else as a datagram of its own. */
+function svcSend(P, s, type, detail) {
+    if (/^TCP/.test(s.profile.proto) && s.profile.id !== 'radius')
+        (0, proto_tcp_1.tcpSend)(P, s, type, detail, /ClientHello/.test(type) ? 517 : /ServerHello/.test(type) ? 1400 : 300);
+    else
+        P.unicast(s, type, detail);
+}
 const data = {
     start(P, s) {
         if (s.rel.direction === 'unidirectional' && !s.initiator)
@@ -70920,6 +71052,193 @@ function installCustomL2(P) {
 exports.OTHER_BEHAVIOURS = { ike, session, service, data, custom, pim };
 
 };
+__defs["analysis/sim/proto-tcp"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.tcpPort = tcpPort;
+exports.tcpListen = tcpListen;
+exports.tcpConnect = tcpConnect;
+exports.tcpOpen = tcpOpen;
+exports.tcpSend = tcpSend;
+exports.tcpClose = tcpClose;
+/**
+ * The sessions of the protocols that run over TCP (BGP and its EVPN and
+ * L3VPN, LDP and its targeted sessions, HTTPS, SSL VPN): their messages go
+ * over a connection of the common transport (transport.ts, tcp.ts) — its
+ * handshake, listener, firewall sessions, retransmission, segmentation by
+ * the path MTU, reset and close, and the connection table — never over an
+ * imitation of TCP of their own.
+ *
+ * One side connects (the behaviour says which: BGP's initiator, LDP's
+ * active side, a service's client); every device with such a session
+ * listens on the protocol's port while the session runs. An accepted
+ * connection belongs to no session until its first message names the
+ * relation it is for; a connection that names none (no such session
+ * there) is reset. Each message arrives at the behaviour's rx as if sent
+ * by unicast; the connection opening and closing arrive at its `tcp`.
+ */
+const ipmath_1 = __req("analysis/ipmath");
+const transport_1 = __req("analysis/sim/transport");
+/** The TCP port of a session's profile ("TCP 179" → 179; "UDP/TCP 646" → 646). */
+function tcpPort(s) {
+    const m = /\bTCP\s+([0-9]{1,5})/.exec(s.profile.proto) || /\bUDP\/TCP\s+([0-9]{1,5})/.exec(s.profile.proto);
+    if (m)
+        return Number(m[1]);
+    const t = (0, transport_1.profileTransport)(s.profile.proto);
+    return t.ports[0] || 0;
+}
+function socks(P) {
+    let m = P.shared.get('tcp-socks');
+    if (!m)
+        P.shared.set('tcp-socks', (m = new Map()));
+    return m;
+}
+function beh(P, s) {
+    return P.behaviours.get(s.profile.behaviour);
+}
+/** A message of the session from its connection: to the behaviour's rx, as a unicast one would. */
+function deliver(P, s, m) {
+    s.heard = P.e.now;
+    const msg = { protocol: s.protocol, type: m.type, label: m.label, detail: m.detail, relation: s.rel.id, data: m.data };
+    beh(P, s).rx(P, s, msg, null, null);
+}
+/** A connection of a session is gone: the behaviour hears of it once (an older connection of the session says nothing). */
+function closed(P, sock, why) {
+    const s = socks(P).get(sock);
+    socks(P).delete(sock);
+    if (!s || s.x.sock !== sock)
+        return;
+    s.x.sock = null;
+    const b = beh(P, s);
+    if (b.tcp)
+        b.tcp(P, s, 'closed', why);
+}
+/**
+ * The device listens on the session's port (once per device and port).
+ * What arrives on an accepted connection names its relation and sender:
+ * the connection is that session's from then on.
+ */
+function tcpListen(P, s) {
+    const port = tcpPort(s);
+    const key = `tcp-listen|${s.dev}|${port}`;
+    if (!P.transport || P.shared.has(key))
+        return;
+    P.shared.set(key, true);
+    const dev = s.dev;
+    P.transport.appListen(dev, port, `${s.profile.label.replace(/ \(.*\)$/, '')} (port ${port})`, {
+        message(sock, m) {
+            let o = socks(P).get(sock);
+            if (!o) {
+                const d = (m.data || {});
+                o = d.rel && d.proto && d.from ? P.sess(d.proto, d.rel, dev, d.from) : undefined;
+                if (!o || !o.x.started) {
+                    P.e.note('drop', d.proto || 'tcp', dev, d.from || '', m.type, '', `${dev} has no ${m.label.split(' ')[0]} session ${d.rel ? 'of ' + d.rel + ' ' : ''}with ${d.from || (0, ipmath_1.formatAddr)(sock.remote)}: it resets the connection`);
+                    sock.reset('no such session');
+                    return;
+                }
+                const cur = o.x.sock;
+                if (cur && cur !== sock && cur.open) {
+                    // a second connection for a session that has one: the session keeps the one it has when it is up (RFC 4271 §6.8), else takes the new one
+                    if (o.up) {
+                        P.e.note('drop', o.protocol, dev, o.peer, m.type, o.state, `${o.profile.label} ${o.rel.id}: ${dev} already has its session with ${o.peer} up: the new connection is closed (connection collision)`);
+                        sock.reset('connection collision: the session is up on another connection');
+                        return;
+                    }
+                    socks(P).delete(cur);
+                    cur.reset('replaced by a new connection of the peer');
+                }
+                o.x.sock = sock;
+                socks(P).set(sock, o);
+                sock.show(o.protocol, o.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), o.rel.id);
+                const b = beh(P, o);
+                if (b.tcp)
+                    b.tcp(P, o, 'open', `${o.peer} connected from ${(0, ipmath_1.formatAddr)(sock.remote)}`);
+            }
+            deliver(P, o, m);
+        },
+        closed(sock, why) {
+            closed(P, sock, why);
+        },
+    }, { protocol: s.protocol, label: s.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '') });
+}
+/** The session's side connects to its peer (from the session's own address and VRF); nothing when it already has a connection. */
+function tcpConnect(P, s) {
+    if (!P.transport)
+        return false;
+    const cur = s.x.sock;
+    if (cur && cur.closedWhy === null)
+        return true;
+    const port = tcpPort(s);
+    const short = s.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '');
+    const sock = P.transport.appConnect(s.dev, s.remote.addr, port, `${short} ${s.rel.id} to ${s.peer}`, {
+        open(k) {
+            if (s.x.sock !== k)
+                return;
+            const b = beh(P, s);
+            if (b.tcp)
+                b.tcp(P, s, 'open', `TCP connection to ${(0, ipmath_1.formatAddr)(s.remote.addr)}:${port} established`);
+        },
+        message(k, m) {
+            if (s.x.sock === k)
+                deliver(P, s, m);
+        },
+        closed(k, why) {
+            closed(P, k, why);
+        },
+    }, { src: s.local.addr, vrf: s.local.l3.vrf }, { protocol: s.protocol, label: short, relation: s.rel.id });
+    if (typeof sock === 'string') {
+        P.e.note('drop', s.protocol, s.dev, s.peer, 'TCP', s.state, `${s.profile.label} ${s.rel.id}: ${s.dev} can't connect: ${sock}`);
+        return false;
+    }
+    s.x.sock = sock;
+    socks(P).set(sock, s);
+    return true;
+}
+/** Is the session's connection open (established, not closed)? */
+function tcpOpen(s) {
+    const k = s.x.sock;
+    return !!k && k.open;
+}
+/**
+ * A message of the session over its connection (its size on the wire
+ * `bytes`): drawn and logged as the protocol's, carried as TCP data. False
+ * when the connection is not open (nothing is sent).
+ */
+function tcpSend(P, s, type, detail, bytes, data = {}) {
+    const k = s.x.sock;
+    if (!k || !k.open)
+        return false;
+    const short = s.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '');
+    const m = {
+        protocol: s.protocol,
+        type,
+        label: `${short} ${type}`,
+        detail: `${s.profile.label} ${type}: ${s.dev} (${(0, ipmath_1.formatAddr)(k.local)}) → ${s.peer} (${(0, ipmath_1.formatAddr)(k.remote)}), TCP ${k.rport === tcpPort(s) ? k.rport : k.lport}; ${detail}`,
+        bytes,
+        data: { ...data, rel: s.rel.id, proto: s.protocol },
+        relation: s.rel.id,
+    };
+    if (s.x.waitedNext) {
+        m.waited = s.x.waitedNext;
+        delete s.x.waitedNext;
+    }
+    P.lane(s.rel, s.dev, s.peer, { protocol: s.protocol, type, label: m.label, detail: m.detail, relation: s.rel.id }, P.e.estimate(s.dev, k.remote));
+    return k.send(m);
+}
+/** Close the session's connection (FIN after what it sent; `reset`: RST at once). */
+function tcpClose(P, s, why, reset = false) {
+    const k = s.x.sock;
+    s.x.sock = null;
+    if (!k)
+        return;
+    socks(P).delete(k);
+    if (reset)
+        k.reset(why);
+    else
+        k.close(why);
+}
+
+};
 __defs["analysis/sim/proto-routing"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -70934,12 +71253,14 @@ exports.bfdDown = bfdDown;
  * model sets or the defaults; see protocols.ts for how sessions are built.
  */
 const ip_1 = __req("model/ip");
+const protocols_1 = __req("model/protocols");
 const services_1 = __req("model/services");
 const ipmath_1 = __req("analysis/ipmath");
 const checks_more_1 = __req("analysis/checks-more");
 const routing_1 = __req("analysis/routing");
 const engine_1 = __req("analysis/sim/engine");
 const params_1 = __req("analysis/sim/params");
+const proto_tcp_1 = __req("analysis/sim/proto-tcp");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s) => (0, ip_1.parseAddress)(s);
 /** A device's router ID for a protocol: its configured one, else its highest loopback IPv4 address, else its highest IPv4 address. */
@@ -71546,16 +71867,64 @@ const rip = {
             P.setState(s, 'Heard', true, `Response from ${s.peer}`);
     },
 };
-// ------------------------------------------------------------------ BGP (and EVPN, L3VPN)
 function bgpRouteToPeer(P, s) {
     const d = (0, routing_1.lookup)(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx(s.dev));
     return d.kind === 'forward' || d.kind === 'local';
 }
+/** The device's own AS number (its BGP service's asn), null when it has none. */
+function bgpOwnAs(P, dev) {
+    const v = (0, services_1.bgpAsn)(P.m.index.devices.get(dev));
+    return v === undefined ? null : v;
+}
+/**
+ * The hold time a device proposes on a session: the relation's `hold`
+ * (per device: `hold.<device>`; 0 or 3–65535 s), else the simulation's
+ * (3 × BGP keepalive). 0 means none (RFC 4271 §4.4: no KEEPALIVEs, no hold timer).
+ */
+function bgpHold(P, s) {
+    const v = (0, routing_1.relParam)(s.rel, 'hold', s.dev);
+    if (v !== undefined && /^\s*[0-9]+\s*$/.test(v)) {
+        const n = Number(v);
+        if (n === 0)
+            return { s: 0, text: '0 (configured: no keepalives and no hold timer)' };
+        if (n >= 3 && n <= 65535)
+            return { s: n, text: `${n} s (configured)` };
+    }
+    const t = P.timer(s, s.profile, 'hold');
+    return { s: Math.round(t.ms / 1000), text: t.text };
+}
+/** The AS a device expects its peer in: the relation's `peer-as`, else (iBGP) its own, else the peer's own AS. */
+function bgpExpectedAs(P, s) {
+    const v = (0, routing_1.relParam)(s.rel, 'peer-as', s.dev);
+    if (v !== undefined && /^\s*[0-9]+\s*$/.test(v))
+        return { as: Number(v), how: 'its peer-as' };
+    if ((0, protocols_1.normalizeProtocol)(s.rel.protocol) === 'ibgp')
+        return { as: bgpOwnAs(P, s.dev), how: 'iBGP: its own AS' };
+    return { as: bgpOwnAs(P, s.peer), how: `${s.peer}'s own AS` };
+}
+function bgpAfi(s) {
+    return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : s.local.addr.version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
+}
+/** The details of a session: the negotiated hold time and keepalive interval (or what it proposes before). */
+function bgpDetail(P, s) {
+    const neg = s.x.holdMs;
+    if (neg !== undefined) {
+        s.x.detail = neg === 0 ? 'hold time 0 negotiated: no keepalives, no hold timer' : `keepalive ${(0, engine_1.fmtSec)(s.x.kaMs)}, hold ${(0, engine_1.fmtSec)(neg)} (negotiated: the smaller of ${s.x.open.hold} s and ${s.x.peerOpen.hold} s)`;
+        return;
+    }
+    const h = bgpHold(P, s);
+    s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${h.text}`;
+}
 function bgpConnect(P, s) {
     if (!s.initiator)
         return;
-    if (s.state === 'Established')
+    if (s.state === 'Established' || s.state === 'OpenSent' || s.state === 'OpenConfirm')
         return;
+    if (bgpOwnAs(P, s.dev) === null) {
+        if (s.state !== 'Idle')
+            P.setState(s, 'Idle', false, `${s.dev} has no AS number: it does not start the session`);
+        return;
+    }
     if (!bgpRouteToPeer(P, s)) {
         // a session between loopbacks waits for a route to the peer (the IGP): it goes on the moment there is one
         if (s.state !== 'Active')
@@ -71571,33 +71940,16 @@ function bgpConnect(P, s) {
     P.setState(s, 'Connect', false, `opening TCP to ${(0, ipmath_1.formatAddr)(s.remote.addr)} port 179`);
     P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${(0, ipmath_1.formatAddr)(s.remote.addr)} waiting for TCP (the connection to port 179)`);
     s.x.tcpSince = P.e.now;
-    bgpSyn(P, s, 0, (s.x.synTok = (s.x.synTok || 0) + 1));
+    if (!(0, proto_tcp_1.tcpConnect)(P, s))
+        P.setState(s, 'Active', false, 'no connection could be opened');
+    // ConnectRetry (RFC 4271 §8.2.2): an attempt not open by then is dropped and made again
     const retry = P.timer(s, s.profile, 'connect-retry');
     P.later(s, retry.ms, () => {
         if (s.state === 'Connect' || s.state === 'Active') {
+            (0, proto_tcp_1.tcpClose)(P, s, 'ConnectRetry timer expired', true);
             P.setState(s, 'Active', false, `ConnectRetry timer expired (${retry.text})`);
             bgpConnect(P, s);
         }
-    });
-}
-/**
- * BGP's TCP connection: its SYN is sent again after the initial
- * retransmission timeout, doubling each time, until the SYN retries are
- * spent (Layer 4 parameters); then the attempt has timed out and the
- * ConnectRetry timer tries again.
- */
-function bgpSyn(P, s, n, tok) {
-    P.unicast(s, 'TCP SYN', n ? `to port 179, retransmission ${n}` : 'to port 179', {}, 'Connect');
-    const rto = Math.min(120000, P.e.params.num('tcp-rto', s.dev) * Math.pow(2, n));
-    P.later(s, rto, () => {
-        if (s.state !== 'Connect' || s.x.synTok !== tok)
-            return;
-        const max = P.param('tcp-syn-retries', s.dev);
-        if (n >= Number(max.value)) {
-            P.e.note('state', s.protocol, s.dev, s.peer, 'TCP connect timed out', 'Connect', `${s.rel.id}: ${s.dev}'s TCP connection to ${(0, ipmath_1.formatAddr)(s.remote.addr)}:179 timed out after ${n} retransmissions (TCP SYN retries ${P.paramText(max)}); the ConnectRetry timer tries again`);
-            return;
-        }
-        bgpSyn(P, s, n + 1, tok);
     });
 }
 function updateText(s) {
@@ -71607,83 +71959,145 @@ function updateText(s) {
         return 'VPNv4 prefixes with route distinguisher, route targets and labels';
     return 'its prefixes';
 }
+/** This side's OPEN (structured: version, AS, hold time, identifier, address family). */
+function bgpSendOpen(P, s) {
+    const h = bgpHold(P, s);
+    const o = { version: 4, as: bgpOwnAs(P, s.dev), hold: h.s, id: routerId(P, s.dev, 'bgp'), afi: bgpAfi(s) };
+    s.x.open = o;
+    (0, proto_tcp_1.tcpSend)(P, s, 'OPEN', `version 4, AS ${o.as === null ? '?' : o.as}, hold time ${o.hold} s, BGP identifier ${o.id}, ${o.afi}`, 45, { open: o });
+}
+/** Why a peer's OPEN is refused (RFC 4271 §6.2: the NOTIFICATION's error), '' when it is accepted. */
+function bgpOpenError(P, s, o) {
+    if (!o)
+        return 'OPEN Message Error: no parameters';
+    if (o.version !== 4)
+        return `OPEN Message Error / Unsupported Version Number (${o.version})`;
+    const exp = bgpExpectedAs(P, s);
+    if (o.as === null || exp.as === null || o.as !== exp.as)
+        return `OPEN Message Error / Bad Peer AS: AS ${o.as === null ? '?' : o.as} in the OPEN, ${s.dev} expects ${exp.as === null ? 'an AS it does not know' : 'AS ' + exp.as} (${exp.how})`;
+    if (o.hold === 1 || o.hold === 2)
+        return `OPEN Message Error / Unacceptable Hold Time (${o.hold} s)`;
+    if (o.id === routerId(P, s.dev, 'bgp'))
+        return `OPEN Message Error / Bad BGP Identifier (${o.id} is ${s.dev}'s own)`;
+    return '';
+}
+/** The negotiated timers (RFC 4271 §4.2, §10): the smaller hold time; keepalives at most a third of it (none when it is 0). */
+function bgpNegotiate(P, s, peer) {
+    const own = s.x.open;
+    const mine = own ? own.hold : bgpHold(P, s).s;
+    const hold = Math.min(mine, peer.hold) * 1000;
+    s.x.peerOpen = peer;
+    s.x.holdMs = hold;
+    s.x.kaMs = hold === 0 ? 0 : Math.min(P.timer(s, s.profile, 'keepalive').ms, Math.floor(hold / 3));
+    bgpDetail(P, s);
+}
+function bgpHoldTimer(P, s) {
+    const hold = s.x.holdMs;
+    if (!hold)
+        return;
+    deadCheck(P, s, hold, () => bgp.down(P, s, `hold timer expired (${(0, engine_1.fmtSec)(hold)}, negotiated)`, true));
+}
+/** Refuse the OPEN: NOTIFICATION, the connection closed, the session Idle (ConnectRetry tries again). */
+function bgpRefuse(P, s, err) {
+    (0, proto_tcp_1.tcpSend)(P, s, 'NOTIFICATION', err, 21, { error: err });
+    bgp.down(P, s, `${err} — NOTIFICATION sent`);
+}
 const bgp = {
     refresh(P, s) {
-        s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${P.timer(s, s.profile, 'hold').text}`;
+        bgpDetail(P, s);
     },
     start(P, s) {
-        bgp.refresh(P, s);
+        bgpDetail(P, s);
+        if (bgpOwnAs(P, s.dev) === null) {
+            // no BGP speaker: nothing listens on port 179, nothing connects
+            P.setState(s, 'Idle', false, `${s.dev} has no AS number (its BGP service's asn): no BGP speaker runs`);
+            return;
+        }
+        (0, proto_tcp_1.tcpListen)(P, s);
         if (s.initiator)
             bgpConnect(P, s);
         else if (s.state === 'Idle')
             P.setState(s, 'Active', false, 'waiting for the peer to connect');
     },
+    tcp(P, s, ev, why) {
+        if (ev === 'open') {
+            if (!s.initiator)
+                return;
+            P.setState(s, 'OpenSent', false, 'TCP connection established');
+            s.x.waitedNext = [`TCP connection to ${(0, ipmath_1.formatAddr)(s.remote.addr)}:179: ${(0, params_1.durationText)(P.e.now - (s.x.tcpSince || P.e.now))}`];
+            bgpSendOpen(P, s);
+            return;
+        }
+        if (s.state === 'Connect') {
+            // the attempt failed (refused, timed out): Active, and the ConnectRetry timer tries again
+            P.setState(s, 'Active', false, `TCP connection to ${(0, ipmath_1.formatAddr)(s.remote.addr)}:179 failed: ${why}`);
+            return;
+        }
+        if (s.state !== 'Idle' && s.state !== 'Active')
+            bgp.down(P, s, `its TCP connection ${/^(closed|reset|connection)/.test(why) ? why : 'is gone: ' + why}`);
+    },
     rx(P, s, msg) {
-        const hold = P.timer(s, s.profile, 'hold');
-        const dd = P.m.index.devices.get(s.dev);
-        const asn = dd ? (dd.services.find((x) => x.id === 'bgp') || { values: new Map() }).values.get('asn') : undefined;
+        const d = (msg.data || {});
         switch (msg.type) {
-            case 'TCP SYN':
-                if (s.state === 'Established')
-                    bgp.down(P, s, 'the peer reconnects');
-                P.unicast(s, 'TCP SYN-ACK', 'accepts the connection on port 179', {}, 'Connect');
-                if (s.state !== 'Connect')
-                    P.setState(s, 'Connect', false, 'TCP connection from the peer');
-                return;
-            case 'TCP SYN-ACK':
-                if (s.state !== 'Connect')
+            case 'OPEN': {
+                if (['Active', 'Connect', 'OpenSent'].indexOf(s.state) < 0)
                     return;
-                P.unicast(s, 'TCP ACK', 'the connection is open');
-                P.setState(s, 'OpenSent', false, 'TCP connection established');
-                s.x.waitedNext = [`TCP connection to ${(0, ipmath_1.formatAddr)(s.remote.addr)}:179: ${(0, params_1.durationText)(P.e.now - (s.x.tcpSince || P.e.now))}`];
-                P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${(0, engine_1.fmtSec)(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}${s.protocol === 'evpn' ? ', L2VPN EVPN' : s.protocol === 'l3vpn' ? ', VPNv4' : ''}`, {}, 'OpenSent');
-                return;
-            case 'TCP ACK':
-                if (s.state !== 'Connect')
+                const err = bgpOpenError(P, s, d.open);
+                if (err) {
+                    if (!s.initiator && s.state !== 'OpenSent')
+                        bgpSendOpen(P, s);
+                    bgpRefuse(P, s, err);
                     return;
-                P.setState(s, 'OpenSent', false, 'TCP connection established');
-                P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${(0, engine_1.fmtSec)(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}`, {}, 'OpenSent');
+                }
+                if (!s.initiator)
+                    bgpSendOpen(P, s);
+                bgpNegotiate(P, s, d.open);
+                P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer} (AS ${d.open.as}, hold ${d.open.hold} s, identifier ${d.open.id})`);
+                (0, proto_tcp_1.tcpSend)(P, s, 'KEEPALIVE', 'confirms the OPEN', 19);
+                bgpHoldTimer(P, s);
                 return;
-            case 'OPEN':
-                if (s.state !== 'OpenSent')
-                    return;
-                P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer}`);
-                P.unicast(s, 'KEEPALIVE', 'confirms the OPEN', {}, 'OpenConfirm');
-                return;
+            }
             case 'KEEPALIVE':
                 if (s.state === 'OpenConfirm') {
                     P.setState(s, 'Established', true, 'KEEPALIVE received');
                     s.x.waitedNext = ['the session to be Established'];
-                    P.unicast(s, 'UPDATE', updateText(s), {}, 'Established');
-                    const g = s.gen;
-                    const kms = () => P.timer(s, s.profile, 'keepalive').ms;
-                    P.periodic(() => s.gen === g && s.state === 'Established', kms, () => P.unicast(s, 'KEEPALIVE', `every ${P.timer(s, s.profile, 'keepalive').text}`), kms());
+                    (0, proto_tcp_1.tcpSend)(P, s, 'UPDATE', updateText(s), 60);
+                    const ka = s.x.kaMs;
+                    if (ka > 0) {
+                        const g = s.gen;
+                        P.periodic(() => s.gen === g && s.state === 'Established', () => s.x.kaMs, () => (0, proto_tcp_1.tcpSend)(P, s, 'KEEPALIVE', `every ${(0, engine_1.fmtSec)(s.x.kaMs)} (a third of the negotiated hold time at most)`, 19), ka);
+                    }
                 }
                 if (s.state === 'Established')
-                    deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
+                    bgpHoldTimer(P, s);
                 return;
             case 'UPDATE':
                 if (s.state === 'Established')
-                    deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
+                    bgpHoldTimer(P, s);
                 return;
             case 'NOTIFICATION':
-                bgp.down(P, s, `NOTIFICATION from ${s.peer}`);
+                bgp.down(P, s, `NOTIFICATION from ${s.peer}: ${d.error || 'closes the session'}`);
                 return;
             default:
                 return;
         }
     },
     down(P, s, why, notify = false) {
-        if (s.state === 'Idle' && !s.up)
+        if (s.state === 'Idle' && !s.up && !s.x.sock)
             return;
         const was = s.state === 'Established';
         if (notify)
-            P.unicast(s, 'NOTIFICATION', `Hold Timer Expired: closes the session`);
+            (0, proto_tcp_1.tcpSend)(P, s, 'NOTIFICATION', 'Hold Timer Expired: closes the session', 21, { error: 'Hold Timer Expired' });
+        // after a NOTIFICATION the connection is closed (FIN after it); else it is reset
+        (0, proto_tcp_1.tcpClose)(P, s, why, !notify && !/NOTIFICATION sent/.test(why));
         P.restart(s);
+        delete s.x.holdMs;
+        delete s.x.peerOpen;
         P.setState(s, 'Idle', false, why);
+        bgpDetail(P, s);
         if (was)
             for (const o of others(P, s, s.protocol, (q) => q.state === 'Established'))
-                P.unicast(o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`);
+                (0, proto_tcp_1.tcpSend)(P, o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`, 30);
         const retry = P.timer(s, s.profile, 'connect-retry');
         if (s.initiator)
             P.later(s, retry.ms, () => bgpConnect(P, s));
@@ -71697,11 +72111,12 @@ const ldp = {
         const targeted = s.protocol !== 'ldp';
         const group = addr('224.0.0.2');
         const name = targeted ? 'Targeted Hello' : 'Hello';
+        (0, proto_tcp_1.tcpListen)(P, s);
         every(P, s, () => P.timer(s, s.profile, 'hello').ms, () => {
             const hello = P.timer(s, s.profile, 'hello');
             if (targeted || s.local.addr.version === 6)
                 P.unicast(s, name, `transport address ${(0, ipmath_1.formatAddr)(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
-            else if (s.initiator || true) {
+            else {
                 const key = `ldp-hello|${s.rel.id}|${s.dev}|${Math.floor(P.e.now / hello.ms)}`;
                 if (!P.shared.has(key)) {
                     P.shared.set(key, true);
@@ -71710,51 +72125,62 @@ const ldp = {
             }
         });
     },
+    tcp(P, s, ev, why) {
+        if (ev === 'open') {
+            // the active side (the higher transport address) starts the session; the passive one answers its Initialization
+            if ((0, ipmath_1.compareAddr)(s.local.addr, s.remote.addr) > 0 && s.state === 'Initialized') {
+                P.setState(s, 'OpenSent', false, 'TCP open');
+                (0, proto_tcp_1.tcpSend)(P, s, 'Initialization', 'session parameters (keepalive time, label distribution)', 32);
+            }
+            return;
+        }
+        if (s.state !== 'Non-existent')
+            ldp.down(P, s, `the session's TCP connection ${why}`);
+    },
     rx(P, s, msg) {
         const hold = P.timer(s, s.profile, 'dead');
         // the side with the higher transport address opens the session (RFC 5036 2.5.2)
         const active = (0, ipmath_1.compareAddr)(s.local.addr, s.remote.addr) > 0;
+        const session = () => {
+            const sh = P.timer(s, s.profile, 'hold');
+            P.armDead(s, sh.ms, () => ldp.down(P, s, `session hold time expired (${sh.text})`), 'session');
+        };
         switch (msg.type) {
             case 'Hello':
             case 'Targeted Hello':
                 deadCheck(P, s, hold.ms, () => ldp.down(P, s, `hello hold time expired (${hold.text})`));
                 if (s.state === 'Non-existent' && active) {
                     P.setState(s, 'Initialized', false, `hello from ${s.peer}; opening the session (higher transport address)`);
-                    P.unicast(s, 'TCP SYN', 'to port 646');
+                    if (!(0, proto_tcp_1.tcpConnect)(P, s))
+                        P.setState(s, 'Non-existent', false, 'no TCP connection could be opened');
                 }
                 return;
-            case 'TCP SYN':
-                P.unicast(s, 'TCP SYN-ACK', 'port 646');
-                if (s.state === 'Non-existent')
-                    P.setState(s, 'Initialized', false, 'TCP from the peer');
-                return;
-            case 'TCP SYN-ACK':
-                P.unicast(s, 'TCP ACK', 'the session’s TCP is open');
-                P.setState(s, 'OpenSent', false, 'TCP open');
-                P.unicast(s, 'Initialization', 'session parameters (keepalive time, label distribution)');
-                return;
             case 'Initialization':
+                session();
                 if (s.state === 'Initialized' || s.state === 'Non-existent') {
                     P.setState(s, 'OpenRec', false, 'Initialization from the peer');
-                    P.unicast(s, 'Initialization', 'session parameters');
+                    (0, proto_tcp_1.tcpSend)(P, s, 'Initialization', 'session parameters', 32);
                 }
                 else if (s.state === 'OpenSent')
                     P.setState(s, 'OpenRec', false, 'Initialization from the peer');
-                P.unicast(s, 'Keepalive', 'accepts the session');
+                (0, proto_tcp_1.tcpSend)(P, s, 'Keepalive', 'accepts the session', 14);
                 return;
             case 'Keepalive':
+                session();
                 if (s.state === 'OpenRec') {
                     P.setState(s, 'Operational', true, 'session up');
                     if (s.protocol === 'ldp')
-                        P.unicast(s, 'Address', 'its interface addresses');
-                    P.unicast(s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)');
+                        (0, proto_tcp_1.tcpSend)(P, s, 'Address', 'its interface addresses', 30);
+                    (0, proto_tcp_1.tcpSend)(P, s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)', 40);
                     every(P, s, () => P.timer(s, s.profile, 'keepalive').ms, () => {
                         if (s.state === 'Operational')
-                            P.unicast(s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`);
+                            (0, proto_tcp_1.tcpSend)(P, s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`, 14);
                     });
                 }
                 return;
             default:
+                if (s.state === 'Operational')
+                    session();
                 return;
         }
     },
@@ -71763,8 +72189,9 @@ const ldp = {
             ldp.down(P, s, `interface ${s.local.l3.id} went down`);
     },
     down(P, s, why) {
-        if (s.state === 'Non-existent')
+        if (s.state === 'Non-existent' && !s.x.sock)
             return;
+        (0, proto_tcp_1.tcpClose)(P, s, why);
         P.restart(s);
         P.setState(s, 'Non-existent', false, why + '; labels withdrawn');
         ldp.start(P, s);

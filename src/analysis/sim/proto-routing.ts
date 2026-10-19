@@ -6,13 +6,15 @@
  * model sets or the defaults; see protocols.ts for how sessions are built.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
-import { routerIdFor } from '../../model/services';
+import { normalizeProtocol } from '../../model/protocols';
+import { bgpAsn, routerIdFor } from '../../model/services';
 import { compareAddr, formatAddr } from '../ipmath';
 import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
 import { fmtSec } from './engine';
 import { durationText } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s: string): IpAddr => parseAddress(s) as IpAddr;
@@ -633,14 +635,76 @@ const rip: Behaviour = {
 
 // ------------------------------------------------------------------ BGP (and EVPN, L3VPN)
 
+/** An OPEN's parameters (RFC 4271 §4.2), kept as the session's state: what it sent and what it received. */
+export interface BgpOpen {
+  version: number;
+  /** "My Autonomous System" (null: the device has no AS number) */
+  as: number | null;
+  /** the hold time it proposes, in seconds (0: no keepalives, no hold timer) */
+  hold: number;
+  /** the BGP identifier */
+  id: string;
+  /** the address families it announces (its capabilities) */
+  afi: string;
+}
+
 function bgpRouteToPeer(P: ProtocolSim, s: Sess): boolean {
   const d = lookup(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx(s.dev));
   return d.kind === 'forward' || d.kind === 'local';
 }
 
+/** The device's own AS number (its BGP service's asn), null when it has none. */
+function bgpOwnAs(P: ProtocolSim, dev: string): number | null {
+  const v = bgpAsn(P.m.index.devices.get(dev));
+  return v === undefined ? null : v;
+}
+
+/**
+ * The hold time a device proposes on a session: the relation's `hold`
+ * (per device: `hold.<device>`; 0 or 3–65535 s), else the simulation's
+ * (3 × BGP keepalive). 0 means none (RFC 4271 §4.4: no KEEPALIVEs, no hold timer).
+ */
+function bgpHold(P: ProtocolSim, s: Sess): { s: number; text: string } {
+  const v = relParam(s.rel, 'hold', s.dev);
+  if (v !== undefined && /^\s*[0-9]+\s*$/.test(v)) {
+    const n = Number(v);
+    if (n === 0) return { s: 0, text: '0 (configured: no keepalives and no hold timer)' };
+    if (n >= 3 && n <= 65535) return { s: n, text: `${n} s (configured)` };
+  }
+  const t = P.timer(s, s.profile, 'hold');
+  return { s: Math.round(t.ms / 1000), text: t.text };
+}
+
+/** The AS a device expects its peer in: the relation's `peer-as`, else (iBGP) its own, else the peer's own AS. */
+function bgpExpectedAs(P: ProtocolSim, s: Sess): { as: number | null; how: string } {
+  const v = relParam(s.rel, 'peer-as', s.dev);
+  if (v !== undefined && /^\s*[0-9]+\s*$/.test(v)) return { as: Number(v), how: 'its peer-as' };
+  if (normalizeProtocol(s.rel.protocol) === 'ibgp') return { as: bgpOwnAs(P, s.dev), how: 'iBGP: its own AS' };
+  return { as: bgpOwnAs(P, s.peer), how: `${s.peer}'s own AS` };
+}
+
+function bgpAfi(s: Sess): string {
+  return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : s.local.addr.version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
+}
+
+/** The details of a session: the negotiated hold time and keepalive interval (or what it proposes before). */
+function bgpDetail(P: ProtocolSim, s: Sess): void {
+  const neg = s.x.holdMs as number | undefined;
+  if (neg !== undefined) {
+    s.x.detail = neg === 0 ? 'hold time 0 negotiated: no keepalives, no hold timer' : `keepalive ${fmtSec(s.x.kaMs as number)}, hold ${fmtSec(neg)} (negotiated: the smaller of ${(s.x.open as BgpOpen).hold} s and ${(s.x.peerOpen as BgpOpen).hold} s)`;
+    return;
+  }
+  const h = bgpHold(P, s);
+  s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${h.text}`;
+}
+
 function bgpConnect(P: ProtocolSim, s: Sess): void {
   if (!s.initiator) return;
-  if (s.state === 'Established') return;
+  if (s.state === 'Established' || s.state === 'OpenSent' || s.state === 'OpenConfirm') return;
+  if (bgpOwnAs(P, s.dev) === null) {
+    if (s.state !== 'Idle') P.setState(s, 'Idle', false, `${s.dev} has no AS number: it does not start the session`);
+    return;
+  }
   if (!bgpRouteToPeer(P, s)) {
     // a session between loopbacks waits for a route to the peer (the IGP): it goes on the moment there is one
     if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(s.remote.addr)} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
@@ -654,33 +718,15 @@ function bgpConnect(P: ProtocolSim, s: Sess): void {
   P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(s.remote.addr)} port 179`);
   P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(s.remote.addr)} waiting for TCP (the connection to port 179)`);
   s.x.tcpSince = P.e.now;
-  bgpSyn(P, s, 0, (s.x.synTok = ((s.x.synTok as number) || 0) + 1));
+  if (!tcpConnect(P, s)) P.setState(s, 'Active', false, 'no connection could be opened');
+  // ConnectRetry (RFC 4271 §8.2.2): an attempt not open by then is dropped and made again
   const retry = P.timer(s, s.profile, 'connect-retry');
   P.later(s, retry.ms, () => {
     if (s.state === 'Connect' || s.state === 'Active') {
+      tcpClose(P, s, 'ConnectRetry timer expired', true);
       P.setState(s, 'Active', false, `ConnectRetry timer expired (${retry.text})`);
       bgpConnect(P, s);
     }
-  });
-}
-
-/**
- * BGP's TCP connection: its SYN is sent again after the initial
- * retransmission timeout, doubling each time, until the SYN retries are
- * spent (Layer 4 parameters); then the attempt has timed out and the
- * ConnectRetry timer tries again.
- */
-function bgpSyn(P: ProtocolSim, s: Sess, n: number, tok: number): void {
-  P.unicast(s, 'TCP SYN', n ? `to port 179, retransmission ${n}` : 'to port 179', {}, 'Connect');
-  const rto = Math.min(120000, P.e.params.num('tcp-rto', s.dev) * Math.pow(2, n));
-  P.later(s, rto, () => {
-    if (s.state !== 'Connect' || s.x.synTok !== tok) return;
-    const max = P.param('tcp-syn-retries', s.dev);
-    if (n >= Number(max.value)) {
-      P.e.note('state', s.protocol, s.dev, s.peer, 'TCP connect timed out', 'Connect', `${s.rel.id}: ${s.dev}'s TCP connection to ${formatAddr(s.remote.addr)}:179 timed out after ${n} retransmissions (TCP SYN retries ${P.paramText(max)}); the ConnectRetry timer tries again`);
-      return;
-    }
-    bgpSyn(P, s, n + 1, tok);
   });
 }
 
@@ -690,75 +736,136 @@ function updateText(s: Sess): string {
   return 'its prefixes';
 }
 
-const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: boolean) => void } = {
+/** This side's OPEN (structured: version, AS, hold time, identifier, address family). */
+function bgpSendOpen(P: ProtocolSim, s: Sess): void {
+  const h = bgpHold(P, s);
+  const o: BgpOpen = { version: 4, as: bgpOwnAs(P, s.dev), hold: h.s, id: routerId(P, s.dev, 'bgp'), afi: bgpAfi(s) };
+  s.x.open = o;
+  tcpSend(P, s, 'OPEN', `version 4, AS ${o.as === null ? '?' : o.as}, hold time ${o.hold} s, BGP identifier ${o.id}, ${o.afi}`, 45, { open: o });
+}
+
+/** Why a peer's OPEN is refused (RFC 4271 §6.2: the NOTIFICATION's error), '' when it is accepted. */
+function bgpOpenError(P: ProtocolSim, s: Sess, o: BgpOpen | undefined): string {
+  if (!o) return 'OPEN Message Error: no parameters';
+  if (o.version !== 4) return `OPEN Message Error / Unsupported Version Number (${o.version})`;
+  const exp = bgpExpectedAs(P, s);
+  if (o.as === null || exp.as === null || o.as !== exp.as) return `OPEN Message Error / Bad Peer AS: AS ${o.as === null ? '?' : o.as} in the OPEN, ${s.dev} expects ${exp.as === null ? 'an AS it does not know' : 'AS ' + exp.as} (${exp.how})`;
+  if (o.hold === 1 || o.hold === 2) return `OPEN Message Error / Unacceptable Hold Time (${o.hold} s)`;
+  if (o.id === routerId(P, s.dev, 'bgp')) return `OPEN Message Error / Bad BGP Identifier (${o.id} is ${s.dev}'s own)`;
+  return '';
+}
+
+/** The negotiated timers (RFC 4271 §4.2, §10): the smaller hold time; keepalives at most a third of it (none when it is 0). */
+function bgpNegotiate(P: ProtocolSim, s: Sess, peer: BgpOpen): void {
+  const own = s.x.open as BgpOpen | undefined;
+  const mine = own ? own.hold : bgpHold(P, s).s;
+  const hold = Math.min(mine, peer.hold) * 1000;
+  s.x.peerOpen = peer;
+  s.x.holdMs = hold;
+  s.x.kaMs = hold === 0 ? 0 : Math.min(P.timer(s, s.profile, 'keepalive').ms, Math.floor(hold / 3));
+  bgpDetail(P, s);
+}
+
+function bgpHoldTimer(P: ProtocolSim, s: Sess): void {
+  const hold = s.x.holdMs as number | undefined;
+  if (!hold) return;
+  deadCheck(P, s, hold, () => bgp.down(P, s, `hold timer expired (${fmtSec(hold)}, negotiated)`, true));
+}
+
+/** Refuse the OPEN: NOTIFICATION, the connection closed, the session Idle (ConnectRetry tries again). */
+function bgpRefuse(P: ProtocolSim, s: Sess, err: string): void {
+  tcpSend(P, s, 'NOTIFICATION', err, 21, { error: err });
+  bgp.down(P, s, `${err} — NOTIFICATION sent`);
+}
+
+const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: boolean) => void } = {
   refresh(P, s) {
-    s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${P.timer(s, s.profile, 'hold').text}`;
+    bgpDetail(P, s);
   },
   start(P, s) {
-    bgp.refresh!(P, s);
+    bgpDetail(P, s);
+    if (bgpOwnAs(P, s.dev) === null) {
+      // no BGP speaker: nothing listens on port 179, nothing connects
+      P.setState(s, 'Idle', false, `${s.dev} has no AS number (its BGP service's asn): no BGP speaker runs`);
+      return;
+    }
+    tcpListen(P, s);
     if (s.initiator) bgpConnect(P, s);
     else if (s.state === 'Idle') P.setState(s, 'Active', false, 'waiting for the peer to connect');
   },
+  tcp(P, s, ev, why) {
+    if (ev === 'open') {
+      if (!s.initiator) return;
+      P.setState(s, 'OpenSent', false, 'TCP connection established');
+      s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
+      bgpSendOpen(P, s);
+      return;
+    }
+    if (s.state === 'Connect') {
+      // the attempt failed (refused, timed out): Active, and the ConnectRetry timer tries again
+      P.setState(s, 'Active', false, `TCP connection to ${formatAddr(s.remote.addr)}:179 failed: ${why}`);
+      return;
+    }
+    if (s.state !== 'Idle' && s.state !== 'Active') bgp.down(P, s, `its TCP connection ${/^(closed|reset|connection)/.test(why) ? why : 'is gone: ' + why}`);
+  },
   rx(P, s, msg) {
-    const hold = P.timer(s, s.profile, 'hold');
-    const dd = P.m.index.devices.get(s.dev);
-    const asn = dd ? (dd.services.find((x) => x.id === 'bgp') || { values: new Map() }).values.get('asn') : undefined;
+    const d = (msg.data || {}) as { open?: BgpOpen; error?: string };
     switch (msg.type) {
-      case 'TCP SYN':
-        if (s.state === 'Established') bgp.down(P, s, 'the peer reconnects');
-        P.unicast(s, 'TCP SYN-ACK', 'accepts the connection on port 179', {}, 'Connect');
-        if (s.state !== 'Connect') P.setState(s, 'Connect', false, 'TCP connection from the peer');
+      case 'OPEN': {
+        if (['Active', 'Connect', 'OpenSent'].indexOf(s.state) < 0) return;
+        const err = bgpOpenError(P, s, d.open);
+        if (err) {
+          if (!s.initiator && s.state !== 'OpenSent') bgpSendOpen(P, s);
+          bgpRefuse(P, s, err);
+          return;
+        }
+        if (!s.initiator) bgpSendOpen(P, s);
+        bgpNegotiate(P, s, d.open as BgpOpen);
+        P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer} (AS ${(d.open as BgpOpen).as}, hold ${(d.open as BgpOpen).hold} s, identifier ${(d.open as BgpOpen).id})`);
+        tcpSend(P, s, 'KEEPALIVE', 'confirms the OPEN', 19);
+        bgpHoldTimer(P, s);
         return;
-      case 'TCP SYN-ACK':
-        if (s.state !== 'Connect') return;
-        P.unicast(s, 'TCP ACK', 'the connection is open');
-        P.setState(s, 'OpenSent', false, 'TCP connection established');
-        s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
-        P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${fmtSec(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}${s.protocol === 'evpn' ? ', L2VPN EVPN' : s.protocol === 'l3vpn' ? ', VPNv4' : ''}`, {}, 'OpenSent');
-        return;
-      case 'TCP ACK':
-        if (s.state !== 'Connect') return;
-        P.setState(s, 'OpenSent', false, 'TCP connection established');
-        P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${fmtSec(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}`, {}, 'OpenSent');
-        return;
-      case 'OPEN':
-        if (s.state !== 'OpenSent') return;
-        P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer}`);
-        P.unicast(s, 'KEEPALIVE', 'confirms the OPEN', {}, 'OpenConfirm');
-        return;
+      }
       case 'KEEPALIVE':
         if (s.state === 'OpenConfirm') {
           P.setState(s, 'Established', true, 'KEEPALIVE received');
           s.x.waitedNext = ['the session to be Established'];
-          P.unicast(s, 'UPDATE', updateText(s), {}, 'Established');
-          const g = s.gen;
-          const kms = (): number => P.timer(s, s.profile, 'keepalive').ms;
-          P.periodic(
-            () => s.gen === g && s.state === 'Established',
-            kms,
-            () => P.unicast(s, 'KEEPALIVE', `every ${P.timer(s, s.profile, 'keepalive').text}`),
-            kms(),
-          );
+          tcpSend(P, s, 'UPDATE', updateText(s), 60);
+          const ka = s.x.kaMs as number;
+          if (ka > 0) {
+            const g = s.gen;
+            P.periodic(
+              () => s.gen === g && s.state === 'Established',
+              () => s.x.kaMs as number,
+              () => tcpSend(P, s, 'KEEPALIVE', `every ${fmtSec(s.x.kaMs as number)} (a third of the negotiated hold time at most)`, 19),
+              ka,
+            );
+          }
         }
-        if (s.state === 'Established') deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
+        if (s.state === 'Established') bgpHoldTimer(P, s);
         return;
       case 'UPDATE':
-        if (s.state === 'Established') deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
+        if (s.state === 'Established') bgpHoldTimer(P, s);
         return;
       case 'NOTIFICATION':
-        bgp.down(P, s, `NOTIFICATION from ${s.peer}`);
+        bgp.down(P, s, `NOTIFICATION from ${s.peer}: ${d.error || 'closes the session'}`);
         return;
       default:
         return;
     }
   },
   down(P: ProtocolSim, s: Sess, why: string, notify = false) {
-    if (s.state === 'Idle' && !s.up) return;
+    if (s.state === 'Idle' && !s.up && !s.x.sock) return;
     const was = s.state === 'Established';
-    if (notify) P.unicast(s, 'NOTIFICATION', `Hold Timer Expired: closes the session`);
+    if (notify) tcpSend(P, s, 'NOTIFICATION', 'Hold Timer Expired: closes the session', 21, { error: 'Hold Timer Expired' });
+    // after a NOTIFICATION the connection is closed (FIN after it); else it is reset
+    tcpClose(P, s, why, !notify && !/NOTIFICATION sent/.test(why));
     P.restart(s);
+    delete s.x.holdMs;
+    delete s.x.peerOpen;
     P.setState(s, 'Idle', false, why);
-    if (was) for (const o of others(P, s, s.protocol, (q) => q.state === 'Established')) P.unicast(o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`);
+    bgpDetail(P, s);
+    if (was) for (const o of others(P, s, s.protocol, (q) => q.state === 'Established')) tcpSend(P, o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`, 30);
     const retry = P.timer(s, s.profile, 'connect-retry');
     if (s.initiator) P.later(s, retry.ms, () => bgpConnect(P, s));
     else P.later(s, 1000, () => P.setState(s, 'Active', false, 'waiting for the peer to connect again'));
@@ -767,15 +874,16 @@ const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: b
 
 // ------------------------------------------------------------------ LDP (link and targeted)
 
-const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
+const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
   start(P, s) {
     const targeted = s.protocol !== 'ldp';
     const group = addr('224.0.0.2');
     const name = targeted ? 'Targeted Hello' : 'Hello';
+    tcpListen(P, s);
     every(P, s, () => P.timer(s, s.profile, 'hello').ms, () => {
       const hello = P.timer(s, s.profile, 'hello');
       if (targeted || s.local.addr.version === 6) P.unicast(s, name, `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
-      else if (s.initiator || true) {
+      else {
         const key = `ldp-hello|${s.rel.id}|${s.dev}|${Math.floor(P.e.now / hello.ms)}`;
         if (!P.shared.has(key)) {
           P.shared.set(key, true);
@@ -784,46 +892,55 @@ const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } 
       }
     });
   },
+  tcp(P, s, ev, why) {
+    if (ev === 'open') {
+      // the active side (the higher transport address) starts the session; the passive one answers its Initialization
+      if (compareAddr(s.local.addr, s.remote.addr) > 0 && s.state === 'Initialized') {
+        P.setState(s, 'OpenSent', false, 'TCP open');
+        tcpSend(P, s, 'Initialization', 'session parameters (keepalive time, label distribution)', 32);
+      }
+      return;
+    }
+    if (s.state !== 'Non-existent') ldp.down(P, s, `the session's TCP connection ${why}`);
+  },
   rx(P, s, msg) {
     const hold = P.timer(s, s.profile, 'dead');
     // the side with the higher transport address opens the session (RFC 5036 2.5.2)
     const active = compareAddr(s.local.addr, s.remote.addr) > 0;
+    const session = (): void => {
+      const sh = P.timer(s, s.profile, 'hold');
+      P.armDead(s, sh.ms, () => ldp.down(P, s, `session hold time expired (${sh.text})`), 'session');
+    };
     switch (msg.type) {
       case 'Hello':
       case 'Targeted Hello':
         deadCheck(P, s, hold.ms, () => ldp.down(P, s, `hello hold time expired (${hold.text})`));
         if (s.state === 'Non-existent' && active) {
           P.setState(s, 'Initialized', false, `hello from ${s.peer}; opening the session (higher transport address)`);
-          P.unicast(s, 'TCP SYN', 'to port 646');
+          if (!tcpConnect(P, s)) P.setState(s, 'Non-existent', false, 'no TCP connection could be opened');
         }
         return;
-      case 'TCP SYN':
-        P.unicast(s, 'TCP SYN-ACK', 'port 646');
-        if (s.state === 'Non-existent') P.setState(s, 'Initialized', false, 'TCP from the peer');
-        return;
-      case 'TCP SYN-ACK':
-        P.unicast(s, 'TCP ACK', 'the session’s TCP is open');
-        P.setState(s, 'OpenSent', false, 'TCP open');
-        P.unicast(s, 'Initialization', 'session parameters (keepalive time, label distribution)');
-        return;
       case 'Initialization':
+        session();
         if (s.state === 'Initialized' || s.state === 'Non-existent') {
           P.setState(s, 'OpenRec', false, 'Initialization from the peer');
-          P.unicast(s, 'Initialization', 'session parameters');
+          tcpSend(P, s, 'Initialization', 'session parameters', 32);
         } else if (s.state === 'OpenSent') P.setState(s, 'OpenRec', false, 'Initialization from the peer');
-        P.unicast(s, 'Keepalive', 'accepts the session');
+        tcpSend(P, s, 'Keepalive', 'accepts the session', 14);
         return;
       case 'Keepalive':
+        session();
         if (s.state === 'OpenRec') {
           P.setState(s, 'Operational', true, 'session up');
-          if (s.protocol === 'ldp') P.unicast(s, 'Address', 'its interface addresses');
-          P.unicast(s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)');
+          if (s.protocol === 'ldp') tcpSend(P, s, 'Address', 'its interface addresses', 30);
+          tcpSend(P, s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)', 40);
           every(P, s, () => P.timer(s, s.profile, 'keepalive').ms, () => {
-            if (s.state === 'Operational') P.unicast(s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`);
+            if (s.state === 'Operational') tcpSend(P, s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`, 14);
           });
         }
         return;
       default:
+        if (s.state === 'Operational') session();
         return;
     }
   },
@@ -831,7 +948,8 @@ const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } 
     if (!up && s.protocol === 'ldp') ldp.down(P, s, `interface ${s.local.l3.id} went down`);
   },
   down(P, s, why) {
-    if (s.state === 'Non-existent') return;
+    if (s.state === 'Non-existent' && !s.x.sock) return;
+    tcpClose(P, s, why);
     P.restart(s);
     P.setState(s, 'Non-existent', false, why + '; labels withdrawn');
     ldp.start(P, s);

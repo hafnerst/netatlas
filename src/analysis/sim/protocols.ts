@@ -25,6 +25,7 @@ import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus, SnoopResult } from './types';
 import { serviceRelations } from './service-relations';
+import type { Transport } from './transport';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -164,6 +165,9 @@ export class ProtocolSim implements Protocols {
   readonly routesHooks: Array<(dev: string) => void> = [];
   /** PIM messages of a session that multicast.ts handles (Join/Prune, Graft): true when it did */
   pimHook: ((s: Sess, msg: Msg, l3: L3Iface | null) => boolean) | null = null;
+  /** the transport (transport.ts): the connections of the protocols over TCP (proto-tcp.ts), and every TCP segment it receives */
+  transport: Transport | null = null;
+  tcpHook: ((dev: string, l3: L3Iface, pkt: Pkt) => void) | null = null;
   private periodics: Periodic[] = [];
 
   constructor(engine: Engine, behaviours: { [id: string]: Behaviour }) {
@@ -775,6 +779,11 @@ export class ProtocolSim implements Protocols {
   }
 
   private dispatch(dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null): void {
+    // a TCP segment of the transport (a BGP session's, an application's, a test's): its connection takes it
+    if (pkt && l3 && pkt.l4 && pkt.l4.proto === 'tcp' && msg.data && (msg.data as { tcp?: boolean }).tcp && this.tcpHook) {
+      this.tcpHook(dev, l3, pkt);
+      return;
+    }
     const h = this.handlers.get(msg.protocol);
     if (h && h(dev, l3, msg, pkt, frame) !== false) return;
     const data = (msg.data || {}) as MsgData;

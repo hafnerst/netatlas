@@ -193,6 +193,8 @@ interface Conn {
   answered?: boolean;
   /** an application's own connection (MQTT, BGP): its socket, which gets the messages instead of the request / answer logic */
   sock?: AppSocket;
+  /** the protocol its segments are drawn as (a BGP session's connection: BGP), else TCP */
+  shown?: { protocol: string; label: string; relation?: string };
 }
 
 /** A message an application sends over its connection (an MQTT packet): what is drawn and logged, its size. */
@@ -210,6 +212,8 @@ export interface AppMessage {
   data: { [k: string]: unknown };
   /** the model's relation it belongs to (a BGP session's), if any */
   relation?: string;
+  /** what it waited for before it could go (a BGP OPEN: its TCP connection), for the inspector */
+  waited?: string[];
 }
 
 /** What an application's connection tells it. */
@@ -261,6 +265,10 @@ export class AppSocket {
   /** reset it (RST): gone at once on both ends */
   reset(why: string): void {
     this.T.appReset(this, why);
+  }
+  /** its segments (the handshake, the acknowledgments) are drawn and filtered as this protocol's, of this relation */
+  show(protocol: string, label: string, relation?: string): void {
+    this.c.shown = { protocol, label, relation };
   }
   /** the connection's table row: its state and sequence numbers (for an application's status) */
   get state(): string {
@@ -350,6 +358,9 @@ export class Transport {
     P.handlers.set('udp', (dev, l3, _msg, pkt) => {
       if (pkt && l3) this.udpIn(dev, l3, pkt);
     });
+    // a segment of a connection, whatever protocol it is drawn as (a BGP session's, an MQTT client's)
+    P.tcpHook = (dev, l3, pkt) => this.tcpIn(dev, l3, pkt);
+    P.transport = this;
     P.filterHook = (dev, pkt, from, to) => this.filter(dev, pkt, from, to);
     P.localErrorHook = (dev, pkt, kind, text, mtu) => this.localError(dev, pkt, kind, text, mtu);
     P.portHook = (dev, pkt, l3) => this.portOpen(dev, pkt, l3);
@@ -453,11 +464,33 @@ export class Transport {
    * else listens on the port on all addresses (a service, a relation's server, an unbound application).
    */
   private open(dev: string, proto: 'tcp' | 'udp', port: number, dst?: IpAddr): boolean {
+    // an application's own listener (an MQTT broker, a BGP speaker) listens while it runs
+    if (proto === 'tcp' && this.appListening.has(dev + '|' + port)) return true;
+    // a routing session's port (BGP 179, LDP 646) is open only while its speaker runs there (its relations alone open nothing)
+    if (proto === 'tcp' && this.sessionPorts(dev).has(port)) return false;
     const ls = this.listening(dev);
     if (!portsMatch(ls.rules, proto, port)) return false;
     if (!dst || ls.written) return true;
     const bound = this.boundOnly(dev, proto, port);
     return !bound || bound.some((b) => this.addrOn(dev, b, dst));
+  }
+
+  private sessionPortCache = new Map<string, Set<number>>();
+
+  /** The TCP ports of a device's routing sessions (BGP, EVPN, L3VPN, LDP …): their speakers listen on them, not the relations. */
+  private sessionPorts(dev: string): Set<number> {
+    let s = this.sessionPortCache.get(dev);
+    if (s) return s;
+    s = new Set<number>();
+    for (const r of this.P.m.relations) {
+      if (relationDevices(r).indexOf(dev) < 0) continue;
+      const prof = relationProfile(this.P.m, r);
+      if (prof.behaviour !== 'bgp' && prof.behaviour !== 'ldp') continue;
+      const m = /\bTCP\s+([0-9]{1,5})/.exec(prof.proto);
+      if (m) s.add(Number(m[1]));
+    }
+    this.sessionPortCache.set(dev, s);
+    return s;
   }
 
   /** The interfaces a port is bound to, when only bound applications listen on it (else null: all addresses). */
@@ -473,6 +506,7 @@ export class Transport {
 
   /** Why a port is closed, for the log: what listens, and where a bound application listens instead. */
   private listenText(dev: string, proto: 'tcp' | 'udp', port: number, dst: IpAddr): string {
+    if (proto === 'tcp' && this.sessionPorts(dev).has(port)) return `no ${port === 646 ? 'LDP' : 'BGP'} speaker runs on ${dev}: port ${port} is open only while one does`;
     const ls = this.listening(dev);
     const bound = portsMatch(ls.rules, proto, port) ? this.boundOnly(dev, proto, port) : null;
     if (bound) return `${proto}/${port} listens on ${bound.join(', ')} only, not on ${formatAddr(dst)}`;
@@ -562,6 +596,7 @@ export class Transport {
     pkt.len = len;
     pkt.df = df;
     pkt.flow = `${formatAddr(src)}:${l4.sport || l4.echoId || 0}>${formatAddr(dst)}:${l4.dport || 0}/${l4.proto}`;
+    if (l4.proto === 'tcp') (m.data as { tcp?: boolean }).tcp = true;
     this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
     // a group goes out of the interface it is sent from (a host sends it on its own segment)
     const out = isMulticastIp(dst) ? this.sourceFor(dev, dst) : null;
@@ -987,11 +1022,11 @@ export class Transport {
   // ------------------------------------------------------------ applications' own connections (MQTT, BGP)
 
   /** the listeners of the applications' own protocols, by "device|port" */
-  private appListening = new Map<string, { h: AppSocketHandlers; what: string }>();
+  private appListening = new Map<string, { h: AppSocketHandlers; what: string; shown?: Conn['shown'] }>();
 
   /** An application listens on a TCP port of its device (an MQTT broker, a BGP speaker): each connection gets a socket. */
-  appListen(dev: string, port: number, what: string, h: AppSocketHandlers): void {
-    this.appListening.set(dev + '|' + port, { h, what });
+  appListen(dev: string, port: number, what: string, h: AppSocketHandlers, shown?: { protocol: string; label: string }): void {
+    this.appListening.set(dev + '|' + port, { h, what, shown });
   }
 
   /** It stops listening (a BGP speaker going Idle): new connections to the port are refused again. */
@@ -1006,10 +1041,11 @@ export class Transport {
    * can't send. `from`: the source address (BGP's update source), else the
    * one the route gives; `vrf` with it.
    */
-  appConnect(dev: string, dst: IpAddr, port: number, what: string, h: AppSocketHandlers, from?: { src: IpAddr; vrf: string }): AppSocket | string {
+  appConnect(dev: string, dst: IpAddr, port: number, what: string, h: AppSocketHandlers, from?: { src: IpAddr; vrf: string }, shown?: { protocol: string; label: string; relation?: string }): AppSocket | string {
     const s = from || this.sourceFor(dev, dst);
     if (!s) return `${dev} has no IPv${dst.version} address to connect from`;
     const c = this.newConn({ dev, vrf: s.vrf, local: s.src, lport: this.ephemeral(dev), remote: dst, rport: port, state: 'SYN_SENT', role: 'client', what });
+    if (shown) c.shown = shown;
     const sock = new AppSocket(this, c, h);
     c.sock = sock;
     this.addConn(c);
@@ -1209,13 +1245,15 @@ export class Transport {
     const f = flags.join(',');
     const type = s.syn ? (synced ? 'TCP SYN-ACK' : 'TCP SYN') : s.fin ? 'TCP FIN' : s.len > 0 ? 'TCP data' : 'TCP ACK';
     const retx = s.sent > 0 ? ' (TCP retransmission)' : '';
-    const label = app ? app.label + retx : type === 'TCP SYN' ? `TCP SYN → ${to}${retx}` : type === 'TCP data' ? `TCP data → ${to} (${s.len} B)${retx}` : type + retx;
+    const sh = c.shown;
+    const label = app ? app.label + retx : sh ? `${sh.label} ${type}${retx}` : type === 'TCP SYN' ? `TCP SYN → ${to}${retx}` : type === 'TCP data' ? `TCP data → ${to} (${s.len} B)${retx}` : type + retx;
     const seqText = `seq ${s.seq}${synced ? ', ack ' + c.tcp.ackNo : ''}`;
     const detail = `${app ? app.detail + ' — ' : ''}TCP ${formatAddr(c.local)}:${c.lport} → ${to} [${f}] ${seqText}${s.len ? ', ' + s.len + ' bytes' : ''}: ${s.what}${more}`;
     const data: { [k: string]: unknown } = { from: '', ...(app ? app.data : {}) };
     if (s.mark) data.tcpMark = { id: s.mark.id, end: s.mark.end, kind: s.mark.msg.kind, bytes: s.mark.msg.kind === 'app' ? s.mark.msg.app.bytes : s.mark.msg.bytes };
     if (app) data.appType = app.type;
-    const msg: Msg = { protocol: (app ? app.protocol : 'tcp') as Msg['protocol'], type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : undefined };
+    const msg: Msg = { protocol: (app ? app.protocol : sh ? sh.protocol : 'tcp') as Msg['protocol'], type: app ? app.type : type, label, detail: sh && !app ? `${sh.label} ${detail}` : detail, data, relation: app && app.relation ? app.relation : sh ? sh.relation : undefined };
+    if (app && app.waited && s.sent === 0) msg.waited = app.waited;
     const l4: L4 = { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags, seq: s.seq, ack: synced ? c.tcp.ackNo : undefined };
     const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + s.len, true, this.e.ownerOf(c.remote) || '');
     this.lastPkt = p.id;
@@ -1228,13 +1266,25 @@ export class Transport {
     const seq = probe ? c.tcp.sndNxt - 1 : c.tcp.sndNxt;
     const type = probe ? 'TCP keepalive' : 'TCP ACK';
     const m = this.msg('tcp', type, type, `TCP ${formatAddr(c.local)}:${c.lport} → ${to} [ACK] seq ${seq}, ack ${c.tcp.ackNo}: ${what}`, {});
+    this.shownAs(c, m);
     this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: ['ACK'], seq, ack: c.tcp.ackNo }, 20, true, this.e.ownerOf(c.remote) || '');
+  }
+
+  /** A connection's own segment drawn as its protocol's (a BGP session's ACK is BGP's). */
+  private shownAs(c: Conn, m: Msg): void {
+    const sh = c.shown;
+    if (!sh) return;
+    m.protocol = sh.protocol as Msg['protocol'];
+    m.label = `${sh.label} ${m.label}`;
+    m.detail = `${sh.label} ${m.detail}`;
+    if (sh.relation) m.relation = sh.relation;
   }
 
   /** A RST of a connection (seq SND.NXT). */
   private rst(c: Conn, what: string): void {
     const to = `${formatAddr(c.remote)}:${c.rport}`;
     const m = this.msg('tcp', 'TCP RST', 'TCP RST', `TCP ${formatAddr(c.local)}:${c.lport} → ${to} [RST,ACK] seq ${c.tcp.sndNxt}, ack ${c.tcp.ackNo}: ${what}`, {});
+    this.shownAs(c, m);
     this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, { proto: 'tcp', num: 6, sport: c.lport, dport: c.rport, flags: ['RST', 'ACK'], seq: c.tcp.sndNxt, ack: c.tcp.ackNo }, 20, true, this.e.ownerOf(c.remote) || '');
   }
 
@@ -1283,6 +1333,7 @@ export class Transport {
         if (lh) {
           sc.sock = new AppSocket(this, sc, lh.h);
           sc.what = `${lh.what}: a client at ${formatAddr(pkt.src)}`;
+          if (lh.shown) sc.shown = { ...lh.shown };
         }
         sc.tcp.synIn(l4.seq || 0);
         this.addConn(sc);
@@ -1445,6 +1496,7 @@ export class Transport {
       if (c.sock && c.sock.closedWhy === null) c.sock.h.message(c.sock, m.app);
       return;
     }
+    // (a test's request on a port an application listens on too: answered as any server's)
     if (c.role === 'server') this.serverData(c, m.bytes, pkt);
     else this.answered(c);
   }

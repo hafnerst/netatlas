@@ -540,11 +540,12 @@ links:
 });
 
 test('BGP’s TCP connection retransmits its SYN by the Layer 4 parameters, then the ConnectRetry timer tries again', () => {
+  // b runs no BGP (no AS): nothing listens on its port 179, and it drops what comes there without a RST
   const Y = `netatlas: 1
 title: bgp
 devices:
   - {id: a, type: router, interfaces: [{id: g0, ip: 10.0.0.1/30}], protocols: {bgp: {asn: 65001}}}
-  - {id: b, type: router, interfaces: [{id: g0, ip: 10.0.0.2/30}], protocols: {bgp: {asn: 65002}}}
+  - {id: b, type: router, interfaces: [{id: g0, ip: 10.0.0.2/30}], simulation: {closed_port_reply: "off"}}
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
 links:
   - {id: l, a: "a:g0", b: "sw:p1"}
@@ -553,12 +554,18 @@ relations:
   - {id: ebgp, protocol: bgp, endpoints: ["a:g0", "b:g0"]}
 `;
   const s = sim(Y, { params: { 'tcp-syn-retries': 2 } });
-  s.powerOff('b');
   s.runTo(10000);
-  const syns = ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.what === 'TCP SYN').map((x) => x.detail);
+  // the common transport's connection: the same SYN (its sequence number) again after 1 s, then 2 s
+  const syns = ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.what === 'TCP SYN');
   assert.ok(syns.length >= 3);
-  assert.match(syns[1], /to port 179, retransmission 1$/);
-  assert.ok(ev(s, (x) => x.what === 'TCP connect timed out' && /after 2 retransmissions \(TCP SYN retries 2 \(simulation\)\)/.test(x.detail)).length === 1);
+  assert.match(syns[1].detail, /^BGP TCP 10\.0\.0\.1:\d+ → 10\.0\.0\.2:179 \[SYN\] seq \d+: opens a connection \(BGP ebgp to b\), retransmission 1 \(timeout 1 s\)$/);
+  const seq = (d) => /seq (\d+)/.exec(d)[1];
+  assert.equal(seq(syns[1].detail), seq(syns[0].detail));
+  assert.ok(Math.abs(syns[1].t - syns[0].t - 1000) < 1 && Math.abs(syns[2].t - syns[1].t - 2000) < 1);
+  // the SYN retries spent: the connection times out, the session goes Active, and the ConnectRetry timer tries again
+  assert.ok(ev(s, (x) => x.device === 'a' && x.what === 'connection closed' && /connection timed out: no answer to the SYN and its 2 retransmissions \(TCP SYN retries 2 \(simulation\)\)/.test(x.detail)).length === 1);
+  assert.ok(ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.state === 'Active' && /TCP connection to 10\.0\.0\.2:179 failed: connection timed out/.test(x.detail)).length === 1);
+  assert.ok(s.connTable('a').every((r) => r.state !== 'SYN_SENT'), 'nothing is left half-open');
 });
 
 test('determinism: the same model and the same tests at the same times give the same timeline', () => {

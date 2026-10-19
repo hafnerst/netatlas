@@ -92,6 +92,8 @@ export const BUILTIN_SERVICES: readonly ServiceDef[] = [
     params: [
       int('asn', 'Local AS number', 'device', 1, 4294967295, { required: true, help: 'The device’s own AS (1–4294967295); iBGP or eBGP follows from both ends.' }),
       int('peer-as', 'Peer AS expected', 'endpoint', 1, 4294967295, { help: 'The AS this device expects the other end to be in.' }),
+      int('hold', 'Hold time (s)', 'endpoint', 0, 65535, { suggest: ['90'], help: 'The hold time this device proposes in its OPEN; the session uses the smaller of both. 0: no keepalives and no hold timer; 1 and 2 are refused by the peer.' }),
+      int('keepalive', 'Keepalive (s)', 'endpoint', 1, 21845, { suggest: ['30'], help: 'At most a third of the negotiated hold time is used.' }),
       DISTANCE,
     ],
   },

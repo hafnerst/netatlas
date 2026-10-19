@@ -404,8 +404,8 @@ const CASES = [
   ['eigrp', { svc: 'eigrp: {asn: 10}' }, ['Hello', 'Update', 'ACK'], 'Up'],
   ['rip', { svc: 'rip: {}' }, ['Request', 'Response'], 'Heard'],
   ['bgp', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'TCP SYN-ACK', 'TCP ACK', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
-  ['evpn', { ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
-  ['l3vpn', { ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
+  ['evpn', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
+  ['l3vpn', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
   ['ldp', { svc: 'ldp: {}' }, ['Hello', 'TCP SYN', 'Initialization', 'Keepalive', 'Label Mapping'], 'Operational'],
   ['pseudowire', { ep: ['r1:lo0', 'r2:lo0'] }, ['Targeted Hello', 'Initialization', 'Keepalive', 'Label Mapping (PW)'], 'Operational'],
   ['vpls', { ep: ['r1:lo0', 'r2:lo0'] }, ['Targeted Hello', 'Initialization', 'Label Mapping (VPLS)'], 'Operational'],
@@ -470,7 +470,7 @@ test('profiles: failure and restore of a session (OSPF over a failed cable goes 
   b.runTo(20000);
   b.fail('link:l');
   b.runTo(20000 + 185000);
-  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min \(3 × bgp keepalive, default/.test(e.detail)).length, 'the hold time');
+  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min, negotiated\)/.test(e.detail)).length, 'the hold time');
   assert.ok(events(b, (e) => e.what === 'NOTIFICATION').length);
 });
 
