@@ -20686,13 +20686,13 @@ const BY_BEHAVIOUR = {
     stp: { level: 'modeled', does: 'A spanning tree per VLAN blocks loops; ports converge with the RSTP or STP timers and BPDUs are shown.', not: 'the tree is computed from the topology, not negotiated BPDU by BPDU; no MSTP regions.' },
     advert: { level: 'modeled', does: 'Periodic advertisements and each neighbour entry with its hold time are simulated.', not: 'their TLV contents.' },
     lacp: { level: 'modeled', does: 'LACPDUs on every member, bundling and min-links are simulated.', not: 'system and port priorities, keys, fast timers.' },
-    ospf: { level: 'modeled', does: 'Hellos, the adjacency states up to Full (DBD, LSR, LSU, LSAck), their timers and the flooding after a change are simulated; routes come from the adjacencies that are up.', not: 'LSA contents field by field, area types, authentication.' },
-    isis: { level: 'modeled', does: 'Hellos, the adjacency states and their timers are simulated; routes come from the adjacencies that are up.', not: 'LSPs field by field, levels’ details, authentication.' },
+    ospf: { level: 'modeled', does: 'Hellos (their intervals, area and network type must match), the interface states with the DR and BDR election of RFC 2328 (priority 0, Waiting, non-preemptive), the adjacency states up to Full (DBD, LSR, LSU, LSAck) with retransmission; each router’s routes come from the records its LSUs brought it (flooded, acknowledged, sent again after 5 s).', not: 'LSA types and contents field by field (a record per router: its adjacencies and interfaces), area types and inter-area summarization, authentication.' },
+    isis: { level: 'modeled', does: 'Hellos, the adjacency states and their timers are simulated; each router’s routes come from the records its LSPs brought it.', not: 'LSPs field by field (a record per router), levels’ details, authentication.' },
     eigrp: { level: 'modeled', does: 'Hellos, Updates, the neighbour states with their hold time, and Queries and Replies when a neighbour is lost are simulated; routes come from the adjacencies that are up.', not: 'DUAL’s feasibility computation, metrics from bandwidth and delay.' },
-    rip: { level: 'modeled', does: 'Requests, periodic and triggered Responses and the neighbour timeout are simulated; routes come from the neighbours that are heard.', not: 'the table’s entries field by field (metrics, route tags).' },
-    bgp: { level: 'modeled', does: 'The TCP session, OPEN, KEEPALIVE, the hold timer and UPDATEs are simulated; routes come from the sessions that are up, through the routing-policy subset (advertised prefixes, a default route, redistribution, ordered import/export filters, local preference, AS-path length and prepending).', not: 'communities, MED, route reflection, iBGP split horizon, authentication.' },
-    ldp: { level: 'modeled', does: 'Hellos, the session and its label mapping messages are simulated.', not: 'label-switched forwarding: traffic follows the IP path.' },
-    pim: { level: 'modeled', does: 'Hellos with the DR election, Join/Prune, Register, the RP’s Bootstrap announcement, the RPF check and multicast forwarding (sparse, SSM, dense) are simulated.', not: 'an election among BSR candidates (the RP is configured), Auto-RP, asserts.' },
+    rip: { level: 'modeled', does: 'Requests, periodic and triggered Responses and the neighbour timeout are simulated; each router’s routes come from what the Responses brought it (a lost triggered Response waits for the next periodic one).', not: 'the table’s entries field by field (metrics, route tags): what a Response carries is the simulation’s records of the routers.' },
+    bgp: { level: 'modeled', does: 'The session over a TCP connection of the transport, OPEN as structured parameters (AS checked, hold time negotiated, 0 for none), KEEPALIVE, the hold timer, NOTIFICATION and UPDATEs; each router’s routes come from what its UPDATEs brought it, through the routing-policy subset (advertised prefixes, a default route, redistribution, ordered import/export filters, local preference, AS-path length and prepending).', not: 'communities, MED, route reflection, iBGP split horizon, authentication.' },
+    ldp: { level: 'modeled', does: 'Hellos, the session over a TCP connection of the transport (with its hold time) and its label mapping messages are simulated.', not: 'label-switched forwarding: traffic follows the IP path.' },
+    pim: { level: 'modeled', does: 'Hellos with the DR election, Join/Prune, Register and Register-Stop, the RP’s Bootstrap announcement, the RPF check and multicast forwarding (sparse, SSM, dense) are simulated; each router uses its own RP (its static RP, its relations’ rp, its PIM domain’s candidate, of the group’s address family).', not: 'an election among BSR candidates (the candidate with the highest router ID of a domain), group ranges per RP, Auto-RP, asserts.' },
     igmp: { level: 'modeled', does: 'Reports, leaves, queries, the querier election and switches’ snooping per VLAN are simulated.', not: 'IGMP proxying.' },
     bfd: { level: 'modeled', does: 'Control packets and the detection time are simulated; a session down takes its client protocols down.', not: 'echo mode, authentication.' },
     fhrp: { level: 'modeled', does: 'The election, advertisements, the virtual MAC and failover with a gratuitous ARP are simulated.', not: 'object tracking, load sharing details.' },
@@ -69489,7 +69489,7 @@ exports.ENTRY_GROUPS = ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlay
 /** The support of the entries that are no relation protocol's profile: the tests' transport and the traffic. */
 const ENTRY_SUPPORT = {
     icmp: { level: 'modeled', does: 'Echo requests and replies, and the ICMP errors routers and hosts send (unreachable, time exceeded, fragmentation needed with path MTU discovery).', not: 'ICMP redirects, router discovery over ICMPv4.' },
-    tcp: { level: 'modeled', does: 'The three-way handshake, segments by the path MTU, retransmission with backoff, RST, FIN and TIME_WAIT, keepalive probes, firewall sessions.', not: 'congestion control and windows: no throughput is computed.' },
+    tcp: { level: 'modeled', does: 'A byte stream per connection: the handshake, sequence and acknowledgement numbers (SYN and FIN take one each), segments by the path MTU, cumulative acknowledgements, retransmission of the earliest unacknowledged segment with backoff, duplicates and out-of-order segments, each message delivered once after its last byte, RST, FIN, TIME_WAIT, keepalive probes, firewall sessions; BGP, LDP, HTTPS and SSL VPN run over it.', not: 'windows, congestion control, fast retransmit, SACK and options: every segment of a write goes at once, and no throughput is computed.' },
     udp: { level: 'modeled', does: 'Datagrams to open ports and their answers; ICMP port unreachable from a closed port.', not: 'payload contents.' },
     demand: { level: 'modeled', does: 'Representative packets of each demand (one every 1–4 s, more often for more bandwidth) along the path routing gives it, rerouted after failures: they show its way and whether it gets through.', not: 'its bandwidth: the stated rate is capacity analysis’s; no cable is loaded, queued or congested by it, and no throughput or latency under load is concluded.' },
     mcast: { level: 'modeled', does: 'Each stream’s datagrams, replicated by snooping switches and multicast routing to the members.', not: 'bandwidth and rate limits.' },
@@ -83547,10 +83547,13 @@ class SimController {
         return true;
     }
     inspect(h, where, near, key, label, forwarding = []) {
+        const ent = this.entries.find((x) => x.id === h.protocol);
+        const support = ent ? { label: ent.label, level: ent.support.level, does: ent.support.does, not: ent.support.not } : undefined;
         const data = () => ({
             hdr: h,
             where,
             forwarding,
+            support,
             follow: {
                 on: !!this.pacer.follow && this.pacer.follow.key === key,
                 act: () => {
@@ -88192,6 +88195,14 @@ class TablePanels {
         const why = [['Caused by', h.causedBy || 'its own timer or start (nothing it answers)']];
         why.push(['Waited for', h.waited && h.waited.length ? h.waited.join('; ') : 'nothing: sent at once']);
         layer('Timing', why);
+        // which fields the simulation computed, which it leaves out, and what is only described
+        const computed = ['addresses and MACs', 'the VLAN tag', h.l3.length ? (h.l3[0].version === 4 ? 'TTL, DF and fragments' : 'the hop limit and fragments') : '', l4 && l4.proto === 'icmp' ? 'the ICMP type, code and quoted header' : '', l4 && (l4.proto === 'tcp' || l4.proto === 'udp') ? 'the ports' : '', l4 && l4.proto === 'tcp' ? 'the TCP flags, sequence and acknowledgement numbers (the connection’s own state)' : '', 'the sizes'].filter((x) => x);
+        const fid = [
+            ['Computed', computed.join(', ') + ': what the simulation works with.'],
+            ['Left out', 'checksums, IP identification and options, the TCP window and options: nothing in the simulation depends on them.'],
+            ['Described', `the payload (${d.support ? d.support.label : h.protocol}) in words: its contents are the simulation’s own records, not the protocol’s field layout${d.support && d.support.not ? ` — not simulated: ${d.support.not.replace(/\.$/, '')}` : ''}.`],
+        ];
+        layer('Fidelity', fid);
         return box;
     }
     arpTable(caption, rows, v6) {

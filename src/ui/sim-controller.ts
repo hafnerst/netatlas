@@ -1490,10 +1490,13 @@ export class SimController implements SimulationMode {
   }
 
   private inspect(h: Headers, where: string, near: { x: number; y: number; w: number; h: number } | null | undefined, key: string, label: string, forwarding: Array<{ title: string; d: McDecision }> = []): void {
-    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }> } => ({
+    const ent = this.entries.find((x) => x.id === h.protocol);
+    const support = ent ? { label: ent.label, level: ent.support.level, does: ent.support.does, not: ent.support.not } : undefined;
+    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }>; support?: { label: string; level: string; does: string; not?: string } } => ({
       hdr: h,
       where,
       forwarding,
+      support,
       follow: {
         on: !!this.pacer.follow && this.pacer.follow.key === key,
         act: () => {

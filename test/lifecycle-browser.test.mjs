@@ -72,3 +72,24 @@ test('repeated Start dialogs, simulation starts and exits, and a model replaced 
     await page.close();
   }
 });
+
+test('the packet inspector says what is computed, what is left out and what is described (a TCP segment: its sequence numbers are the connection’s)', { skip, timeout: 120000 }, async () => {
+  const page = await openPage(url, { width: 1366, height: 768 });
+  try {
+    await page.settle(200);
+    await page.eval(`(sessionStorage.clear(), netatlas.loadExampleNamed('protocol-simulation.yaml'), true)`);
+    await page.settle(200);
+    const id = await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {} }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(8000); const t = c.sim.sendTest({ from: 'pc2', to: 'web', kind: 'tcp', port: 443 }); c.runTo(c.t + 3000); c.refresh(true); return t.id; })()`);
+    assert.ok(await page.eval(`netatlas.simController().inspectTest(${id})`));
+    await page.settle(150);
+    const text = await page.eval(`document.querySelector('.sim-table-panel[data-table="packet"] .pi').textContent`);
+    assert.match(text, /Fidelity/);
+    assert.match(text, /Computed.*the TCP flags, sequence and acknowledgement numbers \(the connection’s own state\)/);
+    assert.match(text, /Left out.*checksums, IP identification and options, the TCP window and options/);
+    assert.match(text, /Described.*the payload \(TCP \(tests\)\) in words.*not simulated: windows, congestion control/);
+    assert.doesNotMatch(text, /\.\.$/);
+    await page.eval(`netatlas.exitSimulation(), true`);
+  } finally {
+    await page.close();
+  }
+});
