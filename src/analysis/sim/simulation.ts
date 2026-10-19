@@ -14,6 +14,7 @@ import { capabilities } from '../../model/capabilities';
 import { snoopingChoice, switchedVlans } from '../../model/snooping';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
+import { lookup } from '../routing';
 import { formatAddr } from '../ipmath';
 import type { AnalysisSnapshot, SnapTiming } from '../snapshot';
 import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
@@ -524,7 +525,7 @@ export class Simulation {
   }
 
   /** Start application (Network events): a client application's messages, one event until they are done or Stop. */
-  actApp(dev: string, id: string, how: 'event' | 'start' = 'event'): ActionRecord {
+  actApp(dev: string, id: string, how: 'event' | 'start' | 'experiment' = 'event'): ActionRecord {
     // (an experiment starts it on scenario time, as the scenario's own applications run: a Network event's repeats on real time)
     const r = this.apps.start(dev, id, how);
     const a = this.apps.app(dev, id);
@@ -680,11 +681,22 @@ export class Simulation {
   }
 
   /** An experiment's multicast stream: on scenario time (a Network event's runs on real time), the same checks; the error, or null. */
-  startExperimentStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): string | null {
-    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'experiment');
-    if (typeof st === 'string') return st;
+  startExperimentStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): { error: string } | { traffic: number } {
+    // its datagrams and every copy carry an id of their own (the experiment's traffic)
+    const traffic = this.transport.reserveId();
+    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'experiment', 0, '', traffic);
+    if (typeof st === 'string') return { error: st };
     this.engine.stateVersion++;
-    return null;
+    return { traffic };
+  }
+
+  /** An experiment's join: as Join group, its reports carrying an id of their own (the experiment's traffic). */
+  joinTagged(dev: string, iface: string, group: string): { error: string } | { traffic: number } {
+    const traffic = this.transport.reserveId();
+    const r = this.multicast.join(dev, iface, group, [], 'event', traffic);
+    if (r) return { error: r };
+    this.engine.stateVersion++;
+    return { traffic };
   }
 
   /** What a host received of a multicast group so far (Multicast tables' reception), or null. */
@@ -809,6 +821,69 @@ export class Simulation {
 
   status(): SessionStatus[] {
     return this.protocols.status();
+  }
+
+  // ------------------------------------------------------------ what experiments observe (state the simulation already keeps)
+
+  /** An address an interface obtained at runtime: its DHCPv4 lease (with when it was bound), or a preferred SLAAC / DHCPv6 address; null: none. */
+  acquiredAddress(dev: string, iface: string, family?: string): { text: string; how: string; since?: number } | null {
+    if (family !== 'ipv6') {
+      const l = this.engine.leases.get(dev + ':' + iface);
+      if (l && l.kind === 'dhcp') return { text: l.addr.text, how: 'DHCPv4', since: l.bound };
+    }
+    if (family !== 'ipv4') {
+      const a = this.ipv6.acquiredAddress(dev, iface);
+      if (a) return { text: a.text, how: a.kind === 'slaac' ? 'SLAAC' : 'DHCPv6' };
+    }
+    return null;
+  }
+
+  /** A complete ARP (IPv4) or neighbor (IPv6) entry of a device for an address, or null. */
+  neighborEntry(dev: string, ip: string): { mac: string; iface: string; state: string } | null {
+    const rows = this.engine.arpRows(dev, 4).concat(this.engine.arpRows(dev, 6));
+    const r = rows.find((x) => x.ip === ip && x.mac !== '' && x.type !== 'incomplete' && x.state !== 'INCOMPLETE');
+    return r ? { mac: r.mac, iface: r.iface, state: r.state || r.type } : null;
+  }
+
+  /** The device's effective route lookup for an address: how it forwards (null: the address is none). */
+  routeLookup(dev: string, ip: string): { kind: 'forward' | 'local' | 'blackhole' | 'none'; text: string } | null {
+    const a = parseAddress(ip);
+    if (!a) return null;
+    const d = lookup(this.model, dev, '', a, this.engine.ctx(dev));
+    const e = d.entries[0];
+    const via = d.hops.map((h) => `${h.gateway ? 'via ' + formatAddr(h.gateway) + ' ' : ''}out ${h.iface}`).join(', ');
+    return { kind: d.kind, text: d.kind === 'none' ? `no route to ${ip}` : d.kind === 'local' ? `${ip} is its own address` : d.kind === 'blackhole' ? `${ip}: the selected route drops it` : `${e ? `${formatAddr(e.net)}/${e.net.prefix} (${e.kind})` : ip}${via ? ' ' + via : ''}` };
+  }
+
+  /** A device's sessions of a protocol (with a peer, else any): the simulation's status of them. */
+  sessions(dev: string, protocol: string, peer?: string): SessionStatus[] {
+    const p = protocol.toLowerCase();
+    return this.status().filter((x) => (x.protocol.toLowerCase() === p || x.protocol.toLowerCase().indexOf(p + ':') === 0) && (x.device === dev || (x.peer === dev && !!peer)) && (!peer || x.peer === peer || x.device === peer));
+  }
+
+  /** A device's timing state: its PTP clock's, its NTP client's (by protocol, or either). */
+  timingState(dev: string, protocol?: string): { synchronized: boolean; text: string } | null {
+    const out: Array<{ synchronized: boolean; text: string }> = [];
+    if (protocol !== 'ntp') {
+      const c = this.ptp.clocks.get(dev);
+      if (c && c.kind !== 'transparent') out.push({ synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: `PTP ${c.state}` });
+    }
+    if (protocol !== 'ptp') {
+      const n = this.status().find((x) => x.protocol === 'ntp' && x.device === dev);
+      if (n) out.push({ synchronized: n.up, text: `NTP ${n.state.toLowerCase()}` });
+    }
+    if (!out.length) return null;
+    const ok = out.find((x) => x.synchronized);
+    return ok || out[0];
+  }
+
+  /** What an MQTT client (device/application) received from its broker, on a topic or in all. */
+  mqttReceived(dev: string, app: string, topic?: string): { count: number; state: string } | null {
+    const cs = this.mqtt.clients.filter((c) => c.run.dev === dev && c.run.app.id === app);
+    if (!cs.length) return null;
+    let n = 0;
+    for (const c of cs) c.received.forEach((v, t) => (n += !topic || t === topic ? v : 0));
+    return { count: n, state: cs[cs.length - 1].state };
   }
 
   arpTable(dev: string): ArpRow[] {
