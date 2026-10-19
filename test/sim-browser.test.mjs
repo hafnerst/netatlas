@@ -53,7 +53,8 @@ test('the Start dialog with the keyboard: protocols first (groups, counts, Selec
       start: d.querySelector('[data-value="start"]').className, last: d.querySelector('.modal-btns').lastElementChild.getAttribute('data-value') }; })()`);
     assert.equal(d0.open, true);
     assert.equal(d0.active, 'sim-pd-protos-p-arp', 'the keyboard starts on the first protocol');
-    assert.deepEqual(d0.order.slice(0, 4), ['muted', 'pp', 'snd', 'psecs'], 'the protocols first, then the senders, the parameters below');
+    // (the execution scope, what runs, comes before the protocols since execution scopes: src/ui/scope-ui.ts)
+    assert.deepEqual(d0.order.slice(0, 5), ['muted', 'sim-pd-scope', 'pp', 'snd', 'psecs'], 'the execution scope, then the protocols, then the senders, the parameters below');
     assert.deepEqual(d0.groups, ['Layer 2 (4 of 4)', 'Routing (3 of 3)', 'Redundancy (1 of 1)', 'Tunnels and overlays (2 of 2)', 'Multicast (3 of 3)', 'Traffic (4 of 4)', 'Custom (1 of 1)']);
     assert.equal(d0.boxes, true, 'all selected by default');
     assert.match(d0.uses, /^OSPF\d+ relations$/);
