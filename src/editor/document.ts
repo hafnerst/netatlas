@@ -2040,11 +2040,31 @@ export class ModelDoc {
   }
 
   /** An experiment's execution scope ('entire' removes it); one undo step. */
-  setExperimentScope(expIndex: number, kind: 'entire' | 'group' | 'vlan' | 'domain' | 'device', value: string): void {
+  setExperimentScope(expIndex: number, kind: 'entire' | 'targets' | 'group' | 'vlan' | 'domain' | 'device', value: string): void {
     const p: Path = ['experiments', expIndex, 'scope'];
     this.change('Set scope', () => {
       if (kind === 'entire') this.removeAt(p);
+      else if (kind === 'targets') this.setAt(p, strNode('targets'), this.orderFor(p.slice(0, -1)));
       else this.setAt(p, mapNode([[kind, kind === 'vlan' && /^[0-9]+$/.test(value) ? numNode(Number(value)) : strNode(value)]], true), this.orderFor(p.slice(0, -1)));
+    }, { layout: false });
+  }
+
+  /**
+   * An experiment's starting state, one undo step: booted (start and settle
+   * left out), settled (settle written: that long first), or a cold start
+   * (start: cold; it never settles).
+   */
+  setExperimentStart(expIndex: number, start: 'booted' | 'settled' | 'cold', settle = '30s'): void {
+    const base: Path = ['experiments', expIndex];
+    this.change('Set start', () => {
+      if (start === 'cold') {
+        this.removeAt(base.concat(['settle']));
+        this.setAt(base.concat(['start']), strNode('cold'), this.orderFor(base));
+      } else {
+        this.removeAt(base.concat(['start']));
+        if (start === 'settled') this.setAt(base.concat(['settle']), strNode(settle), this.orderFor(base));
+        else this.removeAt(base.concat(['settle']));
+      }
     }, { layout: false });
   }
 

@@ -79,6 +79,18 @@
  * Next exchange (paused): on to the end of the exchange that is first on
  * screen (all its hops arrived), or of the next one to start.
  *
+ * An experiment playing (analysis/sim/experiment.ts) is shown with the same
+ * pacing, three things apart: only its traffic is shown (the host's `shown`
+ * says which; the rest runs, hidden, and takes no place: no dot, no cable
+ * activity, nothing on screen to wait for, so an idle stretch of it is
+ * skipped like nothing); a hop never waits on screen for a hidden one it
+ * continues or was caused by (`hiddenHoldsNothing`); nothing is muted
+ * (`mute` off: what is shown is all the experiment's); and the clock stops
+ * at the experiment's end (`host.until`). An idle jump also stops at the
+ * run's notable moments (`host.notable`: a step due, a device done booting)
+ * and the display rests there a moment, so that a state change without
+ * traffic — a cold start's devices booting — is seen, not skipped.
+ *
  * The browser's loop (sim-controller.ts) starts the display clock with the
  * first frame drawn and counts a frame at most FRAME_MAX, so that the
  * first hops get the same screen time as later ones.
@@ -222,6 +234,10 @@ export interface PacerHost {
   foreground?(): boolean;
   /** is a stream of Network events on the real-time schedule? The clock then runs in real time. */
   realtime?(): boolean;
+  /** the simulated time the clock never runs past (an experiment's end); null or none: no end */
+  until?(): number | null;
+  /** the next moment after `t` an idle jump stops at and rests (an experiment's step, a boot's end); null or none: none */
+  notable?(t: number): number | null;
 }
 
 /** A cable (or relation) with traffic not drawn as dots, lately: its protocols and how many hops of each. */
@@ -254,6 +270,10 @@ export class Pacer {
   fgNow = false;
   /** a stream of Network events runs on the real-time schedule: the clock runs in real time, held by nothing */
   rtNow = false;
+  /** the scenario's hops are muted while Network events hold the front (an experiment: off, everything shown is its own) */
+  mute = true;
+  /** a hop waits on screen only for a shown hop it continues or was caused by (an experiment: hidden traffic holds nothing) */
+  hiddenHoldsNothing = false;
   /** the simulation can't keep up with its rate (simulated ms behind, lately; 0: in step) */
   behind = 0;
   /** the display clock and simulated time the rate counts from, and where it left the simulation (moved since by other means: a Step, a jump: counted from there) */
@@ -349,7 +369,7 @@ export class Pacer {
    * goes on moving.
    */
   background(it: PaceItem): boolean {
-    return !it.test && this.fgActive();
+    return this.mute && !it.test && this.fgActive();
   }
 
   /** Does Network events' traffic hold the front now: an operation running, or a hop of one still on screen (on its way or about to start)? */
@@ -415,10 +435,13 @@ export class Pacer {
       // the copy before it has arrived on screen — a stream is a flow on every cable of its tree at once, and a change of the tree
       // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones
       const flow = f.protocol === 'mcast';
-      const parent = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
+      const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
+      // (a hidden hop holds nothing when hidden traffic must not delay what is shown)
+      const parent = pAny && (!this.hiddenHoldsNothing || this.host.shown(pAny.f)) ? pAny : undefined;
       let after = parent && !flow ? this.arrival(parent) : -Infinity;
       // what caused it (a frame it forwards, the request it answers, the ARP reply that released it) arrives first, in the same view
-      const cause = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
+      const cAny = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
+      const cause = cAny && (!this.hiddenHoldsNothing || this.host.shown(cAny.f)) ? cAny : undefined;
       if (!parent && !flow && cause && cause.f.view === f.view) after = Math.max(after, this.arrival(cause));
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
@@ -450,7 +473,7 @@ export class Pacer {
           this.act.push({ f, at: this.clock });
         }
       }
-      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent };
+      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
       this.items.push(it);
       this.byId.set(f.id, it);
       added.push(it);
@@ -516,7 +539,8 @@ export class Pacer {
     this.register();
     const rate = this.rate();
     if (!this.rt || Math.abs(e.now - this.rt.left) > EPS || this.rt.rate !== rate) this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
-    const target = this.rt.now + (this.clock - this.rt.clock) * rate;
+    const cap = this.cap();
+    const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
     if (target > e.now + EPS) {
       const until = Date.now() + JUMP_BUDGET;
       e.runUntil(target, () => {
@@ -536,11 +560,17 @@ export class Pacer {
     if (!this.skipIdle || this.mode === 'realtime' || this.rtNow || this.busy() || this.behind > 0) return;
     if (this.clock < this.restUntil) return;
     const from = e.now;
+    if (from >= cap - EPS) return;
     // a jump cut short by its budget goes on towards the same end next frame (a new jump would never rest)
     const start = this.jumpStart !== null && this.jumpStart <= from && from < this.jumpStart + IDLE_HORIZON ? this.jumpStart : from;
-    this.advance(start + IDLE_HORIZON);
+    const note = this.host.notable ? this.host.notable(from) : null;
+    const stopAt = note !== null && note !== undefined && note > from ? note : Infinity;
+    const horizon = Math.min(cap, start + IDLE_HORIZON, stopAt);
+    this.advance(horizon);
+    // (a notable moment reached without traffic: rest there, so that what changed is seen)
+    if (stopAt < Infinity && e.now >= stopAt - EPS && !this.busy()) this.restUntil = this.clock + IDLE_REST;
     const shown = this.busy();
-    this.jumpStart = !shown && e.now < start + IDLE_HORIZON - EPS ? start : null;
+    this.jumpStart = !shown && e.now < horizon - EPS ? start : null;
     if (e.now - start >= SKIP_REPORT) this.skipped = { ms: e.now - start, at: this.clock };
     // a whole horizon with nothing to show: rest a moment
     if (e.now >= start + IDLE_HORIZON - EPS && !shown) this.restUntil = this.clock + IDLE_REST;
@@ -608,12 +638,23 @@ export class Pacer {
       this.skipIdle = skip;
     } else {
       const from = this.host.engine.now;
-      this.advance(from + IDLE_HORIZON);
+      this.advance(Math.min(this.cap(), from + IDLE_HORIZON));
       const ms = this.host.engine.now - from;
       if (ms >= SKIP_REPORT) this.skipped = { ms, at: this.clock };
       this.rt = null;
     }
     this.prune();
+  }
+
+  /** Hold idle skipping for a moment of display time (an experiment's starting state is seen first). */
+  rest(ms = IDLE_REST): void {
+    this.restUntil = Math.max(this.restUntil, this.clock + ms);
+  }
+
+  /** The simulated time the clock may reach (an experiment's end; Infinity: none). */
+  private cap(): number {
+    const u = this.host.until ? this.host.until() : null;
+    return u === null || u === undefined ? Infinity : u;
   }
 
   /** Follow a hop's conversation (null: stop following). */

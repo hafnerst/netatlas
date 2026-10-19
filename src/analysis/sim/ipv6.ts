@@ -921,6 +921,14 @@ export class Ipv6Sim {
     return parts.join(' · ');
   }
 
+  /** A host interface's preferred address that it obtained at runtime (SLAAC or DHCPv6), or null. */
+  acquiredAddress(dev: string, iface: string): { text: string; kind: 'slaac' | 'dhcpv6' } | null {
+    const h = this.hosts.get(dev + ':' + iface);
+    if (!h || h.disabled) return null;
+    const a = h.addrs.concat(h.dhcp && h.dhcp.addr ? [h.dhcp.addr] : []).find((x) => x.state === 'preferred' && x.kind !== 'link-local');
+    return a ? { text: formatAddr(a.sa.addr), kind: a.kind as 'slaac' | 'dhcpv6' } : null;
+  }
+
   /** The diagram's line of a host interface: its first usable address with its source, else its state, short. */
   mark(dev: string, iface: string): string | null {
     const h = this.hosts.get(dev + ':' + iface);

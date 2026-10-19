@@ -6251,13 +6251,27 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         'Simulate → Experiments… enters the Experiments workspace: its panels named (Experiments, Step, Experiment run), the banner with Exit Experiments, Simulate marked; the experiment selected; nothing has run (opening never starts one)',
         loaded.ok && app.workspace() === 'experiments' && q('#sim-setup-title')!.textContent === 'Experiments' && q('#sim-actions-title')!.textContent === 'Step' && q('#sim-dock-title')!.textContent === 'Experiment run' && /Exit Experiments/.test(q('#ws-exit-banner')!.textContent || '') && q('#simulate-btn')!.getAttribute('aria-current') === 'true' && q('[data-an-root], .ex-item[data-exp="cut"]')!.getAttribute('aria-pressed') === 'true' && app.experimentRuns('cut').length === 0 && !app.simulationOn() && /Nothing has run: press Run/.test(q('#ex-progress')!.textContent || '') && !(q('#ex-run') as HTMLButtonElement).disabled,
       );
-      check('… before a run, the bottom panel says what it will do, in order (its start, its scope, each step with its time)', /Start: a freshly booted network; scope: Entire model/.test(q('.ex-plan')!.textContent || '') && /At 5 s: Send from a → b/.test(q('.ex-plan')!.textContent || '') && /At 12 s: delivery of “ping1” — expect delivered/.test(q('.ex-plan')!.textContent || ''));
-      // Run, through its button: the run goes on in slices (the page stays responsive) until it is done
+      check('… before a run, a short summary (start, duration, actions, observations, scope) and what it will do, in order, each step with its time', /StartFreshly booted.*Duration40 s.*Actions3.*Observations3.*ScopeEntire model \(2 devices\)/.test(q('#ex-summary')!.textContent || '') && /At 5 s: Send from a → b/.test(q('.ex-plan')!.textContent || '') && /At 12 s: delivery of “ping1” — expect delivered/.test(q('.ex-plan')!.textContent || ''));
+      // Run, through its button: it plays in the diagram (the simulation's pacing and dots), only its own traffic shown
       (q('#ex-run') as HTMLElement).click();
-      for (let k = 0; k < 400 && app.experimentRunning(); k++) await tick();
+      await tick();
+      const pb = app.experimentPlayback();
+      check('Run plays the experiment in the diagram: the shared simulation controller with the experiment’s simulation, only its traffic shown, no in-diagram events; editing paused; Pause, the speed and Skip to result offered', !!pb && !!pb.experiment && app.simulationOn() && pb.sim === app.experimentRunner()!.simulation && !!app.editLock() && !!q('#ex-pause') && !!q('#ex-speed') && !!q('#ex-skip') && !pb.diagramClick('device:a', 10, 10) && app.workspace() === 'experiments');
+      if (pb) {
+        // the clock runs as the pacing says: advance it (as frames would), and see the experiment's send on screen
+        for (let k = 0; k < 60 && !pb.pacer.items.some((it) => it.f.test !== undefined); k++) pb.advance(100);
+        const shown = pb.drawItems();
+        check('… its send’s messages are drawn as dots (the experiment’s own operation); nothing unrelated is', shown.length > 0 && shown.every((d) => app.experimentRunner()!.relevance.classify(d.f) !== null), `${shown.length} drawn`);
+      }
+      (q('#ex-pause') as HTMLElement).click();
+      await tick();
+      check('… Pause holds its clock (Play resumes it)', !!pb && !pb.playing && (q('#ex-pause') as HTMLElement).textContent === 'Play' && /^Paused on scenario time/.test(q('#ex-progress')!.textContent || ''));
+      // Skip to result: the rest at once, the same events
+      (q('#ex-skip') as HTMLElement).click();
+      await tick();
       const obs = (): string => Array.from(doc.querySelectorAll('#ws-exp-dock .ex-obs li')).map((x) => x.getAttribute('data-outcome')).join(',');
       const steps = Array.from(doc.querySelectorAll('#ws-exp-dock .ex-steplog li')).map((x) => x.getAttribute('data-state')).join(',');
-      check('Run: from a clean start on scenario time; each action submitted (or refused, with why), each observation’s verdict with what was found; the diagram marks the targets with their verdicts', app.experimentRuns('cut').length === 1 && app.experimentRuns('cut')[0].timing === 'scenario' && obs() === 'satisfied,satisfied,satisfied' && steps === 'submitted,submitted,submitted' && /Done: 3 observations: 3 satisfied/.test(q('#ex-progress')!.textContent || '') && !!q('#viewport [data-ref="link:l1"].ws-ok') && !app.simulationOn(), `${obs()} / ${steps}`);
+      check('Run: from a clean start on scenario time; each action submitted (or refused, with why), each observation’s verdict with what was found; the diagram marks the targets with their verdicts', app.experimentRuns('cut').length === 1 && app.experimentRuns('cut')[0].timing === 'scenario' && obs() === 'satisfied,satisfied,satisfied' && steps === 'submitted,submitted,submitted' && /Done: 3 observations: 3 satisfied/.test(q('#ex-progress')!.textContent || '') && !!q('#viewport [data-ref="link:l1"].ws-ok') && !app.simulationOn() && !app.editLock() && !app.experimentPlayback(), `${obs()} / ${steps}`);
       app.runExperimentNow('cut');
       await tick();
       (q('#ex-compare') as HTMLElement).click();
@@ -6307,7 +6321,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       sel('ex-add-observation', 'device');
       await tick();
-      check('+ Add observation: selected at once with its expected outcome preset (on); its target still to choose', ex().observations.length === 1 && app.experimentSelection().list === 'observe' && (q('#ex-expect') as HTMLSelectElement).value === 'on' && ex().observations[0].missing.indexOf('target') >= 0);
+      check('+ Add observation: selected at once with its expected outcome preset (operational); its target still to choose', ex().observations.length === 1 && app.experimentSelection().list === 'observe' && (q('#ex-expect') as HTMLSelectElement).value === 'operational' && ex().observations[0].missing.indexOf('target') >= 0);
       sel('ex-target', 'b');
       await tick();
       sel('ex-expect', 'off');
@@ -6316,7 +6330,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const y1 = app.exportText();
       app.undo();
       await tick();
-      check('undo takes the last choice back (one step); the selection stays on the step', ex().observations[0].expect === 'on' && app.experimentSelection().list === 'observe' && (q('#ex-expect') as HTMLSelectElement).value === 'on');
+      check('undo takes the last choice back (one step); the selection stays on the step', ex().observations[0].expect === 'operational' && app.experimentSelection().list === 'observe' && (q('#ex-expect') as HTMLSelectElement).value === 'operational');
       app.redo();
       await tick();
       check('… redo brings it back', app.exportText() === y1 && (q('#ex-expect') as HTMLSelectElement).value === 'off');
@@ -6337,6 +6351,118 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#ws-exit-banner') as HTMLElement).click();
       await tick();
       check('Exit Experiments: the Objects list and the Inspector again; nothing of entering or exiting is an undo step', app.workspace() === 'edit' && !!q('#outline-body') && (q('#sim-dock') as HTMLElement).hidden && app.mdoc!.canUndo() === undoNow && app.exportText() === yNow);
+      app.mdoc!.markSaved();
+    }
+
+    // ---- experiments: the duration control, the starting state, For, and a cold start played in the diagram
+    {
+      app.loadExampleNamed('private-house.yaml');
+      await tick();
+      await app.enterExperiments();
+      app.selectExperimentStep({ exp: 'cold-tv', list: null, index: -1 });
+      await tick();
+      const y0 = app.exportText();
+      const u0 = app.mdoc!.canUndo();
+      const num = (): HTMLInputElement => q('#ex-duration') as HTMLInputElement;
+      const unit = (): HTMLSelectElement => q('#ex-duration-unit') as HTMLSelectElement;
+      check('Duration: a number and its unit side by side (sec, min, hours), the unit named for assistive technology; 2 min shown as 2 min', num().type === 'number' && unit().value === 'min' && num().value === '2' && unit().getAttribute('aria-label') === 'Duration unit' && Array.from(unit().options).map((o) => o.value).join() === 'sec,min,hours' && num().parentElement === unit().parentElement);
+      unit().value = 'sec';
+      unit().dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… another unit converts the number and keeps the duration (2 min → 120 sec); nothing in the model changes, nothing is marked modified', num().value === '120' && app.exportText() === y0 && app.mdoc!.canUndo() === u0);
+      num().value = '90';
+      num().dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… a number in that unit is written canonically (90 sec → duration: 90s), one undo step, and still shown in the unit chosen after the panels are drawn again', /\n {4}duration: 90s\n/.test(app.exportText()) && app.session!.model.experiments.find((x) => x.id === 'cold-tv')!.duration === 90000 && num().value === '90' && unit().value === 'sec');
+      num().value = '1.5';
+      unit().value = 'min';
+      unit().dispatchEvent(new Event('change', { bubbles: true }));
+      num().value = '1.5';
+      num().dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('… a fraction: 1.5 min is 90 s exactly (no rounding that changes it)', app.session!.model.experiments.find((x) => x.id === 'cold-tv')!.duration === 90000);
+      num().value = 'abc';
+      num().dispatchEvent(new Event('change', { bubbles: true }));
+      num().value = '';
+      num().dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      const yBad = app.exportText();
+      app.selectExperimentStep({ exp: 'cold-tv', list: 'observe', index: 0 });
+      app.selectExperimentStep({ exp: 'cold-tv', list: null, index: -1 });
+      await tick();
+      check('… an empty required value is said next to the field and not written (nothing replaces it); what was typed stays through the panels being drawn again', num().getAttribute('aria-invalid') === 'true' && /Required/.test(q('#ex-duration-msg')!.textContent || '') && app.exportText() === yBad && num().value === '');
+      num().value = '2';
+      num().dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      app.undo();
+      await tick();
+      app.redo();
+      await tick();
+      check('… undo and redo step through the written values', app.session!.model.experiments.find((x) => x.id === 'cold-tv')!.duration === 120000 && num().getAttribute('aria-invalid') !== 'true');
+      // the starting state: three choices, one undo step each; cold leaves no settle
+      const st = q('#ex-start') as HTMLSelectElement;
+      check('Start: freshly booted, settled first, or Cold start — boot all devices; this one is a cold start, said in a line', Array.from(st.options).map((o) => o.value).join() === 'booted,settled,cold' && st.value === 'cold' && /Cold start — boot all devices/.test(st.textContent || '') && /boots as it normally does/.test(q('#ex-start-help')!.textContent || ''));
+      st.value = 'settled';
+      st.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      const cold = (): Experiment => app.session!.model.experiments.find((x) => x.id === 'cold-tv')!;
+      check('… settled first: start removed, settle written (its duration control shown)', cold().start === 'booted' && cold().settle === 30000 && !!q('#ex-settle') && !!q('#ex-settle-unit'));
+      app.undo();
+      await tick();
+      check('… undo: the cold start again (one step)', cold().start === 'cold' && cold().settle === 0 && !q('#ex-settle'));
+      // For: only on actions that last
+      app.selectExperimentStep({ exp: 'tv-stream', list: 'actions', index: 0 });
+      await tick();
+      const hasFor = !!q('#ex-f-for') && !!q('#ex-f-for-unit') && (q('#ex-f-for') as HTMLInputElement).value === '50' && (q('#ex-f-for-unit') as HTMLSelectElement).value === 'sec';
+      app.selectExperimentStep({ exp: 'tv-stream', list: 'actions', index: 1 });
+      await tick();
+      check('For (how long an action lasts) only where an action has a duration: a stream’s 50 sec; a join, which is instantaneous, has none', hasFor && !q('#ex-f-for'));
+      // the summary before the run, the missing configuration listed before Run is enabled
+      app.selectExperimentStep({ exp: 'cold-tv', list: null, index: -1 });
+      await tick();
+      check('before a run: start, duration, actions, observations and scope in a short summary', /StartCold start \(every device boots\)Duration2 minActions1Observations4ScopeEntire model/.test(q('#ex-summary')!.textContent || ''));
+      // Run: the cold start plays in the diagram, the TV off, booting, then operational
+      (q('#ex-run') as HTMLElement).click();
+      await tick();
+      const pb = app.experimentPlayback()!;
+      const tvClass = (): string => (q('#viewport [data-ref="device:tv"]') ? q('#viewport [data-ref="device:tv"]')!.getAttribute('class') || '' : '');
+      pb.advance(100);
+      pb.refresh(true);
+      await tick();
+      const booting0 = /sim-booting/.test(tvClass());
+      let operational = false;
+      for (let k = 0; k < 400 && !operational; k++) {
+        pb.advance(500);
+        pb.refresh(true);
+        if (app.experimentRunner()!.simulation.deviceState('tv').state === 'operational') {
+          await tick();
+          operational = !/sim-booting|sim-off/.test(tvClass());
+        }
+      }
+      check('a cold start in the diagram: the TV is booting at the start (the shared device-state marks), then operational; the state marks follow the run', booting0 && operational, tvClass());
+      const status = q('#ex-status') ? q('#ex-status')!.textContent || '' : '';
+      check('… the panel says what the run waits for, in short lines (not a paragraph)', !!q('#ex-status') && status.length < 400);
+      // Analyze over a playing experiment: paused, resumed when Analyze is left
+      app.openAddressing();
+      await tick();
+      const pausedInAnalyze = !pb.playing && pb.pausedBy === 'analyze';
+      await app.exitAnalyze();
+      await tick();
+      check('Analyze from a playing experiment pauses it (a snapshot to analyze); Exit Analyze returns to Experiments and resumes it', pausedInAnalyze && app.workspace() === 'experiments' && pb.playing && app.experimentPlayback() === pb);
+      // loading another model ends the playback: nothing of the old run plays on
+      const runner = app.experimentRunner()!;
+      app.loadExampleNamed('ot-network.yaml');
+      await tick();
+      check('another model loaded during a run: the run ends (its playback gone, its result not kept), Experiments shows the new model', runner.over && !app.experimentRunning() && !app.experimentPlayback() && !app.simulationOn() && app.workspace() === 'experiments' && app.experimentRuns('cold-tv').length === 0);
+      // a normal simulation after Experiments shows everything again (no experiment filter left)
+      await app.exitWorkspace();
+      await tick();
+      app.startProtocolSimulation({ protocols: [] as string[] });
+      await tick();
+      const sc = app.simController()!;
+      check('Start simulation after Experiments: the ordinary visibility (no experiment filter, Network events in front with the scenario muted, no end)', !!sc && sc.experiment === null && sc.pacer.mute && !sc.pacer.hiddenHoldsNothing);
+      await app.exitWorkspace();
+      await tick();
       app.mdoc!.markSaved();
     }
 

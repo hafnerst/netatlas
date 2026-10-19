@@ -712,9 +712,9 @@ export class Engine {
   }
 
   /** How many things wait for a condition (tests, the status). */
-  waiting(): Array<{ cond: string; label: string; why: string; since: number }> {
-    const out: Array<{ cond: string; label: string; why: string; since: number }> = [];
-    for (const [cond, list] of this.waits) for (const w of list) out.push({ cond, label: w.msg.label, why: w.why, since: w.since });
+  waiting(): Array<{ cond: string; label: string; why: string; since: number; origin?: string }> {
+    const out: Array<{ cond: string; label: string; why: string; since: number; origin?: string }> = [];
+    for (const [cond, list] of this.waits) for (const w of list) out.push({ cond, label: w.msg.label, why: w.why, since: w.since, origin: w.msg.origin });
     return out;
   }
 

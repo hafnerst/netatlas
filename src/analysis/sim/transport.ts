@@ -117,7 +117,8 @@ export interface Test {
   df: boolean;
   keep: boolean;
   /** periodic test traffic, Send test…, a health check, a probe, a proxy's upstream */
-  source: 'traffic' | 'manual' | 'health' | 'probe' | 'upstream';
+  /** experiment: an experiment's application (scenario time, its messages carrying their id as a Send test's) */
+  source: 'traffic' | 'manual' | 'experiment' | 'health' | 'probe' | 'upstream';
   started: number;
   /** when it ended (its answer, error or timeout) */
   ended?: number;
@@ -474,7 +475,7 @@ export class Transport {
 
   /** Run fn in the context of a test (a Send test's id, else none). */
   private withTestOf(t: Test, fn: () => void): void {
-    this.e.withTest(t.source === 'manual' ? t.id : null, fn);
+    this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, fn);
   }
 
   /** A relation's message to a port the device does not listen on (its `listening` attribute leaves it out): refused like any other. */
@@ -652,7 +653,7 @@ export class Transport {
    */
   private begin(t: Test, name?: string): void {
     // a Send test's exchange is the test's: what it sends and needs, and every answer (always shown, marked Test)
-    this.e.withTest(t.source === 'manual' ? t.id : null, () => this.beginNow(t, name));
+    this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.beginNow(t, name));
   }
 
   /** The DHCP client interface a test from this device (by this interface) waits for, if any (IPv6 waits for none: a lease is IPv4). */
@@ -669,7 +670,7 @@ export class Transport {
   leaseFailed(dev: string, iface: string, why: string): void {
     for (const t of this.tests) {
       if (t.done || t.from !== dev || t.result.indexOf('waiting for a DHCP lease on ' + dev + ':' + iface) !== 0) continue;
-      this.e.withTest(t.source === 'manual' ? t.id : null, () => this.finish(t, false, `not sent: ${dev}:${iface} has no DHCP lease (${why})`));
+      this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.finish(t, false, `not sent: ${dev}:${iface} has no DHCP lease (${why})`));
     }
   }
 
@@ -685,7 +686,7 @@ export class Transport {
   /** Stop: a test that has sent nothing yet (waiting for a lease or a name) is not sent; true when it was cancelled. */
   cancel(t: Test, result: string): boolean {
     if (t.done || t.pktIds.length || t.conn) return false;
-    this.e.withTest(t.source === 'manual' ? t.id : null, () => this.finish(t, false, result));
+    this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.finish(t, false, result));
     return true;
   }
 
@@ -753,7 +754,7 @@ export class Transport {
    * packets (a firewall's policy, no route, a VLAN a port doesn't carry …), so a timeout says where it ended.
    */
   private lastDrop(t: Test): string {
-    if (t.source !== 'manual' && !t.app) return '';
+    if (t.source !== 'manual' && t.source !== 'experiment' && !t.app) return '';
     for (let i = this.e.log.length - 1; i >= 0; i--) {
       const ev = this.e.log[i];
       if (ev.t < t.started) break;
@@ -769,7 +770,7 @@ export class Transport {
     t.ok = ok;
     t.result = result;
     if (ok && t.rtt === undefined) t.rtt = this.e.now - t.started;
-    if (t.source !== 'health' && t.source !== 'probe' && t.source !== 'upstream') this.e.withTest(t.source === 'manual' ? t.id : null, () => this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`));
+    if (t.source !== 'health' && t.source !== 'probe' && t.source !== 'upstream') this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`));
     if (t.onDone) t.onDone(t);
   }
 

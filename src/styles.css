@@ -1859,6 +1859,15 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .ex-grid .tf-pair { display: flex; gap: 6px; flex-wrap: wrap; }
 .ex-grid .tf-pair > * { flex: 1 1 7em; min-width: 0; }
 .ex-grid .help, .ex-grid .field-err { margin: 0 0 0 calc(6.5em + 6px); }
+/* the duration control: a number and its unit, side by side */
+.dur-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dur-ctl { display: flex; gap: 4px; align-items: center; min-width: 0; }
+.ex-grid .tf-row .dur-ctl input.dur-num { flex: 1 1 5em; width: auto; min-width: 3.5em; }
+.ex-grid .tf-row .dur-ctl select.dur-unit { flex: 0 0 auto; width: auto; }
+.ex-grid .dur-msg { margin: 0; }
+.dur-msg[hidden] { display: none; }
+.ex-grid .tf-pair.ex-when > .dur-wrap { flex: 1 1 10em; }
+.ex-facts { display: block; }
 .ex-exps { grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
 .ex-shortcuts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .ex-problems summary { color: var(--warn); font-weight: 600; }
@@ -1884,6 +1893,18 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .has-ws-marks .ws-bad .dev-box, .has-ws-marks .ws-bad .cable-line { stroke: var(--error) !important; stroke-dasharray: none; }
 .has-ws-marks .ws-sel .dev-box, .has-ws-marks .ws-sel .cable-line, .has-ws-marks .ws-sel .net-box { stroke-width: 4.5 !important; filter: drop-shadow(0 0 3px var(--ws)); }
 .has-ws-marks rect.ws-target.port, .has-ws-marks .ws-target.if-entry rect, .has-ws-marks .ws-target.if-chip rect { stroke: var(--ws) !important; stroke-width: 2.4 !important; }
+/* the action in progress of a playing experiment: its target outlined solid, thicker (restrained: no fill, no motion) */
+.has-ws-marks .ws-act .dev-box, .has-ws-marks .ws-act .net-box, .has-ws-marks .ws-act .cable-line, .has-ws-marks .ws-act .rel-line { stroke: var(--ws) !important; stroke-width: 4 !important; stroke-dasharray: none; }
+.has-ws-marks rect.ws-act.port, .has-ws-marks .ws-act.if-entry rect, .has-ws-marks .ws-act.if-chip rect { stroke: var(--ws) !important; stroke-width: 3.2 !important; stroke-dasharray: none; }
+/* a playing run: the progress, what it waits for, the summary before a run */
+.ex-live { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; margin: 4px 0; min-width: 0; }
+.ex-live progress { flex: 0 1 220px; min-width: 80px; height: 10px; }
+.ex-status { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 12px; min-width: 0; }
+.ex-status li::before { content: "◷ "; }
+.ex-summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 0; }
+.ex-summary dt { font-weight: 600; }
+.ex-summary dd { margin: 0; min-width: 0; }
+.ex-missing { margin: 0; padding-left: 1.2em; }
 /* (a workspace's body that is not in front: hidden, whatever its own display) */
 .sp-body[hidden], .sd[hidden], .ws-body[hidden], .ws-dock[hidden] { display: none !important; }
 /* (a narrow panel: the experiment's section and its rows shrink to it, never wider) */

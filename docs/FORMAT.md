@@ -2488,83 +2488,138 @@ starts it, and a file means the same network with or without it.
 
 ```yaml
 experiments:
-  - id: cabinet-outage                 # required, unique among the experiments
-    name: Telemetry while the cabinet is down   # required (a draft without one is kept: not runnable)
-    duration: 180s                     # required to run: it always ends (at most 1h of scenario time)
-    settle: 30s                        # optional: the network runs this long first (its events are not the experiment's); none: freshly booted
-    scope: {group: cell}               # optional: one of group, vlan, domain, device (a dependency slice); none: the entire model
+  - id: cold-tv                        # required, unique among the experiments
+    name: Cold start — the TV gets an address   # required (a draft without one is kept: not runnable)
+    duration: 2min                     # required to run: it always ends (at most 1h of scenario time)
+    start: cold                        # optional: booted (the default) or cold
+    settle: 30s                        # optional, booted only: the network runs this long first (not the experiment's time)
+    scope: targets                     # optional: targets, or one of {group: …}, {vlan: …}, {domain: …}, {device: …}; none: the entire model
     params: {link_up_delay: 1s}        # optional: parameters of Start simulation (the rest: their defaults)
     actions:                           # at one time, in the order written
-      - {id: tele, at: 20s, do: start_app, target: plc/telemetry}
+      - {id: ctl, at: 0s, do: start_app, target: tv/control}
       - {id: join, at: 5s, do: join, target: "rx:e0", group: 239.1.1.1}
-      - {at: 2s, after: join, do: start_stream, target: "src:e0", group: 239.1.1.1, interval: 500ms}
-      - {at: 40s, do: fail, target: cell-cabinet}      # a device, cable, relation or failure domain
+      - {at: 2s, after: join, do: start_stream, target: "src:e0", group: 239.1.1.1, interval: 500ms, for: 30s}
+      - {at: 40s, do: fail, target: cell-cabinet, for: 40s}   # a device, cable, relation or failure domain; restored after 40 s
     observe:                           # read after that time's actions; without at: at the end
-      - {id: poll-ok, at: 35s, of: reach, target: hmi, to: plc/registers, expect: available}
-      - {at: 3s, after: join, within: 10s, of: receive, target: "rx:e0", group: 239.1.1.1, expect: received}
-      - {at: 60s, within: 20s, of: device, target: edge, expect: off}
-      - {at: 120s, of: expectations, target: "*", expect: satisfied}
-      - {of: app, target: tele, expect: failed}
+      - {id: up, at: 0s, within: 60s, of: device, target: tv, expect: operational}
+      - {at: 0s, within: 90s, of: address, target: "tv:wlan0", family: ipv4, expect: acquired}
+      - {at: 3s, after: join, within: 10s, of: receive, target: "rx:e0", group: 239.1.1.1, min: 3, expect: received}
+      - {at: 0s, within: 110s, of: session, target: r1, protocol: ospf, to: r2, expect: established}
+      - {of: app, target: ctl, expect: delivered}
     description: …
 ```
+
+**Durations.** Every duration (`duration`, `settle`, `at`, `within`,
+`interval`, `for`) is one value: a number with `ms`, `s`, `min` or `h`
+(`90s`, `1.5min` is read as 90 s). The editor writes it canonically, in the
+largest whole unit (`2h`, `5min`, `90s`, `1500ms`); the unit it shows (sec,
+min, hours) is the editor's, not the model's.
+
+**Starting state.** `booted` (the default): the network starts up at the
+start, every device on. With `settle`, it runs that long first; that time is
+not the experiment's. `cold`: every device with a power lifecycle is off
+when the run starts and is powered on at t = 0, then boots as the simulation
+boots it — its boot time, its ports negotiating, a VM once its host is up, a
+container by its restart policy. Cables, patch panels, TAPs and external
+networks have no lifecycle and are not powered. Boot time is experiment
+time. A cold start never changes the model's devices.
 
 **Timing.** A step's time is `at` after the start, or `at` after the action
 named by `after` was **submitted** (its own time, resolved along the chain).
 A submitted action is no completed one: a time never promises that a
-protocol's prerequisite has happened; an observation says what happened. A
-cycle of `after`, or an `after` naming no action, keeps the experiment from
-running (and is said).
+protocol's prerequisite has happened; an observation says what happened.
+An action whose device is still coming up (booting, or waiting for its
+host) **waits** for it — said in the run, with how long — and is submitted
+when the device is operational, or **timed out** when the run ends first; a
+time after the start never waits for the whole network. A cycle of `after`,
+or an `after` naming no action, keeps the experiment from running (and is
+said).
 
 | `do` | Target | Required / optional |
 |---|---|---|
 | `send` | the source (device, device:interface, device/application, address) | `to` / `service` (`tcp/443`, `udp/53`, `icmp`), `count`, `interval`; prepared from the communication's identity, as Trace path's handoff |
-| `fail`, `restore` | a device (powered off, on), a cable, a relation, a failure domain (its members) | |
-| `shut`, `no_shut`, `flap`, `stop_flap` | device:interface | |
-| `power_off`, `power_on` | a device | |
+| `fail`, `restore` | a device (powered off, on), a cable, a relation, a failure domain (its members) | — / `for` (fail: restored after it) |
+| `shut`, `no_shut` | device:interface | — / `for` (shut: brought up after it) |
+| `flap`, `stop_flap` | device:interface | — / `for` (flap: stopped after it) |
+| `power_off`, `power_on` | a device | — / `for` (power_off: powered on again after it, and booting) |
 | `join`, `leave` | a host's device:interface | `group` |
-| `start_stream`, `stop_stream` | a host's device:interface | `group` / `port` (5000), `interval` (1s), `size` (1000); on scenario time |
-| `start_app`, `stop_app` | device/application | |
+| `start_stream`, `stop_stream` | a host's device:interface | `group` / `port` (5000), `interval` (1s), `size` (1000), `for`; on scenario time |
+| `start_app`, `stop_app` | device/application | — / `for` (start_app: stopped after it) |
 
-| `of` | Target | `expect` | Window |
-|---|---|---|---|
-| `send` | a send action's `id` | `delivered` (every message), `failed` | traffic |
-| `app` | a start action's `id`, or device/application | `delivered`, `failed` | traffic |
-| `receive` | a host's device:interface (with `group`) | `received`, `not received` | traffic |
-| `reach` | the source (with `to`, `service`) | `available`, `unavailable` (the communication check on the simulation's state) | state |
-| `device` | a device | `on`, `off` | state |
-| `interface` | device:interface | `up`, `down` | state |
-| `link` | a cable | `up`, `down` | state |
-| `member` | a multicast router (with `group`) | `present`, `absent` | state |
-| `expectations` | `*` (all) or saved expectation ids | `satisfied`, `violated` | state |
+`for` is how long an action lasts; an action that is instantaneous (a join,
+a send, a power-on) has none.
+
+| `of` | Target | Other fields | `expect` | Window | Evidence (the simulation's own state) |
+|---|---|---|---|---|---|
+| `send` | a send action's `id` | | `delivered` (every message), `failed` | traffic | each message's answer |
+| `app` | a start action's `id`, or device/application | | `delivered`, `failed` | traffic | the application's exchanges (an MQTT client: its publication rounds) |
+| `receive` | a host's device:interface | `group` / `min` | `received`, `not received` | traffic | datagrams of the group that arrived at the host |
+| `mqtt` | a subscribing client (device/application) | — / `topic`, `min` | `delivered`, `not delivered` | traffic | publications the client received from its broker |
+| `reach` | the source | `to` / `service` | `available`, `unavailable` | state | the communication check on the simulation's state |
+| `device` | a device | | `operational`, `booting`, `on`, `off` | state | its power lifecycle |
+| `interface` | device:interface | | `up`, `down` | state | the port's operational state |
+| `link` | a cable | | `up`, `down` | state | the cable at both ends |
+| `address` | a host's device:interface | — / `family` (`ipv4`, `ipv6`) | `acquired`, `none` | state | its DHCPv4 lease (with its binding time), or a preferred SLAAC / DHCPv6 address |
+| `neighbor` | a device | `to` (an address, a device, an interface) | `resolved`, `unresolved` | state | its ARP or neighbor table: a complete entry |
+| `route` | a device | `to` | `present`, `absent` | state | its effective route lookup |
+| `session` | a device | `protocol` / `to` (the peer) | `established`, `down` | state | the protocol's session state |
+| `member` | a multicast router | `group` | `present`, `absent` | state | its IGMP / MLD membership table |
+| `timing` | a device | — / `protocol` (`ptp`, `ntp`) | `synchronized`, `unsynchronized` | state | its PTP clock state, or its NTP client's |
+| `expectations` | `*` (all) or saved expectation ids | | `satisfied`, `violated` | state | the saved expectations evaluated on the run's state |
 
 **Evaluation.** `within` is an evaluation window: a *state* is satisfied as
-soon as it holds within it (violated when it does not by its end); *traffic*
-is counted until it ends. Without one, an observation is read at once.
-Verdicts: **satisfied**, **violated**, **indeterminate** (not decidable:
-nothing sent yet, still on its way, outside the scope, stopped before it was
-reached) and **unsupported**. `expectations` evaluates the model's own saved
+soon as it holds within it — *already* so when the window opened, or
+*reached* at a moment the result names (the evidence's own time where it
+has one: a boot's end, a lease's binding, a first datagram; else when it was
+read, every 0.1 s of scenario time, a communication or the expectations
+every second) — and violated when it does not by its end. *Traffic* is
+counted until the window ends: what was sent is not what arrived, a route
+is no delivery, and a timing state is a protocol state, never an accuracy.
+Without a window, an observation is read at once. Verdicts: **satisfied**,
+**violated**, **indeterminate** (not decidable: nothing sent yet, still on
+its way, outside the scope, stopped before it was reached) and
+**unsupported** (the target has no such state: a device observation of an
+external network). `expectations` evaluates the model's own saved
 expectations on the run's state and reports what it could not decide: it
-invents no requirement. Finishing the sequence proves nothing; only
+invents no requirement. A target is always named: nothing defaults to the
+whole architecture. Finishing the sequence proves nothing; only
 observations do.
 
+**Scope.** `targets` runs the devices the steps name (targets, destinations,
+an application's peer or broker) with their dependencies (DHCP and DNS
+providers, the routing domains and switches they need: the dependency slice
+of each); `group`, `vlan`, `domain` and `device` as in Start simulation. A
+narrower scope runs fewer devices: what runs outside it — load on a shared
+link, another host's traffic — is not modeled, and a run says how many
+devices of the model it ran.
+
 **Runs.** Each run starts from the experiment's defined start (a new
-simulation of the model, or of its scope's sub-model, on the shared engine)
-on scenario time only, so a run is repeatable; a stream of Network events
-runs on real time and is no experiment action. An action is **submitted**
-or **refused** (with the simulation's reason, or outside the scope). A run
-can be stopped; it is compared with the previous one. Not measured:
+simulation of the model, or of its scope's sub-model, on the shared engine),
+on scenario time only, so a run is repeatable; every step is an event of the
+simulation's clock. A run plays in the diagram with the simulation's own
+pacing and shows only the experiment's traffic: its operations and what they
+cause, and the prerequisite traffic of its devices (a host's DHCP, DNS,
+address resolution and router discovery; the queries of a receiver's LAN;
+the sessions or clocks an observation reads). The rest of the network runs,
+hidden, and never holds the display or the run back. Shown or not, a run
+gives the same result. An action is **submitted**, **refused** (with the
+simulation's reason, or outside the scope), **waiting**, **timed out** or
+**undone** (its `for` ran out). A run can be paused, sped up, skipped to
+its result and stopped; it is compared with the previous one. Not measured:
 convergence time, throughput, synchronization accuracy.
 
 **Validation.** What is written wrong is an **error**: an unknown key,
 action or observation, a value that is no duration or number, a time after
 the end, an expected outcome the observation can't have, an unknown
-parameter, a duplicate id. What is not configured yet — a missing `name`,
-`duration`, `target`, `to`, `group` or `expect` — and what names nothing of
-the model (a target, a scope, an `after`) is a **warning**: the step stays
-in the model with what it misses, so that it can be finished, and the
-experiment can't run until nothing is missing. At most 200 experiments, 200
-actions and 200 observations each. Renaming a device, cable or relation
-updates the targets.
+parameter, family or protocol, `start: cold` with `settle`, a duplicate id.
+What is not configured yet — a missing `name`, `duration`, `target`, `to`,
+`group`, `protocol` or `expect` — and what names nothing of the model (a
+target, a scope, an `after`) is a **warning**: the step stays in the model
+with what it misses, so that it can be finished, and the experiment can't
+run until nothing is missing. A field the step does not take (`for` on a
+join) is a warning and is not used. At most 200 experiments, 200 actions and
+200 observations each. Renaming a device, cable or relation updates the
+targets.
 
 ## `views` (saved views)
 

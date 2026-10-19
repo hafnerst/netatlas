@@ -186,11 +186,11 @@ export class MqttSim {
   }
 
   /** Start an MQTT client: connect, subscribe, publish every interval, until stopped (or its publications are done). */
-  private start(dev: string, a: AppInstance, how: 'event' | 'start'): AppRun | string {
+  private start(dev: string, a: AppInstance, how: 'event' | 'start' | 'experiment'): AppRun | string {
     const b = this.brokers.get(a.broker as string) as Broker;
     const interval = a.publish.length ? a.interval || 0 : 0;
     const run: AppRun = { id: this.A.nextId(), dev, app: a, how, target: `${a.broker}:${b.port}`, t0: this.e.now, count: a.publish.length && a.count !== undefined ? a.count : a.publish.length && !interval ? 1 : null, interval, sent: 0, tests: [], retried: 0, skipped: [], stopped: false };
-    const c: MqttRun = { run, clientId: mqttClientId(dev, a), broker: b.dev, port: b.port, state: 'Disconnected', sock: null, connects: 0, granted: new Map(), published: 0, pubacked: 0, inflight: new Map(), nextPid: 1, received: new Map(), lastSent: this.e.now, pingAt: null, gen: 0, rounds: 0, lost: 0, traffic: how === 'event' ? this.T.reserveId() : undefined };
+    const c: MqttRun = { run, clientId: mqttClientId(dev, a), broker: b.dev, port: b.port, state: 'Disconnected', sock: null, connects: 0, granted: new Map(), published: 0, pubacked: 0, inflight: new Map(), nextPid: 1, received: new Map(), lastSent: this.e.now, pingAt: null, gen: 0, rounds: 0, lost: 0, traffic: how !== 'start' ? this.T.reserveId() : undefined };
     (run as AppRun & { mqtt?: MqttRun }).mqtt = c;
     this.clients.push(c);
     this.A.runs.push(run);

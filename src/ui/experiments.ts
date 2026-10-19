@@ -20,9 +20,10 @@
  */
 import { ExpRunResult, OUTCOME_TEXT, ObsResult, RunCompare } from '../analysis/sim/experiment';
 import { exportFooter, resultInfo } from '../analysis/result';
-import { EXP_ACTIONS, EXP_OBSERVE, ExpAction, ExpObservation, ExpScope, Experiment, FIELD_LABEL, StepField, TargetKind, actionDef, actionText, durText, observationText, observeDef, scopeText, stepTimes, whenText } from '../model/experiments';
+import { DURATION_FIELDS, EXP_ACTIONS, EXP_MAX_DURATION, EXP_OBSERVE, ExpAction, ExpObservation, ExpScope, Experiment, FIELD_CHOICES, FIELD_LABEL, StepField, TargetKind, actionDef, actionText, durText, observationText, observeDef, scopeText, stepTimes, whenText } from '../model/experiments';
 import { Model, deviceInterfaces } from '../model/types';
 import { el } from './dom';
+import { durationControl } from './duration-input';
 
 /** The selected entry: an experiment, and one of its steps (or none). */
 export interface ExpSelection {
@@ -37,7 +38,10 @@ export interface ExpWsView {
   /** the experiment's index in the document (by id) */
   index: Map<string, number>;
   runs: Map<string, ExpRunResult[]>;
-  running: { id: string; reached: number; duration: number; settle: number } | null;
+  /** the run in progress: how far it got, whether it plays in the diagram (and plays now, at which speed), what it waits for, what it found so far */
+  running: { id: string; reached: number; duration: number; settle: number; playback: boolean; playing: boolean; speed: number; status: string[]; live: ExpRunResult } | null;
+  /** the playback speeds */
+  speeds: readonly number[];
   compare: Map<string, RunCompare>;
   outdated: (r: ExpRunResult) => boolean;
   /** why the model can't be edited now ('' it can) */
@@ -57,6 +61,10 @@ export interface ExpWsActions {
   select(sel: ExpSelection): void;
   /** a field of the experiment or of the selected step (a document path as JSON), text, an integer or a duration */
   set(path: string, kind: 'text' | 'int' | 'duration', value: string): void;
+  /** a duration of the experiment or of the selected step (ms; null: removed) */
+  setDuration(path: string, ms: number | null): void;
+  /** the starting state: booted, settled first, or a cold start */
+  setStart(start: 'booted' | 'settled' | 'cold'): void;
   setKind(list: 'actions' | 'observe', k: number, kind: string): void;
   addStep(list: 'actions' | 'observe', kind: string, target?: string): void;
   moveStep(list: 'actions' | 'observe', k: number, delta: -1 | 1): void;
@@ -66,6 +74,11 @@ export interface ExpWsActions {
   setDraft(key: string, dev: string): void;
   deleteExperiment(id: string): void;
   run(): void;
+  /** pause (true) or play a playing run */
+  pause(on: boolean): void;
+  speed(x: number): void;
+  /** the rest of a playing run at once */
+  skip(): void;
   stop(): void;
   reset(): void;
   compare(): void;
@@ -127,7 +140,8 @@ export function experimentsLeft(doc: Document, v: ExpWsView, act: ExpWsActions):
     const runs = v.runs.get(e.id) || [];
     const last = runs[runs.length - 1];
     const status = v.running && v.running.id === e.id ? 'Running' : e.problems.length ? `Incomplete (${e.problems.length})` : last ? last.summary : 'Ready, not run';
-    const b = el(doc, 'button', { type: 'button', class: 'ex-item', 'data-exp': e.id, 'aria-pressed': v.sel.exp === e.id ? 'true' : 'false' }, [el(doc, 'strong', {}, [e.name]), el(doc, 'span', { class: 'muted small', 'data-status': e.problems.length ? 'incomplete' : last ? 'run' : 'ready' }, [(e.problems.length ? '⚠ ' : last ? '◷ ' : '○ ') + status])]);
+    const facts = `${e.duration ? durText(e.duration) : 'no duration'}${e.start === 'cold' ? ' · cold start' : e.settle ? ` · settles ${durText(e.settle)}` : ''} · ${e.actions.length} action${e.actions.length === 1 ? '' : 's'} · ${e.observations.length} observation${e.observations.length === 1 ? '' : 's'}`;
+    const b = el(doc, 'button', { type: 'button', class: 'ex-item', 'data-exp': e.id, 'aria-pressed': v.sel.exp === e.id ? 'true' : 'false' }, [el(doc, 'strong', {}, [e.name]), el(doc, 'span', { class: 'muted small ex-facts' }, [facts]), el(doc, 'span', { class: 'muted small', 'data-status': e.problems.length ? 'incomplete' : last ? 'run' : 'ready' }, [(e.problems.length ? '⚠ ' : last ? '◷ ' : '○ ') + status])]);
     b.addEventListener('click', () => act.select({ exp: e.id, list: null, index: -1 }));
     ul.appendChild(el(doc, 'li', {}, [b]));
   }
@@ -146,24 +160,24 @@ export function experimentsLeft(doc: Document, v: ExpWsView, act: ExpWsActions):
   };
   const g = el(doc, 'div', { class: 'tf-grid ex-grid' });
   g.appendChild(input(P('experiments', k, 'name'), 'text', e.name, 'Name', 'ex-name'));
-  g.appendChild(input(P('experiments', k, 'duration'), 'duration', e.duration ? durText(e.duration).replace(' ', '') : '', 'Duration', 'ex-duration', '120s'));
-  // the starting state: freshly booted, or settled for a while first
+  const dp = P('experiments', k, 'duration');
+  g.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'ex-duration' }, ['Duration']), durationControl(doc, { key: dp, id: 'ex-duration', label: 'Duration', value: e.duration || undefined, min: 1000, max: EXP_MAX_DURATION, required: true, disabled: !!v.locked, commit: (ms) => act.setDuration(dp, ms) })]));
+  // the starting state: freshly booted, settled for a while first, or a cold start
   const start = el(doc, 'select', { id: 'ex-start' }) as HTMLSelectElement;
-  for (const [val, t] of [['boot', 'Freshly booted network'], ['settle', 'Settled first']]) start.appendChild(el(doc, 'option', { value: val }, [t]));
-  start.value = e.settle ? 'settle' : 'boot';
+  for (const [val, t] of [['booted', 'Freshly booted network'], ['settled', 'Settled first'], ['cold', 'Cold start — boot all devices']]) start.appendChild(el(doc, 'option', { value: val }, [t]));
+  start.value = e.start === 'cold' ? 'cold' : e.settle ? 'settled' : 'booted';
   start.disabled = !!v.locked;
-  start.addEventListener('change', () => act.set(P('experiments', k, 'settle'), 'duration', start.value === 'settle' ? '30s' : ''));
-  const startRow = el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'ex-start' }, ['Start']), el(doc, 'span', { class: 'tf-pair' }, [start])]);
-  if (e.settle) {
-    const st = el(doc, 'input', { type: 'text', id: 'ex-settle', 'aria-label': 'Time to settle before the start', 'data-ex-p': P('experiments', k, 'settle'), value: durText(e.settle).replace(' ', '') }) as HTMLInputElement;
-    st.disabled = !!v.locked;
-    st.addEventListener('change', () => act.set(P('experiments', k, 'settle'), 'duration', st.value.trim()));
-    (startRow.lastChild as HTMLElement).appendChild(st);
+  start.addEventListener('change', () => act.setStart(start.value as 'booted' | 'settled' | 'cold'));
+  g.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'ex-start' }, ['Start']), start]));
+  if (e.settle && e.start !== 'cold') {
+    const sp = P('experiments', k, 'settle');
+    g.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'ex-settle' }, ['Settle for']), durationControl(doc, { key: sp, id: 'ex-settle', label: 'Time to settle before the start', value: e.settle, min: 1000, max: EXP_MAX_DURATION, required: true, disabled: !!v.locked, commit: (ms) => act.setDuration(sp, ms) })]));
   }
-  g.appendChild(startRow);
+  g.appendChild(el(doc, 'p', { class: 'help small muted', id: 'ex-start-help' }, [e.start === 'cold' ? 'Every device with a power lifecycle is off when the run starts, then boots as it normally does (its boot time; guests after their host). Boot time counts as experiment time.' : e.settle ? `The network runs ${durText(e.settle)} before the start; that time is not the experiment’s.` : 'The network starts up at the start (devices on, protocols starting).']));
+  start.setAttribute('aria-describedby', 'ex-start-help');
   // the execution scope, and what it resolves to
   const sk = el(doc, 'select', { id: 'ex-scope', 'aria-label': 'Execution scope' }) as HTMLSelectElement;
-  for (const [val, t] of [['entire', 'Entire model'], ['group', 'Group'], ['vlan', 'VLAN'], ['domain', 'Failure domain'], ['device', 'Dependency slice of a device']]) sk.appendChild(el(doc, 'option', { value: val }, [t]));
+  for (const [val, t] of [['entire', 'Entire model'], ['targets', 'Targets and their dependencies'], ['group', 'Group'], ['vlan', 'VLAN'], ['domain', 'Failure domain'], ['device', 'Dependency slice of a device']]) sk.appendChild(el(doc, 'option', { value: val }, [t]));
   sk.value = e.scope.kind;
   sk.disabled = !!v.locked;
   const options: Array<[string, string]> =
@@ -181,7 +195,7 @@ export function experimentsLeft(doc: Document, v: ExpWsView, act: ExpWsActions):
     act.setScope(sk.value as ExpScope['kind'], first ? first.id : sk.value === 'vlan' ? String((v.model.networks.find((n) => n.vlan !== undefined) || { vlan: 1 }).vlan) : '');
   });
   const pair = el(doc, 'span', { class: 'tf-pair' }, [sk]);
-  if (e.scope.kind !== 'entire') {
+  if (e.scope.kind !== 'entire' && e.scope.kind !== 'targets') {
     const sv = el(doc, 'select', { id: 'ex-scope-value', 'aria-label': 'Scope: which' }) as HTMLSelectElement;
     for (const [val, t] of options) sv.appendChild(el(doc, 'option', { value: val }, [t]));
     if (!options.some((o) => o[0] === e.scope.value)) sv.appendChild(el(doc, 'option', { value: e.scope.value }, [`${e.scope.value} (unknown)`]));
@@ -305,7 +319,7 @@ export function experimentsRight(doc: Document, v: ExpWsView, act: ExpWsActions)
   const step = list === 'actions' ? e.actions[n] : list === 'observe' ? e.observations[n] : undefined;
   if (!list || !step) {
     box.appendChild(el(doc, 'p', { class: 'muted' }, ['Select an action or an observation in the sequence to configure it, or add one.']));
-    box.appendChild(el(doc, 'p', { class: 'small' }, [`${e.actions.length} action${e.actions.length === 1 ? '' : 's'}, ${e.observations.length} observation${e.observations.length === 1 ? '' : 's'}; ${e.duration ? `runs ${durText(e.duration)}` : 'no duration yet'}${e.settle ? ` after ${durText(e.settle)} to settle` : ', from a freshly booted network'}.`]));
+    box.appendChild(el(doc, 'p', { class: 'small' }, [`${e.actions.length} action${e.actions.length === 1 ? '' : 's'}, ${e.observations.length} observation${e.observations.length === 1 ? '' : 's'}; ${e.duration ? `runs ${durText(e.duration)}` : 'no duration yet'}${e.start === 'cold' ? ', from a cold start (every device boots)' : e.settle ? ` after ${durText(e.settle)} to settle` : ', from a freshly booted network'}.`]));
     return box;
   }
   const k = v.index.get(e.id) as number;
@@ -351,11 +365,10 @@ export function experimentsRight(doc: Document, v: ExpWsView, act: ExpWsActions)
       if (list === 'observe') act.set(P(...base, 'at'), 'duration', after.value === 'start' ? '0s' : '');
     } else act.setAfter(list, n, Number(after.value));
   });
-  const at = el(doc, 'input', { type: 'text', id: 'ex-at', 'aria-label': 'Delay', placeholder: list === 'observe' && step.at === undefined && !step.after ? '' : '0s', autocomplete: 'off' }) as HTMLInputElement;
-  at.value = step.at !== undefined ? durText(step.at).replace(' ', '') : '';
-  at.disabled = !!v.locked || (list === 'observe' && step.at === undefined && !step.after);
-  at.addEventListener('change', () => act.set(P(...base, 'at'), 'duration', at.value.trim()));
-  row('ex-after', 'When', el(doc, 'span', { class: 'tf-pair' }, [after, at]), missing.has('at') ? 'the time is not a duration (e.g. 10s)' : undefined);
+  const atEnd = list === 'observe' && step.at === undefined && !step.after;
+  const atp = P(...base, 'at');
+  const at = durationControl(doc, { key: atp, id: 'ex-at', label: step.after ? 'Delay after it' : 'Time after the start', value: atEnd ? undefined : step.at || 0, min: 0, max: e.duration || EXP_MAX_DURATION, placeholder: atEnd ? 'at the end' : '0', disabled: !!v.locked || atEnd, error: missing.has('at') ? 'The time is not a duration.' : undefined, commit: (ms) => act.setDuration(atp, ms === null ? 0 : ms) });
+  row('ex-after', 'When', el(doc, 'span', { class: 'tf-pair ex-when' }, [after, at]));
   g.appendChild(el(doc, 'p', { class: 'help small muted' }, [whenText(step, e.duration) + (step.after ? ' — its submission, not its effect: an observation says what happened' : '')]));
   // its target, by what the kind needs
   targetControl(doc, v, act, e, list, n, step, def.target, base, row, missing.has('target'));
@@ -364,11 +377,30 @@ export function experimentsRight(doc: Document, v: ExpWsView, act: ExpWsActions)
   for (const f of fields) {
     const id = 'ex-f-' + f;
     const val = (step as unknown as { [k: string]: unknown })[f];
+    const lab = FIELD_LABEL[f] + (def.required.indexOf(f) >= 0 ? '' : ' (optional)');
+    if (DURATION_FIELDS.indexOf(f) >= 0) {
+      // a duration: the number and its unit
+      const fp = P(...base, f);
+      row(id, lab, durationControl(doc, { key: fp, id, label: FIELD_LABEL[f], value: val as number | undefined, min: f === 'interval' ? 10 : 1, max: EXP_MAX_DURATION, required: def.required.indexOf(f) >= 0, placeholder: f === 'interval' ? '1' : 'until undone', disabled: !!v.locked, commit: (ms) => act.setDuration(fp, ms) }));
+      if (f === 'for') g.appendChild(el(doc, 'p', { class: 'help small muted' }, ['How long it lasts: then it is undone (restored, brought up, powered on, stopped). Left empty: until another action undoes it.']));
+      continue;
+    }
+    const choices = FIELD_CHOICES[f];
+    if (choices) {
+      const cs = el(doc, 'select', { id }) as HTMLSelectElement;
+      cs.appendChild(el(doc, 'option', { value: '' }, [def.required.indexOf(f) >= 0 ? 'Select…' : f === 'family' ? 'Either' : 'Any']));
+      for (const c of f === 'protocol' && (step as ExpObservation).of === 'timing' ? ['ptp', 'ntp'] : choices) cs.appendChild(el(doc, 'option', { value: c }, [f === 'family' ? (c === 'ipv4' ? 'IPv4' : 'IPv6') : c.toUpperCase()]));
+      cs.value = (val as string) || '';
+      cs.disabled = !!v.locked;
+      cs.addEventListener('change', () => act.set(P(...base, f), 'text', cs.value));
+      row(id, lab, cs, missing.has(f) ? `${FIELD_LABEL[f]} is required` : undefined);
+      continue;
+    }
     const i = el(doc, 'input', { type: 'text', id, autocomplete: 'off', spellcheck: 'false', placeholder: f === 'service' ? 'tcp/443, udp/53, icmp' : f === 'group' ? '239.1.1.1' : f === 'interval' ? '1s' : f === 'to' ? 'device, interface, address, application' : f === 'port' ? '5000' : f === 'size' ? '1000' : '1', list: f === 'to' ? 'ex-ends' : null }) as HTMLInputElement;
-    i.value = val === undefined ? '' : f === 'interval' ? durText(val as number).replace(' ', '') : String(val);
+    i.value = val === undefined ? '' : String(val);
     i.disabled = !!v.locked;
-    i.addEventListener('change', () => act.set(P(...base, f), f === 'interval' ? 'duration' : f === 'count' || f === 'port' || f === 'size' ? 'int' : 'text', i.value.trim()));
-    row(id, FIELD_LABEL[f] + (def.required.indexOf(f) >= 0 ? '' : ' (optional)'), i, missing.has(f) ? `${FIELD_LABEL[f]} is required` : undefined);
+    i.addEventListener('change', () => act.set(P(...base, f), f === 'count' || f === 'port' || f === 'size' || f === 'min' ? 'int' : 'text', i.value.trim()));
+    row(id, lab, i, missing.has(f) ? `${FIELD_LABEL[f]} is required` : undefined);
   }
   if (fields.indexOf('to') >= 0) g.appendChild(endsList(doc, v.model));
   // an observation: what it expects, over which window
@@ -382,11 +414,8 @@ export function experimentsRight(doc: Document, v: ExpWsView, act: ExpWsActions)
     ex.disabled = !!v.locked;
     ex.addEventListener('change', () => act.set(P(...base, 'expect'), 'text', ex.value));
     row('ex-expect', 'Expect', ex, missing.has('expect') ? 'the expected outcome is required' : undefined);
-    const w = el(doc, 'input', { type: 'text', id: 'ex-within', placeholder: 'read at once', autocomplete: 'off' }) as HTMLInputElement;
-    w.value = o.within ? durText(o.within).replace(' ', '') : '';
-    w.disabled = !!v.locked;
-    w.addEventListener('change', () => act.set(P(...base, 'within'), 'duration', w.value.trim()));
-    row('ex-within', 'Window', w);
+    const wp = P(...base, 'within');
+    row('ex-within', 'Window', durationControl(doc, { key: wp, id: 'ex-within', label: 'Window', value: o.within, min: 1, max: e.duration || EXP_MAX_DURATION, placeholder: 'read at once', disabled: !!v.locked, commit: (ms) => act.setDuration(wp, ms) }));
     g.appendChild(el(doc, 'p', { class: 'help small muted', id: 'ex-verdicts' }, [od.window === 'state' ? `Satisfied as soon as the state is “${o.expect || od.expect[0]}” within the window (without one: when read); violated when it is not by its end; indeterminate when it can’t be read (outside the scope, not determinable).` : `Counted until the window ends (without one: when read): satisfied when that is “${o.expect || od.expect[0]}”; indeterminate while nothing was sent or it is still on its way.`]));
   }
   box.appendChild(g);
@@ -538,52 +567,117 @@ export function experimentsDock(doc: Document, v: ExpWsView, act: ExpWsActions):
   const runs = e ? v.runs.get(e.id) || [] : [];
   const last = runs[runs.length - 1];
   const running = !!v.running && !!e && v.running.id === e.id;
-  // the controls: Run explicitly; Stop; Reset; Compare; Copy
+  const live = running && v.running ? v.running.live : null;
+  // the controls: Run explicitly; while it plays Pause / Play, the speed, Skip to the result; Stop; Reset; Compare; Copy
   const bar = el(doc, 'div', { class: 'ex-runbar', role: 'group', 'aria-label': 'Run' });
-  const b = (id: string, text: string, why: string, f: () => void, primary = false): void => {
+  const b = (id: string, text: string, why: string, f: () => void, primary = false, pressed?: boolean): void => {
     const x = el(doc, 'button', { type: 'button', id, class: primary ? 'primary' : '', title: why || text }, [text]) as HTMLButtonElement;
     x.disabled = !!why;
+    if (pressed !== undefined) x.setAttribute('aria-pressed', pressed ? 'true' : 'false');
     x.addEventListener('click', f);
     bar.appendChild(x);
   };
   const runWhy = !e ? 'Select an experiment' : running ? 'It is running' : v.running ? `Another experiment is running (${v.running.id})` : e.problems.length ? `It can’t run yet: ${e.problems[0]}${e.problems.length > 1 ? ` (+${e.problems.length - 1})` : ''}` : '';
-  b('ex-run', 'Run', runWhy, () => act.run(), true);
+  b('ex-run', last ? 'Run again' : 'Run', runWhy, () => act.run(), true);
+  if (running && v.running && v.running.playback) {
+    const paused = !v.running.playing;
+    b('ex-pause', paused ? 'Play' : 'Pause', '', () => act.pause(!paused), false, paused);
+    const sp = el(doc, 'select', { id: 'ex-speed', 'aria-label': 'Playback speed' }) as HTMLSelectElement;
+    for (const x of v.speeds) sp.appendChild(el(doc, 'option', { value: String(x) }, [`${x}×`]));
+    sp.value = String(v.running.speed);
+    sp.addEventListener('change', () => act.speed(Number(sp.value)));
+    bar.appendChild(sp);
+    b('ex-skip', 'Skip to result', '', () => act.skip());
+  }
   b('ex-stop', 'Stop', running ? '' : 'Nothing is running', () => act.stop());
   b('ex-reset', 'Reset results', runs.length && !running ? '' : 'No results to reset', () => act.reset());
   b('ex-compare', 'Compare with the previous run', runs.length >= 2 && !running ? '' : 'Run it twice to compare', () => act.compare());
   b('ex-copy', 'Copy result', last && !running ? '' : 'No result yet', () => act.copy());
   // the state of the run: words, and the progress (polite, never moving the focus)
-  const state = !e ? 'No experiment selected.' : running && v.running ? (v.running.reached < 0 ? `Running: settling, ${durText(-v.running.reached)} before the start` : `Running on scenario time: t = ${(v.running.reached / 1000).toFixed(0)} s of ${(v.running.duration / 1000).toFixed(0)} s`) : last ? `${last.state === 'stopped' ? 'Stopped' : last.state === 'refused' ? 'Not run' : 'Done'}: ${last.summary}${v.outdated(last) ? ' — outdated: the model changed since' : ''}` : e.problems.length ? 'Not runnable yet: configure the steps marked ⚠.' : 'Ready. Nothing has run: press Run.';
+  const state = !e
+    ? 'No experiment selected.'
+    : running && v.running
+      ? v.running.reached < 0
+        ? `Running: settling, ${durText(-v.running.reached)} before the start`
+        : `${v.running.playback ? (v.running.playing ? 'Playing' : 'Paused') : 'Running'} on scenario time: t = ${(Math.max(0, v.running.reached) / 1000).toFixed(1)} s of ${durText(v.running.duration)}`
+      : last
+        ? `${last.state === 'stopped' ? 'Stopped' : last.state === 'refused' ? 'Not run' : 'Done'}: ${last.summary}${v.outdated(last) ? ' — outdated: the model changed since' : ''}`
+        : e.problems.length
+          ? 'Not runnable yet: configure the steps marked ⚠.'
+          : 'Ready. Nothing has run: press Run.';
   bar.appendChild(el(doc, 'span', { id: 'ex-progress', class: 'small ex-state', role: 'status', 'aria-live': running ? 'off' : 'polite' }, [state]));
   box.appendChild(bar);
   if (!e) return box;
-  if (!last) {
-    // before a run: what it will do, in order
+  if (running && v.running) {
+    // the progress, and what the run waits for now (short; the evidence is in the results)
+    const pr = el(doc, 'progress', { id: 'ex-progress-bar', max: String(v.running.duration || 1), 'aria-label': 'Experiment time' }) as HTMLProgressElement;
+    pr.value = Math.max(0, Math.min(v.running.duration, v.running.reached));
+    const st = el(doc, 'ul', { class: 'ex-status small', id: 'ex-status', 'aria-label': 'Waiting for' });
+    for (const x of v.running.status) st.appendChild(el(doc, 'li', {}, [x]));
+    if (!v.running.status.length) st.appendChild(el(doc, 'li', { class: 'muted' }, [v.running.playback ? 'Shown: the experiment’s traffic and what it needs (other traffic runs, hidden).' : 'Running without the diagram.']));
+    box.appendChild(el(doc, 'div', { class: 'ex-live' }, [pr, st]));
+  }
+  if (!last && !live) {
+    // before a run: a short summary, what is missing, and what it will do in order
+    const sc = v.scope(e);
+    const sum = el(doc, 'dl', { class: 'ex-summary small', id: 'ex-summary' });
+    const row = (k: string, val: string): void => {
+      sum.appendChild(el(doc, 'dt', {}, [k]));
+      sum.appendChild(el(doc, 'dd', {}, [val]));
+    };
+    row('Start', e.start === 'cold' ? 'Cold start (every device boots)' : e.settle ? `Settled for ${durText(e.settle)}` : 'Freshly booted');
+    row('Duration', e.duration ? durText(e.duration) : 'not set');
+    row('Actions', String(e.actions.length));
+    row('Observations', String(e.observations.length));
+    row('Scope', e.scope.kind === 'entire' ? `Entire model (${sc.total} devices)` : `${scopeText(e.scope)} (${sc.run} of ${sc.total} devices)`);
     const ul = el(doc, 'ol', { class: 'ex-plan small', 'aria-label': 'What it will do' });
-    ul.appendChild(el(doc, 'li', {}, [`Start: ${e.settle ? `the network runs ${durText(e.settle)} to settle first` : 'a freshly booted network'}; scope: ${scopeText(e.scope)}.`]));
     for (const a of e.actions) ul.appendChild(el(doc, 'li', {}, [actionText(a)]));
     for (const o of e.observations) ul.appendChild(el(doc, 'li', {}, [observationText(o, e.duration)]));
     ul.appendChild(el(doc, 'li', {}, [`End at ${durText(e.duration || 0)}.`]));
-    box.appendChild(el(doc, 'div', { class: 'ex-cols' }, [el(doc, 'section', { 'aria-labelledby': 'ex-plan-h' }, [el(doc, 'h3', { id: 'ex-plan-h' }, ['What it will do']), ul])]));
+    const first = el(doc, 'section', { 'aria-labelledby': 'ex-sum-h' }, [el(doc, 'h3', { id: 'ex-sum-h' }, ['Before the run']), sum]);
+    if (e.problems.length) {
+      const pl = el(doc, 'ul', { class: 'small ex-missing', id: 'ex-missing', 'aria-label': 'Missing configuration' });
+      for (const p of e.problems.slice(0, 8)) pl.appendChild(el(doc, 'li', { class: 'trace-error' }, ['⚠ ' + p]));
+      first.appendChild(el(doc, 'h4', { class: 'ex-sub' }, ['Missing before Run']));
+      first.appendChild(pl);
+    }
+    box.appendChild(el(doc, 'div', { class: 'ex-cols' }, [first, el(doc, 'section', { 'aria-labelledby': 'ex-plan-h' }, [el(doc, 'h3', { id: 'ex-plan-h' }, ['What it will do']), ul])]));
     return box;
   }
+  const r = live || (last as ExpRunResult);
   const cols = el(doc, 'div', { class: 'ex-cols' });
-  // the steps: submitted or refused, at their times (those not reached: pending)
+  // the steps: submitted, waiting, refused or timed out, at their times (those not reached: pending)
   const steps = el(doc, 'ol', { class: 'ex-steplog small', 'aria-label': 'Actions in this run' });
   e.actions.forEach((a, n) => {
-    const s = last.actions.find((x) => x.index === n);
-    steps.appendChild(el(doc, 'li', { 'data-state': s ? s.state : 'pending' }, [el(doc, 'span', { class: 'ex-mark', 'aria-hidden': 'true' }, [s ? (s.state === 'submitted' ? '→' : '✕') : '…']), ` ${s ? `t = ${(s.at / 1000).toFixed(1)} s` : 'not reached'} — ${actionText(a)}: `, el(doc, 'span', { class: s && s.state === 'refused' ? 'trace-error' : 'muted' }, [s ? `${s.state === 'submitted' ? 'submitted' : 'refused'}: ${s.text}` : 'pending'])]));
+    const logs = r.actions.filter((x) => x.index === n);
+    if (!logs.length) {
+      steps.appendChild(el(doc, 'li', { 'data-state': 'pending' }, [el(doc, 'span', { class: 'ex-mark', 'aria-hidden': 'true' }, ['…']), ` ${live ? 'not yet' : 'not reached'} — ${actionText(a)}`]));
+      return;
+    }
+    for (const s of logs) {
+      const mark = s.state === 'submitted' ? '→' : s.state === 'undone' ? '↺' : s.state === 'waiting' ? '◷' : '✕';
+      const word = s.state === 'submitted' ? 'submitted' : s.state === 'undone' ? 'undone' : s.state === 'waiting' ? 'waiting' : s.state === 'timed out' ? 'timed out' : 'refused';
+      steps.appendChild(el(doc, 'li', { 'data-state': s.state }, [el(doc, 'span', { class: 'ex-mark', 'aria-hidden': 'true' }, [mark]), ` t = ${(s.at / 1000).toFixed(1)} s — ${actionText(a)}: `, el(doc, 'span', { class: s.state === 'refused' || s.state === 'timed out' ? 'trace-error' : 'muted' }, [`${word}: ${s.text}`])]));
+    }
   });
-  cols.appendChild(el(doc, 'section', { 'aria-labelledby': 'ex-steps-h' }, [el(doc, 'h3', { id: 'ex-steps-h' }, [`Actions (${last.actions.length} of ${e.actions.length} submitted or refused)`]), steps]));
-  // the observations: the verdict, what was found, when
+  cols.appendChild(el(doc, 'section', { 'aria-labelledby': 'ex-steps-h' }, [el(doc, 'h3', { id: 'ex-steps-h' }, [`Actions (${r.actions.filter((x) => x.state !== 'waiting' && x.state !== 'undone').length} of ${e.actions.length} submitted or refused)`]), steps]));
+  // the observations: the verdict, what was found, when (while it runs: those decided so far)
   const obs = el(doc, 'ul', { class: 'ex-obs small', 'aria-label': 'Observations in this run' });
-  for (const r of last.observations) obs.appendChild(obsItem(doc, r, e));
+  for (const o of r.observations) obs.appendChild(obsItem(doc, o, e));
+  if (live) {
+    const open = e.observations.length - r.observations.length;
+    if (open) obs.appendChild(el(doc, 'li', { class: 'muted', 'data-outcome': 'open' }, [`${open} observation${open === 1 ? '' : 's'} not decided yet`]));
+  }
   cols.appendChild(el(doc, 'section', { 'aria-labelledby': 'ex-obs-h' }, [el(doc, 'h3', { id: 'ex-obs-h' }, ['Observations']), obs]));
+  if (live) {
+    box.appendChild(cols);
+    return box;
+  }
   // the events, and the comparison
-  const side = el(doc, 'section', { 'aria-labelledby': 'ex-ev-h' }, [el(doc, 'h3', { id: 'ex-ev-h' }, [`Run: ${last.scope}${last.settle ? `, settled ${durText(last.settle)}` : ''}`])]);
-  const ev = el(doc, 'details', { class: 'layer-ev', id: 'ex-events' }, [el(doc, 'summary', {}, [`Events (${last.events.length}: state changes and drops)`])]);
+  const side = el(doc, 'section', { 'aria-labelledby': 'ex-ev-h' }, [el(doc, 'h3', { id: 'ex-ev-h' }, [`Run: ${r.scope}${r.start === 'cold' && r.cold ? `, cold start (${r.cold.devices} devices booted)` : r.settle ? `, settled ${durText(r.settle)}` : ''}`])]);
+  const ev = el(doc, 'details', { class: 'layer-ev', id: 'ex-events' }, [el(doc, 'summary', {}, [`Events (${r.events.length}: state changes and drops)`])]);
   const evl = el(doc, 'ul', { class: 'small' });
-  for (const x of last.events.slice(-80)) evl.appendChild(el(doc, 'li', {}, [`t = ${(x.t / 1000).toFixed(2)} s ${x.device}: ${x.text}`]));
+  for (const x of r.events.slice(-80)) evl.appendChild(el(doc, 'li', {}, [`t = ${(x.t / 1000).toFixed(2)} s ${x.device}: ${x.text}`]));
   ev.appendChild(evl);
   side.appendChild(ev);
   const cmp = v.compare.get(e.id);
@@ -595,13 +689,14 @@ export function experimentsDock(doc: Document, v: ExpWsView, act: ExpWsActions):
 
 function obsItem(doc: Document, r: ObsResult, e: Experiment): HTMLElement {
   const mark = r.outcome === 'satisfied' ? '✓' : r.outcome === 'violated' ? '✕' : r.outcome === 'unsupported' ? '–' : '?';
-  return el(doc, 'li', { 'data-outcome': r.outcome, class: 'v-' + r.outcome }, [el(doc, 'span', { class: 'v-mark', 'aria-hidden': 'true' }, [mark + ' ']), el(doc, 'strong', {}, [OUTCOME_TEXT[r.outcome] + ': ']), observationText(r.obs, e.duration), el(doc, 'div', { class: 'muted' }, [`${r.actual} — decided at t = ${(r.at / 1000).toFixed(1)} s${r.to > r.from ? ` (window ${(r.from / 1000).toFixed(1)}–${(r.to / 1000).toFixed(1)} s)` : ''}`])]);
+  const def = observeDef(r.obs.of);
+  return el(doc, 'li', { 'data-outcome': r.outcome, class: 'v-' + r.outcome }, [el(doc, 'span', { class: 'v-mark', 'aria-hidden': 'true' }, [mark + ' ']), el(doc, 'strong', {}, [OUTCOME_TEXT[r.outcome] + ': ']), observationText(r.obs, e.duration), el(doc, 'div', { class: 'muted' }, [`${r.actual}${r.held ? '' : ` — decided at t = ${(r.at / 1000).toFixed(1)} s`}${r.to > r.from ? ` (window ${(r.from / 1000).toFixed(1)}–${(r.to / 1000).toFixed(1)} s)` : ''}${def ? ` · modeled: ${def.evidence}` : ''}`])]);
 }
 
 /** A run as text (Copy result): the experiment, the model, the timing, each observation and step, and the events. */
 export function experimentText(o: { title: string; version?: string }, e: Experiment, r: ExpRunResult, cmp?: RunCompare): string {
   const info = resultInfo({ kind: 'model', scope: `Experiment ${e.id}` }, ['Run on scenario time (the simulated clock) from the experiment’s defined start.'], ['Convergence time, throughput and synchronization accuracy are not measured.']);
-  const lines = [`NetAtlas — Experiment “${e.name}” (${e.id})`, `Model: ${o.title}${o.version ? ` · NetAtlas ${o.version}` : ''} · model fingerprint ${r.fingerprint.slice(0, 12)}`, `Scope: ${r.scope}; start: ${r.settle ? `settled ${durText(r.settle)}` : 'freshly booted'}`, `Timing: scenario time; ${r.state === 'done' ? 'ran' : r.state} to t = ${(r.reached / 1000).toFixed(1)} s of ${(r.duration / 1000).toFixed(0)} s${r.params.length ? `; parameters ${r.params.map((p) => `${p.key} ${p.value}`).join(', ')}` : ''}`, r.summary, ''];
+  const lines = [`NetAtlas — Experiment “${e.name}” (${e.id})`, `Model: ${o.title}${o.version ? ` · NetAtlas ${o.version}` : ''} · model fingerprint ${r.fingerprint.slice(0, 12)}`, `Scope: ${r.scope}; start: ${r.start === 'cold' ? `cold start${r.cold ? ` (${r.cold.devices} devices booted from off)` : ''}` : r.settle ? `settled ${durText(r.settle)}` : 'freshly booted'}`, `Timing: scenario time; ${r.state === 'done' ? 'ran' : r.state} to t = ${(r.reached / 1000).toFixed(1)} s of ${(r.duration / 1000).toFixed(0)} s${r.params.length ? `; parameters ${r.params.map((p) => `${p.key} ${p.value}`).join(', ')}` : ''}`, r.summary, ''];
   for (const x of r.observations) lines.push(`[${OUTCOME_TEXT[x.outcome]}] ${observationText(x.obs, e.duration)} — ${x.actual}`);
   lines.push('', 'Actions:');
   for (const s of r.actions) lines.push(`  t = ${(s.at / 1000).toFixed(1)} s ${actionText(s.action)}: ${s.state} — ${s.text}`);

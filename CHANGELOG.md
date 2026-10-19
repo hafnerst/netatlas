@@ -12,12 +12,76 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
-Workspaces for Experiments and Analyze, stable simulation link indicators.
+Experiments that play in the diagram (only their own traffic shown), a cold
+start, numeric durations with units, and observations of state the
+simulation keeps. Workspaces for Experiments and Analyze, stable simulation
+link indicators.
 Analyze as an architecture-validation workflow: shared verdicts with their
 context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Added (experiments played)
+
+- **Experiments play in the diagram.** Run plays a run with the
+  simulation's own pacing, dots, labels, hit areas and packet inspector,
+  and shows only the experiment's traffic: its actions' messages and what
+  they cause, plus its devices' prerequisites (a host's DHCP, DNS, address
+  resolution, router discovery; a receiver's LAN's IGMP / MLD queries; the
+  sessions or clocks an observation reads). The rest of the network runs,
+  hidden. It never holds the run back and never makes its display wait.
+  - **Playback controls:** Pause, the speed and **Skip to result** (the
+    same result, at once).
+  - **Diagram:** device states show Powered off → Booting → Operational,
+    and the action in progress is outlined.
+  - **Status lines** say what the run waits for (booting, DHCP, a
+    neighbor, a session, a receiver's delivery).
+  - **Results while it plays:** the bottom panel shows them as they come
+    in.
+  - **Before a run,** a short summary (start, duration, actions,
+    observations, scope) and what is missing.
+- **Cold start — boot all devices:** every device with a power lifecycle
+  starts off and boots as it normally does.
+  - A VM boots after its host; a container starts by its restart policy.
+  - Cables, patch panels, TAPs and external networks have no lifecycle
+    and are not powered.
+  - Boot time counts as experiment time.
+  - An action whose device is still coming up **waits** for it (the run
+    says so and for how long), or is **timed out**.
+- **Numeric durations with sec / min / hours.** Every experiment duration
+  is a number and a unit: length, settling time, delay, window, interval
+  and the new **For**.
+  - Changing the unit converts the number and keeps the duration.
+  - Only a valid number you enter is written, in a canonical form.
+  - A unit choice changes nothing in the model.
+- **For:** an action that lasts (fail, shut, power off, flap, stream,
+  application) is undone after that long.
+- **New observations, read from state the simulation keeps:**
+  - an address acquired (DHCPv4 with its binding time, SLAAC, DHCPv6);
+  - a neighbor resolved (ARP / neighbor table);
+  - a route available;
+  - a protocol session established (with a peer);
+  - a timing state (PTP or NTP synchronized: a state, never an accuracy);
+  - an MQTT publication delivered to a subscriber (on a topic, at least N);
+  - a reception with a minimum count;
+  - a device that is operational or booting.
+
+  A state reports whether it was *already so* when its window opened or
+  *reached* at a named moment.
+- **Targets and their dependencies:** an execution scope that runs what the
+  steps name with what it needs.
+- **Examples:**
+  - `private-house.yaml`: a cold start (the TV gets an address and reaches
+    the thermostat) and a multicast join / stream / leave;
+  - `ot-network.yaml`: an MQTT dashboard receiving the PLC's temperatures.
+
+### Changed (experiments played)
+
+- An application started by an experiment tags its messages as the
+  experiment's traffic. It still runs on scenario time.
+- Experiments keep `netatlas: 1`. New keys: `start`, `for`, `family`,
+  `protocol`, `topic`, `min`, and `scope: targets`.
 
 ### Added (workspaces)
 
