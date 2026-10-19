@@ -5063,9 +5063,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       nextOpen = opened;
       click('#menu-btn');
       click('#open');
-      await tick(20);
-      await answerDialog('discard');
-      for (let n = 0; n < 50 && (!app.mdoc || md().fileName !== 'opened.yaml'); n++) await tick(10);
+      // (on a slow machine the question about the unsaved changes, and the opening after it, take longer than a few ticks)
+      for (let n = 0; n < 300 && !q('#modal[open]'); n++) await tick(10);
+      const discarded = await answerDialog('discard');
+      for (let n = 0; n < 1000 && (!app.mdoc || md().fileName !== 'opened.yaml'); n++) await tick(10);
       const linkedAfterOpen = app.linked && !saveBtn.disabled && app.fileState().kind === 'linked' && activeEx() === '';
       edit('Opened and saved');
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
@@ -5073,7 +5074,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'Open model… through the browser’s picker links the model to the opened file; Save model asks the browser for write permission and updates that file',
         linkedAfterOpen && opened.perm === 'granted' && opened.writes === 1 && /title: Opened and saved/.test(opened.text) && !md().dirty,
-        `${linkedAfterOpen} ${opened.perm} ${opened.writes}`,
+        `${linkedAfterOpen} ${opened.perm} ${opened.writes} discard answered=${discarded} file=${app.mdoc ? md().fileName : ''}`,
       );
       // a file read through the file input (or dropped without a handle) is never linked
       await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'from-input.yaml'));
