@@ -283,17 +283,21 @@ anything else.
 ## Build and verification
 
 ```sh
-npm install            # TypeScript only (dev dependency)
+npm ci                 # TypeScript only (dev dependency, pinned by package-lock.json)
 npm run build          # -> dist/netatlas.html (and the test build, build/netatlas-test.html)
-npm test               # build + all tests (Node + headless browser)
-npm run check:dist     # is the checked-in dist/netatlas.html generated from this source?
+npm test               # build + every test suite (unit, browser, public, viewport)
+npm run check:dist     # are the checked-in generated files generated from this source?
+npm run verify         # everything CI checks
 ```
 
-`npm run check:dist` regenerates the embedded examples and the bundle in
-memory and compares them byte-for-byte with `src/generated/examples.ts`,
-`src/generated/test-examples.ts` and `dist/netatlas.html`. It writes neither file. It exits with status 1 and
-says so if either is stale. To confirm a checkout or a pull request, run it
-on a clean working tree after `npm ci`.
+`npm run check:dist` regenerates every generated file in memory (the
+embedded examples, the help assets, the fixtures, `docs/SUPPORT.md` and the
+bundle) and compares them byte-for-byte with the committed ones. It writes
+none of them. It exits with status 1 and names the command that regenerates
+a stale one. To confirm a checkout or a pull request, run it on a clean
+working tree after `npm ci`. The suites, CI's checks and the release
+verification are in [TESTING.md](TESTING.md) and
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Project layout
 

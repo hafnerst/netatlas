@@ -12,6 +12,10 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Continuous integration and release verification: required checks on every
+pull request, the shipped HTML verified before anything rebuilds it, a
+strict browser run, the offline contract observed from outside the page,
+and release assets with checksums and provenance.
 Experiments that play in the diagram (only their own traffic shown), a cold
 start, numeric durations with units, and observations of state the
 simulation keeps. Workspaces for Experiments and Analyze, stable simulation
@@ -21,6 +25,71 @@ context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Added (CI and release verification)
+
+- **CI on every pull request into `dev` or `main`** and every push to them
+  (`.github/workflows/ci.yml`), one stable check per job: *Source and
+  generated files*, *Model and analysis tests*, *Compatibility* (Node 22 on
+  Linux, Node 24 on Windows), *Browser regression tests*, *Public artifact*,
+  *Viewport checks*, *Workflow lint* and *Release PR source* (a pull request
+  into `main` must come from `dev`). A newer push cancels a pull request's
+  older run; runs on `dev` and `main` are never cancelled.
+- **Committed artifacts are checked before anything regenerates them.**
+  `npm run check:dist` writes nothing and now also covers the test
+  fixtures; `npm run check:repro` then builds twice and fails if the builds
+  differ or a committed file changed. Each failure names the command that
+  regenerates the file; CI never commits a repair.
+- **Test suites** (`scripts/run-tests.mjs`): `unit`, `browser`, `public` and
+  `viewport`, every test file in exactly one, run as `npm run test:<suite>`;
+  `npm test` runs all four and `npm run verify` everything CI checks.
+  Browser suites run two files at a time. Each file's log, the results and
+  the environment (Node, OS, commit, browser version) are written to
+  `test-results/`.
+- **Strict browser runs:** with `--strict` (CI), a missing browser or a
+  skipped browser test fails; locally they are still skipped with a
+  warning. CI installs Chrome for Testing at an exact version.
+  `NETATLAS_BROWSER=none` tries the behaviour without a browser.
+- **Failure evidence:** browser pages record console errors and exceptions
+  and a last screenshot, the self-tests their full results; kept for failed
+  files only and uploaded by CI for 7 days.
+- **The offline contract, observed from outside** (`test/offline.test.mjs`):
+  every request of the shipped page through its workflows in both themes,
+  with a control that proves the observation sees an external request.
+- **Release package check** (`npm run release:check`): no test-only module
+  or internal example, one inline script, the strict CSP, the version, the
+  size budget (6 MiB). `npm run release:prepare` writes `netatlas.html`,
+  `SHA256SUMS`, `provenance.json` and the release notes to `release/`.
+- **Release workflow** (`.github/workflows/release.yml`), started by hand
+  for an existing tag: checks the tag, the version and the CHANGELOG
+  section, verifies and tests, attests the build provenance and attaches
+  the assets to a draft release after the `release` environment's
+  approval. It never creates a tag, never publishes, never replaces a
+  differing asset.
+- **Security and maintenance:** CodeQL and a dependency review
+  (`.github/workflows/security.yml`, advisory), actionlint and zizmor on
+  the workflows, rules for the workflows in `test/workflows.test.mjs`
+  (read-only default token, SHA-pinned actions, no expressions in shell
+  scripts), monthly grouped Dependabot updates into `dev` without
+  auto-merge.
+- **An optional pre-push hook** (`.githooks/pre-push`), enabled by hand.
+- **Proposed repository settings**: a ruleset with the required checks, the
+  `release` environment, an optional ruleset for release tags
+  (`docs/rulesets/`), and the applied state as read on 2026-10-19
+  (docs/REPOSITORY-SETTINGS.md).
+
+### Changed (CI and release verification)
+
+- **Node.js 22 or later** is required to build and test (`engines`); CI and
+  releases use Node 24 (`.nvmrc`). Node 18 and 20 are no longer supported.
+- `npm run typecheck` no longer regenerates the embedded examples first: it
+  checks the committed source as it is.
+- The released application's own self-test moved from
+  `test/browser.test.mjs` to `test/public-artifact.test.mjs`.
+- `npm test` no longer runs `node --test test/`, which on newer Node
+  versions also runs the helper modules as tests.
+- The record of Ruleset A now says what is applied: *Require approval of
+  the most recent reviewable push* is off.
 
 ### Added (experiments played)
 

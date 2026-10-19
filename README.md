@@ -55,10 +55,12 @@ tools.
 1. **Get the file.** Download
    [`dist/netatlas.html`](https://github.com/hafnerst/netatlas/blob/main/dist/netatlas.html)
    from the default branch `main` (the latest release), or the same file at a
-   [release](https://github.com/hafnerst/netatlas/releases) tag; releases have
-   no separate download. Use this built file, not `src/index.html`. How to
-   check a copy against its source is in
-   [CONTRIBUTING.md](CONTRIBUTING.md#building-and-testing).
+   [release](https://github.com/hafnerst/netatlas/releases) tag. Releases
+   made with the release workflow (after 0.1.3) also attach it as a
+   download, with a `SHA256SUMS` file to check it (`sha256sum -c SHA256SUMS`)
+   and a small provenance file. Use this
+   built file, not `src/index.html`. How to check a copy against its source
+   is in [CONTRIBUTING.md](CONTRIBUTING.md#is-the-checked-in-html-current).
 2. **Open it** in a current Chrome, Edge, Firefox or Safari: double-click it or
    drag it into a browser window.
 3. **Start a model**: **New model**, **Open model…** for a YAML file, or
@@ -163,13 +165,14 @@ Important boundaries:
 
 ## Development
 
-Building from source needs Node.js 18 or later; the only dependency is the
-TypeScript compiler.
+Building from source needs Node.js 22 or later (CI uses 24); the only
+dependency is the TypeScript compiler.
 
 ```sh
-npm install        # TypeScript only
+npm ci             # TypeScript only, as pinned in package-lock.json
 npm run build      # writes dist/netatlas.html
-npm test           # builds, then runs the Node tests and the browser self-tests
+npm test           # builds, then runs every test suite
+npm run verify     # everything CI checks, from freshness to the browser suites
 ```
 
 The browser tests need Chrome, Edge or Chromium. Branch rules, the release
