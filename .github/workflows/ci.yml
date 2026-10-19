@@ -1,0 +1,150 @@
+# The checks a pull request into dev or main must pass, and the verification of
+# every push to them. Each job is one stable check name for the branch rules
+# (docs/REPOSITORY-SETTINGS.md). Nothing here writes to the repository: no
+# commits, no pushes, no comments; the token is read-only.
+#
+# What runs where, and the same commands locally: docs/TESTING.md, "CI".
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a new push to a pull request cancels its older run; runs on dev and main are never cancelled
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # a missing browser or a skipped browser test fails (scripts/run-tests.mjs --strict)
+  NETATLAS_REQUIRE_BROWSER: '1'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  static:
+    name: Source and generated files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Type check
+        run: npm run typecheck
+      # first, without writing anything: the committed generated files equal what the source generates
+      - name: Committed generated files are current (nothing regenerated yet)
+        run: npm run check:dist
+      # only then regenerate: twice, byte-identical, and no committed file changes
+      - name: Repeated builds are identical and change no committed file
+        run: npm run check:repro
+      - name: Release package check of dist/netatlas.html
+        run: npm run release:check
+      - name: Keep what differs
+        if: failure()
+        run: |
+          mkdir -p test-results/static
+          git status --porcelain > test-results/static/status.txt
+          git diff --stat > test-results/static/diff-stat.txt
+          # the readable generated sources in full; the bundle only as a summary (it is one line of 6 MB)
+          git diff -- src/generated docs/SUPPORT.md test/fixtures | head -c 2000000 > test-results/static/generated.diff
+          sha256sum dist/netatlas.html > test-results/static/dist.sha256 || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: static-diagnostics
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  unit:
+    name: Model and analysis tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # the tsc output and the test build, which the packaging test compares with the release;
+      # whether the committed files are current is the "Source and generated files" check's
+      - run: npm run build
+      - run: node scripts/run-tests.mjs unit --strict
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: unit-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  compat:
+    name: Compatibility (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Node 22 on Linux
+            os: ubuntu-24.04
+            node: '22'
+          - name: Node 24 on Windows
+            os: windows-2025
+            node: '24'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # the same generated files from another Node version or operating system
+      - run: npm run check:dist
+      - run: npm run build
+      - run: node scripts/run-tests.mjs unit --strict
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: compat-results-${{ matrix.os }}-node${{ matrix.node }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  release-source:
+    name: Release PR source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: A pull request into main comes from dev of this repository
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then echo "not a pull request: nothing to check"; exit 0; fi
+          if [ "$BASE" != main ]; then echo "a pull request into $BASE: any working branch may target it"; exit 0; fi
+          if [ "$HEAD" = dev ] && [ "$HEAD_REPO" = "$REPO" ]; then echo "a release pull request from dev into main"; exit 0; fi
+          printf '::error::A pull request into main must come from dev of %s, this one is from %s:%s (CONTRIBUTING.md, Releasing)\n' "$REPO" "$HEAD_REPO" "$HEAD"
+          exit 1

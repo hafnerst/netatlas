@@ -52,7 +52,7 @@ const file = join(root, 'docs', 'SUPPORT.md');
 if (process.argv.includes('--check')) {
   const cur = existsSync(file) ? readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : '';
   if (cur !== out) {
-    console.error('docs/SUPPORT.md is not current: run "node scripts/gen-support.mjs" (after tsc)');
+    console.error('docs/SUPPORT.md is not current: regenerate it with "npm run build" (or "node scripts/gen-support.mjs" after tsc) and commit it');
     process.exit(1);
   }
   console.log('docs/SUPPORT.md is up to date (' + cat.length + ' entries, ' + ANALYSIS_SUPPORT.length + ' analyses)');

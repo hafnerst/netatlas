@@ -10,7 +10,8 @@
   "scripts": {
     "build": "node scripts/gen-examples.mjs && node scripts/gen-help.mjs && tsc -p tsconfig.json && node scripts/gen-support.mjs && node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "check:dist": "node scripts/gen-examples.mjs --check && node scripts/gen-help.mjs --check && tsc -p tsconfig.json && node scripts/gen-support.mjs --check && node scripts/build.mjs --check",
+    "check:dist": "node scripts/gen-examples.mjs --check && node scripts/gen-help.mjs --check && tsc -p tsconfig.json && node scripts/make-fixtures.mjs --check && node scripts/gen-support.mjs --check && node scripts/build.mjs --check",
+    "check:repro": "node scripts/check-repro.mjs",
     "test": "npm run build && node scripts/run-tests.mjs all",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:browser": "node scripts/run-tests.mjs browser",
