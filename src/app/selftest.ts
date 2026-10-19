@@ -2586,7 +2586,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
       const piHeads = pi ? Array.from(pi.querySelectorAll('.pi-layer h4')).map((h) => h.textContent || '') : [];
-      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, then its timing, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads.slice(-2).join() === 'Payload,Timing' && /Waited for/.test(pi.textContent || '') && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
+      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, then its timing and its fidelity, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads.slice(-3).join() === 'Payload,Timing,Fidelity' && /Waited for/.test(pi.textContent || '') && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
       if (pi && fi) {
         (pi.querySelector('#pi-follow') as HTMLElement).click();
         await tick();
