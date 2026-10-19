@@ -2961,6 +2961,8 @@ export class App {
       },
       focus: '#sim-pd-protos-list input[data-sim-proto]',
     });
+    // the dialog is gone, whatever was chosen: its senders list lets go of the document
+    senders.dispose();
     if (v !== 'start' || !editor.valid()) return false;
     const picked = picker.selected();
     const chosen = senders.selected();

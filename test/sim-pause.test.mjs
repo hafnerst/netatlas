@@ -120,14 +120,16 @@ test('the packet inspector pauses while it is in use: closing it (× or Esc), le
     await page.mouse('mouseReleased', c.x + 20, c.y + c.h - 60, 'left');
     await page.settle(100);
     s = await page.eval(ST);
-    assert.deepEqual([s.playing, s.pi], [true, true], 'a click elsewhere: playing, the inspector still open');
-    await page.eval(`document.querySelector('.sim-table-panel[data-table="packet"] .st-close').click(), true`);
-    // the focus to another control
-    await open();
+    assert.deepEqual([s.playing, s.by, s.pi], [false, 'inspector', true], 'a click elsewhere: still paused by the open inspector');
+    // the focus to another control: still paused
     await page.eval(`document.getElementById('sim-speed').focus(), true`);
     await page.settle(100);
-    assert.equal((await page.eval(ST)).playing, true, 'the focus elsewhere');
+    assert.equal((await page.eval(ST)).playing, false, 'the focus elsewhere: still paused');
+    assert.match(await page.eval(`document.getElementById('sim-state').title`), /The packet inspector paused it: it plays again when you close the inspector/);
+    // closed: playing
     await page.eval(`document.querySelector('.sim-table-panel[data-table="packet"] .st-close').click(), true`);
+    await page.settle(100);
+    assert.equal((await page.eval(ST)).playing, true, 'closed');
     // no longer visible (moved out of the window, as a layout change would)
     await open();
     await page.eval(`document.querySelector('.sim-table-panel[data-table="packet"]').style.left = '-3000px', true`);
