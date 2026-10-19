@@ -47,13 +47,6 @@ function every(P: ProtocolSim, s: Sess, ms: () => number, fn: () => void): void 
   P.periodic(() => s.gen === g, ms, fn);
 }
 
-/** The sessions of a device in other relations of a protocol (or the same), that are up, for flooding. */
-function others(P: ProtocolSim, s: Sess, protocol: string, ok: (o: Sess) => boolean): Sess[] {
-  return Array.from(P.sessions.values())
-    .filter((o) => o.dev === s.dev && o.protocol === protocol && !(o.peer === s.peer && o.rel.id === s.rel.id) && ok(o))
-    .sort((a, b) => cmp(a.key, b.key));
-}
-
 /** Tell the protocols that use BFD between two devices that it went down. */
 export function bfdDown(P: ProtocolSim, dev: string, peer: string): void {
   for (const s of Array.from(P.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
@@ -261,7 +254,6 @@ function ospfAdjOk(P: ProtocolSim, s: Sess): void {
     const f = ospfIf(P, s);
     P.setState(s, '2-Way', false, `no adjacency any more: neither is DR or BDR (DR ${f.dr || 'none'}, BDR ${f.bdr || 'none'})`);
     ospfRearm(P, s);
-    ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
   }
   ospfDetail(P, s);
 }
@@ -338,18 +330,8 @@ function ospfDown(P: ProtocolSim, s: Sess, why: string): void {
   const x = s.x as OspfX;
   x.sent = false;
   P.setState(s, 'Down', false, why);
-  if (was !== 'Init') ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
   // a neighbour lost (NeighborChange): the segment's DR and BDR again
   if (['Init', 'Down'].indexOf(was) < 0) ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is gone`);
-}
-
-/** The router floods an LSU with its new router LSA to its other Full neighbours (reconvergence). */
-function ospfFlood(P: ProtocolSim, s: Sess, what: string): void {
-  const seq = (P.shared.get('ospf-seq|' + s.dev) as number) || 0;
-  P.shared.set('ospf-seq|' + s.dev, seq + 1);
-  for (const o of others(P, s, 'ospf', (x) => x.state === 'Full')) {
-    P.unicast(o, 'LSU', `flooding ${what} (LSA sequence ${seq + 1})`, { flood: `${s.dev}#${seq + 1}`, origin: s.dev });
-  }
 }
 
 const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
@@ -369,7 +351,7 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     ospfHellos(P, s);
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { rid?: string; prio?: number; seen?: string[]; flood?: string; origin?: string; phase?: string; hello?: number; dead?: number; area?: string; type?: string; dr?: string; bdr?: string };
+    const d = (msg.data || {}) as { rid?: string; prio?: number; seen?: string[]; reply?: boolean; phase?: string; hello?: number; dead?: number; area?: string; type?: string; dr?: string; bdr?: string };
     const x = s.x as OspfX;
     switch (msg.type) {
       case 'Hello': {
@@ -407,7 +389,7 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
           const was = s.state;
           P.setState(s, 'Init', false, `${s.peer}'s Hello no longer lists us`);
           ospfRearm(P, s);
-          if (was !== '2-Way') ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
+          void was;
           ospfElect(P, s.dev, s.local.l3.id, `${s.peer} no longer lists this router`);
           return;
         }
@@ -446,25 +428,14 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
         return;
       case 'LSR':
         if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0) return;
-        P.unicast(s, 'LSU', 'the requested LSAs', { reply: true });
+        // the requested LSAs: this router's whole database (ProtocolSim.learn takes what is new to the peer)
+        P.unicast(s, 'LSU', 'the requested LSAs', { reply: true, db: P.dbOf(s.dev) });
         return;
       case 'LSU':
-        if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0) return;
-        if (d.flood) {
-          // a flooded LSA: acknowledged, and flooded on once
-          P.unicast(s, 'LSAck', `acknowledges ${d.flood}`);
-          const seen = 'ospf-lsa|' + s.dev + '|' + d.flood;
-          if (P.shared.has(seen) || d.origin === s.dev) return;
-          P.shared.set(seen, true);
-          for (const o of others(P, s, 'ospf', (q) => q.state === 'Full' && q.peer !== d.origin)) P.unicast(o, 'LSU', `flooding ${d.flood} on`, { flood: d.flood, origin: d.origin });
-          P.e.routingChanged();
-          return;
-        }
+        // (a flooded LSU — a change — is ProtocolSim's: learned, acknowledged and flooded on there)
+        if (!d.reply || ['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0) return;
         P.unicast(s, 'LSAck', 'acknowledges the LSAs');
-        if (s.state === 'Loading') {
-          P.setState(s, 'Full', true, 'databases synchronised');
-          ospfFlood(P, s, `${s.dev}'s router LSA with ${s.peer}`);
-        }
+        if (s.state === 'Loading') P.setState(s, 'Full', true, 'databases synchronised');
         return;
       default:
         return;
@@ -527,8 +498,7 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
       return;
     }
     if (msg.type === 'CSNP') P.unicast(s, 'PSNP', 'requests the missing LSPs');
-    else if (msg.type === 'PSNP') P.unicast(s, 'LSP', 'the requested LSPs');
-    else if (msg.type === 'LSP') P.e.routingChanged();
+    else if (msg.type === 'PSNP' && !(msg.data as { acks?: number } | undefined || {}).acks) P.unicast(s, 'LSP', 'the requested LSPs', { db: P.dbOf(s.dev) });
   },
   iface(P, s, up) {
     if (!up) isis.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -537,7 +507,6 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     if (s.state === 'Down') return;
     P.restart(s);
     P.setState(s, 'Down', false, why);
-    for (const o of others(P, s, 'isis', (q) => q.up)) P.unicast(o, 'LSP', `${s.dev}'s new LSP without ${s.peer}`);
   },
 };
 
@@ -580,11 +549,10 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     }
     if (msg.type === 'ACK' && s.state === 'Pending') {
       P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-      P.unicast(s, 'Update', 'its routes', {}, 'Up');
+      P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s.dev), dbId: 0, dbAck: 'ACK' }, 'Up');
       return;
     }
-    if (msg.type === 'Update') P.unicast(s, 'ACK', 'acknowledges the routes');
-    else if (msg.type === 'Query') P.unicast(s, 'Reply', 'its way to the lost routes (or none)');
+    if (msg.type === 'Query') P.unicast(s, 'Reply', 'its way to the lost routes (or none)');
   },
   iface(P, s, up) {
     if (!up) eigrp.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -594,7 +562,6 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     P.restart(s);
     s.x.sentInit = false;
     P.setState(s, 'Down', false, why);
-    for (const o of others(P, s, 'eigrp', (q) => q.up)) P.unicast(o, 'Query', `routes lost with ${s.peer}: is there another way?`);
   },
 };
 
@@ -612,14 +579,15 @@ const rip: Behaviour = {
       () => true,
       upd,
       () => {
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes');
+        // the whole table every update interval: what a lost update did not bring comes with the next one
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes', { db: P.dbOf(s.dev) });
       },
       upd(),
     );
   },
   rx(P, s, msg) {
     if (msg.type === 'Request') {
-      P.unicast(s, 'Response', 'answer to the request: its routes');
+      P.unicast(s, 'Response', 'answer to the request: its routes', { db: P.dbOf(s.dev) });
       return;
     }
     if (msg.type !== 'Response') return;
@@ -627,7 +595,6 @@ const rip: Behaviour = {
     deadCheck(P, s, timeout.ms, () => {
       P.restart(s);
       P.setState(s, 'Down', false, `timeout (${timeout.text}): its routes are dropped`);
-      for (const o of others(P, s, 'rip', (q) => q.up)) P.unicast(o, 'Response', `triggered update: the routes via ${s.peer} are unreachable (metric 16)`);
     });
     if (s.state !== 'Heard') P.setState(s, 'Heard', true, `Response from ${s.peer}`);
   },
@@ -782,6 +749,10 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
   refresh(P, s) {
     bgpDetail(P, s);
   },
+  advertise(P, s, recs, why) {
+    // an UPDATE over the session's connection (TCP retransmits it): announcements and withdrawals of what changed
+    if (s.state === 'Established') tcpSend(P, s, 'UPDATE', `${why}: ${recs.map((r) => r.origin + '#' + r.seq).join(', ')}`, 23 + 12 * recs.length, { db: recs });
+  },
   start(P, s) {
     bgpDetail(P, s);
     if (bgpOwnAs(P, s.dev) === null) {
@@ -830,7 +801,8 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
         if (s.state === 'OpenConfirm') {
           P.setState(s, 'Established', true, 'KEEPALIVE received');
           s.x.waitedNext = ['the session to be Established'];
-          tcpSend(P, s, 'UPDATE', updateText(s), 60);
+          const db = P.dbOf(s.dev);
+          tcpSend(P, s, 'UPDATE', updateText(s), 23 + 12 * db.length, { db });
           const ka = s.x.kaMs as number;
           if (ka > 0) {
             const g = s.gen;
@@ -865,7 +837,7 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
     delete s.x.peerOpen;
     P.setState(s, 'Idle', false, why);
     bgpDetail(P, s);
-    if (was) for (const o of others(P, s, s.protocol, (q) => q.state === 'Established')) tcpSend(P, o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`, 30);
+    void was;
     const retry = P.timer(s, s.profile, 'connect-retry');
     if (s.initiator) P.later(s, retry.ms, () => bgpConnect(P, s));
     else P.later(s, 1000, () => P.setState(s, 'Active', false, 'waiting for the peer to connect again'));

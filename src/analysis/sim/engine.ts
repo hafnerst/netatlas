@@ -190,6 +190,10 @@ export interface Protocols {
   joined?(dev: string, iface: string, group: IpAddr): boolean;
   /** a router recomputed its routes (multicast checks its RPF interfaces) */
   routesChanged?(dev: string): void;
+  /** what routing depends on changed: routers whose own adjacencies changed advertise their new record */
+  originate?(): void;
+  /** what a router has learned (its records of every origin), null when it runs no routing protocol */
+  viewOf?(dev: string): Map<string, { origin: string; seq: number; adj: string[]; up: string[] }> | null;
 }
 
 interface QItem {
@@ -961,6 +965,14 @@ export class Engine {
       leases: (device: string) => conn.get(device) || [],
       extraRoutes: (device: string, vrf: string) => routes.get(device + '\0' + vrf) || [],
     };
+    // each router's installed routes: what it had learned at its last recomputation (its own interfaces as they are now)
+    const per = new Map<string, RoutingCtx>();
+    const baseUp = base.up as (d: string, i: string) => boolean;
+    for (const [d, c] of Array.from(this.devCtx)) {
+      const cu = c.up as (dv: string, i: string) => boolean;
+      per.set(d, { ...c, up: (device: string, iface: string) => (device === d ? baseUp(device, iface) : cu(device, iface)), leases: ctx.leases, extraRoutes: ctx.extraRoutes });
+    }
+    ctx.at = (device: string) => per.get(device);
     const at = this.now;
     const key = `${at}|${this.stateVersion}|${this.routingVersion}|${down.join(',')}`;
     return { at, ctx, addresses, down: down.slice().sort(cmpS), key };
@@ -1059,6 +1071,8 @@ export class Engine {
     this.ctxObj = null;
     this.routingVersion++;
     this.estimates.clear();
+    // the routers whose own adjacencies or interfaces changed advertise it (the others learn when that reaches them)
+    if (this.protocols && this.protocols.originate) this.protocols.originate();
     // a route or a tunnel may be there now: what waited for it goes
     this.recheckWaits();
     for (const d of Array.from(this.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
@@ -1068,6 +1082,85 @@ export class Engine {
       const t = this.now + Number(r.value);
       this.at(t, () => this.recompute(d.id, t, r));
     }
+  }
+
+  /** A router learned something (an advertisement reached it): its routes are recomputed after its route recomputation delay. */
+  recomputeSoon(dev: string): void {
+    const d = this.net.devices.get(dev);
+    if (!d || !d.routes || this.spfPending.has(dev) || this.off.has(dev)) return;
+    this.spfPending.add(dev);
+    const r = this.params.get('spf-delay', dev);
+    const t = this.now + Number(r.value);
+    this.at(t, () => this.recompute(dev, t, r));
+  }
+
+  /** the routing contexts of learned states, by their signature (routers that learned the same share one) */
+  private viewCtxs = new Map<string, RoutingCtx>();
+
+  /**
+   * A router's state for its route computation: what is up now on the
+   * router itself, and for every other router what its database says
+   * (that origin's record: its adjacencies and interfaces when it last
+   * advertised them, as far as that has reached this router). A router that
+   * runs no routing protocol: the state now.
+   */
+  private viewCtx(dev: string, base: RoutingCtx): RoutingCtx {
+    const view = this.protocols && this.protocols.viewOf ? this.protocols.viewOf(dev) : null;
+    if (!view) return base;
+    const recs = Array.from(view.values()).sort((a, b) => cmp(a.origin, b.origin));
+    const sig = `${this.routingVersion}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + ':' + r.seq).join(',')}`;
+    const hit = this.viewCtxs.get(sig);
+    if (hit) return hit;
+    const adj = new Set<string>();
+    const ups = new Map<string, Set<string>>();
+    for (const r of recs) {
+      for (const a of r.adj) {
+        const i = a.lastIndexOf('|');
+        adj.add(`${a.slice(0, i)}|${r.origin}|${a.slice(i + 1)}`);
+      }
+      if (r.origin !== dev) ups.set(r.origin, new Set(r.up));
+    }
+    const self = this;
+    const ctx: RoutingCtx = {
+      ...base,
+      // (a relation's adjacency counts when both ends' records say so: the two-way check of a route computation)
+      relUp: () => true,
+      adjUp: (relation: string, from: string, to: string) => adj.has(`${relation}|${from}|${to}`) && adj.has(`${relation}|${to}|${from}`),
+      up(device: string, iface: string): boolean {
+        const u = ups.get(device);
+        if (u && self.net.devices.get(device) && (self.net.devices.get(device) as SimDevice).l3.has(iface)) return u.has(iface);
+        return (base.up as (d: string, i: string) => boolean)(device, iface);
+      },
+    };
+    if (this.viewCtxs.size > 256) this.viewCtxs.clear();
+    this.viewCtxs.set(sig, ctx);
+    return ctx;
+  }
+
+  /**
+   * A router's own interfaces are never stale in its own tables: one that
+   * went down is unusable at once (its connected routes, a next hop out of
+   * it), before the route recomputation delay has passed — what the router
+   * learned of the others waits for that.
+   */
+  private ownLive(dev: string, inner: RoutingCtx): RoutingCtx {
+    const self = this;
+    const innerUp = inner.up as (d: string, i: string) => boolean;
+    return {
+      ...inner,
+      up(device: string, iface: string): boolean {
+        if (device !== dev) return innerUp(device, iface);
+        const sd = self.net.devices.get(dev);
+        if (sd && sd.l3.has(iface)) return self.l3State.get(dev + ':' + iface) !== false;
+        return self.portUp(dev, iface);
+      },
+    };
+  }
+
+  /** a device's interfaces' state now, as a signature */
+  private l3Sig(dev: string): string {
+    const d = this.net.devices.get(dev);
+    return d ? Array.from(d.l3.keys()).map((k) => (this.isL3Up(dev, k) ? '1' : '0')).join('') : '';
   }
 
   private recompute(dev: string, t: number, r: Resolved): void {
@@ -1084,7 +1177,7 @@ export class Engine {
       });
     }
     at.devs.push(dev);
-    this.devCtx.set(dev, at.ctx);
+    this.devCtx.set(dev, this.ownLive(dev, this.viewCtx(dev, at.ctx)));
     if (this.protocols && this.protocols.routesChanged) this.protocols.routesChanged(dev);
     // the device's new routes: what waited for a route goes
     this.recheckWaits();

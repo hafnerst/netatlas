@@ -287,7 +287,8 @@ test('a failure: dropped packets marked where they were lost, the dead interval,
   assert.ok(events(s, (e) => e.device === 'r3' && /OSPF ospf-r1-r3: r3 → r1 Down \(interface ge0 went down\)/.test(e.detail)).length);
   const dead = events(s, (e) => e.device === 'r1' && /r1 → r3 Down \(dead interval expired \(40 s/.test(e.detail))[0];
   assert.ok(dead && dead.t > t0 + 25000 && dead.t <= t0 + 41000, String(dead && dead.t));
-  assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /flooding/.test(e.detail)).length > 2, 'LSU flooding');
+  // the change floods: r1's and r3's new records, and the others pass them on
+  assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /(adjacencies or interfaces changed|learned from \S+) \(?.*: \S+#\d+/.test(e.detail)).length > 2, 'LSU flooding');
   // the users' traffic now goes via r2
   assert.ok(events(s, (e) => e.t > t0 + 2000 && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail)).length);
   assert.ok(s.engine.flights.length >= 0);

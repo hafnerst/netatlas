@@ -20939,6 +20939,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.routeText = exports.ROUTING_PROTOCOLS = exports.DEFAULT_STATIC_DISTANCE = void 0;
 exports.vrfKey = vrfKey;
 exports.vrfName = vrfName;
+exports.deviceCtx = deviceCtx;
 exports.connectedIn = connectedIn;
 exports.connectedOf = connectedOf;
 exports.ifaceVrf = ifaceVrf;
@@ -21028,6 +21029,12 @@ function vrfKey(vrf) {
 function vrfName(vrf) {
     return vrf ? `VRF ${vrf}` : 'the default table';
 }
+/** The state a device's own tables are read in: its own (RoutingCtx.at) when it has one. */
+function deviceCtx(ctx, device) {
+    if (!ctx || !ctx.at)
+        return ctx;
+    return ctx.at(device) || ctx;
+}
 /** A device's connected networks in a state: its configured ones, and what the state adds (a DHCP lease). */
 function connectedIn(model, device, ctx) {
     const own = connectedOf(model, device);
@@ -21114,7 +21121,8 @@ function compareEntries(a, b) {
         cmpStr(a.relation || '', b.relation || ''));
 }
 /** All entries of a device's table for one VRF (connected, static and dynamic), sorted. */
-function ribOf(model, device, vrf, ctx) {
+function ribOf(model, device, vrf, ctx0) {
+    const ctx = deviceCtx(ctx0, device);
     const out = [];
     for (const c of connectedIn(model, device, ctx)) {
         if (c.vrf === vrf)
@@ -21200,7 +21208,8 @@ function deviceVrfs(model, device) {
  *                   a default route would reach counts as unreachable, so a
  *                   floating route can take over).
  */
-function resolveEntry(model, e, ctx, stack = []) {
+function resolveEntry(model, e, ctx0, stack = []) {
+    const ctx = deviceCtx(ctx0, e.device);
     if (e.kind === 'connected') {
         const iface = e.iface;
         return isUp(ctx, e.device, iface) ? { ok: true, hops: [{ iface }], recursive: false } : { ok: false, reason: 'down', detail: `${iface} is down` };
@@ -21256,7 +21265,7 @@ function resolveRoute(model, r, ctx) {
 }
 /** The forwarding decision of `device` in `vrf` for `dest`. */
 function lookup(model, device, vrf, dest, ctx) {
-    return lookupWith(model, device, vrf, dest, ctx, []);
+    return lookupWith(model, device, vrf, dest, deviceCtx(ctx, device), []);
 }
 function lookupWith(model, device, vrf, dest, ctx, stack) {
     const none = { kind: 'none', entries: [], hops: [], unusable: [] };
@@ -21353,7 +21362,7 @@ function routingAdjacencies(model, ctx) {
 }
 /** The routes a device learns over its adjacencies in one VRF (see the module comment), sorted. */
 function dynamicEntries(model, device, vrf, ctx) {
-    return dynState(model, ctx).entries.get(device + '\0' + vrf) || [];
+    return dynState(model, deviceCtx(ctx, device)).entries.get(device + '\0' + vrf) || [];
 }
 /** How `from` reaches its neighbour `to` over a relation; a string says why it can't. */
 function adjacencyHop(model, r, protocol, from, to, ctx) {
@@ -39375,6 +39384,8 @@ class Engine {
         // ------------------------------------------------------------ DHCP leases (the client's side)
         /** the addresses DHCP leased (or a link-local fallback), by "device:interface": the simulation's, never the model's */
         this.leases = new Map();
+        /** the routing contexts of learned states, by their signature (routers that learned the same share one) */
+        this.viewCtxs = new Map();
         // ------------------------------------------------------------ layer 2: sending and forwarding frames
         /** the emission being planned: its sender and time (for the logical view's dots of messages without a relation) */
         this.emitting = null;
@@ -39944,6 +39955,14 @@ class Engine {
             leases: (device) => conn.get(device) || [],
             extraRoutes: (device, vrf) => routes.get(device + '\0' + vrf) || [],
         };
+        // each router's installed routes: what it had learned at its last recomputation (its own interfaces as they are now)
+        const per = new Map();
+        const baseUp = base.up;
+        for (const [d, c] of Array.from(this.devCtx)) {
+            const cu = c.up;
+            per.set(d, { ...c, up: (device, iface) => (device === d ? baseUp(device, iface) : cu(device, iface)), leases: ctx.leases, extraRoutes: ctx.extraRoutes });
+        }
+        ctx.at = (device) => per.get(device);
         const at = this.now;
         const key = `${at}|${this.stateVersion}|${this.routingVersion}|${down.join(',')}`;
         return { at, ctx, addresses, down: down.slice().sort(cmpS), key };
@@ -40042,6 +40061,9 @@ class Engine {
         this.ctxObj = null;
         this.routingVersion++;
         this.estimates.clear();
+        // the routers whose own adjacencies or interfaces changed advertise it (the others learn when that reaches them)
+        if (this.protocols && this.protocols.originate)
+            this.protocols.originate();
         // a route or a tunnel may be there now: what waited for it goes
         this.recheckWaits();
         for (const d of Array.from(this.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
@@ -40052,6 +40074,86 @@ class Engine {
             const t = this.now + Number(r.value);
             this.at(t, () => this.recompute(d.id, t, r));
         }
+    }
+    /** A router learned something (an advertisement reached it): its routes are recomputed after its route recomputation delay. */
+    recomputeSoon(dev) {
+        const d = this.net.devices.get(dev);
+        if (!d || !d.routes || this.spfPending.has(dev) || this.off.has(dev))
+            return;
+        this.spfPending.add(dev);
+        const r = this.params.get('spf-delay', dev);
+        const t = this.now + Number(r.value);
+        this.at(t, () => this.recompute(dev, t, r));
+    }
+    /**
+     * A router's state for its route computation: what is up now on the
+     * router itself, and for every other router what its database says
+     * (that origin's record: its adjacencies and interfaces when it last
+     * advertised them, as far as that has reached this router). A router that
+     * runs no routing protocol: the state now.
+     */
+    viewCtx(dev, base) {
+        const view = this.protocols && this.protocols.viewOf ? this.protocols.viewOf(dev) : null;
+        if (!view)
+            return base;
+        const recs = Array.from(view.values()).sort((a, b) => cmp(a.origin, b.origin));
+        const sig = `${this.routingVersion}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + ':' + r.seq).join(',')}`;
+        const hit = this.viewCtxs.get(sig);
+        if (hit)
+            return hit;
+        const adj = new Set();
+        const ups = new Map();
+        for (const r of recs) {
+            for (const a of r.adj) {
+                const i = a.lastIndexOf('|');
+                adj.add(`${a.slice(0, i)}|${r.origin}|${a.slice(i + 1)}`);
+            }
+            if (r.origin !== dev)
+                ups.set(r.origin, new Set(r.up));
+        }
+        const self = this;
+        const ctx = {
+            ...base,
+            // (a relation's adjacency counts when both ends' records say so: the two-way check of a route computation)
+            relUp: () => true,
+            adjUp: (relation, from, to) => adj.has(`${relation}|${from}|${to}`) && adj.has(`${relation}|${to}|${from}`),
+            up(device, iface) {
+                const u = ups.get(device);
+                if (u && self.net.devices.get(device) && self.net.devices.get(device).l3.has(iface))
+                    return u.has(iface);
+                return base.up(device, iface);
+            },
+        };
+        if (this.viewCtxs.size > 256)
+            this.viewCtxs.clear();
+        this.viewCtxs.set(sig, ctx);
+        return ctx;
+    }
+    /**
+     * A router's own interfaces are never stale in its own tables: one that
+     * went down is unusable at once (its connected routes, a next hop out of
+     * it), before the route recomputation delay has passed — what the router
+     * learned of the others waits for that.
+     */
+    ownLive(dev, inner) {
+        const self = this;
+        const innerUp = inner.up;
+        return {
+            ...inner,
+            up(device, iface) {
+                if (device !== dev)
+                    return innerUp(device, iface);
+                const sd = self.net.devices.get(dev);
+                if (sd && sd.l3.has(iface))
+                    return self.l3State.get(dev + ':' + iface) !== false;
+                return self.portUp(dev, iface);
+            },
+        };
+    }
+    /** a device's interfaces' state now, as a signature */
+    l3Sig(dev) {
+        const d = this.net.devices.get(dev);
+        return d ? Array.from(d.l3.keys()).map((k) => (this.isL3Up(dev, k) ? '1' : '0')).join('') : '';
     }
     recompute(dev, t, r) {
         this.spfPending.delete(dev);
@@ -40068,7 +40170,7 @@ class Engine {
             });
         }
         at.devs.push(dev);
-        this.devCtx.set(dev, at.ctx);
+        this.devCtx.set(dev, this.ownLive(dev, this.viewCtx(dev, at.ctx)));
         if (this.protocols && this.protocols.routesChanged)
             this.protocols.routesChanged(dev);
         // the device's new routes: what waited for a route goes
@@ -43909,6 +44011,21 @@ const service_relations_1 = __req("analysis/sim/service-relations");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** Behaviours whose sessions need a common network (hellos to a link-local group, single-hop BFD). */
 const LINK_LOCAL = ['ospf', 'isis', 'eigrp', 'rip', 'pim', 'ldp', 'bfd', 'igmp'];
+function sameRec(a, b) {
+    return a.adj.join(',') === b.adj.join(',') && a.up.join(',') === b.up.join(',');
+}
+function copyRec(r) {
+    return { origin: r.origin, seq: r.seq, adj: r.adj.slice(), up: r.up.slice() };
+}
+/** The update message of a routing protocol's advertisements, and the acknowledgment it waits for (none: RIP). */
+const UPDATE_OF = {
+    ospf: { type: 'LSU', ack: 'LSAck' },
+    isis: { type: 'LSP', ack: 'PSNP' },
+    eigrp: { type: 'Update', ack: 'ACK' },
+    rip: { type: 'Response' },
+};
+/** An unacknowledged advertisement is sent again after this (OSPF's RxmtInterval 5 s; IS-IS and EIGRP alike in the simulation). */
+const ADV_RXMT = 5000;
 /**
  * The simulation parameter (params.ts) a profile's timer follows: the
  * parameter, and for a derived timer (OSPF dead = 4 × hello) the factor.
@@ -43981,6 +44098,15 @@ class ProtocolSim {
         this.upWaiters = [];
         /** multicast (multicast.ts): has a device's own interface joined a group as a host? */
         this.joinedHook = null;
+        // ------------------------------------------------------------ learned routing state
+        /** each router's routing database: what it learned of every origin (its own record is always current) */
+        this.views = new Map();
+        /** every origin's last sequence number (kept over a reboot: a router's new records outrank its old ones) */
+        this.recSeq = new Map();
+        /** reliable advertisements not acknowledged yet, by "session|id" */
+        this.pendingAdv = new Map();
+        this.advId = 0;
+        this.routingRel = new Map();
         this.e = engine;
         this.m = engine.model;
         engine.protocols = this;
@@ -44382,6 +44508,7 @@ class ProtocolSim {
         for (const k of Array.from(this.vips.keys()))
             if (k.indexOf(dev + ':') === 0)
                 this.vips.delete(k);
+        this.forget(dev);
         for (const h of this.deviceHooks)
             h(dev, false);
     }
@@ -44624,6 +44751,7 @@ class ProtocolSim {
             s.x.replyTo = pkt.src;
         const b = this.behaviours.get(s.profile.behaviour);
         b.rx(this, s, msg, pkt, l3);
+        this.learn(s, msg);
     }
     filter(dev, pkt, from, to) {
         return !this.filterHook || this.filterHook(dev, pkt, from, to);
@@ -44722,6 +44850,166 @@ class ProtocolSim {
         if (p.behaviour === 'ike')
             return list.some((s) => s.up);
         return true;
+    }
+    /** Is a session one of a routing relation (OSPF, IS-IS, EIGRP, RIP, BGP): its advertisements teach routes? */
+    isRouting(s) {
+        let v = this.routingRel.get(s.rel.id);
+        if (v === undefined)
+            this.routingRel.set(s.rel.id, (v = (0, routing_1.routingProtocol)(this.m, s.rel) !== null && ['ospf', 'isis', 'eigrp', 'rip', 'bgp'].indexOf(s.profile.behaviour) >= 0));
+        return v;
+    }
+    view(dev) {
+        let v = this.views.get(dev);
+        if (!v)
+            this.views.set(dev, (v = new Map()));
+        return v;
+    }
+    /**
+     * What a router has learned, for its route computation (Engine.recompute):
+     * null when it runs no routing protocol (its routes are its own).
+     */
+    viewOf(dev) {
+        if (!this.sessionsOf(dev).some((s) => this.isRouting(s)))
+            return null;
+        const v = this.view(dev);
+        if (!v.has(dev))
+            this.originateOne(dev);
+        return v;
+    }
+    /** A router's own record now: its routing adjacencies that are up and its interfaces that are up. */
+    ownRec(dev) {
+        const adj = new Set();
+        for (const s of this.sessionsOf(dev))
+            if (this.isRouting(s) && this.adjUpOf(s))
+                adj.add(s.rel.id + '|' + s.peer);
+        const sd = this.sd(dev);
+        const up = sd ? Array.from(sd.l3.values()).filter((l) => this.e.isL3Up(dev, l.id)).map((l) => l.id).sort(cmp) : [];
+        return { origin: dev, seq: 0, adj: Array.from(adj).sort(cmp), up };
+    }
+    originateOne(dev) {
+        const rec = this.ownRec(dev);
+        const v = this.view(dev);
+        const was = v.get(dev);
+        if (was && sameRec(was, rec))
+            return null;
+        rec.seq = (this.recSeq.get(dev) || 0) + 1;
+        this.recSeq.set(dev, rec.seq);
+        v.set(dev, rec);
+        return rec;
+    }
+    /**
+     * What routing depends on changed (Engine.routingChanged): every router
+     * whose own adjacencies or interfaces changed has a new record and
+     * advertises it to its neighbours (OSPF and IS-IS flood it, EIGRP and RIP
+     * send it as an update, BGP as an UPDATE): the others learn of the change
+     * only when that advertisement reaches them.
+     */
+    originate() {
+        const devs = Array.from(new Set(Array.from(this.sessions.values()).filter((s) => this.isRouting(s)).map((s) => s.dev))).sort(cmp);
+        for (const dev of devs) {
+            if (!this.e.deviceOn(dev))
+                continue;
+            const rec = this.originateOne(dev);
+            if (rec)
+                this.advertise(dev, [rec], null, `${dev}'s ${rec.adj.length ? 'adjacencies or interfaces changed' : 'adjacencies are all down'} (sequence ${rec.seq})`);
+        }
+    }
+    /** The records a router knows (its database), copies: what its synchronisation messages carry. */
+    dbOf(dev) {
+        if (!this.view(dev).has(dev))
+            this.originateOne(dev);
+        return Array.from(this.view(dev).values()).sort((a, b) => cmp(a.origin, b.origin)).map(copyRec);
+    }
+    /** Records to a router's neighbours over its routing adjacencies that are up (but the one they came from). */
+    advertise(dev, recs, except, why) {
+        for (const s of this.sessionsOf(dev)) {
+            if (!this.isRouting(s) || !this.adjUpOf(s) || !s.x.started)
+                continue;
+            if (except && s.peer === except.peer && s.rel.id === except.rel.id)
+                continue;
+            this.sendRecs(s, recs.map(copyRec), why);
+        }
+    }
+    /**
+     * One advertisement of a session: its protocol's update message (OSPF
+     * LSU, IS-IS LSP, EIGRP Update or Query, RIP Response, BGP UPDATE) with
+     * the records. OSPF, IS-IS and EIGRP send it again every retransmit
+     * interval until it is acknowledged (LSAck, PSNP, ACK or Reply); RIP not
+     * at all (its next periodic Response carries everything); BGP over its
+     * TCP connection (the transport retransmits).
+     */
+    sendRecs(s, recs, why) {
+        const b = this.behaviours.get(s.profile.behaviour);
+        const what = recs.map((r) => `${r.origin}#${r.seq}`).join(', ');
+        if (b.advertise) {
+            b.advertise(this, s, recs, why);
+            return;
+        }
+        const kind = UPDATE_OF[s.profile.behaviour] || { type: 'Update' };
+        const type = kind.type;
+        const ack = kind.ack;
+        const id = ++this.advId;
+        const send = (n) => this.unicast(s, type, `${why}: ${what}${n ? ` (sent again: no ${ack} after ${(0, engine_1.fmtSec)(ADV_RXMT)})` : ''}`, { db: recs, dbId: id, dbAck: ack });
+        send(0);
+        if (!ack)
+            return;
+        const key = s.key + '|' + id;
+        this.pendingAdv.set(key, s.gen);
+        const again = (n) => {
+            this.e.after(ADV_RXMT, () => {
+                if (this.pendingAdv.get(key) !== s.gen || !this.adjUpOf(s)) {
+                    this.pendingAdv.delete(key);
+                    return;
+                }
+                send(n);
+                again(n + 1);
+            });
+        };
+        again(1);
+    }
+    /**
+     * A session's message arrived: records in it the router does not have
+     * (a higher sequence number for their origin) go into its database — its
+     * routes are recomputed after its route recomputation delay, and it
+     * advertises them on to its other neighbours; an acknowledgment ends the
+     * retransmission it answers.
+     */
+    learn(s, msg) {
+        const d = (msg.data || {});
+        if (d.acks !== undefined)
+            this.pendingAdv.delete(s.key + '|' + d.acks);
+        if (!d.db)
+            return;
+        if (d.dbId !== undefined && d.dbAck)
+            this.unicast(s, d.dbAck, `acknowledges ${d.db.map((r) => r.origin + '#' + r.seq).join(', ')}`, { acks: d.dbId });
+        if (!this.isRouting(s))
+            return;
+        const v = this.view(s.dev);
+        if (!v.has(s.dev))
+            this.originateOne(s.dev);
+        const changed = [];
+        for (const r of d.db) {
+            if (r.origin === s.dev)
+                continue;
+            const known = v.get(r.origin);
+            if (known && known.seq >= r.seq)
+                continue;
+            const c = copyRec(r);
+            v.set(r.origin, c);
+            changed.push(c);
+        }
+        if (!changed.length)
+            return;
+        this.e.note('route', s.protocol, s.dev, s.peer, 'learned', '', `${s.dev} learned from ${s.peer} (${s.profile.label} ${msg.type}): ${changed.map((r) => `${r.origin} sequence ${r.seq} (${r.adj.length} adjacenc${r.adj.length === 1 ? 'y' : 'ies'})`).join(', ')}; its routes follow after its route recomputation delay`);
+        this.e.recomputeSoon(s.dev);
+        this.advertise(s.dev, changed, s, `learned from ${s.peer}`);
+    }
+    /** A router was powered off: its database is gone (it learns everything again after it boots). */
+    forget(dev) {
+        this.views.delete(dev);
+        for (const k of Array.from(this.pendingAdv.keys()))
+            if (k.split('|')[2] === dev)
+                this.pendingAdv.delete(k);
     }
     // ------------------------------------------------------------ status
     status() {
@@ -71101,6 +71389,7 @@ function deliver(P, s, m) {
     s.heard = P.e.now;
     const msg = { protocol: s.protocol, type: m.type, label: m.label, detail: m.detail, relation: s.rel.id, data: m.data };
     beh(P, s).rx(P, s, msg, null, null);
+    P.learn(s, msg);
 }
 /** A connection of a session is gone: the behaviour hears of it once (an older connection of the session says nothing). */
 function closed(P, sock, why) {
@@ -71294,12 +71583,6 @@ function every(P, s, ms, fn) {
     const g = s.gen;
     P.periodic(() => s.gen === g, ms, fn);
 }
-/** The sessions of a device in other relations of a protocol (or the same), that are up, for flooding. */
-function others(P, s, protocol, ok) {
-    return Array.from(P.sessions.values())
-        .filter((o) => o.dev === s.dev && o.protocol === protocol && !(o.peer === s.peer && o.rel.id === s.rel.id) && ok(o))
-        .sort((a, b) => cmp(a.key, b.key));
-}
 /** Tell the protocols that use BFD between two devices that it went down. */
 function bfdDown(P, dev, peer) {
     for (const s of Array.from(P.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
@@ -71476,7 +71759,6 @@ function ospfAdjOk(P, s) {
         const f = ospfIf(P, s);
         P.setState(s, '2-Way', false, `no adjacency any more: neither is DR or BDR (DR ${f.dr || 'none'}, BDR ${f.bdr || 'none'})`);
         ospfRearm(P, s);
-        ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
     }
     ospfDetail(P, s);
 }
@@ -71552,19 +71834,9 @@ function ospfDown(P, s, why) {
     const x = s.x;
     x.sent = false;
     P.setState(s, 'Down', false, why);
-    if (was !== 'Init')
-        ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
     // a neighbour lost (NeighborChange): the segment's DR and BDR again
     if (['Init', 'Down'].indexOf(was) < 0)
         ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is gone`);
-}
-/** The router floods an LSU with its new router LSA to its other Full neighbours (reconvergence). */
-function ospfFlood(P, s, what) {
-    const seq = P.shared.get('ospf-seq|' + s.dev) || 0;
-    P.shared.set('ospf-seq|' + s.dev, seq + 1);
-    for (const o of others(P, s, 'ospf', (x) => x.state === 'Full')) {
-        P.unicast(o, 'LSU', `flooding ${what} (LSA sequence ${seq + 1})`, { flood: `${s.dev}#${seq + 1}`, origin: s.dev });
-    }
 }
 const ospf = {
     start(P, s) {
@@ -71627,8 +71899,7 @@ const ospf = {
                     const was = s.state;
                     P.setState(s, 'Init', false, `${s.peer}'s Hello no longer lists us`);
                     ospfRearm(P, s);
-                    if (was !== '2-Way')
-                        ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
+                    void was;
                     ospfElect(P, s.dev, s.local.l3.id, `${s.peer} no longer lists this router`);
                     return;
                 }
@@ -71672,28 +71943,16 @@ const ospf = {
             case 'LSR':
                 if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0)
                     return;
-                P.unicast(s, 'LSU', 'the requested LSAs', { reply: true });
+                // the requested LSAs: this router's whole database (ProtocolSim.learn takes what is new to the peer)
+                P.unicast(s, 'LSU', 'the requested LSAs', { reply: true, db: P.dbOf(s.dev) });
                 return;
             case 'LSU':
-                if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0)
+                // (a flooded LSU — a change — is ProtocolSim's: learned, acknowledged and flooded on there)
+                if (!d.reply || ['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0)
                     return;
-                if (d.flood) {
-                    // a flooded LSA: acknowledged, and flooded on once
-                    P.unicast(s, 'LSAck', `acknowledges ${d.flood}`);
-                    const seen = 'ospf-lsa|' + s.dev + '|' + d.flood;
-                    if (P.shared.has(seen) || d.origin === s.dev)
-                        return;
-                    P.shared.set(seen, true);
-                    for (const o of others(P, s, 'ospf', (q) => q.state === 'Full' && q.peer !== d.origin))
-                        P.unicast(o, 'LSU', `flooding ${d.flood} on`, { flood: d.flood, origin: d.origin });
-                    P.e.routingChanged();
-                    return;
-                }
                 P.unicast(s, 'LSAck', 'acknowledges the LSAs');
-                if (s.state === 'Loading') {
+                if (s.state === 'Loading')
                     P.setState(s, 'Full', true, 'databases synchronised');
-                    ospfFlood(P, s, `${s.dev}'s router LSA with ${s.peer}`);
-                }
                 return;
             default:
                 return;
@@ -71757,10 +72016,8 @@ const isis = {
         }
         if (msg.type === 'CSNP')
             P.unicast(s, 'PSNP', 'requests the missing LSPs');
-        else if (msg.type === 'PSNP')
-            P.unicast(s, 'LSP', 'the requested LSPs');
-        else if (msg.type === 'LSP')
-            P.e.routingChanged();
+        else if (msg.type === 'PSNP' && !(msg.data || {}).acks)
+            P.unicast(s, 'LSP', 'the requested LSPs', { db: P.dbOf(s.dev) });
     },
     iface(P, s, up) {
         if (!up)
@@ -71771,8 +72028,6 @@ const isis = {
             return;
         P.restart(s);
         P.setState(s, 'Down', false, why);
-        for (const o of others(P, s, 'isis', (q) => q.up))
-            P.unicast(o, 'LSP', `${s.dev}'s new LSP without ${s.peer}`);
     },
 };
 // ------------------------------------------------------------------ EIGRP
@@ -71812,12 +72067,10 @@ const eigrp = {
         }
         if (msg.type === 'ACK' && s.state === 'Pending') {
             P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-            P.unicast(s, 'Update', 'its routes', {}, 'Up');
+            P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s.dev), dbId: 0, dbAck: 'ACK' }, 'Up');
             return;
         }
-        if (msg.type === 'Update')
-            P.unicast(s, 'ACK', 'acknowledges the routes');
-        else if (msg.type === 'Query')
+        if (msg.type === 'Query')
             P.unicast(s, 'Reply', 'its way to the lost routes (or none)');
     },
     iface(P, s, up) {
@@ -71830,8 +72083,6 @@ const eigrp = {
         P.restart(s);
         s.x.sentInit = false;
         P.setState(s, 'Down', false, why);
-        for (const o of others(P, s, 'eigrp', (q) => q.up))
-            P.unicast(o, 'Query', `routes lost with ${s.peer}: is there another way?`);
     },
 };
 // ------------------------------------------------------------------ RIP
@@ -71845,13 +72096,14 @@ const rip = {
         P.multicast(s, group, 'Request', 'asks for the whole table');
         const upd = () => P.timer(s, s.profile, 'hello').ms;
         P.periodic(() => true, upd, () => {
+            // the whole table every update interval: what a lost update did not bring comes with the next one
             if (P.e.isL3Up(s.dev, s.local.l3.id))
-                P.multicast(s, group, 'Response', 'periodic update: its routes');
+                P.multicast(s, group, 'Response', 'periodic update: its routes', { db: P.dbOf(s.dev) });
         }, upd());
     },
     rx(P, s, msg) {
         if (msg.type === 'Request') {
-            P.unicast(s, 'Response', 'answer to the request: its routes');
+            P.unicast(s, 'Response', 'answer to the request: its routes', { db: P.dbOf(s.dev) });
             return;
         }
         if (msg.type !== 'Response')
@@ -71860,8 +72112,6 @@ const rip = {
         deadCheck(P, s, timeout.ms, () => {
             P.restart(s);
             P.setState(s, 'Down', false, `timeout (${timeout.text}): its routes are dropped`);
-            for (const o of others(P, s, 'rip', (q) => q.up))
-                P.unicast(o, 'Response', `triggered update: the routes via ${s.peer} are unreachable (metric 16)`);
         });
         if (s.state !== 'Heard')
             P.setState(s, 'Heard', true, `Response from ${s.peer}`);
@@ -72006,6 +72256,11 @@ const bgp = {
     refresh(P, s) {
         bgpDetail(P, s);
     },
+    advertise(P, s, recs, why) {
+        // an UPDATE over the session's connection (TCP retransmits it): announcements and withdrawals of what changed
+        if (s.state === 'Established')
+            (0, proto_tcp_1.tcpSend)(P, s, 'UPDATE', `${why}: ${recs.map((r) => r.origin + '#' + r.seq).join(', ')}`, 23 + 12 * recs.length, { db: recs });
+    },
     start(P, s) {
         bgpDetail(P, s);
         if (bgpOwnAs(P, s.dev) === null) {
@@ -72061,7 +72316,8 @@ const bgp = {
                 if (s.state === 'OpenConfirm') {
                     P.setState(s, 'Established', true, 'KEEPALIVE received');
                     s.x.waitedNext = ['the session to be Established'];
-                    (0, proto_tcp_1.tcpSend)(P, s, 'UPDATE', updateText(s), 60);
+                    const db = P.dbOf(s.dev);
+                    (0, proto_tcp_1.tcpSend)(P, s, 'UPDATE', updateText(s), 23 + 12 * db.length, { db });
                     const ka = s.x.kaMs;
                     if (ka > 0) {
                         const g = s.gen;
@@ -72095,9 +72351,7 @@ const bgp = {
         delete s.x.peerOpen;
         P.setState(s, 'Idle', false, why);
         bgpDetail(P, s);
-        if (was)
-            for (const o of others(P, s, s.protocol, (q) => q.state === 'Established'))
-                (0, proto_tcp_1.tcpSend)(P, o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`, 30);
+        void was;
         const retry = P.timer(s, s.profile, 'connect-retry');
         if (s.initiator)
             P.later(s, retry.ms, () => bgpConnect(P, s));

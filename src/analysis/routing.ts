@@ -89,6 +89,18 @@ export interface RoutingCtx {
   extraRoutes?: (device: string, vrf: string) => RibEntry[];
   /** the host a VM runs on now, when it is not its own (restarted elsewhere by its HA cluster) */
   hostOf?: (guest: string) => string | undefined;
+  /**
+   * a device's own state where it differs (the protocol simulation: each
+   * router's installed routes, from what it has learned): a lookup at that
+   * device uses it
+   */
+  at?: (device: string) => RoutingCtx | undefined;
+}
+
+/** The state a device's own tables are read in: its own (RoutingCtx.at) when it has one. */
+export function deviceCtx(ctx: RoutingCtx | undefined, device: string): RoutingCtx | undefined {
+  if (!ctx || !ctx.at) return ctx;
+  return ctx.at(device) || ctx;
 }
 
 /** A device's connected networks in a state: its configured ones, and what the state adds (a DHCP lease). */
@@ -238,7 +250,8 @@ export function compareEntries(a: RibEntry, b: RibEntry): number {
 }
 
 /** All entries of a device's table for one VRF (connected, static and dynamic), sorted. */
-export function ribOf(model: Model, device: string, vrf: string, ctx?: RoutingCtx): RibEntry[] {
+export function ribOf(model: Model, device: string, vrf: string, ctx0?: RoutingCtx): RibEntry[] {
+  const ctx = deviceCtx(ctx0, device);
   const out: RibEntry[] = [];
   for (const c of connectedIn(model, device, ctx)) {
     if (c.vrf === vrf) out.push({ kind: 'connected', device, vrf, net: c.net, distance: 0, metric: 0, iface: c.iface, blackhole: false });
@@ -324,7 +337,8 @@ export type Resolution =
  *                   a default route would reach counts as unreachable, so a
  *                   floating route can take over).
  */
-export function resolveEntry(model: Model, e: RibEntry, ctx?: RoutingCtx, stack: RibEntry[] = []): Resolution {
+export function resolveEntry(model: Model, e: RibEntry, ctx0?: RoutingCtx, stack: RibEntry[] = []): Resolution {
+  const ctx = deviceCtx(ctx0, e.device);
   if (e.kind === 'connected') {
     const iface = e.iface as string;
     return isUp(ctx, e.device, iface) ? { ok: true, hops: [{ iface }], recursive: false } : { ok: false, reason: 'down', detail: `${iface} is down` };
@@ -396,7 +410,7 @@ export interface Decision {
 
 /** The forwarding decision of `device` in `vrf` for `dest`. */
 export function lookup(model: Model, device: string, vrf: string, dest: IpAddr, ctx?: RoutingCtx): Decision {
-  return lookupWith(model, device, vrf, dest, ctx, []);
+  return lookupWith(model, device, vrf, dest, deviceCtx(ctx, device), []);
 }
 
 function lookupWith(model: Model, device: string, vrf: string, dest: IpAddr, ctx: RoutingCtx | undefined, stack: RibEntry[]): Decision {
@@ -530,7 +544,7 @@ export function routingAdjacencies(model: Model, ctx?: RoutingCtx): { adjacencie
 
 /** The routes a device learns over its adjacencies in one VRF (see the module comment), sorted. */
 export function dynamicEntries(model: Model, device: string, vrf: string, ctx?: RoutingCtx): RibEntry[] {
-  return dynState(model, ctx).entries.get(device + '\0' + vrf) || [];
+  return dynState(model, deviceCtx(ctx, device)).entries.get(device + '\0' + vrf) || [];
 }
 
 /** How `from` reaches its neighbour `to` over a relation; a string says why it can't. */

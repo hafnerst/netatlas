@@ -49,6 +49,7 @@ function deliver(P: ProtocolSim, s: Sess, m: AppMessage): void {
   s.heard = P.e.now;
   const msg: Msg = { protocol: s.protocol, type: m.type, label: m.label, detail: m.detail, relation: s.rel.id, data: m.data };
   beh(P, s).rx(P, s, msg, null, null);
+  P.learn(s, msg);
 }
 
 /** A connection of a session is gone: the behaviour hears of it once (an older connection of the session says nothing). */

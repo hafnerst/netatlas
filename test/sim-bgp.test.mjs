@@ -102,10 +102,10 @@ test('BGP over TCP: a lost UPDATE is retransmitted by TCP (same sequence range);
   s.engine.impair = (link, frame) => (frame.msg.protocol === 'bgp' && frame.msg.type === 'UPDATE' && frame.ip && frame.ip.src.bytes[3] === 1 && ++n === 1 ? { lose: true } : null);
   s.runTo(8000);
   assert.equal(st(s, 'a').state, 'Established');
-  const ups = msgs(s, 'a', 'UPDATE');
-  assert.equal(ups.length, 2, 'sent, lost, sent again');
   const seq = (e) => /\] seq (\d+)/.exec(e.detail)[1];
-  assert.equal(seq(ups[0]), seq(ups[1]));
+  const all = msgs(s, 'a', 'UPDATE');
+  const ups = all.filter((e) => seq(e) === seq(all[0]));
+  assert.equal(ups.length, 2, 'sent, lost, sent again with the same sequence number');
   assert.match(ups[1].detail, /retransmission 1 \(timeout 1 s\)/);
 });
 
