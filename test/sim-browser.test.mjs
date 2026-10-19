@@ -473,7 +473,7 @@ test('multicast on screen: Join multicast group… from a device’s menu (the A
     assert.ok(await page.eval(`Array.from(document.querySelectorAll('#sim-status-table tbody tr')).some((r) => /239\.1\.1\.1/.test(r.textContent))`));
     await page.eval(`netatlas.simController().showTable('mroute', 'r1'), true`);
     await page.settle(100);
-    assert.match(await page.eval(`document.getElementById('sim-status-table').textContent`), /RP 10\.255\.0\.1 \(r1\)/);
+    assert.match(await page.eval(`document.getElementById('sim-status-table').textContent`), /RP for 239\.1\.1\.1: 10\.255\.0\.1 \(r1\)/);
     await page.eval(`netatlas.simController().showTable('igmp', 'core1'), true`);
     await page.settle(100);
     assert.equal(await page.eval(`document.querySelector('#sd-sttabs [aria-pressed="true"]').textContent`), 'IGMP / MLD');

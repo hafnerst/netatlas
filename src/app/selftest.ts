@@ -2643,7 +2643,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.showTable('snoop', 'acc-sw');
       await tick();
       const snt = st.textContent || '';
-      check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
+      check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP for 239\.1\.1\.1: 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
       ctl.multicastFrom('pc2', 'join');
       await tick();
       const jmsg = ctl.joinGroup('pc2', 'eth0', '239.4.4.4', []);
