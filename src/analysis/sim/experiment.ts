@@ -245,7 +245,8 @@ export class ExperimentRunner {
     for (const p of exp.params) params[p.key] = p.value;
     this.sim = new Simulation(this.model, { params, realClock: opts.realClock });
     const n = model.devices.length;
-    const scopeLine = !scope ? `Entire model (${n} device${n === 1 ? '' : 's'})` : `${scopeText(exp.scope)}: ${scope.devices.size} of ${n} devices run`;
+    // (what the scope leaves out that can change the outcome is said with it: its results are the scope's, not the entire model's)
+    const scopeLine = !scope ? `Entire model (${n} device${n === 1 ? '' : 's'})` : `${scopeText(exp.scope)}: ${scope.devices.size} of ${n} devices run${scope.caveats.length ? ` — may differ from the entire model: ${scope.caveats.join('; ')}` : ''}`;
     this.res = { experiment: exp.id, name: exp.name, fingerprint, timing: 'scenario', duration: exp.duration, settle: exp.settle, start: exp.start, scope: scopeLine, reached: -exp.settle, state: 'running', params: exp.params.slice(), actions: [], observations: [], events: [], summary: '' };
     this.relevance = new Relevance(
       relevanceSpec(this.model, exp, (dev, iface) => {

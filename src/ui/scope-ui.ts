@@ -23,11 +23,13 @@ export function scopeChooser(doc: Document, scopes: ExecScope[]): { el: HTMLElem
     }
     info.appendChild(el(doc, 'p', {}, [`Runs ${s.devices.size} of ${total} devices; the others are not run at all (marked Not run), and nothing answers from them.`]));
     for (const c of s.cannot) info.appendChild(el(doc, 'p', { class: 'trace-error' }, ['Can’t run faithfully: ' + c]));
+    for (const c of s.caveats) info.appendChild(el(doc, 'p', {}, ['May differ from the entire model: ' + c]));
     const d = el(doc, 'details', { class: 'layer-ev', id: 'sim-pd-scope-detail' }, [el(doc, 'summary', {}, [`Included for it (${s.included.length}) and its boundary (${s.boundary.length} cable${s.boundary.length === 1 ? '' : 's'}${s.cutRelations.length ? `, ${s.cutRelations.length} relation${s.cutRelations.length === 1 ? '' : 's'}` : ''})`])]);
     const ul = el(doc, 'ul', {});
     for (const x of s.included.slice(0, 40)) ul.appendChild(el(doc, 'li', {}, [`${x.device}: ${x.why}`]));
     for (const b of s.boundary.slice(0, 40)) ul.appendChild(el(doc, 'li', { class: 'muted' }, [`Boundary: ${b.device}${b.iface ? ':' + b.iface : ''} (cable ${b.link}) leads to ${b.outside}, not run`]));
     if (s.cutRelations.length) ul.appendChild(el(doc, 'li', { class: 'muted' }, [`Relations to devices outside (their sessions can’t form): ${s.cutRelations.join(', ')}`]));
+    for (const p of s.partialRelations) ul.appendChild(el(doc, 'li', { class: 'muted' }, [`${p.relation} runs with its endpoints inside, without ${p.without.join(', ')}`]));
     d.appendChild(ul);
     info.appendChild(d);
   };

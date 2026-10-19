@@ -7882,7 +7882,7 @@ class App {
             locked: this.editLock(),
             scope: (e) => {
                 const sc = (0, experiment_1.experimentScope)(s.model, e);
-                return { run: sc.devices.size, total: s.model.devices.length, added: sc.included.map((x) => `${x.device}: ${x.why}`), boundary: sc.boundary.length, cannot: sc.cannot };
+                return { run: sc.devices.size, total: s.model.devices.length, added: sc.included.map((x) => `${x.device}: ${x.why}`), boundary: sc.boundary.length, cannot: sc.cannot, caveats: sc.caveats };
             },
             draft: this.expDraft,
             note: this.expNote,
@@ -66218,6 +66218,7 @@ __defs["analysis/exec-scope"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EXEC_SCOPE_TEXT = void 0;
+exports.explicitScope = explicitScope;
 exports.entireScope = entireScope;
 exports.communicationScope = communicationScope;
 exports.dependencyScope = dependencyScope;
@@ -66247,20 +66248,30 @@ exports.scopedModel = scopedModel;
  *   domain          a failure domain's members.
  *
  * What every scope but the entire model needs to execute faithfully is
- * added and said: the switches
- * between its routers' adjacencies, the routing domains whose routes its
- * paths use (every router of the protocol's connected adjacencies), the
- * DHCP and DNS providers of its devices that take addresses or names, and
- * the other members of its gateways' redundancy groups. What still stays
- * outside is listed as the boundary. When what was asked for can't run
- * faithfully in the scope (an end outside it), that is said instead of
- * running it. Pure and deterministic.
+ * added and said, to a fixed point (each device added is examined in turn,
+ * by a work queue): the routing domains of its routing relations (every
+ * router of the protocol's connected adjacencies), the other members of
+ * its redundancy groups, the DHCP and DNS providers it depends on (with
+ * the devices on their way: relays, forwarders' routes), the other end
+ * and the underlay of its tunnels, the host a virtual guest runs on, and
+ * the switches that bridge it to the scope's other devices. Each addition
+ * says why. What still stays outside is listed as the boundary. A relation
+ * with more than two endpoints keeps its endpoints inside (a routing LAN,
+ * a service's clients with their server inside) and says what it runs
+ * without; a two-endpoint relation with an end outside is cut. Where what
+ * is left out can change the outcome (a relation run without some of its
+ * endpoints, cables shared with demands from outside), that is said as a
+ * caveat: the scope's results are not claimed to be the entire model's.
+ * When what was asked for can't run faithfully in the scope (an end outside
+ * it), that is said instead of running it. Pure and deterministic.
  */
 const types_1 = __req("model/types");
 const protocols_1 = __req("model/protocols");
 const dependencies_1 = __req("analysis/dependencies");
 const failure_1 = __req("analysis/failure");
 const routing_1 = __req("analysis/routing");
+const trace_1 = __req("analysis/trace");
+const virtual_1 = __req("model/virtual");
 const net_1 = __req("analysis/sim/net");
 exports.EXEC_SCOPE_TEXT = {
     entire: 'Entire model',
@@ -66283,78 +66294,131 @@ function pathDevices(p, out, depth = 0) {
 }
 /**
  * Add what a set of devices needs to run faithfully (see the module
- * comment): routing domains whose routes are used, the switches between
- * adjacencies, DHCP and DNS providers, redundancy-group members.
+ * comment), to a fixed point: every device added is examined for its own
+ * dependencies in turn. `protocolsUsed`: routing protocols whose domains
+ * the seed's paths use besides those of the routers' own relations.
  */
 function closeOver(model, seed, included, protocolsUsed) {
-    const out = new Set(seed);
+    const out = new Set();
+    const queue = [];
     const add = (d, why) => {
         if (out.has(d) || !model.index.devices.has(d))
             return;
         out.add(d);
-        included.push({ device: d, why });
+        if (why !== null)
+            included.push({ device: d, why });
+        queue.push(d);
     };
-    // the routing domains: every router of a protocol's connected adjacencies that touch the scope
-    for (const p of Array.from(protocolsUsed).sort(cmp)) {
-        const rels = model.relations.filter((r) => (0, routing_1.routingProtocol)(model, r) === p);
+    for (const d of Array.from(seed).sort(cmp))
+        add(d, null);
+    const rels = model.relations.slice().sort((a, b) => cmp(a.id, b.id));
+    const deps = (0, dependencies_1.serviceDependencies)(model).filter((d) => d.kind === 'dhcp' || d.kind === 'dns');
+    const net = (0, net_1.netOf)(model);
+    const domainDone = new Set();
+    const routingDomain = (p, from) => {
+        // every router of the protocol's connected relations from `from` (its routing domain)
+        const k = p + '|' + from;
+        if (domainDone.has(k))
+            return;
+        domainDone.add(k);
+        const prs = rels.filter((r) => (0, routing_1.routingProtocol)(model, r) === p);
+        const dom = new Set([from]);
         let grew = true;
-        const domain = new Set(Array.from(out).filter((d) => rels.some((r) => (0, types_1.relationDevices)(r).indexOf(d) >= 0)));
         while (grew) {
             grew = false;
-            for (const r of rels) {
+            for (const r of prs) {
                 const ds = (0, types_1.relationDevices)(r);
-                if (!ds.some((d) => domain.has(d)))
+                if (!ds.some((d) => dom.has(d)))
                     continue;
                 for (const d of ds)
-                    if (!domain.has(d)) {
-                        domain.add(d);
+                    if (!dom.has(d)) {
+                        dom.add(d);
                         grew = true;
                     }
             }
         }
-        for (const d of Array.from(domain).sort(cmp))
-            add(d, `a router of the ${p.toUpperCase()} domain whose routes the scope uses`);
-    }
-    // redundancy groups: the other members of a gateway group on the scope's routers
-    for (const r of model.relations) {
-        const base = (0, protocols_1.protocolBase)(model.protocols, r.protocol);
-        if (['vrrp', 'hsrp', 'glbp', 'carp'].indexOf(base) < 0)
-            continue;
-        const ds = (0, types_1.relationDevices)(r);
-        if (ds.some((d) => out.has(d)))
-            for (const d of ds)
-                add(d, `a member of the ${base.toUpperCase()} group ${r.id}`);
-    }
-    // DHCP and DNS: the providers of the scope's devices (and the devices on their way)
-    const deps = (0, dependencies_1.serviceDependencies)(model).filter((d) => (d.kind === 'dhcp' || d.kind === 'dns') && seed.has(d.consumer));
-    // (the servers first, so a server is named as one, then the devices on the way)
-    for (const d of deps)
-        for (const o of d.options)
-            if (o.provider)
-                add(o.provider, `${d.consumer}’s ${d.kind === 'dhcp' ? 'DHCP server' : 'DNS server'}`);
-    for (const d of deps) {
-        const st = (0, dependencies_1.evaluateDependency)(model, d);
-        for (const ref of Array.from(st.refs).sort(cmp))
-            if (ref.indexOf('device:') === 0)
-                add(ref.slice(7), `on the way to ${d.consumer}’s ${d.kind === 'dhcp' ? 'DHCP server' : 'resolver'}`);
-    }
-    // the switches between the scope's routed neighbours: their broadcast domains
-    const net = (0, net_1.netOf)(model);
-    for (const d of Array.from(out).sort(cmp)) {
-        const dev = model.index.devices.get(d);
-        for (const i of dev ? (0, types_1.deviceInterfaces)(dev) : []) {
-            if (!i.addresses.length && !i.dhcp)
-                continue;
-            const dom = (0, net_1.l2Domain)(net, { dev: d, iface: i.id });
-            const reachedIn = dom.reached.some((x) => x.dev !== d && out.has(x.dev));
-            if (!reachedIn)
-                continue;
-            for (const b of dom.bridges) {
-                const sd = net.devices.get(b.dev);
-                const owner = sd && sd.virt ? sd.virt.owner : b.dev;
-                add(owner, `bridges ${d}:${i.id} to its neighbours in the scope`);
+        for (const d of Array.from(dom).sort(cmp))
+            add(d, `a router of the ${p.toUpperCase()} domain of ${from} (its routes come from it)`);
+    };
+    const bridged = () => {
+        // the switches between the scope's devices on one segment: their broadcast domains
+        for (const d of Array.from(out).sort(cmp)) {
+            const dev = model.index.devices.get(d);
+            for (const i of dev ? (0, types_1.deviceInterfaces)(dev) : []) {
+                if (!i.addresses.length && !i.dhcp)
+                    continue;
+                const dom = (0, net_1.l2Domain)(net, { dev: d, iface: i.id });
+                if (!dom.reached.some((x) => x.dev !== d && out.has(x.dev)))
+                    continue;
+                for (const b of dom.bridges) {
+                    const sd = net.devices.get(b.dev);
+                    add(sd && sd.virt ? sd.virt.owner : b.dev, `bridges ${d}:${i.id} to its neighbours in the scope`);
+                }
             }
         }
+    };
+    // (the seed's paths' routing protocols first: their domains from each seed router that takes part)
+    for (const p of Array.from(protocolsUsed).sort(cmp))
+        for (const d of Array.from(seed).sort(cmp))
+            if (rels.some((r) => (0, routing_1.routingProtocol)(model, r) === p && (0, types_1.relationDevices)(r).indexOf(d) >= 0))
+                routingDomain(p, d);
+    for (;;) {
+        while (queue.length) {
+            const d = queue.shift();
+            for (const r of rels) {
+                const ds = (0, types_1.relationDevices)(r);
+                if (ds.indexOf(d) < 0)
+                    continue;
+                const base = (0, protocols_1.protocolBase)(model.protocols, r.protocol);
+                const p = (0, routing_1.routingProtocol)(model, r);
+                if (p)
+                    routingDomain(p, d);
+                else if (['vrrp', 'hsrp', 'glbp', 'carp'].indexOf(base) >= 0)
+                    for (const x of ds)
+                        add(x, `a member of the ${base.toUpperCase()} group ${r.id} with ${d}`);
+                else if (r.category === 'tunnel' || r.category === 'overlay') {
+                    // the tunnel's other end, what carries it (the relations it is over), and the devices on its underlay's way
+                    for (const x of ds)
+                        add(x, `the other end of ${d}'s tunnel ${r.id}`);
+                    for (const o of r.over) {
+                        const or = model.index.relations.get(o);
+                        if (or)
+                            for (const x of (0, types_1.relationDevices)(or))
+                                add(x, `an end of ${o}, which carries ${d}'s tunnel ${r.id}`);
+                    }
+                    for (const x of ds) {
+                        if (x === d)
+                            continue;
+                        const tr = (0, trace_1.tracePath)(model, { from: d, to: x });
+                        const on = new Set();
+                        for (const pth of tr.paths)
+                            pathDevices(pth, on);
+                        for (const y of Array.from(on).sort(cmp))
+                            add(y, `on the way of ${d}'s tunnel ${r.id} to ${x}`);
+                    }
+                }
+            }
+            // the DHCP and DNS providers it depends on, and the devices on their way
+            for (const dep of deps) {
+                if (dep.consumer !== d)
+                    continue;
+                for (const o of dep.options)
+                    if (o.provider)
+                        add(o.provider, `${d}’s ${dep.kind === 'dhcp' ? 'DHCP server' : 'DNS server'}`);
+                const st = (0, dependencies_1.evaluateDependency)(model, dep);
+                for (const ref of Array.from(st.refs).sort(cmp))
+                    if (ref.indexOf('device:') === 0)
+                        add(ref.slice(7), `on the way to ${d}’s ${dep.kind === 'dhcp' ? 'DHCP server' : 'resolver'}`);
+            }
+            // a virtual guest runs on its host (its virtual switch, its bridge)
+            const h = (0, virtual_1.hostOf)(model, model.index.devices.get(d));
+            if (h)
+                add(h.id, `${d} runs on it`);
+        }
+        const before = out.size;
+        bridged();
+        if (out.size === before && !queue.length)
+            break;
     }
     return out;
 }
@@ -66368,7 +66432,20 @@ function protocolsTouching(model, seed) {
     }
     return used;
 }
-/** The boundary and the cut relations of a set of devices. */
+/** Does a relation keep running with only the endpoints inside (more than two, two of them inside; a service: its server inside)? */
+function keepsPartly(model, r, devices) {
+    const ds = (0, types_1.relationDevices)(r);
+    if (ds.length < 3)
+        return false;
+    const inside = ds.filter((d) => devices.has(d));
+    if (inside.length < 2)
+        return false;
+    // a service relation's server is its last endpoint: its clients run only with it
+    if (r.category === 'service' && !devices.has(ds[ds.length - 1]))
+        return false;
+    return true;
+}
+/** The boundary, the cut and partly kept relations, and the caveats of a set of devices. */
 function finish(model, kind, label, devices, included, cannot) {
     const boundary = [];
     for (const l of model.links.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -66380,11 +66457,31 @@ function finish(model, kind, label, devices, included, cannot) {
         const outside = ia ? l.b : l.a;
         boundary.push({ device: inside.device, iface: inside.iface, link: l.id, outside: outside.device });
     }
-    const cutRelations = model.relations.filter((r) => {
+    const cutRelations = [];
+    const partialRelations = [];
+    for (const r of model.relations.slice().sort((a, b) => cmp(a.id, b.id))) {
         const ds = (0, types_1.relationDevices)(r);
-        return ds.some((d) => devices.has(d)) && ds.some((d) => !devices.has(d));
-    }).map((r) => r.id).sort(cmp);
-    return { kind, label, devices, included: included.sort((a, b) => cmp(a.device, b.device)), boundary, cutRelations, cannot };
+        if (!ds.some((d) => devices.has(d)) || ds.every((d) => devices.has(d)))
+            continue;
+        if (keepsPartly(model, r, devices))
+            partialRelations.push({ relation: r.id, without: ds.filter((d) => !devices.has(d)).sort(cmp) });
+        else
+            cutRelations.push(r.id);
+    }
+    const caveats = [];
+    if (kind !== 'entire') {
+        for (const p of partialRelations)
+            caveats.push(`${p.relation} runs without ${p.without.join(', ')}: an election, a flooding or a load share there can differ from the entire model's`);
+        // cables of the scope that demands from outside it share: their load is not there in the scope
+        const ext = model.demands.filter((d) => !devices.has(d.source.split(':')[0]) || !devices.has(d.destination.split(':')[0]));
+        if (ext.length)
+            caveats.push(`${ext.length} demand${ext.length === 1 ? '' : 's'} with an end outside (${ext.map((d) => d.id).sort(cmp).slice(0, 5).join(', ')}${ext.length > 5 ? ' …' : ''}) are not run: what they load in the scope is missing from it`);
+    }
+    return { kind, label, devices, included: included.sort((a, b) => cmp(a.device, b.device)), boundary, cutRelations, partialRelations, cannot, caveats };
+}
+/** Exactly these devices, nothing added (an explicit boundary): its cut and partly kept relations and caveats as any scope's. */
+function explicitScope(model, label, devices) {
+    return finish(model, 'group', label, new Set(devices), [], devices.size ? [] : ['the scope names no device']);
 }
 /** The entire model. */
 function entireScope(model) {
@@ -66445,11 +66542,11 @@ function dependencyScope(model, device) {
  * them can't run.
  */
 function unionScope(model, label, scopes) {
-    const devices = new Set();
+    const seed = new Set();
     const included = [];
     const cannot = [];
     for (const s of scopes) {
-        s.devices.forEach((d) => devices.add(d));
+        s.devices.forEach((d) => seed.add(d));
         for (const x of s.included)
             if (!included.some((y) => y.device === x.device))
                 included.push(x);
@@ -66457,6 +66554,12 @@ function unionScope(model, label, scopes) {
             if (cannot.indexOf(c) < 0)
                 cannot.push(c);
     }
+    // (closed over again: together they may need more than each did; what was added already keeps its reason)
+    const more = [];
+    const devices = closeOver(model, seed, more, protocolsTouching(model, seed));
+    for (const x of more)
+        if (!included.some((y) => y.device === x.device))
+            included.push(x);
     return finish(model, 'dependencies', label, devices, included.filter((x) => devices.has(x.device)), cannot);
 }
 /** The devices of a group (and its subgroups). */
@@ -66529,7 +66632,16 @@ function scopedModel(model, scope) {
     const keep = scope.devices;
     const devices = model.devices.filter((d) => keep.has(d.id));
     const links = model.links.filter((l) => keep.has(l.a.device) && keep.has(l.b.device));
-    const relations = model.relations.filter((r) => (0, types_1.relationDevices)(r).every((d) => keep.has(d)));
+    // relations inside it, and those it keeps with their endpoints inside (their links and networks there)
+    const partial = new Set(scope.partialRelations.map((p) => p.relation));
+    const linkIds = new Set(links.map((l) => l.id));
+    const relations = [];
+    for (const r of model.relations) {
+        if ((0, types_1.relationDevices)(r).every((d) => keep.has(d)))
+            relations.push(r);
+        else if (partial.has(r.id))
+            relations.push({ ...r, endpoints: r.endpoints.filter((e) => keep.has(e.device)), over: r.over.filter((o) => linkIds.has(o) || model.index.networks.has(o) || (model.index.relations.has(o) && (0, types_1.relationDevices)(model.index.relations.get(o)).every((d) => keep.has(d)))) });
+    }
     const interfaces = new Map();
     for (const d of devices)
         for (const i of (0, types_1.deviceInterfaces)(d))
@@ -67508,6 +67620,8 @@ function scopeChooser(doc, scopes) {
         info.appendChild((0, dom_1.el)(doc, 'p', {}, [`Runs ${s.devices.size} of ${total} devices; the others are not run at all (marked Not run), and nothing answers from them.`]));
         for (const c of s.cannot)
             info.appendChild((0, dom_1.el)(doc, 'p', { class: 'trace-error' }, ['Can’t run faithfully: ' + c]));
+        for (const c of s.caveats)
+            info.appendChild((0, dom_1.el)(doc, 'p', {}, ['May differ from the entire model: ' + c]));
         const d = (0, dom_1.el)(doc, 'details', { class: 'layer-ev', id: 'sim-pd-scope-detail' }, [(0, dom_1.el)(doc, 'summary', {}, [`Included for it (${s.included.length}) and its boundary (${s.boundary.length} cable${s.boundary.length === 1 ? '' : 's'}${s.cutRelations.length ? `, ${s.cutRelations.length} relation${s.cutRelations.length === 1 ? '' : 's'}` : ''})`])]);
         const ul = (0, dom_1.el)(doc, 'ul', {});
         for (const x of s.included.slice(0, 40))
@@ -67516,6 +67630,8 @@ function scopeChooser(doc, scopes) {
             ul.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, [`Boundary: ${b.device}${b.iface ? ':' + b.iface : ''} (cable ${b.link}) leads to ${b.outside}, not run`]));
         if (s.cutRelations.length)
             ul.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, [`Relations to devices outside (their sessions can’t form): ${s.cutRelations.join(', ')}`]));
+        for (const p of s.partialRelations)
+            ul.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, [`${p.relation} runs with its endpoints inside, without ${p.without.join(', ')}`]));
         d.appendChild(ul);
         info.appendChild(d);
     };
@@ -67997,7 +68113,8 @@ class ExperimentRunner {
             params[p.key] = p.value;
         this.sim = new simulation_1.Simulation(this.model, { params, realClock: opts.realClock });
         const n = model.devices.length;
-        const scopeLine = !scope ? `Entire model (${n} device${n === 1 ? '' : 's'})` : `${(0, experiments_1.scopeText)(exp.scope)}: ${scope.devices.size} of ${n} devices run`;
+        // (what the scope leaves out that can change the outcome is said with it: its results are the scope's, not the entire model's)
+        const scopeLine = !scope ? `Entire model (${n} device${n === 1 ? '' : 's'})` : `${(0, experiments_1.scopeText)(exp.scope)}: ${scope.devices.size} of ${n} devices run${scope.caveats.length ? ` — may differ from the entire model: ${scope.caveats.join('; ')}` : ''}`;
         this.res = { experiment: exp.id, name: exp.name, fingerprint, timing: 'scenario', duration: exp.duration, settle: exp.settle, start: exp.start, scope: scopeLine, reached: -exp.settle, state: 'running', params: exp.params.slice(), actions: [], observations: [], events: [], summary: '' };
         this.relevance = new relevance_1.Relevance((0, relevance_1.relevanceSpec)(this.model, exp, (dev, iface) => {
             try {
@@ -79564,6 +79681,8 @@ function experimentsLeft(doc, v, act) {
         rl.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, [`${sc.boundary} cable${sc.boundary === 1 ? '' : 's'} lead out of the scope (not run beyond)`]));
     for (const x of sc.cannot)
         rl.appendChild((0, dom_1.el)(doc, 'li', { class: 'trace-error' }, ['Can’t run: ' + x]));
+    for (const x of sc.caveats)
+        rl.appendChild((0, dom_1.el)(doc, 'li', {}, ['May differ from the entire model: ' + x]));
     rl.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, ['The scope follows the model as it is when the run starts; the steps name their targets explicitly.']));
     resolved.appendChild(rl);
     sec.appendChild(resolved);

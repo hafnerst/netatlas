@@ -5655,7 +5655,7 @@ export class App {
       locked: this.editLock(),
       scope: (e) => {
         const sc = experimentScope(s.model, e);
-        return { run: sc.devices.size, total: s.model.devices.length, added: sc.included.map((x) => `${x.device}: ${x.why}`), boundary: sc.boundary.length, cannot: sc.cannot };
+        return { run: sc.devices.size, total: s.model.devices.length, added: sc.included.map((x) => `${x.device}: ${x.why}`), boundary: sc.boundary.length, cannot: sc.cannot, caveats: sc.caveats };
       },
       draft: this.expDraft,
       note: this.expNote,

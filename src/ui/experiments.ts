@@ -47,7 +47,7 @@ export interface ExpWsView {
   /** why the model can't be edited now ('' it can) */
   locked: string;
   /** what the scope resolves to: devices run of all, and what it can't run */
-  scope: (e: Experiment) => { run: number; total: number; added: string[]; boundary: number; cannot: string[] };
+  scope: (e: Experiment) => { run: number; total: number; added: string[]; boundary: number; cannot: string[]; caveats: string[] };
   /** a device chosen for a step whose interface or application is not chosen yet (the draft, not in the model) */
   draft: Map<string, string>;
   /** the last edit's note ("Cleared: group — Shut interface takes none") */
@@ -213,6 +213,7 @@ export function experimentsLeft(doc: Document, v: ExpWsView, act: ExpWsActions):
   for (const x of sc.added.slice(0, 30)) rl.appendChild(el(doc, 'li', {}, [x]));
   if (sc.boundary) rl.appendChild(el(doc, 'li', { class: 'muted' }, [`${sc.boundary} cable${sc.boundary === 1 ? '' : 's'} lead out of the scope (not run beyond)`]));
   for (const x of sc.cannot) rl.appendChild(el(doc, 'li', { class: 'trace-error' }, ['Can’t run: ' + x]));
+  for (const x of sc.caveats) rl.appendChild(el(doc, 'li', {}, ['May differ from the entire model: ' + x]));
   rl.appendChild(el(doc, 'li', { class: 'muted' }, ['The scope follows the model as it is when the run starts; the steps name their targets explicitly.']));
   resolved.appendChild(rl);
   sec.appendChild(resolved);
