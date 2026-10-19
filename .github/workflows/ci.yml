@@ -222,6 +222,31 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # actionlint, a pinned release whose checksum is verified before it runs
+      - name: actionlint
+        run: |
+          v=1.7.12
+          sum=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl -fsSL -o actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_amd64.tar.gz"
+          echo "$sum  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+      # zizmor: security findings in the workflows (printed, not uploaded: no write permission needed)
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          version: 1.31.1
+          advanced-security: false
+      # (the repository's own rules for its workflows, such as SHA pins and permissions,
+      # are test/workflows.test.mjs in the unit suite)
+
   release-source:
     name: Release PR source
     runs-on: ubuntu-24.04
