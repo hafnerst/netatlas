@@ -79,6 +79,10 @@ jobs:
         with:
           chrome-version: ${{ env.CHROME_VERSION }}
           install-dependencies: true
+      # Ubuntu 24.04 forbids the unprivileged user namespaces that Chrome's sandbox needs: allow them for
+      # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
+      - name: Let Chrome use its sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Every test suite
         run: node scripts/run-tests.mjs all --strict
         env:

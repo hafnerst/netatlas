@@ -151,6 +151,10 @@ jobs:
         with:
           chrome-version: ${{ env.CHROME_VERSION }}
           install-dependencies: true
+      # Ubuntu 24.04 forbids the unprivileged user namespaces that Chrome's sandbox needs: allow them for
+      # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
+      - name: Let Chrome use its sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # the test build (build/netatlas-test.html): the application with the internal examples and the full self-test
       - run: npm run build
       - run: node scripts/run-tests.mjs browser --strict
@@ -180,6 +184,10 @@ jobs:
         with:
           chrome-version: ${{ env.CHROME_VERSION }}
           install-dependencies: true
+      # Ubuntu 24.04 forbids the unprivileged user namespaces that Chrome's sandbox needs: allow them for
+      # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
+      - name: Let Chrome use its sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # no install and no build: the committed dist/netatlas.html, exactly as it is shipped
       - run: node scripts/run-tests.mjs public --strict
         env:
@@ -210,6 +218,10 @@ jobs:
         with:
           chrome-version: ${{ env.CHROME_VERSION }}
           install-dependencies: true
+      # Ubuntu 24.04 forbids the unprivileged user namespaces that Chrome's sandbox needs: allow them for
+      # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
+      - name: Let Chrome use its sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm run build
       - run: node scripts/run-tests.mjs viewport --strict
         env:

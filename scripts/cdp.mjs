@@ -38,7 +38,7 @@ function launch() {
   const proc = spawn(
     browser,
     ['--headless=new', '--remote-debugging-pipe', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--hide-scrollbars', '--host-resolver-rules=MAP * ~NOTFOUND', `--user-data-dir=${profile}`, 'about:blank'],
-    { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] },
+    { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] },
   );
   const toBrowser = proc.stdio[3];
   const fromBrowser = proc.stdio[4];
@@ -46,6 +46,21 @@ function launch() {
   const pending = new Map();
   const listeners = [];
   let buf = '';
+  // a browser that dies (e.g. without a usable sandbox) fails what waits for it, with the end of what it printed,
+  // instead of an unhandled error on its pipe
+  let stderr = '';
+  let gone = null;
+  proc.stdio[2].on('data', (d) => (stderr = (stderr + d.toString('utf8')).slice(-2000)));
+  const died = (why) => {
+    if (gone) return;
+    gone = new Error(`the browser ${browser} ${why}${stderr.trim() ? ':\n' + stderr.trim() : ''}`);
+    for (const { fail } of pending.values()) fail(gone);
+    pending.clear();
+  };
+  proc.on('error', (e) => died(`could not start (${e.message})`));
+  proc.on('exit', (code, signal) => died(`exited (${signal || 'code ' + code})`));
+  toBrowser.on('error', () => died('closed its pipe'));
+  fromBrowser.on('error', () => died('closed its pipe'));
   fromBrowser.on('data', (d) => {
     buf += d.toString('utf8');
     let at;
@@ -62,6 +77,7 @@ function launch() {
   });
   const send = (method, params = {}, sessionId) =>
     new Promise((ok, fail) => {
+      if (gone) return fail(gone);
       const id = nextId++;
       pending.set(id, { ok, fail });
       toBrowser.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
