@@ -155,6 +155,13 @@ jobs:
       # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
       - name: Let Chrome use its sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # a defined UI font: Liberation Sans (Arial's metrics) instead of the runner's DejaVu Sans
+      - name: Fonts
+        run: |
+          mkdir -p ~/.config/fontconfig
+          cp .github/fontconfig/fonts.conf ~/.config/fontconfig/fonts.conf
+          fc-match system-ui
+          fc-match sans-serif
       # the test build (build/netatlas-test.html): the application with the internal examples and the full self-test
       - run: npm run build
       - run: node scripts/run-tests.mjs browser --strict
@@ -188,6 +195,13 @@ jobs:
       # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
       - name: Let Chrome use its sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # a defined UI font: Liberation Sans (Arial's metrics) instead of the runner's DejaVu Sans
+      - name: Fonts
+        run: |
+          mkdir -p ~/.config/fontconfig
+          cp .github/fontconfig/fonts.conf ~/.config/fontconfig/fonts.conf
+          fc-match system-ui
+          fc-match sans-serif
       # no install and no build: the committed dist/netatlas.html, exactly as it is shipped
       - run: node scripts/run-tests.mjs public --strict
         env:
@@ -222,6 +236,13 @@ jobs:
       # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
       - name: Let Chrome use its sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # a defined UI font: Liberation Sans (Arial's metrics) instead of the runner's DejaVu Sans
+      - name: Fonts
+        run: |
+          mkdir -p ~/.config/fontconfig
+          cp .github/fontconfig/fonts.conf ~/.config/fontconfig/fonts.conf
+          fc-match system-ui
+          fc-match sans-serif
       - run: npm run build
       - run: node scripts/run-tests.mjs viewport --strict
         env:

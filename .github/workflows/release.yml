@@ -83,6 +83,13 @@ jobs:
       # this job, so that the browser runs with its sandbox (rather than with --no-sandbox)
       - name: Let Chrome use its sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # a defined UI font: Liberation Sans (Arial's metrics) instead of the runner's DejaVu Sans
+      - name: Fonts
+        run: |
+          mkdir -p ~/.config/fontconfig
+          cp .github/fontconfig/fonts.conf ~/.config/fontconfig/fonts.conf
+          fc-match system-ui
+          fc-match sans-serif
       - name: Every test suite
         run: node scripts/run-tests.mjs all --strict
         env:

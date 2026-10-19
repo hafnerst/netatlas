@@ -522,6 +522,11 @@ and SVG out), printing layouts, multi-user editing.
   (a halo keeps them readable); a label without a free place takes the
   nearest one with a dashed leader, or overlaps least (reported). Text
   width is estimated (no font metrics), so boxes have a little spare room.
+  The estimate fits Segoe UI, Roboto and Arial-like fonts. Where the
+  system's UI font is wider, such as DejaVu Sans on many Linux desktops, a
+  long label can reach a few pixels past its box (seen in CI on Ubuntu,
+  whose browser jobs therefore use Liberation Sans:
+  `.github/fontconfig/fonts.conf`).
 * **Badges.** Snooping badges and status pills are placed where nothing is
   drawn, not reserved by Auto-arrange; on a crowded box they take its top
   right corner. A device with many uncabled ports gets a tall strip of

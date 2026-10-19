@@ -124,7 +124,11 @@ installation and the build and have not been measured yet, so expect more.
 The jobs run in parallel; a pull request has its result in about the time
 of the browser job. The browser suites run with `--strict`, the browser is
 installed by `browser-actions/setup-chrome` at that exact version, and each
-failed job uploads `test-results/` (7 days). A newer push to a pull request
+failed job uploads `test-results/` (7 days). On the Ubuntu 24.04 runners
+the jobs allow the user namespaces Chrome's sandbox needs (rather than
+`--no-sandbox`), and set the UI font to Liberation Sans
+(`.github/fontconfig/fonts.conf`): the runners' default, DejaVu Sans, is
+wider than the label sizes assume (docs/LIMITATIONS.md, "Labels"). A newer push to a pull request
 cancels its older run; runs on `dev` and `main` are not cancelled.
 
 `.github/workflows/security.yml` runs CodeQL and, on pull requests, a
