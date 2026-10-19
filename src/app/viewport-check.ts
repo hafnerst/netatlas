@@ -315,6 +315,17 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       app.runExperimentNow('cabinet-outage');
       await tick();
       checkPanels('Experiments');
+      // a run playing: its controls (Pause, the speed, Skip to result), its progress and what it waits for; a step with durations
+      app.selectExperimentStep({ exp: 'dashboard', list: 'actions', index: 1 });
+      app.runExperiment('dashboard');
+      await tick();
+      const pb = app.experimentPlayback();
+      if (pb) for (let k = 0; k < 20; k++) pb.advance(200);
+      app.selectExperimentStep({ exp: 'dashboard', list: 'actions', index: 1 });
+      await tick();
+      checkPanels('Experiments, a run playing');
+      app.stopExperiment();
+      await tick();
       await app.exitWorkspace();
       // (the run's toast is not part of the layout under test)
       (q('#toast') as HTMLElement).hidden = true;

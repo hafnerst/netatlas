@@ -51,8 +51,8 @@ test('timing: a step after an earlier action was submitted (its time plus its de
   const r = run(m, 'mc');
   assert.deepEqual(r.actions.map((a) => [a.at, a.action.do, a.state]), [[5000, 'join', 'submitted'], [7000, 'start_stream', 'submitted'], [20000, 'stop_stream', 'submitted']]);
   assert.deepEqual(r.observations.map((o) => [o.obs.id, o.outcome, o.from, o.to]), [['gets', 'satisfied', 8000, 18000], ['quiet', 'satisfied', 22000, 27000]]);
-  assert.match(r.observations[0].actual, /^received: \d+ datagrams of 239\.1\.1\.1 within 10 s$/);
-  assert.match(r.observations[1].actual, /^not received: no datagram of 239\.1\.1\.1 within 5 s$/);
+  assert.match(r.observations[0].actual, /^received: \d+ datagrams of 239\.1\.1\.1 at rx:e0 within 10 s$/);
+  assert.match(r.observations[1].actual, /^not received: no datagram of 239\.1\.1\.1 arrived at rx:e0 within 5 s$/);
   // a cycle, an unknown action: problems, not times
   const bad = validate.loadModel(lan + 'experiments:\n  - id: c\n    name: C\n    duration: 30s\n    actions:\n      - {id: a, after: b, at: 1s, do: power_off, target: src}\n      - {id: b, after: a, at: 1s, do: power_off, target: rx}\n      - {after: nothing, at: 1s, do: power_on, target: src}\n    observe:\n      - {of: device, target: src, expect: on}\n').model.experiments[0];
   assert.ok(bad.problems.some((p) => /a cycle of "after"/.test(p)), bad.problems.join(' | '));
@@ -78,7 +78,7 @@ test('windows: a state is satisfied as soon as it holds within its window, viola
   const by = new Map(r.observations.map((o) => [o.obs.id, o]));
   assert.deepEqual([by.get('soon').outcome, by.get('soon').at], ['satisfied', 5000], 'decided when it held');
   assert.deepEqual([by.get('never').outcome, by.get('never').at], ['violated', 4000]);
-  assert.match(by.get('never').actual, /^on \(.*\) \(throughout 3 s\)$/);
+  assert.match(by.get('never').actual, /^rx is operational \(throughout 3 s\)$/);
   assert.deepEqual([by.get('now').outcome, by.get('now').at], ['violated', 2000]);
 });
 
@@ -169,7 +169,7 @@ experiments:
   const r = run(m, 'x');
   const by = new Map(r.observations.map((o) => [o.obs.id, o]));
   assert.equal(by.get('before').outcome, 'satisfied', by.get('before').actual);
-  assert.match(by.get('before').actual, /^satisfied: all 2 \(no-ssh, https\)$/);
+  assert.match(by.get('before').actual, /^satisfied: all 2 \(no-ssh, https\) — already so when the window opened \(t = 20\.0 s\)$/);
   assert.equal(by.get('after').outcome, 'violated', 'without the firewall the floating route takes SSH around it');
   assert.match(by.get('after').actual, /^violated: no-ssh — 1 of 1 evaluated$/);
   // a model without saved expectations: the observation says so, the experiment can't run
@@ -190,7 +190,7 @@ test('the editor’s steps: a kind chosen is kept while the step is incomplete; 
   assert.deepEqual(d.setStepKind(0, 'actions', 0, 'power_off'), ['target'], 'an interface is no device: cleared, and said');
   d.setText(['experiments', 0, 'actions', 0, 'target'], 'rx');
   d.addStep(0, 'observe', 'device', 'rx');
-  assert.equal(e().observations[0].expect, 'on', 'the usual outcome preset');
+  assert.equal(e().observations[0].expect, 'operational', 'the usual outcome preset');
   d.setStepAfter(0, 'observe', 0, 0);
   assert.deepEqual([e().actions[0].id, e().observations[0].after], ['step-1', 'step-1'], 'the action got an id to be named by');
   const y = d.exportText();

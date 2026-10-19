@@ -1267,7 +1267,7 @@ test('experiments: validation, references that follow renames, and a round trip 
   // what is written wrong: an error
   assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 10s, do: stream, target: pc}\n')), /"stream" is no action/);
   assert.match(errs(one('    duration: 30s\n    actions:\n      - {at: 40s, do: power_off, target: pc}\n')), /action 1 comes at 40 s, after the end of the experiment \(30s\)/);
-  assert.match(errs(one('    duration: 30s\n    observe:\n      - {of: device, target: pc, expect: up}\n')), /A device’s state expects on or off/);
+  assert.match(errs(one('    duration: 30s\n    observe:\n      - {of: device, target: pc, expect: up}\n')), /A device’s state expects operational or booting or on or off/);
   assert.match(errs(one('    duration: 30s\n    params: {warp: 2}\n')), /"warp" is no simulation parameter/);
   assert.match(errs(one('    duration: 2x\n')), /"2x" is no duration/);
   // what is not configured yet, or names nothing: a warning, the step kept, the experiment not runnable

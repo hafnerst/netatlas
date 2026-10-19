@@ -14,7 +14,7 @@ const Lb = load('ui/sim-labels.js');
 const A = load('ui/sim-anim.js');
 
 const cmds = new Map(C.buildCommands().map((c) => [c.id, c]));
-const fake = (model, running) => ({ hasModel: () => model, simulationOn: () => running, toolWindow: () => (running ? 'sim' : ''), mdoc: model ? {} : null, session: model ? {} : null });
+const fake = (model, running) => ({ hasModel: () => model, simulationOn: () => running, experimentRunning: () => null, toolWindow: () => (running ? 'sim' : ''), mdoc: model ? {} : null, session: model ? {} : null });
 
 test('Start simulation… and Exit simulation: the three states, with the reasons', () => {
   const start = cmds.get('sim.start');
