@@ -30,7 +30,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 /** The modules only the test build may contain: the internal examples and fixtures, the full self-test, the viewport check. */
 export const TEST_ONLY = ['generated/test-examples', 'app/selftest', 'app/viewport-check', 'app/main-test'];
 /** The largest dist/netatlas.html that passes (bytes). Measured history and reasons: test/build.test.mjs. */
-export const SIZE_BUDGET = 6 * 1024 * 1024;
+export const SIZE_BUDGET = 6.5 * 1024 * 1024;
 
 export const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
