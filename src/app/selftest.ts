@@ -357,8 +357,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           return new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
         };
         /** wait until a dropped file has been read and handled (reading a file is asynchronous) */
+        // up to 5 s: reading a dropped file is asynchronous, and slow on a busy machine (CI runs browser suites side by side)
         const until = async (done: () => boolean): Promise<void> => {
-          for (let n = 0; n < 100 && !done(); n++) await tick(10);
+          for (let n = 0; n < 500 && !done(); n++) await tick(10);
         };
         const idleBg = doc.defaultView!.getComputedStyle(openBtn).backgroundColor;
         const over = dragEvent('dragover', [new File(['x'], 'x.yaml')]);
