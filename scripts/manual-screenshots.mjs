@@ -328,12 +328,14 @@ networks:
 relations:
   - {id: peering, protocol: ebgp, endpoints: ["r1:g1", "r2:g0"]}
 `;
-      const until = async (want, test) => page.eval(`(() => { const c = netatlas.simController(); const lab = () => Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).map((g) => g.textContent); const want = ${JSON.stringify(want)}; for (let i = 0; i < 6000; i++) { c.advance(20); if (i % 3 === 0) { c.refresh(true); const t = lab(); if (want.every((w) => t.some((x) => x.indexOf(${JSON.stringify(test ? 'Test · ' : '')} + w) === 0))) { document.getElementById('toast').hidden = true; return true; } } } return false; })()`);
+      // want: a JavaScript array literal of the labels wanted, as source text
+      const until = async (want, test) => page.eval(`(() => { const c = netatlas.simController(); const lab = () => Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).map((g) => g.textContent); const want = ${want}; for (let i = 0; i < 6000; i++) { c.advance(20); if (i % 3 === 0) { c.refresh(true); const t = lab(); if (want.every((w) => t.some((x) => x.indexOf(${test ? "'Test · '" : "''"} + w) === 0))) { document.getElementById('toast').hidden = true; return true; } } } return false; })()`);
       // zoomed to 120 % around the labels wanted (the point between them kept in place), cropped around them with room for their way
+      // prefix: a JavaScript string literal, as source text
       const canvas = async (prefix) => {
         // half a hop further (Readable: 3 s a hop at 1x), the labels past their fade-in
         await page.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 50; i++) c.advance(20); c.refresh(true); return true; })()`);
-        await page.eval(`(() => { const c = netatlas.simController(); const ls = Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).filter((g) => g.textContent.indexOf(${JSON.stringify(prefix)}) >= 0).map((g) => g.getBoundingClientRect()); if (!ls.length) return false; const r = document.getElementById('canvas').getBoundingClientRect(); const cx = ls.reduce((n, b) => n + b.left + b.width / 2, 0) / ls.length - r.left; const cy = ls.reduce((n, b) => n + b.top + b.height / 2, 0) / ls.length - r.top; const z = netatlas.zoom; const dx = (cx - z.tx) / z.k; const dy = (cy - z.ty) / z.k; z.k = 1.2; z.tx = r.width / 2 - dx * z.k; z.ty = r.height / 2 - dy * z.k; netatlas.applyZoom(); c.refresh(true); return true; })()`);
+        await page.eval(`(() => { const c = netatlas.simController(); const ls = Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).filter((g) => g.textContent.indexOf(${prefix}) >= 0).map((g) => g.getBoundingClientRect()); if (!ls.length) return false; const r = document.getElementById('canvas').getBoundingClientRect(); const cx = ls.reduce((n, b) => n + b.left + b.width / 2, 0) / ls.length - r.left; const cy = ls.reduce((n, b) => n + b.top + b.height / 2, 0) / ls.length - r.top; const z = netatlas.zoom; const dx = (cx - z.tx) / z.k; const dy = (cy - z.ty) / z.k; z.k = 1.2; z.tx = r.width / 2 - dx * z.k; z.ty = r.height / 2 - dy * z.k; netatlas.applyZoom(); c.refresh(true); return true; })()`);
         await page.settle(200);
         const r = await page.rect('#canvas');
         const w = Math.min(r.w - 8, 600);
@@ -347,16 +349,16 @@ relations:
         await page.settle(150);
         if (view === 'logical') {
           // the BGP session's TCP connection along the relation: its SYN-ACK and ACK, then the OPENs
-          if (await until(['BGP TCP [S,A]'], false)) {
+          if (await until("['BGP TCP [S,A]']", false)) {
             await page.settle(150);
-            await save('tcp-logical', await canvas('BGP TCP ['), { quality: 40 });
+            await save('tcp-logical', await canvas("'BGP TCP ['"), { quality: 40 });
           }
         } else {
           await page.eval(`netatlas.simController().runTo(15000), netatlas.simController().sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 443 }), true`);
-          for (const [name, want] of [['tcp-syn', ['TCP [S]']], ['tcp-synack', ['TCP [S,A]']], ['tcp-ack', ['TCP [A]', 'TCP [P,A]']]]) {
+          for (const [name, want] of [['tcp-syn', "['TCP [S]']"], ['tcp-synack', "['TCP [S,A]']"], ['tcp-ack', "['TCP [A]', 'TCP [P,A]']"]]) {
             if (!(await until(want, true))) continue;
             await page.settle(150);
-            await save(name, await canvas('Test · TCP ['), { quality: 40 });
+            await save(name, await canvas("'Test · TCP ['"), { quality: 40 });
             await page.eval('netatlas.fit(), true');
           }
         }

@@ -316,6 +316,8 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   // its later hops are drawn whatever else is on screen (no room for anything else here); the simulation goes on at its rate
   p.limit = 0;
   const t0 = sim.now;
+  // what was on screen then: its next hops go on (a conversation drawn is drawn to its end), nothing new starts
+  const before = new Set(p.items.filter((x) => x.drawn).map((x) => x.key));
   // (the page's clock stands still meanwhile: each frame's work budget is never cut short, so a slow machine falling behind is not read as being held)
   const real = Date.now;
   const fixed = real();
@@ -327,7 +329,10 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   }
   const mine = p.items.filter((x) => x.key === it.key && x !== it);
   assert.ok(mine.every((x) => x.drawn), 'the conversation followed is drawn');
-  assert.ok(p.items.filter((x) => x.key !== it.key && x.f.t0 > t0 && x.f.view === 'physical').every((x) => !x.drawn), 'others not (no room with limit 0)');
+  const others = p.items.filter((x) => x.key !== it.key && x.f.t0 > t0 && x.f.view === 'physical');
+  assert.ok(others.length > 0, 'other traffic meanwhile');
+  assert.ok(others.every((x) => !x.drawn || before.has(x.key)), 'no other conversation started (no room with limit 0)');
+  assert.ok(others.some((x) => !x.drawn), 'others not drawn');
   assert.ok(sim.now >= t0 + 4800 - 50, 'held by nothing');
   assert.ok(p.followFlight(null));
   assert.equal(p.follow, null);

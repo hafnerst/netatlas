@@ -57,8 +57,9 @@ test('a stream of Network events in Readable pacing: one datagram every second o
   const { sim, p, a, t0 } = streamRun(20000);
   // on the simulated clock: the first at once, then one every simulated second
   const sends = sim.events().filter((e) => e.test === a.traffic && e.kind === 'message' && /^multicast datagram \d+ from/.test(e.detail)).map((e) => e.t);
-  // (the log lists a stream's datagrams 1, 10, 20 …)
-  assert.equal(a.stream.sent, Math.floor((sim.now - t0 - 5) / 1000) + 1, `${a.stream.sent} datagrams in ${sim.now - t0} ms of simulated time`);
+  // (the log lists a stream's datagrams 1, 10, 20 …): the first within a few ms of the start (its jitter), then one each second
+  assert.ok(sends.length > 0 && sends[0] >= t0 && sends[0] < t0 + 5, String(sends[0] - t0));
+  assert.equal(a.stream.sent, Math.floor((sim.now - sends[0]) / 1000) + 1, `${a.stream.sent} datagrams in ${sim.now - t0} ms of simulated time`);
   assert.doesNotMatch(p.describe(), /real time/);
   // the dots keep their readable time
   assert.ok(p.items.filter((it) => it.f.test === a.traffic).every((it) => it.hop >= P.HOP_MIN));

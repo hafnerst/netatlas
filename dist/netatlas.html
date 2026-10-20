@@ -73281,10 +73281,10 @@ function installLacp(P) {
         const other = mems.find((x) => x.dev === m.dev && x.agg === m.agg && x !== m && x.state !== 'Detached' && x.partner !== undefined && x.partner !== m.partner);
         if (other) {
             if (m.state !== 'Detached')
-                set(m, 'Detached', `its partner ${dd.from} (${dd.agg}) is not the aggregate's (${other.partner.replace('|', ', ')})`);
+                set(m, 'Detached', `its partner ${dd.from} (${dd.agg}) is not the aggregate's (${other.partner.split('|').join(', ')})`);
             else if (!m.rel || !P.shared.has('lacp-mismatch|' + m.dev + '|' + m.port)) {
                 P.shared.set('lacp-mismatch|' + m.dev + '|' + m.port, true);
-                P.e.note('state', 'lacp', m.dev, m.peer, 'not bundled', 'Detached', `LACP ${m.dev}:${m.agg} member ${m.port}: its partner ${dd.from} (${dd.agg}) differs from the aggregate's other members' (${other.partner.replace('|', ', ')}): it is not bundled`);
+                P.e.note('state', 'lacp', m.dev, m.peer, 'not bundled', 'Detached', `LACP ${m.dev}:${m.agg} member ${m.port}: its partner ${dd.from} (${dd.agg}) differs from the aggregate's other members' (${other.partner.split('|').join(', ')}): it is not bundled`);
             }
             return;
         }
