@@ -1,0 +1,133 @@
+netatlas: 1
+title: Non-IP interconnects
+description: "Opaque ports and interconnects beside an Ethernet network: a USB instrument, serial lines one way and both ways, an RS-485 multidrop bus, a CAN bus of peers, a VME crate with two controllers, and a VPX-style fabric through a switch module with explicit transit paths. The IP side never uses them."
+
+groups:
+  - {id: lab, label: Lab, kind: room}
+  - {id: crate, label: VPX chassis, kind: rack, parent: lab}
+
+devices:
+  - id: sw
+    type: switch
+    group: lab
+    igmp_mld_snooping: {10: enabled}
+    interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 10}, {id: p3, vlans: 10}]
+  - id: ctl
+    type: system
+    purpose: host
+    label: Lab controller
+    group: lab
+    interfaces:
+      - {id: eth0, ip: 192.0.2.10/24}
+      - {id: usb0, stack: opaque}
+      - {id: com1, stack: opaque}
+      - {id: rs485, stack: opaque}
+  - id: scope
+    type: endpoint
+    label: Oscilloscope
+    group: lab
+    interfaces:
+      - {id: eth0, ip: 192.0.2.20/24}
+      - {id: usb0, stack: opaque}
+  - id: gps
+    type: endpoint
+    label: GPS receiver
+    group: lab
+    interfaces: [{id: com1, stack: opaque}]
+  - id: plc
+    type: endpoint
+    label: PLC console
+    group: lab
+    interfaces: [{id: com1, stack: opaque}]
+  - {id: meter1, type: endpoint, group: lab, interfaces: [{id: rs485, stack: opaque}]}
+  - {id: meter2, type: endpoint, group: lab, interfaces: [{id: rs485, stack: opaque}]}
+  - {id: ecu1, type: endpoint, group: lab, interfaces: [{id: can0, stack: opaque}]}
+  - {id: ecu2, type: endpoint, group: lab, interfaces: [{id: can0, stack: opaque}]}
+  - {id: logger, type: storage, group: lab, label: CAN logger, interfaces: [{id: can0, stack: opaque}]}
+  - {id: sbc1, type: server, group: lab, label: VME CPU 1, interfaces: [{id: vme, stack: opaque}]}
+  - {id: sbc2, type: server, group: lab, label: VME CPU 2, interfaces: [{id: vme, stack: opaque}]}
+  - {id: io1, type: endpoint, group: lab, label: VME I/O, interfaces: [{id: vme, stack: opaque}]}
+  - id: fsw
+    type: system
+    purpose: host
+    label: Fabric switch
+    group: crate
+    interfaces: [{id: f1, stack: opaque}, {id: f2, stack: opaque}, {id: f4, stack: opaque}, {id: f3, stack: opaque, label: console}]
+    opaque_transit:
+      - {ports: [f1, f2, f4]}
+  - {id: payload1, type: server, group: crate, interfaces: [{id: f0, stack: opaque}]}
+  - {id: payload2, type: server, group: crate, interfaces: [{id: f0, stack: opaque}]}
+  - {id: payload3, type: server, group: crate, interfaces: [{id: f0, stack: opaque}]}
+
+links:
+  - {id: l1, a: "sw:p1", b: "ctl:eth0"}
+  - {id: l2, a: "sw:p2", b: "scope:eth0"}
+
+networks:
+  - {id: labnet, cidr: 192.0.2.0/24, vlan: 10}
+
+interconnects:
+  - id: scope-usb
+    topology: point_to_point
+    technology: {name: USB, version: "2.0"}
+    protocol: {name: SCPI}
+    connector: USB-B
+    access: controller_target
+    endpoints:
+      - {port: "ctl:usb0", role: controller}
+      - {port: "scope:usb0", role: target}
+  - id: gps-serial
+    topology: point_to_point
+    technology: {name: RS-232}
+    protocol: {name: NMEA 0183}
+    endpoints:
+      - {port: "gps:com1", role: peer, data: send}
+      - {port: "ctl:com1", role: peer, data: receive}
+  - id: console
+    topology: point_to_point
+    technology: {name: RS-232}
+    endpoints:
+      - {port: "plc:com1", role: peer}
+      - {port: "fsw:f3", role: peer}
+  - id: meter-bus
+    topology: shared
+    technology: {name: RS-485}
+    protocol: {name: Modbus RTU}
+    access: controller_target
+    endpoints:
+      - {port: "ctl:rs485", role: controller}
+      - {port: "meter1:rs485", role: target}
+      - {port: "meter2:rs485", role: target}
+  - id: can
+    topology: shared
+    technology: {name: CAN, version: FD}
+    endpoints:
+      - {port: "ecu1:can0", role: peer}
+      - {port: "ecu2:can0", role: peer}
+      - {port: "logger:can0", role: monitor}
+  - id: vme
+    topology: shared
+    technology: {name: VME, version: VME64x}
+    access: controller_target
+    endpoints:
+      - {port: "sbc1:vme", role: controller_target, system_controller: true}
+      - {port: "sbc2:vme", role: controller_target}
+      - {port: "io1:vme", role: target}
+  - id: fab1
+    topology: point_to_point
+    technology: {name: SRIO, version: "3.1"}
+    endpoints:
+      - {port: "payload1:f0", role: peer}
+      - {port: "fsw:f1", role: peer}
+  - id: fab2
+    topology: point_to_point
+    technology: {name: SRIO, version: "3.1"}
+    endpoints:
+      - {port: "payload2:f0", role: peer}
+      - {port: "fsw:f2", role: peer}
+  - id: fab3
+    topology: point_to_point
+    technology: {name: SRIO, version: "3.1"}
+    endpoints:
+      - {port: "payload3:f0", role: peer}
+      - {port: "fsw:f4", role: peer}

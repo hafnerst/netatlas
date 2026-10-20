@@ -45,6 +45,7 @@ import { routingProtocol } from './routing';
 import { Path, tracePath } from './trace';
 import { hostOf } from '../model/virtual';
 import { l2Domain, netOf } from './sim/net';
+import { keptInterconnects, opaqueIndex } from '../model/interconnect';
 
 export type ExecScopeKind = 'entire' | 'communication' | 'dependencies' | 'group' | 'vlan' | 'domain';
 
@@ -398,8 +399,11 @@ export function scopedModel(model: Model, scope: ExecScope): Model {
   }
   const routes = new Map<string, import('../model/types').Route>();
   for (const d of devices) for (const rt of d.routes) routes.set(routeKey(d.id, rt.index), rt);
-  const index: ModelIndex = { groups: model.index.groups, devices: new Map(devices.map((d) => [d.id, d])), interfaces, links: new Map(links.map((l) => [l.id, l])), networks: model.index.networks, relations: new Map(relations.map((r) => [r.id, r])), ifaceLink, radioLinks, routes };
+  // (the interconnects within the scope: their attachments inside it)
+  const inside = new Set(devices.map((d) => d.id));
+  const interconnects = keptInterconnects(model.interconnects, (d) => inside.has(d));
+  const index: ModelIndex = { groups: model.index.groups, devices: new Map(devices.map((d) => [d.id, d])), interfaces, links: new Map(links.map((l) => [l.id, l])), networks: model.index.networks, relations: new Map(relations.map((r) => [r.id, r])), ifaceLink, radioLinks, routes, ...opaqueIndex(devices, interconnects) };
   const boundary = new Map<string, string>();
   for (const b of scope.boundary) if (b.iface !== undefined) boundary.set(ifaceKey(b.device, b.iface), b.outside);
-  return { ...model, devices, links, relations, index, demands: model.demands.filter((x) => keep.has(x.source.split(':')[0]) && keep.has(x.destination.split(':')[0])), expectations: [], experiments: [], failureDomains: [], execScope: { label: scope.label, boundary } };
+  return { ...model, devices, links, relations, interconnects, index, demands: model.demands.filter((x) => keep.has(x.source.split(':')[0]) && keep.has(x.destination.split(':')[0])), expectations: [], experiments: [], failureDomains: [], execScope: { label: scope.label, boundary } };
 }

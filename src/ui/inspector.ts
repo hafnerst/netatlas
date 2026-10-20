@@ -126,6 +126,7 @@ const KIND_TITLE: { [k in EntityKind]: string } = {
   relation: 'Relations (logical)',
   group: 'Groups / locations',
   protocol: 'Protocols',
+  interconnect: 'Interconnects (non-IP)',
 };
 
 export class Editor {

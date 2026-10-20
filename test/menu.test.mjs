@@ -111,7 +111,7 @@ test('examples: the File menu offers the curated public catalog; the internal ex
   assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
   assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
-  assert.equal(INTERNAL_EXAMPLES.length, 19);
+  assert.equal(INTERNAL_EXAMPLES.length, 20);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.ok(!INTERNAL_EXAMPLES.some((x) => EXAMPLES.some((e) => e.name === x.name)), 'no internal example has a public name');
   // every public example has a title and a description

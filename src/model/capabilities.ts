@@ -77,6 +77,13 @@ export interface Capabilities {
   networkServices: boolean;
   /** runs the spanning tree and the switches' features (MAC table, IGMP snooping, storm control) */
   switchFeatures: boolean;
+  /**
+   * may pass illustrative data between explicitly grouped opaque ports
+   * (`opaque_transit:`, model/interconnect.ts): a System as a fabric
+   * switch module or an active hub — the one generic transit of the
+   * non-IP side, never per technology, never implied
+   */
+  opaqueTransit: boolean;
 }
 
 const NONE: Capabilities = {
@@ -110,6 +117,7 @@ const NONE: Capabilities = {
   serviceHost: false,
   networkServices: false,
   switchFeatures: false,
+  opaqueTransit: false,
 };
 
 /** What a resolver needs to know of a device. */
@@ -176,7 +184,7 @@ function resolve(t: DeviceTypeDef, d: DeviceLike): Partial<Capabilities> {
     case 'cloud':
       return { externalTransit: true };
     case 'system':
-      return systemCaps(d.purpose);
+      return { ...systemCaps(d.purpose), opaqueTransit: true };
   }
   return {};
 }

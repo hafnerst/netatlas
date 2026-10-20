@@ -11,12 +11,12 @@
 export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
-  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'failure_domains', 'expectations', 'experiments', 'views', 'checks', 'layout'],
+  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'interconnects', 'demands', 'failure_domains', 'expectations', 'experiments', 'views', 'checks', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes', 'policy'],
+  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'opaque_transit', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes', 'policy'],
   /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN gateway's VPN gateway, a Security gateway's Domain separation */
   netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'ptp', 'mqtt_broker', 'applications'],
   wireless: ['controller', 'networks'],
@@ -75,7 +75,9 @@ export const SCHEMA = {
   dnsZone: ['name', 'records', 'simulation'],
   dnsRecord: ['name', 'type', 'value'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  interface: ['id', 'label', 'stack', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  /** a System's opaque transit group: an entry of its `opaque_transit` */
+  opaqueTransit: ['ports'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
   logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** a router interface's IPv6 router advertisements (`ipv6_ra:`) */
@@ -105,6 +107,12 @@ export const SCHEMA = {
   linkEnd: ['device', 'interface', 'speed', 'duplex'],
   network: ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs'],
   relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'direction', 'simulation', 'description', 'attrs'],
+  /** a non-IP physical interconnect (`interconnects:`, model/interconnect.ts) */
+  interconnect: ['id', 'label', 'topology', 'technology', 'protocol', 'connector', 'access', 'endpoints', 'description', 'attrs'],
+  /** an interconnect's technology, or the protocol it carries */
+  icTechnology: ['name', 'version'],
+  /** an attachment of a port to an interconnect: an entry of its `endpoints` */
+  icEndpoint: ['port', 'role', 'data', 'system_controller'],
   /** a relation endpoint written as a mapping (the same as "device:interface") */
   endpoint: ['device', 'interface'],
   /** a traffic demand: an entry of `demands` */
