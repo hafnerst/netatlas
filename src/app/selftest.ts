@@ -224,7 +224,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 10 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 11 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
