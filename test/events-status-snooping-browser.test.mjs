@@ -158,8 +158,13 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       assert.deepEqual([b.expand, b.collapse], [false, true], 'all closed: Collapse all disabled');
       assert.equal(b.focus, 'sim-ne-expand');
       assert.deepEqual(b.at, at0);
-      await wait(2200);
-      const after = await page.eval(`(() => { const v = netatlas.simController().sim.actions().find((v) => v.kind === 'stream'); return [v.status, v.progress.done]; })()`);
+      // (the next datagram: polled, the simulation waits for the dots on screen)
+      const STREAM = `(() => { const v = netatlas.simController().sim.actions().find((v) => v.kind === 'stream'); return [v.status, v.progress.done]; })()`;
+      let after = await page.eval(STREAM);
+      for (let i = 0; i < 60 && after[1] < sent0 + 1; i++) {
+        await wait(500);
+        after = await page.eval(STREAM);
+      }
       assert.equal(after[0], 'running', 'collapsing stops nothing');
       assert.ok(after[1] >= sent0 + 1, `${sent0} → ${after[1]}`);
       await page.eval(`document.getElementById('sim-ne-expand').click(), true`);

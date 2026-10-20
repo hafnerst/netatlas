@@ -2290,7 +2290,7 @@ export class SimController implements SimulationMode {
     const q = (id: string): HTMLElement | null => d.getElementById(id);
     this.updateClock();
     const drawn = q('sim-drawn');
-    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `at most ${CONV_LIMIT} exchanges as dots at once`}).` : '';
+    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `kinds of message already shown, and at most ${CONV_LIMIT} exchanges as dots at once`}).` : '';
     // behind for a while (more than 2 s of simulated time): say so, and suggest a smaller execution scope
     const bh = q('sim-behind');
     if (bh) {

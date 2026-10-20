@@ -62,8 +62,11 @@ for (const theme of ['light', 'dark']) {
       let S = await page.eval(STREAMS);
       assert.equal(S.length, 2, JSON.stringify(S));
       assert.ok(S[0].tag !== S[1].tag, 'each its own traffic');
-      await wait(5000);
-      S = await page.eval(STREAMS);
+      // (each stream's first datagram is its example, shown hop by hop, the simulation waiting for it; then the flow)
+      for (let i = 0; i < 90 && !(S.every((s) => s.done >= 3)); i++) {
+        await wait(1000);
+        S = await page.eval(STREAMS);
+      }
       const secs = ((await page.eval(`netatlas.simController().t`)) - t0) / 1000;
       // each a datagram every simulated second (the first at once), neither waiting for the other
       for (const s of S) {
