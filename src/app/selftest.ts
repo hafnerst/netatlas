@@ -623,7 +623,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check(
           'closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown',
           gone && app.session!.state.view === 'physical' && app.session!.state.selected === null && app.session!.state.showNetworks && app.session!.state.hiddenProtocols.size === 0 && !(q('#outline .ol-ctx-hint') || { textContent: '' }).textContent &&
-            !q('#outline [data-t="outline-filter"]') && !app.findOpen && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
+            !q('#outline [data-t="outline-filter"]') && !app.findOpen && foldedNow === 'device=false,link=true,network=false,relation=false,interconnect=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
           `${gone} ${app.session!.state.view} ${app.session!.state.selected} ${foldedNow}`,
         );
         app.closeModel();
@@ -924,7 +924,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const toggle = (k: string): HTMLElement => sec(k).querySelector('[data-act="fold"]') as HTMLElement;
       check(
         'outline sections fold: Links and Protocols start folded to a heading with their count, the others are open',
-        folded() === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && shownIn('link') === 0 && shownIn('device') === m0.devices.length && new RegExp(`\\(${m0.links.length}\\)`).test(toggle('link').textContent || '') &&
+        folded() === 'device=false,link=true,network=false,relation=false,interconnect=false,group=false,protocol=true' && shownIn('link') === 0 && shownIn('device') === m0.devices.length && new RegExp(`\\(${m0.links.length}\\)`).test(toggle('link').textContent || '') &&
           toggle('link').getAttribute('aria-expanded') === 'false' && toggle('device').getAttribute('aria-expanded') === 'true' && !!sec('link').querySelector('[data-act="add-entity"]'),
         folded(),
       );
@@ -933,7 +933,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       toggle('device').click();
       check('a heading toggles its section; folding changes nothing in the model', opened && shownIn('device') === 0 && folded().indexOf('device=true,link=false') === 0 && !(app.mdoc as ModelDoc).dirty && (app.mdoc as ModelDoc).canUndo() === null, folded());
       click('#outline [data-act="fold-all"]');
-      const allFolded = doc.querySelectorAll('#outline .ol-item').length === 0 && doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 6 && /Expand all/.test(q('#outline [data-act="fold-all"]')!.textContent || '');
+      const allFolded = doc.querySelectorAll('#outline .ol-item').length === 0 && doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 7 && /Expand all/.test(q('#outline [data-act="fold-all"]')!.textContent || '');
       // what would be lost from view stays: the selected entry, and what is related to it as a count
       app.select('device:hq-rtr1');
       const selShown = textsOf('#outline .ol-item .ol-label').join() === 'hq-rtr1' && !!q('#outline .ol-item.ctx-selected');
@@ -978,7 +978,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
       click('[data-view-btn="physical"]');
       check(`${ex.name}: physical view draws every device and cable, no relations`,
-        doc.body.getAttribute('data-view') === 'physical' && count('.device') === m.devices.length && count('.cable') === m.links.length && count('.rel') === 0 && count('.port') === m.links.length * 2,
+        doc.body.getAttribute('data-view') === 'physical' && count('.device') === m.devices.length && count('.cable') === m.links.length && count('.rel') === 0 && count('.port:not(.opaque-port)') === m.links.length * 2,
         `${count('.device')}/${m.devices.length} devices, ${count('.cable')}/${m.links.length} cables`);
       check(`${ex.name}: loopbacks are not drawn as ports in the physical view`, count('.loop-chip') === 0);
       // stored layouts (the "…-arranged"/edited examples are arranged too) and auto layouts alike
@@ -3025,7 +3025,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const hint = q('#filter-hint') as HTMLElement;
       const btn = q('#devices-btn') as HTMLButtonElement;
-      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > .types-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
+      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > .types-wrap, #view-filters > label.opt:not([hidden])'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
       const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
       check(
         'top-right diagram controls: Devices (all selected), Device types (all), Labels, Groups / Locations, in both views; Networks and Routes only in the logical view; no Underlay, Endpoints or Servers switches',

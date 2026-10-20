@@ -10,6 +10,7 @@
  * simplifications that cut across them.
  */
 import { APP_PROFILES } from './applications';
+import { IC_SUPPORT } from './interconnect';
 import { SERVICES } from './service-registry';
 import { SIM_GROUPS, SIM_PROFILES } from './sim-profiles';
 import { Support, SupportLevel } from './support';
@@ -107,6 +108,7 @@ export function supportCatalog(): SupportEntry[] {
   }
   for (const s of SERVICES) out.push({ area: 'Services', id: s.id, name: s.label, support: s.support });
   for (const a of APP_PROFILES) out.push({ area: 'Application profiles', id: a.id, name: a.label, support: a.support });
+  out.push({ area: 'Non-IP interconnects', id: 'interconnect', name: 'Interconnects and opaque ports', support: IC_SUPPORT });
   return out;
 }
 

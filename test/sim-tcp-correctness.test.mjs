@@ -43,7 +43,7 @@ const segs = (s, dev, t0 = 0) =>
     .map((e) => {
       const l4 = e.hdr.l4;
       const ip = e.hdr.l3[e.hdr.l3.length - 1];
-      return { flags: T.tcpFlagsText(l4.flags), seq: l4.seq, ack: l4.ack, len: ip.len - (ip.version === 4 ? 20 : 40) - 20, sport: l4.sport, dport: l4.dport, mss: l4.mss, label: e.hdr.label, t: e.t };
+      return { flags: T.tcpFlagsText(l4.flags), seq: l4.seq, ack: l4.ack, len: ip.len - (ip.version === 4 ? 20 : 40) - T.tcpHeaderLen(l4), iplen: ip.len, sport: l4.sport, dport: l4.dport, mss: l4.mss, label: e.hdr.label, t: e.t };
     });
 /** Change (lose, delay …) frames on a cable: `fn(frame)` returns the impairment, or null. */
 const impair = (s, link, fn) => {
@@ -352,6 +352,9 @@ test('MSS: the SYNs announce their MSS; the client sends segments the server can
   const sv = segs(s, 'srv', t0);
   assert.equal(pc[0].mss, 1460);
   assert.equal(sv[0].mss, 960);
+  // a SYN's header has the MSS option: IPv4 20 + TCP 20 + MSS 4 = 44 bytes (no data); the segments after it 20-byte TCP headers
+  assert.deepEqual([pc[0].iplen, pc[0].len, sv[0].iplen], [44, 0, 44]);
+  assert.equal(pc.filter((x) => x.len > 0)[0].iplen, 20 + 20 + 960);
   const data = pc.filter((x) => x.len > 0).map((x) => x.len);
   assert.deepEqual(data, [960, 960, 960, 120]);
   assert.equal(s.events().filter((e) => e.t >= t0 && /Fragmentation Needed/.test(e.what)).length, 0);
@@ -394,7 +397,9 @@ test('logical view: a relation’s connection — its handshake, acknowledgments
   // each dot carries its connection: Follow message is the same conversation in both views
   const phys = s.engine.flights.find((f) => f.view === 'physical' && f.label === 'BGP TCP [S]');
   assert.ok(phys.conv && phys.conv === lane[i('BGP TCP [S]')].conv && lane.every((f) => f.conv === phys.conv), 'one conversation');
-  assert.equal(P.flightKey(phys, phys.hdr), P.conversationKey(phys.protocol, phys.hdr, phys.label), 'the same key from the headers');
+  // its identity is the connection's (made when it opened, carried by both ends' segments), not its addresses and ports
+  assert.match(phys.conv, /^tcp#\d+$/);
+  assert.equal(P.flightKey(phys, phys.hdr), phys.conv);
 });
 
 /** Play a model's display (Readable, physical or logical) with the frame budget's clock pinned; the hops it took in. */
@@ -440,8 +445,13 @@ test('busy model: a TCP handshake drawn is drawn whole — its SYN-ACK and ACK a
         whole++;
       }
       assert.ok(whole >= 1, `${name} ${view}: a handshake drawn`);
-      // the background is still bundled: most of the traffic is cable activity, said so
-      assert.ok(p.notDrawn > 50, `${name} ${view}: ${p.notDrawn}`);
+      // the background stays bounded: never more dots moving at once than the limit (48); in the busy models most of the
+      // traffic is cable activity, said so (cross-domain's little traffic all fits)
+      const shown = items.filter((x) => x.f.view === view && x.drawn);
+      let most = 0;
+      for (let t = 0; t < p.clock; t += 250) most = Math.max(most, shown.filter((x) => x.d0 <= t && t < x.d0 + x.hop).length);
+      assert.ok(most <= 48, `${name} ${view}: ${most} moving at once`);
+      if (name !== 'cross-domain.yaml') assert.ok(p.notDrawn > 50, `${name} ${view}: ${p.notDrawn}`);
     }
   }
 });
@@ -452,4 +462,113 @@ test('Follow message on a TCP connection in a busy model: its handshake and ever
   const mine = items.filter((it) => it.key === p.follow.key);
   assert.ok(mine.some((x) => /\[S,A\]/.test(x.f.label)) && mine.some((x) => /TCP \[A\]/.test(x.f.label)), mine.map((x) => x.f.label).join(' | '));
   assert.ok(mine.every((x) => x.drawn), mine.filter((x) => !x.drawn).map((x) => x.f.label).join(' | '));
+});
+
+// ---- a conversation's identity: its connection's, not its addresses and ports
+
+/** two customers' VRFs on one PE, the same addresses in each: pc-a and pc-b both 10.0.1.10, both servers 10.0.2.10 */
+const TWO_VRFS = `netatlas: 1
+title: same tuple in two vrfs
+devices:
+  - {id: pc-a, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
+  - {id: pc-b, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
+  - {id: srv-a, type: server, interfaces: [{id: eth0, ip: 10.0.2.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}], simulation: {listening: tcp/80}}
+  - {id: srv-b, type: server, interfaces: [{id: eth0, ip: 10.0.2.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}], simulation: {listening: tcp/80}}
+  - id: pe
+    type: router
+    interfaces:
+      - {id: a1, ip: 10.0.1.1/24, vrf: a}
+      - {id: a2, ip: 10.0.2.1/24, vrf: a}
+      - {id: b1, ip: 10.0.1.1/24, vrf: b}
+      - {id: b2, ip: 10.0.2.1/24, vrf: b}
+links:
+  - {id: la1, a: "pc-a:eth0", b: "pe:a1"}
+  - {id: la2, a: "srv-a:eth0", b: "pe:a2"}
+  - {id: lb1, a: "pc-b:eth0", b: "pe:b1"}
+  - {id: lb2, a: "srv-b:eth0", b: "pe:b2"}
+`;
+
+test('conversations: the same addresses and ports in two VRFs are two conversations; each its own, both ends, both views', () => {
+  const s = sim(TWO_VRFS);
+  s.runTo(2500);
+  // the same ephemeral port on both clients: identical tuples
+  const np = s.transport.nextPort;
+  if (!np.has('pc-a')) np.set('pc-a', 50000);
+  np.set('pc-b', np.get('pc-a'));
+  const ta = s.sendTest({ from: 'pc-a', to: '10.0.2.10', kind: 'tcp', port: 80 });
+  const tb = s.sendTest({ from: 'pc-b', to: '10.0.2.10', kind: 'tcp', port: 80 });
+  s.runTo(s.now + 4000);
+  assert.equal(ta.ok, true, ta.result);
+  assert.equal(tb.ok, true, tb.result);
+  // the frames on each customer's cables (physical view): their conversations
+  const on = (links) => s.engine.flights.filter((f) => f.view === 'physical' && f.protocol === 'tcp' && f.conv && links.indexOf(f.track.ref) >= 0);
+  const fa = on(['link:la1', 'link:la2']);
+  const fb = on(['link:lb1', 'link:lb2']);
+  const a = new Set(fa.map((f) => f.conv));
+  const b = new Set(fb.map((f) => f.conv));
+  assert.equal(a.size, 1, Array.from(a).join());
+  assert.equal(b.size, 1, Array.from(b).join());
+  assert.notEqual(Array.from(a)[0], Array.from(b)[0], 'two conversations');
+  // both ways in each (the servers' answers, from port 80, are their clients' conversations)
+  assert.ok(fa.some((f) => f.hdr && f.hdr.l4.sport === 80) && fb.some((f) => f.hdr && f.hdr.l4.sport === 80));
+  // the tuples were really the same (what a key from the headers would have merged)
+  const tuple = (list) => {
+    const f = list.find((x) => x.hdr && x.hdr.l4 && x.hdr.l4.dport === 80);
+    return `${f.hdr.l3[0].src}:${f.hdr.l4.sport}>${f.hdr.l3[0].dst}:${f.hdr.l4.dport}`;
+  };
+  assert.equal(tuple(fa), tuple(fb));
+  // the logical view's dots (if any) carry the same conversations: Follow message is one in both views
+  const lg = s.engine.flights.filter((f) => f.view === 'logical' && f.protocol === 'tcp' && f.conv);
+  assert.ok(lg.every((f) => a.has(f.conv) || b.has(f.conv)));
+});
+
+/** h1 behind a router doing PAT, a server outside */
+const NAT = `netatlas: 1
+title: pat tcp
+devices:
+  - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.11/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]}
+  - id: n
+    type: router
+    services:
+      nat:
+        inside: [g0]
+        outside: [g1]
+        rules:
+          - {type: pat, source: 10.0.0.0/24}
+    interfaces: [{id: g0, ip: 10.0.0.1/24}, {id: g1, ip: 198.51.100.1/24}]
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 198.51.100.10/24}], simulation: {listening: tcp/80}}
+links:
+  - {id: a, a: "h1:eth0", b: "n:g0"}
+  - {id: d, a: "n:g1", b: "srv:eth0"}
+`;
+
+test('conversations: translated by NAT on the way, the reply is the same conversation as the request; a later connection on the same ports is a new one', () => {
+  const s = sim(NAT);
+  s.runTo(2500);
+  const t1 = s.sendTest({ from: 'h1', to: '198.51.100.10', kind: 'tcp', port: 80 });
+  s.runTo(s.now + 4000);
+  assert.equal(t1.ok, true, t1.result);
+  const tcpFlights = s.engine.flights.filter((f) => f.view === 'physical' && f.protocol === 'tcp' && f.conv);
+  // the server saw the translated source: its answers (from port 80, on its cable) go to the router's outside address …
+  const outside = tcpFlights.find((f) => f.track.ref === 'link:d' && f.hdr && f.hdr.l4.sport === 80);
+  assert.equal(outside.hdr.l3[0].dst, '198.51.100.1', 'the server answers the translated address');
+  const inside = tcpFlights.find((f) => f.track.ref === 'link:a' && f.hdr && f.hdr.l4.sport === 80);
+  assert.equal(inside.hdr.l3[0].dst, '10.0.0.11', 'translated back on the inside');
+  // … and it is one conversation, on both sides of the NAT
+  const first = new Set(tcpFlights.map((f) => f.conv));
+  assert.equal(first.size, 1, 'request and answer one conversation: ' + Array.from(first).join());
+  // the same client port again after the connection closed (TIME_WAIT over): another conversation
+  s.runTo(s.now + 300000);
+  const n = s.engine.flights.length;
+  // (the next connection from the same client port: the stack's port counter set back)
+  s.transport.nextPort.set('h1', s.transport.nextPort.get('h1') - 1);
+  const t2 = s.sendTest({ from: 'h1', to: '198.51.100.10', kind: 'tcp', port: 80 });
+  s.runTo(s.now + 4000);
+  assert.equal(t2.ok, true, t2.result);
+  const later = s.engine.flights.slice(n).filter((f) => f.view === 'physical' && f.protocol === 'tcp' && f.conv);
+  const second = new Set(later.map((f) => f.conv));
+  assert.equal(second.size, 1);
+  const cport = (list) => list.find((f) => f.track.ref === 'link:a' && f.hdr && f.hdr.l4.dport === 80).hdr.l4.sport;
+  assert.equal(cport(later), cport(tcpFlights), 'the same client port');
+  assert.ok(!first.has(Array.from(second)[0]), 'a new conversation');
 });

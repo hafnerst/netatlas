@@ -519,6 +519,39 @@
   ],
   "scene": "ce84d61008105af5"
  },
+ "interconnects.yaml physical": {
+  "positions": [
+   "can 435 647",
+   "ctl 791 307",
+   "ecu1 101 307",
+   "ecu2 327 307",
+   "fsw 355 842",
+   "gps 1032 307",
+   "io1 1258 307",
+   "logger 340 497",
+   "meter-bus 679 647",
+   "meter1 792 497",
+   "meter2 566 497",
+   "payload1 127 842",
+   "payload2 582 842",
+   "payload3 808 842",
+   "plc 114 497",
+   "sbc1 1018 497",
+   "sbc2 1244 497",
+   "scope 553 307",
+   "sw 679 94",
+   "vme 923 647"
+  ],
+  "scene": "0a6187d51047048c"
+ },
+ "interconnects.yaml logical": {
+  "positions": [
+   "ctl 680 248",
+   "labnet 397 149",
+   "scope 99 108"
+  ],
+  "scene": "669536fb82b98606"
+ },
  "layout-stress.yaml physical": {
   "positions": [
    "acc1 704 1331",

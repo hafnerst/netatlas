@@ -13,7 +13,7 @@
  */
 import { ArpRow, ConnRow, GridTable, Headers, MacRow, McDecision, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
-import { tcpFlagsLong, tcpFlagsText } from '../analysis/sim/tcp';
+import { tcpFlagsLong, tcpFlagsText, tcpHeaderLen } from '../analysis/sim/tcp';
 
 export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone' | 'mqtt' | 'mqttc' | 'ipv6' | 'ptp' | 'ntp';
 
@@ -29,7 +29,10 @@ export interface FwData {
 }
 
 export interface PacketData {
-  hdr: Headers;
+  /** its frame's headers (none: illustrative data on a non-IP interconnect, which has no headers at all) */
+  hdr?: Headers;
+  /** illustrative data on a non-IP interconnect: what it is, in rows, and its notice (analysis/sim/opaque.ts) */
+  opaque?: { title: string; label: string; rows: Array<[string, string]>; notice: string };
   /** when it was on its way, and where ("t = 3.4 s, on cable l2 (r1 → fw1)") */
   where: string;
   /** Follow message: whether its conversation is followed, and the button's action */
@@ -387,8 +390,18 @@ export class TablePanels {
 
   /** The packet inspector: a frame's headers, layer by layer. */
   private packet(d: PacketData): HTMLElement {
-    const h = d.hdr;
     const box = el(this.doc, 'div', { class: 'pi' });
+    // illustrative data on a non-IP interconnect: no layers (no Ethernet, IP or transport header exists), its rows and the notice
+    if (d.opaque || !d.hdr) {
+      const o = d.opaque || { title: 'No headers', label: '', rows: [], notice: '' };
+      box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${o.label} — ${d.where}`]));
+      const dl = el(this.doc, 'dl');
+      for (const [k, v] of o.rows) dl.appendChild(el(this.doc, 'div', { style: 'display:contents' }, [el(this.doc, 'dt', {}, [k]), el(this.doc, 'dd', {}, [v])]));
+      box.appendChild(el(this.doc, 'section', { class: 'pi-layer pi-opaque' }, [el(this.doc, 'h4', {}, [o.title]), dl]));
+      if (o.notice) box.appendChild(el(this.doc, 'p', { class: 'pi-notice', role: 'note' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['ⓘ ']), o.notice]));
+      return box;
+    }
+    const h = d.hdr;
     box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${h.label} — ${h.cast}; ${d.where}`]));
     if (d.follow) {
       const fb = el(this.doc, 'button', { type: 'button', class: d.follow.on ? 'pi-follow' : 'primary pi-follow', 'aria-pressed': d.follow.on ? 'true' : 'false', id: 'pi-follow' }, [d.follow.on ? 'Stop following' : 'Follow message']);
@@ -458,6 +471,7 @@ export class TablePanels {
         if (l4.proto === 'tcp') rows.push(['Flags', `${tcpFlagsText(l4.flags)} ${tcpFlagsLong(l4.flags)}`]);
         if (l4.seq !== undefined && l4.proto === 'tcp') rows.push(['Sequence, acknowledgement', `${l4.seq}${l4.ack !== undefined ? ', ' + l4.ack : ''}`]);
         if (l4.mss !== undefined) rows.push(['Options', `MSS ${l4.mss} (the largest segment its sender takes)`]);
+        if (l4.proto === 'tcp') rows.push(['Header length', `${tcpHeaderLen(l4)} bytes${l4.mss !== undefined ? ' (20 and the MSS option, 4)' : ''}`]);
       }
       layer(`Layer 4 – ${l4.proto === 'icmp' ? (h.l3.length && h.l3[h.l3.length - 1].version === 6 ? 'ICMPv6' : 'ICMP') : l4.proto === 'other' ? 'protocol' : l4.proto.toUpperCase()}`, rows);
     }

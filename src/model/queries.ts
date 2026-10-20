@@ -66,7 +66,10 @@ export function refExists(model: Model, ref: string): boolean {
     case 'group':
       return ix.groups.has(id);
     case 'iface':
-      return ix.interfaces.has(id);
+      // (a device's interface, or one of its opaque ports)
+      return ix.interfaces.has(id) || ix.opaquePorts.has(id);
+    case 'interconnect':
+      return ix.interconnects.has(id);
     case 'route':
       return ix.routes.has(id);
     case 'protocol':
@@ -115,7 +118,21 @@ export function attachedRefs(model: Model, ref: string): Set<string> | null {
     }
   };
   switch (kind) {
+    case 'interconnect': {
+      const ic = ix.interconnects.get(id);
+      if (!ic) return null;
+      out.add(ref);
+      for (const e of ic.endpoints) out.add(`iface:${e.device}:${e.port}`);
+      return out;
+    }
     case 'iface': {
+      // an opaque port: its interconnect (and the interconnect's other ports)
+      if (ix.opaquePorts.has(id)) {
+        out.add('iface:' + id);
+        const ic = ix.portInterconnect.get(id);
+        if (ic) out.add('interconnect:' + ic);
+        return out;
+      }
       const inf = ix.interfaces.get(id);
       if (!inf) return null;
       out.add('iface:' + id);
@@ -227,8 +244,10 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
         }
       }
       for (const i of deviceInterfaces(dv)) out.add(`iface:${id}:${i.id}`);
+      for (const p of dv.opaquePorts) out.add(`iface:${id}:${p.id}`);
       for (const r of dv.routes) out.add(routeRefOf(r));
       for (const l of model.links) if (l.a.device === id || l.b.device === id) addLink(l.id);
+      for (const ic of model.interconnects) if (ic.endpoints.some((e) => e.device === id)) out.add('interconnect:' + ic.id);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === id)) addRelation(r.id, false);
       for (const n of deviceNetworks(model, id)) out.add('network:' + n);
       break;
@@ -280,6 +299,15 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       // the networks of the VLANs the cable carries at its ends
       const l = ix.links.get(id);
       if (l) for (const n of linkNetworks(model, l)) out.add('network:' + n);
+      break;
+    }
+    case 'interconnect': {
+      const ic = ix.interconnects.get(id);
+      if (ic)
+        for (const e of ic.endpoints) {
+          addDevice(e.device);
+          out.add(`iface:${e.device}:${e.port}`);
+        }
       break;
     }
     case 'hub':
@@ -405,6 +433,11 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   }
   for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', n.cidr || '']);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
+  // the non-IP interconnects (the keyboard's way to them): by id, label, technology ("usb", "rs-485 bus"), protocol, connector and their ports
+  for (const ic of model.interconnects) {
+    const tech = ic.technology.name + (ic.technology.version ? ' ' + ic.technology.version : '');
+    consider('interconnect:' + ic.id, ic.topology === 'shared' ? 'bus / fabric (non-IP)' : 'interconnect (non-IP)', `${ic.label || ic.id} — ${tech}`, [ic.id, ic.label || '', tech, ic.technology.name, ic.protocol ? ic.protocol.name : '', ic.connector || '', ic.topology === 'shared' ? tech + ' bus' : tech + ' link', 'non-ip', 'interconnect', ...ic.endpoints.map((e) => `${e.device}:${e.port}`)]);
+  }
   for (const d of model.devices) {
     for (const r of d.routes) consider(routeRefOf(r), 'route', `${d.label}: ${r.prefix}${r.via !== undefined ? ' via ' + r.via : ''}${r.iface !== undefined ? ' dev ' + r.iface : ''}${r.blackhole ? ' blackhole' : ''}`, [r.prefix, r.via || '', r.iface || '', r.name || '', r.vrf ? 'vrf ' + r.vrf : '']);
   }

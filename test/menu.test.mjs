@@ -111,7 +111,7 @@ test('examples: the File menu offers the curated public catalog; the internal ex
   assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
   assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
-  assert.equal(INTERNAL_EXAMPLES.length, 19);
+  assert.equal(INTERNAL_EXAMPLES.length, 20);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.ok(!INTERNAL_EXAMPLES.some((x) => EXAMPLES.some((e) => e.name === x.name)), 'no internal example has a public name');
   // every public example has a title and a description
@@ -213,14 +213,15 @@ test('diagram filters: one group at the right of the toolbar, with a Filters dro
   const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n  <div class="theme-wrap">[\s\S]*?<\/div>\n<\/header>/.exec(html);
   assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar before the theme switch');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
-  assert.deepEqual(opts, [['opt-labels', 4], ['opt-groups', 3], ['opt-networks', 2], ['opt-routes', 1]]);
+  // (IP and Non-IP: the physical view's connections, shown when the model has non-IP interconnects)
+  assert.deepEqual(opts, [['opt-labels', 4], ['opt-groups', 3], ['opt-ip', 2], ['opt-nonip', 2], ['opt-networks', 2], ['opt-routes', 1]]);
   // the Device types filter stays next to Devices; the old Endpoints and Servers switches are gone
   assert.ok(group[1].indexOf('class="devices-wrap"') < group[1].indexOf('class="types-wrap"') && group[1].indexOf('class="types-wrap"') < group[1].indexOf('id="opt-labels"'));
   assert.doesNotMatch(group[1], /opt-type-|data-device-type/);
   assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
   // on the start screen every filter is disabled; the app enables them once a model is drawn
   const inputs = [...group[1].matchAll(/<input id="(opt-[^"]+)"[^>]*>/g)];
-  assert.equal(inputs.length, 4);
+  assert.equal(inputs.length, 6);
   for (const m of inputs) assert.match(m[0], / disabled>$/, m[1]);
   assert.match(group[1], /<button id="devices-btn"[^>]* disabled>/);
   assert.match(group[1], /<button id="types-btn"[^>]* disabled>/);

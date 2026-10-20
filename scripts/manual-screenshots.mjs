@@ -528,6 +528,15 @@ relations:
         const top = Math.max(sb.y, t.y - 30);
         await save('device-model', { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h, g.y + g.h + 4) - top }, { quality: 50 });
       }
+      // the non-IP interconnects (a test example): a USB line, a one-way serial line, an RS-485 bus with its roles, a fabric switch's transit
+      await page.eval(`netatlas.loadExampleNamed("interconnects.yaml"), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      {
+        const r = await page.eval(`(() => { const ids = ['device:ctl', 'device:scope', 'device:gps', 'device:meter1', 'device:meter2', 'interconnect:meter-bus', 'device:fsw', 'device:payload1', 'device:payload3']; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const id of ids) { const b = document.querySelector('#canvas [data-ref="' + id + '"]').getBoundingClientRect(); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.right); y1 = Math.max(y1, b.bottom); } return { x: x0 - 12, y: y0 - 14, w: x1 - x0 + 24, h: y1 - y0 + 28 }; })()`);
+        await save('interconnects', r, { scale: 1.5, quality: 45 });
+      }
       await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(await ex('cross-domain'))}), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.mouse('mouseMoved', 700, 890);

@@ -91,3 +91,63 @@ test('learning follows the state machine: an UPDATE arriving after the session w
   P.learn(r1, { protocol: 'bgp', type: 'UPDATE', label: 'BGP UPDATE', detail: '', data: { db: [{ ...known, seq: known.seq - 1, adj: [] }] } });
   assert.deepEqual(P.viewOf('r1').find((x) => x.origin === 'r2' && x.inst === P.instanceOf(r1)).adj, known.adj);
 });
+
+test('a route keeps what its own protocol last said: r2’s loopback goes down while BGP UPDATEs are lost — OSPF’s newer record of r2 does not withdraw the BGP route', () => {
+  const s = new S.Simulation(model(PAIR));
+  s.runTo(90000);
+  assert.equal(s.routeLookup('r1', '10.9.9.9').kind, 'forward', 'learned by BGP first');
+  // from now on r2's BGP UPDATEs are lost; OSPF's LSUs pass
+  let blocked = 0;
+  s.engine.impair = (link, f) => {
+    if (link === 'l1' && f.msg.protocol === 'bgp' && f.msg.type === 'UPDATE' && f.msg.data && f.msg.data.from === 'r2') {
+      blocked++;
+      return { lose: true };
+    }
+    return null;
+  };
+  const ospfBefore = s.events().filter((e) => e.kind === 'route' && e.device === 'r1' && e.protocol === 'ospf' && /learned from r2/.test(e.detail)).length;
+  assert.ok(s.shut('r2', 'lo0'));
+  s.runTo(s.now + 60000);
+  assert.ok(blocked > 0, 'r2 sent its UPDATE (lost)');
+  // r1 learned r2's newer OSPF record (lo0 down) …
+  assert.ok(s.events().filter((e) => e.kind === 'route' && e.device === 'r1' && e.protocol === 'ospf' && /learned from r2/.test(e.detail)).length > ospfBefore, 'an OSPF LSU from r2 arrived');
+  const P = s.protocols;
+  const ospfRec = P.viewOf('r1').find((x) => x.origin === 'r2' && x.inst.startsWith('ospf|'));
+  const bgpRec = P.viewOf('r1').find((x) => x.origin === 'r2' && x.inst.startsWith('bgp|'));
+  assert.ok(ospfRec.up.indexOf('lo0') < 0 && bgpRec.up.indexOf('lo0') >= 0, 'OSPF says lo0 down, BGP still up');
+  assert.ok(ospfRec.at > bgpRec.at, 'the OSPF record is the newer one');
+  // … and its BGP route stays what BGP last advertised (nothing of BGP said otherwise)
+  const l = s.routeLookup('r1', '10.9.9.9');
+  assert.equal(l.kind, 'forward', l.text);
+  // the UPDATEs pass again: BGP's withdrawal arrives with the transport's retransmission, and the route goes
+  s.engine.impair = null;
+  s.runTo(s.now + 150000);
+  assert.equal(s.routeLookup('r1', '10.9.9.9').kind, 'none', s.routeLookup('r1', '10.9.9.9').text);
+});
+
+test('a VRF name is the router’s own: routers whose OSPF runs in differently named VRFs learn each other’s routes (the session decides, not the name)', () => {
+  const s = new S.Simulation(model(`netatlas: 1
+title: vrf names
+devices:
+  - id: r1
+    type: router
+    router_id: 10.1.1.1
+    interfaces: [{id: g0, ip: 10.0.12.1/30, vrf: red}, {id: g1, ip: 10.1.0.1/24, vrf: red}]
+    protocols: {ospf: {}}
+  - id: r2
+    type: router
+    router_id: 10.9.9.9
+    interfaces: [{id: g0, ip: 10.0.12.2/30, vrf: blue}, {id: g1, ip: 10.9.0.1/24, vrf: blue}]
+    protocols: {ospf: {}}
+links:
+  - {id: l1, a: "r1:g0", b: "r2:g0"}
+relations:
+  - {id: igp, protocol: ospf, endpoints: ["r1:g0", "r2:g0"]}
+`));
+  s.runTo(90000);
+  assert.deepEqual(state(s, 'r1', 'ospf'), ['Full']);
+  const P = s.protocols;
+  assert.ok(P.viewOf('r1').some((x) => x.origin === 'r2' && x.inst === 'ospf|blue'), 'r2’s record (its own instance name) held in r1’s red instance');
+  const l = s.routeLookup('r1', '10.9.0.1', 'red');
+  assert.equal(l.kind, 'forward', l.text);
+});

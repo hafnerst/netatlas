@@ -302,3 +302,13 @@ export function initialSeq(key: string, n: number): number {
   }
   return h & 0x3fffffff;
 }
+
+/**
+ * A TCP header's length in bytes (RFC 9293 §3.1: 20 and its options, in
+ * 32-bit words): the MSS option (kind 2, length 4) is the only one the
+ * simulation sends. The one calculation for a segment's length, the
+ * inspector, the data length a receiver reads and a RST's acknowledgment.
+ */
+export function tcpHeaderLen(l4: { mss?: number }): number {
+  return 20 + (l4.mss !== undefined ? 4 : 0);
+}

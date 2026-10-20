@@ -38,14 +38,18 @@ const responses = (s, dev, t0 = 0) =>
 const route = (s, dev, ip) => s.routeLookup(dev, ip);
 const prefixOf = (r) => `${[...r.net.bytes].join('.')}/${r.net.prefix}`;
 
-test('RIP: the routes come from the Responses, hop by hop — metric 1 one router away, 2 two away; installed with them', () => {
+test('RIP: the routes come from the Responses, hop by hop — a router advertises its own networks with metric 1: 2 one router away, 3 two away; installed with them', () => {
   const s = sim(CHAIN());
   s.runTo(60000);
   const r1 = s.protocols.rip.routes('r1', '');
   const lan3 = r1.find((r) => prefixOf(r) === '10.3.0.0/24');
   assert.ok(lan3, JSON.stringify(r1.map(prefixOf)));
-  assert.deepEqual([lan3.metric, lan3.peer, lan3.relation], [2, 'r2', 'rip12']);
-  assert.equal(r1.find((r) => prefixOf(r) === '10.0.23.0/30').metric, 1);
+  assert.deepEqual([lan3.metric, lan3.peer, lan3.relation], [3, 'r2', 'rip12']);
+  assert.equal(r1.find((r) => prefixOf(r) === '10.0.23.0/30').metric, 2);
+  // on the wire: r3 advertises its own lan with metric 1 (never 0: RFC 2453 metrics are 1 to 16)
+  const own = responses(s, 'r3').find((x) => /periodic update/.test(x.detail));
+  assert.match(own.detail, /10\.3\.0\.0\/24 metric 1(,|$)/, own.detail);
+  assert.ok(s.events().filter((e) => e.kind === 'message' && e.protocol === 'rip' && e.what === 'Response').every((e) => !/ metric 0\b/.test(e.detail)));
   assert.equal(route(s, 'r1', '10.3.0.10').kind, 'forward');
   assert.match(route(s, 'r1', '10.3.0.10').text, /via 10\.0\.12\.2 out g1/);
   // end to end
@@ -61,10 +65,10 @@ test('RIP: split horizon with poisoned reverse — what came in by an interface 
   const toR1 = responses(s, 'r2', 30000).find((x) => x.peer === 'r1' && /periodic update/.test(x.detail));
   assert.ok(toR1, 'a periodic Response out of g0');
   assert.match(toR1.detail, /10\.1\.0\.0\/24 metric 16/, toR1.detail);
-  assert.match(toR1.detail, /10\.3\.0\.0\/24 metric 1/);
+  assert.match(toR1.detail, /10\.3\.0\.0\/24 metric 2/);
   const toR3 = responses(s, 'r2', 30000).find((x) => x.peer === 'r3' && /periodic update/.test(x.detail));
   assert.match(toR3.detail, /10\.3\.0\.0\/24 metric 16/);
-  assert.match(toR3.detail, /10\.1\.0\.0\/24 metric 1/);
+  assert.match(toR3.detail, /10\.1\.0\.0\/24 metric 2/);
 });
 
 test('RIP: a network that goes away is withdrawn with metric 16 by a triggered update, hop by hop, long before any timeout', () => {
@@ -120,4 +124,73 @@ test('RIP: an interface going down invalidates what was learned through it at on
   assert.equal(route(s, 'r2', '10.3.0.10').kind, 'none', 'its cable is down: no waiting for the timeout');
   assert.ok(responses(s, 'r2', t0).some((x) => x.peer === 'r1' && /triggered update/.test(x.detail) && /10\.3\.0\.0\/24 metric 16/.test(x.detail)));
   assert.equal(route(s, 'r1', '10.3.0.10').kind, 'none');
+});
+
+/** a chain of n routers r1 … rn, RIP between neighbours; rn has a lan */
+const LONG = (n) => {
+  const devs = [];
+  const links = [];
+  const rels = [];
+  for (let i = 1; i <= n; i++) {
+    const ifs = [];
+    if (i > 1) ifs.push(`{id: a, ip: 10.${i - 1}.0.2/30}`);
+    if (i < n) ifs.push(`{id: b, ip: 10.${i}.0.1/30}`);
+    if (i === n) ifs.push('{id: lan, ip: 172.16.0.1/24}');
+    devs.push(`  - {id: r${i}, type: router, interfaces: [${ifs.join(', ')}], protocols: {rip: {}}}`);
+    if (i < n) {
+      links.push(`  - {id: l${i}, a: "r${i}:b", b: "r${i + 1}:a"}`);
+      rels.push(`  - {id: rip${i}, protocol: rip, endpoints: ["r${i}:b", "r${i + 1}:a"]}`);
+    }
+  }
+  return `netatlas: 1\ntitle: long rip chain\ndevices:\n${devs.join('\n')}\nlinks:\n${links.join('\n')}\nrelations:\n${rels.join('\n')}\n`;
+};
+
+test('RIP: the farthest reachable network is 15 — a lan 14 routers away has metric 15, one 15 routers away is unreachable (16)', () => {
+  const s = sim(LONG(16));
+  s.runTo(400000);
+  const at = (dev) => s.protocols.rip.routes(dev, '').find((r) => prefixOf(r) === '172.16.0.0/24');
+  // r2 is 14 routers from r16: 1 (r16's own) + 14 = 15
+  assert.equal(at('r2') && at('r2').metric, 15);
+  assert.equal(route(s, 'r2', '172.16.0.1').kind, 'forward');
+  // r1, one more: 16 — not a route
+  assert.equal(at('r1'), undefined);
+  assert.equal(route(s, 'r1', '172.16.0.1').kind, 'none');
+});
+
+test('RIP: entries with a malformed metric (0, 17, not a whole number) are ignored and said so; the valid ones in the same Response are taken', () => {
+  const s = sim(CHAIN());
+  s.runTo(60000);
+  const P = s.protocols;
+  const sess = Array.from(P.sessions.values()).find((x) => x.dev === 'r1' && x.protocol === 'rip');
+  const n = s.events().length;
+  const origin = { device: 'r2', how: 'connected', history: [] };
+  P.rip.response(sess, [
+    { prefix: '192.0.2.0/24', metric: 0, origin },
+    { prefix: '198.51.100.0/24', metric: 17, origin },
+    { prefix: '203.0.113.0/24', metric: 1.5, origin },
+    { prefix: '10.99.0.0/16', metric: 3, origin },
+  ]);
+  const got = P.rip.routes('r1', '').map(prefixOf);
+  assert.ok(got.indexOf('10.99.0.0/16') >= 0);
+  for (const bad of ['192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24']) assert.ok(got.indexOf(bad) < 0, bad);
+  const note = s.events().slice(n).find((e) => e.kind === 'drop' && e.protocol === 'rip');
+  assert.match(note.detail, /ignores 3 entries of r2's RIP Response: 192\.0\.2\.0\/24 metric 0, 198\.51\.100\.0\/24 metric 17, 203\.0\.113\.0\/24 metric 1\.5 \(a metric must be 1 to 16\)/);
+  assert.equal(P.rip.routes('r1', '').find((r) => prefixOf(r) === '10.99.0.0/16').metric, 4);
+});
+
+test('RIP: power-off and a quick reboot — the old table’s timers (timeouts, garbage collection, triggered updates) never touch the new one', () => {
+  const s = sim(CHAIN());
+  s.runTo(60000);
+  assert.ok(s.protocols.rip.routes('r2', '').length > 0);
+  const t0 = s.now;
+  assert.ok(s.powerOff('r2'));
+  s.runTo(t0 + 1000);
+  assert.ok(s.powerOn('r2'));
+  // past every timeout and garbage collection the old table had scheduled
+  s.runTo(t0 + 400000);
+  const late = s.events().filter((e) => e.t > t0 && e.device === 'r2' && e.protocol === 'rip' && e.kind === 'route' && /timed out/.test(e.detail));
+  assert.deepEqual(late.map((e) => e.detail), [], 'r2 relearned everything; its neighbours never went silent');
+  // the new table is whole: r2 still routes both lans, learned anew after the reboot
+  assert.equal(route(s, 'r2', '10.1.0.10').kind, 'forward');
+  assert.equal(route(s, 'r2', '10.3.0.10').kind, 'forward');
 });

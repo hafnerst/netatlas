@@ -1,7 +1,8 @@
 import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import { bridgePorts, derive, interfaceAddresses, interfaceVlans, isBridgePort, isVlanInterface, portL2, subinterfaceParent } from '../model/derive';
 import { CHECKS, CheckSetting, SEVERITIES, Target, runChecks } from '../analysis/checks';
-import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS } from '../model/types';
+import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS, IcAccess, IcAttachment, IcData, IcRole, IcTopology, Interconnect, OpaquePort, OpaqueTransit } from '../model/types';
+import { IC_ACCESS, IC_DATA, IC_ROLES, IC_TOPOLOGIES, opaqueIndex, receives, sends } from '../model/interconnect';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
 import { DEVICE_TYPE_IDS, deviceTypeLabel, isDeviceType, NO_DEVICE_TYPE, deviceTypeLine } from '../model/device-types';
@@ -71,6 +72,8 @@ const REL_KEYS = SCHEMA.relation;
 const EP_KEYS = SCHEMA.endpoint;
 const PROTO_KEYS = SCHEMA.protocol;
 const ATTRS_HINT = ' (custom data belongs under "attrs:")';
+/** the keys an opaque port may have (the rest of an interface's belong to a network stack) */
+const OPAQUE_KEYS = ['id', 'label', 'stack', 'description', 'attrs'];
 
 // ------------------------------------------------------------ main entry
 
@@ -279,6 +282,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // ------------------------------------------------------------ devices
   const devices: Device[] = [];
   const interfaces = new Map<string, Interface>();
+  /** "device:port" -> an opaque port (never an Interface: no network stack) */
+  const opaquePorts = new Map<string, OpaquePort>();
   /** "device:iface" -> the YAML node of each address in Interface.addresses (same order) */
   const ifaceAddrNodes = new Map<string, YNode[]>();
   /** "device:iface" -> where the interface is declared, e.g. "devices.r1.logical_interfaces[1]" */
@@ -336,6 +341,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
       description: r.field(m, 'description', dpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
       interfaces: [],
+      opaquePorts: [],
+      opaqueTransit: [],
       logical: [],
       dnsNames: [],
       routes: [],
@@ -405,6 +412,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const iid = r.id(im, ipath, IFACE_RE, 'interface id');
       if (!iid) return null;
       const key = ifaceKey(id, iid);
+      if (opaquePorts.has(key)) {
+        c.error(get(im, 'id') as YNode, ipath + '.id', `duplicate interface "${iid}" on device "${id}" (already used by an opaque port; every port and interface of a device has its own id)`);
+        return null;
+      }
       const prev = interfaces.get(key);
       if (prev) {
         c.error(
@@ -420,6 +431,24 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       if (++count > L.maxInterfacesPerDevice) {
         c.error(im, ipath, `too many interfaces on one device (limit ${L.maxInterfacesPerDevice}, physical and logical together)`);
+        return null;
+      }
+      // an opaque port (`stack: opaque`): no network stack — none of a network port's keys; it is never an Interface
+      const stackNode = get(im, 'stack');
+      const stack = isNull(stackNode) ? undefined : r.str(stackNode as YNode, ipath + '.stack', 20);
+      if (stack !== undefined && stack !== 'opaque' && stack !== 'network') c.error(stackNode as YNode, ipath + '.stack', `"${stack}" is not a stack: use opaque (a USB, serial, bus or backplane port without a network stack) or leave it out (a network port)`);
+      if (stack === 'opaque') {
+        if (isGuestType(dev.type) && !dev.cloudInstance) {
+          c.error(im, ipath, `a ${isVm(dev) ? 'VM' : 'container'} has no ports of its own: an opaque port belongs to a physical device`);
+          return null;
+        }
+        for (const [k, e] of im.entries) {
+          if (OPAQUE_KEYS.indexOf(k) >= 0 || SCHEMA.interface.indexOf(k) < 0) continue;
+          c.error(e.value, `${ipath}.${k}`, `an opaque port has no network stack: "${k}" belongs to a network port (remove it here, or remove "stack: opaque")`);
+        }
+        const op: OpaquePort = { id: iid, device: id, label: r.field(im, 'label', ipath, L.maxLabel), description: r.field(im, 'description', ipath, L.maxDescription), attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'), line: im.line };
+        opaquePorts.set(key, op);
+        dev.opaquePorts.push(op);
         return null;
       }
       let type: InterfaceKind = 'physical';
@@ -639,6 +668,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const i = readIface(inode, `${dpath}.logical_interfaces[${k}]`, 'logical');
       if (i) dev.logical.push(i);
     });
+    dev.opaqueTransit = readOpaqueTransit(r, c, m, dpath, dev);
     dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
     dev.routes = readRoutes(r, c, m, dpath, dev, routeNodes);
     const pol = readNetPolicy(r, c, m, dpath, dev, policyNodes);
@@ -767,6 +797,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const devNode = n.kind === 'map' ? (get(n, 'device') as YNode) : n;
     if (!dev) {
       c.error(devNode, path, `unknown device "${device}"${suggest(device, deviceMap.keys())}`);
+      return null;
+    }
+    if (iface !== undefined && opaquePorts.has(ifaceKey(device, iface))) {
+      c.error(
+        n.kind === 'map' ? (get(n, 'interface') as YNode) : n,
+        path,
+        `"${device}:${iface}" is an opaque port (stack: opaque): it has no network stack and connects only through an interconnect (interconnects:), never by a cable or a relation`,
+      );
       return null;
     }
     if (iface !== undefined && !interfaces.has(ifaceKey(device, iface))) {
@@ -1080,6 +1118,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
+  // ------------------------------------------------------- interconnects
+  const interconnects = readInterconnects(r, c, capped(r.list(get(top, 'interconnects'), 'interconnects'), L.maxLinks, 'interconnects', 'interconnects'), claim, deviceMap, opaquePorts);
+
   // ------------------------------------------------------------- layout
   // Presentation only: problems here are warnings and the entry is ignored,
   // so stored positions can never change what the model means.
@@ -1144,12 +1185,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
             const name = id.slice(k + 1);
             return !!owner && !!owner.containerEngine && owner.containerEngine.networks.some((n) => n.name === name && !!n.subnet && (n.driver === 'bridge' || n.driver === 'overlay'));
           };
+          // (in the physical view also a shared interconnect's bar: a bus is placed like a device)
           const known =
             view === 'physical'
-              ? deviceMap.has(id)
+              ? deviceMap.has(id) || interconnects.some((x) => x.id === id && x.topology === 'shared')
               : deviceMap.has(id) || networkMap.has(id) || (relationMap.has(id) && relationDevices(relationMap.get(id) as Relation).length >= 3) || cnet();
           if (!known) {
-            const what = view === 'physical' ? 'device' : 'device, network or multipoint relation';
+            const what = view === 'physical' ? 'device or shared interconnect' : 'device, network or multipoint relation';
             c.warn(e.value, p, `position for "${id}", which is not a ${what} in this model; it is ignored`, { key: id, line: pe.keyLine });
             return;
           }
@@ -1200,6 +1242,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     ifaceLink,
     radioLinks,
     routes,
+    ...opaqueIndex(devices, interconnects),
   };
   const model: Model = {
     version: FORMAT_VERSION,
@@ -1210,6 +1253,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     links,
     networks,
     relations,
+    interconnects,
     protocols,
     services,
     layout,
@@ -1969,4 +2013,182 @@ function inCloudGroup(groups: Map<string, Group>, id: string): boolean {
     if (CLOUD_GROUP_KINDS.some((k) => k.id === g!.kind)) return true;
   }
   return false;
+}
+
+// ------------------------------------------------------------ opaque ports and interconnects
+
+/**
+ * A System's opaque transit (`opaque_transit:`): groups of its opaque ports
+ * that pass illustrative data between each other. Only a System (a fabric
+ * switch module, an active hub, a backplane controller) has it; never
+ * implied by being on one device. Each group names two or more of its
+ * opaque ports, each port in one group at most.
+ */
+function readOpaqueTransit(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device): OpaqueTransit[] {
+  const node = get(m, 'opaque_transit');
+  if (isNull(node)) return [];
+  if (!capabilities(dev).opaqueTransit) {
+    c.error(node as YNode, dpath + '.opaque_transit', `opaque_transit is for a System (a fabric switch module, an active hub); "${dev.id}" is ${dev.type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dev.type) || dev.type}`}`);
+    return [];
+  }
+  const own = new Set(dev.opaquePorts.map((p) => p.id));
+  const used = new Map<string, number>();
+  const out: OpaqueTransit[] = [];
+  r.list(node, dpath + '.opaque_transit').forEach((gn, k) => {
+    const gpath = `${dpath}.opaque_transit[${k}]`;
+    const gm = r.map(gn, gpath);
+    if (!gm) return;
+    r.keys(gm, SCHEMA.opaqueTransit, gpath);
+    const ports: string[] = [];
+    r.list(get(gm, 'ports'), gpath + '.ports', true).forEach((pn, j) => {
+      const p = r.str(pn, `${gpath}.ports[${j}]`, 64);
+      if (p === undefined) return;
+      if (!own.has(p)) {
+        const names = Array.from(own);
+        c.error(pn, `${gpath}.ports[${j}]`, `"${p}" is not an opaque port of "${dev.id}"` + (names.length ? suggest(p, names) : ' (it declares none: write stack: opaque on a port)'));
+        return;
+      }
+      const prev = used.get(p);
+      if (prev !== undefined) c.error(pn, `${gpath}.ports[${j}]`, `"${p}" is already in transit group ${prev + 1}: a port passes data within one group`);
+      else used.set(p, k);
+      if (ports.indexOf(p) < 0) ports.push(p);
+    });
+    if (ports.length < 2) c.error(gm, gpath, 'a transit group joins two or more of the device\'s opaque ports');
+    else out.push({ ports, line: gm.line });
+  });
+  return out;
+}
+
+/**
+ * The `interconnects:` section (model/interconnect.ts): each a topology, a
+ * technology (name and version, as text), the protocol it carries if any,
+ * a connector, an access model and its endpoints — opaque ports, each
+ * attached to one interconnect at most, with a role and a data direction.
+ * What may move where is checked here as far as the model alone says it.
+ */
+function readInterconnects(r: Reader, c: Ctx, items: YNode[], claim: (id: string, kind: string, m: YMap, path: string) => boolean, deviceMap: Map<string, Device>, opaquePorts: Map<string, OpaquePort>): Interconnect[] {
+  const out: Interconnect[] = [];
+  const attached = new Map<string, string>();
+  const L = c.limits;
+  const nameVersion = (m: YMap, key: string, path: string, required: boolean): { name: string; version?: string } | undefined => {
+    const n = get(m, key);
+    if (isNull(n)) {
+      if (required) c.error(m, path, `missing required key "${key}" (its name, and a version if it has one: {name: USB, version: "2.0"})`, { key });
+      return undefined;
+    }
+    const nm = r.map(n as YNode, `${path}.${key}`);
+    if (!nm) return undefined;
+    r.keys(nm, SCHEMA.icTechnology, `${path}.${key}`);
+    const name = r.reqStr(nm, 'name', `${path}.${key}`, 60);
+    if (name === undefined) return undefined;
+    const version = r.field(nm, 'version', `${path}.${key}`, 40);
+    return version !== undefined ? { name, version } : { name };
+  };
+  items.forEach((n, i) => {
+    const path = `interconnects[${i}]`;
+    const m = r.map(n, path);
+    if (!m) return;
+    r.keys(m, SCHEMA.interconnect, path, ATTRS_HINT);
+    const id = r.id(m, path);
+    if (!id) return;
+    const ipath = `interconnects.${id}`;
+    if (!claim(id, 'interconnect', m, path)) return;
+    const topo = r.reqStr(m, 'topology', ipath, 40);
+    if (topo !== undefined && IC_TOPOLOGIES.indexOf(topo as IcTopology) < 0) c.error(get(m, 'topology') as YNode, ipath + '.topology', `"${topo}" is not a topology: use point_to_point (two ports) or shared (one medium with several attachments: a bus)`);
+    const topology: IcTopology = topo === 'shared' ? 'shared' : 'point_to_point';
+    const technology = nameVersion(m, 'technology', ipath, true) || { name: '?' };
+    const protocol = nameVersion(m, 'protocol', ipath, false);
+    const acc = r.field(m, 'access', ipath, 40);
+    if (acc !== undefined && IC_ACCESS.indexOf(acc as IcAccess) < 0) c.error(get(m, 'access') as YNode, ipath + '.access', `"${acc}" is not an access model: use peer (the default) or controller_target (controllers initiate transfers with targets: Master / Slave)`);
+    const access: IcAccess = acc === 'controller_target' ? 'controller_target' : 'peer';
+    const endpoints: IcAttachment[] = [];
+    const epNode = get(m, 'endpoints');
+    if (isNull(epNode)) c.error(m, ipath, 'missing required key "endpoints" (its ports, each with its role: {port: device:port, role: …})', { key: 'endpoints' });
+    r.list(epNode, ipath + '.endpoints').forEach((en, k) => {
+      const epath = `${ipath}.endpoints[${k}]`;
+      const em = r.map(en, epath);
+      if (!em) return;
+      r.keys(em, SCHEMA.icEndpoint, epath);
+      const ref = r.reqStr(em, 'port', epath, 200);
+      if (ref === undefined) return;
+      const pn = get(em, 'port') as YNode;
+      const colon = ref.indexOf(':');
+      const device = colon < 0 ? ref : ref.slice(0, colon);
+      const port = colon < 0 ? '' : ref.slice(colon + 1);
+      const dev = deviceMap.get(device);
+      if (!dev) {
+        c.error(pn, epath + '.port', `unknown device "${device}"${suggest(device, deviceMap.keys())}`);
+        return;
+      }
+      if (!port) {
+        c.error(pn, epath + '.port', `an endpoint is a port: "${device}:port" (one of its opaque ports)`);
+        return;
+      }
+      const key = ifaceKey(device, port);
+      if (!opaquePorts.has(key)) {
+        const names = dev.opaquePorts.map((p) => p.id);
+        const network = deviceInterfaces(dev).some((x) => x.id === port);
+        c.error(pn, epath + '.port', network ? `"${key}" is a network port: an interconnect joins opaque ports (write stack: opaque on a port without a network stack)` : `device "${device}" has no opaque port "${port}"` + (names.length ? suggest(port, names) : ' (it declares none: write stack: opaque on a port)'));
+        return;
+      }
+      const prev = attached.get(key);
+      if (prev !== undefined) {
+        c.error(pn, epath + '.port', `"${key}" is already attached to ${prev === id ? 'this interconnect' : `interconnect "${prev}"`} (a port is attached once)`);
+        return;
+      }
+      attached.set(key, id);
+      const rn = get(em, 'role');
+      const rt = r.field(em, 'role', epath, 40);
+      let role: IcRole = access === 'peer' ? 'peer' : 'target';
+      if (rt === undefined) {
+        if (access === 'controller_target') c.error(em, epath, 'missing required key "role": with controller_target access each endpoint is a controller, a target, controller_target or a monitor', { key: 'role' });
+      } else if (IC_ROLES.indexOf(rt as IcRole) < 0) c.error(rn as YNode, epath + '.role', `"${rt}" is not a role: use ${IC_ROLES.join(', ')}`);
+      else if (access === 'peer' && rt !== 'peer' && rt !== 'monitor') c.error(rn as YNode, epath + '.role', `"${rt}" is a role of controller_target access; between peers a participant is a peer or a monitor (or set access: controller_target)`);
+      else if (access === 'controller_target' && rt === 'peer') c.error(rn as YNode, epath + '.role', 'with controller_target access a participant is a controller, a target, controller_target or a monitor, not a peer');
+      else role = rt as IcRole;
+      const dn = get(em, 'data');
+      const dt = r.field(em, 'data', epath, 20);
+      let data: IcData = role === 'monitor' ? 'receive' : 'both';
+      if (dt !== undefined) {
+        if (IC_DATA.indexOf(dt as IcData) < 0) c.error(dn as YNode, epath + '.data', `"${dt}" is not a data direction: use both (the default), send or receive`);
+        else if (role === 'monitor' && dt !== 'receive') c.error(dn as YNode, epath + '.data', 'a monitor only receives: its data is receive');
+        else data = dt as IcData;
+      }
+      const sc = r.bool(get(em, 'system_controller'), epath + '.system_controller');
+      endpoints.push({ device, port, role, data, systemController: sc === true, line: em.line });
+    });
+    if (topology === 'point_to_point' && endpoints.length !== 2 && !isNull(epNode)) c.error(epNode as YNode, ipath + '.endpoints', `a point_to_point interconnect joins exactly two ports (here ${endpoints.length}); several on one medium are topology: shared`);
+    if (topology === 'shared' && endpoints.length < 2 && !isNull(epNode)) c.error(epNode as YNode, ipath + '.endpoints', 'a shared interconnect has two or more attachments');
+    if (endpoints.length >= 2) {
+      const senders = endpoints.filter(sends);
+      const receivers = endpoints.filter(receives);
+      if (!senders.length || !receivers.length || (senders.length === 1 && receivers.length === 1 && senders[0] === receivers[0])) c.warn(m, ipath, `no data can move on interconnect "${id}": ${!senders.length ? 'no endpoint sends' : 'no other endpoint receives'}`);
+      if (access === 'controller_target' && !endpoints.some((e) => e.role === 'controller' || e.role === 'controller_target')) c.warn(m, ipath, `interconnect "${id}" has controller_target access but no controller: nothing can initiate a transfer`);
+    }
+    out.push({
+      id,
+      topology,
+      technology,
+      protocol,
+      connector: r.field(m, 'connector', ipath, 60),
+      access,
+      endpoints,
+      label: r.field(m, 'label', ipath, L.maxLabel),
+      description: r.field(m, 'description', ipath, L.maxDescription),
+      attrs: r.attrs(get(m, 'attrs'), ipath + '.attrs'),
+      line: m.line,
+    });
+  });
+  // a transit group passes data within one technology: it converts nothing
+  for (const d of deviceMap.values()) {
+    for (const g of d.opaqueTransit) {
+      const techs = new Map<string, string>();
+      for (const p of g.ports) {
+        const ic = out.find((x) => x.id === attached.get(ifaceKey(d.id, p)));
+        if (ic) techs.set(ic.technology.name.toLowerCase(), ic.technology.name);
+      }
+      if (techs.size > 1) c.error({ kind: 'map', entries: new Map(), line: g.line, col: 1 } as YMap, `devices.${d.id}.opaque_transit`, `transit group of "${d.id}" joins interconnects of different technologies (${Array.from(techs.values()).sort().join(', ')}): a transit group converts nothing — group ports of one technology`);
+    }
+  }
+  return out;
 }

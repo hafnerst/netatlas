@@ -12,6 +12,12 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Non-IP physical interconnects — USB, serial lines, buses, backplanes and
+fabrics between opaque ports, apart from everything IP, with illustrative
+data along them — and the remaining IP-protocol defects fixed: routing
+knowledge per protocol and VRF, OSPF database exchange recovery, RIP
+metrics, NTP stratum, overlapping IKE exchanges, IS-IS without IPv4, TCP
+conversations by connection.
 Protocol correctness: TCP flags on every segment's label from its header,
 the handshake visible in both views, routing information kept in its own
 protocol and VRF, and each device knowing the others only by the messages
@@ -35,6 +41,67 @@ context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Added (non-IP interconnects)
+
+- **Opaque ports** (`stack: opaque`): ports without a network stack — no
+  address, VLAN, MAC or protocol of the IP side, and never a cable or
+  relation end.
+- **Interconnects** (`interconnects:`): `point_to_point` or `shared` (a bus
+  or backplane), a technology and version as text (with suggestions), an
+  optional application protocol and connector, `peer` or
+  `controller_target` access, and per endpoint a role (Controller, Target,
+  Controller and target, Peer, Monitor), a data direction (`both`, `send`,
+  `receive`; never taken from the order) and a system-controller mark.
+  Separate interconnects never join; a **System** passes data only between
+  the ports of an explicit `opaque_transit` group, of one technology —
+  nothing converts. Validation explains every refused role, direction,
+  port and group.
+- **The physical view** draws them: dashed lines labelled with technology
+  and direction (*USB 2.0 ↔*, *RS-232 →*), movable bus bars with a tap
+  and role badge per attachment, diamond opaque ports, and a Non-IP legend;
+  **IP** / **Non-IP** switches in the toolbar show either side or both. The
+  logical view never shows them. The editor edits them (endpoints,
+  roles, transit groups; renames follow); Find reaches them by technology,
+  protocol or port.
+- **Send illustrative data** (Network events): abstract data from an
+  initiator, a source to recipients, with count, interval and size, along
+  the modelled connections only, one way, without a reply or a header; its
+  dots on the lines and taps, and the inspector's notice *Illustrative
+  traffic — protocol behaviour not simulated*. **Non-IP failures**: an
+  interconnect, an attachment or an opaque port, each restored from Active
+  events. Results say *delivered along the modelled connection* or where
+  and why the data stopped.
+
+### Fixed (IP correctness)
+
+- **Routing knowledge stays in its protocol and VRF.** A router's view of
+  learned routes was keyed by VRF name alone, so OSPF could use what RIP
+  learned and a VRF's routes leaked into another of the same name on a
+  neighbour; adjacency checks now ask about the protocol in question.
+- **OSPF.** A lost DBD in ExStart or Exchange stalled the adjacency: the
+  master retransmits until acknowledged, the slave answers duplicates,
+  stale DBDs are discarded and an out-of-order one restarts with
+  SeqNumberMismatch. LSAs are flooded to neighbours in Exchange and
+  Loading too (RFC 2328 13.3).
+- **RIP.** Received metrics plus the link's own cost (1), 16 unreachable,
+  malformed entries ignored and noted; timers of a table that was replaced
+  (a power cycle) no longer fire.
+- **NTP.** A server of stratum 15 or an unsynchronized one is not usable;
+  a power cycle forgets what was learned; losing the upstream picks a
+  fresh usable alternative.
+- **IKE.** One request in flight per IKE SA (a window of one): a rekey
+  while a CREATE_CHILD_SA waited queued instead of crossing it; a new
+  IKE_SA_INIT while established keeps the SAs until IKE_AUTH completes.
+- **IS-IS** forms adjacencies over bridged circuits and without IPv4
+  addresses: it no longer borrowed an IP to reach a neighbour.
+- **TCP.** A conversation is its connection: two connections that share
+  addresses (after NAT, in two VRFs, a reused port) no longer mix their
+  segments; the MSS option counts in the SYN's header length (24 bytes).
+- **Audit.** LLDP / CDP neighbours end with their link or device and keep
+  the advertised TTL; DHCPv6 answers a Renew without a binding with
+  NoBinding (the client then requests again), checks the server
+  identifier, and a stale T2 timer no longer rebinds.
 
 ### Changed (TCP flags on packet labels)
 

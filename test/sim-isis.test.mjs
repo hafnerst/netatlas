@@ -70,3 +70,65 @@ test('IS-IS: its identity decides — level 1 only between areas makes no adjace
   assert.deepEqual(states(l2), ['Up', 'Up']);
   assert.equal(l2.routeLookup('r1', '10.255.0.2').kind, 'forward');
 });
+
+test('IS-IS: a router with a NET and no IP address at all — the adjacency forms (no address made up for it); it has no IP next hop to offer, and says nothing it does not have', () => {
+  const s = new S.Simulation(model(`netatlas: 1
+title: isis without ip
+devices:
+  - {id: r1, type: router, interfaces: [{id: g0, label: no ip}], protocols: {isis: {net: 49.0001.0000.0000.0001.00}}}
+  - id: r2
+    type: router
+    interfaces: [{id: g0, label: no ip}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.2/32}]
+    protocols: {isis: {net: 49.0001.0000.0000.0002.00}}
+links:
+  - {id: l1, a: "r1:g0", b: "r2:g0"}
+relations:
+  - {id: igp, protocol: isis, endpoints: ["r1:g0", "r2:g0"]}
+`));
+  s.runTo(60000);
+  assert.deepEqual(states(s), ['Up', 'Up'], 'the adjacency is IS-IS’s, on the link');
+  const P = s.protocols;
+  const r1 = Array.from(P.sessions.values()).find((x) => x.dev === 'r1' && x.protocol === 'isis');
+  assert.equal(r1.local.addr, null, 'r1 has no IP address: none is made up');
+  // the frames went (no IP header)
+  assert.ok(s.events().some((e) => e.kind === 'message' && e.device === 'r1' && e.what === 'IIH' && e.hdr && e.hdr.l3.length === 0));
+  // r2 learned r1's LSPs, but r1 has no IP address to be a next hop: no route through it, and r1 none to r2's loopback either
+  assert.ok(s.events().some((e) => e.kind === 'route' && e.device === 'r2' && e.protocol === 'isis' && /learned from r1/.test(e.detail)));
+  assert.equal(s.routeLookup('r1', '10.255.0.2').kind, 'none');
+  // the routing analysis says why: the adjacency is there, the next hop is not
+  const ROUTING = load('analysis/routing.js');
+  const miss = ROUTING.routingAdjacencies(s.model).missing.find((m) => m.from === 'r1' && m.to === 'r2');
+  assert.match(miss.detail, /the IS-IS adjacency over r1:g0 – r2:g0 has no IP next hop: r1 has no IPv4 address for its unnumbered g0 to use/);
+});
+
+test('IS-IS: an unnumbered circuit through a switch (no cable between the routers) — the adjacency forms over the bridged segment, routes and packets go through it', () => {
+  const s = new S.Simulation(model(`netatlas: 1
+title: isis bridged
+devices:
+  - id: r1
+    type: router
+    interfaces: [{id: g0, label: unnumbered}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.1/32}]
+    protocols: {isis: {net: 49.0001.0000.0000.0001.00}}
+  - id: r2
+    type: router
+    interfaces: [{id: g0, label: unnumbered}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.2/32}]
+    protocols: {isis: {net: 49.0001.0000.0000.0002.00}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+links:
+  - {id: l1, a: "r1:g0", b: "sw:p1"}
+  - {id: l2, a: "r2:g0", b: "sw:p2"}
+relations:
+  - {id: igp, protocol: isis, endpoints: ["r1:g0", "r2:g0"]}
+`));
+  s.runTo(60000);
+  assert.deepEqual(states(s), ['Up', 'Up']);
+  const r = s.routeLookup('r1', '10.255.0.2');
+  assert.equal(r.kind, 'forward', r.text);
+  assert.match(r.text, /out g0/);
+  const t = s.sendTest({ from: 'r1', to: '10.255.0.2', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(t.ok, true, t.result);
+});

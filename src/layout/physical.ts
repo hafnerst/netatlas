@@ -80,6 +80,9 @@ const LOWER_LAYER_W = 1800;
 const MAX_PER_ROW = 6;
 const BASE_W = 150;
 const BASE_H = 54;
+/** a shared interconnect's bar: its height and its label's size */
+export const BUS_H = 26;
+export const BUS_FONT = 11;
 export const PORT_FONT = 10;
 /** a box grows for its ports up to this size; beyond it the ports share the side */
 const MAX_PORT_W = 1200;
@@ -113,6 +116,8 @@ interface Block {
  * of its ports without a cable at its bottom (cabled ports may enlarge it).
  */
 export function physicalBaseSize(d: LDev): { w: number; h: number } {
+  // a bus's bar: as wide as its label and its taps need, thin
+  if (d.bus !== undefined) return { w: Math.max(BASE_W, Math.ceil(textWidth(d.label, BUS_FONT)) + 40, 56 * d.bus), h: BUS_H };
   const b = deviceBody(d.label, d.sub, BASE_W, BASE_H);
   // a host's interior (its virtual switches, container networks and guests) sits under its name
   const w = Math.max(b.w, d.physList[0] ? d.physList[0] + 2 * ENTRY_MARGIN : 0, d.interior[0]);

@@ -479,9 +479,10 @@ export class Pacer {
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
       const key = flightKey(f, h);
-      // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side
+      // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side,
+      // in the same view (the other view's hops are not on this screen: as the cause, they hold nothing here)
       if (!parent && f.sender !== undefined)
-        for (const x of onWay.get(key) || []) if (x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
+        for (const x of onWay.get(key) || []) if (x.f.view === f.view && x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && !flow && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;

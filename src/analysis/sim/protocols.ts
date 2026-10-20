@@ -19,7 +19,7 @@ import { lookupProtocol, protocolBase } from '../../model/protocols';
 import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles';
 import { Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
-import { DvTables, relParam, routingProtocol } from '../routing';
+import { DvTables, isisCircuit, relParam, routingProtocol } from '../routing';
 import { RipSim } from './rip';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
@@ -74,7 +74,18 @@ const EIGRP_ACTIVE = 180000;
 export interface Side {
   dev: string;
   l3: L3Iface;
-  addr: IpAddr;
+  /** its IP address for the session; null: none (IS-IS on an interface of a router without any IP address — its PDUs are frames) */
+  addr: IpAddr | null;
+}
+
+/**
+ * A side's IP address, for what sends or reads IP: every session but
+ * IS-IS's on a router without IP addresses has one (pairSides); asking
+ * for one that has none is a defect, never a made-up address.
+ */
+export function ipOf(x: Side): IpAddr {
+  if (!x.addr) throw new Error(`${x.dev}:${x.l3.id} has no IP address: a session without one sends and reads no IP`);
+  return x.addr;
 }
 
 /** One device's view of a session with a peer. */
@@ -116,6 +127,8 @@ export interface Behaviour {
   advertise?(P: ProtocolSim, s: Sess, recs: RouteRec[], why: string): void;
   /** may this message of the session teach the router now (its state machine's say; default: the session is up) */
   learns?(P: ProtocolSim, s: Sess, msg: Msg): boolean;
+  /** the states besides an adjacency that is up in which a change is flooded to the neighbour too (OSPF: Exchange and Loading, RFC 2328 §13.3) */
+  floodsDuring?: string[];
   /** send one of its unicast messages its own way (IS-IS: a frame on the link, no IP); else ProtocolSim.unicast */
   send?(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown }): void;
 }
@@ -275,16 +288,20 @@ export class ProtocolSim implements Protocols {
     };
     // a tunnel endpoint: its own addresses (the tunnel's inside), else its source's
     const fa = firstOf(la, 4) || firstOf(la);
-    const fb = fa ? firstOf(lb, fa.addr.version) : null;
+    const fb = fa ? firstOf(lb, ipOf(fa).version) : null;
     if (fa && fb) return { a: fa, b: fb, shared: false };
     return null;
   }
 
   /**
-   * The two ends of a cable between two devices' layer-3 interfaces (the
-   * relation's endpoint interfaces when written): IS-IS's link. Each side's
-   * address is its interface's, else (unnumbered) the device's identity — a
-   * loopback's or its first address — for the log; null when no cable joins them.
+   * IS-IS's circuit between two routers (routing.ts isisCircuit: their
+   * interfaces that one's frames reach, over a cable or through bridges,
+   * the relation's endpoint interfaces when written) — its adjacency forms
+   * there whatever the IP addressing. Each side's address is only for the
+   * log and IP next hops: its interface's own, else (unnumbered) the
+   * router's identity (a loopback's, else its first address), else none —
+   * a router with a NET and no IP address at all still forms the
+   * adjacency; no address is made up for it.
    */
   linkSides(r: Relation, a: string, b: string): { a: Side; b: Side } | null {
     const sa = this.sd(a);
@@ -294,28 +311,17 @@ export class ProtocolSim implements Protocols {
       const l = r.endpoints.filter((x) => x.device === dev && x.iface !== undefined).map((x) => x.iface as string);
       return l.length ? l : null;
     };
-    const ea = eps(a);
-    const eb = eps(b);
     const own = (sd: SimDevice): IpAddr | null => {
       const all = Array.from(sd.l3.values()).sort((x, y) => Number(y.kind === 'loopback') - Number(x.kind === 'loopback') || cmp(x.id, y.id));
       for (const l of all) for (const ad of l.addrs) if (ad.addr.version === 4) return ad.addr;
       for (const l of all) if (l.addrs.length) return l.addrs[0].addr;
       return null;
     };
-    for (const k of this.m.links.slice().sort((x, y) => cmp(x.id, y.id))) {
-      const ends = [[k.a, k.b], [k.b, k.a]];
-      for (const [x, y] of ends) {
-        if (x.device !== a || y.device !== b) continue;
-        const la = Array.from(sa.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.ports.indexOf(x.iface as string) >= 0 && (!ea || ea.indexOf(l.id) >= 0));
-        const lb = Array.from(sb.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.ports.indexOf(y.iface as string) >= 0 && (!eb || eb.indexOf(l.id) >= 0));
-        if (!la || !lb) continue;
-        const aa = la.addrs.length ? la.addrs[0].addr : own(sa);
-        const ab = lb.addrs.length ? lb.addrs[0].addr : own(sb);
-        if (!aa || !ab) continue;
-        return { a: { dev: a, l3: la, addr: aa }, b: { dev: b, l3: lb, addr: ab } };
-      }
-    }
-    return null;
+    const c = isisCircuit(this.m, a, b, eps(a), eps(b));
+    const la = c ? sa.l3.get(c.a) : undefined;
+    const lb = c ? sb.l3.get(c.b) : undefined;
+    if (!la || !lb) return null;
+    return { a: { dev: a, l3: la, addr: la.addrs.length ? la.addrs[0].addr : own(sa) }, b: { dev: b, l3: lb, addr: lb.addrs.length ? lb.addrs[0].addr : own(sb) } };
   }
 
   /** Build the sessions of every relation (each pair, each side). */
@@ -717,6 +723,13 @@ export class ProtocolSim implements Protocols {
     return b && b.adjUp ? b.adjUp(this, s) : s.up;
   }
 
+  /** Is a change flooded to the session's neighbour now: its adjacency is up, or its protocol floods in its present state too (OSPF in Exchange or Loading)? */
+  private floodsTo(s: Sess): boolean {
+    if (this.adjUpOf(s)) return true;
+    const b = this.behaviours.get(s.profile.behaviour);
+    return !!b && !!b.floodsDuring && b.floodsDuring.indexOf(s.state) >= 0;
+  }
+
   /** Restart a session (timers of the old generation do nothing). */
   restart(s: Sess): void {
     s.gen++;
@@ -818,11 +831,11 @@ export class ProtocolSim implements Protocols {
 
   /** Unicast to the peer (its address), along the routing tables. */
   unicast(s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
-    const to = (s.x.replyTo as IpAddr | undefined) || s.remote.addr;
-    const at = to === s.remote.addr ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
-    const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
+    const to = (s.x.replyTo as IpAddr | undefined) || ipOf(s.remote);
+    const at = to === ipOf(s.remote) ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
+    const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(s.local.addr, to, s.local.l3.vrf, m, [s.rel.id]);
+    const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id]);
     pkt.l4 = this.l4Of(s);
     this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
     this.e.send(s.dev, pkt);
@@ -830,13 +843,13 @@ export class ProtocolSim implements Protocols {
 
   /** Multicast to a group out of the session's interface (OSPF Hello …): the peers on the segment receive it. */
   multicast(s: Sess, group: IpAddr, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
-    const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
+    const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(s.local.addr, group, s.local.l3.vrf, m, [s.rel.id], 1);
+    const pkt = this.e.newPacket(ipOf(s.local), group, s.local.l3.vrf, m, [s.rel.id], 1);
     pkt.l4 = this.l4Of(s);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
-    for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, (this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote.addr) : 2 * this.e.hopTime());
+    for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, ipOf((this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote)) : 2 * this.e.hopTime());
     this.e.send(s.dev, pkt, s.local.l3);
   }
 
@@ -915,7 +928,7 @@ export class ProtocolSim implements Protocols {
     s.heard = this.e.now;
     // a peer's packets that arrive from another address than its own were translated on the way (NAT): the answers go there,
     // as a server answers a translated client, and the NAT translates them back
-    if (pkt && !pkt.encap && formatAddr(pkt.src) !== formatAddr(s.remote.addr)) s.x.replyTo = pkt.src;
+    if (pkt && !pkt.encap && formatAddr(pkt.src) !== formatAddr(ipOf(s.remote))) s.x.replyTo = pkt.src;
     const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
     b.rx(this, s, msg, pkt, l3);
     this.learn(s, msg);
@@ -1040,10 +1053,14 @@ export class ProtocolSim implements Protocols {
 
   /**
    * Each router's routing databases, one per routing instance — a routing
-   * protocol in a VRF ("ospf|", "bgp|blue") — each with what it learned of
-   * every origin in that instance (its own record is always current). An
-   * instance learns only from its own sessions' advertisements and floods
-   * only over them: what OSPF brings never teaches BGP, nor one VRF another.
+   * protocol in a VRF of the router ("ospf|", "bgp|blue") — each with what
+   * it learned of every origin's instances, by "origin|origin's instance"
+   * (its own record is always current). An instance learns only from its
+   * own sessions' advertisements and floods only over them: what OSPF brings
+   * never teaches BGP, nor one VRF another. A VRF name means something on
+   * its own router only: what one instance takes from another router is
+   * decided by the session it arrived on (its protocol), never by two
+   * routers' VRFs having the same name.
    */
   private views = new Map<string, Map<string, Map<string, RouteRec>>>();
   /** every origin's last sequence number per instance, "origin|instance" (kept over a reboot: a router's new records outrank its old ones) */
@@ -1060,9 +1077,16 @@ export class ProtocolSim implements Protocols {
     return v;
   }
 
-  /** The routing instance a session belongs to: its routing protocol and its VRF. */
+  /** The routing instance a session belongs to: its routing protocol and its VRF (on its own router). */
   instanceOf(s: Sess): string {
     return `${routingProtocol(this.m, s.rel)}|${s.local.l3.vrf}`;
+  }
+
+  /** The records a router's instance holds (its own among them): what its route computation and its own checks may read. */
+  recordsIn(dev: string, inst: string): RouteRec[] {
+    const v = this.view(dev, inst);
+    if (!v.has(dev + '|' + inst)) this.originateOne(dev, inst);
+    return Array.from(v.values()).sort((a, b) => cmp(a.origin, b.origin) || cmp(a.inst, b.inst));
   }
 
   private view(dev: string, inst: string): Map<string, RouteRec> {
@@ -1088,11 +1112,7 @@ export class ProtocolSim implements Protocols {
     const insts = this.instances(dev);
     if (!insts.length) return null;
     const out: RouteRec[] = [];
-    for (const inst of insts) {
-      const v = this.view(dev, inst);
-      if (!v.has(dev)) this.originateOne(dev, inst);
-      for (const r of v.values()) out.push(r);
-    }
+    for (const inst of insts) out.push(...this.recordsIn(dev, inst));
     return out;
   }
 
@@ -1108,12 +1128,12 @@ export class ProtocolSim implements Protocols {
   private originateOne(dev: string, inst: string): RouteRec | null {
     const rec = this.ownRec(dev, inst);
     const v = this.view(dev, inst);
-    const was = v.get(dev);
-    if (was && sameRec(was, rec)) return null;
     const k = dev + '|' + inst;
+    const was = v.get(k);
+    if (was && sameRec(was, rec)) return null;
     rec.seq = (this.recSeq.get(k) || 0) + 1;
     this.recSeq.set(k, rec.seq);
-    v.set(dev, rec);
+    v.set(k, rec);
     return rec;
   }
 
@@ -1129,7 +1149,7 @@ export class ProtocolSim implements Protocols {
     for (const dev of devs) {
       if (!this.e.deviceOn(dev)) continue;
       for (const inst of this.instances(dev)) {
-        const was = this.view(dev, inst).get(dev);
+        const was = this.view(dev, inst).get(dev + '|' + inst);
         const rec = this.originateOne(dev, inst);
         // (an adjacency lost: what went through it must be found anew — EIGRP asks its other neighbours with a Query)
         const lost = !!was && !!rec && was.adj.some((a) => rec.adj.indexOf(a) < 0);
@@ -1140,16 +1160,13 @@ export class ProtocolSim implements Protocols {
 
   /** The records a session's instance knows at its router (that database), copies: what its synchronisation messages carry. */
   dbOf(s: Sess): RouteRec[] {
-    const inst = this.instanceOf(s);
-    const v = this.view(s.dev, inst);
-    if (!v.has(s.dev)) this.originateOne(s.dev, inst);
-    return Array.from(v.values()).sort((a, b) => cmp(a.origin, b.origin)).map(copyRec);
+    return this.recordsIn(s.dev, this.instanceOf(s)).map(copyRec);
   }
 
   /** Records of an instance to the router's neighbours over that instance's adjacencies that are up (but the one they came from). */
   private advertise(dev: string, inst: string, recs: RouteRec[], except: Sess | null, why: string, lost = false): void {
     for (const s of this.sessionsOf(dev)) {
-      if (!this.isRouting(s) || this.instanceOf(s) !== inst || !this.adjUpOf(s) || !s.x.started) continue;
+      if (!this.isRouting(s) || this.instanceOf(s) !== inst || !this.floodsTo(s) || !s.x.started) continue;
       if (except && s.peer === except.peer && s.rel.id === except.rel.id) continue;
       this.sendRecs(s, recs.map(copyRec), why, lost);
     }
@@ -1189,7 +1206,7 @@ export class ProtocolSim implements Protocols {
     this.pendingAdv.set(key, s.gen);
     const again = (n: number): void => {
       this.e.after(ADV_RXMT, () => {
-        if (this.pendingAdv.get(key) !== s.gen || !this.adjUpOf(s)) {
+        if (this.pendingAdv.get(key) !== s.gen || !this.floodsTo(s)) {
           this.pendingAdv.delete(key);
           return;
         }
@@ -1237,14 +1254,18 @@ export class ProtocolSim implements Protocols {
     }
     const inst = this.instanceOf(s);
     const v = this.view(s.dev, inst);
-    if (!v.has(s.dev)) this.originateOne(s.dev, inst);
+    if (!v.has(s.dev + '|' + inst)) this.originateOne(s.dev, inst);
     const changed: RouteRec[] = [];
+    // the session's instance takes what came over it: its own protocol's records (another protocol's never; the origin's VRF
+    // is the origin's own name for it, compared with nothing here)
+    const proto = inst.slice(0, inst.indexOf('|'));
     for (const r of d.db) {
-      if (r.origin === s.dev || r.inst !== inst) continue;
-      const known = v.get(r.origin);
+      if (r.origin === s.dev || r.inst.slice(0, r.inst.indexOf('|')) !== proto) continue;
+      const k = r.origin + '|' + r.inst;
+      const known = v.get(k);
       if (known && known.seq >= r.seq) continue;
       const c = copyRec(r);
-      v.set(r.origin, c);
+      v.set(k, c);
       changed.push(c);
     }
     if (!changed.length) return;

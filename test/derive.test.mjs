@@ -285,7 +285,8 @@ networks:
 
 test('the schema: each fact has one key, in one place', () => {
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
+  // (stack: opaque makes it a port without a network stack: model/interconnect.ts)
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'stack', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
   assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
   // what a device is comes first: its type, kind, role, mode, a System's purpose and icon; then a guest names its host
   assert.deepEqual(SCHEMA.device.slice(SCHEMA.device.indexOf('type'), SCHEMA.device.indexOf('host') + 1), ['type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host']);

@@ -833,6 +833,15 @@ export class Ipv6Sim {
       });
       return;
     }
+    if (d.status === 'NoBinding' && (c.state === 'RENEW' || c.state === 'REBIND') && c.offer) {
+      c.state = 'REQUEST';
+      c.gen++;
+      c.tries = 0;
+      c.xid = ++this.xid;
+      this.note('state', 'dhcpv6', h.dev, d.server || '', 'no binding', 'DHCPv6 pending', `${h.dev}:${h.iface}: ${d.server} has no binding for ${formatAddr(c.offer.addr)} (NoBinding): it sends a Request for it`);
+      this.request(h, 'request');
+      return;
+    }
     if (d.status === 'NoAddrsAvail') {
       c.state = 'SOLICIT';
       c.gen++;
@@ -888,7 +897,8 @@ export class Ipv6Sim {
       this.request(h, 'renew');
     });
     this.later(h, (c.t2 as number) - this.e.now, () => {
-      if (h.dhcp !== c || (c.state !== 'RENEW' && c.state !== 'BOUND')) return;
+      // (this binding's T2: a Reply since — a renewal — set its own)
+      if (h.dhcp !== c || c.gen !== g || (c.state !== 'RENEW' && c.state !== 'BOUND')) return;
       c.state = 'REBIND';
       c.tries = 0;
       c.gen++;
@@ -956,7 +966,8 @@ export class Ipv6Sim {
       reply('Reply', `DHCPv6 Reply from ${dev} to ${d.from}: NoAddrsAvail (its scope for ${prefixText(s.net)} leases no addresses: stateless only)`, { status: 'NoAddrsAvail' }, [['Status', 'NoAddrsAvail']]);
       return;
     }
-    if (msg.type === 'Renew' && d.server !== undefined && d.server !== serverId) return;
+    // a Request or Renew names the server the client chose (RFC 8415 §18.3.2, §18.3.4): another server's is not this one's to answer
+    if ((msg.type === 'Request' || msg.type === 'Renew') && d.server !== undefined && d.server !== serverId) return;
     const now = this.e.now;
     for (const [k, l] of Array.from(s.leases)) if (l.expires <= now) s.leases.delete(k);
     const life = s.lease;
@@ -978,6 +989,11 @@ export class Ipv6Sim {
     const l = s.leases.get(formatAddr(want));
     if (l && l.duid !== d.duid) {
       reply('Reply', `DHCPv6 Reply from ${dev} to ${d.from}: NoAddrsAvail (${formatAddr(want)} is another client’s)`, { status: 'NoAddrsAvail' }, [['Status', 'NoAddrsAvail']]);
+      return;
+    }
+    // a Renew or Rebind for a binding this server does not have (it never gave it, or it expired): NoBinding (§18.3.4, §18.3.5)
+    if ((msg.type === 'Renew' || msg.type === 'Rebind') && !l) {
+      reply('Reply', `DHCPv6 Reply from ${dev} to ${d.from}: NoBinding (${formatAddr(want)} has no binding here)`, { status: 'NoBinding' }, [['Status', 'NoBinding']]);
       return;
     }
     s.leases.set(formatAddr(want), { addr: want, duid: d.duid as string, client: `${d.from}:${d.iface || ''}`, state: 'bound', expires: now + life });

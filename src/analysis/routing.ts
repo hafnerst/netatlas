@@ -53,6 +53,7 @@ import { Device, Interface, Model, Relation, Route, deviceInterfaces, relationDe
 import { addrBig, compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { vethNetwork, isContainer } from '../model/virtual';
 import { DEFAULT_LOCAL_PREF, LINK_STATE, RoutingPolicy, filterRoute } from '../model/routing-policy';
+import { l2Domain, netOf } from './sim/net';
 
 /** Distance a static route without `distance` gets in route selection. */
 export const DEFAULT_STATIC_DISTANCE = 1;
@@ -76,7 +77,13 @@ export function vrfName(vrf: string): string {
  * cached dynamic routes: reuse one object for one state.
  */
 export interface RoutingCtx {
-  up?: (device: string, iface: string) => boolean;
+  /**
+   * is an interface up — for a routing protocol's computation (`protocol`)
+   * as that protocol's advertisements last told this router (the protocol
+   * simulation: another protocol's newer news of the same interface does not
+   * count); without one, as the router knows it otherwise
+   */
+  up?: (device: string, iface: string, protocol?: string) => boolean;
   /** is a relation up (a routing adjacency that is down teaches nothing) */
   relUp?: (id: string) => boolean;
   /** is one direction of a relation's adjacency up (the protocol simulation: OSPF neighbours on a segment form some pairs only) */
@@ -133,6 +140,20 @@ export function connectedIn(model: Model, device: string, ctx?: RoutingCtx): Con
 
 function isUp(ctx: RoutingCtx | undefined, device: string, iface: string): boolean {
   return !ctx || !ctx.up || ctx.up(device, iface);
+}
+
+/** The state as one routing protocol's computation reads it: interfaces as that protocol last advertised them. */
+const PROTO_CTX = new WeakMap<RoutingCtx, Map<string, RoutingCtx>>();
+function protoCtx(ctx: RoutingCtx | undefined, protocol: string): RoutingCtx | undefined {
+  if (!ctx || !ctx.up) return ctx;
+  let m = PROTO_CTX.get(ctx);
+  if (!m) PROTO_CTX.set(ctx, (m = new Map()));
+  let c = m.get(protocol);
+  if (!c) {
+    const up = ctx.up;
+    m.set(protocol, (c = { ...ctx, up: (device: string, iface: string) => up(device, iface, protocol) }));
+  }
+  return c;
 }
 
 /** A network an interface is directly connected to. */
@@ -638,33 +659,54 @@ function adjacencyHop(model: Model, r: Relation, protocol: string, from: string,
   // interfaces in different subnets have no IPv4 next hop for each other
   if (protocol === 'isis') {
     const hop = isisLinkHop(model, r, from, to, aIfs, bIfs, ctx);
-    if (hop) return { relation: r.id, protocol, from, to, fromVrf: ifaceVrf(model, from, hop.iface), toVrf: hop.peer.vrf, iface: hop.iface, via: hop.peer.addr, peerIface: hop.peerIface, cost, distance };
-    const link = cableBetween(model, from, to, aIfs, bIfs);
-    if (link) return `the IS-IS adjacency over ${from}:${link.a} – ${to}:${link.b} has no IP next hop: the interfaces are numbered in different subnets`;
+    if (hop && typeof hop !== 'string') return { relation: r.id, protocol, from, to, fromVrf: ifaceVrf(model, from, hop.iface), toVrf: hop.peer.vrf, iface: hop.iface, via: hop.peer.addr, peerIface: hop.peerIface, cost, distance };
+    if (typeof hop === 'string') return hop;
   }
   if (down) return `an interface between ${from} and ${to} is down`;
   const where = (dev: string, ifs: string[] | null): string => (ifs ? ifs.map((i) => dev + ':' + i).join(', ') : dev);
   return `${where(from, aIfs)} and ${where(to, bIfs)} have no network in common`;
 }
 
-/** A cable between two devices' interfaces (the relation's endpoint interfaces when written): its two interface ids. */
-function cableBetween(model: Model, from: string, to: string, aIfs: string[] | null, bIfs: string[] | null): { a: string; b: string } | null {
-  for (const l of model.links.slice().sort((x, y) => cmpStr(x.id, y.id))) {
-    for (const [x, y] of [[l.a, l.b], [l.b, l.a]]) {
-      if (x.device !== from || y.device !== to || x.iface === undefined || y.iface === undefined) continue;
-      if ((aIfs && aIfs.indexOf(x.iface) < 0) || (bIfs && bIfs.indexOf(y.iface) < 0)) continue;
-      return { a: x.iface, b: y.iface };
-    }
+/**
+ * IS-IS's circuit between two routers: an interface of each (the relation's
+ * endpoint interfaces when written) that one's frames reach — over their
+ * cable or through the bridges between them (sim/net.ts l2Domain: one
+ * definition with the simulation), whatever their IP addresses; its two
+ * interface ids, or null.
+ */
+export function isisCircuit(model: Model, from: string, to: string, aIfs: string[] | null, bIfs: string[] | null, ctx?: RoutingCtx): { a: string; b: string } | null {
+  const net = netOf(model);
+  const sa = net.devices.get(from);
+  if (!sa) return null;
+  const st = ctx && ctx.linkUp ? { cableUp: ctx.linkUp } : {};
+  const own = Array.from(sa.l3.values()).filter((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && (!aIfs || aIfs.indexOf(l.id) >= 0)).sort((x, y) => cmpStr(x.id, y.id));
+  for (const l of own) {
+    const d = l2Domain(net, { dev: from, iface: l.id }, st);
+    const hit = d.reached.filter((x) => x.dev === to && x.l3.kind !== 'loopback' && x.l3.kind !== 'tunnel' && (!bIfs || bIfs.indexOf(x.l3.id) >= 0)).sort((x, y) => cmpStr(x.l3.id, y.l3.id))[0];
+    if (hit) return { a: l.id, b: hit.l3.id };
   }
   return null;
 }
 
-/** IS-IS over an unnumbered interface of `from` on a cable to `to`: the exit interface and the neighbour's own address. */
-function isisLinkHop(model: Model, r: Relation, from: string, to: string, aIfs: string[] | null, bIfs: string[] | null, ctx: RoutingCtx | undefined): { iface: string; peerIface: string; peer: Connected } | null {
+/**
+ * IS-IS's IPv4 next hop over its circuit (isisCircuit) from an unnumbered
+ * interface of `from`: the exit interface and the neighbour's own address.
+ * The adjacency is one thing, a usable next hop another: it needs an
+ * address of `from` for the interface to borrow (its ARP and its packets'
+ * source) and one of the neighbour's; a string says why there is none;
+ * null: no circuit (or numbered: the common subnet decides, elsewhere).
+ */
+function isisLinkHop(model: Model, r: Relation, from: string, to: string, aIfs: string[] | null, bIfs: string[] | null, ctx: RoutingCtx | undefined): { iface: string; peerIface: string; peer: Connected } | string | null {
   void r;
-  const link = cableBetween(model, from, to, aIfs, bIfs);
+  const link = isisCircuit(model, from, to, aIfs, bIfs, ctx);
   if (!link || !isUp(ctx, from, link.a) || !isUp(ctx, to, link.b)) return null;
-  if (connectedOf(model, from).some((c) => c.iface === link.a)) return null;
+  if (connectedOf(model, from).some((c) => c.iface === link.a)) {
+    return connectedOf(model, to).some((c) => c.iface === link.b)
+      ? `the IS-IS adjacency over ${from}:${link.a} – ${to}:${link.b} has no IP next hop: the interfaces are numbered in different subnets`
+      : null;
+  }
+  if (!connectedOf(model, from).some((c) => isUp(ctx, from, c.iface) && c.addr.version === 4))
+    return `the IS-IS adjacency over ${from}:${link.a} – ${to}:${link.b} has no IP next hop: ${from} has no IPv4 address for its unnumbered ${link.a} to use`;
   const peer = connectedOf(model, to).filter((c) => isUp(ctx, to, c.iface) && c.addr.version === 4);
   const d = model.index.devices.get(to);
   const own = d && d.routerId && d.routerId.address ? parseAddress(d.routerId.address) : null;
@@ -674,7 +716,7 @@ function isisLinkHop(model: Model, r: Relation, from: string, to: string, aIfs: 
     return !!i && i.type === 'loopback';
   });
   const p = byRid || loop || peer.find((c) => c.iface === link.b);
-  return p ? { iface: link.a, peerIface: link.b, peer: p } : null;
+  return p ? { iface: link.a, peerIface: link.b, peer: p } : `the IS-IS adjacency over ${from}:${link.a} – ${to}:${link.b} has no IP next hop: ${to} has no IPv4 address`;
 }
 
 /** The address a BGP session to `device` is made to: its endpoint interface's address, else its BGP router ID or first loopback address. */
@@ -807,7 +849,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
           missing.push({ relation: r.id, protocol, from, to, detail: `${lookupProtocolLabel(model, protocol)} is not enabled on ${off.join(' and ')}` });
           continue;
         }
-        const a = adjacencyHop(model, r, protocol, from, to, ctx);
+        const a = adjacencyHop(model, r, protocol, from, to, protoCtx(ctx, protocol));
         if (typeof a === 'string') missing.push({ relation: r.id, protocol, from, to, detail: a });
         else adjacencies.push(a);
       }
@@ -848,18 +890,22 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   // the best routes per protocol and node, by prefix
   const best = new Map<string, Map<string, DynRoute>>();
   const tableOf = (p: string, n: string): Map<string, DynRoute> => best.get(p + '|' + n) || new Map();
+  // (a router's networks and statics as each protocol knows them: an origin's interfaces as that protocol last advertised them)
   const connMemo = new Map<string, Connected[]>();
-  const conn = (dev: string, vrf: string): Connected[] => {
-    const k = dev + '\0' + vrf;
+  const conn = (p: string, dev: string, vrf: string): Connected[] => {
+    const k = p + '\0' + dev + '\0' + vrf;
     let v = connMemo.get(k);
-    if (!v) connMemo.set(k, (v = connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(ctx, dev, c.iface))));
+    if (!v) {
+      const pc = protoCtx(ctx, p);
+      connMemo.set(k, (v = connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(pc, dev, c.iface))));
+    }
     return v;
   };
   const staticsMemo = new Map<string, IpPrefix[]>();
-  const staticsOf = (dev: string, vrf: string): IpPrefix[] => {
-    const k = dev + '\0' + vrf;
+  const staticsOf = (p: string, dev: string, vrf: string): IpPrefix[] => {
+    const k = p + '\0' + dev + '\0' + vrf;
     let v = staticsMemo.get(k);
-    if (!v) staticsMemo.set(k, (v = directStatics(model, dev, vrf, ctx)));
+    if (!v) staticsMemo.set(k, (v = directStatics(model, dev, vrf, protoCtx(ctx, p))));
     return v;
   };
   /** what a router originates into a protocol now (its own routes: metric 0) */
@@ -871,8 +917,8 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
       const k = prefixKey(net);
       if (!out.has(k)) out.set(k, { net, metric: 0, via: [], asPath: [], localPref: DEFAULT_LOCAL_PREF, origin, policy: [] });
     };
-    const own = conn(dev, vrf);
-    const statics = staticsOf(dev, vrf);
+    const own = conn(p, dev, vrf);
+    const statics = staticsOf(p, dev, vrf);
     if (pol && pol.advertise) {
       for (const t of pol.advertise) {
         const pp = parsePrefix(t);

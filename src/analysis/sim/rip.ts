@@ -4,15 +4,19 @@
  * neighbour and relation it came from, a timeout — filled only by its
  * neighbours' Responses, never by another router's state.
  *
- *   A Response carries prefixes with their metrics: what the router
- *   originates (its connected networks, or its policy's advertise /
- *   redistribute / default_route: analysis/routing.ts originatedRoutes) with
- *   metric 0, and what it learned, through its export filter. Split
+ *   A Response carries prefixes with their metrics (1 to 16; RFC 2453
+ *   §3.6): what the router originates (its connected networks, or its
+ *   policy's advertise / redistribute / default_route: analysis/routing.ts
+ *   originatedRoutes) with metric 1 — a directly connected network's cost,
+ *   and the default metric of what is redistributed — and what it learned,
+ *   through its export filter. Split
  *   horizon with poisoned reverse: a route goes out of the interface it
  *   came in by with metric 16 (infinity). One Response per interface, to
  *   the RIP group (a Request's answer: to the asking neighbour).
- *   Receiving one: metric + the relation's cost (default 1), at most 16;
- *   through the inbound filter. A new prefix with a metric below 16 is
+ *   Receiving one: an entry whose metric is not a whole number from 1 to
+ *   16 is ignored (§3.9.2: malformed); otherwise metric + the relation's
+ *   cost (default 1), at most 16; through the inbound filter. A route 15
+ *   hops away is the farthest reachable. A new prefix with a metric below 16 is
  *   taken; from the neighbour the route came from, the new metric is
  *   taken whatever it is (16: the route is withdrawn) and the timeout
  *   starts again; from another neighbour, only a lower metric.
@@ -22,6 +26,11 @@
  *   once; a network the router no longer originates is withdrawn (16).
  *   Every change is sent as a triggered Response after 1 to 5 s (only the
  *   changed routes); the whole table every update interval.
+ *
+ * A router's table lives as long as the router is on: every timer of a
+ * table (a timeout, a garbage collection, a triggered update) does nothing
+ * once that table is gone — after a power-off the router's new table is
+ * never touched by the old one's timers.
  *
  * The routes a router installs from it are its table's (Engine: the
  * routing context's `dv`), with RIP's distance; nothing propagates RIP over
@@ -34,12 +43,14 @@ import { DvRoute, DvTables, RouteOrigin, originatedRoutes, relParam } from '../r
 import { filterRoute } from '../../model/routing-policy';
 import { prefixText } from '../ipmath';
 import { hashIndex } from './engine';
-import { ProtocolSim, Sess } from './protocols';
+import { ProtocolSim, Sess, ipOf } from './protocols';
 
 /** RIP's infinity: a metric of 16 is unreachable. */
 export const RIP_INFINITY = 16;
 /** The garbage-collection timer (RFC 2453 §3.8): a route at 16 is advertised so long, then deleted. */
 export const RIP_GARBAGE = 120000;
+/** The metric a router advertises for what it originates (a directly connected network's cost; the default metric of a redistributed route). */
+export const RIP_OWN_METRIC = 1;
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -89,6 +100,11 @@ export class RipSim implements DvTables {
       this.version++;
     });
     P.routesHooks.push((dev) => this.ownCheck(dev));
+  }
+
+  /** Is a table still the router's (not one of before a power-off)? Its timers act only then. */
+  private live(t: RipTable): boolean {
+    return this.tables.get(t.dev + '\0' + t.vrf) === t;
   }
 
   private table(dev: string, vrf: string): RipTable {
@@ -168,7 +184,7 @@ export class RipSim implements DvTables {
       if (pol && pol.export.length && !filterRoute(pol.export, net, s.peer, 'export').permit) return;
       out.push({ prefix: k, metric, origin });
     };
-    for (const [k, o] of t.own) add(k, o.net, 0, o.origin);
+    for (const [k, o] of t.own) add(k, o.net, RIP_OWN_METRIC, o.origin);
     for (const [k, r] of t.routes) {
       if (t.own.has(k)) continue;
       add(k, r.net, r.iface === s.local.l3.id ? RIP_INFINITY : r.metric, r.origin);
@@ -189,9 +205,15 @@ export class RipSim implements DvTables {
     const pol = this.policy(s.dev);
     const timeout = this.P.timer(s, s.profile, 'dead');
     let learned = 0;
+    const bad: string[] = [];
     for (const e of entries) {
       const net = parsePrefix(e.prefix);
-      if (!net || t.own.has(e.prefix)) continue;
+      // (RFC 2453 §3.9.2: a metric that is not 1 to 16 is malformed: the entry is ignored)
+      if (!net || !Number.isInteger(e.metric) || e.metric < 1 || e.metric > RIP_INFINITY) {
+        bad.push(`${e.prefix} metric ${e.metric}`);
+        continue;
+      }
+      if (t.own.has(e.prefix)) continue;
       if (pol && pol.import.length && !filterRoute(pol.import, net, s.peer, 'import').permit) continue;
       const m = Math.min(RIP_INFINITY, e.metric + cost);
       const cur = t.routes.get(e.prefix);
@@ -231,6 +253,7 @@ export class RipSim implements DvTables {
         learned++;
       }
     }
+    if (bad.length) this.P.e.note('drop', 'rip', s.dev, s.peer, 'malformed entries', '', `${s.dev} ignores ${bad.length} entr${bad.length === 1 ? 'y' : 'ies'} of ${s.peer}'s RIP Response: ${bad.join(', ')} (a metric must be 1 to 16)`);
     if (learned) this.P.e.note('route', 'rip', s.dev, s.peer, 'learned', '', `${s.dev} learned from ${s.peer} (RIP Response): ${learned} route${learned === 1 ? '' : 's'} changed; its routes follow after its route recomputation delay`);
   }
 
@@ -238,7 +261,7 @@ export class RipSim implements DvTables {
   private refresh(t: RipTable, k: string, r: RipRoute, ms: number, text: string): void {
     const g = ++r.gen;
     this.P.e.after(ms, () => {
-      if (r.gen !== g || t.routes.get(k) !== r || r.garbage) return;
+      if (r.gen !== g || !this.live(t) || t.routes.get(k) !== r || r.garbage) return;
       r.metric = RIP_INFINITY;
       this.collect(t, k, r);
       this.P.e.note('route', 'rip', t.dev, r.peer, 'timed out', '', `${t.dev}: ${k} from ${r.peer} timed out (${text} without a Response bringing it): set to 16, deleted after ${RIP_GARBAGE / 1000} s`);
@@ -251,7 +274,7 @@ export class RipSim implements DvTables {
     r.garbage = true;
     const g = ++r.gen;
     this.P.e.after(RIP_GARBAGE, () => {
-      if (r.gen === g && t.routes.get(k) === r) t.routes.delete(k);
+      if (r.gen === g && this.live(t) && t.routes.get(k) === r) t.routes.delete(k);
     });
   }
 
@@ -270,12 +293,13 @@ export class RipSim implements DvTables {
 
   /** A Response out of a session's interface, to the RIP group (224.0.0.9, ff02::9). */
   send(s: Sess, what: string, list: RipEntry[]): void {
-    const group = parseAddress(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string)) as IpAddr;
+    const group = parseAddress(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string)) as IpAddr;
     this.P.multicast(s, group, 'Response', `${what}: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`, { rip: list });
   }
 
   /** A change: the routes are computed again (after the recomputation delay) and a triggered Response goes out soon. */
   private mark(t: RipTable, k: string): void {
+    if (!this.live(t)) return;
     t.changed.add(k);
     this.version++;
     this.P.e.dynamicChanged();
@@ -288,7 +312,7 @@ export class RipSim implements DvTables {
       t.triggered = false;
       const only = new Set(t.changed);
       t.changed.clear();
-      if (!this.tables.has(t.dev + '\0' + t.vrf) || !this.P.e.deviceOn(t.dev)) return;
+      if (!this.live(t) || !this.P.e.deviceOn(t.dev)) return;
       // one Response per relation and interface, to the group (as the periodic ones)
       const done = new Set<string>();
       for (const s of this.P.sessionsOf(t.dev).filter((x) => x.protocol === 'rip' && x.local.l3.vrf === t.vrf && x.x.started).sort((a, b) => cmp(a.key, b.key))) {

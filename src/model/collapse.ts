@@ -21,6 +21,7 @@
  */
 import { Device, Group, Interface, Link, Model, ModelIndex, Relation, ifaceKey, relationDevices, routeKey } from './types';
 import { derive } from './derive';
+import { keptInterconnects, opaqueIndex } from './interconnect';
 
 /** The id prefix of a collapsed group's box ("⊞site"): not an id character, so never a device of the model. */
 export const COLLAPSED = '⊞';
@@ -150,6 +151,8 @@ export function collapseGroups(model: Model, collapsed: Set<string>): Model {
       services: [],
       attrs: [],
       interfaces: ports.get(box) || [],
+      opaquePorts: [],
+      opaqueTransit: [],
       logical: [],
       dnsNames: [],
       routes: [],
@@ -158,6 +161,9 @@ export function collapseGroups(model: Model, collapsed: Set<string>): Model {
   }
   const hiddenGroups = new Set<string>();
   for (const g of inside.keys()) for (const x of groupTree(model, g)) hiddenGroups.add(x);
+  // (an interconnect of a collapsed group's devices is inside its box: drawn among the devices still shown only)
+  const shown = new Set(devices.map((d) => d.id));
+  const interconnects = keptInterconnects(model.interconnects, (d) => shown.has(d));
   const groups = model.groups.filter((g) => !hiddenGroups.has(g.id));
   const interfaces = new Map<string, Interface>();
   for (const d of devices) for (const i of d.interfaces.concat(d.logical)) interfaces.set(ifaceKey(d.id, i.id), i);
@@ -175,6 +181,7 @@ export function collapseGroups(model: Model, collapsed: Set<string>): Model {
     ifaceLink,
     radioLinks: new Map(),
     routes,
+    ...opaqueIndex(devices, interconnects),
   };
-  return { ...model, devices, links, relations, groups, index, layout: { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: model.layout.routing } };
+  return { ...model, devices, links, relations, interconnects, groups, index, layout: { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: model.layout.routing } };
 }

@@ -59,7 +59,7 @@ test('IKEv2: each end detects a dead peer by its own DPD — the other end’s s
   // b finds out later, by what it receives itself: its own DPD unanswered, or a's new IKE_SA_INIT (a starts over)
   s.runTo(t0 + 120000);
   const bDown = s.events().find((e) => e.t >= t0 && e.kind === 'state' && e.device === 'b');
-  assert.ok(bDown && bDown.t > aDown.t && /Dead Peer Detection|the peer starts a new IKE SA/.test(bDown.detail), bDown && bDown.detail);
+  assert.ok(bDown && bDown.t > aDown.t && /Dead Peer Detection|a starts a new IKE SA; b's established SAs serve until the new one is authenticated/.test(bDown.detail), bDown && bDown.detail);
   // the messages pass again: a negotiates anew (its recovery timer), both Established
   s.engine.impair = null;
   s.runTo(s.now + 60000);
@@ -92,4 +92,72 @@ test('IKEv2 rekeying: a rekey answered renews the Child SA on both ends; a rekey
   s.runTo(t0 + 130000);
   assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'a' && e.what === 'rekey failed' || (e.device === 'a' && e.what === 'No Child SA' && e.t >= t0)));
   assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.device === 'b' && e.what === 'No Child SA'), 'b’s Child SA expired by its own lifetime');
+});
+
+const notes = (s, dev, what, t0 = 0) => s.events().filter((e) => e.t >= t0 && e.device === dev && e.what === what);
+
+test('IKEv2: the Child SA and the IKE SA rekeys due at the same moment — the second waits for the first’s response (one request at a time); both SAs renewed, no response ignored', () => {
+  // equal lifetimes and margins: both rekeys at 90 s
+  const s = sim('{child_lifetime: 120, ike_lifetime: 120, rekey_margin: 30, dpd_interval: 600}');
+  s.runTo(150000);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  const rekeys = msgs(s, 'a', 'CREATE_CHILD_SA').filter((e) => /request \(message ID/.test(e.detail));
+  assert.ok(rekeys.some((e) => /rekeys the Child SA/.test(e.detail)) && rekeys.some((e) => /rekeys the IKE SA/.test(e.detail)), rekeys.map((e) => e.detail).join('\n'));
+  assert.deepEqual(s.events().filter((e) => e.kind === 'drop' && e.device === 'a' && /ignores a CREATE_CHILD_SA response/.test(e.detail)).map((e) => e.detail), []);
+  assert.equal(notes(s, 'a', 'No Child SA').length + notes(s, 'b', 'No Child SA').length, 0, 'no SA expired');
+  assert.ok(notes(s, 'a', 'request waits').some((e) => /waits for the response to its CREATE_CHILD_SA/.test(e.detail)));
+  // each request its own message ID, in order
+  const ids = rekeys.map((e) => Number(/message ID (\d+)/.exec(e.detail)[1]));
+  assert.deepEqual(ids, ids.slice().sort((x, y) => x - y));
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('IKEv2: a DPD outstanding when a rekey falls due — the rekey waits for the DPD response, then goes; nothing overwritten', () => {
+  const s = sim('{child_lifetime: 120, rekey_margin: 30, dpd_interval: 15}');
+  // a's DPD at 90 s: its response is delayed so that it is still outstanding when the rekey falls due
+  s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === 'INFORMATIONAL' && (f.msg.data || {}).response && (f.msg.data || {}).from === 'b' ? { delay: 1500 } : null);
+  s.runTo(200000);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  assert.equal(s.events().filter((e) => e.kind === 'drop' && e.device === 'a' && /ignores a (INFORMATIONAL|CREATE_CHILD_SA) response/.test(e.detail)).length, 0);
+  assert.equal(notes(s, 'a', 'No Child SA').length, 0);
+  assert.ok(!s.events().some((e) => e.device === 'a' && /Dead Peer Detection/.test(e.detail)));
+});
+
+test('IKEv2: a rekey’s response lost — the request is sent again with the same message ID, the peer answers from its kept response, the SA renewed once', () => {
+  const s = sim('{child_lifetime: 120, rekey_margin: 30, dpd_interval: 600}');
+  let lost = 0;
+  block(s, (m, d) => m.type === 'CREATE_CHILD_SA' && d.response && lost++ === 0);
+  s.runTo(150000);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  const req = msgs(s, 'a', 'CREATE_CHILD_SA').filter((e) => /rekeys the Child SA/.test(e.detail));
+  assert.ok(req.length >= 2 && /sent again \(1\)/.test(req[1].detail), req.map((e) => e.detail).join('\n'));
+  assert.equal(Number(/message ID (\d+)/.exec(req[0].detail)[1]), Number(/message ID (\d+)/.exec(req[1].detail)[1]));
+  assert.ok(msgs(s, 'b', 'CREATE_CHILD_SA').some((e) => /sent again: the request came again/.test(e.detail)), 'answered from the kept response');
+  assert.equal(notes(s, 'a', 'No Child SA').length, 0);
+});
+
+test('IKEv2: a new IKE_SA_INIT while the responder is established — its old SAs carry traffic until the new IKE SA is authenticated, then are replaced', () => {
+  const s = sim('{dpd_interval: 600}');
+  s.runTo(20000);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  // a reboots and starts over (b's DPD is far off: b is still established); a's first two IKE_AUTH requests are lost
+  let lost = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === 'IKE_AUTH' && !(f.msg.data || {}).response && lost++ < 2 ? { lose: true } : null);
+  const t0 = s.now;
+  assert.ok(s.powerOff('a'));
+  s.runTo(t0 + 500);
+  assert.ok(s.powerOn('a'));
+  // until b has answered a's new IKE_SA_INIT
+  for (let t = t0 + 1000; t < t0 + 300000 && !notes(s, 'b', 'new IKE SA', t0).length; t += 200) s.runTo(t);
+  assert.equal(notes(s, 'b', 'new IKE SA', t0).length, 1);
+  // a's IKE_AUTH lost meanwhile: b is still Established, its SAs serve (nothing deleted by the new negotiation)
+  s.runTo(s.now + 3000);
+  assert.ok(lost >= 1);
+  assert.equal(st(s, 'b'), 'Established');
+  assert.equal(notes(s, 'b', 'IKE SA replaced', t0).length, 0);
+  assert.equal(s.events().filter((e) => e.t >= t0 && e.kind === 'state' && e.device === 'b' && e.what === 'Idle').length, 0);
+  // a's retransmitted IKE_AUTH arrives: the new SA replaces the old one on b
+  s.runTo(s.now + 30000);
+  assert.equal(notes(s, 'b', 'IKE SA replaced', t0).length, 1);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
 });

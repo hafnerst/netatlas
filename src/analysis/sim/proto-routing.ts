@@ -13,7 +13,7 @@ import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
 import { fmtSec, hashIndex } from './engine';
 import { durationText } from './params';
-import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 import { RipEntry } from './rip';
 
@@ -74,9 +74,10 @@ interface OspfX {
   peerBdr?: string;
   /** the last incompatibility noted (said once until it changes) */
   mismatch?: string;
-  /** the database exchange (RFC 2328 §10.6, §10.8): this router's DD sequence number, whether it is master, the last DBD problem noted */
+  /** the database exchange (RFC 2328 §10.6, §10.8): this router's DD sequence number, whether it is master, the neighbour's initial DD sequence number (the master's for a slave: its answer's number), the last DBD problem noted */
   dd?: number;
   master?: boolean;
+  peerInit?: number;
   ddNote?: string;
 }
 
@@ -251,12 +252,7 @@ function ospfShouldAdj(P: ProtocolSim, s: Sess): boolean {
 function ospfAdjOk(P: ProtocolSim, s: Sess): void {
   const x = s.x as OspfX;
   if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
-    P.setState(s, 'ExStart', false, 'master / slave negotiation');
-    // ExStart (RFC 2328 §10.8): an empty DBD with I, M and MS set, its own DD sequence number and its interface MTU, sent again until answered
-    x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
-    x.master = undefined;
-    const mtu = ospfMtu(P, s);
-    ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
+    ospfExStart(P, s, 'master / slave negotiation');
   } else if (['ExStart', 'Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0 && !ospfShouldAdj(P, s)) {
     P.restart(s);
     x.sent = false;
@@ -265,6 +261,34 @@ function ospfAdjOk(P: ProtocolSim, s: Sess): void {
     ospfRearm(P, s);
   }
   ospfDetail(P, s);
+}
+
+/**
+ * ExStart (RFC 2328 §10.8): an empty DBD with I, M and MS set, its own DD
+ * sequence number and its interface MTU, sent again until answered.
+ */
+function ospfExStart(P: ProtocolSim, s: Sess, why: string): void {
+  const x = s.x as OspfX;
+  P.setState(s, 'ExStart', false, why);
+  x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
+  x.master = undefined;
+  x.peerInit = undefined;
+  const mtu = ospfMtu(P, s);
+  ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
+}
+
+/**
+ * SeqNumberMismatch (RFC 2328 §10.6, §10.3): a DBD that does not belong to
+ * the exchange this router is in (the neighbour started over, or the
+ * numbers are not the next ones): the adjacency goes back to ExStart and
+ * negotiates anew. The neighbour's timers are kept (it is still heard).
+ */
+function ospfSeqMismatch(P: ProtocolSim, s: Sess, why: string): void {
+  P.restart(s);
+  (s.x as OspfX).sent = false;
+  ospfRearm(P, s);
+  P.e.note('state', 'ospf', s.dev, s.peer, 'SeqNumberMismatch', 'ExStart', `OSPF ${s.rel.id}: ${s.dev} → ${s.peer}: ${why} — back to ExStart`);
+  ospfExStart(P, s, `SeqNumberMismatch: ${why}`);
 }
 
 /**
@@ -301,7 +325,7 @@ function ospfHellos(P: ProtocolSim, s: Sess): void {
   const key = `ospf-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
   if (P.shared.has(key)) return;
   P.shared.set(key, true);
-  const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+  const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
   P.periodic(
     () => true,
     () => P.timer(s, s.profile, 'hello').ms,
@@ -436,36 +460,63 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
           return;
         }
         x.ddNote = undefined;
+        const slaveAnswer = (again: boolean): void =>
+          P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.peerInit}${again ? ' (again)' : ''}`, { phase: 'summary', dd: x.peerInit, mtu, ms: false }, 'Exchange');
+        const slaveAck = (again: boolean): void => P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}${again ? ' (again: the master sent its summary again)' : ''}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
         if (dd.phase === 'init') {
-          if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) {
-            // (the master sends its initial DBD again: the slave answers again)
-            if (s.state === 'Exchange' && x.master === false && dd.dd === x.dd) P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.dd} (again)`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
-            return;
+          if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
+            // the same initial DBD again (sent before this router's answer reached the neighbour, or delayed): the slave answers
+            // it again, the master ignores it; a new one is the neighbour starting over (SeqNumberMismatch)
+            if (dd.dd === x.peerInit) {
+              if (x.master === false) slaveAnswer(true);
+              return;
+            }
+            ospfSeqMismatch(P, s, `an initial DBD (I bit, DD sequence ${dd.dd}) from ${s.peer} in ${s.state}: it started the exchange over`);
           }
+          if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) return;
+          x.peerInit = dd.dd;
           // the higher router ID is master; the slave takes the master's DD sequence number and answers with its summary
           if (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0) {
             x.master = false;
             x.dd = dd.dd;
             x.sent = true;
             P.setState(s, 'Exchange', false, `negotiation done: ${s.peer} (router ID ${dd.rid}) is master, this router slave (DD sequence ${dd.dd})`);
-            P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+            slaveAnswer(false);
           }
           // (a neighbour with the lower router ID: its initial DBD is ignored — it answers this router's as slave)
           return;
         }
         if (s.state === 'ExStart') {
-          // the master: the slave's answer carries the master's DD sequence number — the negotiation is done
+          // the master: the slave's answer carries the master's DD sequence number — the negotiation is done; its summary is
+          // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8)
           if (dd.ms || dd.dd !== x.dd || (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0)) return;
           x.master = true;
           x.sent = true;
           P.setState(s, 'Exchange', false, `negotiation done: this router (router ID ${x.rid}) is master, ${s.peer} slave (DD sequence ${x.dd})`);
           x.dd = (x.dd as number) + 1;
-          P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: true }, 'Exchange');
-        } else if (s.state === 'Exchange') {
-          // the slave: the master's summary, with the next DD sequence number
-          if (x.master !== false || !dd.ms || dd.dd !== (x.dd as number) + 1) return;
-          x.dd = dd.dd;
-          P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+          const seq = x.dd;
+          let n = 0;
+          ospfRetransmit(P, s, 'Exchange', () => P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${seq}${n++ ? ' (again: not acknowledged)' : ''}`, { phase: 'summary', dd: seq, mtu, ms: true }, 'Exchange'));
+          return;
+        }
+        if (s.state === 'Exchange') {
+          if (x.master === true) {
+            // the slave's acknowledgment of the summary (its DD sequence number): the exchange is done; an older answer is a duplicate
+            if (dd.ms || dd.dd !== x.dd) return;
+          } else {
+            // the slave: the master's summary with the next DD sequence number is acknowledged; the exchange is done with that
+            if (!dd.ms || dd.dd !== (x.dd as number) + 1) return;
+            x.dd = dd.dd;
+            slaveAck(false);
+          }
+        } else if (s.state === 'Loading' || s.state === 'Full') {
+          // after the exchange: the slave answers a duplicate of the master's summary again (its acknowledgment was lost); an
+          // older DBD of this exchange (delayed, a duplicate) is discarded; one with a later DD sequence number does not belong to
+          // it — the neighbour went on with another exchange (SeqNumberMismatch)
+          const own = x.master === true ? !dd.ms : !!dd.ms;
+          if (x.master === false && own && dd.dd === x.dd) slaveAck(true);
+          else if (!own || (dd.dd as number) > (x.dd as number)) ospfSeqMismatch(P, s, `a DBD with DD sequence ${dd.dd} in ${s.state} (this exchange's is ${x.dd})`);
+          return;
         } else return;
         // both summaries had everything (M clear): Loading, the LSAs it lacks requested
         P.setState(s, 'Loading', false, 'database summaries exchanged');
@@ -501,6 +552,8 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
   learns(_P, s) {
     return ['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0;
   },
+  // RFC 2328 §13.3: a change is flooded to every neighbour in Exchange or beyond (and sent again until acknowledged), not only to the Full ones
+  floodsDuring: ['Exchange', 'Loading'],
   adjUp(P, s) {
     if (s.state === 'Full') return true;
     const f = ospfIf(P, s);
@@ -510,10 +563,8 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     const meFull = s.dev === f.drDev || Array.from(P.sessions.values()).some((o) => o.protocol === 'ospf' && o.dev === s.dev && o.peer === f.drDev && o.state === 'Full');
     if (!meFull) return false;
     if (s.peer === f.drDev) return true;
-    const view = P.viewOf(s.dev) || [];
-    const inst = P.instanceOf(s);
-    const dr = view.find((r) => r.origin === f.drDev && r.inst === inst);
-    return !!dr && dr.adj.some((a) => a.slice(a.lastIndexOf('|') + 1) === s.peer);
+    // (the DR's records in this router's own instance: what came over its sessions)
+    return P.recordsIn(s.dev, P.instanceOf(s)).some((r) => r.origin === f.drDev && r.adj.some((a) => a.slice(a.lastIndexOf('|') + 1) === s.peer));
   },
   down: ospfDown,
 };
@@ -636,7 +687,7 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     const key = `eigrp-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+    const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
     P.periodic(
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
@@ -700,7 +751,7 @@ const rip: Behaviour = {
     const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+    const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
     P.multicast(s, group, 'Request', 'asks for the whole table');
     const upd = (): number => P.timer(s, s.profile, 'hello').ms;
     P.periodic(
@@ -750,7 +801,7 @@ export interface BgpOpen {
 }
 
 function bgpRouteToPeer(P: ProtocolSim, s: Sess): boolean {
-  const d = lookup(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx(s.dev));
+  const d = lookup(P.m, s.dev, s.local.l3.vrf, ipOf(s.remote), P.e.ctx(s.dev));
   return d.kind === 'forward' || d.kind === 'local';
 }
 
@@ -785,7 +836,7 @@ function bgpExpectedAs(P: ProtocolSim, s: Sess): { as: number | null; how: strin
 }
 
 function bgpAfi(s: Sess): string {
-  return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : s.local.addr.version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
+  return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : ipOf(s.local).version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
 }
 
 /** The details of a session: the negotiated hold time and keepalive interval (or what it proposes before). */
@@ -808,16 +859,16 @@ function bgpConnect(P: ProtocolSim, s: Sess): void {
   }
   if (!bgpRouteToPeer(P, s)) {
     // a session between loopbacks waits for a route to the peer (the IGP): it goes on the moment there is one
-    if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(s.remote.addr)} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
+    if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(ipOf(s.remote))} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
     const g = s.gen;
-    const m = P.msg(s, 'TCP SYN', `to port 179 of ${formatAddr(s.remote.addr)}`);
-    P.e.waitFor(`route:${s.dev}|${s.local.l3.vrf}|${formatAddr(s.remote.addr)}`, `a route to ${formatAddr(s.remote.addr)}`, s.dev, m, () => {
+    const m = P.msg(s, 'TCP SYN', `to port 179 of ${formatAddr(ipOf(s.remote))}`);
+    P.e.waitFor(`route:${s.dev}|${s.local.l3.vrf}|${formatAddr(ipOf(s.remote))}`, `a route to ${formatAddr(ipOf(s.remote))}`, s.dev, m, () => {
       if (s.gen === g) bgpConnect(P, s);
     }, `${s.key}|bgp-route`);
     return;
   }
-  P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(s.remote.addr)} port 179`);
-  P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(s.remote.addr)} waiting for TCP (the connection to port 179)`);
+  P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(ipOf(s.remote))} port 179`);
+  P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(ipOf(s.remote))} waiting for TCP (the connection to port 179)`);
   s.x.tcpSince = P.e.now;
   if (!tcpConnect(P, s)) P.setState(s, 'Active', false, 'no connection could be opened');
   // ConnectRetry (RFC 4271 §8.2.2): an attempt not open by then is dropped and made again
@@ -906,13 +957,13 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
     if (ev === 'open') {
       if (!s.initiator) return;
       P.setState(s, 'OpenSent', false, 'TCP connection established');
-      s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
+      s.x.waitedNext = [`TCP connection to ${formatAddr(ipOf(s.remote))}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
       bgpSendOpen(P, s);
       return;
     }
     if (s.state === 'Connect') {
       // the attempt failed (refused, timed out): Active, and the ConnectRetry timer tries again
-      P.setState(s, 'Active', false, `TCP connection to ${formatAddr(s.remote.addr)}:179 failed: ${why}`);
+      P.setState(s, 'Active', false, `TCP connection to ${formatAddr(ipOf(s.remote))}:179 failed: ${why}`);
       return;
     }
     if (s.state !== 'Idle' && s.state !== 'Active') bgp.down(P, s, `its TCP connection ${/^(closed|reset|connection)/.test(why) ? why : 'is gone: ' + why}`);
@@ -992,12 +1043,12 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
     tcpListen(P, s);
     every(P, s, () => P.timer(s, s.profile, 'hello').ms, () => {
       const hello = P.timer(s, s.profile, 'hello');
-      if (targeted || s.local.addr.version === 6) P.unicast(s, name, `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
+      if (targeted || ipOf(s.local).version === 6) P.unicast(s, name, `transport address ${formatAddr(ipOf(s.local))}, hold ${P.timer(s, s.profile, 'dead').text}`);
       else {
         const key = `ldp-hello|${s.rel.id}|${s.dev}|${Math.floor(P.e.now / hello.ms)}`;
         if (!P.shared.has(key)) {
           P.shared.set(key, true);
-          P.multicast(s, group, 'Hello', `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
+          P.multicast(s, group, 'Hello', `transport address ${formatAddr(ipOf(s.local))}, hold ${P.timer(s, s.profile, 'dead').text}`);
         }
       }
     });
@@ -1005,7 +1056,7 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
   tcp(P, s, ev, why) {
     if (ev === 'open') {
       // the active side (the higher transport address) starts the session; the passive one answers its Initialization
-      if (compareAddr(s.local.addr, s.remote.addr) > 0 && s.state === 'Initialized') {
+      if (compareAddr(ipOf(s.local), ipOf(s.remote)) > 0 && s.state === 'Initialized') {
         P.setState(s, 'OpenSent', false, 'TCP open');
         tcpSend(P, s, 'Initialization', 'session parameters (keepalive time, label distribution)', 32);
       }
@@ -1016,7 +1067,7 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
   rx(P, s, msg) {
     const hold = P.timer(s, s.profile, 'dead');
     // the side with the higher transport address opens the session (RFC 5036 2.5.2)
-    const active = compareAddr(s.local.addr, s.remote.addr) > 0;
+    const active = compareAddr(ipOf(s.local), ipOf(s.remote)) > 0;
     const session = (): void => {
       const sh = P.timer(s, s.profile, 'hold');
       P.armDead(s, sh.ms, () => ldp.down(P, s, `session hold time expired (${sh.text})`), 'session');

@@ -51,8 +51,8 @@ export const MAX_INPUT_BYTES = DEFAULT_YAML_LIMITS.maxBytes;
 export type PathSeg = string | number;
 export type Path = PathSeg[];
 
-export type EntityKind = 'protocol' | 'group' | 'device' | 'link' | 'network' | 'relation';
-export const ENTITY_KINDS: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+export type EntityKind = 'protocol' | 'group' | 'device' | 'link' | 'network' | 'relation' | 'interconnect';
+export const ENTITY_KINDS: EntityKind[] = ['device', 'link', 'network', 'relation', 'interconnect', 'group', 'protocol'];
 export const SECTION: { [k in EntityKind]: string } = {
   protocol: 'protocols',
   group: 'groups',
@@ -60,6 +60,7 @@ export const SECTION: { [k in EntityKind]: string } = {
   link: 'links',
   network: 'networks',
   relation: 'relations',
+  interconnect: 'interconnects',
 };
 export function kindOfSection(section: string): EntityKind | null {
   for (const k of ENTITY_KINDS) if (SECTION[k] === section) return k;
@@ -694,6 +695,10 @@ export class ModelDoc {
     if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'rules') return 'policyRule';
     if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'zones') return 'policyZone';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'port_pairs') return 'portPair';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'opaque_transit') return 'opaqueTransit';
+    // an interconnect's technology or protocol, an endpoint
+    if (path.length === 3 && path[0] === 'interconnects' && (path[2] === 'technology' || path[2] === 'protocol')) return 'icTechnology';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'interconnects' && path[2] === 'endpoints') return 'icEndpoint';
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
       const rest = path.slice(3).map((x) => (typeof x === 'number' ? '#' : x)).join('/');
@@ -2163,6 +2168,7 @@ export class ModelDoc {
         relation: 'rel1',
         group: 'site1',
         protocol: 'custom1',
+        interconnect: 'ic1',
       };
       const idNode = fields.find(([k]) => k === 'id');
       const id = idNode ? scalarText(idNode[1]) || base[kind] : this.uniqueId(base[kind]);
@@ -2173,6 +2179,7 @@ export class ModelDoc {
         relation: [['endpoints', seqNode([], true)]],
         group: [],
         protocol: [],
+        interconnect: [],
       };
       const entries: Array<[string, YNode]> = [['id', strNode(id)]];
       for (const [k, v] of defaults[kind]) if (!fields.some(([f]) => f === k)) entries.push([k, v]);
@@ -2304,6 +2311,32 @@ export class ModelDoc {
       }
       epRefs('links', 'a/b');
       epRefs('relations', 'endpoints');
+      // an interconnect's endpoints ({port: "device:port"})
+      const ics = this.root.entries.get('interconnects');
+      if (ics && ics.value.kind === 'seq')
+        ics.value.items.forEach((ent, i) => {
+          const eps = ent.kind === 'map' ? ent.entries.get('endpoints') : undefined;
+          if (!eps || eps.value.kind !== 'seq') return;
+          eps.value.items.forEach((ep, k) => {
+            const pn = ep.kind === 'map' ? ep.entries.get('port') : undefined;
+            const t = pn ? scalarText(pn.value) : undefined;
+            if (t === undefined) return;
+            const c = t.indexOf(':');
+            const dev = c < 0 ? t : t.slice(0, c);
+            const inf = c < 0 ? undefined : t.slice(c + 1);
+            if (dev === id && (iface === undefined || inf === iface)) out.push(['interconnects', i, 'endpoints', k, 'port']);
+          });
+        });
+      // a System's opaque transit groups name its own ports
+      if (iface !== undefined) {
+        const dev = this.findEntity('device', id);
+        const tg = dev ? this.get(['devices', dev.index, 'opaque_transit']) : undefined;
+        if (dev && tg && tg.kind === 'seq')
+          tg.items.forEach((g, k) => {
+            const ps = g.kind === 'map' ? g.entries.get('ports') : undefined;
+            if (ps && ps.value.kind === 'seq') ps.value.items.forEach((pn, j) => scalarText(pn) === iface && out.push(['devices', dev.index, 'opaque_transit', k, 'ports', j]));
+          });
+      }
       // static routes of the same device that leave through the interface
       if (iface !== undefined) {
         const dev = this.findEntity('device', id);
@@ -2554,7 +2587,10 @@ export class ModelDoc {
         // an application's peer: the device, or "device/application"
         const s = t.indexOf('/');
         nt = s > 0 ? newId + t.slice(s) : newId;
-      } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
+      } else if (p[0] === 'devices' && p[2] === 'opaque_transit') {
+        // a transit group's port: a bare id of the same device
+        nt = newIf !== undefined ? newIf : t;
+      } else if (/^(a|b|destination|port)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);

@@ -201,6 +201,63 @@ export interface Interface {
   line: number;
 }
 
+/** A port without a network stack (`stack: opaque`): USB, serial, a bus or backplane port. Nothing but its id and descriptions. */
+export interface OpaquePort {
+  id: string;
+  device: string;
+  label?: string;
+  description?: string;
+  attrs: Attrs;
+  line: number;
+}
+
+/** Opaque ports of a System that pass illustrative data between each other (written explicitly; same technology only). */
+export interface OpaqueTransit {
+  ports: string[];
+  line: number;
+}
+
+/** An interconnect's topology: exactly two ports, or one shared medium (a bus) with several attachments. */
+export type IcTopology = 'point_to_point' | 'shared';
+/** How its participants communicate: as peers, or controllers initiating transfers with targets (Master / Slave). */
+export type IcAccess = 'peer' | 'controller_target';
+/** A participant's role on its interconnect (never the device's role elsewhere). */
+export type IcRole = 'controller' | 'target' | 'controller_target' | 'peer' | 'monitor';
+/** What a participant may do with data on its interconnect: send it, receive it, or both (both is not full duplex). */
+export type IcData = 'send' | 'receive' | 'both';
+
+/** A port's attachment to an interconnect. */
+export interface IcAttachment {
+  device: string;
+  port: string;
+  role: IcRole;
+  data: IcData;
+  /** an arbiter or system controller (descriptive: no arbitration is simulated) */
+  systemController: boolean;
+  line: number;
+}
+
+/**
+ * A non-IP physical interconnect (`interconnects:`, model/interconnect.ts):
+ * a point-to-point connection or a shared medium between opaque ports, its
+ * technology (a name and a version, as text), the protocol it carries if
+ * any, its connector, its access model and each attachment's role and
+ * data direction. Physical modelling only: no protocol of it is simulated.
+ */
+export interface Interconnect {
+  id: string;
+  topology: IcTopology;
+  technology: { name: string; version?: string };
+  protocol?: { name: string; version?: string };
+  connector?: string;
+  access: IcAccess;
+  endpoints: IcAttachment[];
+  label?: string;
+  description?: string;
+  attrs: Attrs;
+  line: number;
+}
+
 /** A group an interface joins: any source (ASM), or only the sources listed (SSM; IGMPv3 / MLDv2). */
 export interface McJoin {
   group: string;
@@ -288,8 +345,22 @@ export interface Device {
   services: ServiceConfig[];
   description?: string;
   attrs: Attrs;
-  /** physical interfaces (ports), in file order */
+  /** physical interfaces (ports) with a network stack, in file order */
   interfaces: Interface[];
+  /**
+   * its opaque ports (`stack: opaque` in `interfaces:`), in file order: no
+   * network stack at all — never an Interface, so nothing of the IP side
+   * (addressing, Layer 2, routing, the simulation's network) can take one;
+   * they connect only through interconnects (model/interconnect.ts)
+   */
+  opaquePorts: OpaquePort[];
+  /**
+   * a System's opaque transit (`opaque_transit:`): groups of its opaque
+   * ports that pass illustrative data between each other (a fabric switch
+   * module, an active hub); none written, none — ports are never joined by
+   * being on one device, and nothing converts between technologies
+   */
+  opaqueTransit: OpaqueTransit[];
   /** loopback, virtual and tunnel interfaces, in file order */
   logical: Interface[];
   /** DNS names configured for the device, in file order */
@@ -972,6 +1043,8 @@ export interface Model {
   links: Link[];
   networks: Network[];
   relations: Relation[];
+  /** non-IP physical interconnects (`interconnects:`): never part of the IP side */
+  interconnects: Interconnect[];
   /** Protocol registry (built-ins merged with input definitions). */
   protocols: Map<string, ProtocolDef>;
   /** The routing services devices can enable (built-ins and the protocols that declare params). */
@@ -995,7 +1068,7 @@ export interface Model {
   index: ModelIndex;
 }
 
-export type EntityKind = 'group' | 'device' | 'interface' | 'route' | 'link' | 'network' | 'relation';
+export type EntityKind = 'group' | 'device' | 'interface' | 'route' | 'link' | 'network' | 'relation' | 'interconnect';
 
 export interface ModelIndex {
   groups: Map<string, Group>;
@@ -1005,6 +1078,11 @@ export interface ModelIndex {
   links: Map<string, Link>;
   networks: Map<string, Network>;
   relations: Map<string, Relation>;
+  interconnects: Map<string, Interconnect>;
+  /** "device:port" -> an opaque port */
+  opaquePorts: Map<string, OpaquePort>;
+  /** "device:port" -> the interconnect it is attached to */
+  portInterconnect: Map<string, string>;
   /** "device:iface" -> link id (a radio: its first wireless connection) */
   ifaceLink: Map<string, string>;
   /** a radio of a Wireless access -> every wireless connection associated on it ("device:iface" -> link ids, in file order) */

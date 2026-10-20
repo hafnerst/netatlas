@@ -13,6 +13,8 @@ import { isSsmGroup } from '../analysis/sim/mac';
 import { Simulation, TestSource } from '../analysis/sim/simulation';
 import { el } from './dom';
 import { appProfile, appSummary } from '../model/applications';
+import { OpaqueSpec } from '../analysis/sim/opaque';
+import { ROLE_BADGE, ROLE_TEXT, initiates, sends, technologyText } from '../model/interconnect';
 
 /** What the forms ask of the controller. */
 export interface EventFormHost {
@@ -526,5 +528,164 @@ export class IfaceForm {
 
   focus(): void {
     (this.t.dev.value ? this.t.iface : this.t.dev).focus();
+  }
+}
+
+/**
+ * Send illustrative data: abstract data along the non-IP interconnects
+ * (analysis/sim/opaque.ts) — an interconnect, the attachment that initiates
+ * it, where the data comes from and where it goes (another port, or every
+ * port of the interconnect that receives), Count, Interval and a size. The
+ * button says why it can't send, from the simulation's own rules (roles,
+ * data directions, explicit transit). One direction: no reply is made.
+ */
+export class OpaqueForm {
+  readonly el: HTMLElement;
+  private ic: HTMLSelectElement;
+  private init: HTMLSelectElement;
+  private from: HTMLSelectElement;
+  private to: HTMLSelectElement;
+  private count: HTMLInputElement;
+  private interval: HTMLInputElement;
+  private size: HTMLInputElement;
+  private btn: HTMLButtonElement;
+  private f: { el: HTMLElement; need: HTMLElement; msg: HTMLElement };
+
+  constructor(
+    private doc: Document,
+    private host: { sim(): Simulation; send(spec: OpaqueSpec): string },
+  ) {
+    this.ic = el(doc, 'select', { id: 'sim-o-ic' }) as HTMLSelectElement;
+    this.init = el(doc, 'select', { id: 'sim-o-init' }) as HTMLSelectElement;
+    this.from = el(doc, 'select', { id: 'sim-o-from' }) as HTMLSelectElement;
+    this.to = el(doc, 'select', { id: 'sim-o-to' }) as HTMLSelectElement;
+    this.count = el(doc, 'input', { id: 'sim-o-count', type: 'number', min: '1', max: '100', value: '1' }) as HTMLInputElement;
+    this.interval = el(doc, 'input', { id: 'sim-o-interval', type: 'number', min: '0', step: '0.1', value: '1' }) as HTMLInputElement;
+    this.size = el(doc, 'input', { id: 'sim-o-size', type: 'number', min: '1', value: '64' }) as HTMLInputElement;
+    this.btn = el(doc, 'button', { type: 'button', id: 'sim-o-send', class: 'sp-primary' }, ['Send illustrative data']) as HTMLButtonElement;
+    this.f = footer(doc, 'sim-o', [this.btn]);
+    const note = el(doc, 'p', { class: 'small muted sim-t-note', role: 'note' }, ['Illustrative traffic — protocol behaviour not simulated (no enumeration, addressing, arbitration or acknowledgment). One direction: nothing replies.']);
+    this.el = el(doc, 'div', { class: 'sim-ev-form sim-o-form' }, [
+      grid(doc, [
+        ['sim-o-ic', 'Interconnect', this.ic],
+        ['sim-o-init', 'Initiated by', this.init],
+        ['sim-o-from', 'Data from', this.from],
+        ['sim-o-to', 'Data to', this.to],
+        ['sim-o-count', 'Count', this.count],
+        ['sim-o-interval', 'Interval (s)', this.interval],
+        ['sim-o-size', 'Size (bytes, illustrative)', this.size],
+      ]),
+      note,
+      this.f.el,
+    ]);
+    this.ic.addEventListener('change', () => {
+      for (const s of [this.init, this.from, this.to]) {
+        s.value = '';
+        s.removeAttribute('data-key');
+      }
+      this.sync();
+    });
+    for (const e of [this.init, this.from, this.to, this.count, this.interval, this.size]) e.addEventListener('change', () => this.sync());
+    this.btn.addEventListener('click', () => {
+      this.sync();
+      if (this.btn.disabled) return;
+      this.f.msg.textContent = this.host.send(this.spec());
+      this.sync();
+    });
+    this.sync();
+  }
+
+  private spec(): OpaqueSpec {
+    const sim = this.host.sim();
+    const ic = sim.model.index.interconnects.get(this.ic.value);
+    const every = this.to.value === '*' && !!ic;
+    const to = every && ic ? ic.endpoints.filter((e) => e.data !== 'send' && `${e.device}:${e.port}` !== this.from.value).map((e) => `${e.device}:${e.port}`) : this.to.value ? [this.to.value] : [];
+    return { initiator: this.init.value, from: this.from.value, to, count: Math.max(1, Math.min(100, Math.round(Number(this.count.value) || 1))), interval: Math.max(0, Number(this.interval.value) || 0) * 1000, size: Math.max(1, Math.round(Number(this.size.value) || 1)) };
+  }
+
+  sync(): void {
+    const sim = this.host.sim();
+    const m = sim.model;
+    const k = (e: { device: string; port: string }): string => `${e.device}:${e.port}`;
+    fill(this.doc, this.ic, [{ value: '', label: 'Select…' } as Opt].concat(m.interconnects.map((x) => ({ value: x.id, label: `${x.id} — ${technologyText(x)}` }))));
+    const ic = m.index.interconnects.get(this.ic.value);
+    const eps = ic ? ic.endpoints : [];
+    const first = ic ? 'Select…' : 'Choose an interconnect first';
+    fill(this.doc, this.init, [{ value: '', label: first } as Opt].concat(eps.map((e) => ({ value: k(e), label: `${k(e)} (${ROLE_BADGE[e.role]})`, disabled: !ic || !initiates(ic, e), title: ROLE_TEXT[e.role] }))));
+    // between peers the data is the initiator's own; with controllers it is the controller's or a target's
+    const peer = !!ic && ic.access === 'peer';
+    fill(this.doc, this.from, [{ value: '', label: first } as Opt].concat(eps.map((e) => ({ value: k(e), label: k(e), disabled: !sends(e) || (peer && !!this.init.value && k(e) !== this.init.value) }))));
+    if (peer && this.init.value && this.from.value !== this.init.value) this.from.value = this.init.value;
+    // to: a port of this interconnect, every receiving port of it (a bus), or a port beyond an explicit transit
+    const all = Array.from(m.index.opaquePorts.keys()).filter((x) => m.index.portInterconnect.has(x) && x !== this.from.value).sort();
+    const every: Opt[] = ic && ic.topology === 'shared' ? [{ value: '*', label: `Every receiving port of ${ic.id}` }] : [];
+    fill(this.doc, this.to, [{ value: '', label: first } as Opt].concat(every, all.map((x) => ({ value: x, label: x }))));
+    for (const s of [this.init, this.from, this.to]) s.disabled = !ic;
+    // why it can't send: the simulation's own check
+    const spec = this.spec();
+    let why: string | null = !ic ? 'Choose an interconnect.' : !spec.initiator ? 'Choose who initiates it.' : !spec.from ? 'Choose where the data comes from.' : !spec.to.length ? 'Choose where it goes.' : null;
+    if (!why)
+      for (const t of spec.to) {
+        const r = sim.opaque.route(spec.from, t, spec.initiator);
+        if (typeof r === 'string') {
+          why = r.charAt(0).toUpperCase() + r.slice(1) + '.';
+          break;
+        }
+      }
+    setNeed(this.f.need, [this.btn], why);
+  }
+
+  focus(): void {
+    this.ic.focus();
+  }
+}
+
+/**
+ * Non-IP failures: an interconnect failed (a point-to-point connection or a
+ * bus segment), a participant detached, an opaque port shut — each with its
+ * way back in Active events. No electrical fault beyond them is inferred.
+ */
+export class OpaqueFailForm {
+  readonly el: HTMLElement;
+  private target: HTMLSelectElement;
+  private btn: HTMLButtonElement;
+  private f: { el: HTMLElement; need: HTMLElement; msg: HTMLElement };
+
+  constructor(
+    private doc: Document,
+    private host: { sim(): Simulation; fail(what: 'interconnect' | 'attachment' | 'port', key: string): string },
+  ) {
+    this.target = el(doc, 'select', { id: 'sim-of-target' }) as HTMLSelectElement;
+    this.btn = el(doc, 'button', { type: 'button', id: 'sim-of-fail', class: 'sp-primary' }, ['Fail interconnect']) as HTMLButtonElement;
+    this.f = footer(doc, 'sim-of', [this.btn]);
+    this.el = el(doc, 'div', { class: 'sim-ev-form sim-of-form' }, [grid(doc, [['sim-of-target', 'What fails', this.target]]), this.f.el]);
+    this.target.addEventListener('change', () => this.sync());
+    this.btn.addEventListener('click', () => {
+      const v = this.target.value;
+      const i = v.indexOf('=');
+      if (i < 0) return;
+      this.f.msg.textContent = this.host.fail(v.slice(0, i) as 'interconnect' | 'attachment' | 'port', v.slice(i + 1));
+      this.sync();
+    });
+    this.sync();
+  }
+
+  sync(): void {
+    const sim = this.host.sim();
+    const o = sim.opaque;
+    const opts: Opt[] = [{ value: '', label: 'Select…' }];
+    for (const ic of sim.model.interconnects) opts.push({ value: 'interconnect=' + ic.id, label: `Interconnect ${ic.id}${o.failed.has(ic.id) ? ' (failed)' : ''}`, disabled: o.failed.has(ic.id) });
+    for (const ic of sim.model.interconnects)
+      for (const e of ic.endpoints) {
+        const key = `${e.device}:${e.port}`;
+        const off = o.detached.has(ic.id + '|' + key);
+        opts.push({ value: 'attachment=' + key, label: `Detach ${key} from ${ic.id}${off ? ' (detached)' : ''}`, disabled: off });
+      }
+    for (const key of Array.from(sim.model.index.opaquePorts.keys()).sort()) opts.push({ value: 'port=' + key, label: `Shut port ${key}${o.shut.has(key) ? ' (shut)' : ''}`, disabled: o.shut.has(key) });
+    fill(this.doc, this.target, opts);
+    const v = this.target.value;
+    const word = v.indexOf('attachment=') === 0 ? 'Detach' : v.indexOf('port=') === 0 ? 'Shut port' : 'Fail interconnect';
+    if (this.btn.textContent !== word) this.btn.textContent = word;
+    setNeed(this.f.need, [this.btn], v ? null : 'Choose what fails; restore it from Active events.');
   }
 }

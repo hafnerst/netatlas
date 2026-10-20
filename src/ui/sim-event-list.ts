@@ -15,7 +15,7 @@ import { el } from './dom';
 
 export interface EventListHost {
   /** an event's control (Stop, No shut, Leave group) */
-  control(id: number, op: 'stop' | 'noshut' | 'leave'): void;
+  control(id: number, op: 'stop' | 'noshut' | 'leave' | 'restore'): void;
   /** end a state change of the other kind (Restore, Power on …) */
   end(e: NetEvent): void;
   /** its button's word ("Restore") and what it is about ("cable l1") */

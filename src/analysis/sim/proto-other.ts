@@ -18,7 +18,7 @@ import { fmtSec } from './engine';
 import { isMulticastIp, multicastMac, virtualMac } from './mac';
 import { L3Iface, carries, otherEnd, portKey, linkPort } from './net';
 import { ifaceRef, relRef } from './params';
-import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpOpen, tcpSend } from './proto-tcp';
 import { Msg, Pkt, SessionStatus } from './types';
 import { pimValue } from '../pim-rp';
@@ -315,8 +315,12 @@ const IKE_RTO = 2000;
 interface IkeX {
   /** the next message ID of this side's requests (IKE_SA_INIT 0, IKE_AUTH 1, then each exchange) */
   mid?: number;
-  /** the request it waits a response for */
-  pending?: { mid: number; type: string; tries: number; tok: number };
+  /** the request it waits a response for (what a CREATE_CHILD_SA rekeys) */
+  pending?: { mid: number; type: string; tries: number; tok: number; what?: string };
+  /** its requests waiting for their turn: one outstanding at a time (RFC 7296 §2.3, a window of one) */
+  queue?: Array<{ type: string; what?: string; run: () => void }>;
+  /** a new IKE SA the peer is negotiating while this side's is established (the old one serves until the new one is up) */
+  replacing?: boolean;
   /** the peer's last request and this side's response to it (sent again when the request comes again) */
   answered?: { mid: number; type: string; detail: string; data: { [k: string]: unknown } };
   /** the next request ID expected from the peer */
@@ -331,14 +335,27 @@ interface IkeX {
  * Send one of this side's IKE requests (a message ID of its own, RFC 7296
  * §2.2): sent again with a doubling timeout while unanswered; `failed`
  * after IKE_TRIES retransmissions. Only the response with the same message
- * ID ends it (ikeResponse).
+ * ID ends it (ikeResponse). One request is outstanding at a time (a window
+ * of one, §2.3): while another waits for its response this one waits its
+ * turn — never replacing it — and goes when that one is answered or given
+ * up (ikeNext). A rekey of an SA already waiting or outstanding is not
+ * asked twice.
  */
 function ikeRequest(P: ProtocolSim, s: Sess, type: string, detail: string, state: string, failed: (why: string) => void, data: { [k: string]: unknown } = {}): void {
   const x = s.x as IkeX;
+  const what = typeof data.what === 'string' ? (data.what as string) : undefined;
+  if (x.pending) {
+    const q = x.queue || (x.queue = []);
+    if (what && type === 'CREATE_CHILD_SA' && ((x.pending.type === type && x.pending.what === what) || q.some((e) => e.type === type && e.what === what))) return;
+    const g = s.gen;
+    q.push({ type, what, run: () => (s.gen === g ? ikeRequest(P, s, type, detail, state, failed, data) : undefined) });
+    P.e.note('state', s.protocol, s.dev, s.peer, 'request waits', s.state, `IKEv2 ${s.rel.id}: ${s.dev}'s ${type}${what ? ` (${what === 'ike' ? 'IKE SA' : 'Child SA'})` : ''} waits for the response to its ${x.pending.type} (message ID ${x.pending.mid}): one request at a time`);
+    return;
+  }
   const mid = x.mid === undefined ? 0 : x.mid;
   x.mid = mid + 1;
   const tok = (x.tok = (x.tok || 0) + 1);
-  x.pending = { mid, type, tries: 0, tok };
+  x.pending = { mid, type, tries: 0, tok, what };
   const send = (n: number): void => P.unicast(s, type, `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: ${detail}`, { ...data, mid }, state);
   send(0);
   const again = (n: number): void => {
@@ -347,7 +364,9 @@ function ikeRequest(P: ProtocolSim, s: Sess, type: string, detail: string, state
       if (!p || p.tok !== tok) return;
       if (n > IKE_TRIES) {
         x.pending = undefined;
+        const g = s.gen;
         failed(`${type} (message ID ${mid}) unanswered after ${IKE_TRIES} retransmissions`);
+        if (s.gen === g) ikeNext(s);
         return;
       }
       p.tries = n;
@@ -367,7 +386,20 @@ function ikeResponse(P: ProtocolSim, s: Sess, type: string, mid: number | undefi
     return false;
   }
   x.pending = undefined;
+  ikeNext(s);
   return true;
+}
+
+/** The next request waiting for its turn goes (the one before it was answered or given up). */
+function ikeNext(s: Sess): void {
+  const x = s.x as IkeX;
+  while (!x.pending && x.queue && x.queue.length) (x.queue.shift() as { run: () => void }).run();
+}
+
+/** This side's requests end (a restart, a new IKE SA): none outstanding, none waiting. */
+function ikeClear(x: IkeX): void {
+  x.pending = undefined;
+  x.queue = [];
 }
 
 /** Answer the peer's request (the same message ID); the answer is kept, and sent again if the request comes again. */
@@ -404,6 +436,12 @@ function ikeRepeat(P: ProtocolSim, s: Sess, type: string, mid: number | undefine
  *   its lifetime expires on that side: a Child SA — no traffic until a
  *   new one is negotiated; the IKE SA — everything is deleted and
  *   negotiated anew.
+ *   One request of a side is outstanding at a time: a DPD, a rekey, a
+ *   second rekey due at the same moment wait their turn (ikeRequest).
+ *   A new IKE_SA_INIT from the peer while this side is established (the
+ *   peer lost its SA and starts over): answered, and the old SAs keep
+ *   serving until the new IKE_AUTH completes and replaces them — the new
+ *   negotiation alone deletes nothing.
  * Cryptography stays abstract (proposals, keys and authentication are not
  * checked).
  */
@@ -422,10 +460,15 @@ const ike: Behaviour = {
       case 'IKE_SA_INIT':
         if (!d.response) {
           if (ikeRepeat(P, s, 'IKE_SA_INIT', d.mid)) return;
-          // a new IKE SA from the peer: what this side had is gone (the peer started over)
-          if (s.state === 'Established') ikeDown(P, s, 'the peer starts a new IKE SA (IKE_SA_INIT)', false);
+          if (s.state === 'Established' || s.state === 'No Child SA') {
+            // a new IKE SA from the peer while this side's is up: answered; the old SAs serve until the new one is authenticated
+            x.replacing = true;
+            ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr (a new IKE SA: the established one serves until it is up)');
+            P.e.note('state', s.protocol, s.dev, s.peer, 'new IKE SA', s.state, `IKEv2 ${s.rel.id}: ${s.peer} starts a new IKE SA; ${s.dev}'s established SAs serve until the new one is authenticated`);
+            return;
+          }
           x.mid = 0;
-          x.pending = undefined;
+          ikeClear(x);
           ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr', {}, 'IKE_SA_INIT');
           P.setState(s, 'IKE_SA_INIT', false, 'request from the peer');
         } else if (s.state === 'IKE_SA_INIT' && ikeResponse(P, s, 'IKE_SA_INIT', d.mid)) {
@@ -436,8 +479,10 @@ const ike: Behaviour = {
       case 'IKE_AUTH':
         if (!d.response) {
           if (ikeRepeat(P, s, 'IKE_AUTH', d.mid)) return;
-          if (s.state !== 'IKE_SA_INIT') return;
+          if (s.state !== 'IKE_SA_INIT' && !x.replacing) return;
+          const replaced = !!x.replacing;
           ikeAnswer(P, s, 'IKE_AUTH', d.mid, 'IDr, AUTH, SAr2 (the first Child SA)', {}, 'Established');
+          if (replaced) P.e.note('state', s.protocol, s.dev, s.peer, 'IKE SA replaced', 'Established', `IKEv2 ${s.rel.id}: the new IKE SA with ${s.peer} is authenticated: it and its Child SA replace ${s.dev}'s old ones (deleted now)`);
           ikeUp(P, s);
         } else if (s.state === 'IKE_AUTH' && ikeResponse(P, s, 'IKE_AUTH', d.mid)) ikeUp(P, s);
         return;
@@ -467,10 +512,11 @@ function ikeInit(P: ProtocolSim, s: Sess): void {
   P.restart(s);
   const x = s.x as IkeX;
   x.mid = 0;
-  x.pending = undefined;
+  ikeClear(x);
+  x.replacing = false;
   x.answered = undefined;
   P.setState(s, 'IKE_SA_INIT', false, 'initiating');
-  ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${formatAddr(s.remote.addr)} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
+  ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${formatAddr(ipOf(s.remote))} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
 }
 
 /** The negotiation failed (a request unanswered): it starts again after the DPD interval (the initiator). */
@@ -486,8 +532,17 @@ function ikeFailed(P: ProtocolSim, s: Sess, why: string): void {
 function ikeDown(P: ProtocolSim, s: Sess, why: string, again = true): void {
   P.restart(s);
   const x = s.x as IkeX;
-  x.pending = undefined;
+  ikeClear(x);
+  // (a new IKE SA the peer was negotiating meanwhile goes on: this side waits for its IKE_AUTH)
+  const replacing = !!x.replacing;
+  x.replacing = false;
   x.childUntil = x.ikeUntil = undefined;
+  if (replacing) {
+    x.mid = 0;
+    P.setState(s, 'IKE_SA_INIT', false, `${why}; the new IKE SA ${s.peer} started is negotiated on`);
+    P.e.syncInterfaces();
+    return;
+  }
   P.setState(s, 'Idle', false, why);
   P.e.syncInterfaces();
   // (scheduled after the restart: this generation's timer, not the one just ended)
@@ -547,6 +602,11 @@ function ikeRenew(P: ProtocolSim, s: Sess, what: 'child' | 'ike'): void {
 
 function ikeUp(P: ProtocolSim, s: Sess): void {
   P.restart(s);
+  const x0 = s.x as IkeX;
+  // a new IKE SA: what was outstanding on the old one ends; the responder's own requests start at message ID 0 in it
+  ikeClear(x0);
+  if (!s.initiator) x0.mid = 0;
+  x0.replacing = false;
   P.setState(s, 'Established', true, 'IKE SA and Child SA established');
   P.e.syncInterfaces();
   ikeRenew(P, s, 'child');
@@ -555,7 +615,8 @@ function ikeUp(P: ProtocolSim, s: Sess): void {
   const g = s.gen;
   const dpd = (): void => {
     P.later(s, P.timer(s, s.profile, 'dpd').ms, () => {
-      if (s.gen !== g || (s.x as IkeX).pending) {
+      // (a request of its own outstanding or waiting: its response shows the peer alive; DPD waits)
+      if (s.gen !== g || (s.x as IkeX).pending || ((s.x as IkeX).queue || []).length) {
         if (s.gen === g) dpd();
         return;
       }
@@ -923,7 +984,7 @@ const data: Behaviour = {
     if (s.rel.direction === 'unidirectional' && !s.initiator) return;
     const iv = P.timer(s, s.profile, 'hello');
     s.x.detail = `${s.profile.dataMsg} every ${iv.text} (demonstration)`;
-    every(P, s, () => iv.ms, () => P.unicast(s, s.profile.dataMsg as string, `encapsulated (${s.profile.proto}) between ${formatAddr(s.local.addr)} and ${formatAddr(s.remote.addr)}`));
+    every(P, s, () => iv.ms, () => P.unicast(s, s.profile.dataMsg as string, `encapsulated (${s.profile.proto}) between ${formatAddr(ipOf(s.local))} and ${formatAddr(ipOf(s.remote))}`));
   },
   rx(P, s) {
     if (!s.up) P.setState(s, 'Up', true, 'data received');
@@ -950,7 +1011,7 @@ const pim: Behaviour = {
     const key = `pim-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(s.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
+    const group = addr(ipOf(s.local).version === 4 ? '224.0.0.13' : 'ff02::d');
     P.periodic(
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
@@ -1141,6 +1202,15 @@ export function installLacp(P: ProtocolSim): void {
 
 // ------------------------------------------------------------------ STP, LLDP, CDP (where the model has their relations)
 
+/**
+ * STP's BPDUs (shown; the tree itself is computed from the topology:
+ * engine.ts spanningTree), LLDP and CDP advertisements on the cables of
+ * their relations. A neighbour is known from its advertisements only: for
+ * the time-to-live its last one announced (LLDP's TTL TLV, CDP's holdtime),
+ * and no longer once the port's link goes down or the device is powered
+ * off (IEEE 802.1AB: the remote information of a port that is disabled is
+ * deleted) — never by looking at the neighbour.
+ */
 export function installL2Adverts(P: ProtocolSim): void {
   const STP_MAC = '01:80:c2:00:00:00';
   for (const r of P.m.relations.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -1150,12 +1220,12 @@ export function installL2Adverts(P: ProtocolSim): void {
     if (!p) continue;
     const devs = relationDevices(r);
     // the cables between two of its devices: each end sends on its port
-    type Port = { dev: string; port: string; peer: string; peerPort: string; heard: number; known: boolean };
+    type Port = { dev: string; port: string; peer: string; peerPort: string; heard: number; known: boolean; ttl: number; gen: number };
     const ports: Port[] = [];
     for (const l of P.m.links) {
       if (devs.indexOf(l.a.device) < 0 || devs.indexOf(l.b.device) < 0 || l.a.device === l.b.device) continue;
-      ports.push({ dev: l.a.device, port: linkPort(P.m, l, l.a), peer: l.b.device, peerPort: linkPort(P.m, l, l.b), heard: -1, known: false });
-      ports.push({ dev: l.b.device, port: linkPort(P.m, l, l.b), peer: l.a.device, peerPort: linkPort(P.m, l, l.a), heard: -1, known: false });
+      ports.push({ dev: l.a.device, port: linkPort(P.m, l, l.a), peer: l.b.device, peerPort: linkPort(P.m, l, l.b), heard: -1, known: false, ttl: 0, gen: 0 });
+      ports.push({ dev: l.b.device, port: linkPort(P.m, l, l.b), peer: l.a.device, peerPort: linkPort(P.m, l, l.a), heard: -1, known: false, ttl: 0, gen: 0 });
     }
     if (!ports.length) continue;
     // STP's hello time is each switch's own (its simulation attribute); LLDP's and CDP's their profile's
@@ -1177,32 +1247,53 @@ export function installL2Adverts(P: ProtocolSim): void {
                 const root = stpRoot(P, devs);
                 P.onPort('stp', x.dev, x.port, mac, 'BPDU', `${P.param('stp-mode', x.dev).value === 'stp' ? 'STP' : 'RSTP'} BPDU`, `${P.param('stp-mode', x.dev).value === 'stp' ? 'Configuration BPDU (802.1D)' : 'RST BPDU (802.1w)'} from ${x.dev}:${x.port}: root ${root || '?'}, bridge ${sd.bridgeId || x.dev}, hello ${fmtSec(helloOf(x.dev))}`, {}, x.peer, r);
               }
-            } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, {}, x.peer, r);
+            } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, { ttl }, x.peer, r);
           }
         };
         P.whenPortUp(x.dev, x.port, () => P.periodic(() => true, () => helloOf(x.dev), tick));
       }
     });
     P.handlers.set(base, (dev, _l3, msg) => {
-      const from = ((msg.data || {}) as { from?: string; port?: string });
+      const from = ((msg.data || {}) as { from?: string; port?: string; ttl?: number });
       const x = ports.find((q) => q.dev === dev && q.peer === from.from && q.peerPort === from.port);
       if (!x) return;
       x.heard = P.e.now;
+      // (the time-to-live the advertisement announced: the sender's, not this device's own setting)
+      x.ttl = typeof from.ttl === 'number' ? from.ttl : ttl;
       if (!x.known && base !== 'stp') {
         x.known = true;
-        P.e.note('state', base, dev, x.peer, 'neighbour known', 'neighbour known', `${p.label} on ${dev}:${x.port}: neighbour ${x.peer} port ${x.peerPort}`);
+        P.e.note('state', base, dev, x.peer, 'neighbour known', 'neighbour known', `${p.label} on ${dev}:${x.port}: neighbour ${x.peer} port ${x.peerPort} (for ${fmtSec(x.ttl)}, the TTL it announced)`);
       }
-      P.e.after(ttl, () => {
-        if (x.known && P.e.now - x.heard >= ttl - 1) {
+      const g = x.gen;
+      const life = x.ttl;
+      P.e.after(life, () => {
+        if (x.gen === g && x.known && P.e.now - x.heard >= life - 1) {
           x.known = false;
-          P.e.note('state', base, dev, x.peer, 'neighbour aged out', 'no neighbour', `${p.label} on ${dev}:${x.port}: ${x.peer} aged out after ${fmtSec(ttl)}`);
+          P.e.note('state', base, dev, x.peer, 'neighbour aged out', 'no neighbour', `${p.label} on ${dev}:${x.port}: ${x.peer} aged out after ${fmtSec(life)}`);
         }
       });
+    });
+    // what a port knew is gone with its link, and with its device's power
+    const forget = (x: Port, why: string): void => {
+      x.gen++;
+      if (!x.known) return;
+      x.known = false;
+      P.e.note('state', base, x.dev, x.peer, 'neighbour removed', 'no neighbour', `${p.label} on ${x.dev}:${x.port}: ${x.peer} removed (${why})`);
+    };
+    P.linkHooks.push((ref, up) => {
+      if (up) return;
+      for (const x of ports) {
+        const e = P.e.net.ends.get(portKey(x.dev, x.port));
+        if (e && 'link:' + e.link === ref) forget(x, 'its link went down');
+      }
+    });
+    P.deviceHooks.push((dev, up) => {
+      if (!up) for (const x of ports) if (x.dev === dev) forget(x, `${dev} was powered off`);
     });
     P.extraStatus.push((): SessionStatus[] =>
       base === 'stp'
         ? devs.filter((d) => P.sd(d) && P.sd(d).bridge).map((d) => ({ protocol: 'stp', name: `${r.id}: ${d}`, device: d, peer: '', state: stpRoot(P, devs) === (P.sd(d).bridgeId || d) ? 'Root bridge' : 'Forwarding', detail: `bridge ${P.sd(d).bridgeId}; blocked: ${stpBlockedPorts(P, d).join(', ') || 'none'}`, up: true, relation: r.id }))
-        : ports.map((x) => ({ protocol: base, name: `${x.dev}:${x.port} → ${x.peer}:${x.peerPort}`, device: x.dev, peer: x.peer, state: x.known ? 'neighbour known' : 'no neighbour', detail: `every ${fmtSec(hello)}, TTL ${fmtSec(ttl)}`, up: x.known, relation: r.id })),
+        : ports.map((x) => ({ protocol: base, name: `${x.dev}:${x.port} → ${x.peer}:${x.peerPort}`, device: x.dev, peer: x.peer, state: x.known ? 'neighbour known' : 'no neighbour', detail: `every ${fmtSec(hello)}, TTL ${fmtSec(ttl)}${x.known ? `; the neighbour's last advertisement ${fmtSec(P.e.now - x.heard)} ago announced ${fmtSec(x.ttl)}` : ''}`, up: x.known, relation: r.id })),
     );
   }
 }

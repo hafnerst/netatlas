@@ -137,3 +137,9 @@ simplifications that cut across them.
 | UDP receiver (one-way) | Modeled behavior | Datagrams (and their answers, for request/response) of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports (ICMP port unreachable) apply. | payload contents and application semantics: a label names the application, its protocol is not simulated. |
 | Periodic UDP messages (one-way) | Modeled behavior | Datagrams (and their answers, for request/response) of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports (ICMP port unreachable) apply. | payload contents and application semantics: a label names the application, its protocol is not simulated. |
 | MQTT client (publish / subscribe) | Modeled behavior | MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection. | QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents. |
+
+## Non-IP interconnects
+
+| Name | Level | Implemented | Not modeled |
+| --- | --- | --- | --- |
+| Interconnects and opaque ports | Configuration and validation | Opaque ports and point-to-point or shared interconnects validated (endpoints, roles against the access, data directions, transit groups of one technology on Systems), drawn in the physical view, edited and found; illustrative data moves along them one way, hop by hop under their roles, directions, explicit transit and failures (an interconnect, an attachment, a port, a device), and says why it stops. | any technology or application protocol (enumeration, addressing, arbitration, collisions, framing, timing, bandwidth, acknowledgment, replies); conversion between technologies; electrical faults; the IP side and Analyze never use them. |

@@ -119,3 +119,65 @@ test('LACP: the members of an aggregate are bundled only with one partner aggreg
   assert.deepEqual(sw1, ['Collecting / Distributing', 'Detached']);
   assert.ok(bad.events().some((e) => e.device === 'sw1' && e.what === 'not bundled' && /differs from the aggregate's other members'/.test(e.detail)));
 });
+
+// ---- LLDP / CDP: a neighbour known from its advertisements only
+
+const LLDP = `netatlas: 1
+title: lldp
+devices:
+  - {id: a, type: switch, interfaces: [{id: p1, vlans: 1}]}
+  - {id: b, type: switch, interfaces: [{id: p1, vlans: 1}]}
+links:
+  - {id: l, a: "a:p1", b: "b:p1"}
+relations:
+  - {id: x, protocol: lldp, endpoints: [a, b]}
+`;
+const lldpState = (s, dev) => s.status().find((x) => x.protocol === 'lldp' && x.device === dev).state;
+
+test('LLDP: the local link down — the neighbour is removed at once (not after its time-to-live); back up, it is learned again from its next advertisement', () => {
+  const s = new S.Simulation(model(LLDP));
+  s.runTo(40000);
+  assert.equal(lldpState(s, 'a'), 'neighbour known');
+  const t0 = s.now;
+  assert.ok(s.shut('a', 'p1'));
+  s.runTo(t0 + 1000);
+  assert.equal(lldpState(s, 'a'), 'no neighbour', 'removed with the link, long before the 120 s TTL');
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'a' && e.what === 'neighbour removed' && /its link went down/.test(e.detail)));
+  assert.ok(s.noShut('a', 'p1'));
+  s.runTo(s.now + 60000);
+  assert.equal(lldpState(s, 'a'), 'neighbour known');
+});
+
+test('LLDP: a device powered off forgets its neighbours; its neighbour removes it when the link goes down with it (loss of signal)', () => {
+  const s = new S.Simulation(model(LLDP));
+  s.runTo(40000);
+  const t0 = s.now;
+  assert.ok(s.powerOff('b'));
+  s.runTo(t0 + 1000);
+  assert.equal(lldpState(s, 'b'), 'no neighbour', 'b forgot');
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'b' && e.what === 'neighbour removed' && /b was powered off/.test(e.detail)));
+  // a sees its own link go down (b's port is dark): what that port knew goes
+  assert.equal(lldpState(s, 'a'), 'no neighbour');
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'a' && e.what === 'neighbour removed' && /its link went down/.test(e.detail)));
+});
+
+test('LLDP: the neighbour silent while the link stays up (its advertisements lost) — aged out after the TTL it announced, not before', () => {
+  const s = new S.Simulation(model(LLDP));
+  s.runTo(40000);
+  const t0 = s.now;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'lldp' && f.msg.data && f.msg.data.from === 'b' ? { lose: true } : null);
+  s.runTo(t0 + 60000);
+  assert.equal(lldpState(s, 'a'), 'neighbour known', 'within its TTL');
+  s.runTo(t0 + 130000);
+  assert.equal(lldpState(s, 'a'), 'no neighbour');
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'a' && e.what === 'neighbour aged out' && /aged out after 2 min/.test(e.detail)));
+});
+
+test('LLDP: a neighbour is kept for the time-to-live its own advertisement announced', () => {
+  const s = new S.Simulation(model(LLDP));
+  s.runTo(40000);
+  const ev = s.events().find((e) => e.device === 'a' && e.what === 'neighbour known');
+  assert.match(ev.detail, /neighbour b port p1 \(for 2 min, the TTL it announced\)/);
+  const msg = s.events().find((e) => e.kind === 'message' && e.protocol === 'lldp' && e.device === 'b');
+  assert.match(msg.detail, /TTL 2 min/);
+});

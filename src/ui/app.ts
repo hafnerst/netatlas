@@ -1668,7 +1668,7 @@ export class App {
       const parts: Array<HTMLElement | string> = [
         el(this.doc, 'span', { class: 'file-state', 'data-file': fs.kind }, [fs.text]),
         d.dirty ? el(this.doc, 'span', { class: 'dirty' }, ['unsaved changes']) : '',
-        m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
+        m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations${m.interconnects.length ? ` · ${m.interconnects.length} non-IP interconnect${m.interconnects.length === 1 ? '' : 's'}` : ''}` : '',
         d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [`${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
         d.warnings.length ? `${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
         d.findings.length ? `${d.findings.length} check finding${d.findings.length > 1 ? 's' : ''}` : '',
@@ -1696,6 +1696,14 @@ export class App {
       const cb = this.$(id) as HTMLInputElement;
       cb.checked = v;
       cb.disabled = !s;
+    }
+    // the physical view's connections: IP, non-IP, or both — offered when the model has non-IP interconnects
+    const hasIc = !!s && s.model.interconnects.length > 0;
+    for (const [id, on] of [['opt-ip', !s || s.state.connections !== 'nonip'], ['opt-nonip', !s || s.state.connections !== 'ip']] as Array<[string, boolean]>) {
+      const cb = this.$(id) as HTMLInputElement;
+      cb.checked = on;
+      cb.disabled = !s;
+      (cb.parentElement as HTMLElement).hidden = !hasIc;
     }
     this.updateTypesControl();
     this.updateDevicesControl();
@@ -1874,7 +1882,7 @@ export class App {
       }
     }
     const logical = this.doc.body.getAttribute('data-view') === 'logical';
-    const shown = (o: HTMLElement): boolean => logical || !o.classList.contains('logical-only');
+    const shown = (o: HTMLElement): boolean => (logical || !o.classList.contains('logical-only')) && !(logical && o.classList.contains('physical-only')) && !o.hidden;
     const width = (o: HTMLElement): number => this.optWidth.get(o) || 110;
     const btnW = this.moreBtnWidth || 96;
     // Devices and Device types always stay in the row
@@ -1916,7 +1924,13 @@ export class App {
     // like the switches inside it, the drop-down needs a drawn model
     btn.disabled = !this.session;
     if (btn.hidden || btn.disabled) this.openMoreFilters(false);
-    const off = collapsed.filter((o) => !(o.querySelector('input') as HTMLInputElement).checked);
+    // (a switch is off when unchecked; the connections choice when it leaves something out)
+    const off = collapsed.filter((o) => {
+      const cb = o.querySelector('input') as HTMLInputElement | null;
+      if (cb) return !cb.checked;
+      const sel = o.querySelector('select') as HTMLSelectElement | null;
+      return !!sel && sel.value !== 'all';
+    });
     const name = (o: HTMLElement): string => (o.textContent || '').trim();
     this.$('more-filters-count').textContent = off.length ? ` · ${off.length} off` : '';
     btn.classList.toggle('filtered', off.length > 0);
@@ -6038,6 +6052,22 @@ export class App {
     opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
     opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
     opt('opt-routes', (v) => this.session && (this.session.state.showRoutes = v));
+    // IP / non-IP: at least one stays on (switching the last one off switches the other one back on)
+    for (const [id, other] of [['opt-ip', 'opt-nonip'], ['opt-nonip', 'opt-ip']]) {
+      this.$<HTMLInputElement>(id).addEventListener('change', (e) => {
+        if (!this.session) return;
+        const me = e.target as HTMLInputElement;
+        const them = this.$<HTMLInputElement>(other);
+        if (!me.checked && !them.checked) them.checked = true;
+        const ip = this.$<HTMLInputElement>('opt-ip').checked;
+        const non = this.$<HTMLInputElement>('opt-nonip').checked;
+        if (this.session.setConnections(ip && non ? 'all' : ip ? 'ip' : 'nonip')) {
+          this.render();
+          this.fit();
+        }
+        this.layoutFilters();
+      });
+    }
     this.wireDevices();
     this.wireTypes();
     this.wireDock();
@@ -6702,7 +6732,8 @@ export class App {
       const holder = line ? line.closest('[data-ref]') : null;
       const detail = line && holder ? { field: line.getAttribute('data-field') as string, value: line.getAttribute('data-value') || '' } : null;
       const detailRef = holder ? holder.getAttribute('data-ref') : null;
-      if (nodeRef && !this.simulation && (nodeRef.indexOf('device:') === 0 || nodeRef.indexOf('network:') === 0)) {
+      // (a bus's bar is moved like a device, in the physical view)
+      if (nodeRef && !this.simulation && (nodeRef.indexOf('device:') === 0 || nodeRef.indexOf('network:') === 0 || (nodeRef.indexOf('interconnect:') === 0 && this.session.state.view === 'physical'))) {
         const w = this.toWorld(e.clientX, e.clientY);
         const center = this.nodeCenter(nodeRef);
         drag = { mode: 'node', ref: nodeRef, sx: e.clientX, sy: e.clientY, ox: center.x - w.x, oy: center.y - w.y, moved: false, id: e.pointerId, detail: detailRef === nodeRef ? detail : null };
