@@ -857,13 +857,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
 
       click('#menu-btn');
+      {
+        // one line per example: every entry as tall as a single line of the menu (its name never wraps)
+        const items = Array.from(document.querySelectorAll('#menu-examples [data-example]')) as HTMLElement[];
+        const line = parseFloat(getComputedStyle(items[0].querySelector('.mi-label') as HTMLElement).lineHeight) || 18;
+        const tall = items.filter((b) => (b.querySelector('.mi-label') as HTMLElement).getBoundingClientRect().height > line * 1.5);
+        check('the File menu lists each example on one line', items.length === EXAMPLES.length && tall.length === 0, tall.map((b) => b.textContent).join(', '));
+      }
       click('#menu-examples [data-example="2"]');
       await tick(10);
       check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-save-as') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
       {
         // the loaded example is marked in the File menu, and so is whether its model was modified (also after undo / redo)
         const ex = (i: number): HTMLElement => q(`#menu-examples [data-example="${i}"]`) as HTMLElement;
-        const exState = (i: number): string => `${ex(i).classList.contains('active-example')}/${ex(i).getAttribute('aria-current') || '-'}/${(ex(i).querySelector('.ex-state') as HTMLElement).textContent}/${ex(i).getAttribute('data-modified')}`;
+        const exState = (i: number): string => `${ex(i).classList.contains('active-example')}/${ex(i).getAttribute('aria-current') || '-'}/${(ex(i).querySelector('.mi-state') as HTMLElement).textContent}/${ex(i).getAttribute('data-modified')}`;
         const others = (): boolean => EXAMPLES.every((_, i) => i === 2 || exState(i) === 'false/-//false');
         const loaded = exState(2);
         const saveOff = (q('#btn-save') as HTMLButtonElement).disabled && /not linked/.test(q('#btn-save')!.title) && app.fileState().kind === 'example' && /built-in example/.test(q('#status .file-state')!.textContent || '');

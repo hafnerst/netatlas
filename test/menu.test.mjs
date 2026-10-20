@@ -64,7 +64,13 @@ test('File menu: New model, Open model…, Save model, Save model as…, Close m
   for (const gone of ['id="btn-new"', 'id="open"', 'id="btn-save"', 'id="btn-save-as"', 'id="btn-download"', 'id="examples"', '<select']) assert.ok(!outside.includes(gone), gone);
   // the examples are filled in from the embedded files, one entry each, with a place for the "open · modified" state
   assert.match(app, /const menu = this\.\$\('menu-examples'\);\s+EXAMPLES\.forEach/);
-  assert.match(app, /el\(this\.doc, 'span', \{ class: 'mi-hint ex-state' \}\)/);
+  assert.match(app, /el\(this\.doc, 'span', \{ class: 'mi-hint mi-state' \}\)/);
+  // one line per example: the name never wraps (cut with an ellipsis instead), the state takes no room while empty, and no
+  // other panel's rule reaches the menu's state (the Experiments panel's .ex-state used to: it widened the empty state and
+  // wrapped every name onto a second line)
+  assert.match(css, /#menu-examples button \.mi-label \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/);
+  assert.match(css, /#menu-examples button \.mi-state:empty \{ display: none; \}/);
+  assert.doesNotMatch(app, /'mi-hint ex-state'/);
   // modified state is shown by a dot, never by a different border colour of a button
   assert.doesNotMatch(css, /data-dirty="true"\][^{]*\{[^}]*border-color/);
   // drop-downs open over the page: the toolbar must not clip or scroll them
@@ -108,7 +114,7 @@ test('examples: the File menu offers the curated public catalog; the internal ex
   const { EXAMPLES } = load('generated/examples.js');
   const { INTERNAL_EXAMPLES, FIXTURES } = load('generated/test-examples.js');
   // one representative example per architecture family, in the File menu's order
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml', 'vme-rack.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
   assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
   assert.equal(INTERNAL_EXAMPLES.length, 20);

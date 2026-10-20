@@ -25,6 +25,7 @@ NetAtlas keeps two kinds of example models apart.
 | `ot-network.yaml` | OT cell: PLC, HMI, protocol gateway, TAP and passive IDS; applications and MQTT |
 | `timing-ptp.yaml` | Time synchronization: PTP grandmasters, a boundary and a transparent clock |
 | `cross-domain.yaml` | Cross-domain boundary: a Security gateway that breaks the protocol |
+| `vme-rack.yaml` | Embedded VME rack: a VMEbus backplane, a MIL-STD-1553 bus and console lines beside Ethernet |
 
 [Why each one is in the catalog](#why-each-one-is-in-the-catalog) is below. A public example has a concise `title` and a `description`,
 loads without errors, warnings or consistency findings (each public example
@@ -63,7 +64,7 @@ self-test), and shows one architecture rather than a list of features.
 
 ## Why each one is in the catalog
 
-The **File** menu offers ten examples: one representative model for each
+The **File** menu offers eleven examples: one representative model for each
 kind of network NetAtlas is meant for, each a coherent architecture rather
 than a list of features. They are in [`examples/`]() and are the
 only models built into `dist/netatlas.html`.
@@ -80,6 +81,7 @@ only models built into `dist/netatlas.html`.
 | [`ot-network.yaml`](ot-network.yaml) | **OT cell.** A PLC and an HMI behind a protocol gateway, a pass-through TAP feeding a passive IDS; the PLC's applications (a register listener the HMI polls, telemetry published by MQTT) and an MQTT broker with a matching and a non-matching subscriber. | Industrial devices, port pairs and a monitoring copy that forwards nothing; Endpoints that run applications without becoming servers, and MQTT's fan-out by topic filter; dependency expectations, a violated isolation requirement (a forwarder without a policy) and the broker as a service single point; repeatable experiments of the cabinet's outage and of the HMI's dashboard receiving the PLC's temperatures by MQTT. |
 | [`timing-ptp.yaml`](timing-ptp.yaml) | **Time synchronization.** Two cells in one PTP domain: two grandmaster candidates behind a transparent-clock switch, a router as boundary clock, a PLC and a drive receiving time. | The PTP election, boundary and transparent clocks, and a grandmaster failing and coming back, in the simulation; timing expectations with an explicit method (PTP keeps a source without one grandmaster; the router's NTP chain does not) that never claim synchronization. |
 | [`cross-domain.yaml`](cross-domain.yaml) | **Cross-domain boundary.** Red and Black domains joined by a Security gateway that breaks the protocol: one permitted web transfer in two legs, one denied transfer, a management network apart. | A separation boundary with an explicit policy, traced with a service. |
+| [`vme-rack.yaml`](vme-rack.yaml) | **Embedded VME rack.** A VME64x crate in a control-room rack: a system-controller CPU, a second CPU, ADC and digital I/O boards and a MIL-STD-1553 board on the VMEbus backplane; the 1553 bus to two remote terminals and a bus monitor in the field; RS-232 console lines from both CPUs to a console server; Ethernet only for the CPUs, the console server and an engineering workstation. | Non-IP interconnects as a system uses them: a shared backplane with controllers and targets (one the system controller), a command/response bus with a monitor, point-to-point serial lines, opaque ports beside IP interfaces on the same boards; **Send illustrative data** shows where data can go (a CPU reading the ADC, the 1553 board commanding a remote terminal) and why it can't; the IP side never uses them. |
 
 ### The private-house example
 

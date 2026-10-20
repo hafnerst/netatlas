@@ -7,7 +7,8 @@
 //   npm run build && node scripts/manual-screenshots.mjs && npm run build
 //
 // The browser is controlled through the DevTools protocol (scripts/cdp.mjs).
-// Set NETATLAS_BROWSER=/path/to/chrome to choose the browser.
+// Set NETATLAS_BROWSER=/path/to/chrome to choose the browser. SHOTS=file-menu,simulation
+// writes only the images named (the steps run as always), leaving the others as they are.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,7 +34,9 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   const page = await openPage(pathToFileURL(html).href);
   const saved = [];
+  const only = process.env.SHOTS ? process.env.SHOTS.split(',').map((x) => x.trim()) : null;
   const save = async (name, clip, opts) => {
+    if (only && only.indexOf(name) < 0) return;
     const data = await page.shot(clip, opts);
     writeFileSync(join(outDir, name + '.webp'), data);
     saved.push(`${name}.webp ${(data.length / 1024).toFixed(1)} KiB`);

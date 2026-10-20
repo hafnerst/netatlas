@@ -1,0 +1,131 @@
+netatlas: 1
+title: VME control rack
+description: "An embedded control rack: a VME64x crate whose boards talk over the VMEbus backplane, a MIL-STD-1553 bus to the remote terminals in the field, RS-232 console lines to a console server, and Ethernet only for the operators. The non-IP interconnects carry illustrative data (Simulate → Send illustrative data); the IP side never uses them."
+
+groups:
+  - {id: lab, label: Control room, kind: room}
+  - {id: rack, label: 19-inch rack, kind: rack, parent: lab}
+  - {id: crate, label: VME64x crate, kind: rack, parent: rack}
+  - {id: field, label: Field, kind: room}
+
+devices:
+  # the operators' side: Ethernet
+  - id: sw
+    type: switch
+    label: Rack switch
+    group: rack
+    igmp_mld_snooping: {20: enabled}
+    interfaces: [{id: p1, vlans: 20}, {id: p2, vlans: 20}, {id: p3, vlans: 20}, {id: p4, vlans: 20}]
+  - id: ews
+    type: endpoint
+    label: Engineering workstation
+    group: lab
+    interfaces: [{id: eth0, ip: 10.20.0.50/24}]
+  - id: cons
+    type: system
+    purpose: host
+    label: Console server
+    group: rack
+    interfaces:
+      - {id: eth0, ip: 10.20.0.40/24}
+      - {id: s1, stack: opaque, label: port 1}
+      - {id: s2, stack: opaque, label: port 2}
+
+  # the crate: single-board computers and I/O boards on the backplane
+  - id: cpu1
+    type: server
+    label: SBC 1 (system controller)
+    group: crate
+    interfaces:
+      - {id: eth0, ip: 10.20.0.11/24}
+      - {id: vme, stack: opaque, label: P1/P2}
+      - {id: com1, stack: opaque, label: COM1}
+  - id: cpu2
+    type: server
+    label: SBC 2
+    group: crate
+    interfaces:
+      - {id: eth0, ip: 10.20.0.12/24}
+      - {id: vme, stack: opaque, label: P1/P2}
+      - {id: com1, stack: opaque, label: COM1}
+  - id: adc
+    type: endpoint
+    label: ADC board
+    group: crate
+    interfaces: [{id: vme, stack: opaque, label: P1/P2}]
+  - id: dio
+    type: endpoint
+    label: Digital I/O board
+    group: crate
+    interfaces: [{id: vme, stack: opaque, label: P1/P2}]
+  - id: mil
+    type: system
+    purpose: host
+    label: MIL-STD-1553 board
+    group: crate
+    interfaces:
+      - {id: vme, stack: opaque, label: P1/P2}
+      - {id: bus-a, stack: opaque, label: bus A}
+
+  # the field: remote terminals and a bus monitor on the 1553 bus
+  - id: act
+    type: endpoint
+    label: Actuator (RT 3)
+    group: field
+    interfaces: [{id: bus-a, stack: opaque}]
+  - id: sens
+    type: endpoint
+    label: Sensor unit (RT 5)
+    group: field
+    interfaces: [{id: bus-a, stack: opaque}]
+  - id: mon
+    type: storage
+    label: Bus monitor
+    group: field
+    interfaces: [{id: bus-a, stack: opaque}]
+
+links:
+  - {id: l-ews, a: "sw:p1", b: "ews:eth0"}
+  - {id: l-cons, a: "sw:p2", b: "cons:eth0"}
+  - {id: l-cpu1, a: "sw:p3", b: "cpu1:eth0"}
+  - {id: l-cpu2, a: "sw:p4", b: "cpu2:eth0"}
+
+networks:
+  - {id: ctrl, label: Control LAN, cidr: 10.20.0.0/24, vlan: 20}
+
+interconnects:
+  - id: vmebus
+    topology: shared
+    technology: {name: VME, version: VME64x}
+    connector: VME64x backplane (P1/P2)
+    access: controller_target
+    endpoints:
+      - {port: "cpu1:vme", role: controller_target, system_controller: true}
+      - {port: "cpu2:vme", role: controller_target}
+      - {port: "adc:vme", role: target}
+      - {port: "dio:vme", role: target}
+      - {port: "mil:vme", role: target}
+  - id: mil-bus
+    topology: shared
+    technology: {name: MIL-STD-1553, version: B}
+    connector: twinax, transformer-coupled stubs
+    access: controller_target
+    endpoints:
+      - {port: "mil:bus-a", role: controller}
+      - {port: "act:bus-a", role: target}
+      - {port: "sens:bus-a", role: target}
+      - {port: "mon:bus-a", role: monitor}
+  - id: console-1
+    topology: point_to_point
+    technology: {name: RS-232}
+    connector: DB-9
+    endpoints:
+      - {port: "cpu1:com1", role: peer}
+      - {port: "cons:s1", role: peer}
+  - id: console-2
+    topology: point_to_point
+    technology: {name: RS-232}
+    connector: DB-9
+    endpoints:
+      - {port: "cpu2:com1", role: peer}
+      - {port: "cons:s2", role: peer}
