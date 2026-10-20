@@ -196,6 +196,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; }
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; white-space: nowrap; }
+.opt[hidden] { display: none; }
 /* a narrower toolbar: the logo without name and version (the Auto-arrange label sits above its buttons, so it takes no width and stays) */
 @container (max-width: 1700px) {
   .brand > span { display: none; }
