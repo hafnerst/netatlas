@@ -82,7 +82,7 @@ test('reasonable size, and the examples, the manual and the license are embedded
   // (SIZE_BUDGET in scripts/release-check.mjs, in bytes; 5 973 779 bytes at 0.1.3 + the played experiments, 95 % of it)
   // (5 MiB since virtualization: the Hypervisor and Container engine services' editing, the hosts' interiors, the simulation of virtual networking, its example and manual sections;
   //  6 MiB since the architecture-validation workflow: communication checks, allocation-aware addressing, service dependencies, what-if, failure domains, saved expectations and Design checks;
-  //  6.5 MiB since the non-IP interconnects, decided by the maintainer: 6 211 064 bytes before them, 6 354 732 with them — opaque ports, interconnects, their diagram, editor, illustrative data and manual section)
+  //  6.5 MiB since the non-IP interconnects, decided by the maintainer: 6 211 064 bytes before them, 6 354 764 with them — opaque ports, interconnects, their diagram, editor, illustrative data and manual section)
   assert.ok(Buffer.byteLength(html) <= SIZE_BUDGET, `${Buffer.byteLength(html)} bytes, over the budget of ${SIZE_BUDGET}`);
   // the screenshots are small, cropped WebP images: together under 1080 KiB as data: URLs (the manual's simulation sections added some: the packet inspector, a broadcast domain, the simulation layout and the Device types filter; then a port's VLANs, and the port labels in the diagrams; then virtualization: a host's interior, its Services card and the HA restart in a simulation; then the Send test form; then a device's applications and the PTP clocks' marks; then a saved experiment's run, the saved views and the execution scope)
   const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
