@@ -336,8 +336,8 @@ relations:
         await page.eval(`(() => { const c = netatlas.simController(); const ls = Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).filter((g) => g.textContent.indexOf(${JSON.stringify(prefix)}) >= 0).map((g) => g.getBoundingClientRect()); if (!ls.length) return false; const r = document.getElementById('canvas').getBoundingClientRect(); const cx = ls.reduce((n, b) => n + b.left + b.width / 2, 0) / ls.length - r.left; const cy = ls.reduce((n, b) => n + b.top + b.height / 2, 0) / ls.length - r.top; const z = netatlas.zoom; const dx = (cx - z.tx) / z.k; const dy = (cy - z.ty) / z.k; z.k = 1.2; z.tx = r.width / 2 - dx * z.k; z.ty = r.height / 2 - dy * z.k; netatlas.applyZoom(); c.refresh(true); return true; })()`);
         await page.settle(200);
         const r = await page.rect('#canvas');
-        const w = Math.min(r.w - 8, 760);
-        const h = Math.min(r.h - 8, 420);
+        const w = Math.min(r.w - 8, 600);
+        const h = Math.min(r.h - 8, 300);
         return { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, w, h };
       };
       for (const view of ['logical', 'physical']) {
@@ -349,14 +349,14 @@ relations:
           // the BGP session's TCP connection along the relation: its SYN-ACK and ACK, then the OPENs
           if (await until(['BGP TCP [S,A]'], false)) {
             await page.settle(150);
-            await save('tcp-logical', await canvas('BGP TCP ['), { quality: 55 });
+            await save('tcp-logical', await canvas('BGP TCP ['), { quality: 40 });
           }
         } else {
           await page.eval(`netatlas.simController().runTo(15000), netatlas.simController().sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 443 }), true`);
           for (const [name, want] of [['tcp-syn', ['TCP [S]']], ['tcp-synack', ['TCP [S,A]']], ['tcp-ack', ['TCP [A]', 'TCP [P,A]']]]) {
             if (!(await until(want, true))) continue;
             await page.settle(150);
-            await save(name, await canvas('Test · TCP ['), { quality: 55 });
+            await save(name, await canvas('Test · TCP ['), { quality: 40 });
             await page.eval('netatlas.fit(), true');
           }
         }

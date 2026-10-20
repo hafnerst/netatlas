@@ -12,7 +12,7 @@
  *   came in by with metric 16 (infinity). One Response per interface, to
  *   the RIP group (a Request's answer: to the asking neighbour).
  *   Receiving one: metric + the relation's cost (default 1), at most 16;
- *   through the import filter. A new prefix with a metric below 16 is
+ *   through the inbound filter. A new prefix with a metric below 16 is
  *   taken; from the neighbour the route came from, the new metric is
  *   taken whatever it is (16: the route is withdrawn) and the timeout
  *   starts again; from another neighbour, only a lower metric.

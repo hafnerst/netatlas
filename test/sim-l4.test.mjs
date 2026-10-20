@@ -515,7 +515,7 @@ test('the packet inspector: each dot’s frame layer by layer (MACs, VLAN tag, I
   // a relation's message: its profile's transport (OSPF is IP 89, multicast)
   const o = new S.Simulation(model(example('protocol-simulation.yaml')));
   o.runTo(3000);
-  const hello = o.engine.flights.find((f) => f.protocol === 'ospf' && /Hello/.test(f.label) && f.hdr);
+  const hello = o.engine.flights.find((f) => f.view === 'physical' && f.protocol === 'ospf' && /Hello/.test(f.label) && f.hdr);
   assert.equal(hello.cast, 'multicast');
   assert.equal(hello.hdr.l4.num, 89);
   assert.match(hello.hdr.l2.dstNote, /^IPv4 multicast 224\.0\.0\.5: 01:00:5e/);
