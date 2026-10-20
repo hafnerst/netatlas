@@ -315,8 +315,12 @@ const IKE_RTO = 2000;
 interface IkeX {
   /** the next message ID of this side's requests (IKE_SA_INIT 0, IKE_AUTH 1, then each exchange) */
   mid?: number;
-  /** the request it waits a response for */
-  pending?: { mid: number; type: string; tries: number; tok: number };
+  /** the request it waits a response for (what a CREATE_CHILD_SA rekeys) */
+  pending?: { mid: number; type: string; tries: number; tok: number; what?: string };
+  /** its requests waiting for their turn: one outstanding at a time (RFC 7296 §2.3, a window of one) */
+  queue?: Array<{ type: string; what?: string; run: () => void }>;
+  /** a new IKE SA the peer is negotiating while this side's is established (the old one serves until the new one is up) */
+  replacing?: boolean;
   /** the peer's last request and this side's response to it (sent again when the request comes again) */
   answered?: { mid: number; type: string; detail: string; data: { [k: string]: unknown } };
   /** the next request ID expected from the peer */
@@ -331,14 +335,27 @@ interface IkeX {
  * Send one of this side's IKE requests (a message ID of its own, RFC 7296
  * §2.2): sent again with a doubling timeout while unanswered; `failed`
  * after IKE_TRIES retransmissions. Only the response with the same message
- * ID ends it (ikeResponse).
+ * ID ends it (ikeResponse). One request is outstanding at a time (a window
+ * of one, §2.3): while another waits for its response this one waits its
+ * turn — never replacing it — and goes when that one is answered or given
+ * up (ikeNext). A rekey of an SA already waiting or outstanding is not
+ * asked twice.
  */
 function ikeRequest(P: ProtocolSim, s: Sess, type: string, detail: string, state: string, failed: (why: string) => void, data: { [k: string]: unknown } = {}): void {
   const x = s.x as IkeX;
+  const what = typeof data.what === 'string' ? (data.what as string) : undefined;
+  if (x.pending) {
+    const q = x.queue || (x.queue = []);
+    if (what && type === 'CREATE_CHILD_SA' && ((x.pending.type === type && x.pending.what === what) || q.some((e) => e.type === type && e.what === what))) return;
+    const g = s.gen;
+    q.push({ type, what, run: () => (s.gen === g ? ikeRequest(P, s, type, detail, state, failed, data) : undefined) });
+    P.e.note('state', s.protocol, s.dev, s.peer, 'request waits', s.state, `IKEv2 ${s.rel.id}: ${s.dev}'s ${type}${what ? ` (${what === 'ike' ? 'IKE SA' : 'Child SA'})` : ''} waits for the response to its ${x.pending.type} (message ID ${x.pending.mid}): one request at a time`);
+    return;
+  }
   const mid = x.mid === undefined ? 0 : x.mid;
   x.mid = mid + 1;
   const tok = (x.tok = (x.tok || 0) + 1);
-  x.pending = { mid, type, tries: 0, tok };
+  x.pending = { mid, type, tries: 0, tok, what };
   const send = (n: number): void => P.unicast(s, type, `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: ${detail}`, { ...data, mid }, state);
   send(0);
   const again = (n: number): void => {
@@ -347,7 +364,9 @@ function ikeRequest(P: ProtocolSim, s: Sess, type: string, detail: string, state
       if (!p || p.tok !== tok) return;
       if (n > IKE_TRIES) {
         x.pending = undefined;
+        const g = s.gen;
         failed(`${type} (message ID ${mid}) unanswered after ${IKE_TRIES} retransmissions`);
+        if (s.gen === g) ikeNext(s);
         return;
       }
       p.tries = n;
@@ -367,7 +386,20 @@ function ikeResponse(P: ProtocolSim, s: Sess, type: string, mid: number | undefi
     return false;
   }
   x.pending = undefined;
+  ikeNext(s);
   return true;
+}
+
+/** The next request waiting for its turn goes (the one before it was answered or given up). */
+function ikeNext(s: Sess): void {
+  const x = s.x as IkeX;
+  while (!x.pending && x.queue && x.queue.length) (x.queue.shift() as { run: () => void }).run();
+}
+
+/** This side's requests end (a restart, a new IKE SA): none outstanding, none waiting. */
+function ikeClear(x: IkeX): void {
+  x.pending = undefined;
+  x.queue = [];
 }
 
 /** Answer the peer's request (the same message ID); the answer is kept, and sent again if the request comes again. */
@@ -404,6 +436,12 @@ function ikeRepeat(P: ProtocolSim, s: Sess, type: string, mid: number | undefine
  *   its lifetime expires on that side: a Child SA — no traffic until a
  *   new one is negotiated; the IKE SA — everything is deleted and
  *   negotiated anew.
+ *   One request of a side is outstanding at a time: a DPD, a rekey, a
+ *   second rekey due at the same moment wait their turn (ikeRequest).
+ *   A new IKE_SA_INIT from the peer while this side is established (the
+ *   peer lost its SA and starts over): answered, and the old SAs keep
+ *   serving until the new IKE_AUTH completes and replaces them — the new
+ *   negotiation alone deletes nothing.
  * Cryptography stays abstract (proposals, keys and authentication are not
  * checked).
  */
@@ -422,10 +460,15 @@ const ike: Behaviour = {
       case 'IKE_SA_INIT':
         if (!d.response) {
           if (ikeRepeat(P, s, 'IKE_SA_INIT', d.mid)) return;
-          // a new IKE SA from the peer: what this side had is gone (the peer started over)
-          if (s.state === 'Established') ikeDown(P, s, 'the peer starts a new IKE SA (IKE_SA_INIT)', false);
+          if (s.state === 'Established' || s.state === 'No Child SA') {
+            // a new IKE SA from the peer while this side's is up: answered; the old SAs serve until the new one is authenticated
+            x.replacing = true;
+            ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr (a new IKE SA: the established one serves until it is up)');
+            P.e.note('state', s.protocol, s.dev, s.peer, 'new IKE SA', s.state, `IKEv2 ${s.rel.id}: ${s.peer} starts a new IKE SA; ${s.dev}'s established SAs serve until the new one is authenticated`);
+            return;
+          }
           x.mid = 0;
-          x.pending = undefined;
+          ikeClear(x);
           ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr', {}, 'IKE_SA_INIT');
           P.setState(s, 'IKE_SA_INIT', false, 'request from the peer');
         } else if (s.state === 'IKE_SA_INIT' && ikeResponse(P, s, 'IKE_SA_INIT', d.mid)) {
@@ -436,8 +479,10 @@ const ike: Behaviour = {
       case 'IKE_AUTH':
         if (!d.response) {
           if (ikeRepeat(P, s, 'IKE_AUTH', d.mid)) return;
-          if (s.state !== 'IKE_SA_INIT') return;
+          if (s.state !== 'IKE_SA_INIT' && !x.replacing) return;
+          const replaced = !!x.replacing;
           ikeAnswer(P, s, 'IKE_AUTH', d.mid, 'IDr, AUTH, SAr2 (the first Child SA)', {}, 'Established');
+          if (replaced) P.e.note('state', s.protocol, s.dev, s.peer, 'IKE SA replaced', 'Established', `IKEv2 ${s.rel.id}: the new IKE SA with ${s.peer} is authenticated: it and its Child SA replace ${s.dev}'s old ones (deleted now)`);
           ikeUp(P, s);
         } else if (s.state === 'IKE_AUTH' && ikeResponse(P, s, 'IKE_AUTH', d.mid)) ikeUp(P, s);
         return;
@@ -467,7 +512,8 @@ function ikeInit(P: ProtocolSim, s: Sess): void {
   P.restart(s);
   const x = s.x as IkeX;
   x.mid = 0;
-  x.pending = undefined;
+  ikeClear(x);
+  x.replacing = false;
   x.answered = undefined;
   P.setState(s, 'IKE_SA_INIT', false, 'initiating');
   ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${formatAddr(s.remote.addr)} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
@@ -486,8 +532,17 @@ function ikeFailed(P: ProtocolSim, s: Sess, why: string): void {
 function ikeDown(P: ProtocolSim, s: Sess, why: string, again = true): void {
   P.restart(s);
   const x = s.x as IkeX;
-  x.pending = undefined;
+  ikeClear(x);
+  // (a new IKE SA the peer was negotiating meanwhile goes on: this side waits for its IKE_AUTH)
+  const replacing = !!x.replacing;
+  x.replacing = false;
   x.childUntil = x.ikeUntil = undefined;
+  if (replacing) {
+    x.mid = 0;
+    P.setState(s, 'IKE_SA_INIT', false, `${why}; the new IKE SA ${s.peer} started is negotiated on`);
+    P.e.syncInterfaces();
+    return;
+  }
   P.setState(s, 'Idle', false, why);
   P.e.syncInterfaces();
   // (scheduled after the restart: this generation's timer, not the one just ended)
@@ -547,6 +602,11 @@ function ikeRenew(P: ProtocolSim, s: Sess, what: 'child' | 'ike'): void {
 
 function ikeUp(P: ProtocolSim, s: Sess): void {
   P.restart(s);
+  const x0 = s.x as IkeX;
+  // a new IKE SA: what was outstanding on the old one ends; the responder's own requests start at message ID 0 in it
+  ikeClear(x0);
+  if (!s.initiator) x0.mid = 0;
+  x0.replacing = false;
   P.setState(s, 'Established', true, 'IKE SA and Child SA established');
   P.e.syncInterfaces();
   ikeRenew(P, s, 'child');
@@ -555,7 +615,8 @@ function ikeUp(P: ProtocolSim, s: Sess): void {
   const g = s.gen;
   const dpd = (): void => {
     P.later(s, P.timer(s, s.profile, 'dpd').ms, () => {
-      if (s.gen !== g || (s.x as IkeX).pending) {
+      // (a request of its own outstanding or waiting: its response shows the peer alive; DPD waits)
+      if (s.gen !== g || (s.x as IkeX).pending || ((s.x as IkeX).queue || []).length) {
         if (s.gen === g) dpd();
         return;
       }
