@@ -102,17 +102,18 @@ test('Send illustrative data in a simulation: the form says why it can’t, send
     await page.settle(200);
     await page.eval(`(() => { netatlas.startProtocolSimulation(); const c = netatlas.simController(); c.setPlaying(false); c.runTo(3000); c.refresh(true); return true; })()`);
     await page.settle(150);
-    const set = (id, v) => page.eval(`(() => { const e = document.getElementById('${id}'); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event('change')); return e.value; })()`);
-    assert.equal(await set('sim-o-ic', 'meter-bus'), 'meter-bus');
-    await set('sim-o-init', 'ctl:rs485');
-    await set('sim-o-from', 'meter1:rs485');
-    await set('sim-o-to', 'meter2:rs485');
+    // v: a JavaScript string literal, as source text
+    const set = (id, v) => page.eval(`(() => { const e = document.getElementById('${id}'); e.value = ${v}; e.dispatchEvent(new Event('change')); return e.value; })()`);
+    assert.equal(await set('sim-o-ic', "'meter-bus'"), 'meter-bus');
+    await set('sim-o-init', "'ctl:rs485'");
+    await set('sim-o-from', "'meter1:rs485'");
+    await set('sim-o-to', "'meter2:rs485'");
     // a transfer between two targets: refused, said so, the button disabled
     const need = await page.eval(`({ text: document.getElementById('sim-o-need').textContent, disabled: document.getElementById('sim-o-send').disabled })`);
     assert.equal(need.disabled, true);
     assert.match(need.text, /neither the source nor the recipient/);
     // a read: the meter's data to the controller, initiated by the controller
-    await set('sim-o-to', 'ctl:rs485');
+    await set('sim-o-to', "'ctl:rs485'");
     assert.equal(await page.eval(`document.getElementById('sim-o-send').disabled`), false);
     await page.eval(`document.getElementById('sim-o-send').click(), true`);
     await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(true); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); return true; })()`);
