@@ -184,3 +184,27 @@ test('OSPF: a DBD of a later exchange after Full (the neighbour negotiated anew)
   s.runTo(s.now + 80000);
   assert.deepEqual(ospfStates(s), ['Full', 'Full']);
 });
+
+test('OSPF: a change is flooded to a neighbour in Exchange or Loading too (RFC 2328 §13.3) — r2 learns r1’s record from r3 while their database exchange is still loading', () => {
+  const s = new S.Simulation(model(`netatlas: 1
+title: ospf chain
+devices:
+  - {id: r1, type: router, router_id: 10.255.0.1, interfaces: [{id: g0, ip: 10.0.13.1/30}, {id: lan, ip: 10.1.0.1/24}], protocols: {ospf: {}}}
+  - {id: r3, type: router, router_id: 10.255.0.3, interfaces: [{id: g0, ip: 10.0.13.2/30}, {id: g1, ip: 10.0.23.1/30}], protocols: {ospf: {}}}
+  - {id: r2, type: router, router_id: 10.255.0.2, interfaces: [{id: g0, ip: 10.0.23.2/30}], protocols: {ospf: {}}}
+links:
+  - {id: l13, a: "r1:g0", b: "r3:g0"}
+  - {id: l23, a: "r3:g1", b: "r2:g0"}
+relations:
+  - {id: o13, protocol: ospf, endpoints: ["r1:g0", "r3:g0"]}
+  - {id: o23, protocol: ospf, endpoints: ["r3:g1", "r2:g0"]}
+`));
+  // the database exchange between r3 and r2 never completes: the LSUs answering their LSRs are lost both ways
+  s.engine.impair = (link, f) => (link === 'l23' && f.msg.protocol === 'ospf' && f.msg.type === 'LSU' && f.msg.data && f.msg.data.reply ? { lose: true } : null);
+  s.runTo(60000);
+  assert.deepEqual(s.sessions('r3', 'ospf', 'r2').filter((x) => x.device === 'r3').map((x) => x.state), ['Loading']);
+  assert.deepEqual(s.sessions('r1', 'ospf').map((x) => x.state), ['Full']);
+  // r1's record (its adjacency with r3) reached r2 by flooding, though r3 and r2 are not Full
+  const rec = s.protocols.viewOf('r2').find((x) => x.origin === 'r1');
+  assert.ok(rec && rec.adj.some((a) => /^o13\|r3$/.test(a)), JSON.stringify(s.protocols.viewOf('r2')));
+});

@@ -552,6 +552,8 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
   learns(_P, s) {
     return ['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0;
   },
+  // RFC 2328 §13.3: a change is flooded to every neighbour in Exchange or beyond (and sent again until acknowledged), not only to the Full ones
+  floodsDuring: ['Exchange', 'Loading'],
   adjUp(P, s) {
     if (s.state === 'Full') return true;
     const f = ospfIf(P, s);

@@ -116,6 +116,8 @@ export interface Behaviour {
   advertise?(P: ProtocolSim, s: Sess, recs: RouteRec[], why: string): void;
   /** may this message of the session teach the router now (its state machine's say; default: the session is up) */
   learns?(P: ProtocolSim, s: Sess, msg: Msg): boolean;
+  /** the states besides an adjacency that is up in which a change is flooded to the neighbour too (OSPF: Exchange and Loading, RFC 2328 §13.3) */
+  floodsDuring?: string[];
   /** send one of its unicast messages its own way (IS-IS: a frame on the link, no IP); else ProtocolSim.unicast */
   send?(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown }): void;
 }
@@ -717,6 +719,13 @@ export class ProtocolSim implements Protocols {
     return b && b.adjUp ? b.adjUp(this, s) : s.up;
   }
 
+  /** Is a change flooded to the session's neighbour now: its adjacency is up, or its protocol floods in its present state too (OSPF in Exchange or Loading)? */
+  private floodsTo(s: Sess): boolean {
+    if (this.adjUpOf(s)) return true;
+    const b = this.behaviours.get(s.profile.behaviour);
+    return !!b && !!b.floodsDuring && b.floodsDuring.indexOf(s.state) >= 0;
+  }
+
   /** Restart a session (timers of the old generation do nothing). */
   restart(s: Sess): void {
     s.gen++;
@@ -1153,7 +1162,7 @@ export class ProtocolSim implements Protocols {
   /** Records of an instance to the router's neighbours over that instance's adjacencies that are up (but the one they came from). */
   private advertise(dev: string, inst: string, recs: RouteRec[], except: Sess | null, why: string, lost = false): void {
     for (const s of this.sessionsOf(dev)) {
-      if (!this.isRouting(s) || this.instanceOf(s) !== inst || !this.adjUpOf(s) || !s.x.started) continue;
+      if (!this.isRouting(s) || this.instanceOf(s) !== inst || !this.floodsTo(s) || !s.x.started) continue;
       if (except && s.peer === except.peer && s.rel.id === except.rel.id) continue;
       this.sendRecs(s, recs.map(copyRec), why, lost);
     }
@@ -1193,7 +1202,7 @@ export class ProtocolSim implements Protocols {
     this.pendingAdv.set(key, s.gen);
     const again = (n: number): void => {
       this.e.after(ADV_RXMT, () => {
-        if (this.pendingAdv.get(key) !== s.gen || !this.adjUpOf(s)) {
+        if (this.pendingAdv.get(key) !== s.gen || !this.floodsTo(s)) {
           this.pendingAdv.delete(key);
           return;
         }
