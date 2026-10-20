@@ -1202,6 +1202,15 @@ export function installLacp(P: ProtocolSim): void {
 
 // ------------------------------------------------------------------ STP, LLDP, CDP (where the model has their relations)
 
+/**
+ * STP's BPDUs (shown; the tree itself is computed from the topology:
+ * engine.ts spanningTree), LLDP and CDP advertisements on the cables of
+ * their relations. A neighbour is known from its advertisements only: for
+ * the time-to-live its last one announced (LLDP's TTL TLV, CDP's holdtime),
+ * and no longer once the port's link goes down or the device is powered
+ * off (IEEE 802.1AB: the remote information of a port that is disabled is
+ * deleted) — never by looking at the neighbour.
+ */
 export function installL2Adverts(P: ProtocolSim): void {
   const STP_MAC = '01:80:c2:00:00:00';
   for (const r of P.m.relations.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -1211,12 +1220,12 @@ export function installL2Adverts(P: ProtocolSim): void {
     if (!p) continue;
     const devs = relationDevices(r);
     // the cables between two of its devices: each end sends on its port
-    type Port = { dev: string; port: string; peer: string; peerPort: string; heard: number; known: boolean };
+    type Port = { dev: string; port: string; peer: string; peerPort: string; heard: number; known: boolean; ttl: number; gen: number };
     const ports: Port[] = [];
     for (const l of P.m.links) {
       if (devs.indexOf(l.a.device) < 0 || devs.indexOf(l.b.device) < 0 || l.a.device === l.b.device) continue;
-      ports.push({ dev: l.a.device, port: linkPort(P.m, l, l.a), peer: l.b.device, peerPort: linkPort(P.m, l, l.b), heard: -1, known: false });
-      ports.push({ dev: l.b.device, port: linkPort(P.m, l, l.b), peer: l.a.device, peerPort: linkPort(P.m, l, l.a), heard: -1, known: false });
+      ports.push({ dev: l.a.device, port: linkPort(P.m, l, l.a), peer: l.b.device, peerPort: linkPort(P.m, l, l.b), heard: -1, known: false, ttl: 0, gen: 0 });
+      ports.push({ dev: l.b.device, port: linkPort(P.m, l, l.b), peer: l.a.device, peerPort: linkPort(P.m, l, l.a), heard: -1, known: false, ttl: 0, gen: 0 });
     }
     if (!ports.length) continue;
     // STP's hello time is each switch's own (its simulation attribute); LLDP's and CDP's their profile's
@@ -1238,32 +1247,53 @@ export function installL2Adverts(P: ProtocolSim): void {
                 const root = stpRoot(P, devs);
                 P.onPort('stp', x.dev, x.port, mac, 'BPDU', `${P.param('stp-mode', x.dev).value === 'stp' ? 'STP' : 'RSTP'} BPDU`, `${P.param('stp-mode', x.dev).value === 'stp' ? 'Configuration BPDU (802.1D)' : 'RST BPDU (802.1w)'} from ${x.dev}:${x.port}: root ${root || '?'}, bridge ${sd.bridgeId || x.dev}, hello ${fmtSec(helloOf(x.dev))}`, {}, x.peer, r);
               }
-            } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, {}, x.peer, r);
+            } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, { ttl }, x.peer, r);
           }
         };
         P.whenPortUp(x.dev, x.port, () => P.periodic(() => true, () => helloOf(x.dev), tick));
       }
     });
     P.handlers.set(base, (dev, _l3, msg) => {
-      const from = ((msg.data || {}) as { from?: string; port?: string });
+      const from = ((msg.data || {}) as { from?: string; port?: string; ttl?: number });
       const x = ports.find((q) => q.dev === dev && q.peer === from.from && q.peerPort === from.port);
       if (!x) return;
       x.heard = P.e.now;
+      // (the time-to-live the advertisement announced: the sender's, not this device's own setting)
+      x.ttl = typeof from.ttl === 'number' ? from.ttl : ttl;
       if (!x.known && base !== 'stp') {
         x.known = true;
-        P.e.note('state', base, dev, x.peer, 'neighbour known', 'neighbour known', `${p.label} on ${dev}:${x.port}: neighbour ${x.peer} port ${x.peerPort}`);
+        P.e.note('state', base, dev, x.peer, 'neighbour known', 'neighbour known', `${p.label} on ${dev}:${x.port}: neighbour ${x.peer} port ${x.peerPort} (for ${fmtSec(x.ttl)}, the TTL it announced)`);
       }
-      P.e.after(ttl, () => {
-        if (x.known && P.e.now - x.heard >= ttl - 1) {
+      const g = x.gen;
+      const life = x.ttl;
+      P.e.after(life, () => {
+        if (x.gen === g && x.known && P.e.now - x.heard >= life - 1) {
           x.known = false;
-          P.e.note('state', base, dev, x.peer, 'neighbour aged out', 'no neighbour', `${p.label} on ${dev}:${x.port}: ${x.peer} aged out after ${fmtSec(ttl)}`);
+          P.e.note('state', base, dev, x.peer, 'neighbour aged out', 'no neighbour', `${p.label} on ${dev}:${x.port}: ${x.peer} aged out after ${fmtSec(life)}`);
         }
       });
+    });
+    // what a port knew is gone with its link, and with its device's power
+    const forget = (x: Port, why: string): void => {
+      x.gen++;
+      if (!x.known) return;
+      x.known = false;
+      P.e.note('state', base, x.dev, x.peer, 'neighbour removed', 'no neighbour', `${p.label} on ${x.dev}:${x.port}: ${x.peer} removed (${why})`);
+    };
+    P.linkHooks.push((ref, up) => {
+      if (up) return;
+      for (const x of ports) {
+        const e = P.e.net.ends.get(portKey(x.dev, x.port));
+        if (e && 'link:' + e.link === ref) forget(x, 'its link went down');
+      }
+    });
+    P.deviceHooks.push((dev, up) => {
+      if (!up) for (const x of ports) if (x.dev === dev) forget(x, `${dev} was powered off`);
     });
     P.extraStatus.push((): SessionStatus[] =>
       base === 'stp'
         ? devs.filter((d) => P.sd(d) && P.sd(d).bridge).map((d) => ({ protocol: 'stp', name: `${r.id}: ${d}`, device: d, peer: '', state: stpRoot(P, devs) === (P.sd(d).bridgeId || d) ? 'Root bridge' : 'Forwarding', detail: `bridge ${P.sd(d).bridgeId}; blocked: ${stpBlockedPorts(P, d).join(', ') || 'none'}`, up: true, relation: r.id }))
-        : ports.map((x) => ({ protocol: base, name: `${x.dev}:${x.port} → ${x.peer}:${x.peerPort}`, device: x.dev, peer: x.peer, state: x.known ? 'neighbour known' : 'no neighbour', detail: `every ${fmtSec(hello)}, TTL ${fmtSec(ttl)}`, up: x.known, relation: r.id })),
+        : ports.map((x) => ({ protocol: base, name: `${x.dev}:${x.port} → ${x.peer}:${x.peerPort}`, device: x.dev, peer: x.peer, state: x.known ? 'neighbour known' : 'no neighbour', detail: `every ${fmtSec(hello)}, TTL ${fmtSec(ttl)}${x.known ? `; the neighbour's last advertisement ${fmtSec(P.e.now - x.heard)} ago announced ${fmtSec(x.ttl)}` : ''}`, up: x.known, relation: r.id })),
     );
   }
 }

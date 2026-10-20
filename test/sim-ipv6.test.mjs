@@ -251,3 +251,55 @@ test('private-house.yaml: Internal is dual-stack: the laptop and the phone form 
   assert.ok(s.status().some((x) => x.name === 'laptop → 203.0.113.80 tcp/443' && x.state === 'Answered'));
   assert.ok(s.status().some((x) => x.name === 'laptop → nas.home.arpa tcp/445' && x.state === 'Answered'));
 });
+
+const DHCP6 = (servers = 1) => {
+  const srv = (i) => `  - id: dhcp6${i === 1 ? '' : '-' + i}
+    type: server
+    services:
+      dhcp:
+        scopes:
+          - {network: lan6, range: 2001:db8:10::${i}00-2001:db8:10::${i}ff, dns: ["2001:db8:10::53"], lease: 60s}
+    interfaces: [{id: eth0, ip: 2001:db8:10::${4 + i}/64}]
+`;
+  const links = '  - {id: l5, a: "sw:p5", b: "dhcp6:eth0"}\n' + (servers > 1 ? '  - {id: l6, a: "sw:p4", b: "dhcp6-2:eth0"}\n' : '');
+  return LAN({ method: 'dhcpv6', ra: ', managed: true, autonomous: false', r2: srv(1) + (servers > 1 ? srv(2) : ''), links }) + 'networks:\n  - {id: lan6, cidr: "2001:db8:10::/64"}\n';
+};
+const dhcpEv = (s, dev, what, t0 = 0) => s.events().filter((e) => e.protocol === 'dhcpv6' && e.device === dev && e.what === what && e.t >= t0);
+
+test('DHCPv6: a renewal answered — the old binding’s T2 does nothing (no Rebind while the server answers its Renews)', () => {
+  const s = sim(DHCP6());
+  settle(s, 10000);
+  assert.equal(host(s, 'pc').dhcp.state, 'BOUND');
+  const t0 = s.now;
+  settle(s, 150000);
+  assert.deepEqual(dhcpEv(s, 'pc', 'Rebind', t0).map((e) => e.detail), [], 'never rebinding');
+  assert.ok(dhcpEv(s, 'pc', 'Renew', t0).length >= 2, 'renewed at each T1');
+  assert.equal(host(s, 'pc').dhcp.state, 'BOUND');
+});
+
+test('DHCPv6: two servers (split ranges: overlapping ones are a model error) — the Request names the one chosen: only it binds the address and answers', () => {
+  const s = sim(DHCP6(2));
+  settle(s, 10000);
+  const h = host(s, 'pc');
+  assert.equal(h.dhcp.state, 'BOUND');
+  const req = dhcpEv(s, 'pc', 'Request')[0];
+  assert.ok(req);
+  const chosen = s.events().filter((e) => e.protocol === 'dhcpv6' && e.what === 'Reply' && /is bound/.test(e.detail)).map((e) => e.device);
+  assert.equal(new Set(chosen).size, 1, 'one server answered the Request: ' + chosen.join());
+  // the other server holds no binding for the client
+  const leases = s.ipv6.scopes.map((x) => ({ dev: x.dev, n: Array.from(x.leases.values()).filter((l) => l.state === 'bound').length }));
+  assert.deepEqual(leases.filter((x) => x.n > 0).map((x) => x.dev), chosen.slice(0, 1));
+});
+
+test('DHCPv6: the server has lost the binding — it answers the Renew with NoBinding, and the client sends a Request and is bound again', () => {
+  const s = sim(DHCP6());
+  settle(s, 10000);
+  for (const sc of s.ipv6.scopes) sc.leases.clear();
+  const t0 = s.now;
+  settle(s, 40000);
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'dhcp6' && e.what === 'Reply' && /NoBinding/.test(e.detail)));
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'pc' && e.what === 'no binding'));
+  assert.ok(dhcpEv(s, 'pc', 'Request', t0).length >= 1);
+  assert.equal(host(s, 'pc').dhcp.state, 'BOUND');
+  assert.ok(addrsOf(s, 'pc').some((a) => a === '2001:db8:10::100/128'), 'the same address');
+});
