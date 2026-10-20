@@ -12,6 +12,11 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Readable playback that waits for the dots — a delivery happens only once
+the dot that brings it has arrived on screen, so the diagram is never
+behind the tables and the log — with the steady state summarized as cable
+activity; connection attempts an application gave up on no longer go on
+retransmitting; a VME rack example and a one-line Examples menu.
 Non-IP physical interconnects — USB, serial lines, buses, backplanes and
 fabrics between opaque ports, apart from everything IP, with illustrative
 data along them — and the remaining IP-protocol defects fixed: routing
@@ -41,6 +46,71 @@ context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Changed (Readable playback waits for the dots)
+
+- **A delivery waits for its dot.** In Readable and Proportional pacing the
+  simulation stops before a delivery whose dot is still on its way on
+  screen and processes it, at its own simulated time, once the dot has
+  arrived: ARP is resolved, a TCP connection established, a switch's
+  member port learned when the message that does it visibly arrives, and
+  what it causes (the answer, the next hop, the packet that waited) starts
+  from there. Before, the simulated clock ran at its rate and the dots
+  followed, so state changes and dependent traffic appeared while their
+  causes were still on their way. Per hop, never per conversation:
+  everything already on its way keeps moving, so independent exchanges are
+  on screen together. Nothing is reordered: the waiting delivery and
+  everything after it wait (the engine's `hold`, asked event by event).
+  Network delays, protocol timers, application intervals and retries still
+  use simulated time; the same actions at the same scenario times give the
+  same events, connections and outcomes in every pacing, at every speed,
+  with every filter (tested). Real time pacing is the overview and waits
+  for nothing; headless runs, runTo and an experiment's result never wait.
+- **The steady state is cable activity.** A kind of the scenario's message
+  drawn once (an ARP request, a DHCP Discover, a TCP handshake, a Hello) is
+  a lit cable the next times, not waited for, until the next Network event
+  makes the scenario news again; the startup is shown one of each kind,
+  then the simulation runs at its rate. A multicast stream stays a flow,
+  with one datagram after each join or leave shown hop by hop. Your own
+  Network events, their prerequisites and the message you follow are
+  always shown in detail. Cable activity now counts as something on screen
+  for idle skipping.
+- **Control changes** (the view, the protocols or senders shown, the
+  pacing) remove the dots of what was delivered meanwhile instead of
+  letting them travel behind the tables; nothing is resubmitted or
+  reordered. **Step** processes the next delivery on screen and what it
+  causes at once, nothing later.
+- The pacing text says what the simulation waits for: *waiting for packet
+  arrival*, with *neighbor resolution*, *establishing TCP*, *retransmitting
+  SYN* or *membership report in transit* where the held packet says so.
+
+### Fixed (TCP connection attempts)
+
+- **A connection attempt its application gave up on is abandoned.** When a
+  test's or an application's response timeout ran out while its
+  connection was still in SYN_SENT, the connection stayed and retransmitted
+  its SYN for the whole SYN-retry budget (about two minutes) beside every
+  newer attempt: up to 20 half-open connections on one host of the
+  examples, many apparent connections on screen. The application closing
+  its socket now deletes the attempt (RFC 9293 §3.10.4). An audit of the
+  examples (connections counted where the transport creates them): every
+  other connection is configured — endpoint test traffic every 10 s per
+  target, a load balancer's health checks every 2 s, a proxy's upstream
+  connection per request, one per BGP session; the rest of what looked
+  like many connections was slow dots of earlier exchanges, which the
+  waiting playback no longer leaves behind. No example's traffic changed.
+
+### Added (VME rack example; the Examples menu)
+
+- **`vme-rack.yaml`**, a public example of non-IP interconnects as a system
+  uses them: a VME64x crate whose CPUs (one the system controller), ADC,
+  digital I/O and MIL-STD-1553 boards share the VMEbus backplane, the 1553
+  bus to two remote terminals and a bus monitor, RS-232 console lines to a
+  console server, and Ethernet only for the operators.
+- **File → Examples lists each example on one line.** The menu's
+  *open · modified* state shared a class with the Experiments panel, whose
+  rule widened the empty state and wrapped every name onto a second line;
+  it has its own class now, and a long name ends with an ellipsis.
 
 ### Added (non-IP interconnects)
 
