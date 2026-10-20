@@ -223,11 +223,9 @@ export class SimController implements SimulationMode {
     opts: SimStartOptions | string[] = {},
   ) {
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
-    // the real-time schedule (a stream's interval) counts the page's own clock
-    const win = host.doc.defaultView;
     // an execution scope runs a model of its own (the devices outside are not run at all; display and analysis are not changed by it)
     this.scope = o.scope && o.scope.kind !== 'entire' ? o.scope : null;
-    this.sim = o.simulation || new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+    this.sim = o.simulation || new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params });
     this.experiment = o.experiment || null;
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
@@ -252,7 +250,6 @@ export class SimController implements SimulationMode {
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
         foreground: () => !this.experiment && this.sim.foregroundActive(),
-        realtime: () => this.sim.realtimeActive(),
         until: () => (this.experiment ? this.experiment.until() : null),
         notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
       },
@@ -353,6 +350,7 @@ export class SimController implements SimulationMode {
     // nothing scheduled sends again
     this.sim.close();
     this.closeMenu();
+    if (this.sendersUi) this.sendersUi.dispose();
     this.host.doc.removeEventListener('visibilitychange', this.onVis);
   }
 
@@ -389,7 +387,6 @@ export class SimController implements SimulationMode {
   /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
   schedule(): void {
     // the real-time schedule runs while the simulation does (paused, hidden or closed: it stands)
-    this.sim.setRealTimeRunning(this.running());
     const w = this.host.doc.defaultView;
     if (!w) return;
     if (this.raf) w.cancelAnimationFrame(this.raf);
@@ -417,8 +414,6 @@ export class SimController implements SimulationMode {
 
   /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
   advance(wallMs: number): void {
-    // the streams of Network events first: what is due now goes at the current simulated time
-    if (this.sim.pumpRealTime()) this.actionsKey = '';
     this.pacer.frame(wallMs);
   }
 
@@ -448,6 +443,8 @@ export class SimController implements SimulationMode {
     const s = this.playState();
     const vis = d.getElementById('sim-state');
     if (vis && vis.textContent !== s) vis.textContent = s;
+    // who holds the pause, and what ends it
+    if (vis) vis.title = this.playing ? '' : this.pausedBy === 'inspector' ? 'The packet inspector paused it: it plays again when you close the inspector (or press Play).' : 'You paused it: it stays paused until you press Play.';
     // Send and play only while paused
     const sp = d.getElementById('sim-t-sendplay');
     if (sp) sp.hidden = this.playing;
@@ -464,15 +461,20 @@ export class SimController implements SimulationMode {
     this.watchInspector(true);
   }
 
-  /** The inspector is no longer in use (closed, left, hidden): resume, if it was what paused the simulation. */
+  /** The inspector is closed (or gone from the window): resume, if it was what paused the simulation. */
   resumeFromInspector(): boolean {
     if (this.stopped || this.playing || this.pausedBy !== 'inspector') return false;
     this.setPlaying(true);
     return true;
   }
 
-  /** Is the packet inspector shown (in the page, with a size, inside the window and not covered)? */
-  inspectorVisible(): boolean {
+  /**
+   * Is the packet inspector still open: in the page, not hidden, with a
+   * size, and not entirely outside the window? Focus moving away, a click
+   * elsewhere, another window over it for a while: still open — the pause
+   * it made lasts until it is closed (or Play is pressed).
+   */
+  inspectorOpen(): boolean {
     const box = this.tables.panelOf('packet');
     if (!box || !box.isConnected || box.hidden) return false;
     const r = box.getBoundingClientRect();
@@ -480,44 +482,18 @@ export class SimController implements SimulationMode {
     if (r.width < 1 || r.height < 1 || !w) return false;
     if (r.right <= 0 || r.bottom <= 0 || r.left >= w.innerWidth || r.top >= w.innerHeight) return false;
     const cs = w.getComputedStyle(box);
-    if (cs.visibility === 'hidden' || cs.display === 'none') return false;
-    // covered: what is at its title bar is not the inspector
-    const x = Math.max(1, Math.min(w.innerWidth - 2, r.left + r.width / 2));
-    const y = Math.max(1, Math.min(w.innerHeight - 2, r.top + 8));
-    const at = this.host.doc.elementFromPoint(x, y);
-    return !!at && box.contains(at);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
   }
 
-  private onInspectorFocusOut = (e: FocusEvent): void => {
-    const box = this.tables.panelOf('packet');
-    const to = e.relatedTarget as Node | null;
-    // the focus went somewhere else on the page (not just out of the window); Play / Pause and Step decide for themselves
-    if (box && to && !box.contains(to) && !(to instanceof Element && to.closest('#sim-play, #sim-step, #sim-step-x'))) this.resumeFromInspector();
-  };
-
-  private onPointerElsewhere = (e: Event): void => {
-    const box = this.tables.panelOf('packet');
-    const t = e.target as Element;
-    if (!box || box.contains(t)) return;
-    // Play / Pause and Step decide for themselves
-    if (t.closest && t.closest('#sim-play, #sim-step, #sim-step-x')) return;
-    this.resumeFromInspector();
-  };
-
-  /** Watch the inspector while it holds the simulation: its focus, a click elsewhere, its visibility. */
+  /** Watch the inspector while it holds the simulation: once it is closed (or gone from the window), it plays again. */
   private watchInspector(on: boolean): void {
-    const doc = this.host.doc;
-    const w = doc.defaultView;
-    doc.removeEventListener('focusout', this.onInspectorFocusOut, true);
-    doc.removeEventListener('pointerdown', this.onPointerElsewhere, true);
+    const w = this.host.doc.defaultView;
     if (this.inspectorTimer !== null && w) w.clearInterval(this.inspectorTimer);
     this.inspectorTimer = null;
     if (!on || !w) return;
-    doc.addEventListener('focusout', this.onInspectorFocusOut, true);
-    doc.addEventListener('pointerdown', this.onPointerElsewhere, true);
     this.inspectorTimer = w.setInterval(() => {
       if (this.pausedBy !== 'inspector') return this.watchInspector(false);
-      if (!this.inspectorVisible()) this.resumeFromInspector();
+      if (!this.inspectorOpen()) this.resumeFromInspector();
     }, 300);
   }
 
@@ -1514,10 +1490,13 @@ export class SimController implements SimulationMode {
   }
 
   private inspect(h: Headers, where: string, near: { x: number; y: number; w: number; h: number } | null | undefined, key: string, label: string, forwarding: Array<{ title: string; d: McDecision }> = []): void {
-    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }> } => ({
+    const ent = this.entries.find((x) => x.id === h.protocol);
+    const support = ent ? { label: ent.label, level: ent.support.level, does: ent.support.does, not: ent.support.not } : undefined;
+    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }>; support?: { label: string; level: string; does: string; not?: string } } => ({
       hdr: h,
       where,
       forwarding,
+      support,
       follow: {
         on: !!this.pacer.follow && this.pacer.follow.key === key,
         act: () => {
@@ -1866,6 +1845,8 @@ export class SimController implements SimulationMode {
   private buildSetup(box: HTMLElement): void {
     const doc = this.host.doc;
     while (box.firstChild) box.removeChild(box.firstChild);
+    // (a setup built again: the old senders list lets go of what it listened to)
+    if (this.sendersUi) this.sendersUi.dispose();
     this.picker = protocolPicker(doc, { id: 'sim-setup-protos', entries: this.entries, shown: this.shown, color: (p) => this.color(p), onChange: (ids) => this.setShownSet(ids) });
     box.appendChild(this.picker.el);
     box.appendChild(el(doc, 'p', { class: 'muted small sp-note' }, ['Every protocol runs; unchecked ones are not drawn or logged.']));

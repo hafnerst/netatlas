@@ -29,7 +29,6 @@ import { APP_DEFAULTS, AppInstance, AppProfile, appProfile, parsePeer } from '..
 import { formatAddr } from '../ipmath';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
-import { RealTimeScheduler } from './realtime';
 import { SessionStatus } from './types';
 import { Test, Transport } from './transport';
 
@@ -74,8 +73,6 @@ interface PeerNow {
 export class AppSim {
   private seq = 0;
   readonly runs: AppRun[] = [];
-  /** the real-time schedule of Network events (the runs started there repeat on it) */
-  realtime: RealTimeScheduler | null = null;
 
   constructor(
     private P: ProtocolSim,
@@ -192,29 +189,19 @@ export class AppSim {
     const fire = (n: number): void => {
       if (run.stopped || (run.count !== null && n >= run.count)) return;
       this.message(run, p, n + 1, 0);
-      if (run.count !== null && run.sent >= run.count) this.unschedule(run);
     };
-    if (interval && how === 'event' && this.realtime) {
-      // a run of Network events repeats in real time, as a stream does: its first message now
-      run.rt = this.realtime.add(interval, fire).id;
-    } else {
-      fire(0);
-      const next = (n: number): void => {
-        if (!interval || run.stopped || (run.count !== null && n >= run.count)) return;
-        this.e.at(run.t0 + n * interval, () => {
-          if (run.stopped) return;
-          fire(n);
-          next(n + 1);
-        });
-      };
-      next(1);
-    }
+    // the first message now, then every interval of simulated time (the scenario's; never the page's frames)
+    fire(0);
+    const next = (n: number): void => {
+      if (!interval || run.stopped || (run.count !== null && n >= run.count)) return;
+      this.e.at(run.t0 + n * interval, () => {
+        if (run.stopped) return;
+        fire(n);
+        next(n + 1);
+      });
+    };
+    next(1);
     return run;
-  }
-
-  private unschedule(run: AppRun): void {
-    if (run.rt !== undefined && this.realtime) this.realtime.remove(run.rt);
-    run.rt = undefined;
   }
 
   /** Stop a run: no more messages (those on their way finish); an MQTT client unsubscribes and disconnects. */
@@ -223,7 +210,6 @@ export class AppSim {
     if (run.stopped || !this.pending(run)) return false;
     run.stopped = true;
     run.stoppedAt = this.e.now;
-    this.unschedule(run);
     for (const t of run.tests) this.T.cancel(t, 'not sent: cancelled (Stop)');
     return true;
   }
@@ -284,7 +270,7 @@ export class AppSim {
     else run.tests.push(t);
   }
 
-  /** The applications that start with the simulation: from the chosen senders, once the network had time to come up. */
+  /** The applications that start with the simulation (their own start setting; the Senders choose only what is shown), once the network had time to come up. */
   private startConfigured(): void {
     for (const d of this.P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
       for (const a of d.applications || []) {
@@ -292,7 +278,6 @@ export class AppSim {
         const p = appProfile(a.profile);
         if (!p || !p.client) continue;
         this.e.at(3000 + this.e.jitter(), () => {
-          if (!this.e.isSender(d.id)) return;
           const r = this.start(d.id, a.id, 'start');
           if (typeof r === 'string') this.e.note('note', p.transport, d.id, '', 'application not started', '', `${d.id}/${a.id} (${a.name}) does not start with the simulation: ${r}`);
         });
@@ -359,7 +344,7 @@ export function appSummaryText(r: AppRun, o = appOutcome(r)): string {
 /** "every 5 s of real time", "every 2 s", "one message". */
 export function appCadence(r: AppRun): string {
   if (!r.interval) return 'one message';
-  return `every ${durationText(r.interval)}${r.rt !== undefined || r.how === 'event' ? ' of real time' : ''}${r.count !== null ? `, ${r.count} message${r.count === 1 ? '' : 's'}` : ', until stopped'}`;
+  return `every ${durationText(r.interval)}${r.count !== null ? `, ${r.count} message${r.count === 1 ? '' : 's'}` : ', until stopped'}`;
 }
 
 /** The address the run's last message went to, for the details. */

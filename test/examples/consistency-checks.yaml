@@ -139,6 +139,15 @@ devices:
     type: endpoint
     interfaces:
       - {id: eth0, ip: 10.73.0.10/24, multicast: {join: [239.9.9.9]}}
+  # multicast-rp-conflict: mc-r3 and mc-r4 share a PIM relation, but each names itself as the static RP
+  - id: mc-r3
+    type: router
+    protocols: {pim: {rp: 10.0.74.1}}
+    interfaces: [{id: e0, ip: 10.0.74.1/30}]
+  - id: mc-r4
+    type: router
+    protocols: {pim: {rp: 10.0.74.2}}
+    interfaces: [{id: e0, ip: 10.0.74.2/30}]
   # DHCP: dhcp1 serves the dhcp-lan network; dhcp-pc is on another segment without a server or a relay there
   - id: dhcp1
     type: server
@@ -244,6 +253,7 @@ links:
 
   - {id: l-mc-src, a: "mc-src:eth0", b: "mc-r1:e0"}
   - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}
+  - {id: l-mc-r3-r4, a: "mc-r3:e0", b: "mc-r4:e0"}
   - {id: l-dhcp1, a: "dhcp1:eth0", b: "dhcp-r:e0"}
   - {id: l-dhcp-pc, a: "dhcp-pc:eth0", b: "dhcp-r:e1"}
   - {id: l-hv-a, a: "sw3:q1", b: "hv-a:vmnic0"}
@@ -256,6 +266,7 @@ networks:
   - {id: dhcp-lan, cidr: 10.80.0.0/24}
 
 relations:
+  - {id: pim-mc-r3-r4, protocol: pim, endpoints: ["mc-r3:e0", "mc-r4:e0"], over: l-mc-r3-r4}
   # ospf-area-mismatch, ospf-network-type-mismatch, ospf-timer-mismatch
   - id: ospf-12
     protocol: ospf

@@ -76,6 +76,7 @@ const MEANING: { [id: string]: CheckMeaning } = {
   'snooping-not-configured': M('missing', 'Say for the VLAN whether IGMP/MLD snooping is enabled (igmp_mld_snooping).'),
   'multicast-no-querier': M('missing', 'Add a querier for the VLAN (a router running IGMP/PIM, or a snooping querier).', 'Snooping switches age the memberships out: receivers lose the stream.'),
   'multicast-no-rp': M('missing', 'Name the rendezvous point for PIM sparse mode.', 'Sources and receivers don’t meet: no shared tree.'),
+  'multicast-rp-conflict': M('contradiction', 'Give the routers of the domain the same RP for the group (one static rp everywhere, or a candidate RP).', 'Sources register with one RP, receivers join towards another: the any-source group is not delivered.'),
   'multicast-rpf-not-pim': M('contradiction', 'Enable PIM on the RPF interface, or change the unicast route to the source.', 'The RPF check fails: the stream is not forwarded.'),
   'dhcp-no-server': M('missing', 'Add a DHCP server with a scope for the network, or a relay to one.', 'The client gets no address (its link-local fallback, if any).'),
   'dhcp-relay-no-server': M('missing', 'Point the relay at a DHCP server of the model that has a scope for the network.', 'The clients behind the relay get no address.'),

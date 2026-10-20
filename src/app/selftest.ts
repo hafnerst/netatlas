@@ -2586,7 +2586,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
       const piHeads = pi ? Array.from(pi.querySelectorAll('.pi-layer h4')).map((h) => h.textContent || '') : [];
-      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, then its timing, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads.slice(-2).join() === 'Payload,Timing' && /Waited for/.test(pi.textContent || '') && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
+      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, then its timing and its fidelity, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads.slice(-3).join() === 'Payload,Timing,Fidelity' && /Waited for/.test(pi.textContent || '') && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
       if (pi && fi) {
         (pi.querySelector('#pi-follow') as HTMLElement).click();
         await tick();
@@ -2643,7 +2643,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.showTable('snoop', 'acc-sw');
       await tick();
       const snt = st.textContent || '';
-      check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
+      check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP for 239\.1\.1\.1: 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
       ctl.multicastFrom('pc2', 'join');
       await tick();
       const jmsg = ctl.joinGroup('pc2', 'eth0', '239.4.4.4', []);
@@ -5063,9 +5063,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       nextOpen = opened;
       click('#menu-btn');
       click('#open');
-      await tick(20);
-      await answerDialog('discard');
-      for (let n = 0; n < 50 && (!app.mdoc || md().fileName !== 'opened.yaml'); n++) await tick(10);
+      // (on a slow machine the question about the unsaved changes, and the opening after it, take longer than a few ticks)
+      for (let n = 0; n < 300 && !q('#modal[open]'); n++) await tick(10);
+      const discarded = await answerDialog('discard');
+      for (let n = 0; n < 1000 && (!app.mdoc || md().fileName !== 'opened.yaml'); n++) await tick(10);
       const linkedAfterOpen = app.linked && !saveBtn.disabled && app.fileState().kind === 'linked' && activeEx() === '';
       edit('Opened and saved');
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
@@ -5073,7 +5074,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'Open model… through the browser’s picker links the model to the opened file; Save model asks the browser for write permission and updates that file',
         linkedAfterOpen && opened.perm === 'granted' && opened.writes === 1 && /title: Opened and saved/.test(opened.text) && !md().dirty,
-        `${linkedAfterOpen} ${opened.perm} ${opened.writes}`,
+        `${linkedAfterOpen} ${opened.perm} ${opened.writes} discard answered=${discarded} file=${app.mdoc ? md().fileName : ''}`,
       );
       // a file read through the file input (or dropped without a handle) is never linked
       await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'from-input.yaml'));

@@ -65,7 +65,7 @@ test('the private house: IGMP / MLD to tick (the core is the snooping querier of
   for (const no of ['link:l-core-dist', 'link:l-dist-ap2', 'link:l-core-apb', 'link:w-tv', 'link:w-guest-phone', 'link:w-thermostat', 'link:l-router-core']) assert.ok(!links.has(no), `no copy towards ${no}: no member in VLAN 10, another VLAN, or past the core`);
   assert.equal(st.stream.sent, 3);
   const v = view(s, st.id);
-  assert.match(v.summary, /^3 datagrams sent, every 1 s of real time · no member received any yet · stops at core$/);
+  assert.match(v.summary, /^3 datagrams sent, every 1 s of simulated time · no member received any yet · stops at core$/);
   assert.ok(v.details.some((d) => d === "Last stopped at core: core forwards 239.1.1.1 to no port in VLAN 10: no member reported it there and it has no multicast router port (it is the VLAN's querier itself and no multicast router is there; unregistered multicast goes to the router ports only)"), v.details.join(' | '));
   assert.deepEqual(v.tests, [st.traffic]);
   // in the log, found by the event's id: the first datagram (a message with its headers: the packet inspector)
@@ -83,7 +83,7 @@ test('with a multicast router and a member: the stream reaches the member only; 
   assert.ok(to.has('link:l5') && to.has('link:l3'), 'from h3 to the member h1');
   assert.ok(!to.has('link:l4'), 'not to h2: snooping knows it is no member');
   assert.equal(st.stream.rx.get('h1'), st.stream.sent);
-  assert.match(view(s, st.id).summary, /^6 datagrams sent, every 0\.5 s of real time · received by h1 \(6\)$/);
+  assert.match(view(s, st.id).summary, /^6 datagrams sent, every 0\.5 s of simulated time · received by h1 \(6\)$/);
   // Stop: no datagram of it after the stop (its future sends cancelled); those on their way arrive
   s.actionControl(st.id, 'stop');
   const at = s.now;
@@ -109,26 +109,27 @@ test('with a multicast router and a member: the stream reaches the member only; 
   assert.match(view(s, j.id).state, /^not a member \(left at t = /);
 });
 
-test('a stream of Network events is scheduled in real time: its datagrams at its interval of real time, whatever simulated time does; a stream of the model on the simulated clock', () => {
+test('a stream of Network events runs on the simulated clock, as a model’s stream: one datagram every interval of simulated time, the same in one jump or in frames', () => {
   const s = sim(MC);
   s.runTo(5000);
   const st = s.actStream('h3', 'eth0', '239.2.2.2', 5004, 750, 1000);
   assert.equal(st.stream.sent, 1, 'the first datagram at once');
-  // simulated time alone (a jump, a held clock): no datagram of it
-  s.runTo(60000);
-  assert.equal(st.stream.sent, 1);
-  // 3.1 s of real time with the clock standing: at 0, 0.75, 1.5, 2.25 and 3 s, each at the simulated time it was due
-  for (let i = 0; i < 31; i++) {
-    s.clock.t += 100;
-    s.pumpRealTime();
-  }
+  // 3 s of simulated time: at 0, 0.75, 1.5, 2.25 and 3 s (each with the timers' small jitter)
+  s.runTo(s.now + 3010);
   assert.equal(st.stream.sent, 5);
-  assert.equal(s.now, 60000);
-  // the model's streams still follow the simulated clock (the scenario)
+  // the same in frames of 50 ms (as the page drives it): the same datagrams at the same times
+  const f = sim(MC);
+  f.runTo(5000);
+  const sf = f.actStream('h3', 'eth0', '239.2.2.2', 5004, 750, 1000);
+  for (let i = 0; i < 60; i++) f.runTo(f.now + 50);
+  f.runTo(f.now + 10);
+  const at = (x, id) => x.events().filter((e) => e.test === id && e.kind === 'message' && /^multicast datagram/.test(e.detail)).map((e) => e.t);
+  assert.deepEqual(at(f, sf.traffic), at(s, st.traffic));
+  // the model's streams follow the same clock (the scenario)
   const m = sim(MC.replace('{id: eth0, ip: 10.5.0.13/24}', '{id: eth0, ip: 10.5.0.13/24, multicast: {streams: [{group: 239.3.3.3, interval: 1s}]}}'));
   m.runTo(20000);
   const own = m.multicast.streams.filter((x) => x.origin === 'model');
-  assert.ok(own.length === 1 && own.every((x) => x.rt === undefined && x.sent >= 10), 'the model’s stream: every simulated second');
+  assert.ok(own.length === 1 && own.every((x) => x.sent >= 10), 'the model’s stream: every simulated second');
 });
 
 test('interface states: administrative and operational apart; Shut interface ends a flapping first; a shut interface can’t flap; one flapping per cable; Stop flapping cancels its later transitions', () => {

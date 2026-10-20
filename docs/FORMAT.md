@@ -252,8 +252,8 @@ can declare its own). A parameter is written in one of three places, its
 
 | Protocol | Device parameters | Interface parameters | Endpoint parameters (relation `attrs`) | Router ID |
 |---|---|---|---|---|
-| `bgp` | **`asn`** (1–4294967295) | | `peer-as`, `distance` | optional |
-| `ospf` | `process` (1–65535) | | `area`, `network-type`, `hello`, `dead`, `cost`, `distance` | **required** |
+| `bgp` | **`asn`** (1–4294967295) | | `peer-as`, `hold` (0 or 3–65535 s), `keepalive`, `distance` | optional |
+| `ospf` | `process` (1–65535) | | `area`, `network-type`, `priority` (0–255), `hello`, `dead`, `cost`, `distance` | **required** |
 | `isis` | **`net`** (a NET: `49.0001.1921.6800.1001.00`), `level` (`level-1`, `level-2`, `level-1-2`) | | `cost`, `distance` | |
 | `eigrp` | **`asn`** (1–65535) | | `cost`, `distance` | optional |
 | `rip` | `version` (`1`, `2`, `ng`) | | `distance` | |
@@ -2324,7 +2324,9 @@ failure and after a restore; `src/model/sim-profiles.ts`), used by
 Simulate → Start simulation. The simulation reads these relation
 attributes where they are written (they are *configured*, the first in the
 [order of precedence](#order-of-precedence); else the simulation's value or
-the protocol's default, as the event log says): OSPF `hello`, `dead` and `priority`; BFD
+the protocol's default, as the event log says): OSPF `hello`, `dead`,
+`area`, `network-type` and `priority`; BGP `hold`, `keepalive` and
+`peer-as`; BFD
 `interval` (`300ms`, `1s`) and `multiplier`; PIM `rp` (the RP: an address
 or a device); IGMP `group` (default 239.1.1.1); VRRP / HSRP `preempt`
 (`false` turns it off). A switch's spanning-tree bridge priority is its
@@ -2333,6 +2335,34 @@ simulation attribute `bridge_priority` (default 32768; per VLAN with
 the port's `stp_cost` and `stp_port_priority`. A protocol the model defines
 itself is simulated with dummy packets labelled with its name, in the
 relation's direction.
+
+OSPF. `network-type` is `broadcast` unless written (a tunnel interface:
+`point-to-point`). Broadcast and non-broadcast networks elect a DR and a
+BDR after the Wait timer (the dead interval, or sooner when a Hello shows
+one already elected), by `priority` (default 1; 0: never DR or BDR; no
+eligible router: no DR, and no adjacency beyond 2-Way on the segment),
+non-preemptively; point-to-point and point-to-multipoint never elect.
+Hellos whose hello or dead interval, area or network type differ from
+the receiver's are discarded: no adjacency forms (the log says why). A
+direct router-to-router cable is usually written `point-to-point`.
+
+BGP. A session is a TCP connection to port 179 (the relation's first
+endpoint connects; a device without an AS runs no speaker and nothing
+listens). Each OPEN carries the device's AS, its `hold` time and its BGP
+identifier: the peer refuses it with a NOTIFICATION when the AS is not the
+expected one (`peer-as`, else for iBGP its own, else the peer's `asn`), the
+hold time is 1 or 2, or the identifier is its own. The session uses the
+smaller hold time of the two (0: no keepalives and no hold timer) and
+keepalives at most a third of it.
+
+Routes in the simulation are learned: each router computes its routes from
+the records the routing protocols' advertisements brought it (OSPF and
+IS-IS flooding, EIGRP and RIP updates, BGP UPDATEs), not from the model as
+a whole; an advertisement lost on the way delays what the routers behind it
+learn (OSPF, IS-IS and EIGRP send it again after 5 s, BGP's TCP retransmits
+it, RIP waits for its next periodic Response). PIM: each router's RP is its
+own static `rp`, else the `rp` of its own PIM relations, else the candidate
+RP of its PIM domain, of the group's address family.
 
 ## `demands` (traffic demands)
 
@@ -2691,7 +2721,8 @@ Wherever a value is shown it says where it comes from: *configured on …*,
 *interface …* / *VLAN …* / *relation …* / *scope …* / *zone …*, *device*,
 *simulation* or *default* (with its source). A derived timer
 follows its base: OSPF's dead interval is 4 × the hello interval, BGP's
-hold time 3 × the keepalive. A cable's latency and loss come from the
+hold time 3 × the keepalive (a written `hold` is the device's own; the
+session negotiates the smaller of the two ends'). A cable's latency and loss come from the
 cable, else from one of its devices (a cloud's `latency` and `loss`: the
 larger of the two ends), else from the simulation.
 
@@ -3643,6 +3674,7 @@ VLANs is routed, not "access in VLAN 1").
 | `snooping-not-configured` | error | a switch that carries VLANs on its ports without an IGMP / MLD snooping choice for each (one finding per switch, listing them); until chosen the simulation floods their multicast | devices (switches): `igmp_mld_snooping`; their ports' and aggregates' `vlans` |
 | `multicast-no-querier` | warning | an interface that joins a group in a subnet where no multicast router (PIM, its querier not off) has an interface, and no switch on its Layer 2 way is a snooping querier | interfaces: `multicast.join`, `ip`; devices: `protocols.pim`, simulation `igmp_querier`, `snooping_querier`; links |
 | `multicast-no-rp` | warning | routers in PIM sparse mode and any-source groups joined or streamed, but no rendezvous point (no `rp`, no `candidate_rp: yes`, no relation `rp`) | devices: `protocols.pim`; relations: `rp`; interfaces: `multicast` |
+| `multicast-rp-conflict` | warning | routers of one PIM domain whose RP for a joined or streamed any-source group differs (each uses its own static `rp`, else its PIM relations' `rp`, else the domain's candidate RP) | devices: `protocols.pim`; relations: `rp`; interfaces: `multicast` |
 | `multicast-rpf-not-pim` | warning | a PIM router whose unicast route towards a stream's source (or the RP) leaves through an interface to a device it has no PIM relation with there: joins cannot go that way and the traffic fails the RPF check | devices: `protocols.pim`, `routes`; interfaces: `multicast.streams`, `ip`; PIM relations |
 
 **Encapsulation overhead** assumed by `tunnel-mtu`, per packet, with an IPv4

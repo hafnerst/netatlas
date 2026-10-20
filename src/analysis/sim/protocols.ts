@@ -19,17 +19,50 @@ import { lookupProtocol, protocolBase } from '../../model/protocols';
 import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles';
 import { Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
-import { relParam } from '../routing';
+import { relParam, routingProtocol } from '../routing';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus, SnoopResult } from './types';
 import { serviceRelations } from './service-relations';
+import type { Transport } from './transport';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Behaviours whose sessions need a common network (hellos to a link-local group, single-hop BFD). */
 const LINK_LOCAL = ['ospf', 'isis', 'eigrp', 'rip', 'pim', 'ldp', 'bfd', 'igmp'];
+
+/**
+ * What a router knows of another router (or of itself): that origin's
+ * routing adjacencies that are up ("relation|peer") and its interfaces
+ * that are up, with the origin's sequence number. A router computes its
+ * routes from the records it has (Engine.recompute): an origin's change
+ * reaches it only with an advertisement that carries the new record.
+ */
+export interface RouteRec {
+  origin: string;
+  seq: number;
+  adj: string[];
+  up: string[];
+}
+
+function sameRec(a: RouteRec, b: RouteRec): boolean {
+  return a.adj.join(',') === b.adj.join(',') && a.up.join(',') === b.up.join(',');
+}
+
+function copyRec(r: RouteRec): RouteRec {
+  return { origin: r.origin, seq: r.seq, adj: r.adj.slice(), up: r.up.slice() };
+}
+
+/** The update message of a routing protocol's advertisements, and the acknowledgment it waits for (none: RIP). */
+const UPDATE_OF: { [behaviour: string]: { type: string; ack?: string } } = {
+  ospf: { type: 'LSU', ack: 'LSAck' },
+  isis: { type: 'LSP', ack: 'PSNP' },
+  eigrp: { type: 'Update', ack: 'ACK' },
+  rip: { type: 'Response' },
+};
+/** An unacknowledged advertisement is sent again after this (OSPF's RxmtInterval 5 s; IS-IS and EIGRP alike in the simulation). */
+const ADV_RXMT = 5000;
 
 /** One side of a session: the device, the interface it uses and its address there. */
 export interface Side {
@@ -73,6 +106,8 @@ export interface Behaviour {
   adjUp?(P: ProtocolSim, s: Sess): boolean;
   /** parameters changed: its status details again */
   refresh?(P: ProtocolSim, s: Sess): void;
+  /** send routing records to the peer its own way (BGP: an UPDATE over its TCP connection); else ProtocolSim's update message */
+  advertise?(P: ProtocolSim, s: Sess, recs: RouteRec[], why: string): void;
 }
 
 export interface TimerValue {
@@ -164,6 +199,9 @@ export class ProtocolSim implements Protocols {
   readonly routesHooks: Array<(dev: string) => void> = [];
   /** PIM messages of a session that multicast.ts handles (Join/Prune, Graft): true when it did */
   pimHook: ((s: Sess, msg: Msg, l3: L3Iface | null) => boolean) | null = null;
+  /** the transport (transport.ts): the connections of the protocols over TCP (proto-tcp.ts), and every TCP segment it receives */
+  transport: Transport | null = null;
+  tcpHook: ((dev: string, l3: L3Iface, pkt: Pkt) => void) | null = null;
   private periodics: Periodic[] = [];
 
   constructor(engine: Engine, behaviours: { [id: string]: Behaviour }) {
@@ -560,6 +598,7 @@ export class ProtocolSim implements Protocols {
       s.x = {};
     }
     for (const k of Array.from(this.vips.keys())) if (k.indexOf(dev + ':') === 0) this.vips.delete(k);
+    this.forget(dev);
     for (const h of this.deviceHooks) h(dev, false);
   }
 
@@ -775,6 +814,11 @@ export class ProtocolSim implements Protocols {
   }
 
   private dispatch(dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null): void {
+    // a TCP segment of the transport (a BGP session's, an application's, a test's): its connection takes it
+    if (pkt && l3 && pkt.l4 && pkt.l4.proto === 'tcp' && msg.data && (msg.data as { tcp?: boolean }).tcp && this.tcpHook) {
+      this.tcpHook(dev, l3, pkt);
+      return;
+    }
     const h = this.handlers.get(msg.protocol);
     if (h && h(dev, l3, msg, pkt, frame) !== false) return;
     const data = (msg.data || {}) as MsgData;
@@ -800,6 +844,7 @@ export class ProtocolSim implements Protocols {
     if (pkt && !pkt.encap && formatAddr(pkt.src) !== formatAddr(s.remote.addr)) s.x.replyTo = pkt.src;
     const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
     b.rx(this, s, msg, pkt, l3);
+    this.learn(s, msg);
   }
 
   filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
@@ -852,7 +897,8 @@ export class ProtocolSim implements Protocols {
     }
     for (const h of this.ifaceHooks) h(dev, l3, up);
     // an interface that comes up again announces itself
-    if (up && l3.kind !== 'tunnel' && l3.kind !== 'loopback') for (const a of l3.addrs) this.e.gratuitous(dev, l3, a.addr, l3.mac, `${l3.id} came up`);
+    // (never a tentative IPv6 address: duplicate address detection is still deciding whether it may be used, RFC 4862 §5.4)
+    if (up && l3.kind !== 'tunnel' && l3.kind !== 'loopback') for (const a of l3.addrs) if (!(this.e.v6Hook && this.e.v6Hook.unusable(dev, l3, a.addr))) this.e.gratuitous(dev, l3, a.addr, l3.mac, `${l3.id} came up`);
   }
 
   linkChange(ref: string, up: boolean): void {
@@ -896,6 +942,165 @@ export class ProtocolSim implements Protocols {
     // IPsec carries traffic only once its SAs are established
     if (p.behaviour === 'ike') return list.some((s) => s.up);
     return true;
+  }
+
+  // ------------------------------------------------------------ learned routing state
+
+  /** each router's routing database: what it learned of every origin (its own record is always current) */
+  private views = new Map<string, Map<string, RouteRec>>();
+  /** every origin's last sequence number (kept over a reboot: a router's new records outrank its old ones) */
+  private recSeq = new Map<string, number>();
+  /** reliable advertisements not acknowledged yet, by "session|id" */
+  private pendingAdv = new Map<string, number>();
+  private advId = 0;
+  private routingRel = new Map<string, boolean>();
+
+  /** Is a session one of a routing relation (OSPF, IS-IS, EIGRP, RIP, BGP): its advertisements teach routes? */
+  isRouting(s: Sess): boolean {
+    let v = this.routingRel.get(s.rel.id);
+    if (v === undefined) this.routingRel.set(s.rel.id, (v = routingProtocol(this.m, s.rel) !== null && ['ospf', 'isis', 'eigrp', 'rip', 'bgp'].indexOf(s.profile.behaviour) >= 0));
+    return v;
+  }
+
+  private view(dev: string): Map<string, RouteRec> {
+    let v = this.views.get(dev);
+    if (!v) this.views.set(dev, (v = new Map()));
+    return v;
+  }
+
+  /**
+   * What a router has learned, for its route computation (Engine.recompute):
+   * null when it runs no routing protocol (its routes are its own).
+   */
+  viewOf(dev: string): Map<string, RouteRec> | null {
+    if (!this.sessionsOf(dev).some((s) => this.isRouting(s))) return null;
+    const v = this.view(dev);
+    if (!v.has(dev)) this.originateOne(dev);
+    return v;
+  }
+
+  /** A router's own record now: its routing adjacencies that are up and its interfaces that are up. */
+  private ownRec(dev: string): RouteRec {
+    const adj = new Set<string>();
+    for (const s of this.sessionsOf(dev)) if (this.isRouting(s) && this.adjUpOf(s)) adj.add(s.rel.id + '|' + s.peer);
+    const sd = this.sd(dev);
+    const up = sd ? Array.from(sd.l3.values()).filter((l) => this.e.isL3Up(dev, l.id)).map((l) => l.id).sort(cmp) : [];
+    return { origin: dev, seq: 0, adj: Array.from(adj).sort(cmp), up };
+  }
+
+  private originateOne(dev: string): RouteRec | null {
+    const rec = this.ownRec(dev);
+    const v = this.view(dev);
+    const was = v.get(dev);
+    if (was && sameRec(was, rec)) return null;
+    rec.seq = (this.recSeq.get(dev) || 0) + 1;
+    this.recSeq.set(dev, rec.seq);
+    v.set(dev, rec);
+    return rec;
+  }
+
+  /**
+   * What routing depends on changed (Engine.routingChanged): every router
+   * whose own adjacencies or interfaces changed has a new record and
+   * advertises it to its neighbours (OSPF and IS-IS flood it, EIGRP and RIP
+   * send it as an update, BGP as an UPDATE): the others learn of the change
+   * only when that advertisement reaches them.
+   */
+  originate(): void {
+    const devs = Array.from(new Set(Array.from(this.sessions.values()).filter((s) => this.isRouting(s)).map((s) => s.dev))).sort(cmp);
+    for (const dev of devs) {
+      if (!this.e.deviceOn(dev)) continue;
+      const rec = this.originateOne(dev);
+      if (rec) this.advertise(dev, [rec], null, `${dev}'s ${rec.adj.length ? 'adjacencies or interfaces changed' : 'adjacencies are all down'} (sequence ${rec.seq})`);
+    }
+  }
+
+  /** The records a router knows (its database), copies: what its synchronisation messages carry. */
+  dbOf(dev: string): RouteRec[] {
+    if (!this.view(dev).has(dev)) this.originateOne(dev);
+    return Array.from(this.view(dev).values()).sort((a, b) => cmp(a.origin, b.origin)).map(copyRec);
+  }
+
+  /** Records to a router's neighbours over its routing adjacencies that are up (but the one they came from). */
+  private advertise(dev: string, recs: RouteRec[], except: Sess | null, why: string): void {
+    for (const s of this.sessionsOf(dev)) {
+      if (!this.isRouting(s) || !this.adjUpOf(s) || !s.x.started) continue;
+      if (except && s.peer === except.peer && s.rel.id === except.rel.id) continue;
+      this.sendRecs(s, recs.map(copyRec), why);
+    }
+  }
+
+  /**
+   * One advertisement of a session: its protocol's update message (OSPF
+   * LSU, IS-IS LSP, EIGRP Update or Query, RIP Response, BGP UPDATE) with
+   * the records. OSPF, IS-IS and EIGRP send it again every retransmit
+   * interval until it is acknowledged (LSAck, PSNP, ACK or Reply); RIP not
+   * at all (its next periodic Response carries everything); BGP over its
+   * TCP connection (the transport retransmits).
+   */
+  private sendRecs(s: Sess, recs: RouteRec[], why: string): void {
+    const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
+    const what = recs.map((r) => `${r.origin}#${r.seq}`).join(', ');
+    if (b.advertise) {
+      b.advertise(this, s, recs, why);
+      return;
+    }
+    const kind = UPDATE_OF[s.profile.behaviour] || { type: 'Update' };
+    const type = kind.type;
+    const ack = kind.ack;
+    const id = ++this.advId;
+    const send = (n: number): void => this.unicast(s, type, `${why}: ${what}${n ? ` (sent again: no ${ack} after ${fmtSec(ADV_RXMT)})` : ''}`, { db: recs, dbId: id, dbAck: ack });
+    send(0);
+    if (!ack) return;
+    const key = s.key + '|' + id;
+    this.pendingAdv.set(key, s.gen);
+    const again = (n: number): void => {
+      this.e.after(ADV_RXMT, () => {
+        if (this.pendingAdv.get(key) !== s.gen || !this.adjUpOf(s)) {
+          this.pendingAdv.delete(key);
+          return;
+        }
+        send(n);
+        again(n + 1);
+      });
+    };
+    again(1);
+  }
+
+  /**
+   * A session's message arrived: records in it the router does not have
+   * (a higher sequence number for their origin) go into its database — its
+   * routes are recomputed after its route recomputation delay, and it
+   * advertises them on to its other neighbours; an acknowledgment ends the
+   * retransmission it answers.
+   */
+  learn(s: Sess, msg: Msg): void {
+    const d = (msg.data || {}) as { db?: RouteRec[]; dbId?: number; dbAck?: string; acks?: number };
+    if (d.acks !== undefined) this.pendingAdv.delete(s.key + '|' + d.acks);
+    if (!d.db) return;
+    if (d.dbId !== undefined && d.dbAck) this.unicast(s, d.dbAck, `acknowledges ${d.db.map((r) => r.origin + '#' + r.seq).join(', ')}`, { acks: d.dbId });
+    if (!this.isRouting(s)) return;
+    const v = this.view(s.dev);
+    if (!v.has(s.dev)) this.originateOne(s.dev);
+    const changed: RouteRec[] = [];
+    for (const r of d.db) {
+      if (r.origin === s.dev) continue;
+      const known = v.get(r.origin);
+      if (known && known.seq >= r.seq) continue;
+      const c = copyRec(r);
+      v.set(r.origin, c);
+      changed.push(c);
+    }
+    if (!changed.length) return;
+    this.e.note('route', s.protocol, s.dev, s.peer, 'learned', '', `${s.dev} learned from ${s.peer} (${s.profile.label} ${msg.type}): ${changed.map((r) => `${r.origin} sequence ${r.seq} (${r.adj.length} adjacenc${r.adj.length === 1 ? 'y' : 'ies'})`).join(', ')}; its routes follow after its route recomputation delay`);
+    this.e.recomputeSoon(s.dev);
+    this.advertise(s.dev, changed, s, `learned from ${s.peer}`);
+  }
+
+  /** A router was powered off: its database is gone (it learns everything again after it boots). */
+  private forget(dev: string): void {
+    this.views.delete(dev);
+    for (const k of Array.from(this.pendingAdv.keys())) if (k.split('|')[2] === dev) this.pendingAdv.delete(k);
   }
 
   // ------------------------------------------------------------ status

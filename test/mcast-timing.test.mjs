@@ -123,12 +123,10 @@ test('the same moment: a report processed before a packet of the same instant is
 
 test('on screen: a stream’s copies show from the moment they are forwarded, on every cable at once (no backlog of earlier datagrams); after the leave took effect no new copy towards the TV, the ones forwarded before complete their way', () => {
   const s = sim(HOUSE);
-  const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr, foreground: () => s.foregroundActive(), realtime: () => s.realtimeActive() };
+  const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr, foreground: () => s.foregroundActive() };
   const p = new P.Pacer(host, 48);
   const seen = new Map();
   const frame = () => {
-    s.clock.t += 50;
-    s.pumpRealTime();
     p.frame(50);
     for (const it of p.items) if (it.f.protocol === 'mcast' && it.f.view === 'physical' && !seen.has(it.f.id)) seen.set(it.f.id, { it, clock: p.clock });
   };

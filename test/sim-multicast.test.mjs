@@ -46,13 +46,13 @@ devices:
   - id: r2
     type: router
     router_id: 10.255.0.2
-    protocols: {ospf: {}, pim: {${x.r2pim || ''}}}
+    protocols: {ospf: {}, pim: {${x.r2pim || 'rp: 10.255.0.1'}}}
     interfaces: [{id: g0, ip: 10.0.12.2/30}, {id: g1, ip: 10.2.0.1/24}, {id: g2, ip: 10.0.23.2/30}]
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.2/32}]${x.r2 || ''}
   - id: r3
     type: router
     router_id: 10.255.0.3
-    protocols: {ospf: {}, pim: {${x.r2pim || ''}}}
+    protocols: {ospf: {}, pim: {${x.r2pim || 'rp: 10.255.0.1'}}}
     interfaces: [{id: g0, ip: 10.0.13.2/30}, {id: g1, ip: 10.0.23.1/30}]
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
   - {id: sw, type: switch, ${x.snoop !== undefined ? x.snoop : 'igmp_mld_snooping: {1: enabled}, '}interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
@@ -75,9 +75,9 @@ links:
   - {id: g, a: "r1:g2", b: "r3:g0"}
   - {id: h, a: "r3:g1", b: "r2:g2"}
 relations:
-  - {id: o12, protocol: ospf, endpoints: ["r1:g1", "r2:g0"], attrs: {area: 0, cost: 10}}
-  - {id: o13, protocol: ospf, endpoints: ["r1:g2", "r3:g0"], attrs: {area: 0, cost: 20}}
-  - {id: o23, protocol: ospf, endpoints: ["r3:g1", "r2:g2"], attrs: {area: 0, cost: 20}}
+  - {id: o12, protocol: ospf, endpoints: ["r1:g1", "r2:g0"], attrs: {network-type: point-to-point, area: 0, cost: 10}}
+  - {id: o13, protocol: ospf, endpoints: ["r1:g2", "r3:g0"], attrs: {network-type: point-to-point, area: 0, cost: 20}}
+  - {id: o23, protocol: ospf, endpoints: ["r3:g1", "r2:g2"], attrs: {network-type: point-to-point, area: 0, cost: 20}}
   - {id: p12, protocol: pim, endpoints: ["r1:g1", "r2:g0"]}
   - {id: p13, protocol: pim, endpoints: ["r1:g2", "r3:g0"]}
   - {id: p23, protocol: pim, endpoints: ["r3:g1", "r2:g2"]}${x.rels || ''}
@@ -319,7 +319,7 @@ test('PIM-SM: the receiver’s DR joins the shared tree to the RP; the source re
   assert.deepEqual(r2.find((r) => r[0] === '(*, 239.1.1.1)'), ['(*, 239.1.1.1)', 'g0 (r1)', 'g1 (members)', 'sparse']);
   assert.ok(r2.some((r) => r[0] === '(10.1.0.10, 239.1.1.1)' && /SPT/.test(r[3])));
   assert.ok(r2.some((r) => r[0] === '(10.1.0.10, 232.1.1.1)' && r[3] === 'SSM'));
-  assert.match(s.mrouteTable('r1').notes[0], /^RP 10\.255\.0\.1 \(r1\): the static RP of r1/);
+  assert.match(s.mrouteTable('r1').notes[0], /^RP for 239\.1\.1\.1: 10\.255\.0\.1 \(r1\), the static RP of r1$/);
   assert.deepEqual([status(s, 'rxa member of 239.1.1.1').state, status(s, 'rxb member of 232.1.1.1 (10.1.0.10)').state], ['Receiving', 'Receiving']);
 });
 
@@ -468,4 +468,52 @@ test('determinism with multicast events at the same times', () => {
     return s.events().map((e) => `${e.t}|${e.device}|${e.what}|${e.detail}`).join('\n');
   };
   assert.equal(go(), go());
+});
+
+// ------------------------------------------------------------------ the RP in each router's own context
+
+test('RP: conflicting static RPs stay each router’s own (no global winner); their trees do not meet, the receivers get nothing, and the log says so', () => {
+  // r1 says it is the RP itself; r2 and r3 say r3 is
+  const s = sim(NET({ r1pim: 'rp: 10.255.0.1', r2pim: 'rp: 10.255.0.3' }));
+  s.runTo(40000);
+  assert.equal(s.multicast.rp('r1', '239.1.1.1').dev, 'r1');
+  assert.equal(s.multicast.rp('r2', '239.1.1.1').dev, 'r3');
+  assert.ok(s.events().some((e) => /PIM: r1's RP is 10\.255\.0\.1 \(its static RP\), r[23]'s is 10\.255\.0\.3 \(its static RP\): they disagree in one PIM domain/.test(e.detail)));
+  assert.notEqual(status(s, 'rxa member of 239.1.1.1').state, 'Receiving');
+  // the source-specific group does not need an RP: it still arrives
+  assert.equal(status(s, 'rxb member of 232.1.1.1 (10.1.0.10)').state, 'Receiving');
+});
+
+const ISLANDS = (a = 'a', b = 'b') => `netatlas: 1
+title: islands
+devices:
+  - {id: ${a}1, type: router, router_id: 10.255.0.9, protocols: {pim: {candidate_rp: "yes"}}, interfaces: [{id: g0, ip: 10.9.0.1/30}, {id: g1, ip: 2001:db8:9::1/64}]}
+  - {id: ${a}2, type: router, router_id: 10.255.0.8, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.9.0.2/30}]}
+  - {id: ${b}1, type: router, router_id: 10.255.0.1, protocols: {pim: {candidate_rp: "yes"}}, interfaces: [{id: g0, ip: 10.1.0.1/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.1/32}]}
+  - {id: ${b}2, type: router, router_id: 10.255.0.2, protocols: {pim: {rp: 10.255.0.1}}, interfaces: [{id: g0, ip: 10.1.0.2/30}, {id: g1, ip: 2001:db8:1::1/64}]}
+links:
+  - {id: la, a: "${a}1:g0", b: "${a}2:g0"}
+  - {id: lb, a: "${b}1:g0", b: "${b}2:g0"}
+relations:
+  - {id: pa, protocol: pim, endpoints: ["${a}1:g0", "${a}2:g0"]}
+  - {id: pb, protocol: pim, endpoints: ["${b}1:g0", "${b}2:g0"]}
+`;
+
+test('RP: independent PIM domains never take each other’s candidate RP; device IDs decide nothing; an IPv4 RP serves no IPv6 group', () => {
+  const s = sim(ISLANDS());
+  s.runTo(5000);
+  // a2 learns its own domain's candidate (a1), although b1 sorts first and the bootstrap of b would win a global election
+  assert.equal(s.multicast.rp('a2', '239.1.1.1').dev, 'a1');
+  assert.equal(s.multicast.rp('b1', '239.1.1.1').dev, 'b1');
+  assert.equal(s.multicast.rp('b2', '239.1.1.1').how, 'the static RP of b2');
+  // renamed (b's routers now sort first): the same choices
+  const r = sim(ISLANDS('z', 'c'));
+  r.runTo(5000);
+  assert.equal(r.multicast.rp('z2', '239.1.1.1').dev, 'z1');
+  assert.equal(r.multicast.rp('c2', '239.1.1.1').dev, 'c1');
+  // IPv6: b2's static RP is IPv4 (no RP for ff0e::1 from it), and b1 has no IPv6 address to be one
+  assert.equal(s.multicast.rp('b2', 'ff0e::1'), null);
+  assert.ok(s.events().some((e) => /b2's static RP 10\.255\.0\.1 is IPv4: no RP for its IPv6 groups from it/.test(e.detail)));
+  // a1 has an IPv6 address: it is its domain's IPv6 candidate RP too
+  assert.equal(s.multicast.rp('a2', 'ff0e::1').dev, 'a1');
 });

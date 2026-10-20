@@ -145,8 +145,8 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await startApp('hmi', 'dashboard');
       assert.match(await page.eval(`document.getElementById('sim-a-ctx').textContent`), /subscribe|publish|MQTT/i);
       await startApp('plc', 'telemetry');
-      // real time for the periodic publications: the controller's clock is played on
-      await page.eval(`(() => { const c = netatlas.simController(); const t0 = c.sim.realtime.clock(); let t = t0; c.sim.realtime.clock = () => t; for (let i = 0; i < 240; i++) { t += 50; c.sim.pumpRealTime(); c.runTo(c.t + 50); } c.refresh(true); return true; })()`);
+      // the periodic publications: on the simulated clock, played on 12 s
+      await page.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 240; i++) c.runTo(c.t + 50); c.refresh(true); return true; })()`);
       await page.settle(200);
       await page.eval(`netatlas.simController().showTable('mqtt', 'edge'), true`);
       await page.settle(100);

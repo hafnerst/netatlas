@@ -408,46 +408,50 @@
  },
  "consistency-checks.yaml physical": {
   "positions": [
-   "ct-host 802 919",
-   "dhcp-pc 110 306",
-   "dhcp-r 223 71",
-   "dhcp1 370 306",
-   "hv-a 480 1002",
-   "hv-b 1168 525",
-   "mc-r1 568 75",
-   "mc-r2 794 75",
-   "mc-rx 1374 517",
-   "mc-src 681 307",
-   "r1 1276 221",
-   "r2 1022 221",
-   "r3 1526 221",
-   "sw1 279 625",
-   "sw2 710 625",
-   "sw3 936 625"
+   "ct-host 1048 919",
+   "dhcp-pc 144 306",
+   "dhcp-r 257 71",
+   "dhcp1 404 306",
+   "hv-a 726 1002",
+   "hv-b 1415 525",
+   "mc-r1 602 75",
+   "mc-r2 828 75",
+   "mc-r3 75 506",
+   "mc-r4 301 506",
+   "mc-rx 1621 517",
+   "mc-src 715 307",
+   "r1 1310 221",
+   "r2 1056 221",
+   "r3 1560 221",
+   "sw1 525 625",
+   "sw2 957 625",
+   "sw3 1183 625"
   ],
-  "scene": "c368773db631d471"
+  "scene": "72cdd8fb6c6874cf"
  },
  "consistency-checks.yaml logical": {
   "positions": [
    "core-12 335 136",
    "dhcp-lan 1808 353",
-   "dhcp-pc 629 818",
+   "dhcp-pc 1206 818",
    "dhcp-r 1707 70",
    "dhcp1 1960 612",
-   "mc-r1 898 829",
-   "mc-r2 1152 846",
-   "mc-rx 1406 811",
-   "mc-src 1651 829",
+   "mc-r1 1476 829",
+   "mc-r2 1730 846",
+   "mc-r3 70 811",
+   "mc-r4 370 811",
+   "mc-rx 1984 811",
+   "mc-src 85 1113",
    "r1 734 350",
    "r2 105 484",
    "r3 1239 408",
-   "sw1 97 1151",
-   "users 362 1071",
-   "vm-a1 357 901",
-   "vm-a2 1898 811",
-   "voice 80 787"
+   "sw1 591 1151",
+   "users 856 1071",
+   "vm-a1 934 901",
+   "vm-a2 332 1095",
+   "voice 657 787"
   ],
-  "scene": "c01291428009dba8"
+  "scene": "c760b3a58b9cfbfe"
  },
  "device-types.yaml physical": {
   "positions": [

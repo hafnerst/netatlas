@@ -35,6 +35,8 @@ export interface PacketData {
   follow?: { on: boolean; act: () => void };
   /** the multicast forwarding decisions about this hop: the one that sent it, the one where it arrived */
   forwarding?: Array<{ title: string; d: McDecision }>;
+  /** what the simulation does of its protocol (its support statement), for the Fidelity section */
+  support?: { label: string; level: string; does: string; not?: string };
 }
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
@@ -462,6 +464,14 @@ export class TablePanels {
     const why: Array<[string, string]> = [['Caused by', h.causedBy || 'its own timer or start (nothing it answers)']];
     why.push(['Waited for', h.waited && h.waited.length ? h.waited.join('; ') : 'nothing: sent at once']);
     layer('Timing', why);
+    // which fields the simulation computed, which it leaves out, and what is only described
+    const computed = ['addresses and MACs', 'the VLAN tag', h.l3.length ? (h.l3[0].version === 4 ? 'TTL, DF and fragments' : 'the hop limit and fragments') : '', l4 && l4.proto === 'icmp' ? 'the ICMP type, code and quoted header' : '', l4 && (l4.proto === 'tcp' || l4.proto === 'udp') ? 'the ports' : '', l4 && l4.proto === 'tcp' ? 'the TCP flags, sequence and acknowledgement numbers (the connection’s own state)' : '', 'the sizes'].filter((x) => x);
+    const fid: Array<[string, string]> = [
+      ['Computed', computed.join(', ') + ': what the simulation works with.'],
+      ['Left out', 'checksums, IP identification and options, the TCP window and options: nothing in the simulation depends on them.'],
+      ['Described', `the payload (${d.support ? d.support.label : h.protocol}) in words: its contents are the simulation’s own records, not the protocol’s field layout${d.support && d.support.not ? ` — not simulated: ${d.support.not.replace(/\.$/, '')}` : ''}.`],
+    ];
+    layer('Fidelity', fid);
     return box;
   }
 

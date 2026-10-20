@@ -59,6 +59,8 @@ export class TestForm {
   private df: HTMLInputElement;
   private keep: HTMLInputElement;
   private keepRow: HTMLElement;
+  /** the count's label: what is counted depends on the protocol (Echo requests, Datagrams, Connections) */
+  private countLabel!: HTMLElement;
   private need: HTMLElement;
   private msg: HTMLElement;
   private sendBtn: HTMLButtonElement;
@@ -127,13 +129,15 @@ export class TestForm {
     row('subnet', lab('sim-t-subnet', ['Subnet']), this.subnet);
     row('kind', lab('sim-t-kind', ['Protocol']), this.kind);
     row('port', lab('sim-t-port', ['Port']), this.port);
-    row('count', lab('sim-t-count', ['Messages']), this.count);
+    this.countLabel = lab('sim-t-count', ['Messages']);
+    row('count', this.countLabel, this.count);
     row('interval', lab('sim-t-interval', ['Interval']), el(d, 'span', { class: 'pinput' }, [this.interval, el(d, 'span', { class: 'punit', 'aria-hidden': 'true' }, ['s'])]));
     // the single interface shown as text is named by its row's label
     this.viaOne.setAttribute('aria-labelledby', 'sim-t-via-l');
     this.toifOne.setAttribute('aria-labelledby', 'sim-t-toif-l');
     this.interval.setAttribute('aria-label', 'Interval in seconds');
-    this.keepRow = el(d, 'label', { class: 'check' }, [this.keep, ' TCP: keep open (keepalive)']);
+    // (with several, each is a connection of its own; kept open, each is probed after the keepalive time and stays until closed or reset)
+    this.keepRow = el(d, 'label', { class: 'check', title: 'Each connection stays open after its handshake (no request, no close): with several, each is a connection of its own. An idle one is probed after the TCP keepalive time and reset when its probes go unanswered.' }, [this.keep, ' TCP: keep each connection open (keepalive)']);
     const moreBody = el(d, 'div', { class: 'sim-test-form' }, [lab('sim-t-size', ['Data']), el(d, 'span', { class: 'pinput' }, [this.size, el(d, 'span', { class: 'punit' }, ['bytes'])]), el(d, 'span'), el(d, 'label', { class: 'check' }, [this.df, ' Don’t fragment (IPv4)']), el(d, 'span'), this.keepRow]);
     this.el = el(d, 'div', { class: 'sim-test' }, [grid, more(d, 'sim-t-more', 'More options', moreBody), el(d, 'div', { class: 'sp-row' }, [this.sendBtn, this.sendPlay]), this.need, this.msg]);
     // what stops applying is cleared (never kept hidden); what still fits stays
@@ -312,6 +316,8 @@ export class TestForm {
     this.show('port', on && !!k && usesPorts(k));
     this.show('count', on);
     this.show('interval', on);
+    // what one message is for the protocol: an ICMP echo request, a UDP datagram, a TCP connection (handshake, request and answer, close)
+    this.countLabel.textContent = k === 'icmp' ? 'Echo requests' : k === 'udp' ? 'Datagrams' : k === 'tcp' ? 'Connections' : 'Messages';
     const n = Number(this.count.value);
     this.interval.disabled = !(this.count.value.trim() !== '' && n > 1);
     this.keepRow.hidden = k !== 'tcp';

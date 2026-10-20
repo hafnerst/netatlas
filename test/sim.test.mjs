@@ -278,7 +278,7 @@ test('determinism: the same model and the same actions give the same timeline', 
   assert.deepEqual(run(), run());
 });
 
-test('a failure: dropped packets marked where they were lost, the dead interval, reconvergence, and the full handshake after the restore', () => {
+test('a failure: the far end’s own news reroutes before the dead interval, the dead interval, reconvergence, and the full handshake after the restore', () => {
   const s = sim(pe);
   s.runTo(60000);
   s.fail('link:l-carrier-r3');
@@ -287,10 +287,13 @@ test('a failure: dropped packets marked where they were lost, the dead interval,
   assert.ok(events(s, (e) => e.device === 'r3' && /OSPF ospf-r1-r3: r3 → r1 Down \(interface ge0 went down\)/.test(e.detail)).length);
   const dead = events(s, (e) => e.device === 'r1' && /r1 → r3 Down \(dead interval expired \(40 s/.test(e.detail))[0];
   assert.ok(dead && dead.t > t0 + 25000 && dead.t <= t0 + 41000, String(dead && dead.t));
-  assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /flooding/.test(e.detail)).length > 2, 'LSU flooding');
+  // the change floods: r1's and r3's new records, and the others pass them on
+  assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /(adjacencies or interfaces changed|learned from \S+) \(?.*: \S+#\d+/.test(e.detail)).length > 2, 'LSU flooding');
   // the users' traffic now goes via r2
   assert.ok(events(s, (e) => e.t > t0 + 2000 && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail)).length);
-  assert.ok(s.engine.flights.length >= 0);
+  // r3 noticed its own interface at once and flooded its new record: r1 learned it (through r2) long before its own dead interval
+  const learned = events(s, (e) => e.t >= t0 && e.device === 'r1' && e.what === 'learned' && /r3 sequence/.test(e.detail))[0];
+  assert.ok(learned && learned.t < dead.t - 20000, `learned at ${learned && learned.t}, dead at ${dead.t}`);
   s.restore('link:l-carrier-r3');
   const t1 = s.now;
   s.runTo(t1 + 60000);
@@ -404,8 +407,8 @@ const CASES = [
   ['eigrp', { svc: 'eigrp: {asn: 10}' }, ['Hello', 'Update', 'ACK'], 'Up'],
   ['rip', { svc: 'rip: {}' }, ['Request', 'Response'], 'Heard'],
   ['bgp', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'TCP SYN-ACK', 'TCP ACK', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
-  ['evpn', { ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
-  ['l3vpn', { ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
+  ['evpn', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
+  ['l3vpn', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
   ['ldp', { svc: 'ldp: {}' }, ['Hello', 'TCP SYN', 'Initialization', 'Keepalive', 'Label Mapping'], 'Operational'],
   ['pseudowire', { ep: ['r1:lo0', 'r2:lo0'] }, ['Targeted Hello', 'Initialization', 'Keepalive', 'Label Mapping (PW)'], 'Operational'],
   ['vpls', { ep: ['r1:lo0', 'r2:lo0'] }, ['Targeted Hello', 'Initialization', 'Label Mapping (VPLS)'], 'Operational'],
@@ -470,7 +473,7 @@ test('profiles: failure and restore of a session (OSPF over a failed cable goes 
   b.runTo(20000);
   b.fail('link:l');
   b.runTo(20000 + 185000);
-  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min \(3 × bgp keepalive, default/.test(e.detail)).length, 'the hold time');
+  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min, negotiated\)/.test(e.detail)).length, 'the hold time');
   assert.ok(events(b, (e) => e.what === 'NOTIFICATION').length);
 });
 

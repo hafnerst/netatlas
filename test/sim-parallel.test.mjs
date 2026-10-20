@@ -199,8 +199,8 @@ links:
   - {id: la, a: "a1:g0", b: "a2:g0"}
   - {id: lb, a: "b1:g0", b: "b2:g0"}
 relations:
-  - {id: ospf-a, protocol: ospf, endpoints: ["a1:g0", "a2:g0"]}
-  - {id: ospf-b, protocol: ospf, endpoints: ["b1:g0", "b2:g0"]}
+  - {id: ospf-a, protocol: ospf, endpoints: ["a1:g0", "a2:g0"], attrs: {network-type: point-to-point}}
+  - {id: ospf-b, protocol: ospf, endpoints: ["b1:g0", "b2:g0"], attrs: {network-type: point-to-point}}
 `;
 
 test('independent devices and protocols are not serialized: two islands go through the same steps at the same moments', () => {

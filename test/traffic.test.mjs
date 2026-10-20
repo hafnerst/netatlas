@@ -68,7 +68,7 @@ test('demands: traced like Trace path, through the networks and the relations us
 
 test('equal-cost paths share a demand equally', () => {
   // c1 → c3 now costs as much as c1 → c2 → c3
-  const m = model(reroute.replace('{area: 0, cost: 10}}\n  - {id: ospf-c2-c3', '{area: 0, cost: 20}}\n  - {id: ospf-c2-c3').replace('label: backup, endpoints: ["c2:ge1", "c3:ge1"], over: l-c2-c3, attrs: {area: 0, cost: 30}', 'label: backup, endpoints: ["c2:ge1", "c3:ge1"], over: l-c2-c3, attrs: {area: 0, cost: 10}'));
+  const m = model(reroute.replace('over: l-c1-c3\n    attrs: {network-type: point-to-point, area: 0, cost: 10}', 'over: l-c1-c3\n    attrs: {network-type: point-to-point, area: 0, cost: 20}').replace('over: l-c2-c3\n    attrs: {network-type: point-to-point, area: 0, cost: 30}', 'over: l-c2-c3\n    attrs: {network-type: point-to-point, area: 0, cost: 10}'));
   const fl = T.trafficFlows(m, null).flows.filter((f) => f.of === 'demand:users-app');
   assert.equal(fl.length, 2);
   assert.deepEqual(fl.map((f) => f.share), [0.5, 0.5]);

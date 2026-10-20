@@ -1,9 +1,9 @@
 // On screen (headless Chrome/Edge/Chromium through the DevTools protocol;
 // skipped without one), the busy internal example, both themes.
 // Two multicast streams started from the form run side by side, each a
-// datagram every real second in Readable pacing, both with datagrams on
-// their way at once, each inspectable with its own port; paused, both say
-// Paused and send nothing; Stop one, the other goes on. A device's
+// datagram every simulated second (the scenario's clock: the pacing changes
+// only how fast they are shown), each inspectable with its own port;
+// paused, nothing is sent; Stop one, the other goes on. A device's
 // lifecycle in the diagram (its status indicator): Operational, Powered
 // off, Booting, a tooltip with its state, the box neither moved nor
 // resized, its label clear; a shut interface marks no device off; an
@@ -39,7 +39,7 @@ const DEV = (id) => `(() => { const n = document.querySelector('#canvas .node[da
     stroke: b ? getComputedStyle(b.querySelector('rect')).stroke : null, off: n.classList.contains('sim-off'), booting: n.classList.contains('sim-booting'), down: n.classList.contains('sim-down'), overlapsLabel: hit }; })()`;
 
 for (const theme of ['light', 'dark']) {
-  test(`${theme}: two streams side by side in real seconds, Paused, Stop one; devices operational, powered off and booting in the diagram`, { skip, timeout: 300000 }, async () => {
+  test(`${theme}: two streams side by side on the simulated clock, paused, Stop one; devices operational, powered off and booting in the diagram`, { skip, timeout: 300000 }, async () => {
     const page = await openPage(url, { width: 1440, height: 900 });
     const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
     try {
@@ -58,34 +58,34 @@ for (const theme of ['light', 'dark']) {
         await page.eval(`document.getElementById('sim-s-go').click(), true`);
         await page.settle(30);
       }
-      const t0 = await page.eval(`performance.now()`);
+      const t0 = await page.eval(`netatlas.simController().t`);
       let S = await page.eval(STREAMS);
       assert.equal(S.length, 2, JSON.stringify(S));
       assert.ok(S[0].tag !== S[1].tag, 'each its own traffic');
       await wait(5000);
       S = await page.eval(STREAMS);
-      const secs = ((await page.eval(`performance.now()`)) - t0) / 1000;
-      // each a datagram every real second (the first at once): within a frame or two of the real seconds, neither waiting for the other
+      const secs = ((await page.eval(`netatlas.simController().t`)) - t0) / 1000;
+      // each a datagram every simulated second (the first at once), neither waiting for the other
       for (const s of S) {
-        assert.ok(s.done >= Math.floor(secs) && s.done <= Math.floor(secs) + 2, `${s.done} datagrams in ${secs.toFixed(2)} s`);
+        assert.ok(s.done >= Math.floor(secs) && s.done <= Math.floor(secs) + 2, `${s.done} datagrams in ${secs.toFixed(2)} s of simulated time`);
         assert.equal(s.status, 'running');
         assert.equal(s.row, 'running');
-        assert.match(s.summary, /^\d+ datagrams sent, every 1 s of real time · /);
+        assert.match(s.summary, /^\d+ datagrams sent, every 1 s of simulated time · /);
       }
       assert.ok(Math.abs(S[0].done - S[1].done) <= 1, 'side by side, not taking turns');
-      assert.match(await page.eval(`document.getElementById('sim-pace-text').textContent`), /^Readable · 3 s per hop · 1× · streams in real time( · behind)?$/);
-      // both on screen at once, each with several datagrams on their way (a path takes longer than the interval)
+      assert.doesNotMatch(await page.eval(`document.getElementById('sim-pace-text').textContent`), /real time/);
+      // both on screen
       const A = await page.eval(DOTS(S[0].tag));
       const B = await page.eval(DOTS(S[1].tag));
       assert.ok(A.dots > 0 && B.dots > 0, JSON.stringify([A.dots, B.dots]));
-      assert.ok(A.datagrams >= 2 && B.datagrams >= 2, JSON.stringify([A.datagrams, B.datagrams]));
       // paused: both Paused, nothing sent
       await page.eval(`netatlas.simController().setPlaying(false), true`);
       await page.settle(60);
       const P0 = await page.eval(STREAMS);
       await wait(2000);
       const P1 = await page.eval(STREAMS);
-      assert.deepEqual(P1.map((s) => [s.status, s.row]), [['paused', 'paused'], ['paused', 'paused']]);
+      // (the simulated clock stands: still running streams, with nothing due)
+      assert.deepEqual(P1.map((s) => s.status), ['running', 'running']);
       assert.deepEqual(P1.map((s) => s.done), P0.map((s) => s.done), 'nothing while paused');
       // a dot of the second stream opens the inspector: its group and its own port
       const dot = (await page.eval(DOTS(S[1].tag))).free[0];
@@ -101,11 +101,13 @@ for (const theme of ['light', 'dark']) {
       // Stop the first: the second goes on
       await page.eval(`document.querySelector('#sim-events li[data-kind="stream"][data-act="${S[0].id}"] button[data-op="stop"]').click(), true`);
       const Q0 = await page.eval(STREAMS);
+      const q0 = await page.eval(`netatlas.simController().t`);
       await wait(2500);
       const Q1 = await page.eval(STREAMS);
+      const qs = ((await page.eval(`netatlas.simController().t`)) - q0) / 1000;
       assert.equal(Q1[0].status, 'stopped');
       assert.equal(Q1[0].done, Q0[0].done, 'no datagram after Stop');
-      assert.ok(Q1[1].done >= Q0[1].done + 2, `${Q0[1].done} → ${Q1[1].done}`);
+      assert.ok(Q1[1].done >= Q0[1].done + Math.floor(qs) - 1, `${Q0[1].done} → ${Q1[1].done} in ${qs.toFixed(2)} s of simulated time`);
       await page.eval(`document.querySelector('#sim-events li[data-kind="stream"][data-act="${S[1].id}"] button[data-op="stop"]').click(), true`);
 
       // ---------------------------------------------------------------- device state

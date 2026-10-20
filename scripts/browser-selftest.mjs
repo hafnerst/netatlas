@@ -76,8 +76,11 @@ export function run(browser, url, extra) {
         // a mouse, as on a desktop, also on a machine without a pointing device (CI's Linux runners)
         '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
         `--user-data-dir=${profile}`,
-        // the self-test's waits run on virtual time; under a loaded machine (the whole test suite at once) it needs more than 2 minutes of it
-        '--virtual-time-budget=180000',
+        // the self-test's waits run on virtual time, and a busy page uses it up faster than an idle one: the same run needs under
+        // 1 minute of it alone here, and more than 3 minutes on a loaded CI runner (it stopped part-way at 180000 there).
+        // A finished page ends the browser at once whatever is left, so the budget only bounds a page that never finishes;
+        // the real-time timeout below is the guard against a hang.
+        '--virtual-time-budget=900000',
         ...extra,
         url,
       ],

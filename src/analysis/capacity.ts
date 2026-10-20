@@ -30,7 +30,7 @@
  * flows. Pure and deterministic.
  */
 import { APP_DEFAULTS, appProfile, topicMatches } from '../model/applications';
-import { parseSpeed } from '../model/speed';
+import { bpsText, parseSpeed } from '../model/speed';
 import { Model } from '../model/types';
 import { RoutingCtx } from './routing';
 import { Path, Trace, tracePath } from './trace';
@@ -89,7 +89,6 @@ export interface CapacityResult {
   assumptions: string[];
 }
 
-const bpsText = (b: number): string => (b >= 1e9 ? `${+(b / 1e9).toFixed(2)} Gbit/s` : b >= 1e6 ? `${+(b / 1e6).toFixed(2)} Mbit/s` : b >= 1e3 ? `${+(b / 1e3).toFixed(2)} kbit/s` : `${Math.round(b)} bit/s`);
 export { bpsText };
 
 /** The traffic the model states (see the module comment), sorted by id. */

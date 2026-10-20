@@ -104,6 +104,8 @@ export interface Pkt {
   rides: string[];
   /** held for its transfer delay at this Security gateway: decided already, it goes on */
   held?: string;
+  /** IPv6: the path MTU its sender knows (it fragments its own packet to it; routers never do) */
+  pmtu?: number;
 }
 
 /** One dot: a message on one cable (physical) or one logical line, from t0 to t1. */

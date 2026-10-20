@@ -9,6 +9,7 @@
  */
 import { IpAddr, parseAddress } from '../../model/ip';
 import { simProfile } from '../../model/sim-profiles';
+import { bpsText, representativeText } from '../../model/speed';
 import { Relation, deviceInterfaces, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { parseTraceEnd } from '../trace';
@@ -18,6 +19,7 @@ import { isMulticastIp, multicastMac, virtualMac } from './mac';
 import { L3Iface, carries, otherEnd, portKey, linkPort } from './net';
 import { ifaceRef, relRef } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpOpen, tcpSend } from './proto-tcp';
 import { Msg, Pkt, SessionStatus } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -305,12 +307,38 @@ function greSend(P: ProtocolSim, s: Sess, type: string, detail: string): void {
   P.e.send(s.dev, pkt);
 }
 
+/** Does a session's profile run over TCP (SSL VPN): its handshake starts with the connection of the common transport. */
+function overTcp(s: Sess): boolean {
+  return /^TCP\b/.test(s.profile.proto);
+}
+
+/** The first step of a handshake after its TCP steps (the transport makes the connection). */
+function afterTcp(s: Sess): number {
+  const h = s.profile.handshake || [];
+  let k = 0;
+  while (h[k] && /^TCP\b/.test(h[k].msg)) k++;
+  return k;
+}
+
 function sessionSend(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}): void {
   if (s.protocol === 'gre') greSend(P, s, type, detail);
+  else if (overTcp(s)) tcpSend(P, s, type, detail, 64, data);
   else P.unicast(s, type, detail, data);
 }
 
-const session: Behaviour = {
+/** A handshake's steps from `k` that are this side's (sent one after the other). */
+function ownSteps(P: ProtocolSim, s: Sess, k: number): number {
+  const p = s.profile;
+  const h = p.handshake || [];
+  const mine = s.initiator ? 'a' : 'b';
+  while (h[k] && h[k].from === mine) {
+    sessionSend(P, s, h[k].msg, `handshake step ${k + 1} of ${h.length}`, { step: k });
+    k++;
+  }
+  return k;
+}
+
+const session: TcpBehaviour = {
   refresh(P, s) {
     const p = s.profile;
     s.x.detail = `${p.keepalive ? p.keepalive.msg.toLowerCase() + ' every ' + P.timer(s, p, 'hello').text + ', down after ' + P.timer(s, p, 'dead').text : ''}`;
@@ -319,7 +347,14 @@ const session: Behaviour = {
     const p = s.profile;
     s.state = p.states[0];
     session.refresh!(P, s);
-    if (s.initiator && p.handshake && p.handshake.length) {
+    if (overTcp(s)) {
+      // over TCP: the server listens, the client connects; the handshake goes on once the connection is open
+      tcpListen(P, s);
+      if (s.initiator) {
+        tcpConnect(P, s);
+        P.setState(s, p.states.length > 2 ? p.states[1] : p.states[0], false, 'handshake started: TCP connection');
+      }
+    } else if (s.initiator && p.handshake && p.handshake.length) {
       const first = p.handshake[0];
       sessionSend(P, s, first.msg, 'starts the session', { step: 0 });
       P.setState(s, p.states.length > 2 ? p.states[1] : p.states[0], false, 'handshake started');
@@ -331,9 +366,12 @@ const session: Behaviour = {
     every(P, s, () => P.timer(s, p, 'hello').ms, () => {
       if (!ka.both && !s.initiator) return;
       if (!ka.both || s.up || !p.handshake || !p.handshake.length) sessionSend(P, s, ka.msg, `${ka.reply ? 'expects ' + ka.reply : 'liveness'}`, { ka: true });
-      // a session that is down starts its handshake again
+      // a session that is down starts its handshake again (over TCP: a new connection)
       if (!s.up && s.initiator && p.handshake && p.handshake.length && P.e.now - s.since >= P.timer(s, p, 'dead').ms) {
-        sessionSend(P, s, p.handshake[0].msg, 'starts the session again', { step: 0 });
+        if (overTcp(s)) {
+          tcpClose(P, s, 'the session starts again', true);
+          tcpConnect(P, s);
+        } else sessionSend(P, s, p.handshake[0].msg, 'starts the session again', { step: 0 });
         s.since = P.e.now;
       }
     });
@@ -345,6 +383,16 @@ const session: Behaviour = {
       });
     };
     s.x.check = check;
+  },
+  tcp(P, s, ev, why) {
+    const p = s.profile;
+    if (ev === 'open') {
+      if (!s.initiator) return;
+      const k = ownSteps(P, s, afterTcp(s));
+      if (k >= (p.handshake || []).length) P.setState(s, p.states[p.states.length - 1], true, 'answered');
+      return;
+    }
+    if (s.up || s.state !== p.states[0]) P.setState(s, p.states[0], false, `its TCP connection ${why}`);
   },
   rx(P, s, msg) {
     const p = s.profile;
@@ -360,13 +408,8 @@ const session: Behaviour = {
       const next = p.handshake[d.step + 1];
       const mine = s.initiator ? 'a' : 'b';
       if (next && next.from === mine) {
-        sessionSend(P, s, next.msg, `handshake step ${d.step + 2} of ${p.handshake.length}`, { step: d.step + 1 });
-        // the rest of the handshake that is ours as well
-        let k = d.step + 2;
-        while (p.handshake[k] && p.handshake[k].from === mine) {
-          sessionSend(P, s, p.handshake[k].msg, `handshake step ${k + 1} of ${p.handshake.length}`, { step: k });
-          k++;
-        }
+        // this side's steps that follow (the rest of the handshake that is ours as well)
+        const k = ownSteps(P, s, d.step + 1);
         if (k >= p.handshake.length) up();
         else if (s.state === p.states[0] && p.states.length > 2) P.setState(s, p.states[1], false, 'handshake');
       } else if (!next) up();
@@ -379,7 +422,7 @@ const session: Behaviour = {
 
 // ------------------------------------------------------------------ services, data, custom protocols
 
-const service: Behaviour = {
+const service: TcpBehaviour = {
   refresh(P, s) {
     const p = s.profile;
     const sender = p.fromServer ? !s.initiator : s.initiator;
@@ -388,11 +431,12 @@ const service: Behaviour = {
   },
   start(P, s) {
     const p = s.profile;
-    // requests come from the clients (from the server for SNMP)
+    const tcp = /^TCP/.test(p.proto) && p.id !== 'radius';
+    // requests come from the clients (from the server for SNMP); over TCP the server listens for their connections
     const sender = p.fromServer ? !s.initiator : s.initiator;
+    if (tcp && !sender) tcpListen(P, s);
     if (!sender) return;
     service.refresh!(P, s);
-    const tcp = /^TCP/.test(p.proto) && p.id !== 'radius';
     every(P, s, () => P.timer(s, p, 'hello').ms, () => {
       // SNMP: an agent that did not answer the last poll within the manager's timeout is not responding
       if (p.id === 'snmp') {
@@ -406,41 +450,46 @@ const service: Behaviour = {
           }
         });
       }
-      if (tcp && !s.x.open) {
-        P.unicast(s, 'TCP SYN', `to the server${p.id === 'https' ? ' port 443' : ''}`);
+      if (tcp && !tcpOpen(s)) {
+        // no connection (yet, or it was lost): the common transport opens one; the requests go once it is open
+        tcpConnect(P, s);
         return;
       }
-      P.unicast(s, p.request as string, p.messages[0].does);
+      if (tcp && !s.x.open) return;
+      svcSend(P, s, p.request as string, p.messages[0].does);
     });
+  },
+  tcp(P, s, ev, why) {
+    const p = s.profile;
+    if (ev === 'open') {
+      if (!(p.fromServer ? !s.initiator : s.initiator)) return;
+      if (p.id === 'https') svcSend(P, s, 'TLS ClientHello', 'cipher suites, key share');
+      else {
+        s.x.open = true;
+        svcSend(P, s, p.request as string, p.messages[0].does);
+      }
+      return;
+    }
+    s.x.open = false;
+    if (s.up) P.setState(s, p.states[0], false, `its TCP connection ${why}`);
   },
   rx(P, s, msg) {
     const p = s.profile;
     switch (msg.type) {
-      case 'TCP SYN':
-        P.unicast(s, 'TCP SYN-ACK', 'accepts');
-        return;
-      case 'TCP SYN-ACK':
-        P.unicast(s, 'TCP ACK', 'connection open');
-        if (p.id === 'https') P.unicast(s, 'TLS ClientHello', 'cipher suites, key share');
-        else {
-          s.x.open = true;
-          P.unicast(s, p.request as string, p.messages[0].does);
-        }
-        return;
       case 'TLS ClientHello':
-        P.unicast(s, 'TLS ServerHello', 'certificate, key share, Finished');
+        svcSend(P, s, 'TLS ServerHello', 'certificate, key share, Finished');
         return;
       case 'TLS ServerHello':
         s.x.open = true;
         P.setState(s, 'Answered', true, 'TLS session established');
-        P.unicast(s, p.request as string, p.messages[0].does);
+        svcSend(P, s, p.request as string, p.messages[0].does);
         return;
       default:
         if (msg.type === p.request && p.response) {
           // the server answers after its response time (its simulation attribute)
           const rt = P.param('service-response', s.dev, relRef(s.rel.id));
           const answer = (): void => {
-            P.unicast(s, p.response as string, Number(rt.value) > 0 ? `the answer (after the response time ${P.paramText(rt)})` : 'the answer');
+            svcSend(P, s, p.response as string, Number(rt.value) > 0 ? `the answer (after the response time ${P.paramText(rt)})` : 'the answer');
             if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'answers requests');
           };
           if (Number(rt.value) > 0) P.later(s, Number(rt.value), answer);
@@ -452,6 +501,12 @@ const service: Behaviour = {
     }
   },
 };
+
+/** A service's message: over its TCP connection for a TCP profile (HTTPS), else as a datagram of its own. */
+function svcSend(P: ProtocolSim, s: Sess, type: string, detail: string): void {
+  if (/^TCP/.test(s.profile.proto) && s.profile.id !== 'radius') tcpSend(P, s, type, detail, /ClientHello/.test(type) ? 517 : /ServerHello/.test(type) ? 1400 : 300);
+  else P.unicast(s, type, detail);
+}
 
 const data: Behaviour = {
   start(P, s) {
@@ -480,10 +535,10 @@ const custom: Behaviour = {
 
 // ------------------------------------------------------------------ PIM and IGMP
 
-/** The RP of the any-source groups (multicast.ts decides it), null: none. */
-function rpOf(P: ProtocolSim): { dev: string; addr: IpAddr } | null {
-  const m = P.shared.get('multicast') as { rp(): { dev: string; addr: IpAddr } | null } | undefined;
-  return m ? m.rp() : null;
+/** The RP a router uses for the any-source groups of an address family (multicast.ts decides it, in that router's context), null: none. */
+function rpOf(P: ProtocolSim, dev: string, v: 4 | 6): { dev: string; addr: IpAddr } | null {
+  const m = P.shared.get('multicast') as { rp(dev: string, group: string): { dev: string; addr: IpAddr } | null } | undefined;
+  return m ? m.rp(dev, v === 4 ? '239.0.0.0' : 'ff0e::') : null;
 }
 
 const pim: Behaviour = {
@@ -500,7 +555,7 @@ const pim: Behaviour = {
       },
     );
     // the RP announces itself (BSR) every bootstrap period
-    const rp = rpOf(P);
+    const rp = rpOf(P, s.dev, s.local.addr.version);
     const bkey = 'pim-bsr|' + s.dev;
     if (rp && rp.dev === s.dev && !P.shared.has(bkey)) {
       P.shared.set(bkey, 0);
@@ -748,9 +803,12 @@ export function installBootGarp(P: ProtocolSim): void {
   });
 }
 
-/** The model's demands: data packets from the source to the destination, at a rate that grows with the bandwidth; delivered or lost. */
+/** A demand's representative packet's size on the wire (its IP packet: engine.ts ipLen of a demand's data). */
+const DEMAND_BYTES = 1420;
+
+/** The model's demands: representative data packets from the source to the destination, more often for more bandwidth; delivered or lost. */
 export function installDemands(P: ProtocolSim): void {
-  type D = { id: string; label: string; dev: string; src: IpAddr; dst: IpAddr; every: number; sent: number; got: number; last: number; multicast: boolean };
+  type D = { id: string; label: string; dev: string; src: IpAddr; dst: IpAddr; every: number; sent: number; got: number; last: number; multicast: boolean; bps: number };
   const list: D[] = [];
   for (const dm of P.m.demands.slice().sort((a, b) => cmp(a.id, b.id))) {
     const se = parseTraceEnd(P.m, dm.source);
@@ -766,14 +824,14 @@ export function installDemands(P: ProtocolSim): void {
     // a multicast demand is a stream (multicast.ts)
     if (isMulticastIp(dstAddr)) continue;
     const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
-    list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: isMulticastIp(dstAddr) });
+    list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: isMulticastIp(dstAddr), bps: dm.bps });
   }
   if (!list.length) return;
   P.bootHooks.push(() => {
     for (const x of list) {
       const tick = (): void => {
         x.sent++;
-        const msg: Msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): data packet ${x.sent} from ${x.dev} (${formatAddr(x.src)}) to ${formatAddr(x.dst)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: formatAddr(x.src) } };
+        const msg: Msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): representative data packet ${x.sent} from ${x.dev} (${formatAddr(x.src)}) to ${formatAddr(x.dst)} — it shows the demand's way, not its ${bpsText(x.bps)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: formatAddr(x.src) } };
         const pkt = P.e.newPacket(x.src, x.dst, '', msg, []);
         // the transport of a load test (iperf's default port)
         pkt.l4 = { proto: 'udp', num: 17, sport: 5001, dport: 5001 };
@@ -804,7 +862,7 @@ export function installDemands(P: ProtocolSim): void {
   P.extraStatus.push((): SessionStatus[] =>
     list.map((x) => {
       const lost = x.sent - x.got;
-      return { protocol: 'demand', name: `${x.id}: ${x.dev} → ${formatAddr(x.dst)}`, device: x.dev, peer: '', state: x.multicast ? 'multicast' : x.got && P.e.now - x.last < 3 * x.every + 3000 ? 'Delivered' : x.sent ? 'Lost' : 'Waiting', detail: `${x.got} of ${x.sent} packets delivered${lost > 0 ? ` (${lost} lost or on their way)` : ''}; one every ${fmtSec(x.every)}`, up: x.multicast || (x.got > 0 && P.e.now - x.last < 3 * x.every + 3000) };
+      return { protocol: 'demand', name: `${x.id}: ${x.dev} → ${formatAddr(x.dst)}`, device: x.dev, peer: '', state: x.multicast ? 'multicast' : x.got && P.e.now - x.last < 3 * x.every + 3000 ? 'Delivered' : x.sent ? 'Lost' : 'Waiting', detail: `${x.got} of ${x.sent} representative packets delivered${lost > 0 ? ` (${lost} lost or on their way)` : ''}; ${representativeText(x.bps, x.every, DEMAND_BYTES)}`, up: x.multicast || (x.got > 0 && P.e.now - x.last < 3 * x.every + 3000) };
     }),
   );
 }

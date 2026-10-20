@@ -7,8 +7,9 @@
  * devices grouped by type or by group / site (the user switches between the
  * two), each with its type's icon, its name and, for a switch, its L2 / L3
  * badge. Every group folds and says how many of its devices are chosen
- * ("Routers (2 of 5)"). Nothing here changes the model; the simulation
- * decides what the choice means (sim-controller.ts).
+ * ("Routers (2 of 5)"). Nothing here changes the model, and nothing here
+ * changes what the simulation runs or generates: the choice is what is
+ * drawn and listed (sim-controller.ts).
  */
 import { DEVICE_TYPES, deviceTypeLabel } from '../model/device-types';
 import { Model } from '../model/types';
@@ -36,6 +37,8 @@ export interface SendersPicker {
   set(s: Set<string>): void;
   /** "Senders (3 of 23): hq-rtr1, muc-rtr, client-1…" */
   summary(): string;
+  /** what it listens to outside its own element is removed (its menu closed) */
+  dispose(): void;
 }
 
 /** Plural names of the device types, for the groups' headings. */
@@ -216,6 +219,8 @@ export function sendersPicker(doc: Document, o: SendersPickerOpts): SendersPicke
       menu.appendChild(item);
     }
     menu.hidden = false;
+    // (a click outside closes it: listened for while it is open only, so nothing stays on the document after the picker is gone)
+    doc.addEventListener('pointerdown', outside);
     const r = b.getBoundingClientRect();
     const pr = (menu.offsetParent || body).getBoundingClientRect();
     menu.style.left = Math.max(0, r.left - pr.left) + 'px';
@@ -224,6 +229,7 @@ export function sendersPicker(doc: Document, o: SendersPickerOpts): SendersPicke
   };
   const close = (): void => {
     menu.hidden = true;
+    doc.removeEventListener('pointerdown', outside);
     byType.setAttribute('aria-expanded', 'false');
     byGroup.setAttribute('aria-expanded', 'false');
   };
@@ -243,9 +249,9 @@ export function sendersPicker(doc: Document, o: SendersPickerOpts): SendersPicke
       items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
     } else if (e.key === 'Tab') close();
   });
-  doc.addEventListener('pointerdown', (e) => {
+  function outside(e: Event): void {
     if (!menu.hidden && !menu.contains(e.target as Node) && e.target !== byType && e.target !== byGroup) close();
-  });
+  }
   const groupBy = (b: 'type' | 'group'): void => {
     by = b;
     gType.setAttribute('aria-pressed', b === 'type' ? 'true' : 'false');
@@ -264,5 +270,6 @@ export function sendersPicker(doc: Document, o: SendersPickerOpts): SendersPicke
       render();
     },
     summary: () => sendersSummary(m, sel),
+    dispose: () => close(),
   };
 }

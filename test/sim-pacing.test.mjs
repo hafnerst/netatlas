@@ -310,7 +310,15 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   // its later hops are drawn whatever else is on screen (no room for anything else here); the simulation goes on at its rate
   p.limit = 0;
   const t0 = sim.now;
-  for (let i = 0; i < 300; i++) p.frame(16);
+  // (the page's clock stands still meanwhile: each frame's work budget is never cut short, so a slow machine falling behind is not read as being held)
+  const real = Date.now;
+  const fixed = real();
+  Date.now = () => fixed;
+  try {
+    for (let i = 0; i < 300; i++) p.frame(16);
+  } finally {
+    Date.now = real;
+  }
   const mine = p.items.filter((x) => x.key === it.key && x !== it);
   assert.ok(mine.every((x) => x.drawn), 'the conversation followed is drawn');
   assert.ok(p.items.filter((x) => x.key !== it.key && x.f.t0 > t0 && x.f.view === 'physical').every((x) => !x.drawn), 'others not (no room with limit 0)');

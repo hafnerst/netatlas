@@ -28,8 +28,14 @@ other's back:
 * A result is computed once and stays as it was: after an edit it is marked
   *Outdated* until you press **Refresh**.
 * A snapshot holds what the running simulation had at one moment (leases,
-  SLAAC and DHCPv6 addresses with their state, what was up, the routes
-  learned); it is not updated as the simulation goes on.
+  SLAAC and DHCPv6 addresses with their state, what was up, each router's
+  installed routes — what it had learned by its last recomputation); it is
+  not updated as the simulation goes on.
+* An execution scope runs fewer devices, closed over what they depend on
+  (each device added examined in turn); a relation with more than two
+  endpoints runs with those inside. Where what is left out can change the
+  outcome (such a relation, demands from outside), the scope says it *may
+  differ from the entire model*; its results are the scope's.
 * Analyses that would blend two states refuse: a hypothetical failure is
   applied to the configured model only, never to a snapshot.
 
@@ -75,6 +81,12 @@ nested network, unallocated), and suggests only unallocated addresses.
   the simulation forwards in; any other in a VRF and a connected part of the
   architecture. An owner without a cable or relation has an unknown scope:
   a *possible* conflict.
+* **IPv6 interfaces.** Static IPv6 addresses enable IPv6 on an interface:
+  its link-local address (written fe80::, else from its MAC) is tentative
+  until duplicate address detection passes. A static global address is
+  usable at once (no duplicate address detection for it in the simulation:
+  validation reports duplicates); acquired addresses (SLAAC, DHCPv6) go
+  through it.
 * **DHCP and DNS.** One lease per interface. DNS has no negative caching,
   DNSSEC or TCP fallback and recurses only through the model's DNS servers.
   A name belongs to whole interfaces, never one address of an interface. A
@@ -137,8 +149,8 @@ hosts.
 distance — a missing one counts as 1 — then metric; recursive next hops),
 VRFs, and the routes of the enabled routing protocols' adjacencies. In the
 simulation the protocols' sessions and adjacencies form and fail with
-their timers (see SUPPORT.md for each); the routes come from the
-adjacencies that are up.
+their timers (see SUPPORT.md for each); each router's routes come from
+what the advertisements it received told it (below).
 
 **Simplifications.**
 
@@ -148,10 +160,25 @@ adjacencies that are up.
   what it redistributes) and passes on what it learns through the ordered
   import and export filters; the lowest cost wins (a hop unless a `cost`
   is written), for BGP first the highest local preference and the
-  shortest AS path. The simulation installs the same routes over the
-  adjacencies that are up. An adjacency forms only where the two have a
-  network in common (a BGP session may also run between loopbacks). An LSU
-  or UPDATE stands for what changed.
+  shortest AS path. In the simulation each router computes them from the
+  records it has learned: one per router (its routing adjacencies and its
+  interfaces that are up, with a sequence number), carried by the
+  protocols' advertisements (OSPF and IS-IS flood them and send them again
+  after 5 s until acknowledged, EIGRP likewise, RIP's periodic Responses
+  carry them all, BGP's UPDATEs go over TCP), and flooded over any
+  routing session of a router (also between protocols). They are an
+  abstraction of the protocols' databases, not LSAs or BGP paths field by
+  field. An adjacency forms only where the two have a network in common (a
+  BGP session may also run between loopbacks).
+* **OSPF.** The DR election follows RFC 2328 (Waiting, BackupSeen,
+  priority, non-preemptive) per interface; Hellos whose intervals, area or
+  network type differ are discarded (a network-type mismatch never forms
+  an adjacency in the simulation, whatever a vendor would do). NBMA
+  neighbours are not configured: a non-broadcast network behaves as a
+  broadcast one.
+* **BGP.** Only the relation's first endpoint connects (no connection
+  collision of two simultaneous opens); a second connection of a session
+  that is up is closed. The OPEN's capabilities are its address family.
 * **Equal-cost paths** are all listed (up to 16), without hashing; beyond
   16 the others' outcome is not known (said so). The return path starts at
   the destination's own address.
@@ -215,8 +242,10 @@ result is an upper bound, and an encapsulation without a figure leaves its
 path's limit unknown. Which equal-cost branch a flow takes is not modeled:
 each branch is given. The simulation fragments IPv4 without DF, drops a
 larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
-Big, and the sender learns the path MTU (PMTUD); TCP segments by it. TCP
-options, jumbo-frame negotiation and PLPMTUD are not modelled.
+Big, and the sender learns the path MTU (PMTUD, per VRF and destination,
+forgotten after 10 min or when the route leaves by another interface); TCP
+segments by it, and an IPv6 sender fragments its own UDP and ICMP to it.
+TCP options, jumbo-frame negotiation and PLPMTUD are not modelled.
 
 **Not supported.** Application identification, TLS inspection, user
 identities, time ranges, NAT rules in a policy (the NAT service translates),
@@ -246,8 +275,10 @@ Network events, attributed to their event.
   switch's snooping querier takes part by its VLAN interface's address. A
   leave report is sent once; a lost leave is covered by the membership
   interval.
-* **PIM.** The bootstrap router announces the RP, but RP election is the
-  highest candidate's router ID; an RPT prune acts at the next router up
+* **PIM.** Each router uses its own RP: its static `rp`, else its PIM
+  relations' `rp`, else the candidate RP with the highest router ID of its
+  PIM domain (no BSR election, no group ranges); routers that disagree
+  keep their own (said, and their trees do not meet); an RPT prune acts at the next router up
   only; register suppression lasts while the source sends; IGMPv3 / MLDv2
   source lists are kept per group.
 * **Network events.** A join's outcome is what a multicast router of its
@@ -292,7 +323,10 @@ load balancers) as their request / answer exchanges.
 **Simplifications.** An application's name (*Modbus TCP*, *OPC UA*) only
 labels it; payloads are sizes, never contents. TCP has no congestion
 control, windows or delayed acknowledgements (a request and an answer, each
-acknowledged); tests use fixed sizes (a 120-byte request, a 1460-byte
+acknowledged; a connection's byte stream has real sequence and
+acknowledgement numbers, every segment of a write goes at once, and a lost
+one waits for the retransmission timer — no fast retransmit, no SACK);
+tests use fixed sizes (a 120-byte request, a 1460-byte
 answer). Load balancers and proxies relay TCP only (UDP to them is answered
 by themselves); a reverse proxy and a load balancer relay one connection
 each way; a forward proxy without a parent is reported as a limitation.
@@ -314,16 +348,12 @@ the user.
 
 **Simplifications.**
 
-* **Scenario time and real time.** The simulation runs on scenario time.
-  A send's intervals are scenario time in every pacing (in Readable pacing
-  its next message comes as soon as the last one was seen). A stream of
-  Network events runs on real time: it sends in the first animation frame
-  at or after each moment of its schedule (each deadline computed from the
-  stream's start, so it never drifts); a frame later than a whole interval
-  sends one datagram and counts the others as skipped; while a stream runs
-  the simulated clock follows real time and, on a heavy model, may fall
-  behind (*· behind*). Two runs with streams differ in their simulated
-  times; the model's own traffic is the same every run.
+* **Scenario time.** Everything runs on scenario time, in every pacing:
+  a send's intervals, streams and repeating applications of Network events
+  as much as the model's own traffic; the same history gives the same
+  datagrams at the same simulated times however it was played. Real time
+  pacing shows a simulated second in a real one and, on a heavy model, may
+  fall behind (*· behind*).
 * **Determinism.** Jitter of starts and timers comes from a fixed seed, under
   a hop's time; packet loss is a share of frames from a fixed seed; there is
   no queuing beyond each cable's serialization and no CPU limit. A broadcast
@@ -367,7 +397,7 @@ the user.
   is repeatable; at one time, actions apply in the order written. A step
   after an earlier action counts from its submission, not its effect; an
   action waits only for its own device to come up, never for the whole
-  network. A stream of Network events (real time) is no experiment action.
+  network. A stream of Network events is no experiment action.
   Observations read states and deliveries over their window: no
   convergence time, throughput or accuracy is measured. A state's moment is
   the evidence's own time where it has one (a boot's end, a lease's

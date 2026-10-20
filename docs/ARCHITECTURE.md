@@ -154,6 +154,33 @@ anything else.
   so the YAML file can only ever hold the complete diagrams' layout.
   *Trade-off:* the sub-model is rebuilt after every edit while a filter is
   active (cheap: it is a selection plus a new index).
+* **The simulation is one causally connected stack.** What a higher layer
+  shows rests on what the layers below did, at the moment it happened:
+  - *Layers 1–2 per hop.* A frame's arrival at a device is an event of its
+    own: the device decides then, with its state then (`engine.ts`).
+  - *Routing is learned.* Each router keeps a database of records, one per
+    origin (its routing adjacencies and interfaces, with a sequence number;
+    `protocols.ts`); a record travels only in the protocols' advertisements,
+    and a router computes its routes from the records it has, after its
+    route recomputation delay. `RoutingCtx.at` gives every router its own
+    state, so a lookup at a router uses its installed routes — in the
+    simulation and in an analysis snapshot. A router's own interfaces are
+    read live in its own lookups.
+  - *One TCP.* `sim/tcp.ts` is a connection end's byte stream (sequence
+    and acknowledgment numbers, retransmission ranges, out-of-order
+    segments, each message delivered once); `transport.ts` sends its
+    segments; BGP, LDP, HTTPS and SSL VPN run over it (`proto-tcp.ts`)
+    instead of imitating TCP.
+  - *Each router's own context.* The PIM RP (`analysis/pim-rp.ts`, shared
+    with the checks), the path MTU (per device, VRF and destination), the
+    firewall sessions and NAT translations (per VRF), the source address
+    (after the route, in its VRF).
+  - *One clock.* Everything repeats on the simulated clock (streams and
+    applications of Network events too): the pacing changes how fast it is
+    shown, never what exists.
+  *Trade-off:* a router's records are a per-router abstraction of the
+  protocols' databases (not LSAs or BGP paths field by field), and they are
+  flooded over any routing session of the router.
 * **A result says what it is, and stays as computed.** Every Analyze tool returns its verdict in one vocabulary (`analysis/result.ts`) with the context it was computed on and its coverage. A result is computed when the user asks (Trace, Evaluate, Analyze, opening a window), never behind their back: an edit marks it outdated (by the model's fingerprint, so moving a node does not), Refresh computes it again. A snapshot of a running simulation is frozen when it is taken; a tool that can't evaluate one correctly says so instead of blending the simulation's state with a what-if.
   *Trade-off:* the user presses Refresh after editing; in return a result being read never changes under the reader.
 * **What runs, what is drawn and what is evaluated are three things.**

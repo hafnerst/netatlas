@@ -47,8 +47,11 @@ export function protocolPicker(doc: Document, o: ProtocolPickerOpts): ProtocolPi
   const count = el(doc, 'span', { class: 'pp-count' }, ['']);
   const all = el(doc, 'button', { type: 'button', class: 'mini', id: o.id + '-all' }, ['Select all']) as HTMLButtonElement;
   const none = el(doc, 'button', { type: 'button', class: 'mini', id: o.id + '-none' }, ['Clear']) as HTMLButtonElement;
-  const head = el(doc, 'div', { class: 'pp-head' }, [el(doc, o.heading || 'h3', { class: 'pp-title', id: titleId }, ['Protocols ', count]), el(doc, 'span', { class: 'pp-tools' }, [all, none])]);
-  const list = el(doc, 'div', { class: 'pp-list', role: 'group', 'aria-labelledby': titleId, id: o.id + '-list' });
+  // (what is shown, never what runs: every protocol of the model runs whatever is ticked here)
+  const hint = 'What is drawn and listed. Every protocol of the model runs whatever is ticked: clearing one hides its traffic, it does not stop it.';
+  const head = el(doc, 'div', { class: 'pp-head' }, [el(doc, o.heading || 'h3', { class: 'pp-title', id: titleId, title: hint }, ['Protocol traffic shown ', count]), el(doc, 'span', { class: 'pp-tools' }, [all, none])]);
+  const hintEl = el(doc, 'p', { class: 'sr-only', id: o.id + '-hint' }, [hint]);
+  const list = el(doc, 'div', { class: 'pp-list', role: 'group', 'aria-labelledby': titleId, 'aria-describedby': o.id + '-hint', id: o.id + '-list' });
   const groups: Array<{ g: SimEntryGroup; ids: string[]; count: HTMLElement; all: HTMLButtonElement; none: HTMLButtonElement }> = [];
   const boxes = new Map<string, HTMLInputElement>();
   for (const g of ENTRY_GROUPS) {
@@ -80,7 +83,7 @@ export function protocolPicker(doc: Document, o: ProtocolPickerOpts): ProtocolPi
     list.appendChild(fs);
     groups.push({ g, ids: es.map((e) => e.id), count: gc, all: ga, none: gn });
   }
-  const root = el(doc, 'section', { class: 'pp', id: o.id, 'aria-labelledby': titleId }, [head, list]);
+  const root = el(doc, 'section', { class: 'pp', id: o.id, 'aria-labelledby': titleId }, [head, hintEl, list]);
 
   const sync = (): void => {
     for (const [id, cb] of boxes) cb.checked = sel.has(id);

@@ -6,12 +6,15 @@
  * model sets or the defaults; see protocols.ts for how sessions are built.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
-import { routerIdFor } from '../../model/services';
+import { normalizeProtocol } from '../../model/protocols';
+import { bgpAsn, routerIdFor } from '../../model/services';
 import { compareAddr, formatAddr } from '../ipmath';
-import { lookup } from '../routing';
+import { areaKey } from '../checks-more';
+import { lookup, relParam } from '../routing';
 import { fmtSec } from './engine';
 import { durationText } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s: string): IpAddr => parseAddress(s) as IpAddr;
@@ -44,13 +47,6 @@ function every(P: ProtocolSim, s: Sess, ms: () => number, fn: () => void): void 
   P.periodic(() => s.gen === g, ms, fn);
 }
 
-/** The sessions of a device in other relations of a protocol (or the same), that are up, for flooding. */
-function others(P: ProtocolSim, s: Sess, protocol: string, ok: (o: Sess) => boolean): Sess[] {
-  return Array.from(P.sessions.values())
-    .filter((o) => o.dev === s.dev && o.protocol === protocol && !(o.peer === s.peer && o.rel.id === s.rel.id) && ok(o))
-    .sort((a, b) => cmp(a.key, b.key));
-}
-
 /** Tell the protocols that use BFD between two devices that it went down. */
 export function bfdDown(P: ProtocolSim, dev: string, peer: string): void {
   for (const s of Array.from(P.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
@@ -63,13 +59,232 @@ export function bfdDown(P: ProtocolSim, dev: string, peer: string): void {
 
 // ------------------------------------------------------------------ OSPF
 
+/** An OSPF network type (the relation's `network-type`; broadcast unless written, point-to-point on a tunnel). */
+type OspfType = 'broadcast' | 'point-to-point' | 'non-broadcast' | 'point-to-multipoint';
+
+/** A session's view of its neighbour, from the neighbour's last Hello. */
 interface OspfX {
   rid?: string;
-  prio?: number;
   sent?: boolean;
   peerRid?: string;
   peerPrio?: number;
-  seenUs?: boolean;
+  /** the DR and BDR the neighbour declares (router IDs, '' none) */
+  peerDr?: string;
+  peerBdr?: string;
+  /** the last incompatibility noted (said once until it changes) */
+  mismatch?: string;
+}
+
+/**
+ * An OSPF interface (RFC 2328 §9): its state, and on a broadcast or
+ * non-broadcast network the DR and BDR it elected. Shared by every OSPF
+ * session of the device on that interface (all relations: the segment's
+ * neighbours are the interface's, never one relation's).
+ */
+interface OspfIf {
+  dev: string;
+  iface: string;
+  type: OspfType;
+  state: 'Down' | 'Waiting' | 'DR' | 'Backup' | 'DROther' | 'Point-to-point';
+  dr: string;
+  bdr: string;
+  drDev: string;
+  bdrDev: string;
+  gen: number;
+}
+
+function ospfType(s: Sess): OspfType {
+  const v = (relParam(s.rel, 'network-type', s.dev) || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (v === 'point-to-point' || v === 'non-broadcast' || v === 'point-to-multipoint' || v === 'broadcast') return v;
+  return s.local.l3.kind === 'tunnel' ? 'point-to-point' : 'broadcast';
+}
+
+/** Does a network type elect a DR and BDR (broadcast and non-broadcast multi-access networks)? */
+function elects(t: OspfType): boolean {
+  return t === 'broadcast' || t === 'non-broadcast';
+}
+
+/** The router priority of a device on a relation (`priority.<device>`, else `priority`; 0–255; 0: never DR or BDR). Default 1. */
+function ospfPrio(s: Sess): number {
+  const v = relParam(s.rel, 'priority', s.dev);
+  if (v === undefined || !/^\s*[0-9]+\s*$/.test(v)) return 1;
+  const n = Number(v);
+  return n <= 255 ? n : 1;
+}
+
+function ospfArea(s: Sess): string {
+  return areaKey(relParam(s.rel, 'area', s.dev) || '0');
+}
+
+/** The device's OSPF sessions on one interface, every relation (the segment's neighbours as that router sees them). */
+function onIface(P: ProtocolSim, dev: string, iface: string): Sess[] {
+  return Array.from(P.sessions.values())
+    .filter((o) => o.dev === dev && o.protocol === 'ospf' && o.local.l3.id === iface)
+    .sort((a, b) => cmp(a.key, b.key));
+}
+
+function ospfIf(P: ProtocolSim, s: Sess): OspfIf {
+  const k = `ospf-if|${s.dev}|${s.local.l3.id}`;
+  let f = P.shared.get(k) as OspfIf | undefined;
+  if (!f) {
+    f = { dev: s.dev, iface: s.local.l3.id, type: ospfType(s), state: 'Down', dr: '', bdr: '', drDev: '', bdrDev: '', gen: 0 };
+    P.shared.set(k, f);
+  }
+  return f;
+}
+
+/**
+ * The interface comes up (RFC 2328 §9.3 InterfaceUp): point-to-point and
+ * point-to-multipoint at once; a broadcast or non-broadcast one waits —
+ * Waiting, for the Wait timer (the router dead interval) unless a Hello
+ * shows a DR or BDR already there (BackupSeen) — before its first election.
+ */
+function ospfIfUp(P: ProtocolSim, s: Sess): void {
+  const f = ospfIf(P, s);
+  if (f.state !== 'Down') return;
+  f.gen++;
+  f.dr = f.bdr = f.drDev = f.bdrDev = '';
+  if (!elects(f.type)) {
+    f.state = 'Point-to-point';
+    return;
+  }
+  f.state = 'Waiting';
+  const dead = P.timer(s, s.profile, 'dead');
+  const g = f.gen;
+  P.e.note('state', 'ospf', s.dev, '', 'Waiting', 'Waiting', `OSPF ${s.dev}:${f.iface} (${f.type}): Waiting — no DR election before the Wait timer (${dead.text}) expires or a Hello shows a DR or BDR already elected`);
+  P.e.after(dead.ms, () => {
+    if (f.gen !== g || f.state !== 'Waiting') return;
+    ospfElect(P, s.dev, f.iface, `the Wait timer expired (${dead.text})`, true);
+  });
+}
+
+function ospfIfDown(P: ProtocolSim, dev: string, iface: string): void {
+  const f = P.shared.get(`ospf-if|${dev}|${iface}`) as OspfIf | undefined;
+  if (!f || f.state === 'Down') return;
+  f.gen++;
+  f.state = 'Down';
+  f.dr = f.bdr = f.drDev = f.bdrDev = '';
+}
+
+const ridCmp = (a: string, b: string): number => {
+  const x = parseAddress(a);
+  const y = parseAddress(b);
+  return x && y ? compareAddr(x, y) : cmp(a, b);
+};
+
+/**
+ * The DR election of one interface (RFC 2328 §9.4): among this router and
+ * its neighbours in 2-Way or more with a priority above 0. The BDR is the
+ * best of those that do not declare themselves DR (those declaring
+ * themselves BDR first); the DR the best of those declaring themselves DR,
+ * else the BDR. Highest priority, then highest router ID. Non-preemptive:
+ * a router already declared DR or BDR keeps the role when a better one
+ * appears. No eligible router: no DR at all (and no adjacencies beyond
+ * 2-Way on the segment). The adjacencies follow the result (AdjOK?).
+ */
+function ospfElect(P: ProtocolSim, dev: string, iface: string, why: string, endWait = false): void {
+  const sessions = onIface(P, dev, iface);
+  if (!sessions.length) return;
+  const s0 = sessions[0];
+  const f = ospfIf(P, s0);
+  if (f.state === 'Down' || !elects(f.type)) return;
+  // a Waiting interface elects only when its Wait ends (the Wait timer, BackupSeen); a neighbour change waits with it
+  if (f.state === 'Waiting' && !endWait) return;
+  const first = f.state === 'Waiting';
+  if (first) f.state = 'DROther';
+  const me = routerId(P, dev, 'ospf');
+  type Cand = { dev: string; rid: string; prio: number; declDr: boolean; declBdr: boolean };
+  const self: Cand = { dev, rid: me, prio: ospfPrio(s0), declDr: f.dr === me, declBdr: f.bdr === me };
+  const others: Cand[] = [];
+  for (const o of sessions) {
+    const x = o.x as OspfX;
+    if (!x.peerRid || ['Down', 'Init'].indexOf(o.state) >= 0 || others.some((c) => c.rid === x.peerRid)) continue;
+    others.push({ dev: o.peer, rid: x.peerRid, prio: x.peerPrio === undefined ? 1 : x.peerPrio, declDr: x.peerDr === x.peerRid, declBdr: x.peerBdr === x.peerRid });
+  }
+  const best = (list: Cand[]): Cand | null => list.slice().sort((a, b) => b.prio - a.prio || ridCmp(b.rid, a.rid))[0] || null;
+  const round = (): { dr: Cand | null; bdr: Cand | null } => {
+    const elig = [self].concat(others).filter((c) => c.prio > 0);
+    const noDr = elig.filter((c) => !c.declDr);
+    const bdr = best(noDr.some((c) => c.declBdr) ? noDr.filter((c) => c.declBdr) : noDr);
+    const declared = elig.filter((c) => c.declDr);
+    const dr = declared.length ? best(declared) : bdr;
+    return { dr, bdr: bdr && dr && bdr.rid === dr.rid ? null : bdr };
+  };
+  let r = round();
+  // this router's own role changed: it declares the new one, and the election runs again (§9.4 step 4)
+  for (let i = 0; i < 3; i++) {
+    const isDr = !!r.dr && r.dr.rid === me;
+    const isBdr = !!r.bdr && r.bdr.rid === me;
+    if (isDr === self.declDr && isBdr === self.declBdr) break;
+    self.declDr = isDr;
+    self.declBdr = isBdr;
+    r = round();
+  }
+  // (a BDR promoted to DR here leaves no BDR until that router's own election, which runs again as DR, names one in its Hellos)
+  const was = `${f.dr}|${f.bdr}`;
+  f.dr = r.dr ? r.dr.rid : '';
+  f.drDev = r.dr ? r.dr.dev : '';
+  f.bdr = r.bdr ? r.bdr.rid : '';
+  f.bdrDev = r.bdr ? r.bdr.dev : '';
+  f.state = f.drDev === dev ? 'DR' : f.bdrDev === dev ? 'Backup' : 'DROther';
+  if (first || was !== `${f.dr}|${f.bdr}`) {
+    const res = f.dr ? `DR ${f.dr} (${f.drDev})${f.bdr ? `, BDR ${f.bdr} (${f.bdrDev})` : ', no BDR'}` : 'no DR: no router on the segment has a priority above 0';
+    P.e.note('state', 'ospf', dev, '', f.state, f.state, `OSPF ${dev}:${iface} DR election (${why}): ${res}; this router is ${f.state === 'Backup' ? 'BDR' : f.state}`);
+  }
+  for (const o of sessions) ospfAdjOk(P, o);
+}
+
+/** Should the router form an adjacency with this neighbour (RFC 2328 §10.4)? */
+function ospfShouldAdj(P: ProtocolSim, s: Sess): boolean {
+  const f = ospfIf(P, s);
+  if (!elects(f.type)) return true;
+  if (f.state === 'Waiting' || f.state === 'Down') return false;
+  return [f.drDev, f.bdrDev].some((d) => !!d && (d === s.dev || d === s.peer));
+}
+
+/** AdjOK?: a neighbour in 2-Way becomes adjacent (ExStart) when it should; one that should no longer goes back to 2-Way. */
+function ospfAdjOk(P: ProtocolSim, s: Sess): void {
+  const x = s.x as OspfX;
+  if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
+    P.setState(s, 'ExStart', false, 'master / slave negotiation');
+    ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, router ID ${x.rid}`, { phase: 'init' }, 'ExStart'));
+  } else if (['ExStart', 'Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0 && !ospfShouldAdj(P, s)) {
+    P.restart(s);
+    x.sent = false;
+    const f = ospfIf(P, s);
+    P.setState(s, '2-Way', false, `no adjacency any more: neither is DR or BDR (DR ${f.dr || 'none'}, BDR ${f.bdr || 'none'})`);
+    ospfRearm(P, s);
+  }
+  ospfDetail(P, s);
+}
+
+/**
+ * Send a packet of the database exchange, and again every retransmit
+ * interval while the neighbour stays in that state (RFC 2328 §10.8: an
+ * unanswered DBD or LSR is sent again).
+ */
+function ospfRetransmit(P: ProtocolSim, s: Sess, state: string, send: () => void): void {
+  send();
+  const g = s.gen;
+  const again = (): void => {
+    if (s.gen !== g || s.state !== state) return;
+    send();
+    P.later(s, P.timer(s, s.profile, 'rxmt').ms, again);
+  };
+  P.later(s, P.timer(s, s.profile, 'rxmt').ms, again);
+}
+
+/** A restart forgets the session's timers: its dead timer again (the neighbour is still heard). */
+function ospfRearm(P: ProtocolSim, s: Sess): void {
+  const dead = P.timer(s, s.profile, 'dead');
+  deadCheck(P, s, dead.ms, () => ospfDown(P, s, `dead interval expired (${dead.text}): no Hello from ${s.peer}`));
+}
+
+function ospfDetail(P: ProtocolSim, s: Sess): void {
+  const f = ospfIf(P, s);
+  const x = s.x as OspfX;
+  const role = elects(f.type) ? (f.state === 'Waiting' ? ' · Waiting (no DR yet)' : f.dr ? ` · DR ${f.dr}${f.bdr ? ', BDR ' + f.bdr : ''}${f.state === 'DR' ? ' (this router is DR)' : f.state === 'Backup' ? ' (this router is BDR)' : ''}` : ' · no DR (no eligible router)') : ` · ${f.type}`;
+  s.x.detail = `router ID ${x.rid}, priority ${ospfPrio(s)}${role}`;
 }
 
 /** Hellos go out once per device, relation and interface (all its neighbours there hear them). */
@@ -78,163 +293,170 @@ function ospfHellos(P: ProtocolSim, s: Sess): void {
   if (P.shared.has(key)) return;
   P.shared.set(key, true);
   const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
-  const rid = routerId(P, s.dev, 'ospf');
-  const prio = Number(relPrio(s)) || 1;
   P.periodic(
     () => true,
     () => P.timer(s, s.profile, 'hello').ms,
     () => {
+      if (!P.e.isL3Up(s.dev, s.local.l3.id) || !P.e.deviceOn(s.dev)) return;
+      const f = ospfIf(P, s);
+      if (f.state === 'Down') ospfIfUp(P, s);
+      const rid = routerId(P, s.dev, 'ospf');
+      const prio = ospfPrio(s);
       const hello = P.timer(s, s.profile, 'hello');
       const dead = P.timer(s, s.profile, 'dead');
-      const mine = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.local.l3.id === s.local.l3.id);
-      const seen = mine.filter((o) => o.state !== 'Down').map((o) => (o.x as OspfX).peerRid).filter((x) => !!x) as string[];
-      const dr = drOf(P, s);
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) {
-        P.multicast(s, group, 'Hello', `router ID ${rid}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${dr ? ', DR ' + dr.dr + (dr.bdr ? ', BDR ' + dr.bdr : '') : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms });
-      }
+      const seen = Array.from(new Set(onIface(P, s.dev, s.local.l3.id).filter((o) => o.state !== 'Down').map((o) => (o.x as OspfX).peerRid).filter((x): x is string => !!x)));
+      const area = ospfArea(s);
+      P.multicast(s, group, 'Hello', `router ID ${rid}, area ${relParam(s.rel, 'area', s.dev) || '0'}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, ${f.type}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${elects(f.type) ? `, DR ${f.dr || '0.0.0.0'}, BDR ${f.bdr || '0.0.0.0'}` : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms, area, type: f.type, dr: f.dr, bdr: f.bdr });
     },
   );
 }
 
-function relPrio(s: Sess): string {
-  const own = s.rel.attrs.find(([k]) => k === 'priority.' + s.dev) || s.rel.attrs.find(([k]) => k === 'priority');
-  return own ? own[1] : '1';
-}
-
-/** The routers of a relation on the same segment (the same local interface): three or more make it multi-access (DR and BDR are elected). */
-function segment(P: ProtocolSim, s: Sess): Sess[] {
-  return (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.local.l3.id === s.local.l3.id);
-}
-
-function multiAccess(P: ProtocolSim, s: Sess): boolean {
-  return segment(P, s).length >= 2;
-}
-
-/** The DR and BDR of the segment (highest priority, then highest router ID) among this router and its neighbours in 2-Way or more. */
-function drOf(P: ProtocolSim, s: Sess): { dr: string; bdr: string; drDev: string; bdrDev: string } | null {
-  if (!multiAccess(P, s)) return null;
-  const cands: Array<{ dev: string; rid: string; prio: number }> = [{ dev: s.dev, rid: routerId(P, s.dev, 'ospf'), prio: Number(relPrio(s)) || 1 }];
-  for (const o of segment(P, s)) {
-    const x = o.x as OspfX;
-    if (o.state === 'Down' || o.state === 'Init' || !x.peerRid) continue;
-    cands.push({ dev: o.peer, rid: x.peerRid, prio: x.peerPrio || 1 });
-  }
-  const live = cands.filter((c) => c.prio > 0).sort((a, b) => b.prio - a.prio || compareAddr(addr(b.rid) || addr('0.0.0.0'), addr(a.rid) || addr('0.0.0.0')));
-  if (!live.length) return null;
-  return { dr: live[0].rid, drDev: live[0].dev, bdr: live[1] ? live[1].rid : '', bdrDev: live[1] ? live[1].dev : '' };
-}
-
-function ospfShouldAdj(P: ProtocolSim, s: Sess): boolean {
-  const d = drOf(P, s);
-  if (!d) return true;
-  return [d.drDev, d.bdrDev].indexOf(s.dev) >= 0 || [d.drDev, d.bdrDev].indexOf(s.peer) >= 0;
+/** Why a neighbour's Hello can't make an adjacency (RFC 2328 §10.5: the intervals and the area must match; the network types too, in the simulation); '' when it can. */
+function ospfMismatch(P: ProtocolSim, s: Sess, d: { hello?: number; dead?: number; area?: string; type?: string }): string {
+  const hello = P.timer(s, s.profile, 'hello');
+  const dead = P.timer(s, s.profile, 'dead');
+  if (d.hello !== undefined && d.hello !== hello.ms) return `hello interval ${fmtSec(d.hello)} in its Hello, ${hello.text} here`;
+  if (d.dead !== undefined && d.dead !== dead.ms) return `dead interval ${fmtSec(d.dead)} in its Hello, ${dead.text} here`;
+  if (d.area !== undefined && d.area !== ospfArea(s)) return `area ${d.area} in its Hello, ${ospfArea(s)} here`;
+  const t = ospfIf(P, s).type;
+  if (d.type !== undefined && d.type !== t) return `network type ${d.type} there, ${t} here`;
+  return '';
 }
 
 function ospfDown(P: ProtocolSim, s: Sess, why: string): void {
   if (s.state === 'Down') return;
+  const was = s.state;
   P.restart(s);
   const x = s.x as OspfX;
   x.sent = false;
-  x.seenUs = false;
   P.setState(s, 'Down', false, why);
-  ospfFlood(P, s, `${s.dev}'s router LSA without ${s.peer}`);
-}
-
-/** The router floods an LSU with its new router LSA to its other Full neighbours (reconvergence). */
-function ospfFlood(P: ProtocolSim, s: Sess, what: string): void {
-  const seq = (P.shared.get('ospf-seq|' + s.dev) as number) || 0;
-  P.shared.set('ospf-seq|' + s.dev, seq + 1);
-  for (const o of others(P, s, 'ospf', (x) => x.state === 'Full')) {
-    P.unicast(o, 'LSU', `flooding ${what} (LSA sequence ${seq + 1})`, { flood: `${s.dev}#${seq + 1}`, origin: s.dev });
-  }
+  // a neighbour lost (NeighborChange): the segment's DR and BDR again
+  if (['Init', 'Down'].indexOf(was) < 0) ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is gone`);
 }
 
 const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
   start(P, s) {
     const x = s.x as OspfX;
     x.rid = routerId(P, s.dev, 'ospf');
-    x.prio = Number(relPrio(s)) || 1;
-    s.x.detail = `router ID ${x.rid}`;
+    if (!P.shared.has('ospf-hooks')) {
+      P.shared.set('ospf-hooks', true);
+      // a device powered off: its interfaces' elections are gone (it starts over when it boots)
+      P.deviceHooks.push((dev, up) => {
+        if (up) return;
+        for (const k of Array.from(P.shared.keys())) if (k.indexOf(`ospf-if|${dev}|`) === 0) ospfIfDown(P, dev, k.split('|')[2]);
+      });
+    }
+    ospfIfUp(P, s);
+    ospfDetail(P, s);
     ospfHellos(P, s);
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { rid?: string; prio?: number; seen?: string[]; flood?: string; origin?: string; phase?: string; dead?: number };
+    const d = (msg.data || {}) as { rid?: string; prio?: number; seen?: string[]; reply?: boolean; phase?: string; hello?: number; dead?: number; area?: string; type?: string; dr?: string; bdr?: string };
     const x = s.x as OspfX;
     switch (msg.type) {
       case 'Hello': {
         if (!P.e.isL3Up(s.dev, s.local.l3.id)) return;
-        x.peerRid = d.rid;
-        x.peerPrio = d.prio;
-        const dead = P.timer(s, s.profile, 'dead');
-        deadCheck(P, s, dead.ms, () => ospfDown(P, s, `dead interval expired (${dead.text}): no Hello from ${s.peer}`));
-        if (s.state === 'Down') P.setState(s, 'Init', false, `Hello from ${s.peer} (router ID ${d.rid})`);
-        const seesUs = (d.seen || []).indexOf(x.rid as string) >= 0;
-        if (seesUs && s.state === 'Init') P.setState(s, '2-Way', false, `${s.peer}'s Hello lists us`);
-        if (!seesUs && s.state !== 'Init' && s.state !== 'Down') {
-          ospfDown(P, s, `${s.peer}'s Hello no longer lists us`);
+        const bad = ospfMismatch(P, s, d);
+        if (bad) {
+          // RFC 2328 §10.5: the Hello is discarded; no state is kept from it (an adjacency up so far dies by its dead interval)
+          if (x.mismatch !== bad) {
+            x.mismatch = bad;
+            P.e.note('drop', 'ospf', s.dev, s.peer, 'Hello ignored', s.state, `OSPF ${s.rel.id}: ${s.dev} discards ${s.peer}'s Hello: ${bad} — no adjacency`);
+          }
           return;
         }
-        const role = drOf(P, s);
-        s.x.detail = `router ID ${x.rid}${role ? ` · DR ${role.dr}${role.bdr ? ', BDR ' + role.bdr : ''}${role.drDev === s.dev ? ' (this router is DR)' : role.bdrDev === s.dev ? ' (this router is BDR)' : ''}` : ''}`;
-        if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
-          P.setState(s, 'ExStart', false, 'master / slave negotiation');
-          P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, router ID ${x.rid}`, { phase: 'init' }, 'ExStart');
+        x.mismatch = undefined;
+        const f = ospfIf(P, s);
+        if (f.state === 'Down') ospfIfUp(P, s);
+        const prioWas = x.peerPrio;
+        const declWas = `${x.peerDr}|${x.peerBdr}`;
+        x.peerRid = d.rid;
+        x.peerPrio = typeof d.prio === 'number' ? d.prio : 1;
+        x.peerDr = d.dr || '';
+        x.peerBdr = d.bdr || '';
+        ospfRearm(P, s);
+        if (s.state === 'Down') P.setState(s, 'Init', false, `Hello from ${s.peer} (router ID ${d.rid})`);
+        const seesUs = (d.seen || []).indexOf(x.rid as string) >= 0;
+        let change = false;
+        if (seesUs && s.state === 'Init') {
+          P.setState(s, '2-Way', false, `${s.peer}'s Hello lists us`);
+          change = true;
         }
+        if (!seesUs && s.state !== 'Init' && s.state !== 'Down') {
+          // 1-WayReceived: back to Init (the neighbour no longer lists this router)
+          P.restart(s);
+          x.sent = false;
+          const was = s.state;
+          P.setState(s, 'Init', false, `${s.peer}'s Hello no longer lists us`);
+          ospfRearm(P, s);
+          void was;
+          ospfElect(P, s.dev, s.local.l3.id, `${s.peer} no longer lists this router`);
+          return;
+        }
+        if (elects(f.type) && s.state !== 'Init') {
+          // BackupSeen (RFC 2328 §10.5): the neighbour declares itself BDR, or DR with no BDR — the Wait is over
+          const backupSeen = (x.peerBdr === x.peerRid) || (x.peerDr === x.peerRid && !x.peerBdr);
+          if (f.state === 'Waiting' && backupSeen) ospfElect(P, s.dev, s.local.l3.id, `${s.peer}'s Hello shows the segment's ${x.peerBdr === x.peerRid ? 'BDR' : 'DR'}`, true);
+          else if (f.state !== 'Waiting' && (change || prioWas !== x.peerPrio || declWas !== `${x.peerDr}|${x.peerBdr}`)) ospfElect(P, s.dev, s.local.l3.id, change ? `${s.peer} is 2-Way` : `${s.peer}'s Hello changed its priority or the DR / BDR it declares`);
+        }
+        ospfAdjOk(P, s);
         return;
       }
       case 'DBD':
         if (s.state === 'Down') return;
+        if (s.state === 'Init') {
+          // RFC 2328 §10.6: a DBD in Init is a 2-WayReceived (the neighbour has seen this router's Hello)
+          P.setState(s, '2-Way', false, `a DBD from ${s.peer}: it has seen this router's Hello`);
+          ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is 2-Way`);
+          ospfAdjOk(P, s);
+        }
         if (d.phase === 'init') {
-          if (!x.sent && ['Init', '2-Way', 'ExStart'].indexOf(s.state) >= 0) {
+          if (!x.sent && ['2-Way', 'ExStart'].indexOf(s.state) >= 0 && ospfShouldAdj(P, s)) {
             x.sent = true;
             P.setState(s, 'Exchange', false, `${s.peer} started the exchange`);
             P.unicast(s, 'DBD', 'Exchange: the LSA headers of the database', { phase: 'summary' }, 'Exchange');
           }
           return;
         }
+        if (['ExStart', 'Exchange'].indexOf(s.state) < 0) return;
         if (!x.sent) {
           x.sent = true;
           P.unicast(s, 'DBD', 'Exchange: the LSA headers of the database', { phase: 'summary' }, 'Exchange');
         }
-        if (s.state !== 'Full' && s.state !== 'Loading') {
-          P.setState(s, 'Loading', false, 'database summaries exchanged');
-          P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading');
-        }
+        P.setState(s, 'Loading', false, 'database summaries exchanged');
+        ospfRetransmit(P, s, 'Loading', () => P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading'));
         return;
       case 'LSR':
-        P.unicast(s, 'LSU', 'the requested LSAs', { reply: true });
+        if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0) return;
+        // the requested LSAs: this router's whole database (ProtocolSim.learn takes what is new to the peer)
+        P.unicast(s, 'LSU', 'the requested LSAs', { reply: true, db: P.dbOf(s.dev) });
         return;
       case 'LSU':
-        if (d.flood) {
-          // a flooded LSA: acknowledged, and flooded on once
-          P.unicast(s, 'LSAck', `acknowledges ${d.flood}`);
-          const seen = 'ospf-lsa|' + s.dev + '|' + d.flood;
-          if (P.shared.has(seen) || d.origin === s.dev) return;
-          P.shared.set(seen, true);
-          for (const o of others(P, s, 'ospf', (q) => q.state === 'Full' && q.peer !== d.origin)) P.unicast(o, 'LSU', `flooding ${d.flood} on`, { flood: d.flood, origin: d.origin });
-          P.e.routingChanged();
-          return;
-        }
+        // (a flooded LSU — a change — is ProtocolSim's: learned, acknowledged and flooded on there)
+        if (!d.reply || ['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0) return;
         P.unicast(s, 'LSAck', 'acknowledges the LSAs');
-        if (s.state === 'Loading') {
-          P.setState(s, 'Full', true, 'databases synchronised');
-          ospfFlood(P, s, `${s.dev}'s router LSA with ${s.peer}`);
-        }
+        if (s.state === 'Loading') P.setState(s, 'Full', true, 'databases synchronised');
         return;
       default:
         return;
     }
   },
   iface(P, s, up) {
-    if (!up) ospfDown(P, s, `interface ${s.local.l3.id} went down`);
+    if (up) {
+      // InterfaceUp: Waiting again (or point-to-point at once); the Hellos find the neighbours again
+      if (s.x.started) ospfIfUp(P, s);
+      return;
+    }
+    // the interface first (no election on an interface going down), then its neighbours
+    ospfIfDown(P, s.dev, s.local.l3.id);
+    ospfDown(P, s, `interface ${s.local.l3.id} went down`);
   },
   adjUp(P, s) {
     if (s.state === 'Full') return true;
-    if (s.state !== '2-Way' || !multiAccess(P, s)) return false;
+    const f = ospfIf(P, s);
+    if (s.state !== '2-Way' || !elects(f.type) || !f.drDev) return false;
     // two DROthers: they reach each other through the DR's network LSA once both are Full with it
-    const d = drOf(P, s);
-    if (!d) return false;
-    const full = (dev: string): boolean => dev === d.drDev || (P.byRel.get(s.rel.id) || []).some((o) => o.dev === dev && o.peer === d.drDev && o.state === 'Full');
+    const full = (dev: string): boolean => dev === f.drDev || Array.from(P.sessions.values()).some((o) => o.protocol === 'ospf' && o.dev === dev && o.peer === f.drDev && o.state === 'Full');
     return full(s.dev) && full(s.peer);
   },
   down: ospfDown,
@@ -276,8 +498,7 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
       return;
     }
     if (msg.type === 'CSNP') P.unicast(s, 'PSNP', 'requests the missing LSPs');
-    else if (msg.type === 'PSNP') P.unicast(s, 'LSP', 'the requested LSPs');
-    else if (msg.type === 'LSP') P.e.routingChanged();
+    else if (msg.type === 'PSNP' && !(msg.data as { acks?: number } | undefined || {}).acks) P.unicast(s, 'LSP', 'the requested LSPs', { db: P.dbOf(s.dev) });
   },
   iface(P, s, up) {
     if (!up) isis.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -286,7 +507,6 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     if (s.state === 'Down') return;
     P.restart(s);
     P.setState(s, 'Down', false, why);
-    for (const o of others(P, s, 'isis', (q) => q.up)) P.unicast(o, 'LSP', `${s.dev}'s new LSP without ${s.peer}`);
   },
 };
 
@@ -329,11 +549,10 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     }
     if (msg.type === 'ACK' && s.state === 'Pending') {
       P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-      P.unicast(s, 'Update', 'its routes', {}, 'Up');
+      P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s.dev), dbId: 0, dbAck: 'ACK' }, 'Up');
       return;
     }
-    if (msg.type === 'Update') P.unicast(s, 'ACK', 'acknowledges the routes');
-    else if (msg.type === 'Query') P.unicast(s, 'Reply', 'its way to the lost routes (or none)');
+    if (msg.type === 'Query') P.unicast(s, 'Reply', 'its way to the lost routes (or none)');
   },
   iface(P, s, up) {
     if (!up) eigrp.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -343,7 +562,6 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     P.restart(s);
     s.x.sentInit = false;
     P.setState(s, 'Down', false, why);
-    for (const o of others(P, s, 'eigrp', (q) => q.up)) P.unicast(o, 'Query', `routes lost with ${s.peer}: is there another way?`);
   },
 };
 
@@ -361,14 +579,15 @@ const rip: Behaviour = {
       () => true,
       upd,
       () => {
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes');
+        // the whole table every update interval: what a lost update did not bring comes with the next one
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes', { db: P.dbOf(s.dev) });
       },
       upd(),
     );
   },
   rx(P, s, msg) {
     if (msg.type === 'Request') {
-      P.unicast(s, 'Response', 'answer to the request: its routes');
+      P.unicast(s, 'Response', 'answer to the request: its routes', { db: P.dbOf(s.dev) });
       return;
     }
     if (msg.type !== 'Response') return;
@@ -376,7 +595,6 @@ const rip: Behaviour = {
     deadCheck(P, s, timeout.ms, () => {
       P.restart(s);
       P.setState(s, 'Down', false, `timeout (${timeout.text}): its routes are dropped`);
-      for (const o of others(P, s, 'rip', (q) => q.up)) P.unicast(o, 'Response', `triggered update: the routes via ${s.peer} are unreachable (metric 16)`);
     });
     if (s.state !== 'Heard') P.setState(s, 'Heard', true, `Response from ${s.peer}`);
   },
@@ -384,14 +602,76 @@ const rip: Behaviour = {
 
 // ------------------------------------------------------------------ BGP (and EVPN, L3VPN)
 
+/** An OPEN's parameters (RFC 4271 §4.2), kept as the session's state: what it sent and what it received. */
+export interface BgpOpen {
+  version: number;
+  /** "My Autonomous System" (null: the device has no AS number) */
+  as: number | null;
+  /** the hold time it proposes, in seconds (0: no keepalives, no hold timer) */
+  hold: number;
+  /** the BGP identifier */
+  id: string;
+  /** the address families it announces (its capabilities) */
+  afi: string;
+}
+
 function bgpRouteToPeer(P: ProtocolSim, s: Sess): boolean {
   const d = lookup(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx(s.dev));
   return d.kind === 'forward' || d.kind === 'local';
 }
 
+/** The device's own AS number (its BGP service's asn), null when it has none. */
+function bgpOwnAs(P: ProtocolSim, dev: string): number | null {
+  const v = bgpAsn(P.m.index.devices.get(dev));
+  return v === undefined ? null : v;
+}
+
+/**
+ * The hold time a device proposes on a session: the relation's `hold`
+ * (per device: `hold.<device>`; 0 or 3–65535 s), else the simulation's
+ * (3 × BGP keepalive). 0 means none (RFC 4271 §4.4: no KEEPALIVEs, no hold timer).
+ */
+function bgpHold(P: ProtocolSim, s: Sess): { s: number; text: string } {
+  const v = relParam(s.rel, 'hold', s.dev);
+  if (v !== undefined && /^\s*[0-9]+\s*$/.test(v)) {
+    const n = Number(v);
+    if (n === 0) return { s: 0, text: '0 (configured: no keepalives and no hold timer)' };
+    if (n >= 3 && n <= 65535) return { s: n, text: `${n} s (configured)` };
+  }
+  const t = P.timer(s, s.profile, 'hold');
+  return { s: Math.round(t.ms / 1000), text: t.text };
+}
+
+/** The AS a device expects its peer in: the relation's `peer-as`, else (iBGP) its own, else the peer's own AS. */
+function bgpExpectedAs(P: ProtocolSim, s: Sess): { as: number | null; how: string } {
+  const v = relParam(s.rel, 'peer-as', s.dev);
+  if (v !== undefined && /^\s*[0-9]+\s*$/.test(v)) return { as: Number(v), how: 'its peer-as' };
+  if (normalizeProtocol(s.rel.protocol) === 'ibgp') return { as: bgpOwnAs(P, s.dev), how: 'iBGP: its own AS' };
+  return { as: bgpOwnAs(P, s.peer), how: `${s.peer}'s own AS` };
+}
+
+function bgpAfi(s: Sess): string {
+  return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : s.local.addr.version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
+}
+
+/** The details of a session: the negotiated hold time and keepalive interval (or what it proposes before). */
+function bgpDetail(P: ProtocolSim, s: Sess): void {
+  const neg = s.x.holdMs as number | undefined;
+  if (neg !== undefined) {
+    s.x.detail = neg === 0 ? 'hold time 0 negotiated: no keepalives, no hold timer' : `keepalive ${fmtSec(s.x.kaMs as number)}, hold ${fmtSec(neg)} (negotiated: the smaller of ${(s.x.open as BgpOpen).hold} s and ${(s.x.peerOpen as BgpOpen).hold} s)`;
+    return;
+  }
+  const h = bgpHold(P, s);
+  s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${h.text}`;
+}
+
 function bgpConnect(P: ProtocolSim, s: Sess): void {
   if (!s.initiator) return;
-  if (s.state === 'Established') return;
+  if (s.state === 'Established' || s.state === 'OpenSent' || s.state === 'OpenConfirm') return;
+  if (bgpOwnAs(P, s.dev) === null) {
+    if (s.state !== 'Idle') P.setState(s, 'Idle', false, `${s.dev} has no AS number: it does not start the session`);
+    return;
+  }
   if (!bgpRouteToPeer(P, s)) {
     // a session between loopbacks waits for a route to the peer (the IGP): it goes on the moment there is one
     if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(s.remote.addr)} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
@@ -405,33 +685,15 @@ function bgpConnect(P: ProtocolSim, s: Sess): void {
   P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(s.remote.addr)} port 179`);
   P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(s.remote.addr)} waiting for TCP (the connection to port 179)`);
   s.x.tcpSince = P.e.now;
-  bgpSyn(P, s, 0, (s.x.synTok = ((s.x.synTok as number) || 0) + 1));
+  if (!tcpConnect(P, s)) P.setState(s, 'Active', false, 'no connection could be opened');
+  // ConnectRetry (RFC 4271 §8.2.2): an attempt not open by then is dropped and made again
   const retry = P.timer(s, s.profile, 'connect-retry');
   P.later(s, retry.ms, () => {
     if (s.state === 'Connect' || s.state === 'Active') {
+      tcpClose(P, s, 'ConnectRetry timer expired', true);
       P.setState(s, 'Active', false, `ConnectRetry timer expired (${retry.text})`);
       bgpConnect(P, s);
     }
-  });
-}
-
-/**
- * BGP's TCP connection: its SYN is sent again after the initial
- * retransmission timeout, doubling each time, until the SYN retries are
- * spent (Layer 4 parameters); then the attempt has timed out and the
- * ConnectRetry timer tries again.
- */
-function bgpSyn(P: ProtocolSim, s: Sess, n: number, tok: number): void {
-  P.unicast(s, 'TCP SYN', n ? `to port 179, retransmission ${n}` : 'to port 179', {}, 'Connect');
-  const rto = Math.min(120000, P.e.params.num('tcp-rto', s.dev) * Math.pow(2, n));
-  P.later(s, rto, () => {
-    if (s.state !== 'Connect' || s.x.synTok !== tok) return;
-    const max = P.param('tcp-syn-retries', s.dev);
-    if (n >= Number(max.value)) {
-      P.e.note('state', s.protocol, s.dev, s.peer, 'TCP connect timed out', 'Connect', `${s.rel.id}: ${s.dev}'s TCP connection to ${formatAddr(s.remote.addr)}:179 timed out after ${n} retransmissions (TCP SYN retries ${P.paramText(max)}); the ConnectRetry timer tries again`);
-      return;
-    }
-    bgpSyn(P, s, n + 1, tok);
   });
 }
 
@@ -441,75 +703,141 @@ function updateText(s: Sess): string {
   return 'its prefixes';
 }
 
-const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: boolean) => void } = {
+/** This side's OPEN (structured: version, AS, hold time, identifier, address family). */
+function bgpSendOpen(P: ProtocolSim, s: Sess): void {
+  const h = bgpHold(P, s);
+  const o: BgpOpen = { version: 4, as: bgpOwnAs(P, s.dev), hold: h.s, id: routerId(P, s.dev, 'bgp'), afi: bgpAfi(s) };
+  s.x.open = o;
+  tcpSend(P, s, 'OPEN', `version 4, AS ${o.as === null ? '?' : o.as}, hold time ${o.hold} s, BGP identifier ${o.id}, ${o.afi}`, 45, { open: o });
+}
+
+/** Why a peer's OPEN is refused (RFC 4271 §6.2: the NOTIFICATION's error), '' when it is accepted. */
+function bgpOpenError(P: ProtocolSim, s: Sess, o: BgpOpen | undefined): string {
+  if (!o) return 'OPEN Message Error: no parameters';
+  if (o.version !== 4) return `OPEN Message Error / Unsupported Version Number (${o.version})`;
+  const exp = bgpExpectedAs(P, s);
+  if (o.as === null || exp.as === null || o.as !== exp.as) return `OPEN Message Error / Bad Peer AS: AS ${o.as === null ? '?' : o.as} in the OPEN, ${s.dev} expects ${exp.as === null ? 'an AS it does not know' : 'AS ' + exp.as} (${exp.how})`;
+  if (o.hold === 1 || o.hold === 2) return `OPEN Message Error / Unacceptable Hold Time (${o.hold} s)`;
+  if (o.id === routerId(P, s.dev, 'bgp')) return `OPEN Message Error / Bad BGP Identifier (${o.id} is ${s.dev}'s own)`;
+  return '';
+}
+
+/** The negotiated timers (RFC 4271 §4.2, §10): the smaller hold time; keepalives at most a third of it (none when it is 0). */
+function bgpNegotiate(P: ProtocolSim, s: Sess, peer: BgpOpen): void {
+  const own = s.x.open as BgpOpen | undefined;
+  const mine = own ? own.hold : bgpHold(P, s).s;
+  const hold = Math.min(mine, peer.hold) * 1000;
+  s.x.peerOpen = peer;
+  s.x.holdMs = hold;
+  s.x.kaMs = hold === 0 ? 0 : Math.min(P.timer(s, s.profile, 'keepalive').ms, Math.floor(hold / 3));
+  bgpDetail(P, s);
+}
+
+function bgpHoldTimer(P: ProtocolSim, s: Sess): void {
+  const hold = s.x.holdMs as number | undefined;
+  if (!hold) return;
+  deadCheck(P, s, hold, () => bgp.down(P, s, `hold timer expired (${fmtSec(hold)}, negotiated)`, true));
+}
+
+/** Refuse the OPEN: NOTIFICATION, the connection closed, the session Idle (ConnectRetry tries again). */
+function bgpRefuse(P: ProtocolSim, s: Sess, err: string): void {
+  tcpSend(P, s, 'NOTIFICATION', err, 21, { error: err });
+  bgp.down(P, s, `${err} — NOTIFICATION sent`);
+}
+
+const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: boolean) => void } = {
   refresh(P, s) {
-    s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${P.timer(s, s.profile, 'hold').text}`;
+    bgpDetail(P, s);
+  },
+  advertise(P, s, recs, why) {
+    // an UPDATE over the session's connection (TCP retransmits it): announcements and withdrawals of what changed
+    if (s.state === 'Established') tcpSend(P, s, 'UPDATE', `${why}: ${recs.map((r) => r.origin + '#' + r.seq).join(', ')}`, 23 + 12 * recs.length, { db: recs });
   },
   start(P, s) {
-    bgp.refresh!(P, s);
+    bgpDetail(P, s);
+    if (bgpOwnAs(P, s.dev) === null) {
+      // no BGP speaker: nothing listens on port 179, nothing connects
+      P.setState(s, 'Idle', false, `${s.dev} has no AS number (its BGP service's asn): no BGP speaker runs`);
+      return;
+    }
+    tcpListen(P, s);
     if (s.initiator) bgpConnect(P, s);
     else if (s.state === 'Idle') P.setState(s, 'Active', false, 'waiting for the peer to connect');
   },
+  tcp(P, s, ev, why) {
+    if (ev === 'open') {
+      if (!s.initiator) return;
+      P.setState(s, 'OpenSent', false, 'TCP connection established');
+      s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
+      bgpSendOpen(P, s);
+      return;
+    }
+    if (s.state === 'Connect') {
+      // the attempt failed (refused, timed out): Active, and the ConnectRetry timer tries again
+      P.setState(s, 'Active', false, `TCP connection to ${formatAddr(s.remote.addr)}:179 failed: ${why}`);
+      return;
+    }
+    if (s.state !== 'Idle' && s.state !== 'Active') bgp.down(P, s, `its TCP connection ${/^(closed|reset|connection)/.test(why) ? why : 'is gone: ' + why}`);
+  },
   rx(P, s, msg) {
-    const hold = P.timer(s, s.profile, 'hold');
-    const dd = P.m.index.devices.get(s.dev);
-    const asn = dd ? (dd.services.find((x) => x.id === 'bgp') || { values: new Map() }).values.get('asn') : undefined;
+    const d = (msg.data || {}) as { open?: BgpOpen; error?: string };
     switch (msg.type) {
-      case 'TCP SYN':
-        if (s.state === 'Established') bgp.down(P, s, 'the peer reconnects');
-        P.unicast(s, 'TCP SYN-ACK', 'accepts the connection on port 179', {}, 'Connect');
-        if (s.state !== 'Connect') P.setState(s, 'Connect', false, 'TCP connection from the peer');
+      case 'OPEN': {
+        if (['Active', 'Connect', 'OpenSent'].indexOf(s.state) < 0) return;
+        const err = bgpOpenError(P, s, d.open);
+        if (err) {
+          if (!s.initiator && s.state !== 'OpenSent') bgpSendOpen(P, s);
+          bgpRefuse(P, s, err);
+          return;
+        }
+        if (!s.initiator) bgpSendOpen(P, s);
+        bgpNegotiate(P, s, d.open as BgpOpen);
+        P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer} (AS ${(d.open as BgpOpen).as}, hold ${(d.open as BgpOpen).hold} s, identifier ${(d.open as BgpOpen).id})`);
+        tcpSend(P, s, 'KEEPALIVE', 'confirms the OPEN', 19);
+        bgpHoldTimer(P, s);
         return;
-      case 'TCP SYN-ACK':
-        if (s.state !== 'Connect') return;
-        P.unicast(s, 'TCP ACK', 'the connection is open');
-        P.setState(s, 'OpenSent', false, 'TCP connection established');
-        s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
-        P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${fmtSec(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}${s.protocol === 'evpn' ? ', L2VPN EVPN' : s.protocol === 'l3vpn' ? ', VPNv4' : ''}`, {}, 'OpenSent');
-        return;
-      case 'TCP ACK':
-        if (s.state !== 'Connect') return;
-        P.setState(s, 'OpenSent', false, 'TCP connection established');
-        P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${fmtSec(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}`, {}, 'OpenSent');
-        return;
-      case 'OPEN':
-        if (s.state !== 'OpenSent') return;
-        P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer}`);
-        P.unicast(s, 'KEEPALIVE', 'confirms the OPEN', {}, 'OpenConfirm');
-        return;
+      }
       case 'KEEPALIVE':
         if (s.state === 'OpenConfirm') {
           P.setState(s, 'Established', true, 'KEEPALIVE received');
           s.x.waitedNext = ['the session to be Established'];
-          P.unicast(s, 'UPDATE', updateText(s), {}, 'Established');
-          const g = s.gen;
-          const kms = (): number => P.timer(s, s.profile, 'keepalive').ms;
-          P.periodic(
-            () => s.gen === g && s.state === 'Established',
-            kms,
-            () => P.unicast(s, 'KEEPALIVE', `every ${P.timer(s, s.profile, 'keepalive').text}`),
-            kms(),
-          );
+          const db = P.dbOf(s.dev);
+          tcpSend(P, s, 'UPDATE', updateText(s), 23 + 12 * db.length, { db });
+          const ka = s.x.kaMs as number;
+          if (ka > 0) {
+            const g = s.gen;
+            P.periodic(
+              () => s.gen === g && s.state === 'Established',
+              () => s.x.kaMs as number,
+              () => tcpSend(P, s, 'KEEPALIVE', `every ${fmtSec(s.x.kaMs as number)} (a third of the negotiated hold time at most)`, 19),
+              ka,
+            );
+          }
         }
-        if (s.state === 'Established') deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
+        if (s.state === 'Established') bgpHoldTimer(P, s);
         return;
       case 'UPDATE':
-        if (s.state === 'Established') deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
+        if (s.state === 'Established') bgpHoldTimer(P, s);
         return;
       case 'NOTIFICATION':
-        bgp.down(P, s, `NOTIFICATION from ${s.peer}`);
+        bgp.down(P, s, `NOTIFICATION from ${s.peer}: ${d.error || 'closes the session'}`);
         return;
       default:
         return;
     }
   },
   down(P: ProtocolSim, s: Sess, why: string, notify = false) {
-    if (s.state === 'Idle' && !s.up) return;
+    if (s.state === 'Idle' && !s.up && !s.x.sock) return;
     const was = s.state === 'Established';
-    if (notify) P.unicast(s, 'NOTIFICATION', `Hold Timer Expired: closes the session`);
+    if (notify) tcpSend(P, s, 'NOTIFICATION', 'Hold Timer Expired: closes the session', 21, { error: 'Hold Timer Expired' });
+    // after a NOTIFICATION the connection is closed (FIN after it); else it is reset
+    tcpClose(P, s, why, !notify && !/NOTIFICATION sent/.test(why));
     P.restart(s);
+    delete s.x.holdMs;
+    delete s.x.peerOpen;
     P.setState(s, 'Idle', false, why);
-    if (was) for (const o of others(P, s, s.protocol, (q) => q.state === 'Established')) P.unicast(o, 'UPDATE', `withdraws the prefixes learned from ${s.peer}`);
+    bgpDetail(P, s);
+    void was;
     const retry = P.timer(s, s.profile, 'connect-retry');
     if (s.initiator) P.later(s, retry.ms, () => bgpConnect(P, s));
     else P.later(s, 1000, () => P.setState(s, 'Active', false, 'waiting for the peer to connect again'));
@@ -518,15 +846,16 @@ const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: b
 
 // ------------------------------------------------------------------ LDP (link and targeted)
 
-const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
+const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
   start(P, s) {
     const targeted = s.protocol !== 'ldp';
     const group = addr('224.0.0.2');
     const name = targeted ? 'Targeted Hello' : 'Hello';
+    tcpListen(P, s);
     every(P, s, () => P.timer(s, s.profile, 'hello').ms, () => {
       const hello = P.timer(s, s.profile, 'hello');
       if (targeted || s.local.addr.version === 6) P.unicast(s, name, `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
-      else if (s.initiator || true) {
+      else {
         const key = `ldp-hello|${s.rel.id}|${s.dev}|${Math.floor(P.e.now / hello.ms)}`;
         if (!P.shared.has(key)) {
           P.shared.set(key, true);
@@ -535,46 +864,55 @@ const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } 
       }
     });
   },
+  tcp(P, s, ev, why) {
+    if (ev === 'open') {
+      // the active side (the higher transport address) starts the session; the passive one answers its Initialization
+      if (compareAddr(s.local.addr, s.remote.addr) > 0 && s.state === 'Initialized') {
+        P.setState(s, 'OpenSent', false, 'TCP open');
+        tcpSend(P, s, 'Initialization', 'session parameters (keepalive time, label distribution)', 32);
+      }
+      return;
+    }
+    if (s.state !== 'Non-existent') ldp.down(P, s, `the session's TCP connection ${why}`);
+  },
   rx(P, s, msg) {
     const hold = P.timer(s, s.profile, 'dead');
     // the side with the higher transport address opens the session (RFC 5036 2.5.2)
     const active = compareAddr(s.local.addr, s.remote.addr) > 0;
+    const session = (): void => {
+      const sh = P.timer(s, s.profile, 'hold');
+      P.armDead(s, sh.ms, () => ldp.down(P, s, `session hold time expired (${sh.text})`), 'session');
+    };
     switch (msg.type) {
       case 'Hello':
       case 'Targeted Hello':
         deadCheck(P, s, hold.ms, () => ldp.down(P, s, `hello hold time expired (${hold.text})`));
         if (s.state === 'Non-existent' && active) {
           P.setState(s, 'Initialized', false, `hello from ${s.peer}; opening the session (higher transport address)`);
-          P.unicast(s, 'TCP SYN', 'to port 646');
+          if (!tcpConnect(P, s)) P.setState(s, 'Non-existent', false, 'no TCP connection could be opened');
         }
         return;
-      case 'TCP SYN':
-        P.unicast(s, 'TCP SYN-ACK', 'port 646');
-        if (s.state === 'Non-existent') P.setState(s, 'Initialized', false, 'TCP from the peer');
-        return;
-      case 'TCP SYN-ACK':
-        P.unicast(s, 'TCP ACK', 'the session’s TCP is open');
-        P.setState(s, 'OpenSent', false, 'TCP open');
-        P.unicast(s, 'Initialization', 'session parameters (keepalive time, label distribution)');
-        return;
       case 'Initialization':
+        session();
         if (s.state === 'Initialized' || s.state === 'Non-existent') {
           P.setState(s, 'OpenRec', false, 'Initialization from the peer');
-          P.unicast(s, 'Initialization', 'session parameters');
+          tcpSend(P, s, 'Initialization', 'session parameters', 32);
         } else if (s.state === 'OpenSent') P.setState(s, 'OpenRec', false, 'Initialization from the peer');
-        P.unicast(s, 'Keepalive', 'accepts the session');
+        tcpSend(P, s, 'Keepalive', 'accepts the session', 14);
         return;
       case 'Keepalive':
+        session();
         if (s.state === 'OpenRec') {
           P.setState(s, 'Operational', true, 'session up');
-          if (s.protocol === 'ldp') P.unicast(s, 'Address', 'its interface addresses');
-          P.unicast(s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)');
+          if (s.protocol === 'ldp') tcpSend(P, s, 'Address', 'its interface addresses', 30);
+          tcpSend(P, s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)', 40);
           every(P, s, () => P.timer(s, s.profile, 'keepalive').ms, () => {
-            if (s.state === 'Operational') P.unicast(s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`);
+            if (s.state === 'Operational') tcpSend(P, s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`, 14);
           });
         }
         return;
       default:
+        if (s.state === 'Operational') session();
         return;
     }
   },
@@ -582,7 +920,8 @@ const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } 
     if (!up && s.protocol === 'ldp') ldp.down(P, s, `interface ${s.local.l3.id} went down`);
   },
   down(P, s, why) {
-    if (s.state === 'Non-existent') return;
+    if (s.state === 'Non-existent' && !s.x.sock) return;
+    tcpClose(P, s, why);
     P.restart(s);
     P.setState(s, 'Non-existent', false, why + '; labels withdrawn');
     ldp.start(P, s);
