@@ -712,8 +712,8 @@ export class Simulation {
     const timing: SnapTiming[] = [];
     for (const [dev, st] of Array.from(this.ntp.devs.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
       const src = st.source ? st.upstreams.find((u) => u.addr === st.source) : undefined;
-      const t: SnapTiming = { dev, protocol: 'ntp', synchronized: st.own !== undefined || !!st.source, text: this.ntp.text(dev) };
-      if (src && src.dev) t.source = src.dev;
+      const t: SnapTiming = { dev, protocol: 'ntp', synchronized: this.ntp.synchronized(dev), text: this.ntp.text(dev) };
+      if (src && src.dev && t.synchronized) t.source = src.dev;
       timing.push(t);
     }
     for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
