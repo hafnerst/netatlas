@@ -11,10 +11,11 @@ import { bgpAsn, routerIdFor } from '../../model/services';
 import { compareAddr, formatAddr } from '../ipmath';
 import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
-import { fmtSec } from './engine';
+import { fmtSec, hashIndex } from './engine';
 import { durationText } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
+import { RipEntry } from './rip';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s: string): IpAddr => parseAddress(s) as IpAddr;
@@ -73,6 +74,10 @@ interface OspfX {
   peerBdr?: string;
   /** the last incompatibility noted (said once until it changes) */
   mismatch?: string;
+  /** the database exchange (RFC 2328 §10.6, §10.8): this router's DD sequence number, whether it is master, the last DBD problem noted */
+  dd?: number;
+  master?: boolean;
+  ddNote?: string;
 }
 
 /**
@@ -247,7 +252,11 @@ function ospfAdjOk(P: ProtocolSim, s: Sess): void {
   const x = s.x as OspfX;
   if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
     P.setState(s, 'ExStart', false, 'master / slave negotiation');
-    ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, router ID ${x.rid}`, { phase: 'init' }, 'ExStart'));
+    // ExStart (RFC 2328 §10.8): an empty DBD with I, M and MS set, its own DD sequence number and its interface MTU, sent again until answered
+    x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
+    x.master = undefined;
+    const mtu = ospfMtu(P, s);
+    ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
   } else if (['ExStart', 'Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0 && !ospfShouldAdj(P, s)) {
     P.restart(s);
     x.sent = false;
@@ -309,6 +318,11 @@ function ospfHellos(P: ProtocolSim, s: Sess): void {
       P.multicast(s, group, 'Hello', `router ID ${rid}, area ${relParam(s.rel, 'area', s.dev) || '0'}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, ${f.type}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${elects(f.type) ? `, DR ${f.dr || '0.0.0.0'}, BDR ${f.bdr || '0.0.0.0'}` : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms, area, type: f.type, dr: f.dr, bdr: f.bdr });
     },
   );
+}
+
+/** The MTU of the session's interface (what its DBDs announce, and the most it takes). */
+function ospfMtu(P: ProtocolSim, s: Sess): number {
+  return Number(P.e.mtu(s.dev, s.local.l3).value);
 }
 
 /** Why a neighbour's Hello can't make an adjacency (RFC 2328 §10.5: the intervals and the area must match; the network types too, in the simulation); '' when it can. */
@@ -402,7 +416,7 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
         ospfAdjOk(P, s);
         return;
       }
-      case 'DBD':
+      case 'DBD': {
         if (s.state === 'Down') return;
         if (s.state === 'Init') {
           // RFC 2328 §10.6: a DBD in Init is a 2-WayReceived (the neighbour has seen this router's Hello)
@@ -410,26 +424,58 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
           ospfElect(P, s.dev, s.local.l3.id, `${s.peer} is 2-Way`);
           ospfAdjOk(P, s);
         }
-        if (d.phase === 'init') {
-          if (!x.sent && ['2-Way', 'ExStart'].indexOf(s.state) >= 0 && ospfShouldAdj(P, s)) {
-            x.sent = true;
-            P.setState(s, 'Exchange', false, `${s.peer} started the exchange`);
-            P.unicast(s, 'DBD', 'Exchange: the LSA headers of the database', { phase: 'summary' }, 'Exchange');
+        const dd = d as { phase?: string; dd?: number; mtu?: number; rid?: string; ms?: boolean };
+        // RFC 2328 §10.6: a DBD whose interface MTU is larger than this interface takes is rejected (the adjacency stays in ExStart / Exchange)
+        const mtu = ospfMtu(P, s);
+        if (dd.mtu !== undefined && dd.mtu > mtu) {
+          const note = `MTU ${dd.mtu} in ${s.peer}'s DBD is larger than ${s.local.l3.id}'s MTU ${mtu}`;
+          if (x.ddNote !== note) {
+            x.ddNote = note;
+            P.e.note('drop', 'ospf', s.dev, s.peer, 'DBD rejected', s.state, `OSPF ${s.rel.id}: ${s.dev} rejects the DBD: ${note} — the adjacency does not get past ${s.state}`);
           }
           return;
         }
-        if (['ExStart', 'Exchange'].indexOf(s.state) < 0) return;
-        if (!x.sent) {
-          x.sent = true;
-          P.unicast(s, 'DBD', 'Exchange: the LSA headers of the database', { phase: 'summary' }, 'Exchange');
+        x.ddNote = undefined;
+        if (dd.phase === 'init') {
+          if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) {
+            // (the master sends its initial DBD again: the slave answers again)
+            if (s.state === 'Exchange' && x.master === false && dd.dd === x.dd) P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.dd} (again)`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+            return;
+          }
+          // the higher router ID is master; the slave takes the master's DD sequence number and answers with its summary
+          if (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0) {
+            x.master = false;
+            x.dd = dd.dd;
+            x.sent = true;
+            P.setState(s, 'Exchange', false, `negotiation done: ${s.peer} (router ID ${dd.rid}) is master, this router slave (DD sequence ${dd.dd})`);
+            P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+          }
+          // (a neighbour with the lower router ID: its initial DBD is ignored — it answers this router's as slave)
+          return;
         }
+        if (s.state === 'ExStart') {
+          // the master: the slave's answer carries the master's DD sequence number — the negotiation is done
+          if (dd.ms || dd.dd !== x.dd || (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0)) return;
+          x.master = true;
+          x.sent = true;
+          P.setState(s, 'Exchange', false, `negotiation done: this router (router ID ${x.rid}) is master, ${s.peer} slave (DD sequence ${x.dd})`);
+          x.dd = (x.dd as number) + 1;
+          P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: true }, 'Exchange');
+        } else if (s.state === 'Exchange') {
+          // the slave: the master's summary, with the next DD sequence number
+          if (x.master !== false || !dd.ms || dd.dd !== (x.dd as number) + 1) return;
+          x.dd = dd.dd;
+          P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+        } else return;
+        // both summaries had everything (M clear): Loading, the LSAs it lacks requested
         P.setState(s, 'Loading', false, 'database summaries exchanged');
         ospfRetransmit(P, s, 'Loading', () => P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading'));
         return;
+      }
       case 'LSR':
         if (['Exchange', 'Loading', 'Full'].indexOf(s.state) < 0) return;
         // the requested LSAs: this router's whole database (ProtocolSim.learn takes what is new to the peer)
-        P.unicast(s, 'LSU', 'the requested LSAs', { reply: true, db: P.dbOf(s.dev) });
+        P.unicast(s, 'LSU', 'the requested LSAs', { reply: true, db: P.dbOf(s) });
         return;
       case 'LSU':
         // (a flooded LSU — a change — is ProtocolSim's: learned, acknowledged and flooded on there)
@@ -451,6 +497,10 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     ospfIfDown(P, s.dev, s.local.l3.id);
     ospfDown(P, s, `interface ${s.local.l3.id} went down`);
   },
+  // RFC 2328 §13: a Link State Update from a neighbour in a state below Exchange is discarded
+  learns(_P, s) {
+    return ['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0;
+  },
   adjUp(P, s) {
     if (s.state === 'Full') return true;
     const f = ospfIf(P, s);
@@ -466,39 +516,98 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
 
 const ISIS_MAC = '01:80:c2:00:00:15';
 
+/** A device's IS-IS identity from its NET (area.system-id.selector: "49.0001.1921.6800.1001.00"), and its level. */
+export function isisIdentity(P: ProtocolSim, dev: string): { sys: string; area: string; level: 'level-1' | 'level-2' | 'level-1-2' } {
+  const d = P.m.index.devices.get(dev);
+  const svc = d ? d.services.find((x) => x.id === 'isis') : undefined;
+  const net = svc ? (svc.values.get('net') || '').trim().toLowerCase() : '';
+  const parts = net.split('.');
+  const lv = svc ? svc.values.get('level') : undefined;
+  const level = lv === 'level-1' || lv === 'level-1-2' ? lv : 'level-2';
+  // a NET: an area of one or more fields, a six-byte system ID (three fields), the selector
+  if (parts.length >= 5) return { sys: parts.slice(-4, -1).join('.'), area: parts.slice(0, -4).join('.'), level };
+  return { sys: routerId(P, dev, 'isis'), area: '', level };
+}
+
+/** Why two IS-IS routers' IIHs make no adjacency (ISO 10589 §8.4): no level in common, level 1 only across areas, the same system ID; '' when they can. */
+function isisMismatch(me: ReturnType<typeof isisIdentity>, d: { sys?: string; area?: string; level?: string }): string {
+  if (d.sys === me.sys) return `the same system ID ${me.sys} (a duplicate system ID)`;
+  const l1 = (x: string | undefined): boolean => x === 'level-1' || x === 'level-1-2';
+  const l2 = (x: string | undefined): boolean => x === 'level-2' || x === 'level-1-2';
+  if (l2(me.level) && l2(d.level)) return '';
+  if (l1(me.level) && l1(d.level)) return d.area === me.area ? '' : `level 1 only, and area ${d.area} there, ${me.area} here`;
+  return `no level in common (${d.level} there, ${me.level} here)`;
+}
+
+/** An IS-IS PDU on the session's link: a frame to AllL2ISs (IS-IS runs on the link layer, not over IP). */
+function isisFrame(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown }): void {
+  if (!P.e.isL3Up(s.dev, s.local.l3.id)) return;
+  const m = P.msg(s, type, `${s.dev} on ${s.local.l3.id} to ${ISIS_MAC} (AllL2ISs): ${detail}`, data);
+  P.e.note('message', s.protocol, s.dev, s.peer, type, '', m.detail, P.e.now, m);
+  P.lane(s.rel, s.dev, s.peer, m, 2 * P.e.hopTime());
+  P.e.emit(s.dev, s.local.l3, { src: s.local.l3.mac, dst: ISIS_MAC, msg: m, pdu: true });
+}
+
+/**
+ * IS-IS (ISO 10589, RFC 1195): IIHs on the link with the router's system
+ * ID, area and level (from its NET); the adjacency forms over the link
+ * whatever the interfaces' IP addresses — on a level in common (level 1
+ * only within an area), never with a duplicate system ID — through the
+ * three-way handshake; then CSNP, PSNP and LSPs, all frames on the link.
+ */
 const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
+  // (ISO 10589 §7.3.15.1: an LSP from a system with no adjacency up on the circuit is discarded)
+  learns(_P, s) {
+    return s.state === 'Up';
+  },
+  send(P, s, type, detail, data) {
+    isisFrame(P, s, type, detail, data);
+  },
   start(P, s) {
     const key = `isis-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const sys = routerId(P, s.dev, 'isis');
     P.periodic(
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
       () => {
         if (!P.e.isL3Up(s.dev, s.local.l3.id) || s.local.l3.kind === 'tunnel') return;
-        const seen = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.state !== 'Down').map((o) => o.peer);
-        const m = P.msg(s, 'IIH', `${s.dev} on ${s.local.l3.id} to ${ISIS_MAC} (AllL2ISs), hold ${P.timer(s, s.profile, 'dead').text}; neighbours seen: ${seen.join(', ') || 'none'}`, { seen, sys });
-        P.e.note('message', s.protocol, s.dev, s.peer, 'IIH', '', m.detail);
+        const me = isisIdentity(P, s.dev);
+        // the neighbours it hears on the link, by their system IDs
+        const seen = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.state !== 'Down' && typeof o.x.peerSys === 'string').map((o) => o.x.peerSys as string);
+        const m = P.msg(s, 'IIH', `${s.dev} on ${s.local.l3.id} to ${ISIS_MAC} (AllL2ISs): system ID ${me.sys}${me.area ? ', area ' + me.area : ''}, ${me.level}, hold ${P.timer(s, s.profile, 'dead').text}; neighbours seen: ${seen.join(', ') || 'none'}`, { seen, sys: me.sys, area: me.area, level: me.level });
+        P.e.note('message', s.protocol, s.dev, s.peer, 'IIH', '', m.detail, P.e.now, m);
         for (const o of (P.byRel.get(s.rel.id) || []).filter((q) => q.dev === s.dev)) P.lane(s.rel, s.dev, o.peer, m, 2 * P.e.hopTime());
         P.e.emit(s.dev, s.local.l3, { src: s.local.l3.mac, dst: ISIS_MAC, msg: m, pdu: true });
       },
     );
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { seen?: string[] };
+    const d = (msg.data || {}) as { seen?: string[]; sys?: string; area?: string; level?: string; acks?: number };
     if (msg.type === 'IIH') {
+      const me = isisIdentity(P, s.dev);
+      const bad = isisMismatch(me, d);
+      if (bad) {
+        if (s.x.mismatch !== bad) {
+          s.x.mismatch = bad;
+          P.e.note('drop', 'isis', s.dev, s.peer, 'IIH ignored', s.state, `IS-IS ${s.rel.id}: ${s.dev} makes no adjacency with ${s.peer}: ${bad}`);
+        }
+        return;
+      }
+      s.x.mismatch = undefined;
+      s.x.peerSys = d.sys;
       const dead = P.timer(s, s.profile, 'dead');
       deadCheck(P, s, dead.ms, () => isis.down(P, s, `holding time expired (${dead.text})`));
-      if (s.state === 'Down') P.setState(s, 'Initializing', false, `IIH from ${s.peer}`);
-      if ((d.seen || []).indexOf(s.dev) >= 0 && s.state === 'Initializing') {
-        P.setState(s, 'Up', true, 'three-way handshake complete');
-        P.unicast(s, 'CSNP', 'the database summary');
+      if (s.state === 'Down') P.setState(s, 'Initializing', false, `IIH from ${s.peer} (system ID ${d.sys})`);
+      if ((d.seen || []).indexOf(me.sys) >= 0 && s.state === 'Initializing') {
+        P.setState(s, 'Up', true, `three-way handshake complete (system ID ${d.sys})`);
+        isisFrame(P, s, 'CSNP', 'the database summary', {});
       }
       return;
     }
-    if (msg.type === 'CSNP') P.unicast(s, 'PSNP', 'requests the missing LSPs');
-    else if (msg.type === 'PSNP' && !(msg.data as { acks?: number } | undefined || {}).acks) P.unicast(s, 'LSP', 'the requested LSPs', { db: P.dbOf(s.dev) });
+    if (s.state !== 'Up') return;
+    if (msg.type === 'CSNP') isisFrame(P, s, 'PSNP', 'requests the missing LSPs', {});
+    else if (msg.type === 'PSNP' && d.acks === undefined) isisFrame(P, s, 'LSP', 'the requested LSPs', { db: P.dbOf(s) });
   },
   iface(P, s, up) {
     if (!up) isis.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -513,6 +622,10 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
 // ------------------------------------------------------------------ EIGRP
 
 const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
+  // (RFC 7868 §5.3.1: routes are taken only from a neighbour whose initialization is complete)
+  learns(_P, s) {
+    return s.state === 'Up';
+  },
   start(P, s) {
     const key = `eigrp-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
@@ -549,10 +662,10 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     }
     if (msg.type === 'ACK' && s.state === 'Pending') {
       P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-      P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s.dev), dbId: 0, dbAck: 'ACK' }, 'Up');
+      P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
       return;
     }
-    if (msg.type === 'Query') P.unicast(s, 'Reply', 'its way to the lost routes (or none)');
+    // (a Query is answered with a Reply by ProtocolSim.learn, once its records are taken: from a neighbour that is Up)
   },
   iface(P, s, up) {
     if (!up) eigrp.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -567,8 +680,17 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
 
 // ------------------------------------------------------------------ RIP
 
+/**
+ * RIP: a distance vector (rip.ts holds the routers' tables). A Request at
+ * start; the whole table every update interval out of each interface (one
+ * Response per relation and interface, to the group); a Request's answer to
+ * the neighbour that asked. A Response's entries go into the table; the
+ * session shows the neighbour heard (Heard), Down after the timeout without
+ * any Response from it — its routes time out on their own.
+ */
 const rip: Behaviour = {
   start(P, s) {
+    const R = P.ripSim();
     const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
@@ -580,23 +702,29 @@ const rip: Behaviour = {
       upd,
       () => {
         // the whole table every update interval: what a lost update did not bring comes with the next one
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes', { db: P.dbOf(s.dev) });
+        if (P.e.isL3Up(s.dev, s.local.l3.id) && P.e.deviceOn(s.dev)) R.send(s, 'periodic update', R.entries(s));
       },
       upd(),
     );
   },
   rx(P, s, msg) {
+    const R = P.ripSim();
     if (msg.type === 'Request') {
-      P.unicast(s, 'Response', 'answer to the request: its routes', { db: P.dbOf(s.dev) });
+      const list = R.entries(s);
+      P.unicast(s, 'Response', `answer to the request: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`, { rip: list });
       return;
     }
     if (msg.type !== 'Response') return;
     const timeout = P.timer(s, s.profile, 'dead');
     deadCheck(P, s, timeout.ms, () => {
       P.restart(s);
-      P.setState(s, 'Down', false, `timeout (${timeout.text}): its routes are dropped`);
+      P.setState(s, 'Down', false, `timeout (${timeout.text}): no Response from ${s.peer} (its routes time out on their own)`);
     });
     if (s.state !== 'Heard') P.setState(s, 'Heard', true, `Response from ${s.peer}`);
+    R.response(s, ((msg.data || {}) as { rip?: RipEntry[] }).rip || []);
+  },
+  iface(P, s, up) {
+    if (!up) P.ripSim().ifaceDown(s);
   },
 };
 
@@ -749,6 +877,10 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
   refresh(P, s) {
     bgpDetail(P, s);
   },
+  // RFC 4271 §9: UPDATEs are processed only in Established (in any other state one is an FSM error)
+  learns(_P, s) {
+    return s.state === 'Established';
+  },
   advertise(P, s, recs, why) {
     // an UPDATE over the session's connection (TCP retransmits it): announcements and withdrawals of what changed
     if (s.state === 'Established') tcpSend(P, s, 'UPDATE', `${why}: ${recs.map((r) => r.origin + '#' + r.seq).join(', ')}`, 23 + 12 * recs.length, { db: recs });
@@ -801,7 +933,7 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
         if (s.state === 'OpenConfirm') {
           P.setState(s, 'Established', true, 'KEEPALIVE received');
           s.x.waitedNext = ['the session to be Established'];
-          const db = P.dbOf(s.dev);
+          const db = P.dbOf(s);
           tcpSend(P, s, 'UPDATE', updateText(s), 23 + 12 * db.length, { db });
           const ka = s.x.kaMs as number;
           if (ka > 0) {

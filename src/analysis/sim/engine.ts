@@ -84,7 +84,7 @@ import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/ty
 import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
 import { compareAddr, formatAddr, inPrefix } from '../ipmath';
-import { Connected, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
 import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
@@ -193,8 +193,11 @@ export interface Protocols {
   routesChanged?(dev: string): void;
   /** what routing depends on changed: routers whose own adjacencies changed advertise their new record */
   originate?(): void;
+  /** a distance-vector protocol's tables as the routers hold them (RIP), and their version (bumped at every change); null: none */
+  dvTables?(protocol: string): DvTables | null;
+  dvVersion?(): number;
   /** what a router has learned (its records of every origin), null when it runs no routing protocol */
-  viewOf?(dev: string): Map<string, { origin: string; seq: number; adj: string[]; up: string[] }> | null;
+  viewOf?(dev: string): Array<{ origin: string; inst: string; seq: number; at: number; adj: string[]; up: string[] }> | null;
 }
 
 interface QItem {
@@ -886,6 +889,7 @@ export class Engine {
       },
       leases: (device: string) => self.leaseConnected(device),
       extraRoutes: (device: string, vrf: string) => self.leaseRoutes(device, vrf),
+      dv: (protocol: string) => (self.protocols && self.protocols.dvTables ? self.protocols.dvTables(protocol) : null),
     };
     return this.ctxObj;
   }
@@ -906,7 +910,14 @@ export class Engine {
       for (const a of devs) for (const b of devs) if (a !== b) adj.set(r.id + '|' + a + '|' + b, (live.adjUp as (r: string, f: string, t: string) => boolean)(r.id, a, b));
     }
     const self = this;
+    // the distance-vector tables as they are now (a frozen copy)
+    const dvNow = new Map<string, DvTables>();
+    if (this.protocols && this.protocols.dvTables) for (const p of ['rip']) {
+      const t = this.protocols.dvTables(p) as (DvTables & { frozen?: () => DvTables }) | null;
+      if (t) dvNow.set(p, t.frozen ? t.frozen() : t);
+    }
     return {
+      dv: (protocol: string) => dvNow.get(protocol) || null,
       up(device: string, iface: string): boolean {
         const k = device + ':' + iface;
         if (ifs.has(k)) return ifs.get(k) !== false;
@@ -1065,6 +1076,13 @@ export class Engine {
    * recomputation delay (the routers whose recomputation falls on the same
    * moment share it).
    */
+  /** A distance-vector router's table changed (RIP): the routing contexts are made again (the routers recompute by their delay). */
+  dynamicChanged(): void {
+    this.ctxObj = null;
+    this.routingVersion++;
+    this.estimates.clear();
+  }
+
   routingChanged(): void {
     this.ctxObj = null;
     this.routingVersion++;
@@ -1097,26 +1115,29 @@ export class Engine {
 
   /**
    * A router's state for its route computation: what is up now on the
-   * router itself, and for every other router what its database says
-   * (that origin's record: its adjacencies and interfaces when it last
-   * advertised them, as far as that has reached this router). A router that
-   * runs no routing protocol: the state now.
+   * router itself, and for every other router what its databases say (each
+   * instance's record of that origin: its adjacencies of the instance —
+   * a relation's adjacency is known only through its own protocol's
+   * instance — and its interfaces when it last advertised them, as far as
+   * that has reached this router; the interfaces of the newest record). A
+   * router that runs no routing protocol: the state now.
    */
   private viewCtx(dev: string, base: RoutingCtx): RoutingCtx {
     const view = this.protocols && this.protocols.viewOf ? this.protocols.viewOf(dev) : null;
     if (!view) return base;
-    const recs = Array.from(view.values()).sort((a, b) => cmp(a.origin, b.origin));
-    const sig = `${this.routingVersion}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + ':' + r.seq).join(',')}`;
+    const recs = view.slice().sort((a, b) => cmp(a.origin, b.origin) || cmp(a.inst, b.inst));
+    const sig = `${this.routingVersion}|${this.protocols && this.protocols.dvVersion ? this.protocols.dvVersion() : 0}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + '@' + r.inst + ':' + r.seq).join(',')}`;
     const hit = this.viewCtxs.get(sig);
     if (hit) return hit;
     const adj = new Set<string>();
-    const ups = new Map<string, Set<string>>();
+    const ups = new Map<string, { at: number; up: Set<string> }>();
     for (const r of recs) {
       for (const a of r.adj) {
         const i = a.lastIndexOf('|');
         adj.add(`${a.slice(0, i)}|${r.origin}|${a.slice(i + 1)}`);
       }
-      if (r.origin !== dev) ups.set(r.origin, new Set(r.up));
+      const was = ups.get(r.origin);
+      if (r.origin !== dev && (!was || r.at > was.at)) ups.set(r.origin, { at: r.at, up: new Set(r.up) });
     }
     const self = this;
     const ctx: RoutingCtx = {
@@ -1126,7 +1147,7 @@ export class Engine {
       adjUp: (relation: string, from: string, to: string) => adj.has(`${relation}|${from}|${to}`) && adj.has(`${relation}|${to}|${from}`),
       up(device: string, iface: string): boolean {
         const u = ups.get(device);
-        if (u && self.net.devices.get(device) && (self.net.devices.get(device) as SimDevice).l3.has(iface)) return u.has(iface);
+        if (u && self.net.devices.get(device) && (self.net.devices.get(device) as SimDevice).l3.has(iface)) return u.up.has(iface);
         return (base.up as (d: string, i: string) => boolean)(device, iface);
       },
     };
@@ -3135,7 +3156,7 @@ export class Engine {
   /** An ARP Request (or Neighbor Solicitation): broadcast / to the solicited-node address, or unicast to `mac` (a refresh, a probe). */
   private solicit(dev: string, l3: L3Iface, ip: IpAddr, mac: string): void {
     const ll = ip.version === 6 && l3.ll && (isLinkLocal6(ip) || !l3.addrs.some((a) => a.addr.version === 6)) ? l3.ll : undefined;
-    const src = ll || l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version);
+    const src = ll || l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version) || (ip.version === 4 ? this.borrowed(dev, l3) : undefined);
     if (!src) return;
     const sim = l3.macSimulated ? ' (simulated)' : '';
     if (ip.version === 4) {
@@ -3154,11 +3175,25 @@ export class Engine {
     this.emit(dev, l3, { src: l3.mac, dst: mac || multicastMac(sn), msg, nd: { op: 'NS', src: src.addr, target: ip, lladdr: l3.mac, solicited: false }, ip: pkt });
   }
 
+  /**
+   * The address an unnumbered interface (no IPv4 address of its own) uses:
+   * the device's loopback address in its VRF (as `ip unnumbered Loopback0`),
+   * for its ARP requests and the ARP requests it answers.
+   */
+  private borrowed(dev: string, l3: L3Iface): SimAddr | undefined {
+    if (l3.kind === 'loopback' || l3.addrs.some((a) => a.addr.version === 4)) return undefined;
+    const sd = this.net.devices.get(dev) as SimDevice;
+    const loops = Array.from(sd.l3.values()).filter((l) => l.kind === 'loopback' && l.vrf === l3.vrf).sort((x, y) => cmp(x.id, y.id));
+    for (const l of loops) for (const a of l.addrs) if (a.addr.version === 4) return a;
+    return undefined;
+  }
+
   private arpReceive(dev: string, l3: L3Iface, frame: Frame, a: ArpPdu): void {
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     const key = this.entryKey(l3.id, a.spa);
     const e = tab.get(key);
-    const ownTarget = l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0);
+    const lent = this.borrowed(dev, l3);
+    const ownTarget = l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0) || (!!lent && compareAddr(lent.addr, a.tpa) === 0);
     const vip = this.protocols ? this.protocols.owns(dev, l3.id).find((o) => compareAddr(o.addr, a.tpa) === 0) : undefined;
     if (a.gratuitous) {
       // a gratuitous ARP updates an entry the receiver has (RFC 826's merge; Linux's default): it creates none, so a
@@ -3178,7 +3213,7 @@ export class Engine {
       this.emit(dev, l3, { src: mac, dst: a.sha, msg, arp: { op: 'reply', sha: mac, spa: a.tpa, tha: a.sha, tpa: a.spa } });
       return;
     }
-    if (a.op === 'reply' && compareAddr(a.tpa, a.spa) !== 0 && (l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0) || e)) {
+    if (a.op === 'reply' && compareAddr(a.tpa, a.spa) !== 0 && (ownTarget || e)) {
       this.learnEntry(dev, l3, a.spa, a.sha, isVirtual(a.sha) ? 'virtual' : 'dynamic', 'ARP Reply');
       return;
     }

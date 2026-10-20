@@ -19,7 +19,8 @@ import { lookupProtocol, protocolBase } from '../../model/protocols';
 import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles';
 import { Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
-import { relParam, routingProtocol } from '../routing';
+import { DvTables, relParam, routingProtocol } from '../routing';
+import { RipSim } from './rip';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
@@ -33,15 +34,19 @@ const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const LINK_LOCAL = ['ospf', 'isis', 'eigrp', 'rip', 'pim', 'ldp', 'bfd', 'igmp'];
 
 /**
- * What a router knows of another router (or of itself): that origin's
- * routing adjacencies that are up ("relation|peer") and its interfaces
- * that are up, with the origin's sequence number. A router computes its
- * routes from the records it has (Engine.recompute): an origin's change
- * reaches it only with an advertisement that carries the new record.
+ * What a router knows of another router (or of itself) in one routing
+ * instance (a protocol in a VRF, `inst` "ospf|"): that origin's adjacencies
+ * of the instance that are up ("relation|peer") and its interfaces that
+ * are up, with the origin's sequence number of the instance and the time
+ * it made the record. A router computes its routes from the records it has
+ * (Engine.recompute): an origin's change reaches it only with an
+ * advertisement of that instance that carries the new record.
  */
 export interface RouteRec {
   origin: string;
+  inst: string;
   seq: number;
+  at: number;
   adj: string[];
   up: string[];
 }
@@ -51,7 +56,7 @@ function sameRec(a: RouteRec, b: RouteRec): boolean {
 }
 
 function copyRec(r: RouteRec): RouteRec {
-  return { origin: r.origin, seq: r.seq, adj: r.adj.slice(), up: r.up.slice() };
+  return { origin: r.origin, inst: r.inst, seq: r.seq, at: r.at, adj: r.adj.slice(), up: r.up.slice() };
 }
 
 /** The update message of a routing protocol's advertisements, and the acknowledgment it waits for (none: RIP). */
@@ -59,10 +64,11 @@ const UPDATE_OF: { [behaviour: string]: { type: string; ack?: string } } = {
   ospf: { type: 'LSU', ack: 'LSAck' },
   isis: { type: 'LSP', ack: 'PSNP' },
   eigrp: { type: 'Update', ack: 'ACK' },
-  rip: { type: 'Response' },
 };
 /** An unacknowledged advertisement is sent again after this (OSPF's RxmtInterval 5 s; IS-IS and EIGRP alike in the simulation). */
 const ADV_RXMT = 5000;
+/** EIGRP's active timer (RFC 7868 §5.5: 3 min): a neighbour that has not replied to a Query by then is reset (stuck in active). */
+const EIGRP_ACTIVE = 180000;
 
 /** One side of a session: the device, the interface it uses and its address there. */
 export interface Side {
@@ -108,6 +114,10 @@ export interface Behaviour {
   refresh?(P: ProtocolSim, s: Sess): void;
   /** send routing records to the peer its own way (BGP: an UPDATE over its TCP connection); else ProtocolSim's update message */
   advertise?(P: ProtocolSim, s: Sess, recs: RouteRec[], why: string): void;
+  /** may this message of the session teach the router now (its state machine's say; default: the session is up) */
+  learns?(P: ProtocolSim, s: Sess, msg: Msg): boolean;
+  /** send one of its unicast messages its own way (IS-IS: a frame on the link, no IP); else ProtocolSim.unicast */
+  send?(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown }): void;
 }
 
 export interface TimerValue {
@@ -268,6 +278,44 @@ export class ProtocolSim implements Protocols {
     return null;
   }
 
+  /**
+   * The two ends of a cable between two devices' layer-3 interfaces (the
+   * relation's endpoint interfaces when written): IS-IS's link. Each side's
+   * address is its interface's, else (unnumbered) the device's identity — a
+   * loopback's or its first address — for the log; null when no cable joins them.
+   */
+  linkSides(r: Relation, a: string, b: string): { a: Side; b: Side } | null {
+    const sa = this.sd(a);
+    const sb = this.sd(b);
+    if (!sa || !sb) return null;
+    const eps = (dev: string): string[] | null => {
+      const l = r.endpoints.filter((x) => x.device === dev && x.iface !== undefined).map((x) => x.iface as string);
+      return l.length ? l : null;
+    };
+    const ea = eps(a);
+    const eb = eps(b);
+    const own = (sd: SimDevice): IpAddr | null => {
+      const all = Array.from(sd.l3.values()).sort((x, y) => Number(y.kind === 'loopback') - Number(x.kind === 'loopback') || cmp(x.id, y.id));
+      for (const l of all) for (const ad of l.addrs) if (ad.addr.version === 4) return ad.addr;
+      for (const l of all) if (l.addrs.length) return l.addrs[0].addr;
+      return null;
+    };
+    for (const k of this.m.links.slice().sort((x, y) => cmp(x.id, y.id))) {
+      const ends = [[k.a, k.b], [k.b, k.a]];
+      for (const [x, y] of ends) {
+        if (x.device !== a || y.device !== b) continue;
+        const la = Array.from(sa.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.ports.indexOf(x.iface as string) >= 0 && (!ea || ea.indexOf(l.id) >= 0));
+        const lb = Array.from(sb.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.ports.indexOf(y.iface as string) >= 0 && (!eb || eb.indexOf(l.id) >= 0));
+        if (!la || !lb) continue;
+        const aa = la.addrs.length ? la.addrs[0].addr : own(sa);
+        const ab = lb.addrs.length ? lb.addrs[0].addr : own(sb);
+        if (!aa || !ab) continue;
+        return { a: { dev: a, l3: la, addr: aa }, b: { dev: b, l3: lb, addr: ab } };
+      }
+    }
+    return null;
+  }
+
   /** Build the sessions of every relation (each pair, each side). */
   build(): void {
     // the model's relations, then the exchanges its services imply (service-relations.ts: not drawn, not in the model)
@@ -293,7 +341,10 @@ export class ProtocolSim implements Protocols {
 
   /** The sessions of one pair of a relation's endpoints (none: why is noted). */
   private buildPair(r: Relation, profile: SimProfile, a: string, b: string): Sess[] {
-    const sides = this.pairSides(r, a, b);
+    // IS-IS forms its adjacency on the link itself (its PDUs are frames, not IP): the interfaces of a cable between the two,
+    // whatever their IP addresses (other subnets, none at all)
+    const l2 = profile.behaviour === 'isis' ? this.linkSides(r, a, b) : null;
+    const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.pairSides(r, a, b);
     if (!sides) {
       // a DHCP client without its lease yet: its sessions wait for it
       const lease = [a, b].find((x) => !!this.e.waitsForLease(x));
@@ -946,110 +997,168 @@ export class ProtocolSim implements Protocols {
 
   // ------------------------------------------------------------ learned routing state
 
-  /** each router's routing database: what it learned of every origin (its own record is always current) */
-  private views = new Map<string, Map<string, RouteRec>>();
-  /** every origin's last sequence number (kept over a reboot: a router's new records outrank its old ones) */
+  /** RIP's distance-vector tables (rip.ts), once a RIP session exists */
+  rip: RipSim | null = null;
+
+  /** The RIP router tables (made with the first RIP session). */
+  ripSim(): RipSim {
+    if (!this.rip) this.rip = new RipSim(this);
+    return this.rip;
+  }
+
+  dvTables(protocol: string): DvTables | null {
+    return protocol === 'rip' && this.rip ? this.rip : null;
+  }
+
+  dvVersion(): number {
+    return this.rip ? this.rip.version : 0;
+  }
+
+  /**
+   * Each router's routing databases, one per routing instance — a routing
+   * protocol in a VRF ("ospf|", "bgp|blue") — each with what it learned of
+   * every origin in that instance (its own record is always current). An
+   * instance learns only from its own sessions' advertisements and floods
+   * only over them: what OSPF brings never teaches BGP, nor one VRF another.
+   */
+  private views = new Map<string, Map<string, Map<string, RouteRec>>>();
+  /** every origin's last sequence number per instance, "origin|instance" (kept over a reboot: a router's new records outrank its old ones) */
   private recSeq = new Map<string, number>();
   /** reliable advertisements not acknowledged yet, by "session|id" */
   private pendingAdv = new Map<string, number>();
   private advId = 0;
   private routingRel = new Map<string, boolean>();
 
-  /** Is a session one of a routing relation (OSPF, IS-IS, EIGRP, RIP, BGP): its advertisements teach routes? */
+  /** Is a session one of a routing relation (OSPF, IS-IS, EIGRP, BGP): its advertisements teach routes? (RIP's are its own distance vectors) */
   isRouting(s: Sess): boolean {
     let v = this.routingRel.get(s.rel.id);
-    if (v === undefined) this.routingRel.set(s.rel.id, (v = routingProtocol(this.m, s.rel) !== null && ['ospf', 'isis', 'eigrp', 'rip', 'bgp'].indexOf(s.profile.behaviour) >= 0));
+    if (v === undefined) this.routingRel.set(s.rel.id, (v = routingProtocol(this.m, s.rel) !== null && ['ospf', 'isis', 'eigrp', 'bgp'].indexOf(s.profile.behaviour) >= 0));
     return v;
   }
 
-  private view(dev: string): Map<string, RouteRec> {
-    let v = this.views.get(dev);
-    if (!v) this.views.set(dev, (v = new Map()));
+  /** The routing instance a session belongs to: its routing protocol and its VRF. */
+  instanceOf(s: Sess): string {
+    return `${routingProtocol(this.m, s.rel)}|${s.local.l3.vrf}`;
+  }
+
+  private view(dev: string, inst: string): Map<string, RouteRec> {
+    let byInst = this.views.get(dev);
+    if (!byInst) this.views.set(dev, (byInst = new Map()));
+    let v = byInst.get(inst);
+    if (!v) byInst.set(inst, (v = new Map()));
     return v;
+  }
+
+  /** A router's routing instances (those of its routing sessions). */
+  private instances(dev: string): string[] {
+    return Array.from(new Set(this.sessionsOf(dev).filter((s) => this.isRouting(s)).map((s) => this.instanceOf(s)))).sort(cmp);
   }
 
   /**
    * What a router has learned, for its route computation (Engine.recompute):
-   * null when it runs no routing protocol (its routes are its own).
+   * every record of every instance it runs (each origin's adjacencies of that
+   * instance, and its interfaces as of that record); null when it runs no
+   * routing protocol (its routes are its own).
    */
-  viewOf(dev: string): Map<string, RouteRec> | null {
-    if (!this.sessionsOf(dev).some((s) => this.isRouting(s))) return null;
-    const v = this.view(dev);
-    if (!v.has(dev)) this.originateOne(dev);
-    return v;
+  viewOf(dev: string): RouteRec[] | null {
+    const insts = this.instances(dev);
+    if (!insts.length) return null;
+    const out: RouteRec[] = [];
+    for (const inst of insts) {
+      const v = this.view(dev, inst);
+      if (!v.has(dev)) this.originateOne(dev, inst);
+      for (const r of v.values()) out.push(r);
+    }
+    return out;
   }
 
-  /** A router's own record now: its routing adjacencies that are up and its interfaces that are up. */
-  private ownRec(dev: string): RouteRec {
+  /** A router's own record of an instance now: its adjacencies of the instance that are up, and its interfaces that are up. */
+  private ownRec(dev: string, inst: string): RouteRec {
     const adj = new Set<string>();
-    for (const s of this.sessionsOf(dev)) if (this.isRouting(s) && this.adjUpOf(s)) adj.add(s.rel.id + '|' + s.peer);
+    for (const s of this.sessionsOf(dev)) if (this.isRouting(s) && this.instanceOf(s) === inst && this.adjUpOf(s)) adj.add(s.rel.id + '|' + s.peer);
     const sd = this.sd(dev);
     const up = sd ? Array.from(sd.l3.values()).filter((l) => this.e.isL3Up(dev, l.id)).map((l) => l.id).sort(cmp) : [];
-    return { origin: dev, seq: 0, adj: Array.from(adj).sort(cmp), up };
+    return { origin: dev, inst, seq: 0, at: this.e.now, adj: Array.from(adj).sort(cmp), up };
   }
 
-  private originateOne(dev: string): RouteRec | null {
-    const rec = this.ownRec(dev);
-    const v = this.view(dev);
+  private originateOne(dev: string, inst: string): RouteRec | null {
+    const rec = this.ownRec(dev, inst);
+    const v = this.view(dev, inst);
     const was = v.get(dev);
     if (was && sameRec(was, rec)) return null;
-    rec.seq = (this.recSeq.get(dev) || 0) + 1;
-    this.recSeq.set(dev, rec.seq);
+    const k = dev + '|' + inst;
+    rec.seq = (this.recSeq.get(k) || 0) + 1;
+    this.recSeq.set(k, rec.seq);
     v.set(dev, rec);
     return rec;
   }
 
   /**
    * What routing depends on changed (Engine.routingChanged): every router
-   * whose own adjacencies or interfaces changed has a new record and
-   * advertises it to its neighbours (OSPF and IS-IS flood it, EIGRP and RIP
-   * send it as an update, BGP as an UPDATE): the others learn of the change
-   * only when that advertisement reaches them.
+   * whose own adjacencies or interfaces changed has a new record in each of
+   * its instances and advertises it there (OSPF and IS-IS flood it, EIGRP
+   * sends it as an update, BGP as an UPDATE): the others learn of the
+   * change only when that advertisement reaches them.
    */
   originate(): void {
     const devs = Array.from(new Set(Array.from(this.sessions.values()).filter((s) => this.isRouting(s)).map((s) => s.dev))).sort(cmp);
     for (const dev of devs) {
       if (!this.e.deviceOn(dev)) continue;
-      const rec = this.originateOne(dev);
-      if (rec) this.advertise(dev, [rec], null, `${dev}'s ${rec.adj.length ? 'adjacencies or interfaces changed' : 'adjacencies are all down'} (sequence ${rec.seq})`);
+      for (const inst of this.instances(dev)) {
+        const was = this.view(dev, inst).get(dev);
+        const rec = this.originateOne(dev, inst);
+        // (an adjacency lost: what went through it must be found anew — EIGRP asks its other neighbours with a Query)
+        const lost = !!was && !!rec && was.adj.some((a) => rec.adj.indexOf(a) < 0);
+        if (rec) this.advertise(dev, inst, [rec], null, `${dev}'s ${rec.adj.length ? 'adjacencies or interfaces changed' : 'adjacencies are all down'} (sequence ${rec.seq})`, lost);
+      }
     }
   }
 
-  /** The records a router knows (its database), copies: what its synchronisation messages carry. */
-  dbOf(dev: string): RouteRec[] {
-    if (!this.view(dev).has(dev)) this.originateOne(dev);
-    return Array.from(this.view(dev).values()).sort((a, b) => cmp(a.origin, b.origin)).map(copyRec);
+  /** The records a session's instance knows at its router (that database), copies: what its synchronisation messages carry. */
+  dbOf(s: Sess): RouteRec[] {
+    const inst = this.instanceOf(s);
+    const v = this.view(s.dev, inst);
+    if (!v.has(s.dev)) this.originateOne(s.dev, inst);
+    return Array.from(v.values()).sort((a, b) => cmp(a.origin, b.origin)).map(copyRec);
   }
 
-  /** Records to a router's neighbours over its routing adjacencies that are up (but the one they came from). */
-  private advertise(dev: string, recs: RouteRec[], except: Sess | null, why: string): void {
+  /** Records of an instance to the router's neighbours over that instance's adjacencies that are up (but the one they came from). */
+  private advertise(dev: string, inst: string, recs: RouteRec[], except: Sess | null, why: string, lost = false): void {
     for (const s of this.sessionsOf(dev)) {
-      if (!this.isRouting(s) || !this.adjUpOf(s) || !s.x.started) continue;
+      if (!this.isRouting(s) || this.instanceOf(s) !== inst || !this.adjUpOf(s) || !s.x.started) continue;
       if (except && s.peer === except.peer && s.rel.id === except.rel.id) continue;
-      this.sendRecs(s, recs.map(copyRec), why);
+      this.sendRecs(s, recs.map(copyRec), why, lost);
     }
   }
 
   /**
    * One advertisement of a session: its protocol's update message (OSPF
-   * LSU, IS-IS LSP, EIGRP Update or Query, RIP Response, BGP UPDATE) with
-   * the records. OSPF, IS-IS and EIGRP send it again every retransmit
-   * interval until it is acknowledged (LSAck, PSNP, ACK or Reply); RIP not
-   * at all (its next periodic Response carries everything); BGP over its
-   * TCP connection (the transport retransmits).
+   * LSU, IS-IS LSP, EIGRP Update, BGP UPDATE) with the records. OSPF, IS-IS
+   * and EIGRP send it again every retransmit interval until it is
+   * acknowledged (LSAck, PSNP, ACK); BGP over its TCP connection (the
+   * transport retransmits). EIGRP, when the change is a lost adjacency,
+   * sends a Query instead, which each neighbour must answer with a Reply;
+   * one that has not by the active timer is reset (stuck in active).
    */
-  private sendRecs(s: Sess, recs: RouteRec[], why: string): void {
+  private sendRecs(s: Sess, recs: RouteRec[], why: string, lost = false): void {
     const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
     const what = recs.map((r) => `${r.origin}#${r.seq}`).join(', ');
     if (b.advertise) {
       b.advertise(this, s, recs, why);
       return;
     }
-    const kind = UPDATE_OF[s.profile.behaviour] || { type: 'Update' };
+    const query = lost && s.profile.behaviour === 'eigrp';
+    const kind = query ? { type: 'Query', ack: 'Reply' } : UPDATE_OF[s.profile.behaviour] || { type: 'Update' };
     const type = kind.type;
     const ack = kind.ack;
     const id = ++this.advId;
-    const send = (n: number): void => this.unicast(s, type, `${why}: ${what}${n ? ` (sent again: no ${ack} after ${fmtSec(ADV_RXMT)})` : ''}`, { db: recs, dbId: id, dbAck: ack });
+    const since = this.e.now;
+    const send = (n: number): void => {
+      const data = { db: recs, dbId: id, dbAck: ack };
+      const detail = `${why}: ${what}${n ? ` (sent again: no ${ack} after ${fmtSec(ADV_RXMT)})` : ''}`;
+      if (b.send) b.send(this, s, type, detail, data);
+      else this.unicast(s, type, detail, data);
+    };
     send(0);
     if (!ack) return;
     const key = s.key + '|' + id;
@@ -1060,6 +1169,12 @@ export class ProtocolSim implements Protocols {
           this.pendingAdv.delete(key);
           return;
         }
+        if (query && this.e.now - since >= EIGRP_ACTIVE) {
+          this.pendingAdv.delete(key);
+          const b2 = this.behaviours.get(s.profile.behaviour) as Behaviour & { down?: (P: ProtocolSim, s: Sess, why: string) => void };
+          if (b2.down) b2.down(this, s, `stuck in active: no Reply to its Query within the active timer (${fmtSec(EIGRP_ACTIVE)})`);
+          return;
+        }
         send(n);
         again(n + 1);
       });
@@ -1068,23 +1183,40 @@ export class ProtocolSim implements Protocols {
   }
 
   /**
-   * A session's message arrived: records in it the router does not have
-   * (a higher sequence number for their origin) go into its database — its
-   * routes are recomputed after its route recomputation delay, and it
-   * advertises them on to its other neighbours; an acknowledgment ends the
-   * retransmission it answers.
+   * A session's message arrived. An acknowledgment ends the retransmission
+   * it answers. Records in it are taken only when the session's state
+   * machine says it may learn from this message now (Behaviour.learns:
+   * OSPF from Exchange on, IS-IS and EIGRP adjacencies up, BGP Established
+   * — a message in another state, a late one after the session went down,
+   * teaches nothing and is not acknowledged), and only those of the
+   * session's own instance with a higher sequence number than the router
+   * has (a stale one changes nothing): they go into that instance's
+   * database, its routes are recomputed after its route recomputation
+   * delay, and it advertises them on to its other neighbours of the
+   * instance.
    */
   learn(s: Sess, msg: Msg): void {
     const d = (msg.data || {}) as { db?: RouteRec[]; dbId?: number; dbAck?: string; acks?: number };
     if (d.acks !== undefined) this.pendingAdv.delete(s.key + '|' + d.acks);
-    if (!d.db) return;
-    if (d.dbId !== undefined && d.dbAck) this.unicast(s, d.dbAck, `acknowledges ${d.db.map((r) => r.origin + '#' + r.seq).join(', ')}`, { acks: d.dbId });
-    if (!this.isRouting(s)) return;
-    const v = this.view(s.dev);
-    if (!v.has(s.dev)) this.originateOne(s.dev);
+    if (!d.db || !this.isRouting(s)) return;
+    const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
+    const may = b.learns ? b.learns(this, s, msg) : s.up;
+    if (!may) {
+      this.e.note('drop', s.protocol, s.dev, s.peer, msg.type, s.state, `${s.profile.label} ${s.rel.id}: ${s.dev} takes nothing from ${s.peer}'s ${msg.type} in state ${s.state} (its records are not learned, not acknowledged)`);
+      return;
+    }
+    if (d.dbId !== undefined && d.dbAck) {
+      const ackData = { acks: d.dbId };
+      const ackText = `acknowledges ${d.db.map((r) => r.origin + '#' + r.seq).join(', ')}`;
+      if (b.send) b.send(this, s, d.dbAck, ackText, ackData);
+      else this.unicast(s, d.dbAck, ackText, ackData);
+    }
+    const inst = this.instanceOf(s);
+    const v = this.view(s.dev, inst);
+    if (!v.has(s.dev)) this.originateOne(s.dev, inst);
     const changed: RouteRec[] = [];
     for (const r of d.db) {
-      if (r.origin === s.dev) continue;
+      if (r.origin === s.dev || r.inst !== inst) continue;
       const known = v.get(r.origin);
       if (known && known.seq >= r.seq) continue;
       const c = copyRec(r);
@@ -1094,10 +1226,10 @@ export class ProtocolSim implements Protocols {
     if (!changed.length) return;
     this.e.note('route', s.protocol, s.dev, s.peer, 'learned', '', `${s.dev} learned from ${s.peer} (${s.profile.label} ${msg.type}): ${changed.map((r) => `${r.origin} sequence ${r.seq} (${r.adj.length} adjacenc${r.adj.length === 1 ? 'y' : 'ies'})`).join(', ')}; its routes follow after its route recomputation delay`);
     this.e.recomputeSoon(s.dev);
-    this.advertise(s.dev, changed, s, `learned from ${s.peer}`);
+    this.advertise(s.dev, inst, changed, s, `learned from ${s.peer}`);
   }
 
-  /** A router was powered off: its database is gone (it learns everything again after it boots). */
+  /** A router was powered off: its databases are gone (it learns everything again after it boots). */
   private forget(dev: string): void {
     this.views.delete(dev);
     for (const k of Array.from(this.pendingAdv.keys())) if (k.split('|')[2] === dev) this.pendingAdv.delete(k);
