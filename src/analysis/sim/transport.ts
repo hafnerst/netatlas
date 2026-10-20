@@ -58,8 +58,7 @@ import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { isLinkLocal6 } from './engine';
 import { L3Iface } from './net';
-import { Seg, StreamMark, TcpStream, initialSeq, segmentLabel, tcpFlagsText } from './tcp';
-import { flowKey } from './pacing';
+import { Seg, StreamMark, TcpStream, initialSeq, segmentLabel, tcpFlagsText, tcpHeaderLen } from './tcp';
 import { ParamValue, PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
 import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
@@ -162,6 +161,8 @@ type ConnMsg = { kind: 'app'; app: AppMessage } | { kind: 'request' | 'response'
 
 /** A TCP connection end (tcp.ts keeps its byte stream). */
 interface Conn {
+  /** its conversation (the client's connection made it; the server's end takes it from the SYN) */
+  conv: string;
   key: string;
   dev: string;
   proto: 'tcp';
@@ -336,7 +337,7 @@ export class Transport {
   private conns = new Map<string, Map<string, Conn>>();
   private nextPort = new Map<string, number>();
   /** a protocol break's UDP leg 2 waiting for its answer: by gateway and its source port, the client on leg 1 */
-  private udpRelays = new Map<string, { client: IpAddr; cport: number; local: IpAddr; lport: number; vrf: string; test?: number; profile: string }>();
+  private udpRelays = new Map<string, { client: IpAddr; cport: number; local: IpAddr; lport: number; vrf: string; test?: number; profile: string; conv?: string }>();
   /** learned path MTUs: by device, then "VRF|destination" */
   private pmtu = new Map<string, Map<string, { mtu: number; at: number; via: string }>>();
   readonly tests: Test[] = [];
@@ -690,7 +691,21 @@ export class Transport {
     return { protocol, type, label, detail, data: { from: '', ...data } };
   }
 
-  private sendPkt(dev: string, src: IpAddr, dst: IpAddr, vrf: string, m: Msg, l4: L4, len: number, df: boolean, peer: string): Pkt {
+  /** a new conversation's identity: what a connection, an echo or a datagram exchange is followed by, whatever its addresses on the way */
+  private convN = 0;
+  private newConv(proto: string): string {
+    return `${proto}#${++this.convN}`;
+  }
+
+  /**
+   * Send a packet of the transport. `conv` is its conversation — made where
+   * the exchange starts (a connection, an echo request, a datagram) and
+   * carried by every packet of it, the answers too (each takes the one of
+   * what it answers): so identical addresses and ports in two VRFs, a
+   * translated reply and a later connection on the same ports are never
+   * one conversation.
+   */
+  private sendPkt(dev: string, src: IpAddr, dst: IpAddr, vrf: string, m: Msg, l4: L4, len: number, df: boolean, peer: string, conv: string): Pkt {
     (m.data as { from: string }).from = dev;
     const pkt = this.e.newPacket(src, dst, vrf, m);
     pkt.l4 = l4;
@@ -705,7 +720,7 @@ export class Transport {
       (m.data as { tcp?: boolean }).tcp = true;
       m.flags = tcpFlagsText(l4.flags);
     }
-    if (l4.proto === 'tcp' || l4.proto === 'udp' || (l4.proto === 'icmp' && l4.echoId !== undefined)) m.conv = flowKey(l4.proto, formatAddr(src), formatAddr(dst), l4);
+    m.conv = conv;
     this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
     // the logical view: a segment of a relation's connection (its handshake, its acknowledgments, its messages) goes along the relation —
     // one dot per segment the connection sends, from this one place (a message without a relation goes by its network: the engine's)
@@ -942,7 +957,7 @@ export class Transport {
     const name = v === 4 ? 'ICMP' : 'ICMPv6';
     const m = this.msg('icmp', 'Echo Request', `${name} Echo → ${formatAddr(t.dst)}`, `${name} Echo Request from ${formatAddr(src)} to ${formatAddr(t.dst)}, id ${t.id}, seq 1, ${t.size} bytes of data${t.df ? ', DF' : ''}${pm ? ' (path MTU ' + pm + ')' : ''}`, { test: t.id });
     const l4: L4 = { proto: 'icmp', num: v === 4 ? 1 : 58, icmpType: v === 4 ? 8 : 128, icmpCode: 0, icmpName: 'Echo Request', echoId: t.id, echoSeq: 1 };
-    const p = this.sendPkt(t.from, src, t.dst, vrf, m, l4, 8 + t.size, t.df, this.e.ownerOf(t.dst) || '');
+    const p = this.sendPkt(t.from, src, t.dst, vrf, m, l4, 8 + t.size, t.df, this.e.ownerOf(t.dst) || '', this.newConv('icmp'));
     t.pktIds.push(p.id);
   }
 
@@ -965,7 +980,7 @@ export class Transport {
       const m = this.msg('icmp', 'Echo Reply', `${name} Echo Reply from ${formatAddr(src)}`, `${name} Echo Reply from ${formatAddr(src)} to ${formatAddr(pkt.src)}, id ${l4.echoId}, seq ${l4.echoSeq}`, { test: (pkt.msg.data as { test?: number }).test });
       const back: L4 = { proto: 'icmp', num: l4.num, icmpType: v === 4 ? 0 : 129, icmpCode: 0, icmpName: 'Echo Reply', echoId: l4.echoId, echoSeq: l4.echoSeq };
       // the service response time of a server
-      void this.sendPkt(dev, src, pkt.src, pkt.vrf, m, back, pkt.len || 64, false, this.e.ownerOf(pkt.src) || '');
+      void this.sendPkt(dev, src, pkt.src, pkt.vrf, m, back, pkt.len || 64, false, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('icmp'));
       return;
     }
     if (l4.icmpType === (v === 4 ? 0 : 129)) {
@@ -1045,7 +1060,7 @@ export class Transport {
     const sport = this.ephemeral(t.from);
     const to = `${formatAddr(t.dst)}:${t.port}`;
     const m = this.msg('udp', 'UDP request', `UDP → ${to}`, `UDP ${formatAddr(src)}:${sport} → ${to}, ${t.size} bytes (test ${t.series})`, { test: t.id });
-    const p = this.sendPkt(t.from, src, t.dst, vrf, m, { proto: 'udp', num: 17, sport, dport: t.port }, 8 + t.size, t.df, this.e.ownerOf(t.dst) || '');
+    const p = this.sendPkt(t.from, src, t.dst, vrf, m, { proto: 'udp', num: 17, sport, dport: t.port }, 8 + t.size, t.df, this.e.ownerOf(t.dst) || '', this.newConv('udp'));
     t.pktIds.push(p.id);
   }
 
@@ -1093,7 +1108,7 @@ export class Transport {
     const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
     const answer = (): void => {
       const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
-      this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '');
+      this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('udp'));
     };
     if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
@@ -1134,10 +1149,10 @@ export class Transport {
   }
 
   /** A new connection end (its initial sequence number from its identity and a counter). */
-  private newConn(o: { dev: string; vrf: string; local: IpAddr; lport: number; remote: IpAddr; rport: number; state: string; role: 'client' | 'server'; what: string; test?: Test; keep?: boolean }): Conn {
+  private newConn(o: { dev: string; vrf: string; local: IpAddr; lport: number; remote: IpAddr; rport: number; state: string; role: 'client' | 'server'; what: string; test?: Test; keep?: boolean; conv?: string }): Conn {
     const key = this.connKey(o.vrf, o.local, o.lport, o.remote, o.rport);
     const iss = initialSeq(o.dev + '|' + key, ++this.issCount);
-    return { key, dev: o.dev, proto: 'tcp', local: o.local, lport: o.lport, remote: o.remote, rport: o.rport, vrf: o.vrf, state: o.state, role: o.role, since: this.e.now, heard: this.e.now, timer: null, tries: 0, rtx: 0, gen: 0, what: o.what, test: o.test, tcp: new TcpStream<ConnMsg>(iss), keep: !!o.keep, probes: 0 };
+    return { conv: o.conv || this.newConv('tcp'), key, dev: o.dev, proto: 'tcp', local: o.local, lport: o.lport, remote: o.remote, rport: o.rport, vrf: o.vrf, state: o.state, role: o.role, since: this.e.now, heard: this.e.now, timer: null, tries: 0, rtx: 0, gen: 0, what: o.what, test: o.test, tcp: new TcpStream<ConnMsg>(iss), keep: !!o.keep, probes: 0 };
   }
 
   // ------------------------------------------------------------ applications' own connections (MQTT, BGP)
@@ -1403,7 +1418,7 @@ export class Transport {
     if (app) data.appType = app.type;
     const msg: Msg = { protocol: (app ? app.protocol : sh ? sh.protocol : 'tcp') as Msg['protocol'], type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : sh ? sh.relation : undefined };
     if (app && app.waited && s.sent === 0) msg.waited = app.waited;
-    const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, 20 + s.len, true, this.e.ownerOf(c.remote) || '');
+    const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, tcpHeaderLen(l4) + s.len, true, this.e.ownerOf(c.remote) || '', c.conv);
     this.lastPkt = p.id;
     return p;
   }
@@ -1422,7 +1437,7 @@ export class Transport {
       m.protocol = sh.protocol as Msg['protocol'];
       if (sh.relation) m.relation = sh.relation;
     }
-    this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, l4, 20, true, this.e.ownerOf(c.remote) || '');
+    this.sendPkt(c.dev, c.local, c.remote, c.vrf, m, l4, tcpHeaderLen(l4), true, this.e.ownerOf(c.remote) || '', c.conv);
   }
 
   /** A segment without data: an acknowledgment (seq SND.NXT, ack RCV.NXT), or a keepalive probe (seq SND.NXT − 1). */
@@ -1450,11 +1465,12 @@ export class Transport {
     const flags = l4.flags || [];
     if (flags.indexOf('RST') >= 0) return;
     const hasAck = flags.indexOf('ACK') >= 0;
-    const space = Math.max(0, (pkt.len || 20) - 20) + (flags.indexOf('SYN') >= 0 ? 1 : 0) + (flags.indexOf('FIN') >= 0 ? 1 : 0);
+    const space = Math.max(0, (pkt.len || 20) - tcpHeaderLen(l4)) + (flags.indexOf('SYN') >= 0 ? 1 : 0) + (flags.indexOf('FIN') >= 0 ? 1 : 0);
     const out: L4 = hasAck ? { proto: 'tcp', num: 6, sport: l4.dport, dport: l4.sport, flags: ['RST'], seq: l4.ack || 0 } : { proto: 'tcp', num: 6, sport: l4.dport, dport: l4.sport, flags: ['RST', 'ACK'], seq: 0, ack: (l4.seq || 0) + space };
     const from = src || pkt.dst;
     const m = this.msg('tcp', 'TCP RST', segmentLabel({ flags: out.flags as string[] }), `${this.segText({ local: from, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number }, out, 0)}: ${what}`, {});
-    this.sendPkt(dev, from, pkt.src, pkt.vrf, m, out, 20, true, this.e.ownerOf(pkt.src) || '');
+    // (the conversation of the segment it refuses)
+    this.sendPkt(dev, from, pkt.src, pkt.vrf, m, out, tcpHeaderLen(out), true, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('tcp'));
   }
 
   /** Is a RST acceptable for a connection (RFC 9293 §3.10.7, RFC 5961: its sequence number at RCV.NXT; in SYN_SENT one that acknowledges the SYN)? */
@@ -1480,7 +1496,7 @@ export class Transport {
     const has = (f: string): boolean => flags.indexOf(f) >= 0;
     const vrf = l3.vrf;
     const c = this.conn(dev, vrf, pkt.dst, l4.dport as number, pkt.src, l4.sport as number);
-    const bytes = Math.max(0, (pkt.len || 20) - 20);
+    const bytes = Math.max(0, (pkt.len || 20) - tcpHeaderLen(l4));
     const ends = (x: Conn): string => `${formatAddr(x.local)}:${x.lport} ↔ ${formatAddr(x.remote)}:${x.rport}`;
     if (!c) {
       if (has('RST')) return;
@@ -1489,7 +1505,7 @@ export class Transport {
           this.refuse(dev, l3, pkt, this.listenText(dev, 'tcp', l4.dport as number, pkt.dst));
           return;
         }
-        const sc = this.newConn({ dev, vrf, local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, state: 'SYN_RCVD', role: 'server', what: `serves ${formatAddr(pkt.src)}` });
+        const sc = this.newConn({ dev, vrf, local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, state: 'SYN_RCVD', role: 'server', what: `serves ${formatAddr(pkt.src)}`, conv: pkt.msg.conv });
         const lh = this.appListening.get(dev + '|' + (l4.dport as number));
         if (lh) {
           sc.sock = new AppSocket(this, sc, lh.h);
@@ -1979,9 +1995,9 @@ export class Transport {
     const data = (pkt.msg.data || {}) as { test?: number };
     const send = (): void => {
       const sport = this.ephemeral(dev);
-      if (at.kind.reply) this.udpRelays.set(`${dev}|${sport}`, { client: pkt.src, cport: l4.sport as number, local: pkt.dst, lport: l4.dport as number, vrf: pkt.vrf, test: data.test, profile: at.profile.id });
+      if (at.kind.reply) this.udpRelays.set(`${dev}|${sport}`, { client: pkt.src, cport: l4.sport as number, local: pkt.dst, lport: l4.dport as number, vrf: pkt.vrf, test: data.test, profile: at.profile.id, conv: pkt.msg.conv });
       const m = this.msg('udp', at.kind.label, `UDP → ${formatAddr(fwd.address)}:${fwd.port}`, `protocol break at ${dev}: leg 2 of the ${at.kind.label.toLowerCase()} from ${formatAddr(pkt.src)}, a new datagram ${formatAddr(src.src)}:${sport} → ${formatAddr(fwd.address)}:${fwd.port} (profile ${at.profile.id})`, { breakLeg: true });
-      this.sendPkt(dev, src.src, fwd.address, src.vrf, m, { proto: 'udp', num: 17, sport, dport: fwd.port }, 8 + 64, false, this.e.ownerOf(fwd.address) || '');
+      this.sendPkt(dev, src.src, fwd.address, src.vrf, m, { proto: 'udp', num: 17, sport, dport: fwd.port }, 8 + 64, false, this.e.ownerOf(fwd.address) || '', this.newConv('udp'));
       this.e.note('message', 'udp', dev, this.e.ownerOf(fwd.address) || '', 'leg 2', '', `protocol break at ${dev}: the ${at.kind.label.toLowerCase()} from ${formatAddr(pkt.src)}:${l4.sport} ended at ${l3.id} port ${l4.dport} (leg 1); ${dev} sends its own to ${formatAddr(fwd.address)}:${fwd.port} (leg 2)${at.kind.reply ? '; the answer will come back to it' : '; nothing comes back'}`);
     };
     if (delay > 0) this.later(delay, send);
@@ -1997,7 +2013,7 @@ export class Transport {
     if (!r) return false;
     this.udpRelays.delete(k);
     const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(r.local)}:${r.lport}`, `protocol break at ${dev}: the answer of leg 2 from ${formatAddr(pkt.src)} goes to ${formatAddr(r.client)}:${r.cport} as ${dev}'s own answer on leg 1 (profile ${r.profile})`, { test: r.test, reply: true });
-    this.sendPkt(dev, r.local, r.client, r.vrf, m, { proto: 'udp', num: 17, sport: r.lport, dport: r.cport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(r.client) || '');
+    this.sendPkt(dev, r.local, r.client, r.vrf, m, { proto: 'udp', num: 17, sport: r.lport, dport: r.cport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(r.client) || '', r.conv || this.newConv('udp'));
     return true;
   }
 

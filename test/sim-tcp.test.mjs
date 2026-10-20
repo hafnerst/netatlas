@@ -138,7 +138,8 @@ const segs = (s, dev, t0) =>
     .map((e) => {
       const l4 = e.hdr.l4;
       const ip = e.hdr.l3[e.hdr.l3.length - 1];
-      return [l4.flags.join(','), l4.seq, l4.ack === undefined ? null : l4.ack, ip.len - (ip.version === 4 ? 20 : 40) - 20];
+      // (the TCP header: 20 bytes, 24 with the MSS option of a SYN)
+      return [l4.flags.join(','), l4.seq, l4.ack === undefined ? null : l4.ack, ip.len - (ip.version === 4 ? 20 : 40) - (l4.mss !== undefined ? 24 : 20)];
     });
 
 /** Lose (or duplicate, delay) the n-th frame on a cable that a predicate picks. */
