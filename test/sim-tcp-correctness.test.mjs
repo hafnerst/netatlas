@@ -14,6 +14,7 @@ import { load, model, example } from './helpers.mjs';
 
 const T = load('analysis/sim/tcp.js');
 const S = load('analysis/sim/simulation.js');
+const P = load('analysis/sim/pacing.js');
 
 const CHAIN = (x = {}) => `netatlas: 1
 title: chain
@@ -356,4 +357,96 @@ test('MSS: the SYNs announce their MSS; the client sends segments the server can
   assert.equal(s.events().filter((e) => e.t >= t0 && /Fragmentation Needed/.test(e.what)).length, 0);
   // the server's answer (1460 bytes) by its own MSS (960; the client's 1460 is larger)
   assert.deepEqual(sv.filter((x) => x.len > 0).map((x) => x.len), [960, 500]);
+});
+
+test('two connections between the same hosts at once: separate sequence spaces, each answered once, two conversations (Follow message)', () => {
+  const s = sim(CHAIN());
+  s.runTo(2500);
+  const a = s.sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
+  const b = s.sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
+  const t0 = s.now;
+  s.runTo(t0 + 4000);
+  assert.equal(a.ok && b.ok, true);
+  const ports = Array.from(new Set(segs(s, 'pc', t0).map((x) => x.sport)));
+  assert.equal(ports.length, 2);
+  for (const p of ports) assert.equal(segs(s, 'srv', t0).filter((x) => x.dport === p && x.flags === '[P,A]').length, 1);
+  const keys = new Set(s.engine.flights.filter((f) => f.view === 'physical' && f.hdr && f.hdr.l4 && f.hdr.l4.proto === 'tcp' && f.t0 >= t0).map((f) => P.conversationKey(f.protocol, f.hdr, f.label)));
+  assert.equal(keys.size, 2, Array.from(keys).join(' '));
+});
+
+// ------------------------------------------------------------------ the views
+
+test('logical view: a relation’s connection — its handshake, acknowledgments and messages — goes along the relation, one dot per segment sent', () => {
+  const s = new S.Simulation(model(example('protocol-simulation.yaml')));
+  s.runTo(16000);
+  const lane = s.engine.flights.filter((f) => f.view === 'logical' && f.track.ref === 'relation:ibgp-r1-r3');
+  const labels = lane.map((f) => f.label);
+  // the transport's three segments of the handshake, both ways, before the OPENs
+  const i = (l) => labels.indexOf(l);
+  assert.ok(i('BGP TCP [S]') >= 0 && i('BGP TCP [S,A]') > i('BGP TCP [S]') && i('BGP TCP [A]') > i('BGP TCP [S,A]') && i('BGP OPEN [P,A]') > i('BGP TCP [A]'), labels.slice(0, 8).join(' | '));
+  assert.deepEqual([lane[i('BGP TCP [S]')].track.from, lane[i('BGP TCP [S,A]')].track.from], ['r1', 'r3'], 'the SYN-ACK is the listener’s (it knows its neighbour by address)');
+  // one dot per segment: as many OPEN dots as OPEN segments sent, on the wire too
+  const sent = s.events().filter((e) => e.kind === 'message' && e.protocol === 'bgp' && e.what === 'OPEN').length;
+  assert.equal(labels.filter((l) => l === 'BGP OPEN [P,A]').length, sent);
+  // each dot carries its connection: Follow message is the same conversation in both views
+  const phys = s.engine.flights.find((f) => f.view === 'physical' && f.label === 'BGP TCP [S]');
+  assert.ok(phys.conv && phys.conv === lane[i('BGP TCP [S]')].conv && lane.every((f) => f.conv === phys.conv), 'one conversation');
+  assert.equal(P.flightKey(phys, phys.hdr), P.conversationKey(phys.protocol, phys.hdr, phys.label), 'the same key from the headers');
+});
+
+/** Play a model's display (Readable, physical or logical) with the frame budget's clock pinned; the hops it took in. */
+function display(name, view, follow) {
+  const sim = new S.Simulation(model(example(name)));
+  const host = { engine: sim.engine, shown: (f) => f.view === view, typical: () => sim.engine.hopTime(), headers: (f) => f.hdr };
+  const p = new P.Pacer(host, 48);
+  const now = Date.now;
+  Date.now = () => 0;
+  const seen = new Map();
+  try {
+    for (let i = 0; i < 8000; i++) {
+      p.frame(16);
+      for (const it of p.items) if (it.f.view === view && !seen.has(it.f.id)) seen.set(it.f.id, it);
+      if (follow && !p.follow) {
+        const syn = p.items.find((it) => it.f.view === view && /TCP \[S\]/.test(it.f.label));
+        if (syn) p.followFlight(syn.f.id);
+      }
+    }
+  } finally {
+    Date.now = now;
+  }
+  return { sim, p, items: Array.from(seen.values()) };
+}
+
+test('busy model: a TCP handshake drawn is drawn whole — its SYN-ACK and ACK are never turned into cable activity behind its SYN; the rest stays bounded', () => {
+  for (const [name, views] of [['dmz-services.yaml', ['physical']], ['private-house.yaml', ['physical', 'logical']], ['cross-domain.yaml', ['logical']]]) {
+    for (const view of views) {
+      const { p, items } = display(name, view);
+      const by = new Map();
+      for (const it of items) if (it.f.conv) by.set(it.key, (by.get(it.key) || []).concat([it]));
+      let whole = 0;
+      for (const list of by.values()) {
+        const syn = list.find((x) => x.drawn && /TCP \[S\]/.test(x.f.label));
+        if (!syn) continue;
+        // the handshake's other two segments: the SYN-ACKs, and the client's first ACK after them (every cable of each)
+        const sa = list.filter((x) => /TCP \[S,A\]/.test(x.f.label));
+        const acks = list.filter((x) => /TCP \[A\]$/.test(x.f.label) && x.f.sender === syn.f.sender);
+        const first = acks.length ? Math.min(...acks.map((x) => x.f.t0)) : null;
+        const answers = sa.concat(acks.filter((x) => x.f.t0 === first));
+        if (!sa.length || !answers.length) continue;
+        assert.ok(answers.every((x) => x.drawn), `${name} ${view}: ${answers.filter((x) => !x.drawn).map((x) => `${x.f.label} ${x.f.track.ref} parent ${x.parent ? x.parent.drawn : '-'} lag ${Math.round(x.d0 - p.clock)}`).join(' | ')}`);
+        whole++;
+      }
+      assert.ok(whole >= 1, `${name} ${view}: a handshake drawn`);
+      // the background is still bundled: most of the traffic is cable activity, said so
+      assert.ok(p.notDrawn > 50, `${name} ${view}: ${p.notDrawn}`);
+    }
+  }
+});
+
+test('Follow message on a TCP connection in a busy model: its handshake and every later segment are drawn', () => {
+  const { p, items } = display('dmz-services.yaml', 'physical', true);
+  assert.ok(p.follow, 'following a connection');
+  const mine = items.filter((it) => it.key === p.follow.key);
+  assert.ok(mine.some((x) => /\[S,A\]/.test(x.f.label)) && mine.some((x) => /TCP \[A\]/.test(x.f.label)), mine.map((x) => x.f.label).join(' | '));
+  assert.ok(mine.every((x) => x.drawn), mine.filter((x) => !x.drawn).map((x) => x.f.label).join(' | '));
 });

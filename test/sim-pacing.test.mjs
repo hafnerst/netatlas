@@ -299,9 +299,13 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   const k1 = P.conversationKey('arp', { arp: { senderIp: '10.0.0.1', targetIp: '10.0.0.2' }, l2: { src: 'a', dst: 'b' }, l3: [] }, 'ARP Request');
   const k2 = P.conversationKey('arp', { arp: { senderIp: '10.0.0.2', targetIp: '10.0.0.1' }, l2: { src: 'b', dst: 'a' }, l3: [] }, 'ARP Reply');
   assert.equal(k1, k2);
-  const t1 = P.conversationKey('tcp', { l2: { src: 'a', dst: 'b' }, l3: [{ src: '10.0.0.1', dst: '10.0.0.9' }], l4: { proto: 'tcp', src: 40000, dst: 80 } }, 'SYN');
-  const t2 = P.conversationKey('tcp', { l2: { src: 'b', dst: 'a' }, l3: [{ src: '10.0.0.9', dst: '10.0.0.1' }], l4: { proto: 'tcp', src: 80, dst: 40000 } }, 'SYN-ACK');
+  // (the header's own fields: sport and dport)
+  const t1 = P.conversationKey('tcp', { l2: { src: 'a', dst: 'b' }, l3: [{ src: '10.0.0.1', dst: '10.0.0.9' }], l4: { proto: 'tcp', sport: 40000, dport: 80 } }, 'SYN');
+  const t2 = P.conversationKey('tcp', { l2: { src: 'b', dst: 'a' }, l3: [{ src: '10.0.0.9', dst: '10.0.0.1' }], l4: { proto: 'tcp', sport: 80, dport: 40000 } }, 'SYN-ACK');
   assert.equal(t1, t2);
+  // another connection between the same hosts (another client port) is another conversation
+  const t3 = P.conversationKey('tcp', { l2: { src: 'a', dst: 'b' }, l3: [{ src: '10.0.0.1', dst: '10.0.0.9' }], l4: { proto: 'tcp', sport: 40001, dport: 80 } }, 'SYN');
+  assert.notEqual(t1, t3);
   const { sim, p } = paced();
   p.step();
   const it = p.items.find((x) => x.drawn);
@@ -328,13 +332,15 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   assert.ok(sim.now > 0);
 });
 
-test('the dot limit: a hop beyond it is not drawn; the count says how many', () => {
+test('the dot limit: a hop that would start a conversation beyond it is not drawn (the count says how many); what goes on with a drawn one is', () => {
   const { sim, p } = paced(PS, 'physical', { limit: 2 });
   play(sim, p, 8000, 16, false);
   assert.ok(p.notDrawn > 0, String(p.notDrawn));
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 400; i++) {
     p.frame(16);
-    assert.ok(p.items.filter((x) => x.drawn && p.clock < p.end(x) && x.f.view === 'physical').length <= 2);
+    const on = p.items.filter((x) => x.drawn && p.clock < p.end(x) && x.f.view === 'physical');
+    // no more conversations on screen than the limit; a message or conversation on screen goes on beyond it (the next cable, its answer)
+    assert.ok(new Set(on.map((x) => x.key)).size <= 2, on.map((x) => x.f.label).join(' | '));
   }
 });
 

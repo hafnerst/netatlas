@@ -2475,6 +2475,7 @@ export class Engine {
     if (msg.sender !== undefined) f.sender = msg.sender;
     if (msg.origin !== undefined) f.origin = msg.origin;
     if (msg.test !== undefined) f.test = msg.test;
+    if (msg.conv !== undefined) f.conv = msg.conv;
     this.flights.push(f);
     this.flightById.set(f.id, f);
     return f;

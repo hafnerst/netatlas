@@ -59,6 +59,7 @@ import { isMulticastIp } from './mac';
 import { isLinkLocal6 } from './engine';
 import { L3Iface } from './net';
 import { Seg, StreamMark, TcpStream, initialSeq, segmentLabel, tcpFlagsText } from './tcp';
+import { flowKey } from './pacing';
 import { ParamValue, PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
 import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
@@ -201,6 +202,9 @@ interface Conn {
   /** the MSS the peer's SYN announced (RFC 9293 §3.7.1: what it can receive; 536 / 1220 when it announced none) */
   peerMss?: number;
 }
+
+/** What a listener's connections are drawn as: fixed, or found by the connection's local and remote address. */
+type Shown = { protocol: string; label: string } | ((local: IpAddr, remote: IpAddr) => { protocol: string; label: string; relation?: string });
 
 /** A message an application sends over its connection (an MQTT packet): what is drawn and logged, its size. */
 export interface AppMessage {
@@ -698,7 +702,12 @@ export class Transport {
       if (pm) pkt.pmtu = pm;
     }
     if (l4.proto === 'tcp') (m.data as { tcp?: boolean }).tcp = true;
+    if (l4.proto === 'tcp' || l4.proto === 'udp' || (l4.proto === 'icmp' && l4.echoId !== undefined)) m.conv = flowKey(l4.proto, formatAddr(src), formatAddr(dst), l4);
     this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
+    // the logical view: a segment of a relation's connection (its handshake, its acknowledgments, its messages) goes along the relation —
+    // one dot per segment the connection sends, from this one place (a message without a relation goes by its network: the engine's)
+    const rel = m.relation && peer ? this.P.m.index.relations.get(m.relation) : undefined;
+    if (rel && l4.proto === 'tcp' && relationDevices(rel).indexOf(dev) >= 0 && relationDevices(rel).indexOf(peer) >= 0) this.P.lane(rel, dev, peer, m, this.e.estimate(dev, dst));
     // a group goes out of the interface it is sent from (a host sends it on its own segment)
     const out = isMulticastIp(dst) ? this.sourceFor(dev, dst) : null;
     this.e.send(dev, pkt, out && out.l3 ? out.l3 : undefined);
@@ -1131,10 +1140,16 @@ export class Transport {
   // ------------------------------------------------------------ applications' own connections (MQTT, BGP)
 
   /** the listeners of the applications' own protocols, by "device|port" */
-  private appListening = new Map<string, { h: AppSocketHandlers; what: string; shown?: Conn['shown'] }>();
+  private appListening = new Map<string, { h: AppSocketHandlers; what: string; shown?: Shown }>();
 
-  /** An application listens on a TCP port of its device (an MQTT broker, a BGP speaker): each connection gets a socket. */
-  appListen(dev: string, port: number, what: string, h: AppSocketHandlers, shown?: { protocol: string; label: string }): void {
+  /**
+   * An application listens on a TCP port of its device (an MQTT broker, a
+   * BGP speaker): each connection gets a socket. `shown`: what its
+   * connections' own segments are drawn as — or, by the connection's two
+   * addresses, which of its configured peers it is (a BGP speaker knows its
+   * neighbours by address), so that the handshake is that relation's.
+   */
+  appListen(dev: string, port: number, what: string, h: AppSocketHandlers, shown?: Shown): void {
     this.appListening.set(dev + '|' + port, { h, what, shown });
   }
 
@@ -1476,7 +1491,7 @@ export class Transport {
         if (lh) {
           sc.sock = new AppSocket(this, sc, lh.h);
           sc.what = `${lh.what}: a client at ${formatAddr(pkt.src)}`;
-          if (lh.shown) sc.shown = { ...lh.shown };
+          if (lh.shown) sc.shown = typeof lh.shown === 'function' ? lh.shown(pkt.dst, pkt.src) : { ...lh.shown };
         }
         this.peerSyn(sc, l4);
         this.addConn(sc);
