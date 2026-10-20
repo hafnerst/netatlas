@@ -1040,10 +1040,14 @@ export class ProtocolSim implements Protocols {
 
   /**
    * Each router's routing databases, one per routing instance — a routing
-   * protocol in a VRF ("ospf|", "bgp|blue") — each with what it learned of
-   * every origin in that instance (its own record is always current). An
-   * instance learns only from its own sessions' advertisements and floods
-   * only over them: what OSPF brings never teaches BGP, nor one VRF another.
+   * protocol in a VRF of the router ("ospf|", "bgp|blue") — each with what
+   * it learned of every origin's instances, by "origin|origin's instance"
+   * (its own record is always current). An instance learns only from its
+   * own sessions' advertisements and floods only over them: what OSPF brings
+   * never teaches BGP, nor one VRF another. A VRF name means something on
+   * its own router only: what one instance takes from another router is
+   * decided by the session it arrived on (its protocol), never by two
+   * routers' VRFs having the same name.
    */
   private views = new Map<string, Map<string, Map<string, RouteRec>>>();
   /** every origin's last sequence number per instance, "origin|instance" (kept over a reboot: a router's new records outrank its old ones) */
@@ -1060,9 +1064,16 @@ export class ProtocolSim implements Protocols {
     return v;
   }
 
-  /** The routing instance a session belongs to: its routing protocol and its VRF. */
+  /** The routing instance a session belongs to: its routing protocol and its VRF (on its own router). */
   instanceOf(s: Sess): string {
     return `${routingProtocol(this.m, s.rel)}|${s.local.l3.vrf}`;
+  }
+
+  /** The records a router's instance holds (its own among them): what its route computation and its own checks may read. */
+  recordsIn(dev: string, inst: string): RouteRec[] {
+    const v = this.view(dev, inst);
+    if (!v.has(dev + '|' + inst)) this.originateOne(dev, inst);
+    return Array.from(v.values()).sort((a, b) => cmp(a.origin, b.origin) || cmp(a.inst, b.inst));
   }
 
   private view(dev: string, inst: string): Map<string, RouteRec> {
@@ -1088,11 +1099,7 @@ export class ProtocolSim implements Protocols {
     const insts = this.instances(dev);
     if (!insts.length) return null;
     const out: RouteRec[] = [];
-    for (const inst of insts) {
-      const v = this.view(dev, inst);
-      if (!v.has(dev)) this.originateOne(dev, inst);
-      for (const r of v.values()) out.push(r);
-    }
+    for (const inst of insts) out.push(...this.recordsIn(dev, inst));
     return out;
   }
 
@@ -1108,12 +1115,12 @@ export class ProtocolSim implements Protocols {
   private originateOne(dev: string, inst: string): RouteRec | null {
     const rec = this.ownRec(dev, inst);
     const v = this.view(dev, inst);
-    const was = v.get(dev);
-    if (was && sameRec(was, rec)) return null;
     const k = dev + '|' + inst;
+    const was = v.get(k);
+    if (was && sameRec(was, rec)) return null;
     rec.seq = (this.recSeq.get(k) || 0) + 1;
     this.recSeq.set(k, rec.seq);
-    v.set(dev, rec);
+    v.set(k, rec);
     return rec;
   }
 
@@ -1129,7 +1136,7 @@ export class ProtocolSim implements Protocols {
     for (const dev of devs) {
       if (!this.e.deviceOn(dev)) continue;
       for (const inst of this.instances(dev)) {
-        const was = this.view(dev, inst).get(dev);
+        const was = this.view(dev, inst).get(dev + '|' + inst);
         const rec = this.originateOne(dev, inst);
         // (an adjacency lost: what went through it must be found anew — EIGRP asks its other neighbours with a Query)
         const lost = !!was && !!rec && was.adj.some((a) => rec.adj.indexOf(a) < 0);
@@ -1140,10 +1147,7 @@ export class ProtocolSim implements Protocols {
 
   /** The records a session's instance knows at its router (that database), copies: what its synchronisation messages carry. */
   dbOf(s: Sess): RouteRec[] {
-    const inst = this.instanceOf(s);
-    const v = this.view(s.dev, inst);
-    if (!v.has(s.dev)) this.originateOne(s.dev, inst);
-    return Array.from(v.values()).sort((a, b) => cmp(a.origin, b.origin)).map(copyRec);
+    return this.recordsIn(s.dev, this.instanceOf(s)).map(copyRec);
   }
 
   /** Records of an instance to the router's neighbours over that instance's adjacencies that are up (but the one they came from). */
@@ -1237,14 +1241,18 @@ export class ProtocolSim implements Protocols {
     }
     const inst = this.instanceOf(s);
     const v = this.view(s.dev, inst);
-    if (!v.has(s.dev)) this.originateOne(s.dev, inst);
+    if (!v.has(s.dev + '|' + inst)) this.originateOne(s.dev, inst);
     const changed: RouteRec[] = [];
+    // the session's instance takes what came over it: its own protocol's records (another protocol's never; the origin's VRF
+    // is the origin's own name for it, compared with nothing here)
+    const proto = inst.slice(0, inst.indexOf('|'));
     for (const r of d.db) {
-      if (r.origin === s.dev || r.inst !== inst) continue;
-      const known = v.get(r.origin);
+      if (r.origin === s.dev || r.inst.slice(0, r.inst.indexOf('|')) !== proto) continue;
+      const k = r.origin + '|' + r.inst;
+      const known = v.get(k);
       if (known && known.seq >= r.seq) continue;
       const c = copyRec(r);
-      v.set(r.origin, c);
+      v.set(k, c);
       changed.push(c);
     }
     if (!changed.length) return;

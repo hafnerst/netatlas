@@ -1130,8 +1130,11 @@ export class Engine {
    * instance's record of that origin: its adjacencies of the instance —
    * a relation's adjacency is known only through its own protocol's
    * instance — and its interfaces when it last advertised them, as far as
-   * that has reached this router; the interfaces of the newest record). A
-   * router that runs no routing protocol: the state now.
+   * that has reached this router). A protocol's computation reads an
+   * origin's interfaces from that protocol's record of the interface's VRF
+   * on the origin (OSPF's newer news of an interface never changes what BGP
+   * last advertised); a question without a protocol, from the newest record.
+   * A router that runs no routing protocol: the state now.
    */
   private viewCtx(dev: string, base: RoutingCtx): RoutingCtx {
     const view = this.protocols && this.protocols.viewOf ? this.protocols.viewOf(dev) : null;
@@ -1141,14 +1144,20 @@ export class Engine {
     const hit = this.viewCtxs.get(sig);
     if (hit) return hit;
     const adj = new Set<string>();
-    const ups = new Map<string, { at: number; up: Set<string> }>();
+    // an origin's interfaces: per instance of the origin ("origin|protocol|vrf", the newest copy this router holds), and the newest of all
+    const ups = new Map<string, { at: number; seq: number; up: Set<string> }>();
+    const newest = new Map<string, { at: number; up: Set<string> }>();
     for (const r of recs) {
       for (const a of r.adj) {
         const i = a.lastIndexOf('|');
         adj.add(`${a.slice(0, i)}|${r.origin}|${a.slice(i + 1)}`);
       }
-      const was = ups.get(r.origin);
-      if (r.origin !== dev && (!was || r.at > was.at)) ups.set(r.origin, { at: r.at, up: new Set(r.up) });
+      if (r.origin === dev) continue;
+      const k = r.origin + '|' + r.inst;
+      const was = ups.get(k);
+      if (!was || r.seq > was.seq) ups.set(k, { at: r.at, seq: r.seq, up: new Set(r.up) });
+      const n = newest.get(r.origin);
+      if (!n || r.at > n.at) newest.set(r.origin, { at: r.at, up: new Set(r.up) });
     }
     const self = this;
     const ctx: RoutingCtx = {
@@ -1156,9 +1165,14 @@ export class Engine {
       // (a relation's adjacency counts when both ends' records say so: the two-way check of a route computation)
       relUp: () => true,
       adjUp: (relation: string, from: string, to: string) => adj.has(`${relation}|${from}|${to}`) && adj.has(`${relation}|${to}|${from}`),
-      up(device: string, iface: string): boolean {
-        const u = ups.get(device);
-        if (u && self.net.devices.get(device) && (self.net.devices.get(device) as SimDevice).l3.has(iface)) return u.up.has(iface);
+      up(device: string, iface: string, protocol?: string): boolean {
+        const sd = self.net.devices.get(device);
+        const l = sd ? sd.l3.get(iface) : undefined;
+        if (l) {
+          // (the origin's VRF of that interface: a name on the origin itself, compared with the origin's own instances only)
+          const u = protocol ? ups.get(`${device}|${protocol}|${l.vrf}`) : newest.get(device);
+          if (u) return u.up.has(iface);
+        }
         return (base.up as (d: string, i: string) => boolean)(device, iface);
       },
     };
@@ -1175,11 +1189,11 @@ export class Engine {
    */
   private ownLive(dev: string, inner: RoutingCtx): RoutingCtx {
     const self = this;
-    const innerUp = inner.up as (d: string, i: string) => boolean;
+    const innerUp = inner.up as (d: string, i: string, p?: string) => boolean;
     return {
       ...inner,
-      up(device: string, iface: string): boolean {
-        if (device !== dev) return innerUp(device, iface);
+      up(device: string, iface: string, protocol?: string): boolean {
+        if (device !== dev) return innerUp(device, iface, protocol);
         const sd = self.net.devices.get(dev);
         if (sd && sd.l3.has(iface)) return self.l3State.get(dev + ':' + iface) !== false;
         return self.portUp(dev, iface);

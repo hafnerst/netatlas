@@ -510,10 +510,8 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     const meFull = s.dev === f.drDev || Array.from(P.sessions.values()).some((o) => o.protocol === 'ospf' && o.dev === s.dev && o.peer === f.drDev && o.state === 'Full');
     if (!meFull) return false;
     if (s.peer === f.drDev) return true;
-    const view = P.viewOf(s.dev) || [];
-    const inst = P.instanceOf(s);
-    const dr = view.find((r) => r.origin === f.drDev && r.inst === inst);
-    return !!dr && dr.adj.some((a) => a.slice(a.lastIndexOf('|') + 1) === s.peer);
+    // (the DR's records in this router's own instance: what came over its sessions)
+    return P.recordsIn(s.dev, P.instanceOf(s)).some((r) => r.origin === f.drDev && r.adj.some((a) => a.slice(a.lastIndexOf('|') + 1) === s.peer));
   },
   down: ospfDown,
 };

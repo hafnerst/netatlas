@@ -819,11 +819,11 @@ export class Simulation {
     return r ? { mac: r.mac, iface: r.iface, state: r.state || r.type } : null;
   }
 
-  /** The device's effective route lookup for an address: how it forwards (null: the address is none). */
-  routeLookup(dev: string, ip: string): { kind: 'forward' | 'local' | 'blackhole' | 'none'; text: string } | null {
+  /** The device's effective route lookup for an address, in a VRF (default: the global table): how it forwards (null: the address is none). */
+  routeLookup(dev: string, ip: string, vrf = ''): { kind: 'forward' | 'local' | 'blackhole' | 'none'; text: string } | null {
     const a = parseAddress(ip);
     if (!a) return null;
-    const d = lookup(this.model, dev, '', a, this.engine.ctx(dev));
+    const d = lookup(this.model, dev, vrf, a, this.engine.ctx(dev));
     const e = d.entries[0];
     const via = d.hops.map((h) => `${h.gateway ? 'via ' + formatAddr(h.gateway) + ' ' : ''}out ${h.iface}`).join(', ');
     return { kind: d.kind, text: d.kind === 'none' ? `no route to ${ip}` : d.kind === 'local' ? `${ip} is its own address` : d.kind === 'blackhole' ? `${ip}: the selected route drops it` : `${e ? `${formatAddr(e.net)}/${e.net.prefix} (${e.kind})` : ip}${via ? ' ' + via : ''}` };

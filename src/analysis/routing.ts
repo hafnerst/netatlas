@@ -76,7 +76,13 @@ export function vrfName(vrf: string): string {
  * cached dynamic routes: reuse one object for one state.
  */
 export interface RoutingCtx {
-  up?: (device: string, iface: string) => boolean;
+  /**
+   * is an interface up — for a routing protocol's computation (`protocol`)
+   * as that protocol's advertisements last told this router (the protocol
+   * simulation: another protocol's newer news of the same interface does not
+   * count); without one, as the router knows it otherwise
+   */
+  up?: (device: string, iface: string, protocol?: string) => boolean;
   /** is a relation up (a routing adjacency that is down teaches nothing) */
   relUp?: (id: string) => boolean;
   /** is one direction of a relation's adjacency up (the protocol simulation: OSPF neighbours on a segment form some pairs only) */
@@ -133,6 +139,20 @@ export function connectedIn(model: Model, device: string, ctx?: RoutingCtx): Con
 
 function isUp(ctx: RoutingCtx | undefined, device: string, iface: string): boolean {
   return !ctx || !ctx.up || ctx.up(device, iface);
+}
+
+/** The state as one routing protocol's computation reads it: interfaces as that protocol last advertised them. */
+const PROTO_CTX = new WeakMap<RoutingCtx, Map<string, RoutingCtx>>();
+function protoCtx(ctx: RoutingCtx | undefined, protocol: string): RoutingCtx | undefined {
+  if (!ctx || !ctx.up) return ctx;
+  let m = PROTO_CTX.get(ctx);
+  if (!m) PROTO_CTX.set(ctx, (m = new Map()));
+  let c = m.get(protocol);
+  if (!c) {
+    const up = ctx.up;
+    m.set(protocol, (c = { ...ctx, up: (device: string, iface: string) => up(device, iface, protocol) }));
+  }
+  return c;
 }
 
 /** A network an interface is directly connected to. */
@@ -807,7 +827,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
           missing.push({ relation: r.id, protocol, from, to, detail: `${lookupProtocolLabel(model, protocol)} is not enabled on ${off.join(' and ')}` });
           continue;
         }
-        const a = adjacencyHop(model, r, protocol, from, to, ctx);
+        const a = adjacencyHop(model, r, protocol, from, to, protoCtx(ctx, protocol));
         if (typeof a === 'string') missing.push({ relation: r.id, protocol, from, to, detail: a });
         else adjacencies.push(a);
       }
@@ -848,18 +868,22 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   // the best routes per protocol and node, by prefix
   const best = new Map<string, Map<string, DynRoute>>();
   const tableOf = (p: string, n: string): Map<string, DynRoute> => best.get(p + '|' + n) || new Map();
+  // (a router's networks and statics as each protocol knows them: an origin's interfaces as that protocol last advertised them)
   const connMemo = new Map<string, Connected[]>();
-  const conn = (dev: string, vrf: string): Connected[] => {
-    const k = dev + '\0' + vrf;
+  const conn = (p: string, dev: string, vrf: string): Connected[] => {
+    const k = p + '\0' + dev + '\0' + vrf;
     let v = connMemo.get(k);
-    if (!v) connMemo.set(k, (v = connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(ctx, dev, c.iface))));
+    if (!v) {
+      const pc = protoCtx(ctx, p);
+      connMemo.set(k, (v = connectedOf(model, dev).filter((c) => c.vrf === vrf && isUp(pc, dev, c.iface))));
+    }
     return v;
   };
   const staticsMemo = new Map<string, IpPrefix[]>();
-  const staticsOf = (dev: string, vrf: string): IpPrefix[] => {
-    const k = dev + '\0' + vrf;
+  const staticsOf = (p: string, dev: string, vrf: string): IpPrefix[] => {
+    const k = p + '\0' + dev + '\0' + vrf;
     let v = staticsMemo.get(k);
-    if (!v) staticsMemo.set(k, (v = directStatics(model, dev, vrf, ctx)));
+    if (!v) staticsMemo.set(k, (v = directStatics(model, dev, vrf, protoCtx(ctx, p))));
     return v;
   };
   /** what a router originates into a protocol now (its own routes: metric 0) */
@@ -871,8 +895,8 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
       const k = prefixKey(net);
       if (!out.has(k)) out.set(k, { net, metric: 0, via: [], asPath: [], localPref: DEFAULT_LOCAL_PREF, origin, policy: [] });
     };
-    const own = conn(dev, vrf);
-    const statics = staticsOf(dev, vrf);
+    const own = conn(p, dev, vrf);
+    const statics = staticsOf(p, dev, vrf);
     if (pol && pol.advertise) {
       for (const t of pol.advertise) {
         const pp = parsePrefix(t);
