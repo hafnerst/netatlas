@@ -912,6 +912,11 @@ export class Transport {
       else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
       else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
       else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
+      // the application gave up on a connection still being opened: it closes its socket, and a close in SYN-SENT
+      // deletes the connection (RFC 9293 §3.10.4) — no more SYN retransmissions of an attempt nobody waits for
+      // (its next periodic message or its retry opens a connection of its own)
+      const c = t.conn;
+      if (c && c.state === 'SYN_SENT' && this.alive(c)) this.closeConn(c, `connection attempt abandoned: ${t.from} gave up after its response timeout (${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))})`);
     });
     if (kind === 'icmp') this.ping(t, s.src, s.vrf);
     else if (kind === 'udp') this.udpRequest(t, s.src, s.vrf);
