@@ -905,10 +905,17 @@ const service: TcpBehaviour = {
   },
 };
 
-/** A service's message: over its TCP connection for a TCP profile (HTTPS), else as a datagram of its own. */
+/** A service's message: over its TCP connection for a TCP profile (HTTPS), else as a datagram of its own; an NTP response with the server's stratum as it knows it. */
 function svcSend(P: ProtocolSim, s: Sess, type: string, detail: string): void {
-  if (/^TCP/.test(s.profile.proto) && s.profile.id !== 'radius') tcpSend(P, s, type, detail, /ClientHello/.test(type) ? 517 : /ServerHello/.test(type) ? 1400 : 300);
-  else P.unicast(s, type, detail);
+  if (/^TCP/.test(s.profile.proto) && s.profile.id !== 'radius') {
+    tcpSend(P, s, type, detail, /ClientHello/.test(type) ? 517 : /ServerHello/.test(type) ? 1400 : 300);
+    return;
+  }
+  const ntp = s.profile.id === 'ntp' && type === s.profile.response ? (P.shared.get('ntp') as { responseStratum(dev: string): number } | undefined) : undefined;
+  if (ntp) {
+    const stratum = ntp.responseStratum(s.dev);
+    P.unicast(s, type, `${detail}; stratum ${stratum}${stratum >= 16 ? ' (unsynchronized: no time to take)' : ''}`, { stratum });
+  } else P.unicast(s, type, detail);
 }
 
 const data: Behaviour = {

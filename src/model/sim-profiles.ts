@@ -1004,7 +1004,7 @@ const BY_BEHAVIOUR: { [b: string]: Support } = {
 };
 const BY_PROTOCOL: { [id: string]: Support } = {
   dns: { level: 'modeled', does: 'A relation’s demonstration queries cross the network; name resolution itself (A / AAAA, CNAME, forwarders, the resolver cache) is simulated from the DNS servers’ zones.', not: 'DNSSEC, TCP fallback, recursion beyond the model’s servers.' },
-  ntp: { level: 'modeled', does: 'Client requests and server responses at the poll interval; the clients’ synchronization state (synchronized, unsynchronized) and the servers’ stratum follow from them.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
+  ntp: { level: 'modeled', does: 'Client requests and server responses at the poll interval; each response carries the stratum its server knows (16: unsynchronized), and a client knows its upstreams only by those responses — synchronized to one that answered below 16, its stratum one more; a source answering 16 ends it at once, one silent for 8 polls (the reach register) too.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
   https: { level: 'modeled', does: 'TCP connections of the transport with the TLS 1.3 flights (ClientHello; ServerHello with the server’s Finished; the client’s Finished before its first request — the server takes no request before it), then requests and answers at a demonstration interval.', not: 'TLS itself: certificates, cipher negotiation and encryption are not checked; session resumption.' },
   stp: BY_BEHAVIOUR.stp,
 };
