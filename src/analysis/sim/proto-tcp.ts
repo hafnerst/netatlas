@@ -14,7 +14,7 @@
  * there) is reset. Each message arrives at the behaviour's rx as if sent
  * by unicast; the connection opening and closing arrive at its `tcp`.
  */
-import { formatAddr } from '../ipmath';
+import { compareAddr, formatAddr } from '../ipmath';
 import { profileTransport } from './transport';
 import type { AppMessage, AppSocket } from './transport';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
@@ -106,7 +106,14 @@ export function tcpListen(P: ProtocolSim, s: Sess): void {
     closed(sock, why) {
       closed(P, sock, why);
     },
-  }, { protocol: s.protocol, label: s.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '') });
+  }, (local, remote) => {
+    // the session whose addresses the connection has (its configured peer): its relation's handshake; else the protocol's
+    const o = Array.from(P.sessions.values())
+      .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && compareAddr(x.local.addr, local) === 0 && compareAddr(x.remote.addr, remote) === 0)
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))[0];
+    const by = o || s;
+    return { protocol: by.protocol, label: by.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), relation: o ? o.rel.id : undefined };
+  });
 }
 
 /** The session's side connects to its peer (from the session's own address and VRF); nothing when it already has a connection. */
@@ -166,7 +173,7 @@ export function tcpSend(P: ProtocolSim, s: Sess, type: string, detail: string, b
     m.waited = s.x.waitedNext as string[];
     delete s.x.waitedNext;
   }
-  P.lane(s.rel, s.dev, s.peer, { protocol: s.protocol, type, label: m.label, detail: m.detail, relation: s.rel.id }, P.e.estimate(s.dev, k.remote));
+  // (its dots in the logical view are its segments', drawn by the transport as it sends them)
   return k.send(m);
 }
 

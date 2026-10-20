@@ -13,8 +13,13 @@
  * address's solicited-node group, then RetransTimer, 1 s; an answer, or
  * another node probing the same address, makes it a duplicate and the
  * interface's IPv6 stops, RFC 4862 §5.4.5). Interfaces with static IPv6
- * addresses only have no simulated link-local address and run no DAD
- * (validation reports duplicate static addresses).
+ * addresses only get a link-local address too (RFC 4291 §2.1). Every
+ * written global IPv6 address of an interface (not a loopback's or a
+ * tunnel's) runs the same detection when its interface comes up: tentative
+ * meanwhile — not a source, not answered for, no packet taken for it — and
+ * a duplicate is never used (RFC 4862 §5.4.5). Validation reports
+ * duplicate written addresses in the model; the detection is what the
+ * running network finds once the segments are connected.
  *
  * Router side: once its link-local address is valid, an advertising
  * interface sends Router Advertisements to ff02::1: its first three at
@@ -80,7 +85,7 @@ type AddrState = 'tentative' | 'preferred' | 'deprecated' | 'duplicate';
 
 interface V6Addr {
   sa: SimAddr;
-  kind: 'link-local' | 'slaac' | 'dhcpv6';
+  kind: 'link-local' | 'slaac' | 'dhcpv6' | 'static';
   state: AddrState;
   preferredUntil: number;
   validUntil: number;
@@ -119,6 +124,8 @@ interface HostIf {
   method: Ipv6Method;
   l3: L3Iface;
   ll?: V6Addr;
+  /** its written global addresses and their detection */
+  statics: V6Addr[];
   addrs: V6Addr[];
   routers: Map<string, Router6>;
   onlink: Map<string, { net: IpAddr & { prefix: number }; until: number }>;
@@ -137,6 +144,7 @@ interface RouterIf {
   l3: L3Iface;
   ra: RaConfig;
   ll?: V6Addr;
+  statics: V6Addr[];
   sent: number;
   last: number;
   gen: number;
@@ -149,6 +157,7 @@ interface PlainIf {
   iface: string;
   l3: L3Iface;
   ll?: V6Addr;
+  statics: V6Addr[];
   gen: number;
   disabled?: string;
 }
@@ -198,10 +207,13 @@ export class Ipv6Sim {
         const l3 = sd.l3.get(i.id);
         if (!l3) continue;
         const k = d.id + ':' + i.id;
-        if (autoIpv6(i.ipv6)) this.hosts.set(k, { dev: d.id, iface: i.id, method: i.ipv6 as Ipv6Method, l3, addrs: [], routers: new Map(), onlink: new Map(), dns: new Map(), rs: 0, gen: 0, ra: false });
-        if (i.ra && sd.caps.l3Forward) this.routers.set(k, { dev: d.id, iface: i.id, l3, ra: i.ra, sent: 0, last: -Infinity, gen: 0, answering: false });
+        // its written global IPv6 addresses: each tentative until its duplicate address detection passes (not a loopback's or a tunnel's)
+        const statics = (): V6Addr[] => (l3.kind === 'loopback' || l3.kind === 'tunnel' ? [] : l3.addrs.filter((x) => x.addr.version === 6 && !(x.addr.bytes[0] === 0xfe && (x.addr.bytes[1] & 0xc0) === 0x80)).map((sa): V6Addr => ({ sa, kind: 'static', state: 'tentative', preferredUntil: Infinity, validUntil: Infinity, gen: 0 })));
+        if (autoIpv6(i.ipv6)) this.hosts.set(k, { dev: d.id, iface: i.id, method: i.ipv6 as Ipv6Method, l3, statics: statics(), addrs: [], routers: new Map(), onlink: new Map(), dns: new Map(), rs: 0, gen: 0, ra: false });
+        if (i.ra && sd.caps.l3Forward) this.routers.set(k, { dev: d.id, iface: i.id, l3, ra: i.ra, statics: this.hosts.has(k) ? [] : statics(), sent: 0, last: -Infinity, gen: 0, answering: false });
         // static IPv6 alone enables IPv6 on the interface: its link-local address (RFC 4291 §2.1), no advertisements or autoconfiguration needed
-        if (!this.hosts.has(k) && !this.routers.has(k) && l3.kind !== 'loopback' && l3.kind !== 'tunnel' && i.addresses.some((t) => t.indexOf(':') >= 0)) this.plain.set(k, { dev: d.id, iface: i.id, l3, gen: 0 });
+        if (!this.hosts.has(k) && !this.routers.has(k) && l3.kind !== 'loopback' && l3.kind !== 'tunnel' && i.addresses.some((t) => t.indexOf(':') >= 0)) this.plain.set(k, { dev: d.id, iface: i.id, l3, statics: statics(), gen: 0 });
+        for (const o of [this.hosts.get(k), this.routers.get(k), this.plain.get(k)]) if (o) for (const a of o.statics) P.e.setUsable(d.id, i.id, a.sa.addr, false);
       }
       d.netServices && d.netServices.dhcp && d.netServices.dhcp.scopes.forEach((s, index) => {
         const n = s.network ? P.m.networks.find((x) => x.id === s.network) : undefined;
@@ -301,12 +313,33 @@ export class Ipv6Sim {
   private holderOf(dev: string, l3: L3Iface, target: IpAddr): { owner: HostIf | RouterIf | PlainIf; a: V6Addr } | null {
     const k = dev + ':' + l3.id;
     const h = this.hosts.get(k);
-    if (h) for (const a of (h.ll ? [h.ll] : []).concat(h.addrs, h.dhcp && h.dhcp.addr ? [h.dhcp.addr] : [])) if (compareAddr(a.sa.addr, target) === 0) return { owner: h, a };
+    if (h) for (const a of (h.ll ? [h.ll] : []).concat(h.statics, h.addrs, h.dhcp && h.dhcp.addr ? [h.dhcp.addr] : [])) if (compareAddr(a.sa.addr, target) === 0) return { owner: h, a };
     const r = this.routers.get(k);
-    if (r && r.ll && compareAddr(r.ll.sa.addr, target) === 0) return { owner: r, a: r.ll };
+    if (r) for (const a of (r.ll ? [r.ll] : []).concat(r.statics)) if (compareAddr(a.sa.addr, target) === 0) return { owner: r, a };
     const q = this.plain.get(k);
-    if (q && q.ll && compareAddr(q.ll.sa.addr, target) === 0) return { owner: q, a: q.ll };
+    if (q) for (const a of (q.ll ? [q.ll] : []).concat(q.statics)) if (compareAddr(a.sa.addr, target) === 0) return { owner: q, a };
     return null;
+  }
+
+  /** The interface's written global addresses: each probed (as its link-local one), usable once its detection passes. */
+  private dadStatics(owner: HostIf | RouterIf | PlainIf): void {
+    for (const a of owner.statics) {
+      a.state = 'tentative';
+      this.e.setUsable(owner.dev, owner.iface, a.sa.addr, false);
+      this.note('table', 'ndp', owner.dev, '', 'static address', 'tentative', `${owner.dev}:${owner.iface}: ${a.sa.text} (written) is tentative until duplicate address detection passes: not used, not answered for meanwhile`);
+      this.dad(owner, a, true, (ok) => {
+        if (ok) this.e.setUsable(owner.dev, owner.iface, a.sa.addr, true);
+      });
+    }
+  }
+
+  /** Its interface went down (or the device off): the written addresses are tentative again (detected anew when it is up). */
+  private resetStatics(owner: HostIf | RouterIf | PlainIf): void {
+    for (const a of owner.statics) {
+      if (a.state === 'duplicate' && !this.e.deviceOn(owner.dev)) a.state = 'tentative';
+      if (a.state !== 'duplicate') a.state = 'tentative';
+      this.e.setUsable(owner.dev, owner.iface, a.sa.addr, false);
+    }
   }
 
   private heardProbe(dev: string, l3: L3Iface, target: IpAddr): void {
@@ -322,6 +355,7 @@ export class Ipv6Sim {
   private duplicate(owner: HostIf | RouterIf | PlainIf, a: V6Addr, why: string): void {
     a.state = 'duplicate';
     this.note('state', 'ndp', owner.dev, '', 'duplicate address', 'duplicate', `${owner.dev}:${owner.l3.id}: ${a.sa.text} is a duplicate (${why}): it is not used${a.kind === 'link-local' ? '; the interface’s IPv6 stops (RFC 4862 §5.4.5: a duplicate link-local address needs a manual fix)' : ''}`);
+    if (a.kind === 'static') this.e.setUsable(owner.dev, owner.iface, a.sa.addr, false);
     if (a.kind === 'link-local') {
       if ('method' in owner || !('ra' in owner)) (owner as HostIf | PlainIf).disabled = `duplicate link-local address ${formatAddr(a.sa.addr)}`;
       owner.gen++;
@@ -353,12 +387,14 @@ export class Ipv6Sim {
     this.dad(q, a, true, (ok) => {
       if (ok) this.e.setLinkLocal(q.dev, q.iface, a.sa);
     });
+    this.dadStatics(q);
   }
 
   private resetPlain(q: PlainIf): void {
     q.gen++;
     q.ll = undefined;
     this.e.setLinkLocal(q.dev, q.iface, null);
+    this.resetStatics(q);
   }
 
   // ------------------------------------------------------------ the router side
@@ -376,6 +412,7 @@ export class Ipv6Sim {
       this.e.setLinkLocal(r.dev, r.iface, a.sa);
       this.advertise(r, 'its first advertisements');
     });
+    this.dadStatics(r);
   }
 
   private resetRouter(r: RouterIf): void {
@@ -383,6 +420,7 @@ export class Ipv6Sim {
     r.ll = undefined;
     r.answering = false;
     this.e.setLinkLocal(r.dev, r.iface, null);
+    this.resetStatics(r);
   }
 
   /** The interval before the next unsolicited advertisement (the first three at most 16 s apart). */
@@ -457,11 +495,13 @@ export class Ipv6Sim {
       this.solicit(h);
       if (h.method === 'dhcpv6' || h.method === 'slaac_dhcpv6') this.dhcpStart(h, 'its method is ' + h.method);
     });
+    this.dadStatics(h);
   }
 
   private resetHost(h: HostIf, why: string): void {
     const had = h.addrs.length || h.routers.size || h.dns.size || (h.dhcp && h.dhcp.addr);
     h.gen++;
+    this.resetStatics(h);
     h.ll = undefined;
     h.addrs = [];
     h.routers.clear();

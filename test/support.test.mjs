@@ -64,6 +64,6 @@ test('the three levels have short labels; a support reads as two lines', () => {
   assert.deepEqual(support.SUPPORT_LEVELS.map((x) => x.label), ['Diagram only', 'Configuration and validation', 'Modeled behavior']);
   const lines = support.supportLines(profiles.simProfile('wireguard').support);
   assert.equal(lines.length, 2);
-  assert.match(lines[0], /^Modeled behavior: Session establishment/);
+  assert.match(lines[0], /^Modeled behavior: A generic session: its profile’s handshake steps/);
   assert.match(lines[1], /^Not modeled: payload contents and cryptographic operations/);
 });

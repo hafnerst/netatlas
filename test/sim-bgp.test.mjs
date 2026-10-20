@@ -39,7 +39,7 @@ test('BGP: the session’s TCP connection is the transport’s — in the connec
   assert.ok(cb && cb.state === 'ESTABLISHED');
   // its OPEN, KEEPALIVE and UPDATE are TCP data with real sequence numbers; the handshake is drawn as BGP's
   const open = msgs(s, 'a', 'OPEN')[0];
-  assert.match(open.detail, /version 4, AS 65001, hold time 180 s, BGP identifier 10\.0\.0\.1, IPv4 unicast — TCP 10\.0\.0\.1:\d+ → 10\.0\.0\.2:179 \[PSH,ACK\] seq \d+, ack \d+, 45 bytes/);
+  assert.match(open.detail, /version 4, AS 65001, hold time 180 s, BGP identifier 10\.0\.0\.1, IPv4 unicast — TCP 10\.0\.0\.1:\d+ → 10\.0\.0\.2:179 \[P,A\] seq \d+, ack \d+, 45 bytes$/);
   assert.equal(msgs(s, 'a', 'TCP SYN').length, 1);
   assert.equal(msgs(s, 'b', 'TCP SYN-ACK').length, 1);
   // the negotiated hold time and keepalive are the session's

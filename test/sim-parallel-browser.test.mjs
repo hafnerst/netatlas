@@ -99,7 +99,7 @@ test('the log groups the events of one moment and says what waits for what; the 
     const T = await page.eval(`document.querySelector('.sim-table-panel[data-table="packet"]').textContent`);
     assert.match(T, /Timing/);
     assert.match(T, /Waited forTCP connection to 10\.\d+\.\d+\.\d+:179: /);
-    assert.match(T, /Caused byBGP TCP SYN-ACK \(sent by \w+\), received at t = \d+\.\d{6} s/);
+    assert.match(T, /Caused byBGP TCP \[S,A\] \(sent by \w+\), received at t = \d+\.\d{6} s/);
   } finally {
     await page.close();
   }

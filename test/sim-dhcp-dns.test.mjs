@@ -233,3 +233,96 @@ test('a deterministic timeline with DHCP and DNS', () => {
   };
   assert.deepEqual(run(), run());
 });
+
+// ------------------------------------------------------------------ the legs of a relayed exchange
+
+/** pc (DHCP) — r1 (relay on g0) — fw (UDP 67 only) — srv (the DHCP server); `vrf`: r1's interfaces in that VRF. */
+const RELAYED = (x = {}) => `netatlas: 1
+title: relayed
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp}]}
+  - id: r1
+    type: router
+    interfaces: [{id: g0, ip: 10.10.0.1/24, dhcp_relay: [10.20.0.10]${x.vrf ? ', vrf: ' + x.vrf : ''}}, {id: g1, ip: 10.0.1.1/30${x.vrf ? ', vrf: ' + x.vrf : ''}}]
+    routes: [{prefix: 10.20.0.0/24, via: 10.0.1.2${x.vrf ? ', vrf: ' + x.vrf : ''}}]
+  - id: fw
+    type: firewall
+    interfaces: [{id: in, ip: 10.0.1.2/30}, {id: out, ip: 10.20.0.1/24}]
+    routes: [{prefix: 10.10.0.0/24, via: 10.0.1.1}]
+    simulation: {allow: "udp/67", default_action: drop}
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.20.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.20.0.1}], services: {dhcp: {scopes: [{network: lan, range: 10.10.0.100-10.10.0.110, gateway: 10.10.0.1, dns: [10.20.0.10], lease: ${x.lease || '1h'}}]}}}
+links:
+  - {id: a, a: "pc:eth0", b: "r1:g0"}
+  - {id: b, a: "r1:g1", b: "fw:in"}
+  - {id: c, a: "fw:out", b: "srv:eth0"}
+networks:
+  - {id: lan, cidr: 10.10.0.0/24}
+`;
+/** each DHCP message as sent: [device, type, source port, destination port, VRF] from its headers */
+const legs = (s) =>
+  ev(s, (e) => e.kind === 'message' && e.protocol === 'dhcp' && e.hdr && e.hdr.l4)
+    .map((e) => [e.device, e.what, e.hdr.l4.sport, e.hdr.l4.dport]);
+
+test('DHCP relayed through a firewall that permits only UDP 67: client 68 → 67, relay → server 67 → 67, server → relay 67 → 67, relay → client 67 → 68', () => {
+  const s = sim(RELAYED());
+  s.runTo(30000);
+  assert.ok(s.acquiredAddress('pc', 'eth0'), 'the client is bound through the relay and the firewall');
+  const l = legs(s);
+  const first = (dev, type) => l.find((x) => x[0] === dev && x[1] === type);
+  assert.deepEqual(first('pc', 'DHCPDISCOVER').slice(2), [68, 67]);
+  assert.deepEqual(first('r1', 'DHCPDISCOVER').slice(2), [67, 67], 'the relay to the server');
+  assert.deepEqual(first('srv', 'DHCPOFFER').slice(2), [67, 67], 'the server back to the relay (its giaddr)');
+  assert.deepEqual(first('r1', 'DHCPOFFER').slice(2), [67, 68], 'the relay to the client');
+  assert.deepEqual(first('srv', 'DHCPACK').slice(2), [67, 67]);
+  // nothing of the exchange was dropped by the firewall's policy
+  assert.equal(ev(s, (e) => e.kind === 'drop' && e.device === 'fw' && e.protocol === 'dhcp').length, 0);
+});
+
+test('DHCP: the relay’s legs are in the VRF of its interfaces (the relay’s server reachable only there)', () => {
+  const s = sim(RELAYED({ vrf: 'blue' }));
+  s.runTo(30000);
+  assert.ok(s.acquiredAddress('pc', 'eth0'), 'bound through a relay in VRF blue');
+  const relayed = ev(s, (e) => e.kind === 'message' && e.device === 'r1' && e.what === 'DHCPDISCOVER');
+  assert.ok(relayed.length >= 1);
+  assert.equal(ev(s, (e) => e.kind === 'drop' && e.device === 'r1' && /no route/.test(e.detail)).length, 0);
+});
+
+test('DHCP renewal: a lost unicast renewal is sent again after half the time to T2 (at least 60 s); it renews before T2, no rebinding', () => {
+  // lease 20 min: T1 at 10 min, T2 at 17.5 min
+  const s = sim(RELAYED({ lease: '20m' }));
+  let lost = 0;
+  s.engine.impair = (link, f) => {
+    if (link === 'a' && f.msg.protocol === 'dhcp' && f.msg.type === 'DHCPREQUEST' && f.ip && f.ip.src.bytes[0] === 10 && lost === 0 && /renew/.test(f.msg.label)) {
+      lost++;
+      return { lose: true };
+    }
+    return null;
+  };
+  s.runTo(30000);
+  const bound = s.now;
+  s.runTo(bound + 20 * 60000);
+  const renews = ev(s, (e) => e.kind === 'message' && e.device === 'pc' && e.what === 'DHCPREQUEST' && /renewing at T1/.test(e.detail));
+  assert.equal(lost, 1);
+  assert.ok(renews.length >= 2, renews.map((e) => e.detail).join('\n'));
+  // sent again after half the time left to T2: (17.5 − 10) / 2 = 3.75 min
+  const gap = renews[1].t - renews[0].t;
+  assert.ok(Math.abs(gap - 225000) < 1000, String(gap));
+  assert.ok(/sent again, 1/.test(renews[1].detail));
+  assert.ok(ev(s, (e) => e.kind === 'state' && e.device === 'pc' && e.what === 'Renewed').length >= 1);
+  assert.equal(ev(s, (e) => e.kind === 'message' && e.device === 'pc' && /rebinding at T2/.test(e.detail) && e.t < renews[1].t + 60000).length, 0);
+});
+
+test('DHCP: a message to the wrong port is not taken (the handler does not make a misaddressed packet succeed)', () => {
+  const s = sim(RELAYED());
+  s.runTo(30000);
+  const P = s.protocols;
+  const n = s.events().length;
+  // a DHCPDISCOVER to UDP 68 at the server: no server takes it
+  const pkt = s.engine.newPacket(load('model/ip.js').parseAddress('10.0.1.1'), load('model/ip.js').parseAddress('10.20.0.10'), '', { protocol: 'dhcp', type: 'DHCPDISCOVER', label: 'DHCPDISCOVER', detail: '', data: { xid: 1, chaddr: '02:00:00:00:00:99', from: 'r1', giaddr: '10.10.0.1' } });
+  pkt.l4 = { proto: 'udp', num: 17, sport: 67, dport: 68 };
+  P.handlers.get('dhcp')('srv', s.engine.net.devices.get('srv').l3.get('eth0'), pkt.msg, pkt);
+  const after = s.events().slice(n);
+  assert.ok(after.some((e) => e.kind === 'drop' && /sent to UDP port 68, a DHCP server or relay takes it on 67/.test(e.detail)), after.map((e) => e.detail).join('\n'));
+  s.runTo(s.now + 2000);
+  assert.ok(!s.events().slice(n).some((e) => e.what === 'DHCPOFFER' && e.device === 'srv'));
+});

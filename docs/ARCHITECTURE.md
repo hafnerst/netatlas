@@ -158,19 +158,32 @@ anything else.
   shows rests on what the layers below did, at the moment it happened:
   - *Layers 1–2 per hop.* A frame's arrival at a device is an event of its
     own: the device decides then, with its state then (`engine.ts`).
-  - *Routing is learned.* Each router keeps a database of records, one per
-    origin (its routing adjacencies and interfaces, with a sequence number;
-    `protocols.ts`); a record travels only in the protocols' advertisements,
-    and a router computes its routes from the records it has, after its
-    route recomputation delay. `RoutingCtx.at` gives every router its own
-    state, so a lookup at a router uses its installed routes — in the
-    simulation and in an analysis snapshot. A router's own interfaces are
-    read live in its own lookups.
+  - *Routing is learned, per instance.* Each router keeps one database per
+    routing instance — a protocol in a VRF — with one record per origin
+    (that origin's adjacencies of the instance and its interfaces, with a
+    sequence number; `protocols.ts`); a record travels only in that
+    protocol's advertisements, over that instance's sessions, and is taken
+    only when the protocol's state machine allows it (`Behaviour.learns`).
+    RIP keeps its own distance-vector tables instead (`rip.ts`), which the
+    route computation takes as they are (`RoutingCtx.dv`). A router
+    computes its routes from what it has, after its route recomputation
+    delay. `RoutingCtx.at` gives every router its own state, so a lookup at
+    a router uses its installed routes — in the simulation and in an
+    analysis snapshot. A router's own interfaces are read live in its own
+    lookups.
+  - *Knowledge comes by messages.* A device knows another's state only by
+    what it received: a BFD peer's intervals, a PIM neighbour's DR
+    priority, an RP candidate's Bootstrap (until its holdtime), an NTP
+    server's stratum, an OSPF DR's record of its neighbours; an IKEv2 end
+    deletes its own SAs by its own DPD, never the peer's.
   - *One TCP.* `sim/tcp.ts` is a connection end's byte stream (sequence
     and acknowledgment numbers, retransmission ranges, out-of-order
-    segments, each message delivered once); `transport.ts` sends its
-    segments; BGP, LDP, HTTPS and SSL VPN run over it (`proto-tcp.ts`)
-    instead of imitating TCP.
+    segments, each message delivered once) and the one notation of its
+    flags (`tcpFlagsText`: [S,A]); `transport.ts` sends its segments, every
+    label and log line from the segment's own header, and draws a
+    relation's segments along the relation in the logical view; BGP, LDP,
+    HTTPS, SSL VPN and MQTT run over it (`proto-tcp.ts`, `mqtt.ts`) instead
+    of imitating TCP, and no other module makes a TCP header.
   - *Each router's own context.* The PIM RP (`analysis/pim-rp.ts`, shared
     with the checks), the path MTU (per device, VRF and destination), the
     firewall sessions and NAT translations (per VRF), the source address
@@ -178,9 +191,14 @@ anything else.
   - *One clock.* Everything repeats on the simulated clock (streams and
     applications of Network events too): the pacing changes how fast it is
     shown, never what exists.
+  - *Each object its own random stream.* Jitter, loss and the other draws
+    come from a stream per device or cable, seeded by the model's title and
+    its id; generated MACs from the title and the interface: adding an
+    unrelated object changes no one else's timeline.
   *Trade-off:* a router's records are a per-router abstraction of the
-  protocols' databases (not LSAs or BGP paths field by field), and they are
-  flooded over any routing session of the router.
+  protocols' databases (not LSAs or BGP paths field by field): the
+  prefixes an origin advertises are computed from its configuration given
+  the adjacencies the records say are up.
 * **A result says what it is, and stays as computed.** Every Analyze tool returns its verdict in one vocabulary (`analysis/result.ts`) with the context it was computed on and its coverage. A result is computed when the user asks (Trace, Evaluate, Analyze, opening a window), never behind their back: an edit marks it outdated (by the model's fingerprint, so moving a node does not), Refresh computes it again. A snapshot of a running simulation is frozen when it is taken; a tool that can't evaluate one correctly says so instead of blending the simulation's state with a what-if.
   *Trade-off:* the user presses Refresh after editing; in return a result being read never changes under the reader.
 * **What runs, what is drawn and what is evaluated are three things.**

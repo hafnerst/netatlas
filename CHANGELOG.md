@@ -12,6 +12,10 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Protocol correctness: TCP flags on every segment's label from its header,
+the handshake visible in both views, routing information kept in its own
+protocol and VRF, and each device knowing the others only by the messages
+it received.
 Correctness of the Layer 1–4 simulation: one causally connected stack —
 routes learned from the advertisements each router received, a real TCP
 byte stream that BGP and LDP use, the OSPF election of RFC 2328, each
@@ -31,6 +35,73 @@ context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Changed (TCP flags on packet labels)
+
+- **Every TCP segment's label names its flags**, from its own header, in
+  one notation: the letters S, F, R, P, A, U, E, C in that order, in
+  brackets — *TCP [S] → 10.0.2.10:80*, *TCP [S,A]*, *TCP [A]*,
+  *TCP [P,A] · 120 B*, *TCP [F,A]*, *TCP [R]*; *[]* for none. A protocol
+  over TCP keeps its name: *BGP OPEN [P,A]*, *MQTT PUBLISH [P,A]*,
+  *BGP TCP [S,A]* for its connection's own segments. The log, the packet
+  inspector (the flags with their names) and the grey background labels
+  use the same notation; the help explains it.
+- **The handshake shows in both views.** A relation's TCP segments (its
+  handshake, its acknowledgments, its messages) are drawn along the
+  relation in the logical view, one dot per segment sent; a logical dot
+  opens its inspector too. A drawn handshake is drawn whole in a busy
+  model (its SYN-ACK and ACK are never turned into cable activity behind
+  its SYN); Follow message tells two connections between the same hosts
+  apart by their ports.
+
+### Fixed (protocol correctness)
+
+- **TCP.** A health check reset its connection before the third ACK and
+  called the handshake completed; it is a connect check now (ACK, then
+  RST). A power-off left its connections' timers alive: after a quick
+  reboot the old connection sent again. Unacceptable segments are refused
+  as RFC 9293 says (an ACK of something never sent drops the segment; a
+  RST answers with [R] when the segment had an ACK, [R,A] otherwise; the
+  handshake's ACK is checked). A FIN closes one direction (CLOSE_WAIT), a
+  FIN sent again restarts TIME_WAIT, and each SYN carries its MSS.
+- **Routing information stays in its protocol.** One database per router
+  was filled by every protocol: with BGP UPDATEs lost, OSPF's floods made
+  the BGP routes appear. Each routing instance (a protocol in a VRF) has
+  its own database now, filled only by its own advertisements and only
+  when its state machine allows; RIP is a distance vector (metrics, split
+  horizon with poisoned reverse, timeouts, withdrawal, triggered updates);
+  IS-IS forms its adjacency on the link whatever the addressing, by its
+  NET and level; OSPF's database exchange negotiates master and slave and
+  rejects a larger MTU; EIGRP sends the Queries its support text claimed.
+- **DHCP.** The relay and the server talked to each other from port 67 to
+  68 (a firewall permitting UDP 67 dropped them), every DHCP packet was in
+  the default table, renewals were never sent again, a unicast renewal
+  from another network found no scope, and a relayed rebind was answered
+  past the relay.
+- **Multicast and IPv6.** MLD went out from a global address; it uses the
+  link-local one (:: before it is valid), with the Router Alert option and
+  the lengths of its version, and the MLD querier is elected by it. The
+  dynamic RP was read from the other routers' configuration and power
+  state; it is the candidate whose Bootstraps reached the router, until
+  their holdtime. Written global IPv6 addresses run duplicate address
+  detection.
+- **Redundancy and tunnels.** One Master/Backup algorithm stood for VRRP,
+  HSRP, GLBP and CARP; each has its own election and transport now (VRRP
+  owner at 255, HSRP's Active and Standby with Listen routers). IKEv2's DPD
+  set the peer's session Idle and its recovery timer was voided; each end
+  has its own exchanges, retransmissions and SA lifetimes. HTTPS sent data
+  before the client's Finished; WireGuard never rekeyed and took
+  keepalives for liveness.
+- **Identities and NAT.** A MAC written twice was replaced on the second
+  interface; written MACs are kept, and generated ones and the random
+  streams no longer change when an unrelated device is added. Two hosts
+  pinging one destination through PAT shared one translation; echoes are
+  translated by identifier, and ICMP errors (PMTUD) are translated back.
+- **NTP** clients read their server's state; they know it only by its
+  responses now. **BFD** detected by its own timers instead of the peer's,
+  **PIM** elected its DR by the neighbours' configuration, **LACP**
+  bundled members of different partners, and a **DNS** forwarding server
+  decided by the forwarders' configuration — each now by what it received.
 
 ### Fixed (Layer 1–4 simulation)
 

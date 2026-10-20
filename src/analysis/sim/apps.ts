@@ -277,7 +277,7 @@ export class AppSim {
         if (a.start !== 'simulation_start') continue;
         const p = appProfile(a.profile);
         if (!p || !p.client) continue;
-        this.e.at(3000 + this.e.jitter(), () => {
+        this.e.at(3000 + this.e.jitter(d.id), () => {
           const r = this.start(d.id, a.id, 'start');
           if (typeof r === 'string') this.e.note('note', p.transport, d.id, '', 'application not started', '', `${d.id}/${a.id} (${a.name}) does not start with the simulation: ${r}`);
         });

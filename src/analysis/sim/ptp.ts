@@ -506,8 +506,8 @@ export class PtpSim {
       }
       this.later(p, c.syncIv, sync);
     };
-    this.later(p, this.e.jitter(), announce);
-    this.later(p, this.e.jitter() + 1, sync);
+    this.later(p, this.e.jitter(c.dev), announce);
+    this.later(p, this.e.jitter(c.dev) + 1, sync);
   }
 
   private delayTimer(p: PtpPort): void {
@@ -522,7 +522,7 @@ export class PtpSim {
       }
       this.later(p, c.delayIv, tick);
     };
-    this.later(p, c.delayIv / 2 + this.e.jitter(), tick);
+    this.later(p, c.delayIv / 2 + this.e.jitter(c.dev), tick);
   }
 
   // ------------------------------------------------------------ receiving

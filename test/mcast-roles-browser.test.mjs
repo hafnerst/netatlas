@@ -122,7 +122,8 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
         bg = await page.eval(`(() => { const ls = Array.from(document.querySelectorAll('#canvas .sim-bg-label')); return { n: ls.length, texts: ls.map((l) => l.textContent), pe: ls.map((l) => getComputedStyle(l).pointerEvents), fill: ls.length ? getComputedStyle(ls[0].querySelector('text')).fill : '', hit: ls.some((l) => { const r = l.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!e && !!e.closest('.sim-bg-label'); }) }; })()`);
       }
       assert.ok(bg.n > 0, 'short labels on the background');
-      assert.ok(bg.texts.every((t) => /^[A-Za-z0-9]+( [A-Za-z]+)?$/.test(t) && t.length <= 16), bg.texts.join(', '));
+      // a TCP segment's carries its flags in the label notation (TCP [S], BGP [P,A])
+      assert.ok(bg.texts.every((t) => /^[A-Za-z0-9]+( [A-Za-z]+)?( \[(?:[SFRPAUEC](?:,[SFRPAUEC])*)?\])?$/.test(t) && t.length <= 24), bg.texts.join(', '));
       assert.ok(bg.pe.every((p) => p === 'none'));
       assert.equal(bg.hit, false, 'the pointer goes through them');
       // the same muted colour as the background dots' text: not the protocols' colours

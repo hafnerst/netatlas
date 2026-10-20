@@ -205,7 +205,8 @@ test('IGMPv3 and MLD: reports with records (and sources), to 224.0.0.22 / ff02::
   assert.match(v3.detail, /IGMPv3 Report from h1 \(10\.5\.0\.11\) to 224\.0\.0\.22: ALLOW \/ IS_IN \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/);
   assert.deepEqual([v3.hdr.l4.igmp.version, v3.hdr.l4.igmp.sources], ['IGMPv3', ['10.9.0.1']]);
   const mld = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /ff05::9/.test(e.detail))[0];
-  assert.match(mld.detail, /MLDv2 Report from h1 \(2001:db8:5::11\) to ff02::16: IS_EX \(ff05::9, \{\}\)/);
+  // (its first Report, at once when its link is up, goes from :: — its link-local address is still tentative: RFC 3590)
+  assert.match(mld.detail, /MLDv2 Report from h1 \((::|fe80::[0-9a-f:]+)\) to ff02::16: IS_EX \(ff05::9, \{\}\)/);
   assert.equal(mld.hdr.l4.icmpType, 143);
   const t = s.igmpTable('q1');
   assert.ok(t.rows.some((r) => r[1] === '232.9.9.9' && r[4] === '10.9.0.1'));
@@ -501,14 +502,14 @@ relations:
 
 test('RP: independent PIM domains never take each other’s candidate RP; device IDs decide nothing; an IPv4 RP serves no IPv6 group', () => {
   const s = sim(ISLANDS());
-  s.runTo(5000);
-  // a2 learns its own domain's candidate (a1), although b1 sorts first and the bootstrap of b would win a global election
+  s.runTo(40000);
+  // a2 learns its own domain's candidate (a1) from its Bootstraps, although b1 sorts first and the bootstrap of b would win a global election
   assert.equal(s.multicast.rp('a2', '239.1.1.1').dev, 'a1');
   assert.equal(s.multicast.rp('b1', '239.1.1.1').dev, 'b1');
   assert.equal(s.multicast.rp('b2', '239.1.1.1').how, 'the static RP of b2');
   // renamed (b's routers now sort first): the same choices
   const r = sim(ISLANDS('z', 'c'));
-  r.runTo(5000);
+  r.runTo(40000);
   assert.equal(r.multicast.rp('z2', '239.1.1.1').dev, 'z1');
   assert.equal(r.multicast.rp('c2', '239.1.1.1').dev, 'c1');
   // IPv6: b2's static RP is IPv4 (no RP for ff0e::1 from it), and b1 has no IPv6 address to be one
@@ -516,4 +517,55 @@ test('RP: independent PIM domains never take each other’s candidate RP; device
   assert.ok(s.events().some((e) => /b2's static RP 10\.255\.0\.1 is IPv4: no RP for its IPv6 groups from it/.test(e.detail)));
   // a1 has an IPv6 address: it is its domain's IPv6 candidate RP too
   assert.equal(s.multicast.rp('a2', 'ff0e::1').dev, 'a1');
+});
+
+test('RP discovery follows the Bootstraps: none before the first arrives; a silent candidate is kept until its holdtime, then dropped (no reading of its power state)', () => {
+  const s = sim(ISLANDS());
+  s.runTo(1500);
+  assert.equal(s.multicast.rp('a2', '239.1.1.1'), null, 'no Bootstrap yet: no RP known');
+  s.runTo(40000);
+  assert.equal(s.multicast.rp('a2', '239.1.1.1').dev, 'a1');
+  assert.ok(s.events().some((e) => e.kind === 'table' && e.device === 'a2' && e.what === 'RP set' && /learns candidate RP a1 \(router ID 10\.255\.0\.9\) from a Bootstrap, for 150 s/.test(e.detail)));
+  const last = s.events().filter((e) => e.kind === 'message' && e.what === 'Bootstrap' && e.device === 'a1').slice(-1)[0];
+  s.powerOff('a1');
+  const off = s.now;
+  s.runTo(off + 30000);
+  assert.equal(s.multicast.rp('a2', '239.1.1.1').dev, 'a1', 'stale: still the candidate it last heard of');
+  s.runTo(last.t + 150000 + 1000);
+  assert.equal(s.multicast.rp('a2', '239.1.1.1'), null, 'its holdtime ran out');
+  assert.ok(s.events().some((e) => e.kind === 'table' && e.device === 'a2' && e.what === 'RP expired'));
+});
+
+test('MLD: from the link-local address once it is valid (:: before), with the Router Alert option and hop limit 1; a router ignores MLD from a global source', () => {
+  const s = sim(LAN({ h1j: ', multicast: {join: ["ff05::9"]}', q1: ', simulation: {igmp_query_interval: 10}' }));
+  s.runTo(40000);
+  const mld = ev(s, (e) => e.kind === 'message' && e.protocol === 'igmp' && e.hdr && e.hdr.l3.length && e.hdr.l3[0].version === 6);
+  assert.ok(mld.length >= 3);
+  for (const e of mld) {
+    const ip = e.hdr.l3[0];
+    assert.ok(/^fe80::/.test(ip.src) || ip.src === '::', `${e.what} from ${ip.src}`);
+    assert.equal(ip.ttl, 1);
+    assert.equal(ip.options, 'Hop-by-Hop: Router Alert (MLD)');
+  }
+  // the router's queries are from its link-local address, and later reports from the host's
+  assert.ok(mld.some((e) => e.what === 'Query' && /^fe80::/.test(e.hdr.l3[0].src)));
+  assert.ok(mld.some((e) => e.what === 'Report' && e.device === 'h1' && /^fe80::/.test(e.hdr.l3[0].src)));
+  // the lengths follow the version: an MLDv2 Report with one record and no sources 28 bytes (+ 8 of Hop-by-Hop after the 40)
+  const rep = mld.find((e) => e.what === 'Report' && e.device === 'h1');
+  assert.equal(rep.hdr.l3[0].len, 40 + 8 + 28);
+  const q = mld.find((e) => e.what === 'Query');
+  assert.equal(q.hdr.l3[0].len, 40 + 8 + 28, 'an MLDv2 General Query: 28 bytes');
+  // IGMPv3: a Report 8 + 8 per record + 4 per source; the Router Alert option is 4 bytes of the IPv4 header
+  const v4 = ev(s, (e) => e.kind === 'message' && e.protocol === 'igmp' && e.hdr && e.hdr.l3.length && e.hdr.l3[0].version === 4);
+  for (const e of v4) assert.equal(e.hdr.l3[0].options, 'Router Alert (option 20)');
+  // a report from a global source is ignored by the router (RFC 3810 §5)
+  const P = s.protocols;
+  const ip = load('model/ip.js');
+  const n = s.events().length;
+  const pkt = s.engine.newPacket(ip.parseAddress('2001:db8:5::11'), ip.parseAddress('ff02::16'), '', { protocol: 'igmp', type: 'Report', label: 'MLD Report ff05::7', detail: '', data: { from: 'h1', group: 'ff05::7' } }, [], 1);
+  pkt.routerAlert = true;
+  pkt.l4 = { proto: 'icmp', num: 58, icmpType: 143, icmpCode: 0, icmpName: 'MLD Report', igmp: { type: 'Membership Report', version: 'MLDv2', group: 'ff05::7' } };
+  P.handlers.get('igmp')('q1', s.engine.net.devices.get('q1').l3.get('g0'), pkt.msg, pkt);
+  assert.ok(s.events().slice(n).some((e) => e.kind === 'drop' && /source 2001:db8:5::11 is not link-local/.test(e.detail)));
+  assert.ok(!s.igmpTable('q1').rows.some((r) => r[1] === 'ff05::7'));
 });

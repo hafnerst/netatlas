@@ -138,7 +138,8 @@ export class MqttSim {
       const port = typeof svc.values.port === 'number' ? (svc.values.port as number) : MQTT_PORT;
       const b: Broker = { dev: d.id, port, retry: typeof svc.values.retry_interval === 'number' ? (svc.values.retry_interval as number) : APP_DEFAULTS.mqttRetry, sessions: new Map(), received: 0, delivered: 0, unmatched: 0, takeovers: 0 };
       this.brokers.set(d.id, b);
-      T.appListen(d.id, port, `MQTT broker ${d.id}`, { message: (s, m) => this.brokerIn(b, s, m), closed: (s, why) => this.brokerClosed(b, s, why) });
+      // (its connections' own segments — the handshake, the acknowledgments — are drawn and filtered as MQTT's)
+      T.appListen(d.id, port, `MQTT broker ${d.id}`, { message: (s, m) => this.brokerIn(b, s, m), closed: (s, why) => this.brokerClosed(b, s, why) }, { protocol: 'mqtt', label: 'MQTT' });
     }
     A.mqttProblem = (dev, a) => this.problem(dev, a);
     A.mqttStart = (dev, a, how) => this.start(dev, a, how);
@@ -233,7 +234,7 @@ export class MqttSim {
         closed: (sk, w) => {
           if (c.sock === sk) this.as(c, () => this.lostConnection(c, w, true));
         },
-      }),
+      }, undefined, { protocol: 'mqtt', label: 'MQTT' }),
     );
     if (typeof s === 'string') {
       this.note(c, 'not connected', 'Disconnected', `${this.name(c)}: ${s}; it tries again in ${durationText(RECONNECT_DELAY)}`);

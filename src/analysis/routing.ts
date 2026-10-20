@@ -95,6 +95,27 @@ export interface RoutingCtx {
    * device uses it
    */
   at?: (device: string) => RoutingCtx | undefined;
+  /**
+   * a distance-vector protocol's tables as its routers hold them (the
+   * protocol simulation's RIP: what each router's neighbours' Responses
+   * brought it): the computation takes them instead of propagating that
+   * protocol over the model's adjacencies
+   */
+  dv?: (protocol: string) => DvTables | null;
+}
+
+/** A route a distance-vector router holds: the prefix, its metric, the relation and neighbour it came from, where it was originated. */
+export interface DvRoute {
+  net: IpPrefix;
+  metric: number;
+  relation: string;
+  peer: string;
+  origin: RouteOrigin;
+}
+
+/** The tables of a distance-vector protocol's routers, by device and VRF. */
+export interface DvTables {
+  routes(device: string, vrf: string): DvRoute[];
 }
 
 /** The state a device's own tables are read in: its own (RoutingCtx.at) when it has one. */
@@ -522,6 +543,8 @@ interface DynState {
   missing: MissingAdjacency[];
   /** "device\0vrf" -> entries */
   entries: Map<string, RibEntry[]>;
+  /** "protocol|device\0vrf" -> what that router originates into the protocol (by prefix) */
+  originated: Map<string, Map<string, DynRoute>>;
 }
 
 const NO_CTX: RoutingCtx = {};
@@ -534,6 +557,16 @@ function dynState(model: Model, ctx: RoutingCtx | undefined): DynState {
   let st = byCtx.get(key);
   if (!st) byCtx.set(key, (st = computeDynamic(model, ctx)));
   return st;
+}
+
+/**
+ * What a router originates into a routing protocol in a VRF in a state:
+ * its connected networks, or its policy's `advertise`, `redistribute` and
+ * `default_route` (redistributed routes as the router has them there).
+ */
+export function originatedRoutes(model: Model, device: string, vrf: string, protocol: string, ctx?: RoutingCtx): Array<{ net: IpPrefix; origin: RouteOrigin }> {
+  const m = dynState(model, deviceCtx(ctx, device)).originated.get(protocol + '|' + device + '\0' + vrf);
+  return m ? Array.from(m.values()).map((r) => ({ net: r.net, origin: r.origin })) : [];
 }
 
 /** The routing adjacencies of the model (one per direction) and those that can't form, sorted. */
@@ -600,9 +633,48 @@ function adjacencyHop(model: Model, r: Relation, protocol: string, from: string,
       return { relation: r.id, protocol, from, to, fromVrf, toVrf: peer.vrf, via: peer.addr, peerIface: peer.iface, cost, distance };
     }
   }
+  // IS-IS forms its adjacency on the link, whatever the addresses (its PDUs are frames): over an unnumbered interface (no
+  // address of its own) its routes go out of it to the neighbour's own address (its router ID, else a loopback's); numbered
+  // interfaces in different subnets have no IPv4 next hop for each other
+  if (protocol === 'isis') {
+    const hop = isisLinkHop(model, r, from, to, aIfs, bIfs, ctx);
+    if (hop) return { relation: r.id, protocol, from, to, fromVrf: ifaceVrf(model, from, hop.iface), toVrf: hop.peer.vrf, iface: hop.iface, via: hop.peer.addr, peerIface: hop.peerIface, cost, distance };
+    const link = cableBetween(model, from, to, aIfs, bIfs);
+    if (link) return `the IS-IS adjacency over ${from}:${link.a} – ${to}:${link.b} has no IP next hop: the interfaces are numbered in different subnets`;
+  }
   if (down) return `an interface between ${from} and ${to} is down`;
   const where = (dev: string, ifs: string[] | null): string => (ifs ? ifs.map((i) => dev + ':' + i).join(', ') : dev);
   return `${where(from, aIfs)} and ${where(to, bIfs)} have no network in common`;
+}
+
+/** A cable between two devices' interfaces (the relation's endpoint interfaces when written): its two interface ids. */
+function cableBetween(model: Model, from: string, to: string, aIfs: string[] | null, bIfs: string[] | null): { a: string; b: string } | null {
+  for (const l of model.links.slice().sort((x, y) => cmpStr(x.id, y.id))) {
+    for (const [x, y] of [[l.a, l.b], [l.b, l.a]]) {
+      if (x.device !== from || y.device !== to || x.iface === undefined || y.iface === undefined) continue;
+      if ((aIfs && aIfs.indexOf(x.iface) < 0) || (bIfs && bIfs.indexOf(y.iface) < 0)) continue;
+      return { a: x.iface, b: y.iface };
+    }
+  }
+  return null;
+}
+
+/** IS-IS over an unnumbered interface of `from` on a cable to `to`: the exit interface and the neighbour's own address. */
+function isisLinkHop(model: Model, r: Relation, from: string, to: string, aIfs: string[] | null, bIfs: string[] | null, ctx: RoutingCtx | undefined): { iface: string; peerIface: string; peer: Connected } | null {
+  void r;
+  const link = cableBetween(model, from, to, aIfs, bIfs);
+  if (!link || !isUp(ctx, from, link.a) || !isUp(ctx, to, link.b)) return null;
+  if (connectedOf(model, from).some((c) => c.iface === link.a)) return null;
+  const peer = connectedOf(model, to).filter((c) => isUp(ctx, to, c.iface) && c.addr.version === 4);
+  const d = model.index.devices.get(to);
+  const own = d && d.routerId && d.routerId.address ? parseAddress(d.routerId.address) : null;
+  const byRid = own ? peer.find((c) => compareAddr(c.addr, own) === 0) : undefined;
+  const loop = peer.find((c) => {
+    const i = model.index.interfaces.get(to + ':' + c.iface);
+    return !!i && i.type === 'loopback';
+  });
+  const p = byRid || loop || peer.find((c) => c.iface === link.b);
+  return p ? { iface: link.a, peerIface: link.b, peer: p } : null;
 }
 
 /** The address a BGP session to `device` is made to: its endpoint interface's address, else its BGP router ID or first loopback address. */
@@ -713,6 +785,13 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   const adjacencies: Adjacency[] = [];
   const missing: MissingAdjacency[] = [];
   const rels = model.relations.slice().sort((a, b) => cmpStr(a.id, b.id));
+  // a distance-vector protocol whose routers' own tables the state gives (the simulation's RIP): its adjacencies say only how a
+  // neighbour is reached; what is learned over them is in those tables
+  const dvs = new Map<string, DvTables>();
+  if (ctx && ctx.dv) for (const p of ROUTING_PROTOCOLS) {
+    const t = ctx.dv(p);
+    if (t) dvs.set(p, t);
+  }
   for (const r of rels) {
     const protocol = routingProtocol(model, r);
     if (!protocol) continue;
@@ -721,7 +800,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
     for (const from of devs) {
       for (const to of devs) {
         if (from === to) continue;
-        if (ctx && ctx.adjUp && !ctx.adjUp(r.id, from, to)) continue;
+        if (ctx && ctx.adjUp && !dvs.has(protocol) && !ctx.adjUp(r.id, from, to)) continue;
         // only devices that enable the protocol (their protocols:) take part in its adjacencies
         const off = [from, to].filter((d) => !hasService(model, d, protocol));
         if (off.length) {
@@ -832,6 +911,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
   // propagate until nothing changes (bounded: a route is never longer than the routers there are)
   const maxRounds = Array.from(nodesOf.values()).reduce((x, l) => x + l.length, 0) + 4;
   const originMemo = new Map<string, Map<string, DynRoute>>();
+  const originated = new Map<string, Map<string, DynRoute>>();
   // a router's table is computed again in a round only when what it reads changed in the round before: a neighbour's
   // table of the protocol, or one of its own tables (redistribution, a default route if installed) — the same fixpoint, less work
   let changedTables = new Set<string>();
@@ -853,7 +933,25 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
           const pol = policyOf(model, dev, p);
           if (!pol || (!pol.redistribute.some((x) => x !== 'connected' && x !== 'static') && pol.defaultRoute !== 'if_installed')) originMemo.set(p + '|' + n, mine);
         }
+        originated.set(p + '|' + n, mine);
         const out = new Map<string, DynRoute>(mine);
+        const dv = dvs.get(p);
+        if (dv) {
+          // what the router's own table holds (its neighbours' updates, through its filters): over the adjacency it came by
+          const [, vrf] = n.split('\0');
+          for (const r of dv.routes(dev, vrf)) {
+            const a = (inbound.get(p + '|' + n) || []).find((x) => x.relation === r.relation && x.to === r.peer);
+            const k = prefixKey(r.net);
+            if (!a || (out.get(k) && !(out.get(k) as DynRoute).via.length)) continue;
+            out.set(k, { net: r.net, metric: r.metric, via: [a], asPath: [], localPref: DEFAULT_LOCAL_PREF, origin: r.origin, policy: [] });
+          }
+          if (sameTable(out, tableOf(p, n))) continue;
+          next.set(p + '|' + n, out);
+          nowTables.add(p + '|' + n);
+          nowNodes.add(n);
+          changed = true;
+          continue;
+        }
         const myAs = p === 'bgp' ? bgpAsn(model.index.devices.get(dev)) : undefined;
         const myPol = policyOf(model, dev, p);
         for (const a of inbound.get(p + '|' + n) || []) {
@@ -938,7 +1036,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
       entries.set(n, list.sort(compareEntries));
     }
   }
-  return { adjacencies, missing, entries };
+  return { adjacencies, missing, entries, originated };
 }
 
 // ------------------------------------------------------------ route text

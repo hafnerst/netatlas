@@ -201,3 +201,16 @@ test('OSPF Hellos that do not match: different intervals, areas or network types
   ok.runTo(15000);
   assert.equal(stateOf(ok, 'r1', 'r2'), 'Full');
 });
+
+test('OSPF: two DROthers reach each other through the DR’s record (as its LSUs brought it), the next hop each other on the segment', () => {
+  const s = sim(lan(4));
+  s.runTo(50000);
+  assert.deepEqual(['r1', 'r2'].map((d) => roleOf(s, d)), ['DROther', 'DROther']);
+  assert.equal(stateOf(s, 'r1', 'r2'), '2-Way');
+  const r = route(s, 'r1', '10.2.0.1');
+  assert.equal(r.kind, 'forward', r.text);
+  assert.match(r.text, /via 10\.0\.0\.2 out ge0/, 'straight to the other DROther, not through the DR');
+  // r1 knows of r2 through r4's record (the DR names r2 as its neighbour), never by reading r2's own state
+  const dr = s.protocols.viewOf('r1').find((x) => x.origin === 'r4' && x.inst === 'ospf|');
+  assert.ok(dr && dr.adj.some((a) => a.endsWith('|r2')), JSON.stringify(dr));
+});

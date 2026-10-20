@@ -37,6 +37,10 @@ export interface Msg {
   waited?: string[];
   /** the Send test it belongs to (its id): the test's own packets, what they need (ARP, NDP, DNS) and every answer to them */
   test?: number;
+  /** the transport conversation it belongs to (pacing.ts flowKey: a TCP connection's ends and ports), for its dots in both views */
+  conv?: string;
+  /** a TCP segment's flags as a label gives them ("[S,A]", tcp.ts), from its header */
+  flags?: string;
 }
 
 /** The transport header of a packet (ICMP counts here too): what the inspector, firewalls and the transport layer read. */
@@ -46,10 +50,12 @@ export interface L4 {
   num: number;
   sport?: number;
   dport?: number;
-  /** TCP flags ("SYN", "ACK", "FIN", "RST", "PSH") */
+  /** TCP flags ("SYN", "ACK", "FIN", "RST", "PSH"; a label gives them as tcp.ts's tcpFlagsText: [S,A]) */
   flags?: string[];
   seq?: number;
   ack?: number;
+  /** TCP's MSS option (a SYN's: the largest segment its sender can receive) */
+  mss?: number;
   /** ICMP / ICMPv6 type and code, and their name ("Destination Unreachable", "Net Unreachable") */
   icmpType?: number;
   icmpCode?: number;
@@ -73,6 +79,8 @@ export interface Quote {
   proto: string;
   sport?: number;
   dport?: number;
+  /** a quoted ICMP echo's identifier */
+  echoId?: number;
   /** the quoted packet's id, for the sender to match it */
   pkt: number;
   /** the quoted packet's flow (the transport matches its connection) */
@@ -106,6 +114,8 @@ export interface Pkt {
   held?: string;
   /** IPv6: the path MTU its sender knows (it fragments its own packet to it; routers never do) */
   pmtu?: number;
+  /** the Router Alert option (IPv4 option 20, RFC 2113; IPv6 Hop-by-Hop, RFC 2711): IGMP and MLD carry it */
+  routerAlert?: boolean;
 }
 
 /** One dot: a message on one cable (physical) or one logical line, from t0 to t1. */
@@ -136,6 +146,10 @@ export interface Flight {
   origin?: string;
   /** the Send test its message belongs to (always shown, drawn first, marked Test) */
   test?: number;
+  /** its message's transport conversation (Msg.conv): Follow message's key in both views */
+  conv?: string;
+  /** a TCP segment's flags (Msg.flags): what a short background label says of it */
+  flags?: string;
   /**
    * the flight whose arrival caused it (a frame forwarded on, an answer, an
    * ARP request for a packet, the packet released by the ARP reply …): the
@@ -219,7 +233,7 @@ export interface Headers {
   };
   arp?: { op: string; senderMac: string; senderIp: string; targetMac: string; targetIp: string };
   /** the IP headers, outermost first (an encapsulated packet has several) */
-  l3: Array<{ version: 4 | 6; src: string; dst: string; ttl: number; df: boolean; proto: string; len: number; frag?: string; encap?: string }>;
+  l3: Array<{ version: 4 | 6; src: string; dst: string; ttl: number; df: boolean; proto: string; len: number; frag?: string; encap?: string; options?: string }>;
   l4?: L4;
   /** what it carries ("OSPF Hello", "Echo request, 56 bytes", the quoted header of an ICMP error) */
   payload: string;

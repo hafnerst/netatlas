@@ -84,14 +84,14 @@ import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/ty
 import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
 import { compareAddr, formatAddr, inPrefix } from '../ipmath';
-import { Connected, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
 import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, l2Domain, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
-import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
+import { ArpRow, ArpType, Cast, Flight, Headers, L4, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 import { capabilities } from '../../model/capabilities';
 import { SeparationSim } from './separation';
@@ -193,8 +193,11 @@ export interface Protocols {
   routesChanged?(dev: string): void;
   /** what routing depends on changed: routers whose own adjacencies changed advertise their new record */
   originate?(): void;
+  /** a distance-vector protocol's tables as the routers hold them (RIP), and their version (bumped at every change); null: none */
+  dvTables?(protocol: string): DvTables | null;
+  dvVersion?(): number;
   /** what a router has learned (its records of every origin), null when it runs no routing protocol */
-  viewOf?(dev: string): Map<string, { origin: string; seq: number; adj: string[]; up: string[] }> | null;
+  viewOf?(dev: string): Array<{ origin: string; inst: string; seq: number; at: number; adj: string[]; up: string[] }> | null;
 }
 
 interface QItem {
@@ -278,9 +281,8 @@ export class Engine {
   protocols: Protocols | null = null;
   now = 0;
   timerScale: number;
-  readonly random: () => number;
-  /** the start-up and timer jitter: its own seeded sequence (so that it changes nothing else's) */
-  private jitterRandom: () => number;
+  /** the seeded streams, one per kind and object ("jitter|r1", "loss|l2"): an object's numbers depend on nothing else in the model */
+  private streams = new Map<string, () => number>();
   private q: QItem[] = [];
   private seq = 0;
   private logSeq = 0;
@@ -297,8 +299,6 @@ export class Engine {
   private causeFlight: number | null = null;
   /** the parameters in effect (params.ts): simulation-wide, and each device's own */
   readonly params: SimParams;
-  /** the loss of frames: its own seeded sequence (the start-up jitter stays the same whatever the loss) */
-  private lossRandom: () => number;
   /** the Security gateways' permitted transfers (sim/separation.ts) */
   sep: SeparationSim;
   /** failed cables and relations, by id, with when they failed */
@@ -425,16 +425,30 @@ export class Engine {
 
   /** Is the address one of the interface's own: configured, leased, learned, or its link-local one? */
   private hasOwn(l3: L3Iface, a: IpAddr): boolean {
-    return l3.addrs.some((x) => compareAddr(x.addr, a) === 0) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
+    return l3.addrs.some((x) => compareAddr(x.addr, a) === 0 && this.usableAddr(l3, x.addr)) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
+  }
+
+  /** Is one of an interface's written addresses usable now (not a tentative or duplicate IPv6 address)? */
+  usableAddr(l3: L3Iface, a: IpAddr): boolean {
+    return !l3.unusable || !l3.unusable.length || l3.unusable.indexOf(formatAddr(a)) < 0;
+  }
+
+  /** A written IPv6 address becomes unusable (tentative, a duplicate) or usable (its duplicate address detection passed). */
+  setUsable(dev: string, iface: string, a: IpAddr, usable: boolean): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!l3) return;
+    const t = formatAddr(a);
+    const list = (l3.unusable || []).filter((x) => x !== t);
+    if (!usable) list.push(t);
+    l3.unusable = list;
+    this.stateVersion++;
   }
 
   constructor(model: Model, opts: EngineOptions = {}) {
     this.model = model;
     this.net = buildNet(model);
     this.timerScale = opts.timerScale || 1;
-    this.random = rng(modelSeed(model));
-    this.jitterRandom = rng(modelSeed(model) + '|jitter');
-    this.lossRandom = rng(modelSeed(model) + '|loss');
     const eng = this;
     this.sep = new SeparationSim({
       get now(): number {
@@ -442,7 +456,7 @@ export class Engine {
       },
       note: (kind, protocol, device, peer, what, state, detail) => eng.note(kind, protocol, device, peer, what, state, detail),
       param: (key, dev) => eng.params.get(key, dev),
-      loss: () => eng.lossRandom(),
+      loss: () => eng.stream('loss', 'separation')(),
     });
     const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
     for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
@@ -886,6 +900,7 @@ export class Engine {
       },
       leases: (device: string) => self.leaseConnected(device),
       extraRoutes: (device: string, vrf: string) => self.leaseRoutes(device, vrf),
+      dv: (protocol: string) => (self.protocols && self.protocols.dvTables ? self.protocols.dvTables(protocol) : null),
     };
     return this.ctxObj;
   }
@@ -906,7 +921,14 @@ export class Engine {
       for (const a of devs) for (const b of devs) if (a !== b) adj.set(r.id + '|' + a + '|' + b, (live.adjUp as (r: string, f: string, t: string) => boolean)(r.id, a, b));
     }
     const self = this;
+    // the distance-vector tables as they are now (a frozen copy)
+    const dvNow = new Map<string, DvTables>();
+    if (this.protocols && this.protocols.dvTables) for (const p of ['rip']) {
+      const t = this.protocols.dvTables(p) as (DvTables & { frozen?: () => DvTables }) | null;
+      if (t) dvNow.set(p, t.frozen ? t.frozen() : t);
+    }
     return {
+      dv: (protocol: string) => dvNow.get(protocol) || null,
       up(device: string, iface: string): boolean {
         const k = device + ':' + iface;
         if (ifs.has(k)) return ifs.get(k) !== false;
@@ -1065,6 +1087,13 @@ export class Engine {
    * recomputation delay (the routers whose recomputation falls on the same
    * moment share it).
    */
+  /** A distance-vector router's table changed (RIP): the routing contexts are made again (the routers recompute by their delay). */
+  dynamicChanged(): void {
+    this.ctxObj = null;
+    this.routingVersion++;
+    this.estimates.clear();
+  }
+
   routingChanged(): void {
     this.ctxObj = null;
     this.routingVersion++;
@@ -1097,26 +1126,29 @@ export class Engine {
 
   /**
    * A router's state for its route computation: what is up now on the
-   * router itself, and for every other router what its database says
-   * (that origin's record: its adjacencies and interfaces when it last
-   * advertised them, as far as that has reached this router). A router that
-   * runs no routing protocol: the state now.
+   * router itself, and for every other router what its databases say (each
+   * instance's record of that origin: its adjacencies of the instance —
+   * a relation's adjacency is known only through its own protocol's
+   * instance — and its interfaces when it last advertised them, as far as
+   * that has reached this router; the interfaces of the newest record). A
+   * router that runs no routing protocol: the state now.
    */
   private viewCtx(dev: string, base: RoutingCtx): RoutingCtx {
     const view = this.protocols && this.protocols.viewOf ? this.protocols.viewOf(dev) : null;
     if (!view) return base;
-    const recs = Array.from(view.values()).sort((a, b) => cmp(a.origin, b.origin));
-    const sig = `${this.routingVersion}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + ':' + r.seq).join(',')}`;
+    const recs = view.slice().sort((a, b) => cmp(a.origin, b.origin) || cmp(a.inst, b.inst));
+    const sig = `${this.routingVersion}|${this.protocols && this.protocols.dvVersion ? this.protocols.dvVersion() : 0}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + '@' + r.inst + ':' + r.seq).join(',')}`;
     const hit = this.viewCtxs.get(sig);
     if (hit) return hit;
     const adj = new Set<string>();
-    const ups = new Map<string, Set<string>>();
+    const ups = new Map<string, { at: number; up: Set<string> }>();
     for (const r of recs) {
       for (const a of r.adj) {
         const i = a.lastIndexOf('|');
         adj.add(`${a.slice(0, i)}|${r.origin}|${a.slice(i + 1)}`);
       }
-      if (r.origin !== dev) ups.set(r.origin, new Set(r.up));
+      const was = ups.get(r.origin);
+      if (r.origin !== dev && (!was || r.at > was.at)) ups.set(r.origin, { at: r.at, up: new Set(r.up) });
     }
     const self = this;
     const ctx: RoutingCtx = {
@@ -1126,7 +1158,7 @@ export class Engine {
       adjUp: (relation: string, from: string, to: string) => adj.has(`${relation}|${from}|${to}`) && adj.has(`${relation}|${to}|${from}`),
       up(device: string, iface: string): boolean {
         const u = ups.get(device);
-        if (u && self.net.devices.get(device) && (self.net.devices.get(device) as SimDevice).l3.has(iface)) return u.has(iface);
+        if (u && self.net.devices.get(device) && (self.net.devices.get(device) as SimDevice).l3.has(iface)) return u.up.has(iface);
         return (base.up as (d: string, i: string) => boolean)(device, iface);
       },
     };
@@ -1319,7 +1351,7 @@ export class Engine {
       // its first BPDU arrives with the far end's first hello
       const guard = this.params.get('stp-bpdu-guard', dev, null, at);
       if (guard.value === 'on') {
-        this.at(this.now + this.jitter(), () => {
+        this.at(this.now + this.jitter(dev), () => {
           if (!this.linkUp(link) || this.shutPorts.has(portKey(dev, port))) return;
           this.note('link', 'stp', dev, o.device, 'BPDU guard', 'err-disabled', `BPDU guard on ${dev}:${bp} (${resolvedText(guard)}): a BPDU from ${o.device}:${o.port}, a bridge where a host was expected; the port is err-disabled (shut down) until No shut`);
           this.shut(dev, port);
@@ -1621,7 +1653,7 @@ export class Engine {
     const ser = (this.frameBytes(frame) * 8 * 1000) / Number(this.speed(link).value);
     this.cableFree.set(key, start + ser);
     const loss = Number(this.loss(link).value);
-    const lost = loss > 0 && this.lossRandom() * 100 < loss;
+    const lost = loss > 0 && this.stream('loss', link)() * 100 < loss;
     const imp = this.impair ? this.impair(link, frame) : null;
     return { start, end: start + ser + Number(this.latency(link).value) + (imp && imp.delay ? imp.delay : 0), lost: lost || !!(imp && imp.lose), dup: !!(imp && imp.dup), impaired: !!(imp && imp.lose) && !lost };
   }
@@ -1639,8 +1671,20 @@ export class Engine {
    * what starts together runs together (on screen too) without being drawn
    * on top of each other.
    */
-  jitter(): number {
-    return this.jitterRandom() * JITTER_SHARE * this.hopTime();
+  jitter(scope = ''): number {
+    return this.stream('jitter', scope)() * JITTER_SHARE * this.hopTime();
+  }
+
+  /** A seeded number in [0, 1) of an object's own stream (a device's, a cable's): the same model, the same numbers for it, whatever else it holds. */
+  random(scope = ''): number {
+    return this.stream('random', scope)();
+  }
+
+  private stream(kind: string, scope: string): () => number {
+    const k = kind + '|' + scope;
+    let r = this.streams.get(k);
+    if (!r) this.streams.set(k, (r = rng(`${modelSeed(this.model)}|${kind}|${scope}`)));
+    return r;
   }
 
   /**
@@ -1666,7 +1710,7 @@ export class Engine {
       const d = this.linkUpDelay(id);
       const tok = ++this.tokens;
       this.carrierToken.set('link:' + id, tok);
-      this.at(Number(d.value) + this.jitter(), () => {
+      this.at(Number(d.value) + this.jitter('link:' + id), () => {
         if (this.carrierToken.get('link:' + id) !== tok) return;
         this.carrierToken.delete('link:' + id);
         if (!this.physUp(id)) return;
@@ -1805,7 +1849,16 @@ export class Engine {
     if (waited.length) f.hdr.waited = waited;
     const ev = this.msgEvents.get(frame.msg);
     if (ev && !ev.hdr) ev.hdr = f.hdr;
+    // the logical view's dots of the message (no frame of their own): the headers it was sent with, for their inspector
+    const waiting = this.logicalNoHdr.get(frame.msg);
+    if (waiting) {
+      this.logicalNoHdr.delete(frame.msg);
+      for (const x of waiting) if (!x.hdr) x.hdr = f.hdr;
+    }
   }
+
+  /** the logical view's dots of a message, until its first frame's headers are known */
+  private logicalNoHdr = new WeakMap<Msg, Flight[]>();
 
   /**
    * A frame on a wireless link: a client silent for its access point's idle
@@ -1877,7 +1930,7 @@ export class Engine {
     let p = frame.ip;
     let inner: Pkt | undefined;
     while (p) {
-      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap });
+      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap, options: p.routerAlert ? (p.dst.version === 4 ? 'Router Alert (option 20)' : 'Hop-by-Hop: Router Alert (MLD)') : undefined });
       inner = p;
       p = p.inner;
     }
@@ -2308,9 +2361,16 @@ export class Engine {
    * (PAT then gives the next free one, from 1024): two inside hosts never
    * share a translation, and the reply goes back to the one it belongs to.
    */
+  /**
+   * A translation of the NAT table: the outside address, the remote end and
+   * the protocol, and the flow's own identity there — TCP and UDP their
+   * source port, an ICMP echo its identifier (RFC 5508 §3.1: two inside
+   * hosts pinging one destination are two translations, never one) —
+   * translated when it collides (PAT); returns the identity used outside.
+   */
   private translate(dev: string, to: IpAddr, pkt: Pkt, vrf: string, pat: boolean): number | undefined {
     const proto = pkt.l4 ? pkt.l4.proto : '';
-    const sport = pkt.l4 ? pkt.l4.sport : undefined;
+    const sport = natPort(pkt.l4, 'src');
     const base = `${dev}|${formatAddr(to)}|${formatAddr(pkt.dst)}|${proto}|`;
     const mine = (e: { inside: IpAddr; port?: number; vrf: string } | undefined): boolean => !!e && compareAddr(e.inside, pkt.src) === 0 && e.port === sport && e.vrf === vrf;
     let port = sport;
@@ -2361,22 +2421,23 @@ export class Engine {
       const own = out.addrs.find((x) => x.addr.version === pkt.src.version);
       const to = rule && typeof rule.to === 'string' ? parseAddress(rule.to) : own ? own.addr : null;
       if (rule && to) {
-        const sport = pkt.l4 ? pkt.l4.sport : undefined;
+        const sport = natPort(pkt.l4, 'src');
         const port = this.translate(dev, to, pkt, from.vrf, rule.type === 'pat');
         const moved = port !== sport && port !== undefined;
-        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(to)}${moved ? ':' + port + ' (its port is taken towards ' + formatAddr(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
-        return { ...pkt, src: to, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
+        const icmp = !!pkt.l4 && pkt.l4.proto === 'icmp';
+        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)}${moved ? (icmp ? ' (echo identifier ' + sport + ')' : ':' + sport) : ''} → ${formatAddr(to)}${moved ? (icmp ? ' (echo identifier ' + port + ')' : ':' + port) + ' (its ' + (icmp ? 'identifier' : 'port') + ' is taken towards ' + formatAddr(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, src: to, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'src', port as number) : pkt.l4 };
       }
     }
     const b = this.bridgeNet(dev, from);
     if (!b || !b.nat || out.id === from.id || this.bridgeNet(dev, out)) return pkt;
     const a = out.addrs.find((x) => x.addr.version === pkt.src.version);
     if (!a) return pkt;
-    const sport = pkt.l4 ? pkt.l4.sport : undefined;
+    const sport = natPort(pkt.l4, 'src');
     const port = this.translate(dev, a.addr, pkt, from.vrf, true);
     const moved = port !== sport && port !== undefined;
     this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(a.addr)}${moved ? ':' + port : ''} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
-    return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
+    return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'src', port as number) : pkt.l4 };
   }
 
   /** A packet to a container host's own address: the reply to a translated packet, or to a published port, goes on to its container. */
@@ -2385,13 +2446,26 @@ export class Engine {
     const nat = natOf(this.model, dev);
     if (!d || (!d.containerEngine && !nat)) return null;
     const proto = pkt.l4 ? pkt.l4.proto : '';
-    const dport = pkt.l4 ? pkt.l4.dport : undefined;
+    // an ICMP error about a translated packet (unreachable, Fragmentation Needed): its quote names the translation; it goes to
+    // the inside host with the quote translated back too, so that its sender finds its connection (PMTUD through NAT)
+    const q = pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.quote : undefined;
+    if (q) {
+      const qport = q.proto === 'icmp' ? q.echoId : q.sport;
+      const e = this.natTable.get(`${dev}|${q.src}|${q.dst}|${q.proto}|${qport !== undefined ? qport : ''}`);
+      if (e) {
+        const inside = formatAddr(e.inside);
+        const quote = { ...q, src: inside, sport: q.proto === 'icmp' ? q.sport : e.port, echoId: q.proto === 'icmp' ? e.port : q.echoId, flow: q.flow.replace(`${q.src}:${qport !== undefined ? qport : 0}>`, `${inside}:${e.port !== undefined ? e.port : 0}>`) };
+        this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates an ICMP error back: destination ${formatAddr(pkt.dst)} → ${inside}, its quoted header ${q.src}${qport !== undefined ? ':' + qport : ''} → ${inside}${e.port !== undefined ? ':' + e.port : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, dst: e.inside, vrf: e.vrf, l4: { ...(pkt.l4 as L4), quote } };
+      }
+    }
+    const dport = natPort(pkt.l4, 'dst');
     const k = `${dev}|${formatAddr(pkt.dst)}|${formatAddr(pkt.src)}|${proto}|${dport !== undefined ? dport : ''}`;
     const back = this.natTable.get(k);
     if (back) {
       const moved = back.port !== undefined && back.port !== dport;
       this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)}${moved ? ':' + dport : ''} → ${formatAddr(back.inside)}${moved ? ':' + back.port : ''}${back.vrf ? ' in VRF ' + back.vrf : ''} (${pkt.msg.label})`, this.now, pkt.msg);
-      return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? { ...pkt.l4, dport: back.port } : pkt.l4 };
+      return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'dst', back.port as number) : pkt.l4 };
     }
     // a published port: on to the container (TCP and UDP); a NAT service's port forward: on to its inside address
     if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined) return null;
@@ -2475,6 +2549,13 @@ export class Engine {
     if (msg.sender !== undefined) f.sender = msg.sender;
     if (msg.origin !== undefined) f.origin = msg.origin;
     if (msg.test !== undefined) f.test = msg.test;
+    if (msg.conv !== undefined) f.conv = msg.conv;
+    if (msg.flags !== undefined) f.flags = msg.flags;
+    if (view === 'logical') {
+      const l = this.logicalNoHdr.get(msg);
+      if (l) l.push(f);
+      else this.logicalNoHdr.set(msg, [f]);
+    }
     this.flights.push(f);
     this.flightById.set(f.id, f);
     return f;
@@ -3054,7 +3135,7 @@ export class Engine {
     if (!src) return;
     this.icmpLast.set(dev, this.now);
     const t = icmpType(kind, v);
-    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, pkt: pkt.id, flow: pkt.flow };
+    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, echoId: pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.echoId : undefined, pkt: pkt.id, flow: pkt.flow };
     const name = v === 4 ? 'ICMP' : 'ICMPv6';
     const label = `${name} ${t.short}${kind === 'frag' ? ` (MTU ${o.mtu})` : ''} from ${formatAddr(src)}`;
     const detail = `${dev} (${formatAddr(src)}) → ${formatAddr(pkt.src)}: ${name} ${t.name} (type ${t.type}, code ${t.code}${kind === 'frag' ? ', MTU ' + o.mtu : ''}) about ${quoteText(quote)}: ${pkt.msg.label}`;
@@ -3134,7 +3215,7 @@ export class Engine {
   /** An ARP Request (or Neighbor Solicitation): broadcast / to the solicited-node address, or unicast to `mac` (a refresh, a probe). */
   private solicit(dev: string, l3: L3Iface, ip: IpAddr, mac: string): void {
     const ll = ip.version === 6 && l3.ll && (isLinkLocal6(ip) || !l3.addrs.some((a) => a.addr.version === 6)) ? l3.ll : undefined;
-    const src = ll || l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version);
+    const src = ll || l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version) || (ip.version === 4 ? this.borrowed(dev, l3) : undefined);
     if (!src) return;
     const sim = l3.macSimulated ? ' (simulated)' : '';
     if (ip.version === 4) {
@@ -3153,11 +3234,25 @@ export class Engine {
     this.emit(dev, l3, { src: l3.mac, dst: mac || multicastMac(sn), msg, nd: { op: 'NS', src: src.addr, target: ip, lladdr: l3.mac, solicited: false }, ip: pkt });
   }
 
+  /**
+   * The address an unnumbered interface (no IPv4 address of its own) uses:
+   * the device's loopback address in its VRF (as `ip unnumbered Loopback0`),
+   * for its ARP requests and the ARP requests it answers.
+   */
+  private borrowed(dev: string, l3: L3Iface): SimAddr | undefined {
+    if (l3.kind === 'loopback' || l3.addrs.some((a) => a.addr.version === 4)) return undefined;
+    const sd = this.net.devices.get(dev) as SimDevice;
+    const loops = Array.from(sd.l3.values()).filter((l) => l.kind === 'loopback' && l.vrf === l3.vrf).sort((x, y) => cmp(x.id, y.id));
+    for (const l of loops) for (const a of l.addrs) if (a.addr.version === 4) return a;
+    return undefined;
+  }
+
   private arpReceive(dev: string, l3: L3Iface, frame: Frame, a: ArpPdu): void {
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     const key = this.entryKey(l3.id, a.spa);
     const e = tab.get(key);
-    const ownTarget = l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0);
+    const lent = this.borrowed(dev, l3);
+    const ownTarget = l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0) || (!!lent && compareAddr(lent.addr, a.tpa) === 0);
     const vip = this.protocols ? this.protocols.owns(dev, l3.id).find((o) => compareAddr(o.addr, a.tpa) === 0) : undefined;
     if (a.gratuitous) {
       // a gratuitous ARP updates an entry the receiver has (RFC 826's merge; Linux's default): it creates none, so a
@@ -3177,7 +3272,7 @@ export class Engine {
       this.emit(dev, l3, { src: mac, dst: a.sha, msg, arp: { op: 'reply', sha: mac, spa: a.tpa, tha: a.sha, tpa: a.spa } });
       return;
     }
-    if (a.op === 'reply' && compareAddr(a.tpa, a.spa) !== 0 && (l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0) || e)) {
+    if (a.op === 'reply' && compareAddr(a.tpa, a.spa) !== 0 && (ownTarget || e)) {
       this.learnEntry(dev, l3, a.spa, a.sha, isVirtual(a.sha) ? 'virtual' : 'dynamic', 'ARP Reply');
       return;
     }
@@ -4300,8 +4395,8 @@ export class Engine {
 
 /** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
 export function ipLen(p: Pkt): number {
-  // (an IPv6 fragment has its 8-byte fragment header besides)
-  const hdr = p.dst.version === 4 ? 20 : p.frag ? 48 : 40;
+  // (an IPv6 fragment has its 8-byte fragment header besides; the Router Alert option: 4 bytes in IPv4, an 8-byte Hop-by-Hop header in IPv6)
+  const hdr = (p.dst.version === 4 ? 20 : p.frag ? 48 : 40) + (p.routerAlert ? (p.dst.version === 4 ? 4 : 8) : 0);
   if (p.inner) return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
   if (p.len !== undefined) return hdr + p.len;
   const d = p.msg.data as { size?: unknown } | undefined;
@@ -4509,4 +4604,17 @@ function inspectionMatch(model: Model, dev: string, frame: Frame): string | null
     if ('list' in r && portsMatch(r.list, proto, proto === 'icmp' ? 0 : (pkt.l4.dport as number))) return b;
   }
   return null;
+}
+
+/** A flow's identity at NAT, one side of it: TCP and UDP the port, an ICMP echo (request or reply) its identifier. */
+function natPort(l4: L4 | undefined, side: 'src' | 'dst'): number | undefined {
+  if (!l4) return undefined;
+  if (l4.proto === 'icmp') return l4.quote ? undefined : l4.echoId;
+  return side === 'src' ? l4.sport : l4.dport;
+}
+
+/** The header with that identity replaced (the port, or the echo identifier). */
+function withNatPort(l4: L4, side: 'src' | 'dst', v: number): L4 {
+  if (l4.proto === 'icmp') return { ...l4, echoId: v };
+  return side === 'src' ? { ...l4, sport: v } : { ...l4, dport: v };
 }

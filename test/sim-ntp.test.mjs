@@ -79,3 +79,26 @@ test('NTP and PTP stay apart: neither enables or disciplines the other', () => {
   assert.ok(!s.ptp.clocks.has('mid'), 'NTP turns no PTP on');
   assert.ok(!s.ntp.has('ptp-only'));
 });
+
+test('a client knows its upstreams only by their responses: the stratum they reported, fresh by their reach; a source answering stratum 16 ends it at once', () => {
+  const s = sim();
+  s.runTo(400000);
+  assert.equal(s.ntp.stratum('leaf'), 3);
+  // the stratum is the one mid's last response said (shown as such)
+  const t = s.ntp.table('leaf');
+  assert.deepEqual([t.cols[3], t.rows[0][3]], ['Stratum it reported', '2']);
+  assert.ok(s.events().some((e) => e.kind === 'message' && e.device === 'mid' && e.what === 'Server response' && /stratum 2$/.test(e.detail)));
+  // ref powered off: nothing tells mid at once — it stays synchronized until its reach register runs out (8 polls)
+  const off = s.now;
+  s.powerOff('ref');
+  s.runTo(off + 300000);
+  assert.match(s.ntp.text('mid'), /^synchronized to 10\.0\.0\.1/, 'stale but its own knowledge');
+  s.runTo(off + 8 * 64000 + 70000);
+  assert.match(s.ntp.text('mid'), /^unsynchronized/);
+  // mid's next response says stratum 16: leaf drops its source at once (not 8 polls later), and its status agrees
+  s.runTo(s.now + 70000);
+  const lost = s.events().find((e) => e.kind === 'state' && e.device === 'leaf' && e.what === 'unsynchronized');
+  assert.ok(lost && /its source mid answers at stratum 16/.test(lost.detail), lost && lost.detail);
+  assert.equal(s.ntp.stratum('leaf'), 16);
+  assert.ok(s.status().some((x) => x.name === 'NTP leaf' && x.state === 'Unsynchronized'));
+});

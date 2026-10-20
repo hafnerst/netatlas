@@ -47,7 +47,10 @@
  * different operations overlap. The tables and the log may be ahead of the
  * dots (by the hops still to show); a hop that would start more than
  * LAG_MAX after it happened is not drawn as a dot (cable activity) — except
- * a Network event's and the conversation followed. Only how far the
+ * a Network event's and the conversation followed; one that goes on with
+ * what is drawn (the next cable of a message on screen, the next message of
+ * a conversation on screen: a TCP handshake's SYN-ACK and ACK after its SYN)
+ * has LAG_CONT, so an exchange on screen is not cut in the middle. Only how far the
  * simulation has got at a moment depends on the pacing, never what happens
  * or in which order: the engine runs the same events whatever the pacing
  * (tests compare the results).
@@ -69,7 +72,11 @@
  * with nothing on screen, so a startup burst of one protocol (DHCP, ARP)
  * never hides another's message (an IGMP query, a Hello); a hop of another
  * conversation is cable activity (a cable lit, "OSPF ×3"; `notDrawn` counts them for a note). At
- * most `limit` hops are on screen at once whatever their conversations.
+ * most `limit` hops start on screen at once whatever their conversations; a
+ * hop that goes on with what is drawn (the next cable of a message, the next
+ * message of its conversation) is drawn beyond it, so nothing on screen is
+ * cut in the middle (the conversations on screen are at most CONV_LIMIT +
+ * CONV_DIVERSE).
  *
  * Streams and repeating applications, started from Network events or the
  * model, run on the simulated clock: the pacing changes how fast they are
@@ -127,6 +134,8 @@ export const FADE_MS = 300;
 export const TRANSIT_MS = 600;
 /** A hop that would start on screen more than this after it happened (display ms) is cable activity instead of a dot (not a Network event's, not the conversation followed). */
 export const LAG_MAX = 15000;
+/** The same for a hop that goes on with what is on screen (the next cable of a drawn message, the next message of a drawn conversation): bounded too, further. */
+export const LAG_CONT = 60000;
 /** A skipped idle stretch is reported when it is at least this long (simulated ms). */
 export const SKIP_REPORT = 500;
 /** The longest jump at once (simulated ms: 10 min); when it finds nothing to show, the next one waits IDLE_REST of display time. */
@@ -161,18 +170,40 @@ export function scaleText(scale: number): string {
   return `1 ms = ${s >= 1 ? s : s.toFixed(1)} s`;
 }
 
-/** What a message belongs to: its protocol and its two ends, either way round (a request and its reply share it). */
+/**
+ * What a message belongs to: its protocol and its two ends, either way round
+ * (a request and its reply share it). TCP and UDP: the transport and both
+ * ends with their ports (the innermost header: an encapsulated connection's
+ * own), so two connections between the same hosts are two conversations; an
+ * ICMP echo: its identifier with the two addresses.
+ */
 export function conversationKey(protocol: string, h: Headers | undefined, label: string): string {
   const pair = (a: string, b: string): string => (a < b ? a + '|' + b : b + '|' + a);
   if (!h) return protocol + '|' + label;
   if (h.arp) return 'arp|' + pair(h.arp.senderIp, h.arp.targetIp);
   const ip = h.l3.length ? h.l3[h.l3.length - 1] : null;
-  if (ip && h.l4 && (h.l4.proto === 'tcp' || h.l4.proto === 'udp')) {
-    const l4 = h.l4 as { proto: string; src?: number; dst?: number };
-    return `${h.l4.proto}|${pair(ip.src + ':' + (l4.src || ''), ip.dst + ':' + (l4.dst || ''))}`;
-  }
+  if (ip && h.l4 && (h.l4.proto === 'tcp' || h.l4.proto === 'udp' || (h.l4.proto === 'icmp' && h.l4.echoId !== undefined))) return flowKey(h.l4.proto, ip.src, ip.dst, h.l4);
   if (ip) return `${protocol}|${pair(ip.src, ip.dst)}`;
   return `${protocol}|${pair(h.l2.src, h.l2.dst)}`;
+}
+
+/**
+ * A transport conversation's key from its addresses and ports (TCP, UDP;
+ * an ICMP echo by its identifier), either way round: what the packet
+ * inspector's headers give, and what the transport gives the dots of the
+ * logical view (which have no frame) — so Follow message is the same in
+ * both views.
+ */
+export function flowKey(proto: string, src: string, dst: string, l4: { sport?: number; dport?: number; echoId?: number }): string {
+  if (proto === 'icmp') return `icmp|${l4.echoId}|${src < dst ? src + '|' + dst : dst + '|' + src}`;
+  const a = src + ':' + (l4.sport !== undefined ? l4.sport : '');
+  const b = dst + ':' + (l4.dport !== undefined ? l4.dport : '');
+  return `${proto}|${a < b ? a + '|' + b : b + '|' + a}`;
+}
+
+/** The key a hop's conversation has: its transport's when it has one (both views), else its headers'. */
+export function flightKey(f: Flight, h: Headers | undefined): string {
+  return f.conv || conversationKey(f.protocol, h, f.label);
 }
 
 /** One hop on screen. */
@@ -408,8 +439,16 @@ export class Pacer {
     const convs = { physical: new Set<string>(), logical: new Set<string>() };
     // the protocols with a conversation on screen, per view
     const protos = { physical: new Set<string>(), logical: new Set<string>() };
+    // the drawn hops still on their way, by conversation (an answer's first hop waits for them): one pass, not one per new hop
+    const onWay = new Map<string, PaceItem[]>();
+    const wayOf = (x: PaceItem): void => {
+      const l = onWay.get(x.key);
+      if (l) l.push(x);
+      else onWay.set(x.key, [x]);
+    };
     if (fresh.length)
-      for (const x of this.items)
+      for (const x of this.items) {
+        if (x.drawn && this.onItsWay(x)) wayOf(x);
         if (x.drawn && this.clock < this.end(x) && this.host.shown(x.f)) {
           live[x.f.view]++;
           // (a conversation takes a place while a hop of it is on its way; its arrival's pulse doesn't)
@@ -418,6 +457,7 @@ export class Pacer {
             protos[x.f.view].add(x.f.protocol);
           }
         }
+      }
     for (const f of fresh) {
       if (this.byId.has(f.id)) continue;
       // a creation-time loss puts the flight's end where it was lost: midway
@@ -438,10 +478,10 @@ export class Pacer {
       if (!parent && !flow && cause && cause.f.view === f.view) after = Math.max(after, this.arrival(cause));
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
-      const key = conversationKey(f.protocol, h, f.label);
+      const key = flightKey(f, h);
       // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side
       if (!parent && f.sender !== undefined)
-        for (const x of this.items) if (x.key === key && x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
+        for (const x of onWay.get(key) || []) if (x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && !flow && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
@@ -452,8 +492,13 @@ export class Pacer {
       const room = live[f.view] < this.limit;
       // (a protocol with nothing on screen gets a place beyond the limit, a few at most)
       const conv = convs[f.view].has(key) || convs[f.view].size < this.convLimit || (!protos[f.view].has(f.protocol) && convs[f.view].size < this.convLimit + CONV_DIVERSE);
-      const late = d0 - this.clock > LAG_MAX;
-      const drawn = !shown || test || followed || (room && conv && !late);
+      // a hop that goes on with what is drawn (the next cable of a message on screen, the next message of a conversation on
+      // screen: a SYN-ACK after its SYN, the handshake's ACK after that) is drawn whatever the limit (it takes over from the hop
+      // before it; the conversations on screen are few) as long as it is not more than LAG_CONT behind, so an exchange on screen
+      // is never cut in the middle; anything else needs room and is cable activity beyond LAG_MAX
+      const goesOn = (!!parent && parent.drawn) || convs[f.view].has(key);
+      const late = d0 - this.clock > (goesOn ? LAG_CONT : LAG_MAX);
+      const drawn = !shown || test || followed || (conv && !late && (goesOn || room));
       if (shown) {
         if (drawn) {
           live[f.view]++;
@@ -468,6 +513,7 @@ export class Pacer {
       }
       const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
       this.items.push(it);
+      if (drawn) wayOf(it);
       this.byId.set(f.id, it);
       added.push(it);
     }

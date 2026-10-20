@@ -133,6 +133,11 @@ test('duplicate address detection: a node that has the address answers, the newc
   // pc forms 2001:db8:10::ff:fe00:1 from its MAC 02:00:00:00:00:01 (modified EUI-64); the squatter has it written
   const text = LAN({ pc: ', mac: "02:00:00:00:00:01"', r2: '  - id: squatter\n    type: endpoint\n    interfaces: [{id: eth0, ip: "2001:db8:10::ff:fe00:1/64"}]\n', links: '  - {id: l5, a: "sw:p5", b: "squatter:eth0"}\n' });
   const s = sim(text);
+  // (pc comes up once the squatter's written address is valid: its own duplicate address detection passed — a written address
+  // runs it too, and two nodes probing the same address at once both lose it, RFC 4862 §5.4.3)
+  s.shut('pc', 'eth0');
+  settle(s, 6000);
+  s.noShut('pc', 'eth0');
   settle(s, 10000);
   const h = host(s, 'pc');
   assert.equal(formatted(h.addrs[0]), '2001:db8:10::ff:fe00:1/64');

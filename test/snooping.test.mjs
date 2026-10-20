@@ -197,7 +197,7 @@ test('IPv6: MLD reports make member ports too; an IPv6 group goes to its member 
   assert.deepEqual(data(s, 'l2', 'ff05::1', t), []);
   const row = s.snoopTable('sw').rows.find((r) => r[1] === 'ff05::1 (MLD)');
   assert.deepEqual(row.slice(0, 3), ['10', 'ff05::1 (MLD)', 'p1']);
-  assert.match(row[3], /^member port: MLDv2, any source, reported by 2001:db8:10::11$/);
+  assert.match(row[3], /^member port: MLDv2, any source, reported by (::|fe80::[0-9a-f:]+)$/);
   // the host's own memberships: its table
   const m = s.memberTable('h1');
   assert.deepEqual(m.rows.map((r) => r.slice(0, 4)), [['eth0', 'ff05::1', 'MLDv2', 'any source']]);

@@ -8,11 +8,16 @@
  * stratum from a reference clock of its own (taken as given: no reference
  * clock is simulated). One with upstreams starts unsynchronized: it serves
  * stratum 16 (an alarm: no client takes time from it) until a response
- * comes from an upstream that is itself usable (a reference or
- * synchronized); then it is synchronized to that upstream, its stratum one
- * more. Without a response from its source for 8 poll intervals (an NTP
- * reach register gone to zero, RFC 5905) it is unsynchronized again and
- * tries the next usable upstream that answers. A relation's client (an
+ * comes from an upstream whose stratum (in the response: what that server
+ * knew when it answered) is below 16; then it is synchronized to that
+ * upstream, its stratum one more than the one the response said. A client
+ * knows its upstreams only by their responses — the stratum each last
+ * reported and when — never by reading a server's state. A response of its
+ * source at stratum 16 (the source lost its own time) ends the
+ * synchronization at once; without a response from its source for 8 poll
+ * intervals (an NTP reach register gone to zero, RFC 5905) it is
+ * unsynchronized again; then it takes the next upstream whose last
+ * response, still fresh, was usable. A relation's client (an
  * ntp relation without the service) has the same state. Not modelled:
  * clock filtering, selection and discipline (no offset, jitter or accuracy
  * is computed), leap seconds, authentication, NTP's own symmetric modes.
@@ -33,7 +38,8 @@ export interface NtpState {
   /** a stratum of its own (a reference clock), when configured */
   own?: number;
   /** its configured upstreams (addresses), and the device each is, when the model has it */
-  upstreams: Array<{ addr: string; dev: string | null; last?: number }>;
+  /** its upstreams: the address, the device it is (when the model has it), its last response and the stratum that response reported */
+  upstreams: Array<{ addr: string; dev: string | null; last?: number; stratum?: number }>;
   /** the upstream it is synchronized to now, and since when */
   source?: string;
   since?: number;
@@ -45,6 +51,7 @@ export class NtpSim {
   readonly devs = new Map<string, NtpState>();
 
   constructor(private P: ProtocolSim) {
+    P.shared.set('ntp', this);
     for (const d of P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
       const s = d.appServices ? d.appServices.get('ntp') : undefined;
       if (!s) continue;
@@ -52,7 +59,8 @@ export class NtpSim {
       this.devs.set(d.id, { dev: d.id, own: typeof s.values.stratum === 'number' ? (s.values.stratum as number) : undefined, upstreams: ups.map((a) => ({ addr: a, dev: this.owner(a) })) });
     }
     P.handlers.set('ntp', (dev, _l3, msg) => {
-      if (msg.type === 'Server response') this.answered(dev, String((msg.data as { from?: string }).from || ''));
+      const d = (msg.data || {}) as { from?: string; stratum?: number };
+      if (msg.type === 'Server response') this.answered(dev, String(d.from || ''), typeof d.stratum === 'number' ? d.stratum : 16);
       // (the session behaviour goes on with it)
       return false;
     });
@@ -72,19 +80,19 @@ export class NtpSim {
     return null;
   }
 
-  /** A device's stratum now: its own, one more than its source's, else 16 (unsynchronized). */
+  /** A device's stratum as it knows it now: its own, one more than its source's last response said, else 16 (unsynchronized). */
   stratum(dev: string): number {
     const st = this.devs.get(dev);
     if (!st) return 16;
     if (st.own !== undefined) return st.own;
     if (!st.source) return 16;
     const src = st.upstreams.find((u) => u.addr === st.source);
-    return src && src.dev ? Math.min(16, this.stratum(src.dev) + 1) : 16;
+    return src && src.stratum !== undefined ? Math.min(16, src.stratum + 1) : 16;
   }
 
-  /** Does a device serve usable time (a reference, or synchronized), and is it powered on? */
-  usable(dev: string): boolean {
-    return this.P.e.deviceOn(dev) && this.stratum(dev) < 16;
+  /** The stratum a server puts in its response: what it knows itself (its own state, never its upstreams'). */
+  responseStratum(dev: string): number {
+    return this.stratum(dev);
   }
 
   /** The poll interval: the NTP sessions' demonstration interval (NTPv4's minimum poll, 64 s). */
@@ -92,7 +100,8 @@ export class NtpSim {
     return 64000;
   }
 
-  private answered(client: string, server: string): void {
+  /** A server's response reached its client: what it says (its stratum) is all the client knows of it. */
+  private answered(client: string, server: string, stratum: number): void {
     let st = this.devs.get(client);
     if (!st) {
       // a relation's client without the service: it has the same state
@@ -102,10 +111,12 @@ export class NtpSim {
     const u = st.upstreams.find((x) => x.dev === server);
     if (!u) return;
     u.last = this.P.e.now;
+    u.stratum = stratum;
     if (st.own !== undefined) return;
-    const ok = this.usable(server);
-    if (!ok) {
-      if (!st.source) this.P.e.note('state', 'ntp', client, server, 'not synchronized', 'unsynchronized', `${client}: ${server} answers at stratum 16 (it is unsynchronized itself): no time to take from it`);
+    if (stratum >= 16) {
+      // the server has no time to give (stratum 16): its own source is gone; the client's, if it is this one, too
+      if (st.source === u.addr) this.lose(st, `its source ${server} answers at stratum 16 (it is unsynchronized itself)`);
+      else if (!st.source) this.P.e.note('state', 'ntp', client, server, 'not synchronized', 'unsynchronized', `${client}: ${server} answers at stratum 16 (it is unsynchronized itself): no time to take from it`);
       return;
     }
     if (st.source === u.addr) return;
@@ -116,7 +127,7 @@ export class NtpSim {
     st.source = u.addr;
     st.since = this.P.e.now;
     st.lost = undefined;
-    this.P.e.note('state', 'ntp', client, server, 'synchronized', 'synchronized', `${client} is synchronized to ${server} (${u.addr}, stratum ${this.stratum(server)}): it serves stratum ${this.stratum(client)} now (no offset or accuracy is computed: NTP's clock discipline is not modelled)`);
+    this.P.e.note('state', 'ntp', client, server, 'synchronized', 'synchronized', `${client} is synchronized to ${server} (${u.addr}, stratum ${stratum} in its response): it serves stratum ${this.stratum(client)} now (no offset or accuracy is computed: NTP's clock discipline is not modelled)`);
     this.watch(st);
   }
 
@@ -166,8 +177,9 @@ export class NtpSim {
   table(dev: string): GridTable {
     const st = this.devs.get(dev);
     const now = this.P.e.now;
-    const rows = st ? st.upstreams.map((u) => [u.addr, u.dev || '(outside the model)', u.last !== undefined ? `${durationText(now - u.last)} ago` : 'never', u.dev ? String(this.stratum(u.dev)) : '—', st.source === u.addr ? 'its source' : '']) : [];
-    return { caption: `NTP of ${dev}`, cols: ['Upstream', 'Device', 'Last answer', 'Its stratum', ''], rows, empty: st && st.own !== undefined ? 'A reference: it asks no upstream.' : 'No upstream.', timers: [], notes: st ? [`${dev}: ${this.text(dev)}.`, `Unreachable after ${NTP_REACH} polls without an answer (the demonstration poll interval is 64 s, NTP's minimum).`] : [] };
+    // (what its responses said: a client knows nothing else of an upstream)
+    const rows = st ? st.upstreams.map((u) => [u.addr, u.dev || '(outside the model)', u.last !== undefined ? `${durationText(now - u.last)} ago` : 'never', u.stratum !== undefined ? String(u.stratum) : '—', st.source === u.addr ? 'its source' : '']) : [];
+    return { caption: `NTP of ${dev}`, cols: ['Upstream', 'Device', 'Last answer', 'Stratum it reported', ''], rows, empty: st && st.own !== undefined ? 'A reference: it asks no upstream.' : 'No upstream.', timers: [], notes: st ? [`${dev}: ${this.text(dev)}.`, `Unreachable after ${NTP_REACH} polls without an answer (the demonstration poll interval is 64 s, NTP's minimum).`] : [] };
   }
 
   /** Is there an NTP state to show for the device? */

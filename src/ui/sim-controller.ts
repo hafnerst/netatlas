@@ -59,7 +59,7 @@ import { virtBridgeId } from '../model/virtual';
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
-import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
+import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, flightKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
@@ -1460,7 +1460,7 @@ export class SimController implements SimulationMode {
       const l = m.index.links.get(f.track.ref.slice(5));
       if (l) where += `, on cable ${l.id} (${f.track.from === 'a' ? l.a.device + ' → ' + l.b.device : l.b.device + ' → ' + l.a.device})`;
     }
-    const key = it ? it.key : conversationKey(f.protocol, f.hdr, f.label);
+    const key = it ? it.key : flightKey(f, f.hdr);
     this.inspect(f.hdr, where, near, key, f.label, this.forwardingOf(f));
     return true;
   }

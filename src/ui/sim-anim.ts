@@ -480,7 +480,7 @@ export class SimAnimator {
         // (under the foreground's dots)
         dots.insertBefore(shape, dots.firstChild);
         drawn++;
-        const kind = bgKind(f.protocol, f.label);
+        const kind = bgKind(f.protocol, f.label, f.flags);
         const k = f.track.ref + '|' + kind;
         // one dot of a cable and kind carries the label while it is on its way (then the next one): it never hops between dots
         const owner = this.bgOwners.get(k);
@@ -570,8 +570,10 @@ const BG_FONT = 8.5;
  * Query / Report / Leave, OSPF Hello …); a multicast stream's datagrams are
  * UDP. Never addresses or interfaces (the inspector and the log have them).
  */
-export function bgKind(protocol: string, label: string): string {
+export function bgKind(protocol: string, label: string, flags?: string): string {
   const name = BG_NAMES[protocol] || protocol.toUpperCase().slice(0, 10);
+  // a TCP segment (of whatever protocol): its flags, from its header
+  if (flags !== undefined) return `${name} ${flags}`;
   const m = /\b(Query|Report|Leave|Hello|Join|Prune|Register|Request|Reply|Discover|Offer|Ack|Update|Keepalive|BPDU)\b/.exec(label);
   const type = m ? m[1] : '';
   if (protocol === 'igmp' || protocol === 'mld' || protocol === 'pim' || protocol === 'ospf' || protocol === 'bgp' || protocol === 'stp' || protocol === 'bfd') return type ? `${name} ${type}` : name;
