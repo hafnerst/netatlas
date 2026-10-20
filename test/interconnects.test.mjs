@@ -168,3 +168,15 @@ test('the editor: an interconnect is an entity of its own (added, found, deleted
   d.undo();
   assert.equal(d.exportText(), text);
 });
+
+test('Find reaches the interconnects (the keyboard’s way to them): by technology, protocol, connector and port', () => {
+  const Q = load('model/queries.js');
+  const m = model(example('interconnects.yaml'));
+  const refs = (q) => Q.search(m, q, 50).map((h) => h.ref);
+  assert.ok(refs('usb').includes('interconnect:scope-usb'));
+  assert.ok(refs('modbus').includes('interconnect:meter-bus'));
+  assert.ok(refs('rs-485 bus').includes('interconnect:meter-bus'));
+  assert.ok(refs('meter2:rs485').includes('interconnect:meter-bus'));
+  assert.ok(refs('srio').includes('interconnect:fab1'));
+  assert.equal(Q.search(m, 'can fd')[0].ref, 'interconnect:can');
+});

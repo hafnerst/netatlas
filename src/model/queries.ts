@@ -433,6 +433,11 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   }
   for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', n.cidr || '']);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
+  // the non-IP interconnects (the keyboard's way to them): by id, label, technology ("usb", "rs-485 bus"), protocol, connector and their ports
+  for (const ic of model.interconnects) {
+    const tech = ic.technology.name + (ic.technology.version ? ' ' + ic.technology.version : '');
+    consider('interconnect:' + ic.id, ic.topology === 'shared' ? 'bus / fabric (non-IP)' : 'interconnect (non-IP)', `${ic.label || ic.id} — ${tech}`, [ic.id, ic.label || '', tech, ic.technology.name, ic.protocol ? ic.protocol.name : '', ic.connector || '', ic.topology === 'shared' ? tech + ' bus' : tech + ' link', 'non-ip', 'interconnect', ...ic.endpoints.map((e) => `${e.device}:${e.port}`)]);
+  }
   for (const d of model.devices) {
     for (const r of d.routes) consider(routeRefOf(r), 'route', `${d.label}: ${r.prefix}${r.via !== undefined ? ' via ' + r.via : ''}${r.iface !== undefined ? ' dev ' + r.iface : ''}${r.blackhole ? ' blackhole' : ''}`, [r.prefix, r.via || '', r.iface || '', r.name || '', r.vrf ? 'vrf ' + r.vrf : '']);
   }
