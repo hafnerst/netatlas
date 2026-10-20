@@ -9,7 +9,10 @@
  *      or a device: that router's address);
  *   3. else the candidate RP (`candidate_rp: yes`) with the highest router
  *      ID among the routers its PIM relations connect it to (its PIM
- *      domain: what the bootstrap router announces there).
+ *      domain: what the bootstrap router announces there) — in the
+ *      simulation, among the candidates the router has heard announced
+ *      in Bootstrap messages and not yet expired (RpEnv.learned), never
+ *      read from the other routers' configuration or state.
  *
  * The address family must be the group's: an IPv6 group never takes an
  * IPv4 RP (a candidate is an IPv6 RP by its first loopback, else interface,
@@ -33,11 +36,13 @@ export interface RpEnv {
   routerId(dev: string): IpAddr | null;
   v6Addr(dev: string): IpAddr | null;
   on?(dev: string): boolean;
+  /** the candidate RPs a router knows from the Bootstraps it received (the simulation): the dynamic choice is among these only */
+  learned?(dev: string, v: 4 | 6): Array<{ dev: string; rid: IpAddr; addr: IpAddr }>;
 }
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-function pimValue(model: Model, dev: string, key: string): string | undefined {
+export function pimValue(model: Model, dev: string, key: string): string | undefined {
   const d = model.index.devices.get(dev);
   const s = d ? d.services.find((x) => x.id === 'pim') : undefined;
   return s ? s.values.get(key) : undefined;
@@ -97,6 +102,11 @@ export function rpFor(model: Model, env: RpEnv, dev: string, group: string): RpC
       const ra = rpAddr(env, x[1], v);
       if (ra) return { dev: x[1], addr: ra, how: `the rp of its relation ${r.id}` };
     }
+  }
+  if (env.learned) {
+    // the simulation: what the router's Bootstraps told it (each candidate until its holdtime runs out)
+    const heard = env.learned(dev, v).slice().sort((a, b) => compareAddr(b.rid, a.rid) || cmp(a.dev, b.dev));
+    return heard.length ? { dev: heard[0].dev, addr: heard[0].addr, how: 'the candidate RP with the highest router ID its Bootstraps announced' } : null;
   }
   const dom = pimDomain(model, dev);
   const cands = Array.from(dom)

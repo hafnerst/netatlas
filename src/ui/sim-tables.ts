@@ -430,6 +430,7 @@ export class TablePanels {
       ];
       if (ip.version === 4) rows.splice(3, 0, ['Don’t Fragment', ip.df ? 'set' : 'not set']);
       if (ip.frag) rows.push(['Fragment', ip.frag]);
+      if (ip.options) rows.push(['Options', ip.options]);
       if (ip.encap) rows.push(['Carries', `${ip.encap}, with the packet below inside`]);
       layer(`Layer 3 – IPv${ip.version}${h.l3.length > 1 ? (i === 0 ? ' (outer)' : i === h.l3.length - 1 ? ' (inner)' : ` (${i + 1})`) : ''}`, rows);
     });

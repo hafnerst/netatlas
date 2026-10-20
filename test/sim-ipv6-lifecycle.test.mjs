@@ -98,3 +98,47 @@ test('shut, reboot and recovery: the link-local address is gone, then tentative 
   s.runTo(s.now + 3000);
   assert.equal(t.ok, true, t.result);
 });
+
+/** two hosts and a router on one switch; `dup`: the second host is written with the first one's global address. */
+const LAN6 = (o = {}) => `netatlas: 1
+title: dad
+devices:
+  - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: [2001:db8:9::10/64]}]}
+  - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: [${o.dup ? '2001:db8:9::10' : '2001:db8:9::20'}/64]}]${o.h2 || ''}}
+  - {id: r, type: router, interfaces: [{id: g0, ip: [2001:db8:9::1/64]}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+links:
+  - {id: a, a: "h1:eth0", b: "sw:p1"}
+  - {id: b, a: "h2:eth0", b: "sw:p2"}
+  - {id: c, a: "r:g0", b: "sw:p3"}
+`;
+
+test('static IPv6 addresses run duplicate address detection too: tentative (not used) until it passes; a duplicate found on the link is never used', () => {
+  // unique: each written address is probed and usable afterwards
+  const u = sim(LAN6());
+  u.runTo(2100);
+  assert.ok(u.events().some((e) => e.kind === 'table' && e.device === 'h1' && e.what === 'static address' && /2001:db8:9::10\/64 \(written\) is tentative/.test(e.detail)));
+  u.runTo(5000);
+  assert.ok(u.events().some((e) => e.kind === 'message' && e.what === 'Neighbor Solicitation' && /duplicate address detection: is 2001:db8:9::10 in use\?/.test(e.detail)), 'the written address is probed');
+  assert.ok(u.events().some((e) => e.kind === 'table' && e.device === 'h1' && e.what === 'DAD passed' && /2001:db8:9::10\/64 \(static\)/.test(e.detail)));
+  const ok = u.sendTest({ from: 'h1', to: '2001:db8:9::1', kind: 'icmp' });
+  u.runTo(u.now + 2000);
+  assert.equal(ok.ok, true, ok.result);
+  // a duplicate: h2's cable comes up later; h1 defends its address, h2's copy is a duplicate and never used
+  const d = sim(LAN6({ dup: true }));
+  d.shut('h2', 'eth0');
+  d.runTo(8000);
+  d.noShut('h2', 'eth0');
+  d.runTo(20000);
+  assert.ok(d.events().some((e) => e.kind === 'state' && e.device === 'h2' && e.what === 'duplicate address' && /2001:db8:9::10\/64 is a duplicate/.test(e.detail)), d.events().filter((e) => e.device === 'h2' && e.protocol === 'ndp').map((e) => e.detail).join('\n'));
+  assert.ok(!d.events().some((e) => e.kind === 'state' && e.device === 'h1' && e.what === 'duplicate address'), 'the first holder keeps it');
+  const t = d.sendTest({ from: 'h2', to: '2001:db8:9::1', kind: 'icmp' });
+  d.runTo(d.now + 3000);
+  assert.ok(typeof t === 'string' ? /no IPv6 address/.test(t) : t.ok === false && /no IPv6 address/.test(t.result), 'h2 has no usable IPv6 address to send from');
+  // the router reaches the address: h1 answers (its NA), never h2
+  const r = d.sendTest({ from: 'r', to: '2001:db8:9::10', kind: 'icmp' });
+  d.runTo(d.now + 3000);
+  assert.equal(r.ok, true, r.result);
+  assert.ok(d.events().some((e) => e.kind === 'message' && e.device === 'h1' && e.what === 'Echo Reply' && e.t >= r.started));
+  assert.ok(!d.events().some((e) => e.kind === 'message' && e.device === 'h2' && e.what === 'Echo Reply'));
+});

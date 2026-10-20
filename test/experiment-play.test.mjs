@@ -262,9 +262,16 @@ test('played with the pacing (only its traffic shown) or run at once: the same r
       pacer.hiddenHoldsNothing = true;
     }
     let frames = 0;
-    while (!r.over && frames < 100000) {
-      pacer.frame(100);
-      frames++;
+    // (the frame's work budget is real time: the clock is pinned, so the count depends on the pacing alone, not on the machine)
+    const now = Date.now;
+    Date.now = () => 0;
+    try {
+      while (!r.over && frames < 100000) {
+        pacer.frame(100);
+        frames++;
+      }
+    } finally {
+      Date.now = now;
     }
     assert.ok(r.simulation.now <= r.endTime + 1e-6, 'the clock stops at the end');
     return { res: r.result(), frames };

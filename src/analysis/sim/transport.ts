@@ -439,7 +439,7 @@ export class Transport {
     if (!sd) return { why: `${dev} is not a device of the simulation` };
     const fam = `IPv${dst.version}`;
     const ll = isLinkLocalAddr(dst);
-    const usable = (l: L3Iface, x: { addr: IpAddr }): boolean => x.addr.version === dst.version && (ll || !isLinkLocalAddr(x.addr) || l.kind === 'loopback');
+    const usable = (l: L3Iface, x: { addr: IpAddr }): boolean => x.addr.version === dst.version && (ll || !isLinkLocalAddr(x.addr) || l.kind === 'loopback') && this.e.usableAddr(l, x.addr);
     if (via !== undefined) {
       const l = sd.l3.get(via);
       if (!l) return { why: `${dev} has no interface ${via} with an IP address` };

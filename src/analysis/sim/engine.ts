@@ -428,7 +428,24 @@ export class Engine {
 
   /** Is the address one of the interface's own: configured, leased, learned, or its link-local one? */
   private hasOwn(l3: L3Iface, a: IpAddr): boolean {
-    return l3.addrs.some((x) => compareAddr(x.addr, a) === 0) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
+    return l3.addrs.some((x) => compareAddr(x.addr, a) === 0 && this.usableAddr(l3, x.addr)) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
+  }
+
+  /** Is one of an interface's written addresses usable now (not a tentative or duplicate IPv6 address)? */
+  usableAddr(l3: L3Iface, a: IpAddr): boolean {
+    return !l3.unusable || !l3.unusable.length || l3.unusable.indexOf(formatAddr(a)) < 0;
+  }
+
+  /** A written IPv6 address becomes unusable (tentative, a duplicate) or usable (its duplicate address detection passed). */
+  setUsable(dev: string, iface: string, a: IpAddr, usable: boolean): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!l3) return;
+    const t = formatAddr(a);
+    const list = (l3.unusable || []).filter((x) => x !== t);
+    if (!usable) list.push(t);
+    l3.unusable = list;
+    this.stateVersion++;
   }
 
   constructor(model: Model, opts: EngineOptions = {}) {
@@ -1898,7 +1915,7 @@ export class Engine {
     let p = frame.ip;
     let inner: Pkt | undefined;
     while (p) {
-      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap });
+      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap, options: p.routerAlert ? (p.dst.version === 4 ? 'Router Alert (option 20)' : 'Hop-by-Hop: Router Alert (MLD)') : undefined });
       inner = p;
       p = p.inner;
     }
@@ -4336,8 +4353,8 @@ export class Engine {
 
 /** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
 export function ipLen(p: Pkt): number {
-  // (an IPv6 fragment has its 8-byte fragment header besides)
-  const hdr = p.dst.version === 4 ? 20 : p.frag ? 48 : 40;
+  // (an IPv6 fragment has its 8-byte fragment header besides; the Router Alert option: 4 bytes in IPv4, an 8-byte Hop-by-Hop header in IPv6)
+  const hdr = (p.dst.version === 4 ? 20 : p.frag ? 48 : 40) + (p.routerAlert ? (p.dst.version === 4 ? 4 : 8) : 0);
   if (p.inner) return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
   if (p.len !== undefined) return hdr + p.len;
   const d = p.msg.data as { size?: unknown } | undefined;

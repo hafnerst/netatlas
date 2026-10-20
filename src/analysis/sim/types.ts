@@ -110,6 +110,8 @@ export interface Pkt {
   held?: string;
   /** IPv6: the path MTU its sender knows (it fragments its own packet to it; routers never do) */
   pmtu?: number;
+  /** the Router Alert option (IPv4 option 20, RFC 2113; IPv6 Hop-by-Hop, RFC 2711): IGMP and MLD carry it */
+  routerAlert?: boolean;
 }
 
 /** One dot: a message on one cable (physical) or one logical line, from t0 to t1. */
@@ -225,7 +227,7 @@ export interface Headers {
   };
   arp?: { op: string; senderMac: string; senderIp: string; targetMac: string; targetIp: string };
   /** the IP headers, outermost first (an encapsulated packet has several) */
-  l3: Array<{ version: 4 | 6; src: string; dst: string; ttl: number; df: boolean; proto: string; len: number; frag?: string; encap?: string }>;
+  l3: Array<{ version: 4 | 6; src: string; dst: string; ttl: number; df: boolean; proto: string; len: number; frag?: string; encap?: string; options?: string }>;
   l4?: L4;
   /** what it carries ("OSPF Hello", "Echo request, 56 bytes", the quoted header of an ICMP error) */
   payload: string;

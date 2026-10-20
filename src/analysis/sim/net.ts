@@ -110,8 +110,10 @@ export interface L3Iface {
   ports: string[];
   mac: string;
   macSimulated: boolean;
-  /** its IPv6 link-local address once duplicate address detection passed (an interface with automatic IPv6 or router advertisements; ipv6.ts) */
+  /** its IPv6 link-local address once duplicate address detection passed (ipv6.ts) */
   ll?: SimAddr;
+  /** its written IPv6 addresses not usable now (tentative until duplicate address detection passes, or duplicates; ipv6.ts) */
+  unusable?: string[];
 }
 
 export interface SimDevice {

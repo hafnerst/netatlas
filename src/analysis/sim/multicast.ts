@@ -71,7 +71,7 @@ import { isLinkLocalGroup, isMulticastIp, isSsmGroup, multicastMac } from './mac
 import { L3Iface, SimDevice } from './net';
 import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, vlanRef } from './params';
 import { routerId } from './proto-routing';
-import { RpChoice, RpEnv, pimDomain, rpFor, staticRp } from '../pim-rp';
+import { pimDomain, pimValue, RpChoice, RpEnv, rpFor, staticRp } from '../pim-rp';
 import { ProtocolSim, Sess } from './protocols';
 import { representativeText } from '../../model/speed';
 import { SnoopingChoice, snoopingChoice, switchedVlans } from '../../model/snooping';
@@ -488,7 +488,40 @@ export class Multicast {
         return null;
       },
       on: (d) => this.e.deviceOn(d),
+      learned: (d, v) => this.rpSet(d, v),
     };
+  }
+
+  /**
+   * The candidate RPs a router knows (PIM BSR, RFC 5059 in the simulation's
+   * terms): itself when it is a candidate, and every candidate whose
+   * Bootstrap reached it, until that one's holdtime runs out.
+   */
+  private rpSet(dev: string, v: 4 | 6): Array<{ dev: string; rid: IpAddr; addr: IpAddr }> {
+    const out: Array<{ dev: string; rid: IpAddr; addr: IpAddr }> = [];
+    const env = { routerId: (d: string) => (this.P.sd(d) ? A(routerId(this.P, d, 'pim')) : null) };
+    if (pimValue(this.P.m, dev, 'candidate_rp') === 'yes' && this.e.deviceOn(dev)) {
+      const own = v === 4 ? env.routerId(dev) : this.ownV6(dev);
+      const rid = env.routerId(dev);
+      if (own && rid) out.push({ dev, rid, addr: own });
+    }
+    const heard = this.P.shared.get('pim-rpset|' + dev) as Map<string, { rid: string; rp4?: string; rp6?: string; until: number }> | undefined;
+    if (heard)
+      for (const [origin, x] of heard) {
+        if (x.until <= this.e.now || origin === dev) continue;
+        const a = v === 4 ? x.rp4 : x.rp6;
+        if (a) out.push({ dev: origin, rid: A(x.rid), addr: A(a) });
+      }
+    return out;
+  }
+
+  /** A router's own IPv6 RP address (its first loopback's, else interface's, global IPv6 address). */
+  ownV6(d: string): IpAddr | null {
+    const sd = this.P.sd(d);
+    if (!sd) return null;
+    const ls = Array.from(sd.l3.values()).sort((x, y) => Number(y.kind === 'loopback') - Number(x.kind === 'loopback') || cmp(x.id, y.id));
+    for (const l of ls) for (const x of l.addrs) if (x.addr.version === 6 && x.addr.bytes[0] !== 0xfe) return x.addr;
+    return null;
   }
 
   /**
@@ -529,7 +562,13 @@ export class Multicast {
     return v === 4 ? `IGMP${ver}` : ver === 'v3' ? 'MLDv2' : 'MLDv1';
   }
 
-  /** Send an IGMP / MLD message out of an interface (TTL 1, link-local or the group). */
+  /**
+   * Send an IGMP / MLD message out of an interface: TTL (hop limit) 1, the
+   * Router Alert option (RFC 3376 §4, RFC 3810 §5), its length by its
+   * version (IGMPv2 8 bytes; IGMPv3 Query 12 + 4 per source, Report 8 +
+   * 8 per record + 4 per source; MLDv1 24; MLDv2 Query 28 + 16 per source,
+   * Report 8 + 20 per record + 16 per source).
+   */
   private igmpSend(dev: string, l3: L3Iface, src: IpAddr, dst: IpAddr, type: string, label: string, detail: string, f: NonNullable<L4['igmp']>, data: { [k: string]: unknown }): void {
     const v = dst.version;
     const msg: Msg = { protocol: 'igmp', type, label, detail, data: { from: dev, ...data } };
@@ -537,17 +576,35 @@ export class Multicast {
     const icmp6: { [k: string]: number } = { Query: 130, 'Report v1': 131, Leave: 132, 'Report v2': 143 };
     const kind = type.indexOf('Query') >= 0 ? 'Query' : type === 'Leave' ? 'Leave' : f.version === 'MLDv2' ? 'Report v2' : 'Report v1';
     pkt.l4 = v === 4 ? { proto: 'igmp', num: 2, igmp: f } : { proto: 'icmp', num: 58, icmpType: icmp6[kind], icmpCode: 0, icmpName: `MLD ${type}`, igmp: f };
-    pkt.len = 8 + 4 * ((f.sources || []).length + (f.records || []).length);
+    pkt.routerAlert = true;
+    pkt.len = igmpLength(v, f, kind);
     this.e.note('message', 'igmp', dev, '', type, '', detail, this.e.now, msg);
     this.e.send(dev, pkt, l3);
   }
 
-  /** The IP address of a host's interface for a group's family. */
+  /**
+   * The source of a host's IGMP / MLD message on an interface: its IPv4
+   * address; for MLD its link-local address once that is valid (RFC 3810
+   * §5), else — an interface with IPv6 still detecting its link-local
+   * address — the unspecified address :: (RFC 3590, RFC 3810 §5.2.13), never
+   * a global one.
+   */
   private hostAddr(dev: string, iface: string, v: 4 | 6): { l3: L3Iface; addr: IpAddr } | null {
     const sd = this.P.sd(dev);
     const l3 = sd ? sd.l3.get(iface) : undefined;
-    const a = l3 ? l3.addrs.find((x) => x.addr.version === v) : undefined;
-    return l3 && a ? { l3, addr: a.addr } : null;
+    if (!l3) return null;
+    if (v === 6) {
+      if (l3.ll) return { l3, addr: l3.ll.addr };
+      return l3.addrs.some((x) => x.addr.version === 6) ? { l3, addr: A('::') } : null;
+    }
+    const a = l3.addrs.find((x) => x.addr.version === v);
+    return a ? { l3, addr: a.addr } : null;
+  }
+
+  /** A router's own address on an interface for its queries and the querier election: IPv4 its address, MLD its valid link-local address (none yet: it does not query). */
+  private queryAddr(ri: RIface): IpAddr | null {
+    if (ri.addr.version === 4) return ri.addr;
+    return ri.l3.ll ? ri.l3.ll.addr : null;
   }
 
   /** A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). */
@@ -827,7 +884,9 @@ export class Multicast {
    * ignores (that one stops on hearing this one).
    */
   private heardQuery(c: Cand, src: IpAddr, from: string, t: number): void {
-    if (!c.running || compareAddr(src, c.addr) >= 0) return;
+    // (MLD: a router's own address in the election is its link-local one, as its queries carry; without one yet, any querier wins)
+    const own = 'l3' in c && c.addr.version === 6 ? this.queryAddr(c as RIface) : c.addr;
+    if (!c.running || (own && compareAddr(src, own) >= 0)) return;
     const was = c.querier;
     c.querier = false;
     c.startup = 0;
@@ -976,19 +1035,23 @@ export class Multicast {
   }
 
   private generalQuery(ri: RIface): void {
+    const src = this.queryAddr(ri);
+    if (!src) return;
     ri.queries++;
     const v = ri.addr.version;
     const all = A(v === 4 ? '224.0.0.1' : 'ff02::1');
     const mrt = this.e.params.num('igmp-max-resp', ri.dev, null, this.at(ri));
     const vn = this.verName(v, this.ver(ri.dev, ri.l3.id));
-    this.igmpSend(ri.dev, ri.l3, ri.addr, all, 'Query', `${this.name(v)} Query (general)`, `${vn} General Query from ${ri.dev} (${formatAddr(ri.addr)}, the querier) to ${formatAddr(all)}: which groups have members? Answer within ${durationText(mrt)}`, { type: 'Membership Query (general)', version: vn, maxResp: mrt / 1000 }, { maxResp: mrt, querier: formatAddr(ri.addr) });
+    this.igmpSend(ri.dev, ri.l3, src, all, 'Query', `${this.name(v)} Query (general)`, `${vn} General Query from ${ri.dev} (${formatAddr(src)}, the querier) to ${formatAddr(all)}: which groups have members? Answer within ${durationText(mrt)}`, { type: 'Membership Query (general)', version: vn, maxResp: mrt / 1000 }, { maxResp: mrt, querier: formatAddr(src) });
   }
 
   private groupQuery(ri: RIface, group: string): void {
+    const src = this.queryAddr(ri);
+    if (!src) return;
     const v = ri.addr.version;
     const lmqi = this.e.params.num('igmp-lmqi', ri.dev, null, this.at(ri));
     const vn = this.verName(v, this.ver(ri.dev, ri.l3.id));
-    this.igmpSend(ri.dev, ri.l3, ri.addr, A(group), 'Query', `${this.name(v)} Query ${group}`, `${vn} Group-Specific Query from ${ri.dev} (${formatAddr(ri.addr)}) to ${group}: any members left? Answer within ${durationText(lmqi)}`, { type: 'Membership Query (group-specific)', version: vn, group, maxResp: lmqi / 1000 }, { maxResp: lmqi, group, querier: formatAddr(ri.addr) });
+    this.igmpSend(ri.dev, ri.l3, src, A(group), 'Query', `${this.name(v)} Query ${group}`, `${vn} Group-Specific Query from ${ri.dev} (${formatAddr(src)}) to ${group}: any members left? Answer within ${durationText(lmqi)}`, { type: 'Membership Query (group-specific)', version: vn, group, maxResp: lmqi / 1000 }, { maxResp: lmqi, group, querier: formatAddr(src) });
   }
 
   private rifsAt(dev: string, l3: L3Iface, v: 4 | 6): RIface | undefined {
@@ -1000,6 +1063,14 @@ export class Multicast {
     const d = (msg.data || {}) as { group?: string; leave?: boolean; sources?: string[]; maxResp?: number; querier?: string; from?: string };
     if (d.from === dev) return;
     const v = pkt.src.version;
+    // what IGMPv3 / MLD take (RFC 3376 §9.1, RFC 3810 §5): the Router Alert option, a hop limit of 1 (MLD), an MLD source that
+    // is link-local — or :: in a Report of a node still without one; else the message is ignored
+    const unspec = v === 6 && pkt.src.bytes.every((b) => b === 0);
+    const bad = !pkt.routerAlert ? 'no Router Alert option' : v === 6 && pkt.ttl !== 1 ? `hop limit ${pkt.ttl}, not 1` : v === 6 && !(pkt.src.bytes[0] === 0xfe && (pkt.src.bytes[1] & 0xc0) === 0x80) && !(unspec && msg.type !== 'Query') ? `source ${formatAddr(pkt.src)} is not link-local` : '';
+    if (bad) {
+      this.e.note('drop', 'igmp', dev, d.from || '', msg.type, '', `${dev} ignores ${msg.label} on ${l3.id}: ${bad}`);
+      return;
+    }
     const ri = this.rifsAt(dev, l3, v);
     if (ri) {
       if (msg.type === 'Query') {
@@ -1306,7 +1377,8 @@ export class Multicast {
     const msg: Msg = { protocol: 'igmp', type: 'Query', label: group ? `IGMP Query ${group}` : 'IGMP Query (general)', detail, data: { from: sd.id, maxResp: mrt, querier: formatAddr(c.addr), snooping: true, vlan: c.vlan, ...(group ? { group } : {}) } };
     const pkt = this.e.newPacket(c.addr, dst, '', msg, [], 1);
     pkt.l4 = { proto: 'igmp', num: 2, igmp: { type: group ? 'Membership Query (group-specific)' : 'Membership Query (general)', version: vn, maxResp: mrt / 1000, ...(group ? { group } : {}) } };
-    pkt.len = 12;
+    pkt.routerAlert = true;
+    pkt.len = igmpLength(4, pkt.l4.igmp as NonNullable<L4['igmp']>, 'Query');
     this.e.note('message', 'igmp', sd.id, '', 'Query', '', detail, this.e.now, msg);
     this.e.floodFrom(sd.id, c.vlan, { src: sd.bridgeId.split('.')[1] || '00:00:00:00:00:00', dst: multicastMac(dst), msg, ip: pkt });
   }
@@ -2396,3 +2468,15 @@ const ROLE_WORD: { [k in QuerierRole]: string } = { starting: 'Querier (startup)
 
 /** A remaining time as the tables write it. */
 
+/** An IGMP / MLD message's length after the IP header (RFC 2236, RFC 3376 §4, RFC 2710, RFC 3810 §5). */
+export function igmpLength(v: 4 | 6, f: NonNullable<L4['igmp']>, kind: string): number {
+  const sources = (f.sources || []).length;
+  const records = Math.max(1, (f.records || []).length);
+  const v3 = f.version === 'IGMPv3' || f.version === 'MLDv2';
+  if (v === 4) {
+    if (!v3) return 8;
+    return kind === 'Query' ? 12 + 4 * sources : 8 + 8 * records + 4 * sources;
+  }
+  if (!v3) return 24;
+  return kind === 'Query' ? 28 + 16 * sources : 8 + 20 * records + 16 * sources;
+}

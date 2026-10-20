@@ -21,6 +21,8 @@ import { ifaceRef, relRef } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpOpen, tcpSend } from './proto-tcp';
 import { Msg, Pkt, SessionStatus } from './types';
+import { pimValue } from '../pim-rp';
+import { routerId } from './proto-routing';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s: string): IpAddr => parseAddress(s) as IpAddr;
@@ -535,12 +537,6 @@ const custom: Behaviour = {
 
 // ------------------------------------------------------------------ PIM and IGMP
 
-/** The RP a router uses for the any-source groups of an address family (multicast.ts decides it, in that router's context), null: none. */
-function rpOf(P: ProtocolSim, dev: string, v: 4 | 6): { dev: string; addr: IpAddr } | null {
-  const m = P.shared.get('multicast') as { rp(dev: string, group: string): { dev: string; addr: IpAddr } | null } | undefined;
-  return m ? m.rp(dev, v === 4 ? '239.0.0.0' : 'ff0e::') : null;
-}
-
 const pim: Behaviour = {
   start(P, s) {
     const key = `pim-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
@@ -554,19 +550,23 @@ const pim: Behaviour = {
         if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}, DR priority ${P.paramText(P.param('pim-dr-priority', s.dev, ifaceRef(s.dev, s.local.l3.id)))}`);
       },
     );
-    // the RP announces itself (BSR) every bootstrap period
-    const rp = rpOf(P, s.dev, s.local.addr.version);
+    // a candidate RP announces itself every bootstrap period (PIM BSR, RFC 5059: in the simulation the candidate's own
+    // Bootstrap, flooded over the PIM neighbours): its router ID, its RP addresses and a holdtime of 2.5 periods
     const bkey = 'pim-bsr|' + s.dev;
-    if (rp && rp.dev === s.dev && !P.shared.has(bkey)) {
+    if (pimValue(P.m, s.dev, 'candidate_rp') === 'yes' && !P.shared.has(bkey)) {
       P.shared.set(bkey, 0);
       P.periodic(
-        () => true,
+        () => P.e.deviceOn(s.dev),
         () => P.timer(s, s.profile, 'bsr').ms,
         () => {
           const seq = ((P.shared.get(bkey) as number) || 0) + 1;
           P.shared.set(bkey, seq);
+          const m = P.shared.get('multicast') as { ownV6(d: string): IpAddr | null } | undefined;
+          const rid = routerId(P, s.dev, 'pim');
+          const v6 = m ? m.ownV6(s.dev) : null;
+          const hold = Math.round(2.5 * P.timer(s, s.profile, 'bsr').ms);
           for (const o of Array.from(P.sessions.values()).filter((x) => x.protocol === 'pim' && x.dev === s.dev && x.up).sort((a, b) => (a.key < b.key ? -1 : 1))) {
-            P.unicast(o, 'Bootstrap', `the RP for 224.0.0.0/4 is ${formatAddr(rp.addr)} (${rp.dev})`, { bsr: seq, origin: s.dev });
+            P.unicast(o, 'Bootstrap', `candidate RP ${s.dev} (router ID ${rid}): RP ${rid}${v6 ? ' and ' + formatAddr(v6) : ''} for 224.0.0.0/4${v6 ? ' and ff00::/8' : ''}, holdtime ${fmtSec(hold)}`, { bsr: seq, origin: s.dev, rid, rp4: rid, rp6: v6 ? formatAddr(v6) : undefined, hold });
           }
         },
         3000,
@@ -588,10 +588,25 @@ const pim: Behaviour = {
         return;
       }
       case 'Bootstrap': {
-        const key = `pim-bsr-seen|${s.dev}|${d.origin}|${d.bsr}`;
-        if (P.shared.has(key)) return;
+        const b = d as { bsr?: number; origin?: string; rid?: string; rp4?: string; rp6?: string; hold?: number };
+        const key = `pim-bsr-seen|${s.dev}|${b.origin}|${b.bsr}`;
+        if (P.shared.has(key) || !b.origin || b.origin === s.dev) return;
         P.shared.set(key, true);
-        for (const o of Array.from(P.sessions.values()).filter((x) => x.protocol === 'pim' && x.dev === s.dev && x.up && x.peer !== s.peer && x.peer !== d.origin)) P.unicast(o, 'Bootstrap', 'forwarded on', { bsr: d.bsr, origin: d.origin });
+        // what the router knows of the candidate from now on: its RP addresses, until the holdtime runs out without another Bootstrap
+        const setKey = 'pim-rpset|' + s.dev;
+        let set = P.shared.get(setKey) as Map<string, { rid: string; rp4?: string; rp6?: string; until: number }> | undefined;
+        if (!set) P.shared.set(setKey, (set = new Map()));
+        const was = set.get(b.origin);
+        const hold = b.hold || 150000;
+        set.set(b.origin, { rid: b.rid || '0.0.0.0', rp4: b.rp4, rp6: b.rp6, until: P.e.now + hold });
+        if (!was || was.until <= P.e.now) P.e.note('table', 'pim', s.dev, b.origin, 'RP set', '', `PIM: ${s.dev} learns candidate RP ${b.origin} (router ID ${b.rid}) from a Bootstrap, for ${fmtSec(hold)} unless another one comes`);
+        const set2 = set;
+        const origin = b.origin;
+        P.e.after(hold, () => {
+          const x = set2.get(origin);
+          if (x && x.until <= P.e.now) P.e.note('table', 'pim', s.dev, origin, 'RP expired', '', `PIM: ${s.dev} heard no Bootstrap of candidate RP ${origin} for its holdtime (${fmtSec(hold)}): it is no RP candidate here any more`);
+        });
+        for (const o of Array.from(P.sessions.values()).filter((x) => x.protocol === 'pim' && x.dev === s.dev && x.up && x.peer !== s.peer && x.peer !== b.origin)) P.unicast(o, 'Bootstrap', `forwarded on: candidate RP ${b.origin}`, { bsr: b.bsr, origin: b.origin, rid: b.rid, rp4: b.rp4, rp6: b.rp6, hold: b.hold });
         return;
       }
       default:
