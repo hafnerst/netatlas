@@ -307,6 +307,64 @@ async function main() {
       await page.settle(100);
     }
 
+    // TCP flags on the labels: a small model (pc — r1 — r2 — srv, eBGP between the routers) whose labels read at Fit; the physical view
+    // at a TCP test's three steps ([S]; [S,A]; [A] with the request [P,A]), the logical view with the BGP session's own handshake
+    {
+      const TCP_MODEL = `netatlas: 1
+title: TCP handshake
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
+  - {id: r1, type: router, router_id: 10.255.0.1, protocols: {bgp: {asn: 65001}}, interfaces: [{id: g0, ip: 10.0.1.1/24}, {id: g1, ip: 10.0.12.1/30}], routes: [{prefix: 10.0.2.0/24, via: 10.0.12.2}]}
+  - {id: r2, type: router, router_id: 10.255.0.2, protocols: {bgp: {asn: 65002}}, interfaces: [{id: g0, ip: 10.0.12.2/30}, {id: g1, ip: 10.0.2.1/24}], routes: [{prefix: 10.0.1.0/24, via: 10.0.12.1}]}
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.2.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}], simulation: {listening: tcp/443}}
+links:
+  - {id: l1, a: "pc:eth0", b: "r1:g0"}
+  - {id: l2, a: "r1:g1", b: "r2:g0"}
+  - {id: l3, a: "r2:g1", b: "srv:eth0"}
+networks:
+  - {id: lan1, cidr: 10.0.1.0/24}
+  - {id: wan, cidr: 10.0.12.0/30}
+  - {id: lan2, cidr: 10.0.2.0/24}
+relations:
+  - {id: peering, protocol: ebgp, endpoints: ["r1:g1", "r2:g0"]}
+`;
+      const until = async (want, test) => page.eval(`(() => { const c = netatlas.simController(); const lab = () => Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).map((g) => g.textContent); const want = ${JSON.stringify(want)}; for (let i = 0; i < 6000; i++) { c.advance(20); if (i % 3 === 0) { c.refresh(true); const t = lab(); if (want.every((w) => t.some((x) => x.indexOf(${JSON.stringify(test ? 'Test · ' : '')} + w) === 0))) { document.getElementById('toast').hidden = true; return true; } } } return false; })()`);
+      // zoomed to 120 % around the labels wanted (the point between them kept in place), cropped around them with room for their way
+      const canvas = async (prefix) => {
+        // half a hop further (Readable: 3 s a hop at 1x), the labels past their fade-in
+        await page.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 50; i++) c.advance(20); c.refresh(true); return true; })()`);
+        await page.eval(`(() => { const c = netatlas.simController(); const ls = Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).filter((g) => g.textContent.indexOf(${JSON.stringify(prefix)}) >= 0).map((g) => g.getBoundingClientRect()); if (!ls.length) return false; const r = document.getElementById('canvas').getBoundingClientRect(); const cx = ls.reduce((n, b) => n + b.left + b.width / 2, 0) / ls.length - r.left; const cy = ls.reduce((n, b) => n + b.top + b.height / 2, 0) / ls.length - r.top; const z = netatlas.zoom; const dx = (cx - z.tx) / z.k; const dy = (cy - z.ty) / z.k; z.k = 1.2; z.tx = r.width / 2 - dx * z.k; z.ty = r.height / 2 - dy * z.k; netatlas.applyZoom(); c.refresh(true); return true; })()`);
+        await page.settle(200);
+        const r = await page.rect('#canvas');
+        const w = Math.min(r.w - 8, 760);
+        const h = Math.min(r.h - 8, 420);
+        return { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, w, h };
+      };
+      for (const view of ['logical', 'physical']) {
+        await page.eval(`netatlas.loadText(${JSON.stringify('$MODEL$')}, 'tcp-handshake.yaml'), netatlas.setView('${view}'), true`.replace(JSON.stringify('$MODEL$'), JSON.stringify(TCP_MODEL)));
+        await page.eval("document.getElementById('toast').hidden = true");
+        await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ params: {} }), netatlas.simController().setPlaying(false), netatlas.fit(), true`);
+        await page.settle(150);
+        if (view === 'logical') {
+          // the BGP session's TCP connection along the relation: its SYN-ACK and ACK, then the OPENs
+          if (await until(['BGP TCP [S,A]'], false)) {
+            await page.settle(150);
+            await save('tcp-logical', await canvas('BGP TCP ['), { quality: 55 });
+          }
+        } else {
+          await page.eval(`netatlas.simController().runTo(15000), netatlas.simController().sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 443 }), true`);
+          for (const [name, want] of [['tcp-syn', ['TCP [S]']], ['tcp-synack', ['TCP [S,A]']], ['tcp-ack', ['TCP [A]', 'TCP [P,A]']]]) {
+            if (!(await until(want, true))) continue;
+            await page.settle(150);
+            await save(name, await canvas('Test · TCP ['), { quality: 55 });
+            await page.eval('netatlas.fit(), true');
+          }
+        }
+        await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+        await page.settle(100);
+      }
+    }
+
     // the protocol simulation (protocol-simulation.yaml, an internal test model, physical view): the tables, the packet inspector, a broadcast domain, multicast routes, a device's Simulation section, the start dialog
     {
       await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'test', 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
@@ -319,7 +377,7 @@ async function main() {
       const st = await page.rect('#sd-status');
       await save('arp-table', { x: st.x, y: st.y, w: st.w, h: Math.min(st.h, 300) }, { quality: 55 });
       // the packet inspector for a TCP SYN of pc1's test traffic, with Follow message
-      await page.eval(`(() => { const c = netatlas.simController(); c.showStatus(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP SYN → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP SYN → /.test(x.label)); } return false; })()`);
+      await page.eval(`(() => { const c = netatlas.simController(); c.showStatus(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP \\[S\\] → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP \\[S\\] → /.test(x.label)); } return false; })()`);
       await page.settle(200);
       await save('packet-inspector', around([await page.rect('.sim-table-panel[data-table="packet"]')], 6), { quality: 55 });
       // the lab host's broadcast domain, highlighted

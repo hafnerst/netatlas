@@ -83,11 +83,15 @@ nested network, unallocated), and suggests only unallocated addresses.
   a *possible* conflict.
 * **IPv6 interfaces.** Static IPv6 addresses enable IPv6 on an interface:
   its link-local address (written fe80::, else from its MAC) is tentative
-  until duplicate address detection passes. A static global address is
-  usable at once (no duplicate address detection for it in the simulation:
-  validation reports duplicates); acquired addresses (SLAAC, DHCPv6) go
-  through it.
-* **DHCP and DNS.** One lease per interface. DNS has no negative caching,
+  until duplicate address detection passes. A written global address runs
+  it too (tentative meanwhile: not a source, not answered for; a duplicate
+  found on the link is never used — the first holder keeps it), as do
+  acquired addresses (SLAAC, DHCPv6). Validation reports duplicates written
+  in the model; the detection is what the running network finds.
+* **DHCP and DNS.** One lease per interface; each DHCP message has its leg's
+  UDP ports (client 68 → 67, relay ↔ server 67 → 67, to the client 67 → 68)
+  in its interface's VRF; renewing and rebinding are sent again after half
+  the time left. DNS has no negative caching,
   DNSSEC or TCP fallback and recurses only through the model's DNS servers.
   A name belongs to whole interfaces, never one address of an interface. A
   DHCP client without a DHCP server in the model gets no address (or a
@@ -161,21 +165,45 @@ what the advertisements it received told it (below).
   import and export filters; the lowest cost wins (a hop unless a `cost`
   is written), for BGP first the highest local preference and the
   shortest AS path. In the simulation each router computes them from the
-  records it has learned: one per router (its routing adjacencies and its
-  interfaces that are up, with a sequence number), carried by the
-  protocols' advertisements (OSPF and IS-IS flood them and send them again
-  after 5 s until acknowledged, EIGRP likewise, RIP's periodic Responses
-  carry them all, BGP's UPDATEs go over TCP), and flooded over any
-  routing session of a router (also between protocols). They are an
-  abstraction of the protocols' databases, not LSAs or BGP paths field by
-  field. An adjacency forms only where the two have a network in common (a
-  BGP session may also run between loopbacks).
+  records it has learned, one database per routing instance (a protocol in
+  a VRF): each record is a router's adjacencies of that instance and its
+  interfaces that are up, with a sequence number, carried only by that
+  protocol's own advertisements (OSPF and IS-IS flood them and send them
+  again after 5 s until acknowledged, EIGRP likewise, BGP's UPDATEs go over
+  TCP) and flooded only over that instance's sessions — OSPF never teaches
+  BGP, nor one VRF another; redistribution is the policy's. A message is
+  taken only when the protocol's state machine allows it (OSPF from
+  Exchange on, IS-IS and EIGRP adjacencies up, BGP Established). The
+  records are an abstraction of the databases, not LSAs or BGP paths field
+  by field: the prefixes a router originates are computed from its
+  configuration, the knowledge of its adjacencies from the records. A
+  router knows another router's interfaces by the newest record of it,
+  whatever its instance. An adjacency forms only where the two have a
+  network in common (a BGP session may also run between loopbacks; IS-IS
+  forms on a cable whatever the addresses).
+* **RIP is a distance vector** of its own: each router's table (prefix,
+  metric, the neighbour it came from, a timeout) comes from its
+  neighbours' Responses only, with split horizon and poisoned reverse,
+  withdrawal with 16, a 180 s timeout and 120 s garbage collection, and
+  triggered updates after 1–5 s. No hold-down, no RIPv1.
+* **IS-IS** pairs routers over the cable between them (its PDUs are
+  frames), by the NET's system ID and area and the level; its routes over
+  an unnumbered interface go to the neighbour's own address out of it,
+  numbered interfaces in different subnets get no IPv4 next hop. One
+  database for both levels, no designated IS.
+* **EIGRP**: a lost neighbour is a Query to the others, each answering
+  with a Reply (stuck in active after 3 min without one); DUAL's
+  feasibility condition is not modelled (another neighbour's route is used
+  at once).
 * **OSPF.** The DR election follows RFC 2328 (Waiting, BackupSeen,
   priority, non-preemptive) per interface; Hellos whose intervals, area or
   network type differ are discarded (a network-type mismatch never forms
-  an adjacency in the simulation, whatever a vendor would do). NBMA
-  neighbours are not configured: a non-broadcast network behaves as a
-  broadcast one.
+  an adjacency in the simulation, whatever a vendor would do). The database
+  exchange negotiates master and slave by router ID and rejects a DBD
+  whose MTU is larger than the interface's (stuck in ExStart / Exchange);
+  one DBD holds the database (no M-bit paging). Two DROthers reach each
+  other through the DR's record. NBMA neighbours are not configured: a
+  non-broadcast network behaves as a broadcast one.
 * **BGP.** Only the relation's first endpoint connects (no connection
   collision of two simultaneous opens); a second connection of a session
   that is up is closed. The OPEN's capabilities are its address family.
@@ -225,7 +253,10 @@ to the host's address, DNAT for published ports) in both.
   service from anywhere to anywhere), default deny.
 * **A router's policy filters what it routes**, not what it bridges within
   a VLAN (no VLAN ACLs); it is stateless unless written stateful.
-* **NAT is one translation per flow** (no port exhaustion, no hairpin NAT);
+* **NAT is one translation per flow** — TCP and UDP by their ports, an ICMP
+  echo by its identifier; an ICMP error about a translated packet goes back
+  to the inside host with its quoted header translated back (PMTUD through
+  NAT) — (no port exhaustion, no hairpin NAT);
   the path tracer names a container's published ports without checking the
   port numbers, and does not apply the NAT service (the simulation does).
 * **An IDS/IPS's inspection** matches protocols and ports; inline it blocks,
@@ -244,8 +275,9 @@ each branch is given. The simulation fragments IPv4 without DF, drops a
 larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
 Big, and the sender learns the path MTU (PMTUD, per VRF and destination,
 forgotten after 10 min or when the route leaves by another interface); TCP
-segments by it, and an IPv6 sender fragments its own UDP and ICMP to it.
-TCP options, jumbo-frame negotiation and PLPMTUD are not modelled.
+segments by it and by the MSS its peer's SYN announced, and an IPv6 sender
+fragments its own UDP and ICMP to it. TCP options other than the MSS,
+jumbo-frame negotiation and PLPMTUD are not modelled.
 
 **Not supported.** Application identification, TLS inspection, user
 identities, time ranges, NAT rules in a policy (the NAT service translates),
@@ -276,11 +308,18 @@ Network events, attributed to their event.
   leave report is sent once; a lost leave is covered by the membership
   interval.
 * **PIM.** Each router uses its own RP: its static `rp`, else its PIM
-  relations' `rp`, else the candidate RP with the highest router ID of its
-  PIM domain (no BSR election, no group ranges); routers that disagree
-  keep their own (said, and their trees do not meet); an RPT prune acts at the next router up
-  only; register suppression lasts while the source sends; IGMPv3 / MLDv2
-  source lists are kept per group.
+  relations' `rp`, else the candidate RP with the highest router ID among
+  those whose Bootstraps reached it (each candidate floods its own every
+  Bootstrap period; known for 2.5 periods, then dropped — no separate BSR,
+  no C-RP advertisements, no priorities, no group ranges); routers that
+  disagree keep their own (said, and their trees do not meet); the DR is
+  elected by the priorities the neighbours' Hellos announce; an RPT prune
+  acts at the next router up only; register suppression lasts while the
+  source sends; IGMPv3 / MLDv2 source lists are kept per group.
+* **IGMP and MLD messages** carry the Router Alert option and TTL 1, their
+  lengths by version; MLD goes from the link-local address once it is valid
+  (a host's Report before it: from ::), and a router elects the MLD querier
+  by link-local address.
 * **Network events.** A join's outcome is what a multicast router of its
   segment records (receipt by snooping switches is not part of it); a
   Leave multicast group follows the entries learned on the host's way when
@@ -301,7 +340,9 @@ static timing check finds a compatible source path.
 
 **Simplifications.** PTP clock states follow the modelled timestamps (a
 model of the servo, not of real oscillators). NTP computes no time: its
-state is modelled, its offsets, jitter and clock filter are not. A static
+state is modelled, its offsets, jitter and clock filter are not; a client
+knows its upstreams only by their responses (the stratum each reported,
+fresh by the reach register), never by their state. A static
 timing check works by the method asked for (PTP, NTP, or either, both then
 reported): a PTP source path, or an NTP source chain from upstream to
 upstream to a configured reference (a reference's own clock is taken as
@@ -324,8 +365,14 @@ load balancers) as their request / answer exchanges.
 labels it; payloads are sizes, never contents. TCP has no congestion
 control, windows or delayed acknowledgements (a request and an answer, each
 acknowledged; a connection's byte stream has real sequence and
-acknowledgement numbers, every segment of a write goes at once, and a lost
-one waits for the retransmission timer — no fast retransmit, no SACK);
+acknowledgement numbers, the MSS each SYN announces, every segment of a
+write goes at once, and a lost one waits for the retransmission timer — no
+fast retransmit, no SACK; unacceptable segments are refused as RFC 9293
+says; a FIN closes one direction, CLOSE_WAIT until the application
+closes — the test's request/answer and BGP and MQTT close at once; no
+urgent data, no ECN, no simultaneous open, no window scaling);
+a load balancer's health check is a TCP connect check (the handshake
+completed, then a RST);
 tests use fixed sizes (a 120-byte request, a 1460-byte
 answer). Load balancers and proxies relay TCP only (UDP to them is answered
 by themselves); a reverse proxy and a load balancer relay one connection
@@ -355,16 +402,26 @@ the user.
   pacing shows a simulated second in a real one and, on a heavy model, may
   fall behind (*· behind*).
 * **Determinism.** Jitter of starts and timers comes from a fixed seed, under
-  a hop's time; packet loss is a share of frames from a fixed seed; there is
+  a hop's time — each device's and each cable's own stream, from the
+  model's title and its id, so adding a device changes nobody else's; a
+  generated MAC comes from the title and the interface alone (a written MAC
+  is always kept, a duplicate too); packet loss is a share of frames from a
+  fixed seed; there is
   no queuing beyond each cable's serialization and no CPU limit. A broadcast
   storm follows each frame for 6 rounds.
 * **Foreground and background are a display choice.** Senders choose what is
   shown, not what runs: every device's protocols are computed. In Readable
   pacing the dots of a long chain run behind the tables, up to 15 s, beyond
-  which the exchange shows as cable activity; at most 48 messages are drawn
-  at once and the event log keeps the last 20 000 events. Following a
-  message keeps its conversation drawn. Cable activity shows the last 3 s
-  of display. A browser tab in the background stops the display clock.
+  which the exchange shows as cable activity — but what goes on with what
+  is drawn (the next cable of a message on screen, the next message of a
+  conversation on screen: a TCP handshake's SYN-ACK and ACK) up to 60 s,
+  beyond the dot limit; at most 48 messages start being drawn at once and
+  the event log keeps the last 20 000 events. Following a message keeps
+  its conversation drawn: a TCP or UDP conversation is its two ends with
+  their ports (an ICMP echo its identifier), as its sender sent it — a
+  conversation through NAT is two, one each side of the translation. Cable
+  activity shows the last 3 s of display. A browser tab in the background
+  stops the display clock.
 * **Order on screen** follows the deliveries the engine records; a reply
   sent after a delay of its own (a service's response time, an ARP
   retransmission) is ordered by its conversation and counts as the

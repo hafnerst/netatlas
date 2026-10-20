@@ -323,7 +323,7 @@ const MANUAL: Section[] = [
       'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters.',
       'Everything happens inside NetAtlas: simulated packets travel only through the model on screen. Nothing is sent to a real network, and the page makes no network connections.',
     ],
-    figures: [['sim-scope', 'The execution scope in Start simulation: Building A of the campus runs 11 of 12 devices, its DHCP and DNS servers and the switches between included; the cable to the controller is its boundary.'], ['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
+    figures: [['sim-scope', 'The execution scope in Start simulation: Building A of the campus runs 11 of 12 devices, its DHCP and DNS servers and the switches between included; the cable to the controller is its boundary.'], ['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.'], ['tcp-syn', 'A TCP test from pc to srv, physical view: the first segment, *Test · TCP [S] → 10.0.2.10:443*.'], ['tcp-synack', 'Its answer on the way back from srv: *TCP [S,A]*.'], ['tcp-ack', 'pc’s request right behind its ACK: *TCP [P,A] · 120 B*.'], ['tcp-logical', 'The logical view: a BGP session’s own handshake along its eBGP relation, *BGP TCP [S,A]*.']],
   },
   {
     id: 'sim-layout',

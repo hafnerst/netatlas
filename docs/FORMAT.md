@@ -3325,8 +3325,12 @@ message of the event log) shows the frame layer by layer: source and
 destination MAC (what a broadcast or multicast MAC is, and how an IP group
 maps to it: 01:00:5e + the low 23 bits, 33:33 + the low 32 bits), the
 802.1Q tag on that cable, the IP headers (outermost first: TTL, DF,
-protocol, length, fragment), the transport header (ports, TCP flags,
-ICMP type and code with the quoted header) and what it carries. A relation's
+protocol, length, fragment, the Router Alert option), the transport header
+(ports, TCP flags and the MSS option, ICMP type and code with the quoted
+header) and what it carries. A TCP segment's dot is labelled with the flags
+of its own header — its letters S, F, R, P, A, U, E, C in that order, in
+brackets: *TCP [S,A]*, *BGP OPEN [P,A]* (the application's message keeps
+its name, the flags are the transport's); *[]* has none. A relation's
 message has its profile's transport (OSPF IP 89, BGP TCP 179 …).
 
 ### DHCP and DNS
