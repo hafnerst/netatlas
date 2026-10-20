@@ -790,7 +790,14 @@ export class Simulation {
   /** Run towards t, stopping at the first moment a message that `visible` accepts is sent; returns the time reached. */
   advance(t: number, visible: (f: Flight) => boolean): number {
     const from = this.engine.flightSerial;
-    this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    // (a jump, as runTo: past the presentation's hold — what it passes is history to the pacing)
+    const hold = this.engine.hold;
+    this.engine.hold = null;
+    try {
+      this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    } finally {
+      this.engine.hold = hold;
+    }
     return this.engine.now;
   }
 
