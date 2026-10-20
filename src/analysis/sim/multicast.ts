@@ -72,7 +72,7 @@ import { L3Iface, SimDevice } from './net';
 import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, vlanRef } from './params';
 import { routerId } from './proto-routing';
 import { pimDomain, pimValue, RpChoice, RpEnv, rpFor, staticRp } from '../pim-rp';
-import { ProtocolSim, Sess } from './protocols';
+import { ProtocolSim, Sess, ipOf } from './protocols';
 import { representativeText } from '../../model/speed';
 import { SnoopingChoice, snoopingChoice, switchedVlans } from '../../model/snooping';
 import { vlanRangesShown } from '../../model/derive';
@@ -1416,9 +1416,9 @@ export class Multicast {
     if (!own) return { dr: false, who: '' };
     let best = { dev, prio: this.e.params.num('pim-dr-priority', dev, null, ifaceRef(dev, l3.id)), addr: own.addr };
     for (const s of this.neighbours(dev, l3.id)) {
-      if (s.remote.addr.version !== v) continue;
+      if (ipOf(s.remote).version !== v) continue;
       // (its priority as its last Hello said: a router knows its neighbour's configuration only that way)
-      const c = { dev: s.peer, prio: typeof s.x.peerDrPrio === 'number' ? (s.x.peerDrPrio as number) : 1, addr: s.remote.addr };
+      const c = { dev: s.peer, prio: typeof s.x.peerDrPrio === 'number' ? (s.x.peerDrPrio as number) : 1, addr: ipOf(s.remote) };
       if (c.prio > best.prio || (c.prio === best.prio && compareAddr(c.addr, best.addr) > 0)) best = c;
     }
     return { dr: best.dev === dev, who: best.dev };
@@ -1438,14 +1438,14 @@ export class Multicast {
     if (d.kind !== 'forward' || !d.hops.length) return { iif: null, nbr: null, gateway: null, why: `no route to ${formatAddr(target)}` };
     const hop = d.hops[0];
     if (!hop.gateway) return { iif: hop.iface, nbr: null, gateway: null, why: 'directly connected' };
-    const nbr = this.neighbours(dev, hop.iface).find((s) => compareAddr(s.remote.addr, hop.gateway as IpAddr) === 0) || null;
+    const nbr = this.neighbours(dev, hop.iface).find((s) => compareAddr(ipOf(s.remote), hop.gateway as IpAddr) === 0) || null;
     return { iif: hop.iface, nbr, gateway: hop.gateway, why: nbr ? `RPF neighbour ${nbr.peer}` : `the RPF neighbour ${formatAddr(hop.gateway)} on ${hop.iface} is no PIM neighbour` };
   }
 
   /** Send a Join or a Prune for an entry to an upstream neighbour (on its PIM session). */
   private joinPrune(dev: string, nbr: Sess, s: string, g: string, prune: boolean, rpt = false): void {
     const what = s === '*' ? `(*, ${g})` : `(${s}, ${g})${rpt ? ', RPT' : ''}`;
-    const group = A(nbr.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
+    const group = A(ipOf(nbr.local).version === 4 ? '224.0.0.13' : 'ff02::d');
     this.P.multicast(nbr, group, 'Join/Prune', `${prune ? 'prune' : 'join'} ${what}; upstream neighbour ${nbr.peer}`, { target: nbr.peer, s, g, prune, rpt });
   }
 
@@ -1555,7 +1555,7 @@ export class Multicast {
   private graft(dev: string, e: MRoute): void {
     const nbr = e.nbr ? this.neighbours(dev).find((s) => s.peer === e.nbr) : undefined;
     if (!nbr) return;
-    const group = A(nbr.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
+    const group = A(ipOf(nbr.local).version === 4 ? '224.0.0.13' : 'ff02::d');
     this.P.multicast(nbr, group, 'Graft', `graft (${e.s}, ${e.g}): a member joined downstream; upstream neighbour ${nbr.peer}`, { target: nbr.peer, s: e.s, g: e.g, graft: true });
   }
 
@@ -1706,7 +1706,7 @@ export class Multicast {
       const expect = sg && sg.iif ? sg.iif : starIif;
       // dense mode: a copy on another interface than the one towards the source: that neighbour is told to prune it
       if (mode === 'dense' && sg && sg.iif) {
-        const nb = this.neighbours(dev, l3.id).find((x) => compareAddr(x.remote.addr, pkt.src) !== 0);
+        const nb = this.neighbours(dev, l3.id).find((x) => compareAddr(ipOf(x.remote), pkt.src) !== 0);
         const k = `dnrpf|${dev}|${s}|${g}|${l3.id}`;
         if (nb && (!this.noted.has(k) || this.e.now - (this.noted.get(k) as number) >= JOIN_HOLD)) {
           this.noted.set(k, this.e.now);

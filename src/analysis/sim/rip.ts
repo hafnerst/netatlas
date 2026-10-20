@@ -43,7 +43,7 @@ import { DvRoute, DvTables, RouteOrigin, originatedRoutes, relParam } from '../r
 import { filterRoute } from '../../model/routing-policy';
 import { prefixText } from '../ipmath';
 import { hashIndex } from './engine';
-import { ProtocolSim, Sess } from './protocols';
+import { ProtocolSim, Sess, ipOf } from './protocols';
 
 /** RIP's infinity: a metric of 16 is unreachable. */
 export const RIP_INFINITY = 16;
@@ -293,7 +293,7 @@ export class RipSim implements DvTables {
 
   /** A Response out of a session's interface, to the RIP group (224.0.0.9, ff02::9). */
   send(s: Sess, what: string, list: RipEntry[]): void {
-    const group = parseAddress(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string)) as IpAddr;
+    const group = parseAddress(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string)) as IpAddr;
     this.P.multicast(s, group, 'Response', `${what}: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`, { rip: list });
   }
 

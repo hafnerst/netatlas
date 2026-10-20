@@ -18,7 +18,7 @@ import { fmtSec } from './engine';
 import { isMulticastIp, multicastMac, virtualMac } from './mac';
 import { L3Iface, carries, otherEnd, portKey, linkPort } from './net';
 import { ifaceRef, relRef } from './params';
-import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpOpen, tcpSend } from './proto-tcp';
 import { Msg, Pkt, SessionStatus } from './types';
 import { pimValue } from '../pim-rp';
@@ -516,7 +516,7 @@ function ikeInit(P: ProtocolSim, s: Sess): void {
   x.replacing = false;
   x.answered = undefined;
   P.setState(s, 'IKE_SA_INIT', false, 'initiating');
-  ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${formatAddr(s.remote.addr)} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
+  ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${formatAddr(ipOf(s.remote))} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
 }
 
 /** The negotiation failed (a request unanswered): it starts again after the DPD interval (the initiator). */
@@ -984,7 +984,7 @@ const data: Behaviour = {
     if (s.rel.direction === 'unidirectional' && !s.initiator) return;
     const iv = P.timer(s, s.profile, 'hello');
     s.x.detail = `${s.profile.dataMsg} every ${iv.text} (demonstration)`;
-    every(P, s, () => iv.ms, () => P.unicast(s, s.profile.dataMsg as string, `encapsulated (${s.profile.proto}) between ${formatAddr(s.local.addr)} and ${formatAddr(s.remote.addr)}`));
+    every(P, s, () => iv.ms, () => P.unicast(s, s.profile.dataMsg as string, `encapsulated (${s.profile.proto}) between ${formatAddr(ipOf(s.local))} and ${formatAddr(ipOf(s.remote))}`));
   },
   rx(P, s) {
     if (!s.up) P.setState(s, 'Up', true, 'data received');
@@ -1011,7 +1011,7 @@ const pim: Behaviour = {
     const key = `pim-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(s.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
+    const group = addr(ipOf(s.local).version === 4 ? '224.0.0.13' : 'ff02::d');
     P.periodic(
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,

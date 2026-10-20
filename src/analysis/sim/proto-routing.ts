@@ -13,7 +13,7 @@ import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
 import { fmtSec, hashIndex } from './engine';
 import { durationText } from './params';
-import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 import { RipEntry } from './rip';
 
@@ -325,7 +325,7 @@ function ospfHellos(P: ProtocolSim, s: Sess): void {
   const key = `ospf-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
   if (P.shared.has(key)) return;
   P.shared.set(key, true);
-  const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+  const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
   P.periodic(
     () => true,
     () => P.timer(s, s.profile, 'hello').ms,
@@ -687,7 +687,7 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     const key = `eigrp-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+    const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
     P.periodic(
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
@@ -751,7 +751,7 @@ const rip: Behaviour = {
     const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+    const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
     P.multicast(s, group, 'Request', 'asks for the whole table');
     const upd = (): number => P.timer(s, s.profile, 'hello').ms;
     P.periodic(
@@ -801,7 +801,7 @@ export interface BgpOpen {
 }
 
 function bgpRouteToPeer(P: ProtocolSim, s: Sess): boolean {
-  const d = lookup(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx(s.dev));
+  const d = lookup(P.m, s.dev, s.local.l3.vrf, ipOf(s.remote), P.e.ctx(s.dev));
   return d.kind === 'forward' || d.kind === 'local';
 }
 
@@ -836,7 +836,7 @@ function bgpExpectedAs(P: ProtocolSim, s: Sess): { as: number | null; how: strin
 }
 
 function bgpAfi(s: Sess): string {
-  return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : s.local.addr.version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
+  return s.protocol === 'evpn' ? 'L2VPN EVPN' : s.protocol === 'l3vpn' ? 'VPNv4' : ipOf(s.local).version === 6 ? 'IPv6 unicast' : 'IPv4 unicast';
 }
 
 /** The details of a session: the negotiated hold time and keepalive interval (or what it proposes before). */
@@ -859,16 +859,16 @@ function bgpConnect(P: ProtocolSim, s: Sess): void {
   }
   if (!bgpRouteToPeer(P, s)) {
     // a session between loopbacks waits for a route to the peer (the IGP): it goes on the moment there is one
-    if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(s.remote.addr)} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
+    if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(ipOf(s.remote))} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
     const g = s.gen;
-    const m = P.msg(s, 'TCP SYN', `to port 179 of ${formatAddr(s.remote.addr)}`);
-    P.e.waitFor(`route:${s.dev}|${s.local.l3.vrf}|${formatAddr(s.remote.addr)}`, `a route to ${formatAddr(s.remote.addr)}`, s.dev, m, () => {
+    const m = P.msg(s, 'TCP SYN', `to port 179 of ${formatAddr(ipOf(s.remote))}`);
+    P.e.waitFor(`route:${s.dev}|${s.local.l3.vrf}|${formatAddr(ipOf(s.remote))}`, `a route to ${formatAddr(ipOf(s.remote))}`, s.dev, m, () => {
       if (s.gen === g) bgpConnect(P, s);
     }, `${s.key}|bgp-route`);
     return;
   }
-  P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(s.remote.addr)} port 179`);
-  P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(s.remote.addr)} waiting for TCP (the connection to port 179)`);
+  P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(ipOf(s.remote))} port 179`);
+  P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(ipOf(s.remote))} waiting for TCP (the connection to port 179)`);
   s.x.tcpSince = P.e.now;
   if (!tcpConnect(P, s)) P.setState(s, 'Active', false, 'no connection could be opened');
   // ConnectRetry (RFC 4271 §8.2.2): an attempt not open by then is dropped and made again
@@ -957,13 +957,13 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
     if (ev === 'open') {
       if (!s.initiator) return;
       P.setState(s, 'OpenSent', false, 'TCP connection established');
-      s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
+      s.x.waitedNext = [`TCP connection to ${formatAddr(ipOf(s.remote))}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
       bgpSendOpen(P, s);
       return;
     }
     if (s.state === 'Connect') {
       // the attempt failed (refused, timed out): Active, and the ConnectRetry timer tries again
-      P.setState(s, 'Active', false, `TCP connection to ${formatAddr(s.remote.addr)}:179 failed: ${why}`);
+      P.setState(s, 'Active', false, `TCP connection to ${formatAddr(ipOf(s.remote))}:179 failed: ${why}`);
       return;
     }
     if (s.state !== 'Idle' && s.state !== 'Active') bgp.down(P, s, `its TCP connection ${/^(closed|reset|connection)/.test(why) ? why : 'is gone: ' + why}`);
@@ -1043,12 +1043,12 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
     tcpListen(P, s);
     every(P, s, () => P.timer(s, s.profile, 'hello').ms, () => {
       const hello = P.timer(s, s.profile, 'hello');
-      if (targeted || s.local.addr.version === 6) P.unicast(s, name, `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
+      if (targeted || ipOf(s.local).version === 6) P.unicast(s, name, `transport address ${formatAddr(ipOf(s.local))}, hold ${P.timer(s, s.profile, 'dead').text}`);
       else {
         const key = `ldp-hello|${s.rel.id}|${s.dev}|${Math.floor(P.e.now / hello.ms)}`;
         if (!P.shared.has(key)) {
           P.shared.set(key, true);
-          P.multicast(s, group, 'Hello', `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
+          P.multicast(s, group, 'Hello', `transport address ${formatAddr(ipOf(s.local))}, hold ${P.timer(s, s.profile, 'dead').text}`);
         }
       }
     });
@@ -1056,7 +1056,7 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
   tcp(P, s, ev, why) {
     if (ev === 'open') {
       // the active side (the higher transport address) starts the session; the passive one answers its Initialization
-      if (compareAddr(s.local.addr, s.remote.addr) > 0 && s.state === 'Initialized') {
+      if (compareAddr(ipOf(s.local), ipOf(s.remote)) > 0 && s.state === 'Initialized') {
         P.setState(s, 'OpenSent', false, 'TCP open');
         tcpSend(P, s, 'Initialization', 'session parameters (keepalive time, label distribution)', 32);
       }
@@ -1067,7 +1067,7 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
   rx(P, s, msg) {
     const hold = P.timer(s, s.profile, 'dead');
     // the side with the higher transport address opens the session (RFC 5036 2.5.2)
-    const active = compareAddr(s.local.addr, s.remote.addr) > 0;
+    const active = compareAddr(ipOf(s.local), ipOf(s.remote)) > 0;
     const session = (): void => {
       const sh = P.timer(s, s.profile, 'hold');
       P.armDead(s, sh.ms, () => ldp.down(P, s, `session hold time expired (${sh.text})`), 'session');

@@ -17,7 +17,7 @@
 import { compareAddr, formatAddr } from '../ipmath';
 import { profileTransport } from './transport';
 import type { AppMessage, AppSocket } from './transport';
-import { Behaviour, ProtocolSim, Sess } from './protocols';
+import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { Msg } from './types';
 
 /** What a behaviour hears of its session's connection. */
@@ -109,7 +109,7 @@ export function tcpListen(P: ProtocolSim, s: Sess): void {
   }, (local, remote) => {
     // the session whose addresses the connection has (its configured peer): its relation's handshake; else the protocol's
     const o = Array.from(P.sessions.values())
-      .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && compareAddr(x.local.addr, local) === 0 && compareAddr(x.remote.addr, remote) === 0)
+      .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && compareAddr(ipOf(x.local), local) === 0 && compareAddr(ipOf(x.remote), remote) === 0)
       .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))[0];
     const by = o || s;
     return { protocol: by.protocol, label: by.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), relation: o ? o.rel.id : undefined };
@@ -123,11 +123,11 @@ export function tcpConnect(P: ProtocolSim, s: Sess): boolean {
   if (cur && cur.closedWhy === null) return true;
   const port = tcpPort(s);
   const short = s.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '');
-  const sock = P.transport.appConnect(s.dev, s.remote.addr, port, `${short} ${s.rel.id} to ${s.peer}`, {
+  const sock = P.transport.appConnect(s.dev, ipOf(s.remote), port, `${short} ${s.rel.id} to ${s.peer}`, {
     open(k) {
       if (s.x.sock !== k) return;
       const b = beh(P, s);
-      if (b.tcp) b.tcp(P, s, 'open', `TCP connection to ${formatAddr(s.remote.addr)}:${port} established`);
+      if (b.tcp) b.tcp(P, s, 'open', `TCP connection to ${formatAddr(ipOf(s.remote))}:${port} established`);
     },
     message(k, m) {
       if (s.x.sock === k) deliver(P, s, m);
@@ -135,7 +135,7 @@ export function tcpConnect(P: ProtocolSim, s: Sess): boolean {
     closed(k, why) {
       closed(P, k, why);
     },
-  }, { src: s.local.addr, vrf: s.local.l3.vrf }, { protocol: s.protocol, label: short, relation: s.rel.id });
+  }, { src: ipOf(s.local), vrf: s.local.l3.vrf }, { protocol: s.protocol, label: short, relation: s.rel.id });
   if (typeof sock === 'string') {
     P.e.note('drop', s.protocol, s.dev, s.peer, 'TCP', s.state, `${s.profile.label} ${s.rel.id}: ${s.dev} can't connect: ${sock}`);
     return false;
