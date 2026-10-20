@@ -1849,7 +1849,16 @@ export class Engine {
     if (waited.length) f.hdr.waited = waited;
     const ev = this.msgEvents.get(frame.msg);
     if (ev && !ev.hdr) ev.hdr = f.hdr;
+    // the logical view's dots of the message (no frame of their own): the headers it was sent with, for their inspector
+    const waiting = this.logicalNoHdr.get(frame.msg);
+    if (waiting) {
+      this.logicalNoHdr.delete(frame.msg);
+      for (const x of waiting) if (!x.hdr) x.hdr = f.hdr;
+    }
   }
+
+  /** the logical view's dots of a message, until its first frame's headers are known */
+  private logicalNoHdr = new WeakMap<Msg, Flight[]>();
 
   /**
    * A frame on a wireless link: a client silent for its access point's idle
@@ -2541,6 +2550,12 @@ export class Engine {
     if (msg.origin !== undefined) f.origin = msg.origin;
     if (msg.test !== undefined) f.test = msg.test;
     if (msg.conv !== undefined) f.conv = msg.conv;
+    if (msg.flags !== undefined) f.flags = msg.flags;
+    if (view === 'logical') {
+      const l = this.logicalNoHdr.get(msg);
+      if (l) l.push(f);
+      else this.logicalNoHdr.set(msg, [f]);
+    }
     this.flights.push(f);
     this.flightById.set(f.id, f);
     return f;

@@ -701,7 +701,10 @@ export class Transport {
       const pm = this.pathMtu(dev, vrf, dst);
       if (pm) pkt.pmtu = pm;
     }
-    if (l4.proto === 'tcp') (m.data as { tcp?: boolean }).tcp = true;
+    if (l4.proto === 'tcp') {
+      (m.data as { tcp?: boolean }).tcp = true;
+      m.flags = tcpFlagsText(l4.flags);
+    }
     if (l4.proto === 'tcp' || l4.proto === 'udp' || (l4.proto === 'icmp' && l4.echoId !== undefined)) m.conv = flowKey(l4.proto, formatAddr(src), formatAddr(dst), l4);
     this.e.note('message', m.protocol, dev, peer, m.type, '', m.detail, this.e.now, m);
     // the logical view: a segment of a relation's connection (its handshake, its acknowledgments, its messages) goes along the relation —

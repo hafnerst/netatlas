@@ -39,6 +39,8 @@ export interface Msg {
   test?: number;
   /** the transport conversation it belongs to (pacing.ts flowKey: a TCP connection's ends and ports), for its dots in both views */
   conv?: string;
+  /** a TCP segment's flags as a label gives them ("[S,A]", tcp.ts), from its header */
+  flags?: string;
 }
 
 /** The transport header of a packet (ICMP counts here too): what the inspector, firewalls and the transport layer read. */
@@ -146,6 +148,8 @@ export interface Flight {
   test?: number;
   /** its message's transport conversation (Msg.conv): Follow message's key in both views */
   conv?: string;
+  /** a TCP segment's flags (Msg.flags): what a short background label says of it */
+  flags?: string;
   /**
    * the flight whose arrival caused it (a frame forwarded on, an answer, an
    * ARP request for a packet, the packet released by the ARP reply …): the

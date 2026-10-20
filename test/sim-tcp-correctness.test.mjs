@@ -385,6 +385,9 @@ test('logical view: a relation’s connection — its handshake, acknowledgments
   const i = (l) => labels.indexOf(l);
   assert.ok(i('BGP TCP [S]') >= 0 && i('BGP TCP [S,A]') > i('BGP TCP [S]') && i('BGP TCP [A]') > i('BGP TCP [S,A]') && i('BGP OPEN [P,A]') > i('BGP TCP [A]'), labels.slice(0, 8).join(' | '));
   assert.deepEqual([lane[i('BGP TCP [S]')].track.from, lane[i('BGP TCP [S,A]')].track.from], ['r1', 'r3'], 'the SYN-ACK is the listener’s (it knows its neighbour by address)');
+  // a logical dot has the headers its segment was sent with (its inspector), its flags with them
+  assert.deepEqual(lane[i('BGP TCP [S,A]')].hdr.l4.flags, ['SYN', 'ACK']);
+  assert.equal(lane[i('BGP TCP [S,A]')].flags, '[S,A]');
   // one dot per segment: as many OPEN dots as OPEN segments sent, on the wire too
   const sent = s.events().filter((e) => e.kind === 'message' && e.protocol === 'bgp' && e.what === 'OPEN').length;
   assert.equal(labels.filter((l) => l === 'BGP OPEN [P,A]').length, sent);
