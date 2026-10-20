@@ -29,6 +29,7 @@ import { AppSim } from './apps';
 import { MqttSim } from './mqtt';
 import { Ipv6Sim } from './ipv6';
 import { NtpSim } from './ntp';
+import { OpaqueSim } from './opaque';
 import { PtpSim } from './ptp';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
@@ -201,6 +202,8 @@ export class Simulation {
   readonly ipv6: Ipv6Sim;
   /** NTP's synchronization state (ntp.ts) and PTP (ptp.ts): kept apart, neither disciplines the other */
   readonly ntp: NtpSim;
+  /** illustrative data on the non-IP interconnects and their failures (opaque.ts): never part of the IP side */
+  readonly opaque: OpaqueSim;
   readonly ptp: PtpSim;
 
   constructor(model: Model, opts: SimOptions = {}) {
@@ -227,6 +230,8 @@ export class Simulation {
     this.transport.install();
     this.apps = new AppSim(this.protocols, this.transport);
     this.mqtt = new MqttSim(this.protocols, this.transport, this.apps);
+    // the non-IP interconnects: illustrative data only, apart from everything IP (opaque.ts)
+    this.opaque = new OpaqueSim(this.engine, this.model, () => this.transport.reserveId());
     this.ntp = new NtpSim(this.protocols);
     this.ntp.install();
     this.ptp = new PtpSim(this.protocols, this.multicast);
@@ -576,6 +581,10 @@ export class Simulation {
       } else if (a.flap) {
         // flapping until its cycles are done or it is stopped
         if (!a.flap.obj.ended) return true;
+      } else if (a.opaque) {
+        // illustrative data until its transfers are sent and settled
+        const r = a.opaque;
+        if ((!r.stopped && r.sent < r.spec.count) || r.deliveries.some((d) => d.ok === null)) return true;
       } else if (a.app) {
         // an application until its messages are sent and settled (one waiting for its source's DHCP lease does not count yet)
         if (this.apps.pending(a.app)) return true;
@@ -593,7 +602,7 @@ export class Simulation {
   }
 
   /** An event's control: Stop (a send, a stream, flapping), No shut, Leave group. */
-  actionControl(id: number, op: 'stop' | 'noshut' | 'leave'): boolean {
+  actionControl(id: number, op: 'stop' | 'noshut' | 'leave' | 'restore'): boolean {
     const a = this.acts.find((x) => x.id === id);
     if (!a) return false;
     if (op === 'stop' && a.run) return this.stopRun(a.run.id);
@@ -602,7 +611,28 @@ export class Simulation {
     if (op === 'stop' && a.app) return this.apps.stop(a.app);
     if (op === 'noshut' && a.shut) return this.noShut(a.shut.dev, a.shut.iface);
     if (op === 'leave' && a.join) return this.leaveGroup(a.join.dev, a.join.iface, a.join.group);
+    if (op === 'stop' && a.opaque) return this.opaque.stop(a.opaque.id);
+    if (op === 'restore' && a.icfail && a.icfail.restoredAt === undefined) {
+      const f = a.icfail;
+      const done = f.what === 'interconnect' ? this.opaque.restoreInterconnect(f.key) : f.what === 'attachment' ? this.opaque.reattach(f.key) : this.opaque.noShutPort(f.key);
+      if (done) f.restoredAt = this.now;
+      return done;
+    }
     return false;
+  }
+
+  /** Send illustrative data (Network events): a series of abstract transfers on the non-IP interconnects; refused: a failed event. */
+  actOpaque(spec: import('./opaque').OpaqueSpec): ActionRecord {
+    const target = `${spec.from} → ${spec.to.join(', ') || '?'}${spec.initiator && spec.initiator !== spec.from ? ` (initiated by ${spec.initiator})` : ''}`;
+    const r = this.opaque.start(spec);
+    if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'opaque', at: this.now, target, error: r });
+    return this.keepAction({ id: ++this.actSeq, kind: 'opaque', at: this.now, target, opaque: r });
+  }
+
+  /** A non-IP failure (Network events): an interconnect failed, a participant detached, an opaque port shut — until restored. */
+  actOpaqueFail(what: 'interconnect' | 'attachment' | 'port', key: string): ActionRecord {
+    const why = what === 'interconnect' ? this.opaque.failInterconnect(key) : what === 'attachment' ? this.opaque.detach(key) : this.opaque.shutPort(key);
+    return this.keepAction({ id: ++this.actSeq, kind: 'icfail', at: this.now, target: what === 'interconnect' ? `interconnect ${key}` : key, ...(why ? { error: why } : { icfail: { what, key } }) });
   }
 
   /** Clear finished: the events no longer queued or in progress leave the list. */

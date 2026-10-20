@@ -44,11 +44,12 @@ import { DELIVERY_LABEL, KIND_LABEL, TestPlan } from './test-plan';
 import { Test } from './transport';
 import { AppRun, appCadence, appOutcome, appSummaryText } from './apps';
 import { appProfile } from '../../model/applications';
+import { OpaqueRun } from './opaque';
 
-export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap' | 'app';
+export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap' | 'app' | 'opaque' | 'icfail';
 export type ActionStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'cancelled';
 
-export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping', app: 'Application' };
+export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping', app: 'Application', opaque: 'Send illustrative data', icfail: 'Non-IP failure' };
 export const STATUS_LABEL: Record<ActionStatus, string> = { queued: 'Queued', running: 'In progress', paused: 'Paused', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
 /** An icon per state (beside its word: never the colour alone). */
 export const STATUS_ICON: Record<ActionStatus, string> = { queued: '◷', running: '▶', paused: '❚❚', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
@@ -92,11 +93,15 @@ export interface ActionRecord {
   flap?: { ref: string; obj: Flap };
   /** Start application: its run (apps.ts), or an MQTT client's session (mqtt.ts) */
   app?: AppRun;
+  /** Send illustrative data on the non-IP interconnects (opaque.ts) */
+  opaque?: OpaqueRun;
+  /** a non-IP failure: an interconnect failed, a participant detached, an opaque port shut — until restored */
+  icfail?: { what: 'interconnect' | 'attachment' | 'port'; key: string; restoredAt?: number };
 }
 
 /** A control of an event: Stop (a send, a stream, flapping), No shut, Leave group. */
 export interface ActionControl {
-  op: 'stop' | 'noshut' | 'leave';
+  op: 'stop' | 'noshut' | 'leave' | 'restore';
   label: string;
 }
 
@@ -288,8 +293,50 @@ export function appView(a: ActionRecord, c: ActionContext): ActionView {
 }
 
 /** The view of any operation. */
+/** Send illustrative data: its transfers delivered, stopped on their way (with where and why), pending. */
+function opaqueView(a: ActionRecord, now: number): ActionView {
+  const r = a.opaque as OpaqueRun;
+  const s = r.spec;
+  const ok = r.deliveries.filter((d) => d.ok === true).length;
+  const failed = r.deliveries.filter((d) => d.ok === false).length;
+  const pending = r.deliveries.filter((d) => d.ok === null).length;
+  const total = s.count * s.to.length;
+  const more = !r.stopped && r.sent < s.count;
+  const status: ActionStatus = more || pending ? 'running' : r.stopped ? (ok + failed ? 'stopped' : 'cancelled') : failed && !ok ? 'failed' : 'completed';
+  const ended = status === 'running' ? undefined : Math.max(r.stoppedAt || r.t0, ...r.deliveries.map((d) => d.ended || d.t));
+  const parts = [ok ? `${ok} delivered` : '', failed ? `${failed} not delivered` : '', pending ? `${pending} on their way` : ''].filter((x) => !!x);
+  const last = r.deliveries.filter((d) => d.ok === false).slice(-1)[0];
+  return {
+    id: a.id,
+    kind: 'opaque',
+    title: ACTION_TITLE.opaque,
+    target: a.target,
+    status,
+    at: a.at,
+    ended,
+    progress: { done: ok + failed, total, unit: 'transfers' },
+    outcome: { ok, failed, pending, unknown: 0, cancelled: 0, rate: true, basis: 'Delivered: the illustrative data reached the recipient along the modelled connection. No protocol of the interconnect is simulated.' },
+    summary: (parts.join(' · ') || 'nothing sent yet') + (last ? ` · ${last.why}` : ''),
+    controls: more ? [{ op: 'stop', label: 'Stop' }] : [],
+    details: [
+      `Initiated by ${s.initiator}; data from ${s.from} to ${s.to.join(', ')}; ${s.size} bytes; ${s.count} transfer${s.count === 1 ? '' : 's'}${s.count > 1 ? ' every ' + sec(s.interval) : ''} · submitted ${at(a.at)}.`,
+      ...r.deliveries.slice(-6).map((d) => `#${d.n + 1} to ${d.to}: ${d.ok === null ? 'on its way' : d.why}${d.path ? ' (' + d.path + ')' : ''}`),
+      'Illustrative traffic — protocol behaviour not simulated: no enumeration, addressing, arbitration, acknowledgment or timing.',
+    ],
+    tests: [r.traffic],
+  };
+  void now;
+}
+
 export function actionView(a: ActionRecord, c: ActionContext): ActionView {
   if (a.kind === 'send' && a.run) return sendView(a, c.now);
+  if (a.kind === 'opaque' && a.opaque && !a.error) return opaqueView(a, c.now);
+  if (a.kind === 'icfail' && a.icfail && !a.error) {
+    const f = a.icfail;
+    const on = f.restoredAt === undefined;
+    const word = f.what === 'interconnect' ? 'failed' : f.what === 'attachment' ? 'detached' : 'shut';
+    return { id: a.id, kind: 'icfail', title: ACTION_TITLE.icfail, target: a.target, status: 'completed', at: a.at, ended: a.at, summary: `${a.target} ${word}`, state: on ? `${word} (no illustrative data crosses it)` : `restored at ${at(f.restoredAt as number)}`, controls: on ? [{ op: 'restore', label: f.what === 'port' ? 'Bring port up' : f.what === 'attachment' ? 'Reattach' : 'Restore' }] : [], details: [`${a.target} ${word} at ${at(a.at)}: ${f.what === 'interconnect' ? 'the whole connection or bus segment' : 'that participant alone'}; no electrical fault beyond it is inferred.`], tests: [] };
+  }
   if (a.kind === 'app' && a.app) return appView(a, c);
   const title = ACTION_TITLE[a.kind];
   if (a.error) return failedView(a, title);

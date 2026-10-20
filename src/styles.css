@@ -564,6 +564,7 @@ button.ref:hover { text-decoration: underline; }
 .ic-role text { font-size: 9.5px; font-weight: 700; fill: var(--text); }
 .port.opaque-port { fill: var(--opaque); }
 .ic.selected .ic-line, .ic.selected .ic-bar { filter: drop-shadow(0 0 3px var(--sel)); }
+.pi-notice { margin: 8px 0 0; padding: 6px 8px; border: 1px solid var(--border); border-left: 3px solid var(--opaque); border-radius: 4px; font-size: 12px; }
 /* the layer-2 tagging of a link end, under its port's name: "U 10 · T 20,30" */
 .port-tag { font-size: 10px; fill: var(--text) !important; cursor: pointer; }
 .has-selection .hl.port-tag, .hover-hl.port-tag { text-decoration: underline; }

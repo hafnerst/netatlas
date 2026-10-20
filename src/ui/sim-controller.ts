@@ -71,7 +71,7 @@ import { textWidth } from '../layout/text';
 type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
-import { AppForm, IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
+import { AppForm, IfaceForm, JoinForm, LeaveForm, OpaqueFailForm, OpaqueForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
@@ -149,7 +149,7 @@ export interface SimStartOptions {
   experiment?: { relevant(f: Flight): boolean; until(): number; notable?(t: number): number | null };
 }
 
-const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c' };
+const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c', opaque: '#7048b6' };
 
 /** The protocols of Layer 2 (the event log's layer filter); the link events are Layer 1, tests and services Layer 4. */
 const LAYER2 = ['arp', 'ndp', 'garp', 'stp', 'lacp', 'lldp', 'cdp'];
@@ -210,6 +210,8 @@ export class SimController implements SimulationMode {
   private streamForm: StreamForm | null = null;
   private ifaceForm: IfaceForm | null = null;
   private appForm: AppForm | null = null;
+  private opaqueForm: OpaqueForm | null = null;
+  private opaqueFailForm: OpaqueFailForm | null = null;
   private domainKey = '';
   /** the status side shows the protocols' status, or a table of the selected device */
   private statusView: { kind: DevTable; dev: string } | null = null;
@@ -1165,7 +1167,7 @@ export class SimController implements SimulationMode {
   /** A protocol's short name for the cable activity ("OSPF", "ARP"): its setup entry's label, else its id. */
   private protocolName(p: string): string {
     const e = this.entries.find((x) => x.id === p);
-    if (!e) return p === 'mcast' ? 'Multicast' : p.toUpperCase();
+    if (!e) return p === 'mcast' ? 'Multicast' : p === 'opaque' ? 'Non-IP' : p.toUpperCase();
     // "ICMP / ICMPv6" → "ICMP", "TCP (tests)" → "TCP"
     return e.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '');
   }
@@ -1452,6 +1454,13 @@ export class SimController implements SimulationMode {
   inspectFlight(id: number, near?: { x: number; y: number; w: number; h: number } | null): boolean {
     const it = this.pacer.find(id);
     const f = it ? it.f : this.sim.engine.flights.find((x) => x.id === id);
+    // illustrative data on a non-IP interconnect: its own rows, no layers
+    const op = f ? this.sim.opaque.info.get(f.id) : undefined;
+    if (f && op) {
+      this.inspectorPause();
+      this.tables.show('packet', 'inspector', near || null, () => ({ where: `t = ${fmtSec(f.t0)}`, opaque: { ...op, label: f.label } }));
+      return true;
+    }
     if (!f || !f.hdr) return false;
     this.inspectorPause();
     const m = this.host.model();
@@ -1780,8 +1789,25 @@ export class SimController implements SimulationMode {
     return this.playing ? (r.count > 1 ? more : `Test sent at t = ${fmtSec(r.t0)}: ${r.series}.`) : `${more} It starts when the simulation plays.`;
   }
 
+  /** Send illustrative data (Network events): its event in Active events; refused: why. */
+  private sendOpaque(spec: import('../analysis/sim/opaque').OpaqueSpec): string {
+    const a = this.sim.actOpaque(spec);
+    this.eventsKey = '';
+    this.refresh(true);
+    if (a.error) return `Not sent: ${a.error}.`;
+    return `${spec.count} illustrative transfer${spec.count === 1 ? '' : 's'} from ${spec.from} at t = ${fmtSec(this.t)}${this.playing ? '' : ' (it goes when the simulation plays)'}; see Active events.`;
+  }
+
+  /** A non-IP failure (Network events): its event, with Restore, in Active events. */
+  private failOpaque(what: 'interconnect' | 'attachment' | 'port', key: string): string {
+    const a = this.sim.actOpaqueFail(what, key);
+    this.eventsKey = '';
+    this.refresh(true);
+    return a.error ? `Not done: ${a.error}.` : `${a.target} ${what === 'interconnect' ? 'failed' : what === 'attachment' ? 'detached' : 'shut'} at t = ${fmtSec(this.t)}; restore it from Active events.`;
+  }
+
   /** An event's control in Active events: Stop, No shut, Leave group. */
-  actionControl(id: number, op: 'stop' | 'noshut' | 'leave'): boolean {
+  actionControl(id: number, op: 'stop' | 'noshut' | 'leave' | 'restore'): boolean {
     if (!this.sim.actionControl(id, op)) return false;
     this.eventsKey = '';
     this.logKey = '';
@@ -1892,6 +1918,10 @@ export class SimController implements SimulationMode {
     this.streamForm = new StreamForm(doc, fh);
     this.ifaceForm = new IfaceForm(doc, fh);
     this.appForm = new AppForm(doc, fh);
+    // the non-IP interconnects: illustrative data and their failures (only for a model that has them)
+    const hasIc = this.host.model().interconnects.length > 0;
+    this.opaqueForm = hasIc ? new OpaqueForm(doc, { sim: () => this.sim, send: (spec) => this.sendOpaque(spec) }) : null;
+    this.opaqueFailForm = hasIc ? new OpaqueFailForm(doc, { sim: () => this.sim, fail: (what, key) => this.failOpaque(what, key) }) : null;
     const net = this.sec(doc, 'sim-act-net', 'Network events', [
       this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
       this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
@@ -1899,6 +1929,7 @@ export class SimController implements SimulationMode {
       this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
       this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
       this.action(doc, 'sim-ne-app', 'Start application', this.appForm.el),
+      ...(this.opaqueForm && this.opaqueFailForm ? [this.action(doc, 'sim-ne-opaque', 'Send illustrative data', this.opaqueForm.el), this.action(doc, 'sim-ne-opaque-fail', 'Non-IP failures', this.opaqueFailForm.el)] : []),
     ]);
     this.bulkControls(doc, net);
     box.appendChild(net);
@@ -2283,7 +2314,7 @@ export class SimController implements SimulationMode {
       }
     }
     // the forms of Network events (a lease bound or lost, a device powered off, an interface shut …)
-    for (const f of [this.testForm, this.joinForm, this.leaveForm, this.streamForm, this.ifaceForm]) if (f && f.el.isConnected) f.sync();
+    for (const f of [this.testForm, this.joinForm, this.leaveForm, this.streamForm, this.ifaceForm, this.opaqueForm, this.opaqueFailForm]) if (f && f.el.isConnected) f.sync();
     // Active events: the events of Network events (newest first) and the other state changes in effect
     const views = this.sim.actions();
     const others = this.sim.otherEvents();
@@ -2395,7 +2426,7 @@ export class SimController implements SimulationMode {
 
   protoLabel(protocol: string): string {
     const e = this.entries.find((x) => x.id === protocol);
-    return e ? e.label : protocol === 'link' ? 'Link' : protocol === 'stp' ? 'STP / MAC' : protocol;
+    return e ? e.label : protocol === 'link' ? 'Link' : protocol === 'stp' ? 'STP / MAC' : protocol === 'opaque' ? 'Non-IP (illustrative)' : protocol;
   }
 
   /** The events the log lists: of shown protocols (and the links), matching the filters, up to now. */

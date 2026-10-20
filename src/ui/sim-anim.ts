@@ -58,6 +58,13 @@ export function findTrack(scene: Element, t: Track): Geo | null {
   // (a VM restarted on another member: its link there has the same wire, "@host" left out)
   if (t.ref.indexOf('link:~') === 0) return pick(`path.vwire[data-link="${cssEsc(t.ref.slice(5).replace(/@[^@~]*$/, ''))}"]`, t.from === 'b' ? 1 : -1);
   if (t.ref.indexOf('link:') === 0) return pick(`g.cable[data-ref="${ref}"] path.cable-line`, t.from === 'a' ? 1 : -1);
+  // a non-IP interconnect (diagram/interconnects.ts): a bus's tap up to the bar and down the recipient's, or the line itself
+  if (t.ref.indexOf('interconnect:') === 0) {
+    if (t.to === 'bus') return pick(`g.ic.tap[data-ref="${ref}"][data-port="${cssEsc(t.from)}"] path.ic-track`, 1);
+    if (t.from === 'bus') return pick(`g.ic.tap[data-ref="${ref}"][data-port="${cssEsc(t.to)}"] path.ic-track`, -1);
+    const g = scene.querySelector(`g.ic.p2p[data-ref="${ref}"]`);
+    return g ? pick(`g.ic.p2p[data-ref="${ref}"] path.ic-line`, g.getAttribute('data-from') === t.from ? 1 : -1) : null;
+  }
   if (t.ref.indexOf('network:') === 0) {
     if (t.to === 'net') return pick(`path.member[data-ref="${ref}"][data-member="${cssEsc(t.from)}"]`, 1);
     return pick(`path.member[data-ref="${ref}"][data-member="${cssEsc(t.to)}"]`, -1);

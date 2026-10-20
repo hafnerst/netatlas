@@ -29,7 +29,10 @@ export interface FwData {
 }
 
 export interface PacketData {
-  hdr: Headers;
+  /** its frame's headers (none: illustrative data on a non-IP interconnect, which has no headers at all) */
+  hdr?: Headers;
+  /** illustrative data on a non-IP interconnect: what it is, in rows, and its notice (analysis/sim/opaque.ts) */
+  opaque?: { title: string; label: string; rows: Array<[string, string]>; notice: string };
   /** when it was on its way, and where ("t = 3.4 s, on cable l2 (r1 → fw1)") */
   where: string;
   /** Follow message: whether its conversation is followed, and the button's action */
@@ -387,8 +390,18 @@ export class TablePanels {
 
   /** The packet inspector: a frame's headers, layer by layer. */
   private packet(d: PacketData): HTMLElement {
-    const h = d.hdr;
     const box = el(this.doc, 'div', { class: 'pi' });
+    // illustrative data on a non-IP interconnect: no layers (no Ethernet, IP or transport header exists), its rows and the notice
+    if (d.opaque || !d.hdr) {
+      const o = d.opaque || { title: 'No headers', label: '', rows: [], notice: '' };
+      box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${o.label} — ${d.where}`]));
+      const dl = el(this.doc, 'dl');
+      for (const [k, v] of o.rows) dl.appendChild(el(this.doc, 'div', { style: 'display:contents' }, [el(this.doc, 'dt', {}, [k]), el(this.doc, 'dd', {}, [v])]));
+      box.appendChild(el(this.doc, 'section', { class: 'pi-layer pi-opaque' }, [el(this.doc, 'h4', {}, [o.title]), dl]));
+      if (o.notice) box.appendChild(el(this.doc, 'p', { class: 'pi-notice', role: 'note' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['ⓘ ']), o.notice]));
+      return box;
+    }
+    const h = d.hdr;
     box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${h.label} — ${h.cast}; ${d.where}`]));
     if (d.follow) {
       const fb = el(this.doc, 'button', { type: 'button', class: d.follow.on ? 'pi-follow' : 'primary pi-follow', 'aria-pressed': d.follow.on ? 'true' : 'false', id: 'pi-follow' }, [d.follow.on ? 'Stop following' : 'Follow message']);
