@@ -505,9 +505,15 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     if (s.state === 'Full') return true;
     const f = ospfIf(P, s);
     if (s.state !== '2-Way' || !elects(f.type) || !f.drDev) return false;
-    // two DROthers: they reach each other through the DR's network LSA once both are Full with it
-    const full = (dev: string): boolean => dev === f.drDev || Array.from(P.sessions.values()).some((o) => o.protocol === 'ospf' && o.dev === dev && o.peer === f.drDev && o.state === 'Full');
-    return full(s.dev) && full(s.peer);
+    // two DROthers: they reach each other through the DR's network LSA — this router Full with the DR, and the DR's record (as
+    // its LSUs brought it here) naming the other one as its neighbour; never the other router's own state, which it cannot see
+    const meFull = s.dev === f.drDev || Array.from(P.sessions.values()).some((o) => o.protocol === 'ospf' && o.dev === s.dev && o.peer === f.drDev && o.state === 'Full');
+    if (!meFull) return false;
+    if (s.peer === f.drDev) return true;
+    const view = P.viewOf(s.dev) || [];
+    const inst = P.instanceOf(s);
+    const dr = view.find((r) => r.origin === f.drDev && r.inst === inst);
+    return !!dr && dr.adj.some((a) => a.slice(a.lastIndexOf('|') + 1) === s.peer);
   },
   down: ospfDown,
 };
@@ -1082,22 +1088,28 @@ const bfd: Behaviour = {
       P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => P.startNow(s));
       return;
     }
-    every(P, s, () => P.timer(s, s.profile, 'interval').ms, () => {
+    // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2)
+    every(P, s, () => Math.max(P.timer(s, s.profile, 'interval').ms, typeof s.x.peerMinRx === 'number' ? (s.x.peerMinRx as number) : 0), () => {
       const iv = P.timer(s, s.profile, 'interval');
       const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired interval ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state });
+      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired min TX ${fmtSec(iv.ms)}, required min RX ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: iv.ms, minRx: iv.ms, mult: n });
     });
   },
   rx(P, s, msg) {
-    const peerState = ((msg.data || {}) as { state?: string }).state || 'Down';
+    const d = (msg.data || {}) as { state?: string; minTx?: number; minRx?: number; mult?: number };
+    const peerState = d.state || 'Down';
     const iv = P.timer(s, s.profile, 'interval');
-    const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
-    const detect = iv.ms * n;
+    // RFC 5880 §6.8.4: the detection time is the PEER's detect multiplier × the larger of this end's Required Min RX and the
+    // peer's Desired Min TX (as its Control packets say) — not this end's own multiplier
+    const n = typeof d.mult === 'number' ? d.mult : Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
+    const rate = Math.max(iv.ms, typeof d.minTx === 'number' ? d.minTx : iv.ms);
+    if (typeof d.minRx === 'number') s.x.peerMinRx = d.minRx;
+    const detect = rate * n;
     const g = s.gen;
     P.e.after(detect, () => {
       if (s.gen !== g || s.state === 'Down') return;
       if (P.e.now - s.heard >= detect - 1) {
-        P.setState(s, 'Down', false, `detection time expired (${fmtSec(detect)}: ${n} × ${fmtSec(iv.ms)})`);
+        P.setState(s, 'Down', false, `detection time expired (${fmtSec(detect)}: the peer's multiplier ${n} × ${fmtSec(rate)})`);
         bfdDown(P, s.dev, s.peer);
       }
     });

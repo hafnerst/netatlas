@@ -1417,7 +1417,8 @@ export class Multicast {
     let best = { dev, prio: this.e.params.num('pim-dr-priority', dev, null, ifaceRef(dev, l3.id)), addr: own.addr };
     for (const s of this.neighbours(dev, l3.id)) {
       if (s.remote.addr.version !== v) continue;
-      const c = { dev: s.peer, prio: this.e.params.num('pim-dr-priority', s.peer, null, ifaceRef(s.peer, s.remote.l3.id)), addr: s.remote.addr };
+      // (its priority as its last Hello said: a router knows its neighbour's configuration only that way)
+      const c = { dev: s.peer, prio: typeof s.x.peerDrPrio === 'number' ? (s.x.peerDrPrio as number) : 1, addr: s.remote.addr };
       if (c.prio > best.prio || (c.prio === best.prio && compareAddr(c.addr, best.addr) > 0)) best = c;
     }
     return { dr: best.dev === dev, who: best.dev };

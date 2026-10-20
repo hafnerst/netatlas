@@ -1251,6 +1251,9 @@ export class ProtocolSim implements Protocols {
     this.e.note('route', s.protocol, s.dev, s.peer, 'learned', '', `${s.dev} learned from ${s.peer} (${s.profile.label} ${msg.type}): ${changed.map((r) => `${r.origin} sequence ${r.seq} (${r.adj.length} adjacenc${r.adj.length === 1 ? 'y' : 'ies'})`).join(', ')}; its routes follow after its route recomputation delay`);
     this.e.recomputeSoon(s.dev);
     this.advertise(s.dev, inst, changed, s, `learned from ${s.peer}`);
+    // what it learned may change its own record (an OSPF DROther's adjacency through the DR's record): originated anew if so
+    const own = this.originateOne(s.dev, inst);
+    if (own) this.advertise(s.dev, inst, [own], null, `${s.dev}'s adjacencies changed with what it learned (sequence ${own.seq})`);
   }
 
   /** A router was powered off: its databases are gone (it learns everything again after it boots). */

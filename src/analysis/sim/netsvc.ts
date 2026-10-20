@@ -649,7 +649,9 @@ export class NetServicesSim {
     q.attempt++;
     const d: DnsData = { id: q.id, name: q.name, qtype: q.qtype, from: q.dev };
     const m: Msg = { protocol: 'dns', type: 'Query', label: `DNS ${q.qtype}? ${q.name}`, detail: `DNS query from ${q.dev} to ${formatAddr(srv)}:53 (UDP): ${q.qtype}? ${q.name} (id ${q.id}${q.attempt > 1 ? ', attempt ' + q.attempt : ''})`, data: d as unknown as { [k: string]: unknown } };
-    const src = this.srcTo(q.dev, srv);
+    // (its source and VRF as any of its packets get them: by the route to the server)
+    const from = this.P.transport ? this.P.transport.sourceFor(q.dev, srv) : null;
+    const src = from ? from.src : this.srcTo(q.dev, srv);
     if (!src) {
       q.done = true;
       this.queries.delete(q.id);
@@ -657,7 +659,7 @@ export class NetServicesSim {
       return;
     }
     this.P.e.note('message', 'dns', q.dev, this.P.e.ownerOf(srv) || '', 'Query', '', m.detail, this.P.e.now, m);
-    const pkt = this.P.e.newPacket(src, srv, '', m);
+    const pkt = this.P.e.newPacket(src, srv, from ? from.vrf : '', m);
     pkt.l4 = { proto: 'udp', num: 17, sport: 49152 + (q.id % 16000), dport: 53 };
     pkt.len = 8 + 40;
     this.P.e.send(q.dev, pkt);
@@ -714,20 +716,20 @@ export class NetServicesSim {
     }
     const zone = dns.zones.filter((z) => inZone(d.name, z.name)).sort((a, b) => b.name.length - a.name.length)[0];
     if (!zone) {
-      // not one of its zones: its forwarders (a DNS server of the model), else SERVFAIL
-      const fw = dns.forwarders.map((x) => parseAddress(x) as IpAddr).filter((a) => {
-        const o = this.P.e.ownerOf(a);
-        const od = o ? this.P.m.index.devices.get(o) : undefined;
-        return !!od && !!od.netServices && !!od.netServices.dns && od.id !== dev;
-      });
+      // not one of its zones: it asks its forwarders (whether one answers is the query's to find out — a forwarder that runs no
+      // DNS refuses it with a port unreachable, one out of reach never answers: its timeout), else SERVFAIL
+      const fw = dns.forwarders.map((x) => parseAddress(x)).filter((a): a is IpAddr => !!a && this.P.e.ownerOf(a) !== dev);
       if (fw.length) {
         this.P.e.note('note', 'dns', dev, '', 'forward', '', `${dev} has no zone for ${d.name}: it asks its forwarder ${fw.map(formatAddr).join(', ')}`);
-        const q: Query = { dev, name: d.name, qtype: d.qtype, servers: fw, si: 0, attempt: 0, id: ++this.qid, done: false, cb: () => undefined, forFor: { dev, q: pkt, l3 } };
+        // (none of them answering: the client gets SERVFAIL, as from a forwarding server whose forwarders time out)
+        const q: Query = { dev, name: d.name, qtype: d.qtype, servers: fw, si: 0, attempt: 0, id: ++this.qid, done: false, cb: (r) => {
+          if (r.error) this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, `its forwarders gave no answer: ${r.error.replace(/^DNS: /, '')}`);
+        }, forFor: { dev, q: pkt, l3 } };
         this.queries.set(q.id, q);
         this.ask(q);
         return;
       }
-      this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, dns.forwarders.length ? 'its forwarders are outside the model' : 'it has no zone for it and no forwarder');
+      this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, 'it has no zone for it and no forwarder');
       return;
     }
     const ttl = this.P.e.params.num('dns-ttl', dev, null, zoneRef(dev, zone.name));

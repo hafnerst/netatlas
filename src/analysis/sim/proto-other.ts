@@ -955,7 +955,9 @@ const pim: Behaviour = {
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
       () => {
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}, DR priority ${P.paramText(P.param('pim-dr-priority', s.dev, ifaceRef(s.dev, s.local.l3.id)))}`);
+        // (the Hello's DR Priority option, RFC 7761 §4.9.2: what its neighbours elect the DR by)
+        const prio = P.param('pim-dr-priority', s.dev, ifaceRef(s.dev, s.local.l3.id));
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}, DR priority ${P.paramText(prio)}`, { drPrio: Number(prio.value) });
       },
     );
     // a candidate RP announces itself every bootstrap period (PIM BSR, RFC 5059: in the simulation the candidate's own
@@ -988,6 +990,9 @@ const pim: Behaviour = {
     switch (msg.type) {
       case 'Hello': {
         const dead = P.timer(s, s.profile, 'dead');
+        const hd = (msg.data || {}) as { drPrio?: number };
+        // the neighbour's DR priority is what its Hello said (none: 1, RFC 7761 §4.3.2)
+        s.x.peerDrPrio = typeof hd.drPrio === 'number' ? hd.drPrio : 1;
         deadCheck(P, s, dead.ms, () => {
           P.restart(s);
           P.setState(s, 'No neighbour', false, `holdtime expired (${dead.text})`);
@@ -1027,7 +1032,7 @@ const pim: Behaviour = {
 
 /** LACP on every aggregate's member links: LACPDUs both ways, members attached, collecting and distributing; a member whose link goes down is detached at once. */
 export function installLacp(P: ProtocolSim): void {
-  type Mem = { dev: string; agg: string; port: string; peer: string; peerPort: string; state: string; heard: number; gen: number; rel?: Relation };
+  type Mem = { dev: string; agg: string; port: string; peer: string; peerPort: string; state: string; heard: number; gen: number; rel?: Relation; partner?: string };
   const mems: Mem[] = [];
   const LACP_MAC = '01:80:c2:00:00:02';
   for (const d of P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -1091,6 +1096,19 @@ export function installLacp(P: ProtocolSim): void {
       if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)} (LACP rate ${rate(m).text})`);
     });
     const theirs = ((msg.data || {}) as { state?: string }).state || 'Detached';
+    // the partner as its LACPDU names it (its system and its aggregate's key): every member of an aggregate must have the same
+    // partner (IEEE 802.1AX selection) — a member cabled to another system or another aggregate there is not bundled
+    const dd = (msg.data || {}) as { from?: string; agg?: string };
+    m.partner = `${dd.from}|${dd.agg}`;
+    const other = mems.find((x) => x.dev === m.dev && x.agg === m.agg && x !== m && x.state !== 'Detached' && x.partner !== undefined && x.partner !== m.partner);
+    if (other) {
+      if (m.state !== 'Detached') set(m, 'Detached', `its partner ${dd.from} (${dd.agg}) is not the aggregate's (${other.partner!.replace('|', ', ')})`);
+      else if (!m.rel || !P.shared.has('lacp-mismatch|' + m.dev + '|' + m.port)) {
+        P.shared.set('lacp-mismatch|' + m.dev + '|' + m.port, true);
+        P.e.note('state', 'lacp', m.dev, m.peer, 'not bundled', 'Detached', `LACP ${m.dev}:${m.agg} member ${m.port}: its partner ${dd.from} (${dd.agg}) differs from the aggregate's other members' (${other.partner!.replace('|', ', ')}): it is not bundled`);
+      }
+      return;
+    }
     if (m.state === 'Detached') {
       set(m, 'Attached', `partner ${m.peer}:${m.peerPort}`);
       send(m, 'answers the partner');
