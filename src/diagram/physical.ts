@@ -14,7 +14,9 @@
  *   is never in doubt and no floating label can cover it.
  */
 import { CBox, Pt, Rect, boxRect, polylineCrossings, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { entryTexts, linkLabelExtraFields, linkLabelText, linkTagNote, portLinks } from '../layout/input';
+import { entryTexts, linkLabelExtraFields, linkLabelText, linkTagNote, opaquePortLinks, portLinks } from '../layout/input';
+import { busGroup } from '../model/interconnect';
+import { interconnectNodes } from './interconnects';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
 import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, GROUP_KIND_SIZE, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
 import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, deviceOwnLines, routeTables } from '../model/addresses';
@@ -84,7 +86,8 @@ function cableArrow(end: Pt, from: Pt, color: string): VNode {
 export function physicalBoxes(layout: PhysicalLayout, positions: Map<string, Pt>): Map<string, CBox> {
   const boxes = new Map<string, CBox>();
   layout.boxes.forEach((b, id) => {
-    const o = positions.get('device:' + id);
+    // (a bus's bar is dragged as its interconnect)
+    const o = positions.get('device:' + id) || positions.get('interconnect:' + id);
     boxes.set(id, o ? { ...b, cx: o.x, cy: o.y } : { ...b });
   });
   return boxes;
@@ -346,7 +349,9 @@ const ORTHO_SECOND_PASS = 150;
 
 export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewOptions): SceneResult {
   const boxes = physicalBoxes(layout, opts.positions);
-  const ports = assignPorts(portLinks(model), boxes);
+  // (the cables, and the interconnects' connections: a point-to-point line, a bus's taps)
+  const icLinks = opaquePortLinks(model);
+  const ports = assignPorts(portLinks(model).concat(icLinks), boxes);
   // a group's frame also holds the labels of its devices' top and bottom ports (a port's VLANs reach one line beyond its name)
   const labelParts = new Map<string, Rect[]>();
   for (const p of ports) {
@@ -354,6 +359,12 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const d = model.index.devices.get(p.device);
     if (!d || !d.group) continue;
     labelParts.set(d.group, (labelParts.get(d.group) || []).concat([portLabelBox(p).rect]));
+  }
+  // a bus's bar is in its participants' group
+  for (const ic of model.interconnects) {
+    const b = boxes.get(ic.id);
+    const g = b ? busGroup(model.index, ic) : null;
+    if (b && g) labelParts.set(g, (labelParts.get(g) || []).concat([boxRect(b)]));
   }
   const grects = groupRects(model, boxes, labelParts);
   const portByKey = new Map<string, PortPos>(ports.map((p) => [p.key, p] as [string, PortPos]));
@@ -366,6 +377,14 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     placer.block(boxRect(b, 2));
     obstacles.set(d.id, boxRect(b, 5));
   });
+  // (a bus's bar is in the way of the cables, as a device is)
+  for (const ic of model.interconnects) {
+    const b = boxes.get(ic.id);
+    if (!b) continue;
+    placer.block(boxRect(b, 2));
+    obstacles.set(ic.id, boxRect(b, 5));
+  }
+  const icDrawn = icLinks.map((l) => ({ l, pa: portByKey.get(l.id + ':a'), pb: portByKey.get(l.id + ':b') })).filter((x): x is { l: typeof x.l; pa: PortPos; pb: PortPos } => !!x.pa && !!x.pb);
 
   // ---- groups (outermost first so children draw on top)
   const showGroups = opts.showGroups !== false;
@@ -381,8 +400,10 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     .filter((x): x is { l: typeof x.l; pa: PortPos; pb: PortPos } => !!x.pa && !!x.pb);
   const extra: Rect[] = [];
   if (opts.showLabels) {
-    for (const { pa, pb } of drawn) {
+    for (const { pa, pb } of drawn.concat(icDrawn as typeof drawn)) {
       for (const p of [pa, pb]) {
+        // (a bus's end of a tap has no port of its own)
+        if (!p.iface && model.index.interconnects.has(p.device)) continue;
         const pl = portLabelBox(p);
         for (const ln of pl.lines) {
           // the name belongs to the interface; the tagging to the end of the link (its field in the Edit tab)
@@ -399,7 +420,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   }
   // the area of every port (its square and its label): other cables keep clear of it
   const portArea = new Map<string, Rect[]>();
-  for (const { pa, pb } of drawn) {
+  for (const { pa, pb } of drawn.concat(icDrawn as typeof drawn)) {
     for (const p of [pa, pb]) {
       const rs: Rect[] = [{ x: p.x - 6.5, y: p.y - 6.5, w: 13, h: 13 }];
       if (opts.showLabels) for (const ln of portLabelBox(p).lines) rs.push(ln.rect);
@@ -467,7 +488,21 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     });
     routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), avoid));
   }
+  // the interconnects' connections, routed as cables are, once the cables are laid
+  const icRoutes = new Map<string, Pt[]>();
+  {
+    const lanes = newLanes();
+    if (opts.orthogonal) routes.forEach((q) => addLanes(lanes, q));
+    for (const { l, pa, pb } of icDrawn.slice().sort((p, q) => (p.l.id < q.l.id ? -1 : 1))) {
+      const pts = opts.orthogonal ? orthoCableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), lanes) : cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]));
+      icRoutes.set(l.id, pts);
+      if (opts.orthogonal) addLanes(lanes, pts);
+    }
+  }
   // an aggregate's name keeps clear of the cables
+  icRoutes.forEach((pts) => {
+    for (let k = 0; k + 1 < pts.length; k++) placer.blockLine(pts[k], pts[k + 1], 2);
+  });
   routes.forEach((pts) => {
     for (let k = 0; k + 1 < pts.length; k++) placer.blockLine(pts[k], pts[k + 1], 2);
   });
@@ -518,6 +553,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       ]),
     ]);
   }
+  // ---- the non-IP interconnects (diagram/interconnects.ts): lines, buses' bars and taps, diamonds, labels and role badges
+  const ic = interconnectNodes(model, boxes, (k) => portByKey.get(k), (id) => icRoutes.get(id), placer, opts.showLabels, extra);
   // ---- aggregates (LAG / port-channel): a bracket around the run of member ports on a side, named by the aggregate
   const lagNodes = lagMarks(model, ports, placer, opts.showLabels, extra);
 
@@ -587,11 +624,11 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     routes,
     root: h('g', { class: 'scene scene-physical' + (opts.orthogonal ? ' orthogonal' : '') }, [
       h('g', { class: 'layer-groups' }, groupNodes),
-      h('g', { class: 'layer-links' }, linkNodes),
-      h('g', { class: 'layer-nodes' }, deviceNodes),
+      h('g', { class: 'layer-links' }, linkNodes.concat(ic.lines)),
+      h('g', { class: 'layer-nodes' }, deviceNodes.concat(ic.bars)),
       h('g', { class: 'layer-vwires' }, wireNodes),
-      h('g', { class: 'layer-ports' }, portNodes.concat(lagNodes.marks)),
-      h('g', { class: 'layer-labels' }, groupTitles.concat(labelNodes, lagNodes.labels)),
+      h('g', { class: 'layer-ports' }, portNodes.concat(lagNodes.marks, ic.ports)),
+      h('g', { class: 'layer-labels' }, groupTitles.concat(labelNodes, lagNodes.labels, ic.labels)),
     ]),
     bounds,
   };

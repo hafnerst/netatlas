@@ -80,6 +80,8 @@
   --warn: #b35900;
   --sel: #d9730d;
   --trace: #a61e8a;
+  /* the non-IP interconnects: dashed lines and buses, diamond ports (never colour alone) */
+  --opaque: #7048b6;
   /* a simulated state: the frame around the diagram, its badge and banner (with a pattern and words, not colour alone) */
   --sim: #5f3dc4;
   --sim-soft: #f3f0ff;
@@ -127,6 +129,7 @@
   --warn: #e0b07a;
   --sel: #e3a857;
   --trace: #f38bd9;
+  --opaque: #b49be8;
   --sim: #b197fc;
   --sim-soft: #2a2540;
   --exp: #66d9e8;
@@ -229,6 +232,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .ol-filter .outline-filter { flex: 1; min-width: 0; margin: 0; }
 .ol-filter.active .outline-filter { border-color: var(--accent); }
 body:not([data-view="logical"]) .logical-only { display: none; }
+body[data-view="logical"] .physical-only { display: none; }
 /* Devices filter: a button with a checkbox panel, in the top-right diagram controls */
 .devices-wrap { position: relative; }
 #devices-btn.filtered, #types-btn.filtered { border-color: var(--accent); color: var(--accent); }
@@ -549,6 +553,17 @@ button.ref:hover { text-decoration: underline; }
 .port { stroke: var(--dev-fill); stroke-width: 1.2; cursor: pointer; }
 .halo { paint-order: stroke; stroke: var(--halo); stroke-width: 3.5px; stroke-linejoin: round; }
 .port-label { font-size: 10px; fill: var(--muted) !important; }
+.ic { cursor: pointer; }
+.ic-line { fill: none; stroke: var(--opaque); stroke-width: 2.2; stroke-dasharray: 7 3; }
+.ic-track { fill: none; stroke: none; pointer-events: none; }
+.ic-arrow { fill: var(--opaque); stroke: none; }
+.ic-bar { fill: var(--dev-fill); stroke: var(--opaque); stroke-width: 2.2; stroke-dasharray: 7 3; }
+.ic-bar-label { fill: var(--text); font-weight: 600; pointer-events: none; }
+.ic-label { font-size: 10.5px; font-weight: 600; fill: var(--opaque); }
+.ic-role rect { fill: var(--panel); stroke: var(--opaque); stroke-width: 1; }
+.ic-role text { font-size: 9.5px; font-weight: 700; fill: var(--text); }
+.port.opaque-port { fill: var(--opaque); }
+.ic.selected .ic-line, .ic.selected .ic-bar { filter: drop-shadow(0 0 3px var(--sel)); }
 /* the layer-2 tagging of a link end, under its port's name: "U 10 · T 20,30" */
 .port-tag { font-size: 10px; fill: var(--text) !important; cursor: pointer; }
 .has-selection .hl.port-tag, .hover-hl.port-tag { text-decoration: underline; }

@@ -11,6 +11,7 @@ import { load, model, example, exampleNames } from './helpers.mjs';
 const { ModelDoc } = load('editor/document.js');
 const { layoutInput } = load('layout/input.js');
 const { autoPositions } = load('layout/positions.js');
+const IC = load('model/interconnect.js');
 const { STRATEGIES, strategyPositions, allStrategyPositions } = load('layout/strategies.js');
 const { physicalBoxes } = load('layout/physical.js');
 const { logicalSpecs } = load('layout/logical.js');
@@ -43,7 +44,9 @@ function overlaps(bs, margin) {
 function frameIntrusions(m, bs) {
   const devs = new Map(bs.filter((b) => b.kind === 'device').map((b) => [b.id, b]));
   const inGroup = (d, g) => {
-    let x = m.index.devices.get(d)?.group;
+    // (a bus's bar is in its participants' group: model/interconnect.ts busGroup)
+    const ic = m.index.interconnects.get(d);
+    let x = ic ? IC.busGroup(m.index, ic) : m.index.devices.get(d)?.group;
     for (let n = 0; x && n < 50; n++) {
       if (x === g) return true;
       x = m.index.groups.get(x)?.parent;

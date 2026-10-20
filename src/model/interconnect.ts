@@ -96,6 +96,12 @@ export function interconnectLabel(ic: Interconnect): string {
   return (ic.label ? ic.label : technologyText(ic)) + (arrow ? ' ' + arrow : '');
 }
 
+/** The group a bus's bar is drawn in: its participants' group when they all share one, else none. */
+export function busGroup(index: { devices: Map<string, Device> }, ic: Interconnect): string | null {
+  const gs = Array.from(new Set(ic.endpoints.map((e) => (index.devices.get(e.device) || { group: undefined }).group || '')));
+  return gs.length === 1 && gs[0] ? gs[0] : null;
+}
+
 export function portKeyOf(device: string, port: string): string {
   return device + ':' + port;
 }

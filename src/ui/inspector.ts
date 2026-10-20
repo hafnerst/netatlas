@@ -36,6 +36,7 @@ import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
 import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, nextFreeContainerAddr, platformOui, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanChoices, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
 import { Device, Model, relationDevices } from '../model/types';
+import { ACCESS_TEXT, DATA_TEXT, IC_TOPOLOGIES, PROTOCOL_SUGGESTIONS, ROLE_TEXT, TECHNOLOGY_SUGGESTIONS, TOPOLOGY_TEXT } from '../model/interconnect';
 import { deviceAttributes, interfaceAttributes, relationAttributes, vlanAttributes } from '../analysis/sim/attrs';
 import { ParamDef as SimParamDef, ParamValue, SimParams, ceRef, deviceParamByYaml, fieldText, fieldUnit, formatValue, hvRef, ifaceRef, parseValue, relRef, scopeRef, serviceParams, vlanRef, vswRef, zoneRef } from '../analysis/sim/params';
 import { derivedRecords } from '../model/netservices';
@@ -471,7 +472,7 @@ export class Editor {
       );
     }
     const counts = this.issueCounts();
-    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'interconnect', 'group', 'protocol'];
     const allFolded = kinds.every((k) => this.collapsed.has(k));
     // The selection hint shares the row of "Collapse all", which is always there: selecting,
     // switching and clearing change its text only, never the position of anything below it.
@@ -1151,6 +1152,28 @@ export class Editor {
         const sim = this.relationSimSection(index);
         if (sim) w.appendChild(sim);
       }
+      notes();
+    } else if (kind === 'interconnect') {
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'text', undefined, 'Empty: its technology names it in the diagram.')], 'identity');
+      const tname = (doc.text(base.concat('technology', 'name')) || '').toLowerCase();
+      const known = TECHNOLOGY_SUGGESTIONS.find((t) => t.name.toLowerCase() === tname);
+      g('Technology', [
+        this.textField(base.concat('technology', 'name'), 'Technology *', 'icTechnology', 'text', TECHNOLOGY_SUGGESTIONS.map((t) => t.name), 'Required. Suggestions only — any name may be written. Physical modelling: no protocol of it is simulated.', 'USB, RS-485, CAN, VME, PCIe …'),
+        this.textField(base.concat('technology', 'version'), 'Version / revision', 'icTechnology', 'text', known ? known.versions : [], 'Text as written: "2.0", "FD", "revision B".'),
+        this.field('Topology *', this.labelledSelect(base.concat('topology'), o, IC_TOPOLOGIES.map((t) => [t, TOPOLOGY_TEXT[t]] as [string, string]), 'Select topology'), base.concat('topology'), known ? `${known.name} is usually ${TOPOLOGY_TEXT[known.topology].toLowerCase()}.` : 'Point to point: exactly two ports. Shared: one medium (a bus) with its attachments.'),
+        this.field('Access', this.labelledSelect(base.concat('access'), o, [['controller_target', ACCESS_TEXT.controller_target]], ACCESS_TEXT.peer), base.concat('access'), 'Controllers initiate transfers with targets (several controllers are allowed; no arbitration is simulated), or all participants are peers.'),
+      ], 'technology');
+      g('Endpoints', [this.icEndpoints(base)], 'endpoints');
+      // the protocol it carries and its connector: optional, folded until they are used
+      const more = !!doc.get(base.concat('protocol')) || !!doc.get(base.concat('connector'));
+      const det = this.e('details', { class: 'fgroup ic-more', 'data-group': 'ic-more' }, [
+        this.e('summary', { class: 'fgroup-title' }, ['Carried protocol and connector']),
+        this.textField(base.concat('protocol', 'name'), 'Application protocol', 'icTechnology', 'text', PROTOCOL_SUGGESTIONS.slice(), 'What it carries, if it matters (Modbus RTU over RS-485 …): descriptive.'),
+        this.textField(base.concat('protocol', 'version'), 'Protocol version', 'icTechnology', 'text'),
+        this.textField(base.concat('connector'), 'Connector', o, 'text', ['USB-A', 'USB-B', 'USB-C', 'DB9', 'RJ45', 'M12', 'VPX'], 'Descriptive: it decides nothing.'),
+      ]);
+      if (more) det.setAttribute('open', '');
+      w.appendChild(det);
       notes();
     } else if (kind === 'group') {
       const self = doc.text(base.concat('id'));
@@ -2174,7 +2197,7 @@ export class Editor {
     const errs = iss.filter((i) => i.severity === 'error').length;
     const addrs = this.listTexts(p.concat('ip'));
     const dhcp = doc.dhcpOn(p);
-    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : interfaceKindLabel(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
+    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : o === 'interface' && doc.text(p.concat('stack')) === 'opaque' ? 'Opaque port' : interfaceKindLabel(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
     const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-iface': id || '', 'data-kind': kind });
     const selected = !!this.sel && !!this.sel.iface && J(this.sel.iface) === J(p);
     if (this.open.has(J(p)) || selected) card.setAttribute('open', '');
@@ -2187,6 +2210,17 @@ export class Editor {
       ]),
     );
     card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
+    if (o === 'interface' && !isGuest({ type: doc.text(['devices', devIndex, 'type']) || '' }))
+      card.appendChild(this.field('Port stack', this.labelledSelect(p.concat('stack'), 'interface', [['opaque', 'Opaque: no network stack (USB, serial, a bus or backplane)']], 'Network (Ethernet, IP)'), p.concat('stack'), 'An opaque port has no addresses, VLANs or MAC: it connects only through an interconnect.'));
+    if (o === 'interface' && doc.text(p.concat('stack')) === 'opaque') {
+      card.appendChild(this.textField(p.concat('label'), 'Label', o));
+      const model = doc.result.model;
+      const devName = doc.text(['devices', devIndex, 'id']) || '';
+      const on = model && id ? model.index.portInterconnect.get(`${devName}:${id}`) : undefined;
+      card.appendChild(this.e('p', { class: 'help' }, [on ? `Attached to the interconnect ${on}.` : 'On no interconnect yet: add it to an interconnect’s endpoints (Interconnects in the Objects list).']));
+      card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
+      return card;
+    }
     card.appendChild(this.ifTypeField(p, entry));
     // a guest's virtual NIC and a container's network attachment: what they are attached to, right after what they are
     if (kind === 'vnic') for (const f of this.vnicFields(devIndex, p, id || '')) card.appendChild(f);
@@ -3897,6 +3931,53 @@ export class Editor {
       out.push(this.group('Management', [this.chipsField(mpath, 'Management interfaces', ports, 'Its interfaces for managing it: never forwarded, in no domain.', 'Add a management interface')], 'management'));
     }
     return out;
+  }
+
+  /**
+   * An interconnect's endpoints, one card each: the opaque port (one not
+   * attached elsewhere), its role (the access model's), what it does with
+   * data (both, send, receive: never the order of the endpoints), and the
+   * descriptive system-controller flag.
+   */
+  private icEndpoints(base: Path): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const ep = base.concat('endpoints');
+    const self = doc.text(base.concat('id')) || '';
+    const access = doc.text(base.concat('access')) === 'controller_target' ? 'controller_target' : 'peer';
+    const roles = access === 'peer' ? (['peer', 'monitor'] as const) : (['controller', 'target', 'controller_target', 'monitor'] as const);
+    // the opaque ports of the model that are free (or this interconnect's own)
+    const free: string[] = [];
+    if (model) for (const d of model.devices) for (const op of d.opaquePorts) {
+      const k = `${d.id}:${op.id}`;
+      const on = model.index.portInterconnect.get(k);
+      if (!on || on === self) free.push(k);
+    }
+    const box = this.e('div', { class: 'ic-endpoints' });
+    const n = doc.get(ep);
+    const count = n && n.kind === 'seq' ? n.items.length : 0;
+    for (let j = 0; j < count; j++) {
+      const ip = ep.concat(j);
+      const port = doc.text(ip.concat('port')) || '';
+      box.appendChild(
+        this.e('div', { class: 'svc-card ic-endpoint', role: 'group', 'aria-label': `Endpoint ${j + 1}${port ? ': ' + port : ''}` }, [
+          this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [port || `Endpoint ${j + 1}`]), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove this endpoint', 'aria-label': `Remove endpoint ${j + 1}` }, ['×'])]),
+          this.field('Port *', this.selectEl(ip.concat('port'), 'text', 'icEndpoint', free.filter((x) => x === port || !this.listTextsAt(ep, 'port').includes(x)), port, 'Select an opaque port', { 'aria-label': `Endpoint ${j + 1}: port` }), ip.concat('port'), free.length ? undefined : 'No free opaque port: set a port\'s stack to Opaque on its device first.'),
+          this.field(access === 'peer' ? 'Role' : 'Role *', this.labelledSelect(ip.concat('role'), 'icEndpoint', roles.map((r) => [r, ROLE_TEXT[r]] as [string, string]), access === 'peer' ? ROLE_TEXT.peer : 'Select role'), ip.concat('role'), 'On this interconnect only. A target is not receive-only: a controller may read from it.'),
+          this.field('Data', this.labelledSelect(ip.concat('data'), 'icEndpoint', [['send', DATA_TEXT.send], ['receive', DATA_TEXT.receive]], DATA_TEXT.both), ip.concat('data'), 'What this port does with data here. Both is not full duplex, and no reply is made because of it.'),
+          access === 'controller_target' ? this.field('System controller', this.selectEl(ip.concat('system_controller'), 'yesno', 'icEndpoint', ['true'], doc.text(ip.concat('system_controller')) || '', 'no'), ip.concat('system_controller'), 'Descriptive (an arbiter, a slot-1 controller): no arbitration is simulated.') : null,
+        ]),
+      );
+    }
+    box.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(ep), 'data-what': 'endpoint' }, ['+ Add endpoint'])]));
+    return box;
+  }
+
+  /** The values of one key in each map of a list (a list of endpoints' ports). */
+  private listTextsAt(listPath: Path, key: string): string[] {
+    const n = this.doc.get(listPath);
+    if (!n || n.kind !== 'seq') return [];
+    return n.items.map((_, k) => this.doc.text(listPath.concat(k, key)) || '').filter((x) => !!x);
   }
 
   /**

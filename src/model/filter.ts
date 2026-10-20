@@ -117,6 +117,19 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   };
 }
 
+/**
+ * The physical view's connections filter: IP only (the cables; no
+ * interconnect, the devices stay) or non-IP only (the interconnects and
+ * the devices on them; no cable). A new, self-consistent Model.
+ */
+export function withConnections(model: Model, mode: 'ip' | 'nonip'): Model {
+  if (mode === 'ip') return { ...model, interconnects: [], layout: emptyLayout(), index: { ...model.index, ...opaqueIndex(model.devices, []) } };
+  const on = new Set<string>();
+  for (const ic of model.interconnects) for (const e of ic.endpoints) on.add(e.device);
+  const part = filterModel(model, on, 'physical');
+  return { ...part, links: [], index: { ...part.index, links: new Map(), ifaceLink: new Map(), radioLinks: new Map() } };
+}
+
 function emptyLayout(): Model['layout'] {
   return { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: {} };
 }

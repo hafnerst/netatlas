@@ -39,7 +39,7 @@ import { ArrangeStrategy, STRATEGIES, STRATEGY_ROUTING, strategyPositions } from
 import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
-import { filterModel, selectsAll } from '../model/filter';
+import { filterModel, selectsAll, withConnections } from '../model/filter';
 import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusContext, FocusUp, contextFocus, focusNeighbourhood, focusSeeds } from '../analysis/focus';
 import type { FailureResult } from '../analysis/failure';
 import { refExists, relatedRefs } from '../model/queries';
@@ -69,6 +69,8 @@ export interface ViewState {
   focus: { ref: string; hops: number; context?: FocusContext } | null;
   /** groups drawn as one box each (model/collapse.ts); display state only */
   collapsed: Set<string>;
+  /** the physical view's connections: IP and non-IP (all), IP only (no interconnect), or non-IP only (no cable) */
+  connections: 'all' | 'ip' | 'nonip';
   /**
    * Temporary positions while a node is being dragged, keyed by ref
    * ("device:x", "network:y"). The editor commits them to the document's
@@ -91,6 +93,7 @@ export function createViewState(): ViewState {
     hiddenTypes: new Set(),
     focus: null,
     collapsed: new Set(),
+    connections: 'all',
     positions: { physical: new Map(), logical: new Map() },
   };
 }
@@ -213,7 +216,30 @@ export class Session {
 
   /** Does a view (the one on screen by default) show a proper subset of the devices (by selection, by type or by focus)? */
   isFiltered(view: View = this.state.view): boolean {
-    return this.shownSet(view) !== null || this.collapsing();
+    return this.shownSet(view) !== null || this.collapsing() || this.connectionsFilter(view) !== null;
+  }
+
+  /** The physical view's connections filter in effect (only when it leaves something out), else null. */
+  private connectionsFilter(view: View): 'ip' | 'nonip' | null {
+    const c = this.state.connections;
+    if (view !== 'physical' || c === 'all') return null;
+    if (c === 'ip') return this.model.interconnects.length ? 'ip' : null;
+    return this.model.links.length || this.model.devices.some((d) => !d.opaquePorts.length) ? 'nonip' : null;
+  }
+
+  /**
+   * Choose the physical view's connections: IP and non-IP, IP only, non-IP
+   * only. A filtered view is arranged afresh (as a device filter is); all of
+   * them again brings the stored positions back. Returns whether it changed.
+   */
+  setConnections(mode: 'all' | 'ip' | 'nonip'): boolean {
+    if (this.state.connections === mode) return false;
+    this.state.connections = mode;
+    this.filtered = { physical: null, logical: null };
+    this.temp = { physical: null, logical: null };
+    this.parked = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    return true;
   }
 
   /** Is a collapsed group drawn as a box (one that still exists and has a device)? */
@@ -455,12 +481,17 @@ export class Session {
   private cache(view: View): ViewCache {
     const c = this.filtered[view];
     if (c) return c;
+    let out: ViewCache;
     if (this.collapsing()) {
       const base = this.cacheBase(view).model;
       const model = collapseGroups(base, this.state.collapsed);
-      return (this.filtered[view] = { model, input: layoutInput(model) });
-    }
-    return this.cacheBase(view);
+      out = this.filtered[view] = { model, input: layoutInput(model) };
+    } else out = this.cacheBase(view);
+    // (the physical view's connections: IP only, non-IP only)
+    const conn = this.connectionsFilter(view);
+    if (!conn) return out;
+    const model = withConnections(out.model, conn);
+    return (this.filtered[view] = { model, input: layoutInput(model) });
   }
 
   private cacheBase(view: View): ViewCache {

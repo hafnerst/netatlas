@@ -14,6 +14,7 @@ import { compareRoutes, identityLines, routeLine } from '../model/addresses';
 import { formatAddr } from '../analysis/ipmath';
 import { DEFAULT_STATIC_DISTANCE, resolveRoute } from '../analysis/routing';
 import { separationSummary } from '../analysis/separation';
+import { ACCESS_TEXT, DATA_TEXT, ROLE_BADGE, ROLE_TEXT, TOPOLOGY_TEXT, interconnectLabel, p2pArrow, technologyText } from '../model/interconnect';
 
 
 function refLink(ref: string, text: string): VNode {
@@ -172,8 +173,14 @@ export function headOf(model: Model, ref: string): { kind: string; title: string
     return d ? { kind: 'device', title: d.label, id: d.id } : null;
   }
   if (kind === 'iface') {
+    const op = ix.opaquePorts.get(id);
+    if (op) return { kind: 'opaque port', title: op.device + ' ' + op.id };
     const i = ix.interfaces.get(id);
     return i ? { kind: 'interface', title: i.device + ' ' + i.id } : null;
+  }
+  if (kind === 'interconnect') {
+    const ic = ix.interconnects.get(id);
+    return ic ? { kind: 'non-IP interconnect', title: ic.label || technologyText(ic), id: ic.id } : null;
   }
   if (kind === 'link') {
     const l = ix.links.get(id);
@@ -250,6 +257,32 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
   const [kind, id] = splitRef(ref);
   const ix = model.index;
   const kids: Array<VNode | null> = [];
+  // the non-IP side: an interconnect, an opaque port (physical modelling only)
+  const icNote = h('p', { class: 'muted small' }, 'Non-IP: physical modelling only — no protocol of it is simulated; the IP side never uses it. Illustrative data can be sent along it in a simulation.');
+  if (kind === 'interconnect' || (kind === 'iface' && ix.opaquePorts.has(id))) {
+    const ic = ix.interconnects.get(kind === 'interconnect' ? id : ix.portInterconnect.get(id) || '');
+    kids.push(header());
+    if (kind === 'iface') {
+      const e = ic ? ic.endpoints.find((x) => `${x.device}:${x.port}` === id) : undefined;
+      kids.push(kv([['interconnect', ic ? refLink('interconnect:' + ic.id, interconnectLabel(ic)) : 'none: on no interconnect'], ['role', e ? ROLE_TEXT[e.role] + (e.systemController ? ', system controller' : '') : undefined], ['data', e ? DATA_TEXT[e.data] : undefined], ['description', (ix.opaquePorts.get(id) as { description?: string }).description]]));
+    } else if (ic) {
+      kids.push(
+        kv([
+          ['technology', technologyText(ic)],
+          ['carries', ic.protocol ? `${ic.protocol.name}${ic.protocol.version ? ' ' + ic.protocol.version : ''}` : undefined],
+          ['connector', ic.connector],
+          ['topology', TOPOLOGY_TEXT[ic.topology]],
+          ['access', ACCESS_TEXT[ic.access]],
+          ['direction', ic.topology === 'point_to_point' ? p2pArrow(ic) || 'none' : undefined],
+          ['description', ic.description],
+        ]),
+      );
+      kids.push(list('Endpoints', ic.endpoints.map((e) => h('li', {}, [refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device), h('span', {}, ' '), refLink(`iface:${e.device}:${e.port}`, e.port), h('span', { class: 'muted' }, ` — ${ROLE_TEXT[e.role]}${e.systemController ? ', system controller' : ''}; ${DATA_TEXT[e.data].toLowerCase()}`)]))));
+      kids.push(attrsTable('Attributes', ic.attrs));
+    }
+    kids.push(icNote);
+    return h('div', { class: 'details' }, kids);
+  }
   if (kind === 'device') {
     const d = ix.devices.get(id);
     if (!d) return h('div', {}, 'Not found');
@@ -648,6 +681,15 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const r = ix.routes.get(id);
     if (!r) return [];
     return [`${r.device}: ${routeLine(r)}`, r.name || '', r.vrf ? 'VRF ' + r.vrf : '', nextHopWords(model, r)].filter((s) => s);
+  }
+  if (kind === 'interconnect') {
+    const ic = ix.interconnects.get(id);
+    if (!ic) return [];
+    return [interconnectLabel(ic), `${TOPOLOGY_TEXT[ic.topology]} · ${ACCESS_TEXT[ic.access]}`, ic.endpoints.map((e) => `${e.device}:${e.port} (${ROLE_BADGE[e.role]})`).join(', '), 'non-IP: physical modelling only'];
+  }
+  if (kind === 'iface' && ix.opaquePorts.has(id)) {
+    const on = ix.portInterconnect.get(id);
+    return [id.replace(':', ' '), 'opaque port (no network stack)', on ? 'on ' + on : 'on no interconnect'];
   }
   if (kind === 'iface') {
     const i = ix.interfaces.get(id);

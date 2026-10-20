@@ -1185,12 +1185,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
             const name = id.slice(k + 1);
             return !!owner && !!owner.containerEngine && owner.containerEngine.networks.some((n) => n.name === name && !!n.subnet && (n.driver === 'bridge' || n.driver === 'overlay'));
           };
+          // (in the physical view also a shared interconnect's bar: a bus is placed like a device)
           const known =
             view === 'physical'
-              ? deviceMap.has(id)
+              ? deviceMap.has(id) || interconnects.some((x) => x.id === id && x.topology === 'shared')
               : deviceMap.has(id) || networkMap.has(id) || (relationMap.has(id) && relationDevices(relationMap.get(id) as Relation).length >= 3) || cnet();
           if (!known) {
-            const what = view === 'physical' ? 'device' : 'device, network or multipoint relation';
+            const what = view === 'physical' ? 'device or shared interconnect' : 'device, network or multipoint relation';
             c.warn(e.value, p, `position for "${id}", which is not a ${what} in this model; it is ignored`, { key: id, line: pe.keyLine });
             return;
           }
