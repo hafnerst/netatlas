@@ -990,8 +990,9 @@ export class ProtocolSim implements Protocols {
     const list = this.byRel.get(relation);
     if (!list || !list.length) return true;
     const p = list[0].profile;
-    // IPsec carries traffic only once its SAs are established
-    if (p.behaviour === 'ike') return list.some((s) => s.up);
+    // IPsec carries traffic only while both ends of a pair have their SAs (each end decides its own: one whose SAs are gone
+    // drops what the other still sends until that one's dead peer detection finds out)
+    if (p.behaviour === 'ike') return list.some((s) => s.up && list.some((o) => o.dev === s.peer && o.peer === s.dev && o.up));
     return true;
   }
 

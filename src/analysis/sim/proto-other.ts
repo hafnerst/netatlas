@@ -49,15 +49,46 @@ interface FhrpMember {
   vmac: string;
   prio: number;
   preempt: boolean;
+  /** VRRP: the virtual address is one of the interface's own (priority 255, RFC 5798 §6.1) */
+  owner: boolean;
   state: string;
   gen: number;
+  /** VRRP / CARP: the master last heard; HSRP / GLBP: the Active and the Standby last heard (when, priority, address) */
   heardAt: number;
+  active?: { at: number; prio: number; ip: string; dev: string };
+  standby?: { at: number; prio: number; ip: string; dev: string };
   rel?: Relation;
 }
 
 const FHRP = ['vrrp', 'hsrp', 'glbp', 'carp'];
 
-/** The groups on the interfaces (VRRP …): elections, advertisements from the master, failover with a gratuitous ARP. */
+/** VRRP and CARP elect a master that alone advertises; HSRP and GLBP (its gateway, the AVG) an Active and a Standby that both say hello. */
+function hsrpLike(protocol: string): boolean {
+  return protocol === 'hsrp' || protocol === 'glbp';
+}
+
+/**
+ * The redundancy groups on the interfaces, each protocol's own way:
+ *
+ *   VRRP (RFC 5798) and CARP: the master alone advertises (IP protocol
+ *   112 to 224.0.0.18 / ff02::12, TTL 255 — a receiver takes only TTL 255,
+ *   §7.1); a backup becomes master after the master down interval (3 ×
+ *   the interval + the skew of its priority); the owner of the virtual
+ *   address (an address of its interface) has priority 255 and is master
+ *   at once; a backup with a higher priority preempts (the default).
+ *   HSRP (RFC 2281) and GLBP's gateway election: the Active and the
+ *   Standby router both send Hellos (UDP 1985 to 224.0.0.2 with TTL 1;
+ *   GLBP UDP 3222 to 224.0.0.102); the others Listen silently. A router
+ *   that hears no Active (or no Standby) for the hold time Speaks — says
+ *   hello and takes part — and after a hold time Speaking without a better
+ *   one it becomes Standby, or Active when there is none; the Standby
+ *   becomes Active when the Active's Hellos stop. Preemption only when
+ *   configured (a Coup: the Active Resigns to Speak). GLBP: one virtual
+ *   forwarder, the AVG's — no load sharing between gateways.
+ *
+ * The holder of the virtual address answers for it with the virtual MAC
+ * and announces it with a gratuitous ARP when it takes it over.
+ */
 export function installFhrp(P: ProtocolSim): void {
   const members: FhrpMember[] = [];
   for (const d of P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -69,55 +100,74 @@ export function installFhrp(P: ProtocolSim): void {
         const vip = vipText ? parseAddress(vipText) : null;
         const l3 = P.sd(d.id).l3.get(i.id);
         if (!vip || !l3 || !Number.isFinite(g)) continue;
-        const prio = Number(sv.values.get('priority') || '100');
+        const owner = (sv.id === 'vrrp' || sv.id === 'carp') && l3.addrs.some((a) => compareAddr(a.addr, vip) === 0);
+        const prio = owner ? 255 : Number(sv.values.get('priority') || '100');
         const rel = P.m.relations.find((r) => P.e.base(r) === sv.id && relationDevices(r).indexOf(d.id) >= 0);
         const pre = rel ? rel.attrs.find(([k]) => k === 'preempt') : undefined;
-        members.push({ key: `${sv.id}|${l3.vrf}|${g}|${formatAddr(vip)}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: virtualMac(sv.id, g, vip.version), prio, preempt: pre ? pre[1] !== 'false' : sv.id !== 'hsrp', state: 'Initialize', gen: 0, heardAt: -1, rel });
+        members.push({ key: `${sv.id}|${l3.vrf}|${g}|${formatAddr(vip)}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: virtualMac(sv.id, g, vip.version), prio, owner, preempt: owner || (pre ? pre[1] !== 'false' : !hsrpLike(sv.id)), state: 'Initialize', gen: 0, heardAt: -1, rel });
       }
     }
   }
   if (!members.length) return;
   const label = (m: FhrpMember): string => (simProfile(m.protocol) || { label: m.protocol.toUpperCase() }).label;
-  const names = (m: FhrpMember, st: string): string => (m.protocol === 'hsrp' || m.protocol === 'glbp' ? (st === 'Master' ? 'Active' : st === 'Backup' ? 'Standby' : st) : st);
   const timers = (m: FhrpMember): { adv: number; down: number } => {
     const p = simProfile(m.protocol);
     const hold = p ? p.timers.find((t) => t.key === 'dead') : undefined;
     const a = p ? P.timer(null, p, 'hello', m.dev).ms : 1000;
-    // VRRP / CARP: 3 × advertisement + skew ((256 − priority) / 256 s); HSRP / GLBP: the hold time
-    const down = m.protocol === 'vrrp' || m.protocol === 'carp' ? 3 * a + Math.round(((256 - m.prio) / 256) * a) : (hold ? hold.seconds : 10) * 1000;
+    // VRRP / CARP: 3 × advertisement + skew ((256 − priority) / 256 × the interval); HSRP / GLBP: the hold time
+    const down = hsrpLike(m.protocol) ? (hold ? hold.seconds : 10) * 1000 : 3 * a + Math.round(((256 - m.prio) / 256) * a);
     return { adv: a, down };
   };
+  const ownIp = (m: FhrpMember): string => {
+    const a = m.l3.addrs.find((x) => x.addr.version === m.vip.version);
+    return a ? formatAddr(a.addr) : '0.0.0.0';
+  };
+  /** does (priority, address) a outrank b (higher priority, then the higher address)? */
+  const outranks = (pa: number, ia: string, pb: number, ib: string): boolean => pa > pb || (pa === pb && compareAddr(addr(ia), addr(ib)) > 0);
+  const holds = (st: string): boolean => st === 'Master' || st === 'Active';
   const set = (m: FhrpMember, st: string, why: string): void => {
     if (m.state === st) return;
+    const had = holds(m.state);
     m.state = st;
-    P.e.note('state', m.protocol, m.dev, '', names(m, st), names(m, st), `${label(m)} group ${m.group} (${formatAddr(m.vip)}) on ${m.dev}:${m.l3.id}: ${names(m, st)}${why ? ' (' + why + ')' : ''}`);
+    P.e.note('state', m.protocol, m.dev, '', st, st, `${label(m)} group ${m.group} (${formatAddr(m.vip)}) on ${m.dev}:${m.l3.id}: ${st}${why ? ' (' + why + ')' : ''}`);
     const k = m.dev + ':' + m.l3.id;
     const held = (P.vips.get(k) || []).filter((v) => !(compareAddr(v.addr, m.vip) === 0 && v.protocol === m.protocol));
-    if (st === 'Master') held.push({ addr: m.vip, mac: m.vmac, protocol: m.protocol });
+    if (holds(st)) held.push({ addr: m.vip, mac: m.vmac, protocol: m.protocol });
     P.vips.set(k, held);
+    // the new holder announces the virtual address with the virtual MAC: switches learn its port, hosts keep their entry
+    if (holds(st) && !had) P.e.gratuitous(m.dev, m.l3, m.vip, m.vmac, `${label(m)} group ${m.group}: ${m.dev} is the new ${st}`, 'garp');
   };
-  const advertise = (m: FhrpMember): void => {
+  /** One advertisement or Hello of a member, its protocol's way (transport, TTL, source MAC). */
+  const say = (m: FhrpMember, op = ''): void => {
     const p = simProfile(m.protocol);
-    const type = m.protocol === 'vrrp' || m.protocol === 'carp' ? 'Advertisement' : 'Hello';
+    const hs = hsrpLike(m.protocol);
+    const type = hs ? op || 'Hello' : 'Advertisement';
     const group = addr(m.vip.version === 4 ? (p && p.group4) || '224.0.0.18' : (p && p.group6) || 'ff02::12');
     const src = m.l3.addrs.find((a) => a.addr.version === m.vip.version);
     if (!src || !P.e.isL3Up(m.dev, m.l3.id)) return;
-    const msg: Msg = { protocol: m.protocol, type, label: `${label(m)} ${type}`, detail: `${label(m)} ${type}: group ${m.group}, priority ${m.prio}, virtual ${formatAddr(m.vip)}, from ${m.dev}:${m.l3.id} (source MAC ${m.vmac}, the virtual MAC) to ${formatAddr(group)} (${multicastMac(group)})`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, key: m.key, prio: m.prio, ip: formatAddr(src.addr) } };
-    P.e.note('message', m.protocol, m.dev, '', type, names(m, m.state), msg.detail);
+    // the Active (and the VRRP master) sends from the virtual MAC; a Standby or Speaking router from its own
+    const smac = holds(m.state) ? m.vmac : m.l3.mac;
+    const port = m.protocol === 'hsrp' ? 1985 : 3222;
+    const msg: Msg = { protocol: m.protocol, type, label: `${label(m)} ${type}${hs ? ' (' + m.state + ')' : ''}`, detail: `${label(m)} ${type}: group ${m.group}, ${hs ? 'state ' + m.state + ', ' : ''}priority ${m.prio}${m.owner ? ' (the address owner)' : ''}, virtual ${formatAddr(m.vip)}, from ${m.dev}:${m.l3.id} (source MAC ${smac}${smac === m.vmac ? ', the virtual MAC' : ''}) to ${formatAddr(group)} (${multicastMac(group)})${hs ? `, UDP ${port}, TTL 1` : ', IP protocol 112, TTL 255'}`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, key: m.key, prio: m.prio, ip: formatAddr(src.addr), state: m.state, op: type } };
+    P.e.note('message', m.protocol, m.dev, '', type, m.state, msg.detail, P.e.now, msg);
     if (m.rel) for (const o of members) if (o.key === m.key && o !== m) P.lane(m.rel, m.dev, o.dev, msg, 2 * P.e.hopTime());
-    const pkt = P.e.newPacket(src.addr, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], 255);
-    P.e.emit(m.dev, m.l3, { src: m.vmac, dst: multicastMac(group), msg, ip: pkt });
+    const pkt = P.e.newPacket(src.addr, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], m.protocol === 'hsrp' ? 1 : 255);
+    pkt.l4 = hs ? { proto: 'udp', num: 17, sport: port, dport: port } : { proto: 'other', num: 112 };
+    pkt.len = hs ? 8 + 20 : 8 + 4 * (1 + 0);
+    P.e.emit(m.dev, m.l3, { src: smac, dst: multicastMac(group), msg, ip: pkt });
   };
-  const becomeMaster = (m: FhrpMember, why: string): void => {
+
+  // -------------------------------------------------- VRRP, CARP
+  const master = (m: FhrpMember, why: string): void => {
     m.gen++;
     set(m, 'Master', why);
-    // the new master announces the virtual address with the virtual MAC: switches learn its port, hosts keep their entry
-    P.e.gratuitous(m.dev, m.l3, m.vip, m.vmac, `${label(m)} group ${m.group}: ${m.dev} is the new ${names(m, 'Master')}`, 'garp');
     const g = m.gen;
+    say(m);
     P.periodic(
       () => m.gen === g && m.state === 'Master',
       () => timers(m).adv,
-      () => advertise(m),
+      () => say(m),
+      timers(m).adv,
     );
   };
   const backup = (m: FhrpMember, why: string): void => {
@@ -126,29 +176,116 @@ export function installFhrp(P: ProtocolSim): void {
     const g = m.gen;
     const wait = (): void => {
       if (m.gen !== g || m.state !== 'Backup') return;
-      if (P.e.now - m.heardAt >= timers(m).down - 1) becomeMaster(m, m.heardAt < 0 ? 'no master heard' : `master down interval expired (${fmtSec(timers(m).down)}): no ${m.protocol === 'vrrp' || m.protocol === 'carp' ? 'advertisement' : 'hello'} from the master`);
+      if (P.e.now - m.heardAt >= timers(m).down - 1) master(m, m.heardAt < 0 ? 'no master heard' : `master down interval expired (${fmtSec(timers(m).down)}): no advertisement from the master`);
       else P.e.after(timers(m).down - (P.e.now - m.heardAt), wait);
     };
     P.e.after(timers(m).down, wait);
   };
+  const vrStart = (m: FhrpMember, why: string): void => {
+    // RFC 5798 §6.4.1: the owner of the address (priority 255) is master at once; the others start as backup
+    if (m.owner) master(m, `${why}: it owns ${formatAddr(m.vip)} (priority 255)`);
+    else backup(m, why);
+  };
+  const vrIn = (m: FhrpMember, d: { prio?: number; ip?: string; from?: string }, ttl: number): void => {
+    if (ttl !== 255) {
+      P.e.note('drop', m.protocol, m.dev, d.from || '', 'Advertisement', m.state, `${m.dev} discards a ${label(m)} advertisement with TTL ${ttl} (RFC 5798 §7.1: only TTL 255)`);
+      return;
+    }
+    const theirs = d.prio || 0;
+    const higher = outranks(theirs, d.ip || '0.0.0.0', m.prio, ownIp(m));
+    if (m.state === 'Backup') {
+      if (higher || !m.preempt) m.heardAt = P.e.now;
+      else master(m, `preempts ${d.from} (priority ${m.prio} > ${theirs})`);
+    } else if (m.state === 'Master' && higher) {
+      m.heardAt = P.e.now;
+      backup(m, `${d.from} has priority ${theirs}`);
+    }
+  };
+
+  // -------------------------------------------------- HSRP, GLBP (its gateway election)
+  const hsTick = (m: FhrpMember): void => {
+    // every hello time: the Active, the Standby and a Speaking router say hello; the timers decide the next state
+    const g = m.gen;
+    P.periodic(
+      () => m.gen === g && m.state !== 'Initialize',
+      () => timers(m).adv,
+      () => {
+        if (m.state === 'Active' || m.state === 'Standby' || m.state === 'Speak') say(m);
+        const hold = timers(m).down;
+        const now = P.e.now;
+        const activeGone = !m.active || now - m.active.at >= hold;
+        const standbyGone = !m.standby || now - m.standby.at >= hold;
+        if (m.state === 'Listen' && (activeGone || standbyGone)) hsSpeak(m, activeGone ? 'no Active heard for the hold time' : 'no Standby heard for the hold time');
+        else if (m.state === 'Standby' && activeGone) hsSet(m, 'Active', `no Hello from the Active ${m.active ? m.active.dev : ''} for the hold time (${fmtSec(hold)})`.replace('  ', ' '));
+      },
+      timers(m).adv,
+    );
+  };
+  const hsSet = (m: FhrpMember, st: string, why: string): void => {
+    set(m, st, why);
+    if (st === 'Active') m.active = undefined;
+    if (st === 'Standby') m.standby = undefined;
+  };
+  const hsSpeak = (m: FhrpMember, why: string): void => {
+    set(m, 'Speak', why);
+    const g = m.gen;
+    const hold = timers(m).down;
+    P.e.after(hold, () => {
+      if (m.gen !== g || m.state !== 'Speak') return;
+      const now = P.e.now;
+      // after a hold time Speaking: Active when there is none, else Standby when it is the best of the others, else Listen again
+      if (!m.active || now - m.active.at >= hold) hsSet(m, 'Active', 'no Active heard while Speaking');
+      else if (!m.standby || now - m.standby.at >= hold || outranks(m.prio, ownIp(m), m.standby.prio, m.standby.ip)) hsSet(m, 'Standby', 'the best of the other routers');
+      else set(m, 'Listen', `${m.standby.dev} is Standby with a higher priority`);
+    });
+  };
+  const hsStart = (m: FhrpMember, why: string): void => {
+    m.gen++;
+    m.active = m.standby = undefined;
+    set(m, 'Listen', why);
+    hsTick(m);
+  };
+  const hsIn = (m: FhrpMember, d: { prio?: number; ip?: string; from?: string; state?: string; op?: string }): void => {
+    const theirs = { at: P.e.now, prio: d.prio || 0, ip: d.ip || '0.0.0.0', dev: d.from || '' };
+    const better = outranks(theirs.prio, theirs.ip, m.prio, ownIp(m));
+    if (d.op === 'Resign') {
+      if (m.active && m.active.dev === theirs.dev) m.active = undefined;
+      return;
+    }
+    if (d.op === 'Coup' || d.state === 'Active') {
+      if (m.state === 'Active' && (d.op === 'Coup' ? better : better)) {
+        // a better router took over (a Coup, or another Active that outranks it): it resigns
+        say(m, 'Resign');
+        set(m, 'Speak', `${theirs.dev} ${d.op === 'Coup' ? 'takes over (Coup)' : 'is Active with a higher priority'}`);
+        hsSpeak(m, 'resigned');
+        m.active = theirs;
+        return;
+      }
+      m.active = theirs;
+      // preemption (configured): a higher-priority Standby or Speaking router takes over with a Coup
+      if (m.preempt && (m.state === 'Standby' || m.state === 'Speak') && outranks(m.prio, ownIp(m), theirs.prio, theirs.ip)) {
+        say(m, 'Coup');
+        hsSet(m, 'Active', `preempts ${theirs.dev} (priority ${m.prio} > ${theirs.prio})`);
+      }
+      return;
+    }
+    if (d.state === 'Standby' || d.state === 'Speak') {
+      if (d.state === 'Standby') m.standby = theirs;
+      if (m.state === 'Standby' && better) set(m, 'Listen', `${theirs.dev} (priority ${theirs.prio}) is the better Standby`);
+    }
+  };
+
   P.bootHooks.push(() => {
-    // each starts (Backup) as soon as its interface is up: all of them together
-    for (const m of members) P.whenIfaceUp(m.dev, m.l3.id, () => backup(m, 'initial state'));
+    // each starts as soon as its interface is up: all of them together
+    for (const m of members) P.whenIfaceUp(m.dev, m.l3.id, () => (hsrpLike(m.protocol) ? hsStart(m, 'initial state') : vrStart(m, 'initial state')));
   });
   for (const proto of FHRP) {
-    P.handlers.set(proto, (dev, l3, msg) => {
-      const d = (msg.data || {}) as { key?: string; prio?: number; ip?: string; from?: string };
+    P.handlers.set(proto, (dev, l3, msg, pkt) => {
+      const d = (msg.data || {}) as { key?: string; prio?: number; ip?: string; from?: string; state?: string; op?: string };
       for (const m of members) {
-        if (m.dev !== dev || !l3 || m.l3.id !== l3.id || m.key !== d.key || d.from === dev) continue;
-        const theirs = d.prio || 0;
-        const higher = theirs > m.prio || (theirs === m.prio && d.ip !== undefined && compareAddr(addr(d.ip), (m.l3.addrs[0] || { addr: addr('0.0.0.0') }).addr) > 0);
-        if (m.state === 'Backup') {
-          if (higher || !m.preempt) m.heardAt = P.e.now;
-          else becomeMaster(m, `preempts ${d.from} (priority ${m.prio} > ${theirs})`);
-        } else if (m.state === 'Master' && higher) {
-          m.heardAt = P.e.now;
-          backup(m, `${d.from} has priority ${theirs}`);
-        }
+        if (m.dev !== dev || !l3 || m.l3.id !== l3.id || m.key !== d.key || d.from === dev || m.state === 'Initialize') continue;
+        if (hsrpLike(m.protocol)) hsIn(m, d);
+        else vrIn(m, d, pkt ? pkt.ttl : 255);
       }
     });
   }
@@ -158,49 +295,167 @@ export function installFhrp(P: ProtocolSim): void {
       if (!up) {
         m.gen++;
         set(m, 'Initialize', `interface ${l3.id} went down`);
-      } else backup(m, `interface ${l3.id} came up`);
+      } else if (hsrpLike(m.protocol)) hsStart(m, `interface ${l3.id} came up`);
+      else vrStart(m, `interface ${l3.id} came up`);
     }
   });
   P.extraStatus.push((): SessionStatus[] =>
-    members.map((m) => ({ protocol: m.protocol, name: `group ${m.group} (${formatAddr(m.vip)}): ${m.dev}:${m.l3.id}`, device: m.dev, peer: '', state: names(m, m.state), detail: `priority ${m.prio}${m.preempt ? ', preempt' : ''}; virtual MAC ${m.vmac}`, up: m.state === 'Master' || m.state === 'Backup', relation: m.rel ? m.rel.id : undefined })),
+    members.map((m) => ({ protocol: m.protocol, name: `group ${m.group} (${formatAddr(m.vip)}): ${m.dev}:${m.l3.id}`, device: m.dev, peer: '', state: m.state, detail: `priority ${m.prio}${m.owner ? ' (address owner)' : ''}${m.preempt ? ', preempt' : ''}; virtual MAC ${m.vmac}`, up: m.state !== 'Initialize', relation: m.rel ? m.rel.id : undefined })),
   );
 }
 
 // ------------------------------------------------------------------ IPsec (IKEv2)
 
+/** IKEv2 retransmits a request this often before giving up (RFC 7296 §2.1 leaves it to the implementation; strongSwan: 5 retransmissions). */
+const IKE_TRIES = 5;
+/** The first retransmission after this, doubled each time (strongSwan's 4 s × 1.8ⁿ, simplified). */
+const IKE_RTO = 2000;
+
+/** One side's IKE state: its own requests' message IDs, the one outstanding, the peer's last request answered, its SAs' lifetimes. */
+interface IkeX {
+  /** the next message ID of this side's requests (IKE_SA_INIT 0, IKE_AUTH 1, then each exchange) */
+  mid?: number;
+  /** the request it waits a response for */
+  pending?: { mid: number; type: string; tries: number; tok: number };
+  /** the peer's last request and this side's response to it (sent again when the request comes again) */
+  answered?: { mid: number; type: string; detail: string; data: { [k: string]: unknown } };
+  /** the next request ID expected from the peer */
+  peerMid?: number;
+  /** when its Child SA and IKE SA end unless rekeyed (ms) */
+  childUntil?: number;
+  ikeUntil?: number;
+  tok?: number;
+}
+
+/**
+ * Send one of this side's IKE requests (a message ID of its own, RFC 7296
+ * §2.2): sent again with a doubling timeout while unanswered; `failed`
+ * after IKE_TRIES retransmissions. Only the response with the same message
+ * ID ends it (ikeResponse).
+ */
+function ikeRequest(P: ProtocolSim, s: Sess, type: string, detail: string, state: string, failed: (why: string) => void, data: { [k: string]: unknown } = {}): void {
+  const x = s.x as IkeX;
+  const mid = x.mid === undefined ? 0 : x.mid;
+  x.mid = mid + 1;
+  const tok = (x.tok = (x.tok || 0) + 1);
+  x.pending = { mid, type, tries: 0, tok };
+  const send = (n: number): void => P.unicast(s, type, `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: ${detail}`, { ...data, mid }, state);
+  send(0);
+  const again = (n: number): void => {
+    P.later(s, IKE_RTO * Math.pow(2, n - 1), () => {
+      const p = x.pending;
+      if (!p || p.tok !== tok) return;
+      if (n > IKE_TRIES) {
+        x.pending = undefined;
+        failed(`${type} (message ID ${mid}) unanswered after ${IKE_TRIES} retransmissions`);
+        return;
+      }
+      p.tries = n;
+      send(n);
+      again(n + 1);
+    });
+  };
+  again(1);
+}
+
+/** A response: taken only for the request outstanding (its type and message ID); anything else is ignored. */
+function ikeResponse(P: ProtocolSim, s: Sess, type: string, mid: number | undefined): boolean {
+  const x = s.x as IkeX;
+  const p = x.pending;
+  if (!p || p.type !== type || p.mid !== mid) {
+    P.e.note('drop', s.protocol, s.dev, s.peer, type, s.state, `IKEv2 ${s.rel.id}: ${s.dev} ignores a ${type} response (message ID ${mid === undefined ? '?' : mid}): ${p ? `it waits for the response to ${p.type} ${p.mid}` : 'no request of its own is outstanding'}`);
+    return false;
+  }
+  x.pending = undefined;
+  return true;
+}
+
+/** Answer the peer's request (the same message ID); the answer is kept, and sent again if the request comes again. */
+function ikeAnswer(P: ProtocolSim, s: Sess, type: string, mid: number | undefined, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
+  const x = s.x as IkeX;
+  x.answered = { mid: mid === undefined ? 0 : mid, type, detail, data };
+  x.peerMid = (mid === undefined ? 0 : mid) + 1;
+  P.unicast(s, type, `response (message ID ${mid}): ${detail}`, { ...data, response: true, mid }, state);
+}
+
+/** The peer's request: a retransmission of the last one answered is answered again (no second exchange). */
+function ikeRepeat(P: ProtocolSim, s: Sess, type: string, mid: number | undefined): boolean {
+  const x = s.x as IkeX;
+  const a = x.answered;
+  if (!a || a.type !== type || a.mid !== mid) return false;
+  P.unicast(s, type, `response (message ID ${mid}), sent again: the request came again`, { ...a.data, response: true, mid }, '');
+  return true;
+}
+
+/**
+ * IKEv2 (RFC 7296) between the two ends, each with its own state and
+ * timers — never one side changing the other's:
+ *   IKE_SA_INIT and IKE_AUTH (the initiator's requests, message IDs 0 and
+ *   1), each sent again with a doubling timeout while unanswered; the
+ *   responder answers a repeated request with its kept response. Both
+ *   ends Established with the IKE SA and the first Child SA.
+ *   Dead peer detection on each side: an empty INFORMATIONAL request every
+ *   DPD interval, sent again every interval for its retries; unanswered,
+ *   that side deletes its SAs (the initiator starts again after the DPD
+ *   interval; the responder waits for it).
+ *   Rekeying (the initiator, its rekey margin before a lifetime ends): a
+ *   CREATE_CHILD_SA for the Child SA or the IKE SA; its response replaces
+ *   the SA on both ends (a new lifetime). An SA not rekeyed by the end of
+ *   its lifetime expires on that side: a Child SA — no traffic until a
+ *   new one is negotiated; the IKE SA — everything is deleted and
+ *   negotiated anew.
+ * Cryptography stays abstract (proposals, keys and authentication are not
+ * checked).
+ */
 const ike: Behaviour = {
   refresh(P, s) {
-    if (s.up && s.initiator) ikeDetail(P, s);
+    if (s.up) ikeDetail(P, s);
   },
   start(P, s) {
     s.state = 'Idle';
     if (s.initiator) ikeInit(P, s);
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { response?: boolean };
+    const d = (msg.data || {}) as { response?: boolean; mid?: number; what?: string };
+    const x = s.x as IkeX;
     switch (msg.type) {
       case 'IKE_SA_INIT':
         if (!d.response) {
-          if (s.state === 'Established') P.setState(s, 'Idle', false, 'the peer starts over');
-          P.unicast(s, 'IKE_SA_INIT', 'response: chosen proposal, KE, Nr', { response: true }, 'IKE_SA_INIT');
+          if (ikeRepeat(P, s, 'IKE_SA_INIT', d.mid)) return;
+          // a new IKE SA from the peer: what this side had is gone (the peer started over)
+          if (s.state === 'Established') ikeDown(P, s, 'the peer starts a new IKE SA (IKE_SA_INIT)', false);
+          x.mid = 0;
+          x.pending = undefined;
+          ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr', {}, 'IKE_SA_INIT');
           P.setState(s, 'IKE_SA_INIT', false, 'request from the peer');
-        } else if (s.state === 'IKE_SA_INIT') {
-          P.unicast(s, 'IKE_AUTH', 'request: IDi, AUTH, SAi2, TSi, TSr (encrypted)', {}, 'IKE_AUTH');
+        } else if (s.state === 'IKE_SA_INIT' && ikeResponse(P, s, 'IKE_SA_INIT', d.mid)) {
           P.setState(s, 'IKE_AUTH', false, 'IKE SA keys derived');
+          ikeRequest(P, s, 'IKE_AUTH', 'IDi, AUTH, SAi2, TSi, TSr (encrypted)', 'IKE_AUTH', (why) => ikeFailed(P, s, why));
         }
         return;
       case 'IKE_AUTH':
         if (!d.response) {
-          P.unicast(s, 'IKE_AUTH', 'response: IDr, AUTH, SAr2 (the first Child SA)', { response: true }, 'Established');
+          if (ikeRepeat(P, s, 'IKE_AUTH', d.mid)) return;
+          if (s.state !== 'IKE_SA_INIT') return;
+          ikeAnswer(P, s, 'IKE_AUTH', d.mid, 'IDr, AUTH, SAr2 (the first Child SA)', {}, 'Established');
           ikeUp(P, s);
-        } else if (s.state === 'IKE_AUTH') ikeUp(P, s);
+        } else if (s.state === 'IKE_AUTH' && ikeResponse(P, s, 'IKE_AUTH', d.mid)) ikeUp(P, s);
         return;
       case 'INFORMATIONAL':
-        if (!d.response) P.unicast(s, 'INFORMATIONAL', 'DPD response (empty)', { response: true });
-        else s.x.dpdMiss = 0;
+        if (!d.response) {
+          if (ikeRepeat(P, s, 'INFORMATIONAL', d.mid)) return;
+          // (a DPD request of an IKE SA this side does not have: no answer — the peer's DPD finds that out)
+          if (s.state === 'Established' || s.state === 'No Child SA') ikeAnswer(P, s, 'INFORMATIONAL', d.mid, 'DPD (empty)');
+        } else ikeResponse(P, s, 'INFORMATIONAL', d.mid);
         return;
       case 'CREATE_CHILD_SA':
-        if (!d.response) P.unicast(s, 'CREATE_CHILD_SA', 'response: the new Child SA', { response: true });
+        if (!d.response) {
+          if (ikeRepeat(P, s, 'CREATE_CHILD_SA', d.mid)) return;
+          if (s.state !== 'Established' && s.state !== 'No Child SA') return;
+          // the rekeyed SA replaces this side's: a new lifetime from now
+          ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
+          ikeAnswer(P, s, 'CREATE_CHILD_SA', d.mid, d.what === 'ike' ? 'the new IKE SA' : 'the new Child SA', { what: d.what });
+        } else if (ikeResponse(P, s, 'CREATE_CHILD_SA', d.mid)) ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
         return;
       default:
         return;
@@ -210,12 +465,33 @@ const ike: Behaviour = {
 
 function ikeInit(P: ProtocolSim, s: Sess): void {
   P.restart(s);
+  const x = s.x as IkeX;
+  x.mid = 0;
+  x.pending = undefined;
+  x.answered = undefined;
   P.setState(s, 'IKE_SA_INIT', false, 'initiating');
-  P.unicast(s, 'IKE_SA_INIT', `request: SA proposals, KE, Ni to ${formatAddr(s.remote.addr)} UDP 500`, {}, 'IKE_SA_INIT');
-  // no answer: start over after the DPD interval
-  P.later(s, P.timer(s, s.profile, 'dpd').ms, () => {
-    if (!s.up) ikeInit(P, s);
-  });
+  ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${formatAddr(s.remote.addr)} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
+}
+
+/** The negotiation failed (a request unanswered): it starts again after the DPD interval (the initiator). */
+function ikeFailed(P: ProtocolSim, s: Sess, why: string): void {
+  P.setState(s, 'Idle', false, why);
+  if (!s.initiator) return;
+  const dpd = P.timer(s, s.profile, 'dpd');
+  P.restart(s);
+  P.later(s, dpd.ms, () => ikeInit(P, s));
+}
+
+/** This side's SAs are gone (DPD, the IKE SA's lifetime, the peer's new IKE_SA_INIT): its timers end; the initiator negotiates again after the DPD interval. */
+function ikeDown(P: ProtocolSim, s: Sess, why: string, again = true): void {
+  P.restart(s);
+  const x = s.x as IkeX;
+  x.pending = undefined;
+  x.childUntil = x.ikeUntil = undefined;
+  P.setState(s, 'Idle', false, why);
+  P.e.syncInterfaces();
+  // (scheduled after the restart: this generation's timer, not the one just ended)
+  if (again && s.initiator) P.later(s, P.timer(s, s.profile, 'dpd').ms, () => ikeInit(P, s));
 }
 
 function ikeDetail(P: ProtocolSim, s: Sess): void {
@@ -223,7 +499,9 @@ function ikeDetail(P: ProtocolSim, s: Sess): void {
   const retries = P.timer(s, s.profile, 'dpd-retries');
   const life = P.timer(s, s.profile, 'child-lifetime');
   const ike = P.timer(s, s.profile, 'ike-lifetime');
-  s.x.detail = `DPD ${dpd.text} × ${retries.text}; Child SA lifetime ${life.text}; IKE SA lifetime ${ike.text}; rekey margin ${P.paramText(P.param('rekey-margin', s.dev, relRef(s.rel.id)))}`;
+  const x = s.x as IkeX;
+  const left = (t?: number): string => (t === undefined ? '' : ` (${fmtSec(Math.max(0, t - P.e.now))} left)`);
+  s.x.detail = `DPD ${dpd.text} × ${retries.text}; Child SA lifetime ${life.text}${left(x.childUntil)}; IKE SA lifetime ${ike.text}${left(x.ikeUntil)}; rekey margin ${P.paramText(P.param('rekey-margin', s.dev, relRef(s.rel.id)))}`;
 }
 
 /** Rekey an SA before its lifetime ends (its lifetime less the rekey margin, at least half of it). */
@@ -233,53 +511,85 @@ function rekeyAfter(P: ProtocolSim, s: Sess, key: string): number {
   return Math.max(life / 2, life - margin);
 }
 
+/** A new SA (the first, or a rekeyed one): its lifetime from now; its expiry; the initiator's rekey before it. */
+function ikeRenew(P: ProtocolSim, s: Sess, what: 'child' | 'ike'): void {
+  const x = s.x as IkeX;
+  const key = what === 'child' ? 'child-lifetime' : 'ike-lifetime';
+  const life = P.timer(s, s.profile, key);
+  const until = P.e.now + life.ms;
+  if (what === 'child') x.childUntil = until;
+  else x.ikeUntil = until;
+  if (what === 'child' && s.state === 'No Child SA') {
+    P.setState(s, 'Established', true, 'a new Child SA');
+    P.e.syncInterfaces();
+  }
+  ikeDetail(P, s);
+  // the end of the lifetime, unless a rekey replaced it meanwhile
+  P.later(s, life.ms, () => {
+    if ((what === 'child' ? x.childUntil : x.ikeUntil) !== until) return;
+    if (what === 'ike') {
+      ikeDown(P, s, `the IKE SA's lifetime (${life.text}) ended without a rekey: its SAs are deleted`);
+      return;
+    }
+    x.childUntil = undefined;
+    P.setState(s, 'No Child SA', false, `the Child SA's lifetime (${life.text}) ended without a rekey: no traffic until a new one`);
+    P.e.syncInterfaces();
+    if (s.initiator) ikeRequest(P, s, 'CREATE_CHILD_SA', 'a new Child SA (the old one expired)', '', (why) => ikeDown(P, s, `${why}: its SAs are deleted`), { what: 'child' });
+  });
+  // the initiator rekeys before the end
+  if (s.initiator)
+    P.later(s, rekeyAfter(P, s, key), () => {
+      if ((what === 'child' ? x.childUntil : x.ikeUntil) !== until) return;
+      const margin = fmtSec(Number(P.param('rekey-margin', s.dev, relRef(s.rel.id)).value));
+      ikeRequest(P, s, 'CREATE_CHILD_SA', what === 'child' ? `rekeys the Child SA ${margin} before its lifetime (${life.text}) ends` : `rekeys the IKE SA before its lifetime (${life.text}) ends`, '', (why) => P.e.note('state', s.protocol, s.dev, s.peer, 'rekey failed', s.state, `IKEv2 ${s.rel.id}: ${s.dev}'s rekey failed (${why}): the ${what === 'child' ? 'Child' : 'IKE'} SA lives until its lifetime ends`), { what });
+    });
+}
+
 function ikeUp(P: ProtocolSim, s: Sess): void {
   P.restart(s);
   P.setState(s, 'Established', true, 'IKE SA and Child SA established');
   P.e.syncInterfaces();
-  if (!s.initiator) return;
-  ikeDetail(P, s);
-  s.x.dpdMiss = 0;
-  every(P, s, () => P.timer(s, s.profile, 'dpd').ms, () => {
-    const retries = Math.max(1, Math.round(P.timer(s, s.profile, 'dpd-retries').ms / 1000));
-    const dpd = P.timer(s, s.profile, 'dpd');
-    if ((s.x.dpdMiss as number) >= retries) {
-      const peer = P.sess(s.protocol, s.rel.id, s.peer, s.dev);
-      P.setState(s, 'Idle', false, `Dead Peer Detection: ${s.x.dpdMiss} requests unanswered; the SAs are deleted`);
-      if (peer && peer.up) P.setState(peer, 'Idle', false, 'the SAs are deleted');
-      P.e.syncInterfaces();
-      P.later(s, dpd.ms, () => ikeInit(P, s));
-      P.restart(s);
-      return;
-    }
-    s.x.dpdMiss = (s.x.dpdMiss as number) + 1;
-    P.unicast(s, 'INFORMATIONAL', 'DPD request (empty)');
-  });
+  ikeRenew(P, s, 'child');
+  ikeRenew(P, s, 'ike');
+  // dead peer detection, on each side by its own timers: a request every interval, sent again every interval for its retries
   const g = s.gen;
-  let first = true;
-  P.periodic(
-    () => s.gen === g,
-    () => rekeyAfter(P, s, 'child-lifetime'),
-    () => {
-      if (first) {
-        first = false;
+  const dpd = (): void => {
+    P.later(s, P.timer(s, s.profile, 'dpd').ms, () => {
+      if (s.gen !== g || (s.x as IkeX).pending) {
+        if (s.gen === g) dpd();
         return;
       }
-      P.unicast(s, 'CREATE_CHILD_SA', `rekeys the Child SA ${fmtSec(Number(P.param('rekey-margin', s.dev, relRef(s.rel.id)).value))} before its lifetime (${P.timer(s, s.profile, 'child-lifetime').text}) ends`);
-    },
-  );
-  let firstIke = true;
-  P.periodic(
-    () => s.gen === g,
-    () => rekeyAfter(P, s, 'ike-lifetime'),
-    () => {
-      if (firstIke) {
-        firstIke = false;
-        return;
-      }
-      P.unicast(s, 'CREATE_CHILD_SA', `rekeys the IKE SA before its lifetime (${P.timer(s, s.profile, 'ike-lifetime').text}) ends`);
-    },
-  );
+      const retries = Math.max(1, Math.round(P.timer(s, s.profile, 'dpd-retries').ms / 1000));
+      const interval = P.timer(s, s.profile, 'dpd');
+      const x = s.x as IkeX;
+      const mid = x.mid === undefined ? 0 : x.mid;
+      x.mid = mid + 1;
+      const tok = (x.tok = (x.tok || 0) + 1);
+      x.pending = { mid, type: 'INFORMATIONAL', tries: 0, tok };
+      let n = 0;
+      const send = (): void => P.unicast(s, 'INFORMATIONAL', `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: DPD (empty)`, { mid });
+      send();
+      const check = (): void => {
+        P.later(s, interval.ms, () => {
+          const p = x.pending;
+          if (!p || p.tok !== tok) {
+            dpd();
+            return;
+          }
+          if (n >= retries) {
+            x.pending = undefined;
+            ikeDown(P, s, `Dead Peer Detection: no response to ${n + 1} DPD requests (${interval.text} × ${retries}): its SAs are deleted`);
+            return;
+          }
+          n++;
+          send();
+          check();
+        });
+      };
+      check();
+    });
+  };
+  dpd();
 }
 
 // ------------------------------------------------------------------ generic sessions (GRE, WireGuard, OpenVPN, L2TP, MLAG …)
@@ -340,15 +650,81 @@ function ownSteps(P: ProtocolSim, s: Sess, k: number): number {
   return k;
 }
 
+/** WireGuard's timers (the whitepaper §6): a handshake sent again every REKEY_TIMEOUT for up to REKEY_ATTEMPT_TIME. */
+const WG_REKEY_TIMEOUT = 5000;
+const WG_REKEY_ATTEMPT = 90000;
+
+/**
+ * WireGuard: the initiator's Handshake Initiation is sent again every 5 s
+ * until a Handshake Response comes, for up to 90 s; once answered, both
+ * ends have keys — the initiator handshakes again after REKEY_AFTER_TIME
+ * (the profile's rekey, 120 s), and each end's keys are rejected after
+ * REJECT_AFTER_TIME (its dead timer, 180 s) unless a newer handshake
+ * replaced them. Keepalives keep NAT state, they renew no keys.
+ */
+function wgHandshake(P: ProtocolSim, s: Sess, why: string): void {
+  const p = s.profile;
+  const g = s.gen;
+  const tok = ((s.x.wgTok as number) || 0) + 1;
+  s.x.wgTok = tok;
+  const started = P.e.now;
+  let n = 0;
+  const send = (): void => {
+    sessionSend(P, s, p.handshake![0].msg, `${why}${n ? ` (sent again, ${n}: no Handshake Response within ${WG_REKEY_TIMEOUT / 1000} s)` : ''}`, { step: 0 });
+    P.later(s, WG_REKEY_TIMEOUT, () => {
+      if (s.gen !== g || s.x.wgTok !== tok || s.x.wgDone === tok) return;
+      if (P.e.now - started >= WG_REKEY_ATTEMPT) {
+        P.e.note('state', s.protocol, s.dev, s.peer, 'handshake failed', s.state, `WireGuard ${s.rel.id}: ${s.dev} got no Handshake Response for ${WG_REKEY_ATTEMPT / 1000} s: it stops trying until its next attempt`);
+        return;
+      }
+      n++;
+      send();
+    });
+  };
+  send();
+}
+
+/** A completed WireGuard handshake at one end: new keys, their rejection after the dead timer, the initiator's next handshake. */
+function wgKeys(P: ProtocolSim, s: Sess): void {
+  const p = s.profile;
+  const at = P.e.now;
+  s.x.wgKeys = at;
+  s.x.wgDone = s.x.wgTok;
+  const reject = P.timer(s, p, 'dead');
+  P.later(s, reject.ms, () => {
+    if (s.x.wgKeys !== at) return;
+    P.setState(s, p.states[0], false, `its keys are ${reject.text} old (REJECT_AFTER_TIME) and no newer handshake replaced them`);
+  });
+  if (s.initiator)
+    P.later(s, P.timer(s, p, 'rekey').ms, () => {
+      if (s.x.wgKeys === at) wgHandshake(P, s, `REKEY_AFTER_TIME (${P.timer(s, p, 'rekey').text}): a new handshake`);
+    });
+}
+
 const session: TcpBehaviour = {
   refresh(P, s) {
     const p = s.profile;
-    s.x.detail = `${p.keepalive ? p.keepalive.msg.toLowerCase() + ' every ' + P.timer(s, p, 'hello').text + ', down after ' + P.timer(s, p, 'dead').text : ''}`;
+    s.x.detail = p.id === 'wireguard' ? `handshake again after ${P.timer(s, p, 'rekey').text}, keys rejected after ${P.timer(s, p, 'dead').text}; persistent keepalive ${P.timer(s, p, 'hello').text}` : `${p.keepalive ? p.keepalive.msg.toLowerCase() + ' every ' + P.timer(s, p, 'hello').text + ', down after ' + P.timer(s, p, 'dead').text : ''}`;
   },
   start(P, s) {
     const p = s.profile;
     s.state = p.states[0];
     session.refresh!(P, s);
+    if (p.id === 'wireguard') {
+      if (s.initiator) {
+        wgHandshake(P, s, 'starts the session');
+        P.setState(s, p.states[1], false, 'handshake started');
+      }
+      // persistent keepalives both ways while the session has keys; a session without keys handshakes again (the initiator)
+      every(P, s, () => P.timer(s, p, 'hello').ms, () => {
+        if (s.up) sessionSend(P, s, 'Keepalive', 'persistent keepalive', { ka: true });
+        else if (s.initiator && s.x.wgDone !== s.x.wgTok && P.e.now - ((s.x.wgStarted as number) || 0) >= WG_REKEY_ATTEMPT) {
+          s.x.wgStarted = P.e.now;
+          wgHandshake(P, s, 'starts the session again');
+        }
+      });
+      return;
+    }
     if (overTcp(s)) {
       // over TCP: the server listens, the client connects; the handshake goes on once the connection is open
       tcpListen(P, s);
@@ -399,6 +775,18 @@ const session: TcpBehaviour = {
   rx(P, s, msg) {
     const p = s.profile;
     const d = (msg.data || {}) as { step?: number; ka?: boolean };
+    if (p.id === 'wireguard') {
+      if (msg.type === p.handshake![0].msg) {
+        // the responder: a Handshake Response, new keys
+        sessionSend(P, s, p.handshake![1].msg, 'completes the handshake', { step: 1 });
+        wgKeys(P, s);
+        if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'handshake answered: keys');
+      } else if (msg.type === p.handshake![1].msg && s.initiator) {
+        wgKeys(P, s);
+        if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'Handshake Response: keys');
+      }
+      return;
+    }
     const up = (): void => {
       if (!s.up) {
         P.setState(s, p.states[p.states.length - 1], true, 'answered');
@@ -479,14 +867,27 @@ const service: TcpBehaviour = {
     const p = s.profile;
     switch (msg.type) {
       case 'TLS ClientHello':
-        svcSend(P, s, 'TLS ServerHello', 'certificate, key share, Finished');
+        // TLS 1.3 (RFC 8446 §2): the server's flight — ServerHello, its certificate, key share and Finished; its handshake completes with the client's Finished
+        s.x.tls = 'server-flight';
+        svcSend(P, s, 'TLS ServerHello', 'ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished');
         return;
       case 'TLS ServerHello':
+        // the client completes its side with its Finished before any application data of its own
+        svcSend(P, s, 'TLS Finished', 'the client’s Finished: its side of the handshake is complete');
         s.x.open = true;
-        P.setState(s, 'Answered', true, 'TLS session established');
+        s.x.tls = 'done';
+        P.setState(s, 'Answered', true, 'TLS handshake complete (the client’s Finished sent)');
         svcSend(P, s, p.request as string, p.messages[0].does);
         return;
+      case 'TLS Finished':
+        s.x.tls = 'done';
+        return;
       default:
+        if (p.id === 'https' && msg.type === p.request && s.x.tls !== 'done') {
+          // application data before the client's Finished: not taken (a TLS server answers with an alert and closes)
+          P.e.note('drop', s.protocol, s.dev, s.peer, msg.type, s.state, `${p.label} ${s.rel.id}: ${s.dev} takes no request before the client's Finished (the handshake is not complete)`);
+          return;
+        }
         if (msg.type === p.request && p.response) {
           // the server answers after its response time (its simulation attribute)
           const rt = P.param('service-response', s.dev, relRef(s.rel.id));
