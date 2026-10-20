@@ -46,10 +46,12 @@ export interface L4 {
   num: number;
   sport?: number;
   dport?: number;
-  /** TCP flags ("SYN", "ACK", "FIN", "RST", "PSH") */
+  /** TCP flags ("SYN", "ACK", "FIN", "RST", "PSH"; a label gives them as tcp.ts's tcpFlagsText: [S,A]) */
   flags?: string[];
   seq?: number;
   ack?: number;
+  /** TCP's MSS option (a SYN's: the largest segment its sender can receive) */
+  mss?: number;
   /** ICMP / ICMPv6 type and code, and their name ("Destination Unreachable", "Net Unreachable") */
   icmpType?: number;
   icmpCode?: number;

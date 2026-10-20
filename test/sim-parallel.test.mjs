@@ -142,11 +142,11 @@ test('BGP: ARP, then TCP, then OPEN, then Established, then UPDATE; each step sa
   assert.ok(order.every(Number.isFinite), JSON.stringify(order));
   // the SYN is queued for ARP (it is noted when sent); the SYN-ACK comes only after the ARP reply
   assert.ok(arp >= syn - 0.001 && synAck > arp && open > synAck && est > open && upd >= est, JSON.stringify(order));
-  assert.ok(ev(s, (e) => e.kind === 'wait' && /^BGP TCP SYN waiting for ARP 10\.0\.0\.2$/.test(e.detail)).length >= 1);
+  assert.ok(ev(s, (e) => e.kind === 'wait' && /^BGP TCP \[S\] waiting for ARP 10\.0\.0\.2$/.test(e.detail)).length >= 1);
   assert.ok(ev(s, (e) => e.kind === 'wait' && /BGP OPEN to 10\.0\.0\.2 waiting for TCP/.test(e.detail)).length === 1);
   const om = ev(s, (e) => e.kind === 'message' && e.what === 'OPEN' && e.device === 'a')[0];
   assert.ok(om.hdr && om.hdr.waited && /^TCP connection to 10\.0\.0\.2:179: /.test(om.hdr.waited[0]), JSON.stringify(om.hdr));
-  assert.match(om.hdr.causedBy || '', /^BGP TCP SYN-ACK \(sent by b\), received at t = \d+\.\d{6} s$/);
+  assert.match(om.hdr.causedBy || '', /^BGP TCP \[S,A\] \(sent by b\), received at t = \d+\.\d{6} s$/);
 });
 
 test('tunnels stack in order: the link, IKE_SA_INIT, IKE_AUTH (the Child SA), then GRE inside ESP, then OSPF inside the tunnel; nothing over it is dropped meanwhile', () => {

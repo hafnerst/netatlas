@@ -248,6 +248,50 @@ export class TcpStream<M> {
   }
 }
 
+/**
+ * The TCP flags in the order a label gives them (SYN, FIN, RST, PSH, ACK,
+ * URG, ECE, CWR — so the common combinations read [S,A], [P,A], [F,A]),
+ * each by its letter. The one notation of the packet labels, the inspector
+ * and the log; always from the segment's header, never from a message name.
+ */
+export const TCP_FLAGS: ReadonlyArray<readonly [string, string]> = [
+  ['SYN', 'S'],
+  ['FIN', 'F'],
+  ['RST', 'R'],
+  ['PSH', 'P'],
+  ['ACK', 'A'],
+  ['URG', 'U'],
+  ['ECE', 'E'],
+  ['CWR', 'C'],
+];
+
+/** A header's flags as a label gives them: "[S,A]", "[P,A]"; "[]" for a segment without any. */
+export function tcpFlagsText(flags: readonly string[] | undefined): string {
+  const f = flags || [];
+  return '[' + TCP_FLAGS.filter(([name]) => f.indexOf(name) >= 0).map(([, a]) => a).join(',') + ']';
+}
+
+/** The flags spelled out with their letters, for the inspector and the help: "SYN (S), ACK (A)"; "none". */
+export function tcpFlagsLong(flags: readonly string[] | undefined): string {
+  const f = flags || [];
+  const out = TCP_FLAGS.filter(([name]) => f.indexOf(name) >= 0).map(([name, a]) => `${name} (${a})`);
+  return out.length ? out.join(', ') : 'none';
+}
+
+/**
+ * The label of a TCP segment beside its dot, from its header: the
+ * application's message (BGP OPEN, MQTT PUBLISH) or the protocol the
+ * connection belongs to (BGP TCP) or plain TCP, then the flags; data with
+ * its size when it is no application message of its own; a retransmission
+ * said as such. `to`: the destination a plain connection's SYN names.
+ */
+export function segmentLabel(o: { flags: readonly string[]; app?: string; owner?: string; bytes?: number; to?: string; keepalive?: boolean; retx?: boolean }): string {
+  const base = o.app ? o.app : `${o.owner ? o.owner + ' ' : ''}TCP${o.keepalive ? ' keepalive' : ''}`;
+  const size = !o.app && o.bytes ? ` · ${o.bytes} B` : '';
+  const to = !o.app && !o.owner && o.to ? ` → ${o.to}` : '';
+  return `${base} ${tcpFlagsText(o.flags)}${size}${to}${o.retx ? ' (retransmission)' : ''}`;
+}
+
 /** An initial sequence number from a connection's identity and a counter (deterministic, below 2^31; RFC 6528's are random). */
 export function initialSeq(key: string, n: number): number {
   let h = 2166136261;

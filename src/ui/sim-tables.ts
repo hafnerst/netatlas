@@ -13,6 +13,7 @@
  */
 import { ArpRow, ConnRow, GridTable, Headers, MacRow, McDecision, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
+import { tcpFlagsLong, tcpFlagsText } from '../analysis/sim/tcp';
 
 export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone' | 'mqtt' | 'mqttc' | 'ipv6' | 'ptp' | 'ntp';
 
@@ -453,8 +454,9 @@ export class TablePanels {
       } else if (l4.proto === 'other') rows.push(['IP protocol', String(l4.num)]);
       else {
         rows.push(['Source port', String(l4.sport)], ['Destination port', String(l4.dport)]);
-        if (l4.flags) rows.push(['Flags', l4.flags.join(', ')]);
+        if (l4.proto === 'tcp') rows.push(['Flags', `${tcpFlagsText(l4.flags)} ${tcpFlagsLong(l4.flags)}`]);
         if (l4.seq !== undefined && l4.proto === 'tcp') rows.push(['Sequence, acknowledgement', `${l4.seq}${l4.ack !== undefined ? ', ' + l4.ack : ''}`]);
+        if (l4.mss !== undefined) rows.push(['Options', `MSS ${l4.mss} (the largest segment its sender takes)`]);
       }
       layer(`Layer 4 – ${l4.proto === 'icmp' ? (h.l3.length && h.l3[h.l3.length - 1].version === 6 ? 'ICMPv6' : 'ICMP') : l4.proto === 'other' ? 'protocol' : l4.proto.toUpperCase()}`, rows);
     }

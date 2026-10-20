@@ -728,18 +728,20 @@ export class ProtocolSim implements Protocols {
   }
 
   /**
-   * The transport header of a session's message, from its profile's
-   * transport ("TCP 179", "UDP 3784", "IP 89"): the client side (the
-   * requests' sender, or the relation's earlier endpoint) sends from an
-   * ephemeral port to the protocol's port, the other side back; TCP flags
-   * follow the message (SYN, SYN-ACK, ACK, else PSH and ACK).
+   * The transport header of a session's message sent here (unicast or
+   * multicast, never over a connection), from its profile's datagram
+   * transport ("UDP 3784", "IP 89"; LDP's "UDP/TCP 646": its Hellos are
+   * UDP): the client side (the requests' sender, or the relation's earlier
+   * endpoint) sends from an ephemeral port to the protocol's port, the other
+   * side back. A protocol's TCP messages go over the transport's connections
+   * (proto-tcp.ts) with their segments' real flags: no TCP header is made up
+   * here (a profile with only TCP gets none).
    */
-  l4Of(s: Sess, type: string): L4 | undefined {
+  l4Of(s: Sess): L4 | undefined {
     const p = s.profile.proto;
-    const tcp = /\bTCP\s+([0-9]{1,5})/.exec(p);
-    const udp = /\bUDP\s+([0-9]{1,5})/.exec(p);
+    const udp = /\bUDP(?:\/TCP)?\s+([0-9]{1,5})/.exec(p);
     const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(p);
-    const first = [tcp, udp, ip].filter((x): x is RegExpExecArray => !!x).sort((a, b) => a.index - b.index)[0];
+    const first = [udp, ip].filter((x): x is RegExpExecArray => !!x).sort((a, b) => a.index - b.index)[0];
     if (!first) return undefined;
     if (first === ip) return { proto: 'other', num: Number(ip[1]) };
     const port = Number(first[1]);
@@ -747,9 +749,7 @@ export class ProtocolSim implements Protocols {
     const eph = (dev: string): number => 49152 + hashIndex(s.rel.id + '|' + dev, 16000);
     const sport = client ? eph(s.dev) : port;
     const dport = client ? port : eph(s.peer);
-    if (first === udp) return { proto: 'udp', num: 17, sport, dport };
-    const flags = /SYN-ACK/.test(type) ? ['SYN', 'ACK'] : /\bSYN\b/.test(type) ? ['SYN'] : /^TCP ACK$/.test(type) ? ['ACK'] : /\bRST\b/.test(type) ? ['RST'] : /\bFIN\b/.test(type) ? ['FIN', 'ACK'] : ['PSH', 'ACK'];
-    return { proto: 'tcp', num: 6, sport, dport, flags };
+    return { proto: 'udp', num: 17, sport, dport };
   }
 
   /** Unicast to the peer (its address), along the routing tables. */
@@ -759,7 +759,7 @@ export class ProtocolSim implements Protocols {
     const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
     const pkt = this.e.newPacket(s.local.addr, to, s.local.l3.vrf, m, [s.rel.id]);
-    pkt.l4 = this.l4Of(s, type);
+    pkt.l4 = this.l4Of(s);
     this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
     this.e.send(s.dev, pkt);
   }
@@ -769,7 +769,7 @@ export class ProtocolSim implements Protocols {
     const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
     const pkt = this.e.newPacket(s.local.addr, group, s.local.l3.vrf, m, [s.rel.id], 1);
-    pkt.l4 = this.l4Of(s, type);
+    pkt.l4 = this.l4Of(s);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
     for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, (this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote.addr) : 2 * this.e.hopTime());

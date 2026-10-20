@@ -498,7 +498,7 @@ test('the packet inspector: each dot’s frame layer by layer (MACs, VLAN tag, I
   s.runTo(2500);
   run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 443 }, 2000);
   run(s, { from: 'pc', to: '203.0.113.1', kind: 'icmp' }, 2000);
-  const syn = s.engine.flights.find((f) => f.label === 'TCP SYN → 10.0.2.10:443' && f.track.ref === 'link:l2');
+  const syn = s.engine.flights.find((f) => f.label === 'TCP [S] → 10.0.2.10:443' && f.track.ref === 'link:l2');
   assert.equal(syn.cast, 'unicast');
   assert.equal(syn.hdr.l2.ethertype, 'IPv4 (0x0800)');
   assert.equal(syn.hdr.l2.vlan, null);
@@ -559,7 +559,7 @@ relations:
   // the common transport's connection: the same SYN (its sequence number) again after 1 s, then 2 s
   const syns = ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.what === 'TCP SYN');
   assert.ok(syns.length >= 3);
-  assert.match(syns[1].detail, /^BGP TCP 10\.0\.0\.1:\d+ → 10\.0\.0\.2:179 \[SYN\] seq \d+: opens a connection \(BGP ebgp to b\), retransmission 1 \(timeout 1 s\)$/);
+  assert.match(syns[1].detail, /^BGP TCP 10\.0\.0\.1:\d+ → 10\.0\.0\.2:179 \[S\] seq \d+, MSS 1460: opens a connection \(BGP ebgp to b\), retransmission 1 \(timeout 1 s\)$/);
   const seq = (d) => /seq (\d+)/.exec(d)[1];
   assert.equal(seq(syns[1].detail), seq(syns[0].detail));
   assert.ok(Math.abs(syns[1].t - syns[0].t - 1000) < 1 && Math.abs(syns[2].t - syns[1].t - 2000) < 1);

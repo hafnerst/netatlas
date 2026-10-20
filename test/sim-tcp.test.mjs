@@ -131,13 +131,15 @@ links:
 `;
 
 const sim = (text, opts) => new S.Simulation(model(text), opts);
-/** the TCP segments a device sent after t, as [type, seq, ack, bytes] from their headers */
+/** the TCP segments a device sent after t, as [flags, seq, ack, bytes] from their headers as sent (the packet inspector's) */
 const segs = (s, dev, t0) =>
   s.events()
-    .filter((e) => e.kind === 'message' && e.protocol === 'tcp' && e.device === dev && e.t >= t0)
-    .map((e) => /\[([A-Z,]+)\] seq (\d+)(?:, ack (\d+))?(?:, (\d+) bytes)?/.exec(e.detail))
-    .filter((m) => !!m)
-    .map((m) => [m[1], Number(m[2]), m[3] === undefined ? null : Number(m[3]), m[4] === undefined ? 0 : Number(m[4])]);
+    .filter((e) => e.kind === 'message' && e.device === dev && e.t >= t0 && e.hdr && e.hdr.l4 && e.hdr.l4.proto === 'tcp')
+    .map((e) => {
+      const l4 = e.hdr.l4;
+      const ip = e.hdr.l3[e.hdr.l3.length - 1];
+      return [l4.flags.join(','), l4.seq, l4.ack === undefined ? null : l4.ack, ip.len - (ip.version === 4 ? 20 : 40) - 20];
+    });
 
 /** Lose (or duplicate, delay) the n-th frame on a cable that a predicate picks. */
 function impair(s, pick, what, n = 1) {
@@ -242,7 +244,7 @@ test('connection: a lost handshake ACK — the request’s own ACK completes the
   const t0 = s.now;
   s.runTo(t0 + 3000);
   assert.equal(t.ok, true, t.result);
-  assert.ok(s.events().some((e) => e.kind === 'drop' && /lost on l1 \(an impairment of the test\): TCP ACK/.test(e.detail)), 'the handshake ACK was lost');
+  assert.ok(s.events().some((e) => e.kind === 'drop' && /lost on l1 \(an impairment of the test\): TCP \[A\]$/.test(e.detail)), 'the handshake ACK was lost');
   // the server never retransmitted its SYN-ACK: the request (ACK set) completed the handshake
   assert.equal(segs(s, 'srv', t0).filter((x) => x[0] === 'SYN,ACK').length, 1);
 });
