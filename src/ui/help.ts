@@ -509,6 +509,22 @@ const MANUAL: Section[] = [
     figures: [['device-model', 'pgw in ot-network.yaml: a System whose purpose is Layer 3 forwarder, with its kind name and its icon.']],
   },
   {
+    id: 'interconnects',
+    title: 'Model a USB, serial, bus or backplane connection',
+    steps: [
+      'On each device, add the port with **Port stack** *Opaque*: it has no network stack (no address, VLAN or MAC), and nothing of the IP side ever uses it.',
+      'Add an **interconnect** (in the YAML: *interconnects:*). Its **Topology**: *point to point* (two ports) or *shared* (a bus or backplane with several attachments). Its **Technology** and version (*USB* *2.0*, *RS-485*, *CAN FD*, *VME*: suggestions, any text), and optionally the **Protocol** over it and the **Connector**.',
+      'Its **Access**: *peer* (every participant sends its own data) or *controller / target* (controllers initiate). Each endpoint gets its **role** (Controller, Target, Controller and target, Peer, Monitor) and its **Data** direction (*both*, *send*, *receive*): the direction is written there, never taken from the order of the endpoints.',
+      'A fabric switch or an active hub passes data between its ports only where you say so: on a **System**, add a transit group of its opaque ports (*opaque_transit*). Two connections of the same technology are never joined otherwise, and nothing converts one technology into another.',
+      'In a simulation, **Network events → Send illustrative data**: choose the interconnect, who **initiates** it, where the data comes **from** and where it goes **to**. A controller reads a target by choosing the target as the source. **Non-IP failures** fail an interconnect, detach one attachment or shut a port; restore them from **Active events**.',
+    ],
+    notes: [
+      'The physical view draws a point-to-point connection as a dashed line labelled with its technology and direction (*USB 2.0 ↔*, *RS-232 →*), a bus as a bar you can move with a tap and role badge per attachment, and opaque ports as diamonds. The **IP** and **Non-IP** switches show one side or both; the logical view never shows them. Find (`/`) finds them by technology, protocol or port.',
+      'The data is illustrative: it shows where data can go and why it can’t, one way and without a reply. Nothing of USB, RS-485, CAN, VME or any protocol over them is simulated, and the packet inspector says so.',
+    ],
+    figures: [['interconnects', 'A USB line and a one-way serial line, an RS-485 bus with its controller and targets, and a fabric switch passing SRIO between its payload cards.']],
+  },
+  {
     id: 'vpn-gateway',
     title: 'Configure a VPN gateway',
     steps: [

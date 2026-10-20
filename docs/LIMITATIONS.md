@@ -538,6 +538,37 @@ statically; contextual focus.
 importance, dependencies nobody wrote down, requirements about sessions or
 timing accuracy.
 
+## Non-IP interconnects
+
+**Implemented.** Opaque ports, point-to-point and shared interconnects
+with a technology, an application protocol and a connector as text, peer
+and controller / target access with per-attachment roles and data
+directions, explicit transit through Systems, their drawing in the
+physical view (IP / Non-IP switches), the editor, Find, and illustrative
+data with failures of an interconnect, an attachment or a port.
+
+**Simplifications.**
+
+* **Illustrative only.** Data moves where the model says it can, one
+  direction, no reply. No technology or protocol is simulated:
+  enumeration, addressing, arbitration, collisions, framing, timing,
+  bandwidth, acknowledgment, error handling and termination are not. Two
+  controllers of a bus send at the same moment without contention. A hop
+  takes 1 ms of simulated time; the size is a label.
+* **Text, not semantics.** Technology, version, protocol and connector are
+  free text: nothing checks that a USB version matches on both ends, that
+  a connector fits, or that an RS-232 line is short enough.
+* **No conversion.** A transit group passes data between ports of one
+  technology only; a converter or gateway (USB to serial, CAN to
+  Ethernet) is not modelled as such.
+* **No coupling with the IP side.** An opaque port's device being powered
+  off stops its data; nothing else of the IP simulation affects or is
+  affected by an interconnect. Its failure is a failure of the connection
+  only: no electrical fault (a shorted bus taking everything down) is
+  inferred.
+* **Not in Analyze.** Paths, what-if, failure domains, expectations and
+  experiments cover the IP side only.
+
 ## Model and editing
 
 **Implemented.** One YAML model with validation, an editor that writes it

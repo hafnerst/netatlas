@@ -273,6 +273,23 @@ anything else.
   of the model. *Trade-off:* rows with ports are taller and the logical
   diagrams larger; routes are computed at render time (sides, stubs, corners
   around boxes), like labels, so they follow dragged nodes.
+* **Non-IP interconnects are a separate graph.** Opaque ports
+  (`stack: opaque`) live in `Device.opaquePorts`, never in its interfaces,
+  and interconnects in `Model.interconnects`; `model/interconnect.ts` holds
+  their rules (roles, data directions, the hop rule, explicit transit).
+  Everything IP — addressing, routing, paths, checks, the logical view, the
+  simulation's network — iterates interfaces and links, so it cannot see an
+  opaque port by construction; validation refuses one as a link or relation
+  end. Only the physical layout (`layout/input.ts` merges them as extra
+  nodes and edges), the diagram (`diagram/interconnects.ts`), the editor and
+  `analysis/sim/opaque.ts` read them. That simulation moves abstract data
+  over the interconnect graph and the Systems' `opaque_transit` groups (the
+  only transit; nothing is joined because two connections share a
+  technology), as flights with no headers on tracks
+  `interconnect:<id>`, checking each hop when it is due.
+  *Trade-off:* no protocol of an interconnect is simulated — only where
+  data can go and why it can't; and a device that is both (a USB adapter
+  with a network stack) is modelled as two ports, one of each kind.
 * **Labels are placed at render time, deterministically.** Floating labels
   (cable labels, relation labels, addresses) go through a `LabelPlacer` in id
   order: first free candidate, else least overlap. Routes and label places

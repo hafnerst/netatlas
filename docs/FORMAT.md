@@ -20,6 +20,7 @@ things that are often mixed up in diagrams:
 | Concept | Section | Drawn in | Meaning |
 |---|---|---|---|
 | Physical connectivity | `links` | Physical view | A real cable / radio link between two ports (what each port carries is configured on the port) |
+| Non-IP connections | `interconnects` | Physical view | A USB, serial, bus, backplane or fabric connection between opaque ports (`stack: opaque`), apart from the IP side ([Interconnects](#interconnects-non-ip-physical-connections)) |
 | Logical relationships | `relations` | Logical view | Protocol sessions, tunnels, overlays, redundancy groups, service dependencies |
 | IP networks | `networks` | Logical view | One IP prefix each, optionally with the VLAN it lives in. Members are derived from addresses. |
 | Static routes | `routes` of a device | Logical view | Destination prefix and next hop, per device and VRF |
@@ -2086,6 +2087,158 @@ A link holds no VLANs: what a cable carries follows from its two ports'
 The cable shows what both ends carry, the networks of those VLANs, and ⚠
 *VLANs differ* when they disagree. `mode`, `untagged` and `tagged` on a
 link end are unknown keys; the error says where the VLANs go.
+
+## `interconnects` (non-IP physical connections)
+
+Some connections carry no network stack the model knows about: a USB
+instrument, a serial line, an RS-485 or CAN bus, a VME backplane, a
+RapidIO / PCIe fabric in a chassis. They are modelled apart from the IP
+side, in two parts: **opaque ports** on the devices, and **interconnects**
+that join them. NetAtlas does not simulate what runs on them; it shows
+where they go and moves [illustrative data](#illustrative-data-on-interconnects)
+along them.
+
+### Opaque ports (`stack: opaque`)
+
+A port written with `stack: opaque` has no network stack:
+
+```yaml
+devices:
+  - id: ctl
+    type: system
+    interfaces:
+      - {id: eth0, ip: 192.0.2.10/24}
+      - {id: usb0, stack: opaque}
+      - {id: rs485, stack: opaque, label: "Meter bus", description: "terminated"}
+```
+
+* It takes only `id`, `label`, `stack`, `description` and `attrs`. Any
+  key of a network port (addresses, VLANs, `mode`, `speed`, `mtu`,
+  services …) is an error that says so.
+* It is never an IP interface: no address, no MAC, no VLAN, no ARP, no
+  route, no adjacency, no path, no simulation of any protocol of the IP
+  side. Analyses, paths, routing, the logical view and the simulation's
+  IP side never see it.
+* It connects only through an interconnect. A `links` end or a relation
+  endpoint that names it is an error.
+* `stack: network` is the default and is not written; any other value is
+  an error.
+
+### Interconnects
+
+```yaml
+interconnects:
+  - id: scope-usb
+    topology: point_to_point
+    technology: {name: USB, version: "2.0"}
+    protocol: {name: SCPI}
+    connector: USB-B
+    access: controller_target
+    endpoints:
+      - {port: "ctl:usb0", role: controller}
+      - {port: "scope:usb0", role: target}
+  - id: meter-bus
+    topology: shared
+    technology: {name: RS-485}
+    protocol: {name: Modbus RTU}
+    access: controller_target
+    endpoints:
+      - {port: "ctl:rs485", role: controller}
+      - {port: "meter1:rs485", role: target}
+      - {port: "meter2:rs485", role: target}
+  - id: gps-serial
+    topology: point_to_point
+    technology: {name: RS-232}
+    endpoints:
+      - {port: "gps:com1", data: send}
+      - {port: "ctl:com1", data: receive}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `id` | yes | Unique among all the model's ids. |
+| `topology` | yes | `point_to_point`: exactly two ports. `shared`: one medium with two or more attachments (a bus, a backplane), drawn as a bar with a tap per attachment. |
+| `technology` | yes | `{name, version}`: what the connection is, as text (`USB` `2.0`, `RS-485`, `CAN FD`, `VME` `VME64x`, `SRIO` `3.1`). The editor suggests common names; any text is accepted and nothing is derived from it. |
+| `protocol` | | `{name, version}`: the application protocol over it (`SCPI`, `Modbus RTU`, `NMEA 0183`), as text. Shown, never simulated. |
+| `connector` | | The connector, as text (`USB-B`, `DB9`, `M12`). |
+| `access` | | `peer` (the default): every participant may send its own data. `controller_target`: controllers initiate every transfer with targets (Master / Slave). |
+| `endpoints` | yes | The attachments: `{port: device:port, role, data, system_controller}`. `port` names an opaque port; a port is attached to one interconnect only. |
+| `label`, `description`, `attrs` | | |
+
+An endpoint's keys:
+
+| Key | Description |
+|---|---|
+| `role` | With `peer` access: `peer` (the default) or `monitor`. With `controller_target` access (required there): `controller`, `target`, `controller_target` (both, as on a VME card that is master and slave) or `monitor`. A monitor only receives. |
+| `data` | The direction of this port's data: `both` (the default), `send` or `receive`. A monitor's is `receive`. **Direction comes from here, never from the order of the endpoints.** |
+| `system_controller` | `true` for the attachment that is the system controller of a backplane (VME slot 1); shown, not simulated. |
+
+Rules (errors unless said otherwise):
+
+* An endpoint names an opaque port of a known device; a network port, an
+  unknown port or a port attached twice is an error with a suggestion.
+* A `point_to_point` interconnect has exactly two endpoints; a `shared`
+  one two or more.
+* A role must fit the access: `peer` only with `peer` access; `controller`,
+  `target` and `controller_target` only with `controller_target`.
+* Warnings: no endpoint can send, or none other receives (no data can
+  move); `controller_target` access without a controller (nothing can
+  initiate).
+* Separate interconnects never join, even of the same technology: two
+  RS-485 segments are two networks unless a device passes data between
+  them (below).
+
+### Transit through a device (`opaque_transit`)
+
+A backplane switch module, an active hub or a fabric switch passes data
+between some of its opaque ports. That is written on the device, never
+assumed:
+
+```yaml
+  - id: fsw
+    type: system
+    interfaces: [{id: f1, stack: opaque}, {id: f2, stack: opaque}, {id: f4, stack: opaque}, {id: f3, stack: opaque, label: console}]
+    opaque_transit:
+      - {ports: [f1, f2, f4]}
+```
+
+* Only a **System** device takes `opaque_transit`; on any other type it is
+  an error.
+* Each group lists two or more of the device's opaque ports; data passes
+  between the ports of one group, and a port is in one group at most.
+  Without `opaque_transit` a device passes nothing (the default).
+* A group joins interconnects of one technology: it **converts nothing**
+  (a USB-to-serial adapter is two devices in the model, or not modelled).
+  Ports of different technologies in one group are an error.
+
+### Illustrative data on interconnects
+
+In the protocol simulation, **Network events → Send illustrative data**
+moves abstract data along these connections: an interconnect, the
+attachment that initiates it, where the data comes from and where it goes,
+Count, Interval and an illustrative size. Each hop follows its
+interconnect's rules — a sender that sends, a recipient that receives, a
+controller that initiates (one end of the data is its own: a read carries
+a target's data to it), peers that send their own data, transit only where
+written. No reply is made, no header of any layer exists, nothing of the
+technology or protocol is simulated (no enumeration, addressing,
+arbitration, collisions, framing, acknowledgment or timing). The result
+says "delivered along the modelled connection", or where and why the data
+stopped. **Non-IP failures** fail an interconnect (a point-to-point
+connection or a bus segment), detach one attachment or shut one opaque
+port, each restored from Active events. Interconnects are passive: they
+take no power and do not boot.
+
+### In the diagram
+
+The physical view draws a point-to-point interconnect as a dashed line in
+its own colour labelled with its technology and data direction
+(`USB 2.0 ↔`, `RS-232 →`), a shared one as a movable bar with a tap to each
+attachment and the attachment's role as a badge (`C`, `T`, `C/T`, `P`,
+`M`; `*` for a system controller), and opaque ports as diamonds. The
+toolbar's **IP** / **Non-IP** switches show either side alone or both
+(only for a model with interconnects). The logical view never draws them.
+Their positions are kept in `layout.physical` under their ids.
 
 ## `networks`
 

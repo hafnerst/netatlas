@@ -26,6 +26,7 @@
  * DOM-free.
  */
 import { Device, IcAccess, IcAttachment, IcData, IcRole, IcTopology, Interconnect, OpaquePort } from './types';
+import { Support } from './support';
 
 export const IC_TOPOLOGIES: readonly IcTopology[] = ['point_to_point', 'shared'];
 export const IC_ACCESS: readonly IcAccess[] = ['peer', 'controller_target'];
@@ -150,3 +151,10 @@ export function hopRule(ic: Interconnect, from: IcAttachment, to: IcAttachment, 
   if (initiator !== from && initiator !== to) return `the controller ${name(initiator)} is neither the source nor the recipient: a transfer between two other participants needs one of them to be its initiator`;
   return null;
 }
+
+/** What NetAtlas does for the non-IP interconnects (the support catalog, docs/SUPPORT.md). */
+export const IC_SUPPORT: Support = {
+  level: 'configured',
+  does: 'Opaque ports and point-to-point or shared interconnects validated (endpoints, roles against the access, data directions, transit groups of one technology on Systems), drawn in the physical view, edited and found; illustrative data moves along them one way, hop by hop under their roles, directions, explicit transit and failures (an interconnect, an attachment, a port, a device), and says why it stops.',
+  not: 'any technology or application protocol (enumeration, addressing, arbitration, collisions, framing, timing, bandwidth, acknowledgment, replies); conversion between technologies; electrical faults; the IP side and Analyze never use them.',
+};
