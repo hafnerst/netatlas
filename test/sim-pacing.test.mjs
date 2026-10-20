@@ -307,8 +307,10 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   const t3 = P.conversationKey('tcp', { l2: { src: 'a', dst: 'b' }, l3: [{ src: '10.0.0.1', dst: '10.0.0.9' }], l4: { proto: 'tcp', sport: 40001, dport: 80 } }, 'SYN');
   assert.notEqual(t1, t3);
   const { sim, p } = paced();
-  p.step();
-  const it = p.items.find((x) => x.drawn);
+  // (a conversation that goes on: an OSPF Hello, every hello interval)
+  for (let i = 0; i < 400 && !p.items.some((x) => x.drawn && x.f.protocol === 'ospf'); i++) p.frame(16);
+  const it = p.items.find((x) => x.drawn && x.f.protocol === 'ospf');
+  assert.ok(it, 'an OSPF Hello on screen');
   assert.ok(p.followFlight(it.f.id));
   assert.equal(p.follow.key, it.key);
   // its later hops are drawn whatever else is on screen (no room for anything else here); the simulation goes on at its rate

@@ -226,7 +226,7 @@ export class NetServicesSim {
     P.ifaceHooks.push((dev, l3, up) => {
       const c = this.clients.get(dev + ':' + l3.id);
       if (!c) return;
-      if (up && c.state === 'INIT' && !this.P.e.leases.has(dev + ':' + l3.id)) this.P.e.at(this.P.e.now + this.P.e.jitter(), () => this.discover(c, 'its link is up'));
+      if (up && c.state === 'INIT' && !this.P.e.leases.has(dev + ':' + l3.id)) this.P.e.at(this.P.e.now + this.P.e.jitter(dev), () => this.discover(c, 'its link is up'));
       if (!up) {
         c.gen++;
         c.state = 'INIT';
@@ -236,7 +236,7 @@ export class NetServicesSim {
     });
     P.bootHooks.push(() => {
       // (an interface up from the start, without a cable to wait for)
-      for (const c of this.clients.values()) if (this.P.e.isL3Up(c.dev, c.iface)) this.P.e.at(this.P.e.jitter(), () => this.discover(c, 'it starts'));
+      for (const c of this.clients.values()) if (this.P.e.isL3Up(c.dev, c.iface)) this.P.e.at(this.P.e.jitter(c.dev), () => this.discover(c, 'it starts'));
     });
   }
 

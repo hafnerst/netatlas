@@ -436,7 +436,7 @@ export class Multicast {
     for (const d of this.P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
       for (const i of d.interfaces.concat(d.logical)) {
         if (!i.multicast) continue;
-        for (const s of i.multicast.streams) this.addStream(d.id, i.id, s.group, s.port, s.interval, s.size, 'model', 4000 + this.e.jitter());
+        for (const s of i.multicast.streams) this.addStream(d.id, i.id, s.group, s.port, s.interval, s.size, 'model', 4000 + this.e.jitter(d.id));
       }
     }
     // the model's multicast demands are streams too
@@ -448,7 +448,7 @@ export class Multicast {
       const l3 = Array.from(sd.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.addrs.some((a) => a.addr.version === g.version));
       if (!l3) continue;
       const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
-      this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(), dm.label || dm.id);
+      this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(sd.id), dm.label || dm.id);
       this.demandBps.set(sd.id + '|' + dm.destination, dm.bps);
     }
   }
@@ -1100,7 +1100,7 @@ export class Multicast {
       const list = d.group ? [m.get(d.group)].filter((x): x is HostGroup => !!x) : Array.from(m.values());
       for (const hg of list.sort((a, b) => cmp(a.group, b.group))) {
         if (A(hg.group).version !== v) continue;
-        const delay = Math.floor(this.e.random() * mrt);
+        const delay = Math.floor(this.e.random(dev) * mrt);
         const tok = ++hg.answer;
         this.e.after(delay, () => {
           if (hg.answer !== tok || m.get(hg.group) !== hg) return;

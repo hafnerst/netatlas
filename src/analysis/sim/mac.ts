@@ -32,12 +32,14 @@ export function hash32(s: string): number {
   return h >>> 0;
 }
 
-/** The seed of a model: its title and its device and interface ids, sorted (the file's order does not matter). */
+/**
+ * The seed of a model's random streams: its title. Each stream is scoped
+ * further by the object it is for (a device's jitter, a cable's loss), so
+ * that adding an unrelated object changes nothing of the others' numbers;
+ * the file's order never matters.
+ */
 export function modelSeed(model: Model): string {
-  const ids: string[] = [];
-  for (const d of model.devices) for (const i of deviceInterfaces(d)) ids.push(d.id + ':' + i.id);
-  ids.sort();
-  return `${model.title}|${hash32(ids.join(','))}`;
+  return model.title;
 }
 
 /** A deterministic random number generator (mulberry32): the same seed, the same numbers. */
@@ -60,9 +62,13 @@ export interface IfaceMac {
 /**
  * The MAC address of every interface that sends frames (physical,
  * virtual, aggregates; loopbacks and tunnels have none), by "device:iface":
- * the model's own (canonical), else a generated, locally administered
- * unicast address, unique in the model, derived from the model's seed and
- * the interface's key. Generated ones are never written to the model.
+ * the model's own (canonical) — always, a duplicate too: two interfaces
+ * written with one MAC are a fault the simulation shows (switches see it
+ * move, ARP answers compete), never repaired — else a generated, locally
+ * administered unicast address derived from the model's title and the
+ * interface's own key alone (another object added or removed changes it
+ * not), unlike any written one. Generated ones are never written to the
+ * model.
  */
 export function interfaceMacs(model: Model): Map<string, IfaceMac> {
   const out = new Map<string, IfaceMac>();
@@ -73,7 +79,7 @@ export function interfaceMacs(model: Model): Map<string, IfaceMac> {
       if (i.type === 'loopback' || i.type === 'tunnel') continue;
       const key = d.id + ':' + i.id;
       const own = i.mac ? canonicalMac(i.mac) : null;
-      if (own && !used.has(own)) {
+      if (own) {
         out.set(key, { mac: own, simulated: false });
         used.add(own);
       } else missing.push(key);

@@ -2047,7 +2047,7 @@ export class Transport {
       if (!d.caps.testTraffic || !d.l3.size) continue;
       const dev = d.id;
       // all endpoints together, once the network had time to come up
-      const first = 3000 + this.e.jitter();
+      const first = 3000 + this.e.jitter(dev);
       this.P.periodic(
         () => true,
         () => this.e.params.num('test-interval', dev),
@@ -2122,7 +2122,8 @@ export class Transport {
               onDone: (t) => this.checked(dev, m, t),
             });
           },
-          2000 + this.e.jitter(),
+          2000 + this.e.jitter(dev),
+          dev,
         );
       }
     }
@@ -2169,7 +2170,8 @@ export class Transport {
           if (!this.e.deviceOn(dev)) return;
           for (const a of agents) this.run({ from: dev, target: a.dev, dst: a.addr, kind: 'icmp', source: 'probe', series: `${dev} probe ${a.dev}`, timeout: { value: PROBE_TIMEOUT }, onDone: (t) => this.probed(dev, a.dev, t) });
         },
-        2500 + this.e.jitter(),
+        2500 + this.e.jitter(dev),
+        dev,
       );
     }
   }

@@ -439,8 +439,16 @@ export class Pacer {
     const convs = { physical: new Set<string>(), logical: new Set<string>() };
     // the protocols with a conversation on screen, per view
     const protos = { physical: new Set<string>(), logical: new Set<string>() };
+    // the drawn hops still on their way, by conversation (an answer's first hop waits for them): one pass, not one per new hop
+    const onWay = new Map<string, PaceItem[]>();
+    const wayOf = (x: PaceItem): void => {
+      const l = onWay.get(x.key);
+      if (l) l.push(x);
+      else onWay.set(x.key, [x]);
+    };
     if (fresh.length)
-      for (const x of this.items)
+      for (const x of this.items) {
+        if (x.drawn && this.onItsWay(x)) wayOf(x);
         if (x.drawn && this.clock < this.end(x) && this.host.shown(x.f)) {
           live[x.f.view]++;
           // (a conversation takes a place while a hop of it is on its way; its arrival's pulse doesn't)
@@ -449,6 +457,7 @@ export class Pacer {
             protos[x.f.view].add(x.f.protocol);
           }
         }
+      }
     for (const f of fresh) {
       if (this.byId.has(f.id)) continue;
       // a creation-time loss puts the flight's end where it was lost: midway
@@ -472,7 +481,7 @@ export class Pacer {
       const key = flightKey(f, h);
       // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side
       if (!parent && f.sender !== undefined)
-        for (const x of this.items) if (x.key === key && x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && x.drawn && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
+        for (const x of onWay.get(key) || []) if (x.f.test === f.test && x.f.sender !== undefined && x.f.sender !== f.sender && this.onItsWay(x)) after = Math.max(after, this.arrival(x));
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && !flow && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
@@ -504,6 +513,7 @@ export class Pacer {
       }
       const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
       this.items.push(it);
+      if (drawn) wayOf(it);
       this.byId.set(f.id, it);
       added.push(it);
     }

@@ -77,6 +77,8 @@ export interface Quote {
   proto: string;
   sport?: number;
   dport?: number;
+  /** a quoted ICMP echo's identifier */
+  echoId?: number;
   /** the quoted packet's id, for the sender to match it */
   pkt: number;
   /** the quoted packet's flow (the transport matches its connection) */

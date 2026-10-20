@@ -173,3 +173,36 @@ test('PAT: two inside hosts with the same source port to the same server get two
   const back = s.events().filter((e) => e.device === 'n' && e.what === 'NAT reply').map((e) => /→ (10\.0\.0\.1[12])/.exec(e.detail)[1]).sort();
   assert.deepEqual(back, ['10.0.0.11', '10.0.0.12']);
 });
+
+test('PAT and ICMP: two inside hosts pinging one server at once are two translations (by echo identifier); each reply goes to its own host', () => {
+  const s = sim(PAT);
+  s.runTo(3000);
+  const a = s.sendTest({ from: 'h1', to: '198.51.100.10', kind: 'icmp' });
+  const b = s.sendTest({ from: 'h2', to: '198.51.100.10', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(a.ok, true, a.result);
+  assert.equal(b.ok, true, b.result);
+  // the echoes as they left the NAT: two identifiers, never one shared translation
+  const replies = s.events().filter((e) => e.device === 'n' && e.what === 'NAT reply').map((e) => /→ (10\.0\.0\.1[12])/.exec(e.detail)[1]).sort();
+  assert.deepEqual(replies, ['10.0.0.11', '10.0.0.12']);
+  // the server saw two different identifiers from the NAT's address
+  const ids = new Set(s.engine.flights.filter((f) => f.view === 'physical' && f.track.ref === 'link:d' && f.hdr && f.hdr.l4 && f.hdr.l4.icmpType === 8).map((f) => `${f.hdr.l3[0].src}#${f.hdr.l4.echoId}`));
+  assert.equal(ids.size, 2, Array.from(ids).join(' '));
+});
+
+const PAT_MTU = PAT.replace('  - {id: srv, type: server, interfaces: [{id: eth0, ip: 198.51.100.10/24}], simulation: {listening: udp/53}}', `  - {id: r2, type: router, interfaces: [{id: g0, ip: 198.51.100.2/24}, {id: g1, ip: 203.0.113.1/24, mtu: 1000}], routes: [{prefix: 0.0.0.0/0, via: 198.51.100.1}]}
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 203.0.113.10/24}], routes: [{prefix: 0.0.0.0/0, via: 203.0.113.1}], simulation: {listening: tcp/80}}`)
+  .replace('    interfaces: [{id: g0, ip: 10.0.0.1/24}, {id: g1, ip: 198.51.100.1/24}]', '    interfaces: [{id: g0, ip: 10.0.0.1/24}, {id: g1, ip: 198.51.100.1/24}]\n    routes: [{prefix: 203.0.113.0/24, via: 198.51.100.2}]')
+  .replace('  - {id: d, a: "n:g1", b: "srv:eth0"}', '  - {id: d, a: "n:g1", b: "r2:g0"}\n  - {id: e, a: "r2:g1", b: "srv:eth0"}');
+
+test('PAT and PMTUD: Fragmentation Needed from behind the NAT reaches the inside sender with its quote translated back; the connection resegments and is answered', () => {
+  const s = sim(PAT_MTU);
+  s.runTo(3000);
+  const t = s.sendTest({ from: 'h1', to: '203.0.113.10', kind: 'tcp', port: 80, size: 3000 });
+  s.runTo(s.now + 6000);
+  assert.equal(t.ok, true, t.result);
+  const err = s.events().find((e) => e.device === 'n' && e.what === 'NAT reply' && /an ICMP error back/.test(e.detail));
+  assert.ok(err, 'the error was translated back');
+  assert.match(err.detail, /its quoted header 198\.51\.100\.1:\d+ → 10\.0\.0\.11:\d+/);
+  assert.ok(s.events().some((e) => e.device === 'h1' && e.what === 'path MTU' && /is 1000 bytes now/.test(e.detail)), 'h1 learned the path MTU');
+});

@@ -91,7 +91,7 @@ import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trac
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, l2Domain, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
-import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
+import { ArpRow, ArpType, Cast, Flight, Headers, L4, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 import { capabilities } from '../../model/capabilities';
 import { SeparationSim } from './separation';
@@ -281,9 +281,8 @@ export class Engine {
   protocols: Protocols | null = null;
   now = 0;
   timerScale: number;
-  readonly random: () => number;
-  /** the start-up and timer jitter: its own seeded sequence (so that it changes nothing else's) */
-  private jitterRandom: () => number;
+  /** the seeded streams, one per kind and object ("jitter|r1", "loss|l2"): an object's numbers depend on nothing else in the model */
+  private streams = new Map<string, () => number>();
   private q: QItem[] = [];
   private seq = 0;
   private logSeq = 0;
@@ -300,8 +299,6 @@ export class Engine {
   private causeFlight: number | null = null;
   /** the parameters in effect (params.ts): simulation-wide, and each device's own */
   readonly params: SimParams;
-  /** the loss of frames: its own seeded sequence (the start-up jitter stays the same whatever the loss) */
-  private lossRandom: () => number;
   /** the Security gateways' permitted transfers (sim/separation.ts) */
   sep: SeparationSim;
   /** failed cables and relations, by id, with when they failed */
@@ -452,9 +449,6 @@ export class Engine {
     this.model = model;
     this.net = buildNet(model);
     this.timerScale = opts.timerScale || 1;
-    this.random = rng(modelSeed(model));
-    this.jitterRandom = rng(modelSeed(model) + '|jitter');
-    this.lossRandom = rng(modelSeed(model) + '|loss');
     const eng = this;
     this.sep = new SeparationSim({
       get now(): number {
@@ -462,7 +456,7 @@ export class Engine {
       },
       note: (kind, protocol, device, peer, what, state, detail) => eng.note(kind, protocol, device, peer, what, state, detail),
       param: (key, dev) => eng.params.get(key, dev),
-      loss: () => eng.lossRandom(),
+      loss: () => eng.stream('loss', 'separation')(),
     });
     const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
     for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
@@ -1357,7 +1351,7 @@ export class Engine {
       // its first BPDU arrives with the far end's first hello
       const guard = this.params.get('stp-bpdu-guard', dev, null, at);
       if (guard.value === 'on') {
-        this.at(this.now + this.jitter(), () => {
+        this.at(this.now + this.jitter(dev), () => {
           if (!this.linkUp(link) || this.shutPorts.has(portKey(dev, port))) return;
           this.note('link', 'stp', dev, o.device, 'BPDU guard', 'err-disabled', `BPDU guard on ${dev}:${bp} (${resolvedText(guard)}): a BPDU from ${o.device}:${o.port}, a bridge where a host was expected; the port is err-disabled (shut down) until No shut`);
           this.shut(dev, port);
@@ -1659,7 +1653,7 @@ export class Engine {
     const ser = (this.frameBytes(frame) * 8 * 1000) / Number(this.speed(link).value);
     this.cableFree.set(key, start + ser);
     const loss = Number(this.loss(link).value);
-    const lost = loss > 0 && this.lossRandom() * 100 < loss;
+    const lost = loss > 0 && this.stream('loss', link)() * 100 < loss;
     const imp = this.impair ? this.impair(link, frame) : null;
     return { start, end: start + ser + Number(this.latency(link).value) + (imp && imp.delay ? imp.delay : 0), lost: lost || !!(imp && imp.lose), dup: !!(imp && imp.dup), impaired: !!(imp && imp.lose) && !lost };
   }
@@ -1677,8 +1671,20 @@ export class Engine {
    * what starts together runs together (on screen too) without being drawn
    * on top of each other.
    */
-  jitter(): number {
-    return this.jitterRandom() * JITTER_SHARE * this.hopTime();
+  jitter(scope = ''): number {
+    return this.stream('jitter', scope)() * JITTER_SHARE * this.hopTime();
+  }
+
+  /** A seeded number in [0, 1) of an object's own stream (a device's, a cable's): the same model, the same numbers for it, whatever else it holds. */
+  random(scope = ''): number {
+    return this.stream('random', scope)();
+  }
+
+  private stream(kind: string, scope: string): () => number {
+    const k = kind + '|' + scope;
+    let r = this.streams.get(k);
+    if (!r) this.streams.set(k, (r = rng(`${modelSeed(this.model)}|${kind}|${scope}`)));
+    return r;
   }
 
   /**
@@ -1704,7 +1710,7 @@ export class Engine {
       const d = this.linkUpDelay(id);
       const tok = ++this.tokens;
       this.carrierToken.set('link:' + id, tok);
-      this.at(Number(d.value) + this.jitter(), () => {
+      this.at(Number(d.value) + this.jitter('link:' + id), () => {
         if (this.carrierToken.get('link:' + id) !== tok) return;
         this.carrierToken.delete('link:' + id);
         if (!this.physUp(id)) return;
@@ -2346,9 +2352,16 @@ export class Engine {
    * (PAT then gives the next free one, from 1024): two inside hosts never
    * share a translation, and the reply goes back to the one it belongs to.
    */
+  /**
+   * A translation of the NAT table: the outside address, the remote end and
+   * the protocol, and the flow's own identity there — TCP and UDP their
+   * source port, an ICMP echo its identifier (RFC 5508 §3.1: two inside
+   * hosts pinging one destination are two translations, never one) —
+   * translated when it collides (PAT); returns the identity used outside.
+   */
   private translate(dev: string, to: IpAddr, pkt: Pkt, vrf: string, pat: boolean): number | undefined {
     const proto = pkt.l4 ? pkt.l4.proto : '';
-    const sport = pkt.l4 ? pkt.l4.sport : undefined;
+    const sport = natPort(pkt.l4, 'src');
     const base = `${dev}|${formatAddr(to)}|${formatAddr(pkt.dst)}|${proto}|`;
     const mine = (e: { inside: IpAddr; port?: number; vrf: string } | undefined): boolean => !!e && compareAddr(e.inside, pkt.src) === 0 && e.port === sport && e.vrf === vrf;
     let port = sport;
@@ -2399,22 +2412,23 @@ export class Engine {
       const own = out.addrs.find((x) => x.addr.version === pkt.src.version);
       const to = rule && typeof rule.to === 'string' ? parseAddress(rule.to) : own ? own.addr : null;
       if (rule && to) {
-        const sport = pkt.l4 ? pkt.l4.sport : undefined;
+        const sport = natPort(pkt.l4, 'src');
         const port = this.translate(dev, to, pkt, from.vrf, rule.type === 'pat');
         const moved = port !== sport && port !== undefined;
-        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(to)}${moved ? ':' + port + ' (its port is taken towards ' + formatAddr(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
-        return { ...pkt, src: to, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
+        const icmp = !!pkt.l4 && pkt.l4.proto === 'icmp';
+        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)}${moved ? (icmp ? ' (echo identifier ' + sport + ')' : ':' + sport) : ''} → ${formatAddr(to)}${moved ? (icmp ? ' (echo identifier ' + port + ')' : ':' + port) + ' (its ' + (icmp ? 'identifier' : 'port') + ' is taken towards ' + formatAddr(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, src: to, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'src', port as number) : pkt.l4 };
       }
     }
     const b = this.bridgeNet(dev, from);
     if (!b || !b.nat || out.id === from.id || this.bridgeNet(dev, out)) return pkt;
     const a = out.addrs.find((x) => x.addr.version === pkt.src.version);
     if (!a) return pkt;
-    const sport = pkt.l4 ? pkt.l4.sport : undefined;
+    const sport = natPort(pkt.l4, 'src');
     const port = this.translate(dev, a.addr, pkt, from.vrf, true);
     const moved = port !== sport && port !== undefined;
     this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(a.addr)}${moved ? ':' + port : ''} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
-    return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? { ...pkt.l4, sport: port } : pkt.l4 };
+    return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'src', port as number) : pkt.l4 };
   }
 
   /** A packet to a container host's own address: the reply to a translated packet, or to a published port, goes on to its container. */
@@ -2423,13 +2437,26 @@ export class Engine {
     const nat = natOf(this.model, dev);
     if (!d || (!d.containerEngine && !nat)) return null;
     const proto = pkt.l4 ? pkt.l4.proto : '';
-    const dport = pkt.l4 ? pkt.l4.dport : undefined;
+    // an ICMP error about a translated packet (unreachable, Fragmentation Needed): its quote names the translation; it goes to
+    // the inside host with the quote translated back too, so that its sender finds its connection (PMTUD through NAT)
+    const q = pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.quote : undefined;
+    if (q) {
+      const qport = q.proto === 'icmp' ? q.echoId : q.sport;
+      const e = this.natTable.get(`${dev}|${q.src}|${q.dst}|${q.proto}|${qport !== undefined ? qport : ''}`);
+      if (e) {
+        const inside = formatAddr(e.inside);
+        const quote = { ...q, src: inside, sport: q.proto === 'icmp' ? q.sport : e.port, echoId: q.proto === 'icmp' ? e.port : q.echoId, flow: q.flow.replace(`${q.src}:${qport !== undefined ? qport : 0}>`, `${inside}:${e.port !== undefined ? e.port : 0}>`) };
+        this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates an ICMP error back: destination ${formatAddr(pkt.dst)} → ${inside}, its quoted header ${q.src}${qport !== undefined ? ':' + qport : ''} → ${inside}${e.port !== undefined ? ':' + e.port : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, dst: e.inside, vrf: e.vrf, l4: { ...(pkt.l4 as L4), quote } };
+      }
+    }
+    const dport = natPort(pkt.l4, 'dst');
     const k = `${dev}|${formatAddr(pkt.dst)}|${formatAddr(pkt.src)}|${proto}|${dport !== undefined ? dport : ''}`;
     const back = this.natTable.get(k);
     if (back) {
       const moved = back.port !== undefined && back.port !== dport;
       this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)}${moved ? ':' + dport : ''} → ${formatAddr(back.inside)}${moved ? ':' + back.port : ''}${back.vrf ? ' in VRF ' + back.vrf : ''} (${pkt.msg.label})`, this.now, pkt.msg);
-      return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? { ...pkt.l4, dport: back.port } : pkt.l4 };
+      return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'dst', back.port as number) : pkt.l4 };
     }
     // a published port: on to the container (TCP and UDP); a NAT service's port forward: on to its inside address
     if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined) return null;
@@ -3093,7 +3120,7 @@ export class Engine {
     if (!src) return;
     this.icmpLast.set(dev, this.now);
     const t = icmpType(kind, v);
-    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, pkt: pkt.id, flow: pkt.flow };
+    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, echoId: pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.echoId : undefined, pkt: pkt.id, flow: pkt.flow };
     const name = v === 4 ? 'ICMP' : 'ICMPv6';
     const label = `${name} ${t.short}${kind === 'frag' ? ` (MTU ${o.mtu})` : ''} from ${formatAddr(src)}`;
     const detail = `${dev} (${formatAddr(src)}) → ${formatAddr(pkt.src)}: ${name} ${t.name} (type ${t.type}, code ${t.code}${kind === 'frag' ? ', MTU ' + o.mtu : ''}) about ${quoteText(quote)}: ${pkt.msg.label}`;
@@ -4562,4 +4589,17 @@ function inspectionMatch(model: Model, dev: string, frame: Frame): string | null
     if ('list' in r && portsMatch(r.list, proto, proto === 'icmp' ? 0 : (pkt.l4.dport as number))) return b;
   }
   return null;
+}
+
+/** A flow's identity at NAT, one side of it: TCP and UDP the port, an ICMP echo (request or reply) its identifier. */
+function natPort(l4: L4 | undefined, side: 'src' | 'dst'): number | undefined {
+  if (!l4) return undefined;
+  if (l4.proto === 'icmp') return l4.quote ? undefined : l4.echoId;
+  return side === 'src' ? l4.sport : l4.dport;
+}
+
+/** The header with that identity replaced (the port, or the echo identifier). */
+function withNatPort(l4: L4, side: 'src' | 'dst', v: number): L4 {
+  if (l4.proto === 'icmp') return { ...l4, echoId: v };
+  return side === 'src' ? { ...l4, sport: v } : { ...l4, dport: v };
 }

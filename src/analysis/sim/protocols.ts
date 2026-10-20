@@ -157,6 +157,8 @@ const TIMER_PARAMS: { [k: string]: { key: string; factor?: number } } = {
 
 /** A periodic timer: rescheduled when its interval changes (a parameter changed). */
 interface Periodic {
+  /** the device whose jitter stream its timer draws from (the one it runs for) */
+  scope: string;
   alive: () => boolean;
   interval: () => number;
   fn: () => void;
@@ -459,7 +461,7 @@ export class ProtocolSim implements Protocols {
    */
   whenIfaceUp(dev: string, iface: string, fn: () => void): void {
     if (this.e.isL3Up(dev, iface) && this.e.addressReady(dev, iface)) {
-      this.e.at(this.e.now + this.e.jitter(), fn);
+      this.e.at(this.e.now + this.e.jitter(dev), fn);
       return;
     }
     const k = dev + ':' + iface;
@@ -470,7 +472,7 @@ export class ProtocolSim implements Protocols {
   whenPortUp(dev: string, port: string, fn: () => void): void {
     const e = this.e.net.ends.get(portKey(dev, port));
     if (!e || this.e.linkUp(e.link)) {
-      this.e.at(this.e.now + this.e.jitter(), fn);
+      this.e.at(this.e.now + this.e.jitter(dev), fn);
       return;
     }
     const k = 'link:' + e.link;
@@ -481,7 +483,7 @@ export class ProtocolSim implements Protocols {
   whenAnyPortUp(dev: string, fn: () => void): void {
     const ports = Array.from(this.e.net.ends.values()).filter((x) => x.device === dev).map((x) => x.port).sort(cmp);
     if (!ports.length) {
-      this.e.at(this.e.now + this.e.jitter(), fn);
+      this.e.at(this.e.now + this.e.jitter(dev), fn);
       return;
     }
     let done = false;
@@ -498,7 +500,9 @@ export class ProtocolSim implements Protocols {
     const list = this.pendingUp.get(k);
     if (!list) return;
     this.pendingUp.delete(k);
-    for (const fn of list) this.e.at(this.e.now + this.e.jitter(), fn);
+    // (the jitter of the interface's device, or of the cable)
+    const scope = k.indexOf('link:') === 0 ? k : k.split(':')[0];
+    for (const fn of list) this.e.at(this.e.now + this.e.jitter(scope), fn);
   }
 
   /** Start a session as soon as its interface is up (with a small jitter); until then it sends nothing. */
@@ -506,13 +510,13 @@ export class ProtocolSim implements Protocols {
     // a tunnel's own session (GRE's keepalives …) runs over the interface of the tunnel's source; what runs inside the tunnel waits for the tunnel
     const iface = this.ownTunnel(s) ? this.underlay(s.dev, s.local.l3.id) : s.local.l3.id;
     if (iface !== s.local.l3.id) {
-      if (!iface || this.e.isL3Up(s.dev, iface)) this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
+      if (!iface || this.e.isL3Up(s.dev, iface)) this.e.at(this.e.now + this.e.jitter(s.dev), () => this.startSession(s));
       else this.whenIfaceUp(s.dev, iface, () => this.startSession(s));
       return;
     }
     // (a DHCP client's interface: once it has its lease)
     if (this.e.isL3Up(s.dev, s.local.l3.id) && this.e.addressReady(s.dev, s.local.l3.id)) {
-      this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
+      this.e.at(this.e.now + this.e.jitter(s.dev), () => this.startSession(s));
       return;
     }
     const k = s.dev + ':' + s.local.l3.id;
@@ -539,7 +543,13 @@ export class ProtocolSim implements Protocols {
   private startSession(s: Sess): void {
     if (s.x.started) return;
     s.x.started = true;
-    (this.behaviours.get(s.profile.behaviour) as Behaviour).start(this, s);
+    const was = this.scopeDev;
+    this.scopeDev = s.dev;
+    try {
+      (this.behaviours.get(s.profile.behaviour) as Behaviour).start(this, s);
+    } finally {
+      this.scopeDev = was;
+    }
   }
 
   // ------------------------------------------------------------ timers
@@ -599,8 +609,11 @@ export class ProtocolSim implements Protocols {
    * change reschedules the next run at once (from the last run with the new
    * interval, or now when that is past).
    */
-  periodic(alive: () => boolean, interval: () => number, fn: () => void, first = 0): void {
-    const p: Periodic = { alive, interval, fn, last: this.e.now, iv: interval(), token: 0, next: this.e.now };
+  /** the device a session start or a message is being handled for: a periodic timer set up meanwhile is that device's (its jitter stream) */
+  private scopeDev = '';
+
+  periodic(alive: () => boolean, interval: () => number, fn: () => void, first = 0, scope = this.scopeDev): void {
+    const p: Periodic = { scope, alive, interval, fn, last: this.e.now, iv: interval(), token: 0, next: this.e.now };
     if (this.periodics.length > 64 && this.periodics.length % 64 === 0) this.periodics = this.periodics.filter((x) => x.alive());
     this.periodics.push(p);
     if (first <= 0) this.fire(p, 0);
@@ -611,7 +624,7 @@ export class ProtocolSim implements Protocols {
     const tok = ++p.token;
     p.next = t;
     // a small jitter, as real protocols jitter their timers (never adding up: the next one counts from `next`)
-    this.e.at(t + this.e.jitter(), () => this.fire(p, tok));
+    this.e.at(t + this.e.jitter(p.scope), () => this.fire(p, tok));
   }
 
   private fire(p: Periodic, tok: number): void {
@@ -661,7 +674,7 @@ export class ProtocolSim implements Protocols {
       this.restart(s);
       s.x = {};
       s.heard = -1;
-      const jitter = 100 + Math.floor(this.e.random() * 400);
+      const jitter = 100 + Math.floor(this.e.random(dev) * 400);
       const g = s.gen;
       this.e.after(jitter, () => {
         if (s.gen === g) this.startSession(s);
@@ -693,7 +706,7 @@ export class ProtocolSim implements Protocols {
       const go = this.upWaiters.filter((w) => w.when(s));
       if (go.length) {
         this.upWaiters = this.upWaiters.filter((w) => go.indexOf(w) < 0);
-        for (const w of go) this.e.at(this.e.now + this.e.jitter(), w.fn);
+        for (const w of go) this.e.at(this.e.now + this.e.jitter(s.dev), w.fn);
       }
       this.e.recheckWaits();
     }
@@ -865,6 +878,16 @@ export class ProtocolSim implements Protocols {
   }
 
   private dispatch(dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null): void {
+    const was = this.scopeDev;
+    this.scopeDev = dev;
+    try {
+      this.dispatchAt(dev, l3, msg, pkt, frame);
+    } finally {
+      this.scopeDev = was;
+    }
+  }
+
+  private dispatchAt(dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null): void {
     // a TCP segment of the transport (a BGP session's, an application's, a test's): its connection takes it
     if (pkt && l3 && pkt.l4 && pkt.l4.proto === 'tcp' && msg.data && (msg.data as { tcp?: boolean }).tcp && this.tcpHook) {
       this.tcpHook(dev, l3, pkt);
@@ -935,7 +958,7 @@ export class ProtocolSim implements Protocols {
     const waiting = ready ? this.pendingStart.get(dev + ':' + l3.id) : undefined;
     if (waiting) {
       this.pendingStart.delete(dev + ':' + l3.id);
-      for (const s of waiting) this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
+      for (const s of waiting) this.e.at(this.e.now + this.e.jitter(s.dev), () => this.startSession(s));
     }
     if (ready) {
       this.releaseUp(dev + ':' + l3.id);

@@ -1213,7 +1213,7 @@ export function installBootGarp(P: ProtocolSim): void {
     for (const d of P.e.net.devices.values()) {
       for (const l3 of Array.from(d.l3.values()).sort((a, b) => cmp(a.id, b.id))) {
         if (l3.kind === 'loopback' || l3.kind === 'tunnel' || !l3.addrs.length || !P.e.isL3Up(d.id, l3.id)) continue;
-        for (const a of l3.addrs) P.e.at(P.e.jitter(), () => P.e.gratuitous(d.id, l3, a.addr, l3.mac, `${l3.id} came up`));
+        for (const a of l3.addrs) P.e.at(P.e.jitter(d.id), () => P.e.gratuitous(d.id, l3, a.addr, l3.mac, `${l3.id} came up`));
       }
     }
   });
@@ -1259,7 +1259,7 @@ export function installDemands(P: ProtocolSim): void {
         P.e.after(x.every, tick);
       };
       // data starts once the network had time to converge (it still waits for ARP like any packet); all demands together
-      P.e.at(DATA_START + P.e.jitter(), tick);
+      P.e.at(DATA_START + P.e.jitter(x.dev), tick);
     }
   });
   P.handlers.set('demand', (dev, l3, msg, pkt) => {

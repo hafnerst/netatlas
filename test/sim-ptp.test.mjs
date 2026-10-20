@@ -168,7 +168,8 @@ test('the transparent clock: it times what it forwards and corrects the matching
 });
 
 test('grandmaster loss and recovery: gm2 takes over after the announce receipt timeout; gm1 back, the election follows the data sets again', () => {
-  const s = sim();
+  // (gm2 the configured backup: its priority1 110 before the boundary clock's 128 — not a tie left to the clocks' identities)
+  const s = sim(NET({ gm2: ', priority1: 110' }));
   settle(s, 30000);
   s.powerOff('gm1');
   settle(s, 20000);
