@@ -74,9 +74,10 @@ interface OspfX {
   peerBdr?: string;
   /** the last incompatibility noted (said once until it changes) */
   mismatch?: string;
-  /** the database exchange (RFC 2328 §10.6, §10.8): this router's DD sequence number, whether it is master, the last DBD problem noted */
+  /** the database exchange (RFC 2328 §10.6, §10.8): this router's DD sequence number, whether it is master, the neighbour's initial DD sequence number (the master's for a slave: its answer's number), the last DBD problem noted */
   dd?: number;
   master?: boolean;
+  peerInit?: number;
   ddNote?: string;
 }
 
@@ -251,12 +252,7 @@ function ospfShouldAdj(P: ProtocolSim, s: Sess): boolean {
 function ospfAdjOk(P: ProtocolSim, s: Sess): void {
   const x = s.x as OspfX;
   if (s.state === '2-Way' && ospfShouldAdj(P, s)) {
-    P.setState(s, 'ExStart', false, 'master / slave negotiation');
-    // ExStart (RFC 2328 §10.8): an empty DBD with I, M and MS set, its own DD sequence number and its interface MTU, sent again until answered
-    x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
-    x.master = undefined;
-    const mtu = ospfMtu(P, s);
-    ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
+    ospfExStart(P, s, 'master / slave negotiation');
   } else if (['ExStart', 'Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0 && !ospfShouldAdj(P, s)) {
     P.restart(s);
     x.sent = false;
@@ -265,6 +261,34 @@ function ospfAdjOk(P: ProtocolSim, s: Sess): void {
     ospfRearm(P, s);
   }
   ospfDetail(P, s);
+}
+
+/**
+ * ExStart (RFC 2328 §10.8): an empty DBD with I, M and MS set, its own DD
+ * sequence number and its interface MTU, sent again until answered.
+ */
+function ospfExStart(P: ProtocolSim, s: Sess, why: string): void {
+  const x = s.x as OspfX;
+  P.setState(s, 'ExStart', false, why);
+  x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
+  x.master = undefined;
+  x.peerInit = undefined;
+  const mtu = ospfMtu(P, s);
+  ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
+}
+
+/**
+ * SeqNumberMismatch (RFC 2328 §10.6, §10.3): a DBD that does not belong to
+ * the exchange this router is in (the neighbour started over, or the
+ * numbers are not the next ones): the adjacency goes back to ExStart and
+ * negotiates anew. The neighbour's timers are kept (it is still heard).
+ */
+function ospfSeqMismatch(P: ProtocolSim, s: Sess, why: string): void {
+  P.restart(s);
+  (s.x as OspfX).sent = false;
+  ospfRearm(P, s);
+  P.e.note('state', 'ospf', s.dev, s.peer, 'SeqNumberMismatch', 'ExStart', `OSPF ${s.rel.id}: ${s.dev} → ${s.peer}: ${why} — back to ExStart`);
+  ospfExStart(P, s, `SeqNumberMismatch: ${why}`);
 }
 
 /**
@@ -436,36 +460,63 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
           return;
         }
         x.ddNote = undefined;
+        const slaveAnswer = (again: boolean): void =>
+          P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.peerInit}${again ? ' (again)' : ''}`, { phase: 'summary', dd: x.peerInit, mtu, ms: false }, 'Exchange');
+        const slaveAck = (again: boolean): void => P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}${again ? ' (again: the master sent its summary again)' : ''}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
         if (dd.phase === 'init') {
-          if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) {
-            // (the master sends its initial DBD again: the slave answers again)
-            if (s.state === 'Exchange' && x.master === false && dd.dd === x.dd) P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.dd} (again)`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
-            return;
+          if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
+            // the same initial DBD again (sent before this router's answer reached the neighbour, or delayed): the slave answers
+            // it again, the master ignores it; a new one is the neighbour starting over (SeqNumberMismatch)
+            if (dd.dd === x.peerInit) {
+              if (x.master === false) slaveAnswer(true);
+              return;
+            }
+            ospfSeqMismatch(P, s, `an initial DBD (I bit, DD sequence ${dd.dd}) from ${s.peer} in ${s.state}: it started the exchange over`);
           }
+          if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) return;
+          x.peerInit = dd.dd;
           // the higher router ID is master; the slave takes the master's DD sequence number and answers with its summary
           if (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0) {
             x.master = false;
             x.dd = dd.dd;
             x.sent = true;
             P.setState(s, 'Exchange', false, `negotiation done: ${s.peer} (router ID ${dd.rid}) is master, this router slave (DD sequence ${dd.dd})`);
-            P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+            slaveAnswer(false);
           }
           // (a neighbour with the lower router ID: its initial DBD is ignored — it answers this router's as slave)
           return;
         }
         if (s.state === 'ExStart') {
-          // the master: the slave's answer carries the master's DD sequence number — the negotiation is done
+          // the master: the slave's answer carries the master's DD sequence number — the negotiation is done; its summary is
+          // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8)
           if (dd.ms || dd.dd !== x.dd || (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0)) return;
           x.master = true;
           x.sent = true;
           P.setState(s, 'Exchange', false, `negotiation done: this router (router ID ${x.rid}) is master, ${s.peer} slave (DD sequence ${x.dd})`);
           x.dd = (x.dd as number) + 1;
-          P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: true }, 'Exchange');
-        } else if (s.state === 'Exchange') {
-          // the slave: the master's summary, with the next DD sequence number
-          if (x.master !== false || !dd.ms || dd.dd !== (x.dd as number) + 1) return;
-          x.dd = dd.dd;
-          P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
+          const seq = x.dd;
+          let n = 0;
+          ospfRetransmit(P, s, 'Exchange', () => P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${seq}${n++ ? ' (again: not acknowledged)' : ''}`, { phase: 'summary', dd: seq, mtu, ms: true }, 'Exchange'));
+          return;
+        }
+        if (s.state === 'Exchange') {
+          if (x.master === true) {
+            // the slave's acknowledgment of the summary (its DD sequence number): the exchange is done; an older answer is a duplicate
+            if (dd.ms || dd.dd !== x.dd) return;
+          } else {
+            // the slave: the master's summary with the next DD sequence number is acknowledged; the exchange is done with that
+            if (!dd.ms || dd.dd !== (x.dd as number) + 1) return;
+            x.dd = dd.dd;
+            slaveAck(false);
+          }
+        } else if (s.state === 'Loading' || s.state === 'Full') {
+          // after the exchange: the slave answers a duplicate of the master's summary again (its acknowledgment was lost); an
+          // older DBD of this exchange (delayed, a duplicate) is discarded; one with a later DD sequence number does not belong to
+          // it — the neighbour went on with another exchange (SeqNumberMismatch)
+          const own = x.master === true ? !dd.ms : !!dd.ms;
+          if (x.master === false && own && dd.dd === x.dd) slaveAck(true);
+          else if (!own || (dd.dd as number) > (x.dd as number)) ospfSeqMismatch(P, s, `a DBD with DD sequence ${dd.dd} in ${s.state} (this exchange's is ${x.dd})`);
+          return;
         } else return;
         // both summaries had everything (M clear): Loading, the LSAs it lacks requested
         P.setState(s, 'Loading', false, 'database summaries exchanged');
