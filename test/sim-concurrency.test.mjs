@@ -1,9 +1,11 @@
-// Execution apart from the display (pacing.ts), without a browser: the
-// simulated clock runs at its rate whatever is on screen, so IGMP startup
-// queries, protocol timers and independent exchanges happen when they are
-// due, together; the dots follow each operation's causal order (a hop after
-// the one it continues, an answer after what it answers); a slow exchange
-// never delays an unrelated one; the same events in the same order
+// Execution and the display (pacing.ts), without a browser: the simulated
+// clock runs at its rate, and waits before a delivery until its dot has
+// arrived on screen (Readable); IGMP startup queries, protocol timers and
+// independent exchanges keep their simulated times whatever is on screen,
+// and independent exchanges are on screen together; the dots follow each
+// operation's causal order (a hop after the one it continues, an answer
+// after what it answers, which the simulation computes only once the
+// request has arrived on screen); the same events in the same order
 // whatever is drawn; a frame's work stays bounded. Foreground attribution
 // by the operation's id: its messages, copies, answers and prerequisites
 // (the ARP it needs) are the foreground, the scenario the background (muted)
@@ -30,6 +32,13 @@ function paced(name, set = {}) {
 const run = (frame, ms, dt = 50) => {
   for (let t = 0; t < ms; t += dt) frame(dt);
 };
+/** Frames until `cond()` (at most `max` ms of display); returns the display time it took. */
+const until = (frame, cond, max = 600000, dt = 50) => {
+  let t = 0;
+  for (; t < max && !cond(); t += dt) frame(dt);
+  assert.ok(cond(), `not within ${max} ms of display`);
+  return t;
+};
 
 // ------------------------------------------------------------------ IGMP startup
 
@@ -46,8 +55,8 @@ test('private house from a fresh start: the core (the snooping querier of VLANs 
       Date.now = real;
     }
   };
-  // the startup burst (DHCP, ARP …) is on screen meanwhile: it holds nothing
-  run(frame, 2500);
+  // the startup burst (DHCP, ARP …) is on screen meanwhile, each delivery after its dot: the queries keep their simulated time
+  until(frame, () => sim.now >= 2500);
   // (the core is the snooping querier of VLANs 10, 20 and 30: one query each)
   const q = sim.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query');
   assert.equal(q.length, 3);
@@ -61,19 +70,17 @@ test('private house from a fresh start: the core (the snooping querier of VLANs 
   assert.deepEqual([role.role, role.startup, Math.round(role.nextAt)], ['starting', '2 of 2', 33250]);
   assert.ok(sim.multicast.querierTable('core').rows.every((r) => r[5] === 'query at t = 33.3 s (startup 2 of 2)'));
   // on, past it: the second query at its deadline, then the querier elected, the next a query interval on
-  run(frame, 32000);
+  until(frame, () => sim.now >= 34500);
   const q2 = sim.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query');
   assert.deepEqual(q2.map((e) => Math.round(e.t)), [2000, 2000, 2000, 33250, 33250, 33250]);
   assert.ok(sim.multicast.querierRoles('core').every((r) => r.role === 'querier' && Math.round(r.nextAt) === 33250 + 125000));
-  // the simulation ran with real time all along (34.5 s), whatever was on screen
-  assert.ok(sim.now >= 34500 - 100, String(sim.now));
 });
 
 test('a new simulation starts its schedule afresh: the same deadlines, no second schedule; no candidate: no query at all', () => {
   const a = paced('private-house.yaml');
   const b = paced('private-house.yaml');
-  run(a.frame, 40000);
-  run(b.frame, 40000);
+  until(a.frame, () => a.sim.now >= 40000);
+  until(b.frame, () => b.sim.now >= 40000);
   const times = (s) => s.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query').map((e) => Math.round(e.t));
   assert.deepEqual(times(a.sim), [2000, 2000, 2000, 33250, 33250, 33250]);
   assert.deepEqual(times(b.sim), times(a.sim));
@@ -95,17 +102,18 @@ test('two independent operations progress together: both sends’ messages on sc
   assert.equal(lan.error, undefined);
   assert.equal(wan.error, undefined);
   let together = false;
-  for (let t = 0; t < 20000; t += 50) {
-    frame(50);
+  const finished = (a) => sim.actions().find((x) => x.id === a.id).status === 'completed';
+  until(frame, () => {
     const moving = p.items.filter((it) => it.drawn && p.state(it).phase === 'moving');
     if (moving.some((it) => it.f.test === lan.run.tests[0].id) && moving.some((it) => it.f.test === wan.run.tests[0].id)) together = true;
-  }
+    return finished(lan) && finished(wan);
+  });
   assert.ok(together, 'both on screen at once');
   // the LAN echo answered at the same simulated time as when it runs alone
   const alone = paced('protocol-simulation.yaml');
   run(alone.frame, 8000);
   const solo = alone.sim.actSend({ delivery: 'unicast', from: 'pc1', target: '10.10.10.1', kind: 'icmp' });
-  run(alone.frame, 20000);
+  until(alone.frame, () => alone.sim.actions().find((x) => x.id === solo.id).status === 'completed');
   const done = (s, a) => s.events().find((e) => e.test === a.run.tests[0].id && e.what === 'Echo Reply' && e.kind === 'message');
   assert.ok(done(sim, lan) && done(alone.sim, solo));
   assert.equal(done(sim, lan).t - lan.at, done(alone.sim, solo).t - solo.at, 'the other one changed nothing');
@@ -121,14 +129,22 @@ test('two independent operations progress together: both sends’ messages on sc
 
 test('the causal order on screen: a reply’s first hop never starts before its request arrived; a continuing hop never before the one before it', () => {
   const { sim, p, frame } = paced('protocol-simulation.yaml');
-  run(frame, 6000);
+  until(frame, () => sim.now >= 6000);
   const a = sim.actSend({ delivery: 'unicast', from: 'pc1', target: '10.10.20.22', kind: 'icmp' });
   const id = a.run.tests[0].id;
   const seen = new Set();
-  for (let t = 0; t < 60000; t += 50) {
-    frame(50);
-    for (const it of p.items) if (it.f.test === id && it.f.view === 'physical') seen.add(it);
-  }
+  // the simulation computes the reply only once the request has arrived on screen at pc2 (the barrier)
+  let early = '';
+  until(frame, () => {
+    const replied = sim.events().some((e) => e.test === id && e.what === 'Echo Reply');
+    for (const it of p.items) {
+      if (it.f.test !== id || it.f.view !== 'physical') continue;
+      seen.add(it);
+      if (replied && /^ICMP Echo →/.test(it.f.label) && it.f.track.to && p.clock < p.arrival(it) - 1e-6 && !it.f.dropped && it.f.t1 <= sim.now && !early) early = it.f.label + ' on ' + it.f.track.ref;
+    }
+    return sim.actions().find((x) => x.id === a.id).status === 'completed' && p.items.every((it) => it.f.test !== id || p.state(it).phase === 'gone');
+  });
+  assert.equal(early, '', 'a request still on its way on screen was already delivered');
   const hops = Array.from(seen);
   const req = hops.filter((it) => /^ICMP Echo →/.test(it.f.label));
   const rep = hops.filter((it) => /^ICMP Echo Reply/.test(it.f.label));
@@ -137,17 +153,20 @@ test('the causal order on screen: a reply’s first hop never starts before its 
   const firstRep = Math.min(...rep.map((it) => it.d0));
   assert.ok(firstRep >= lastReq - 1e-6, `the reply starts at ${firstRep}, the request arrived at ${lastReq}`);
   for (const it of hops) if (it.parent) assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6);
-  // while the simulation knew the answer long before (it is not held by the dots)
+  // in simulated time the answer is as quick as ever: waiting for the dots costs display time, never simulated time
   const ans = sim.events().find((e) => e.test === id && e.what === 'Echo Reply');
   assert.ok(ans.t < a.at + 1000, `answered at ${ans.t} (sent at ${a.at})`);
 });
 
 test('the same events in the same order whatever is drawn: bundling, the dot limit, a followed conversation change nothing simulated', () => {
-  const sig = (s) => s.events().filter((e) => e.t <= 20000).map((e) => `${e.t.toFixed(6)}|${e.device}|${e.what}|${e.detail}`);
   const a = paced('protocol-simulation.yaml');
   const b = paced('protocol-simulation.yaml', { convLimit: 1000, limit: 1000 });
   const c = paced('protocol-simulation.yaml', { limit: 1 });
-  for (const r of [a, b, c]) run(r.frame, 22000);
+  for (const r of [a, b, c]) run(r.frame, 60000);
+  // (as far as the slowest got: more dots, more waiting for them)
+  const upTo = Math.min(a.sim.now, b.sim.now, c.sim.now);
+  assert.ok(upTo > 2100, String(upTo));
+  const sig = (s) => s.events().filter((e) => e.t <= upTo).map((e) => `${e.t.toFixed(6)}|${e.device}|${e.what}|${e.detail}`);
   assert.deepEqual(sig(b.sim), sig(a.sim));
   assert.deepEqual(sig(c.sim), sig(a.sim));
 });
@@ -163,7 +182,7 @@ test('a busy model stays responsive: a frame does a bounded amount of simulation
     worst = Math.max(worst, (d.user + d.system) / 1000);
   }
   assert.ok(worst < P.JUMP_BUDGET + 250, `worst frame ${worst.toFixed(0)} ms of CPU`);
-  assert.ok(sim.now > 5000);
+  assert.ok(sim.now > 2000);
   // a slow machine: every look at the wall clock 30 ms on — behind, said; never caught up in a burst
   const real = Date.now;
   let clock = real();
@@ -182,13 +201,13 @@ test('a busy model stays responsive: a frame does a bounded amount of simulation
 
 test('attribution by the operation’s id: a send’s request, its ARP prerequisite and its reply are the foreground; the scenario (Hellos, queries) the background while it runs, and again the foreground after its hops arrived', () => {
   const { sim, p, frame } = paced('protocol-simulation.yaml');
-  run(frame, 6000);
+  until(frame, () => sim.now >= 6000);
   // core1 has no ARP entry for pc2 yet: the send needs ARP on the way, which is its own (its id)
   const a = sim.actSend({ delivery: 'unicast', from: 'pc1', target: '10.10.20.22', kind: 'icmp' });
   const id = a.run.tests[0].id;
   const seen = new Set();
   let bgSeen = false;
-  for (let t = 0; t < 4000; t += 50) {
+  for (let t = 0; t < 20000; t += 50) {
     frame(50);
     for (const it of p.items) {
       if (it.f.test === id) {
@@ -202,10 +221,9 @@ test('attribution by the operation’s id: a send’s request, its ARP prerequis
   assert.ok(bgSeen, 'the scenario went on, muted');
   // the autonomous traffic is never the operation's: an OSPF Hello carries no id
   assert.ok(p.items.filter((it) => it.f.protocol === 'ospf').every((it) => it.f.test === undefined));
-  // done (in simulated time long since) and, once its last hop arrived on screen, nothing is muted any more
-  assert.equal(sim.foregroundActive(), false);
-  assert.equal(p.fgActive(), true, 'its dots are still on their way: still in front');
-  run(frame, 60000);
+  // done once its last hop arrived on screen (the simulation waits for its dots), and then nothing is muted any more
+  until(frame, () => !sim.foregroundActive());
+  run(frame, 10000);
   assert.equal(sim.foregroundActive(), false);
   assert.equal(p.fgActive(), false);
   assert.ok(p.items.every((it) => !p.background(it)));

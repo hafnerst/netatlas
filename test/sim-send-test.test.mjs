@@ -93,14 +93,15 @@ test('marked as the test’s: its packets, their ARP, the replies, a RST, an ICM
   assert.ok(sim.engine.flights.filter((f) => f.test !== undefined).every((f) => ['icmp', 'tcp', 'udp', 'arp', 'ndp', 'dns'].includes(f.protocol)));
 });
 
-test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered at once in simulated time (nothing on screen holds it); its hops show one after the other, never behind the traffic on screen', () => {
+test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered once its dots have arrived (the simulation waits for them); its hops show one after the other, never behind the traffic on screen', () => {
   const sim = new S.Simulation(model(PS));
   const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, testRunning: () => sim.tests().some((t) => !t.done) };
   const p = new P.Pacer(host, 6);
   // the startup burst: more hops than the limit
   for (let i = 0; i < 400 && p.notDrawn === 0; i++) p.frame(16);
   assert.ok(p.notDrawn > 0, 'the limit is reached');
-  sim.engine.runUntil(sim.now + 3000, () => false);
+  // (a jump, as the tests make them: past the presentation's holds)
+  sim.engine.run(sim.now + 3000);
   p.resync();
   for (let i = 0; i < 200 && p.notDrawn < 20; i++) p.frame(16);
   const t = sim.sendTest({ from: 'pc1', to: 'core1', kind: 'icmp' });
@@ -108,18 +109,17 @@ test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered
   p.frame(16);
   const mine = p.items.filter((it) => it.test);
   assert.ok(mine.length > 0 && mine.every((it) => it.drawn), 'drawn at once, beyond the limit');
-  // (the scenario's dots on screen meanwhile hold nothing: there is no clock to hold any more)
-  // answered in simulated time within a few frames: the dots on screen hold nothing
-  for (let i = 0; i < 10 && !t.done; i++) p.frame(16);
-  assert.ok(t.done, t.result);
-  // on screen: its hops one after the other, each at most HOP_MAX (and a switch's crossing): no wait behind the others
+  // on screen: its hops one after the other, each at most HOP_MAX (and a switch's crossing): no wait behind the others; the
+  // simulation delivers each only when its dot is there, so the test is answered with its last hop on screen
   let frames = 0;
   const seen = new Set();
-  while (p.items.some((it) => it.test && p.clock < p.arrival(it)) && frames < 3000) {
+  while ((!t.done || p.items.some((it) => it.test && p.clock < p.arrival(it))) && frames < 3000) {
     for (const it of p.items) if (it.test && it.f.view === 'physical') seen.add(it.f.track.ref + '|' + it.f.label);
+    for (const it of p.items) if (it.test && p.gated(it) && p.clock < p.arrival(it) - 1e-6) assert.ok(sim.now <= it.f.t1 + 1e-9, `${it.f.label} delivered before its dot arrived`);
     p.frame(16);
     frames++;
   }
+  assert.ok(t.done, t.result);
   // (each message on each cable: the hops shown one after the other)
   const hops = seen.size;
   assert.ok(frames * 16 <= (hops + 2) * (P.HOP_MAX + P.TRANSIT_MS) + 2000, `${frames * 16} ms for ${hops} cables`);

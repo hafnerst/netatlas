@@ -254,6 +254,7 @@ export class SimController implements SimulationMode {
         foreground: () => !this.experiment && this.sim.foregroundActive(),
         until: () => (this.experiment ? this.experiment.until() : null),
         notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
+        epoch: () => this.sim.actionCount,
       },
       MAX_DOTS,
     );
@@ -262,6 +263,7 @@ export class SimController implements SimulationMode {
       this.pacer.mute = false;
       this.pacer.hiddenHoldsNothing = true;
       this.pacer.convLimit = 40;
+      this.pacer.summarizeRepeats = false;
       // its starting state is seen before anything is skipped
       this.pacer.rest();
     }
@@ -349,7 +351,8 @@ export class SimController implements SimulationMode {
     this.badges = null;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
-    // nothing scheduled sends again
+    // nothing scheduled sends again, and nothing waits for a dot
+    this.pacer.detach();
     this.sim.close();
     this.closeMenu();
     if (this.sendersUi) this.sendersUi.dispose();
@@ -536,6 +539,7 @@ export class SimController implements SimulationMode {
   setPacing(mode: PaceMode, scale?: number): void {
     this.pacer.mode = mode;
     if (scale !== undefined && PACE_SCALES.indexOf(scale) >= 0) this.pacer.scale = scale;
+    this.pacer.reshow();
     this.refresh(true);
   }
 
@@ -577,7 +581,11 @@ export class SimController implements SimulationMode {
     this.shownChanged();
   }
 
+  /** the view the pacing last showed */
+  private viewSeen: string | null = null;
+
   private shownChanged(): void {
+    this.pacer.reshow();
     this.logKey = '';
     if (this.picker) this.picker.set(this.shown);
     if (this.host.shownChanged) this.host.shownChanged(new Set(this.shown));
@@ -634,6 +642,7 @@ export class SimController implements SimulationMode {
     this.sim.engine.setSenders(all ? null : next, all ? 'every device' : names.length ? names.join(', ') : 'none');
     if (this.sendersUi) this.sendersUi.set(this.senders);
     if (this.host.sendersChanged) this.host.sendersChanged(new Set(this.senders));
+    this.pacer.reshow();
     this.logKey = '';
     this.actionsKey = '';
     this.badgesKey = '';
@@ -1148,6 +1157,12 @@ export class SimController implements SimulationMode {
 
   /** The diagram was drawn again: the dots on the new scene. */
   sceneChanged(): void {
+    // (another view: what it shows of what was delivered meanwhile is history, not dots on their way)
+    const v = this.host.view();
+    if (v !== this.viewSeen) {
+      this.viewSeen = v;
+      this.pacer.reshow();
+    }
     this.lengths.clear();
     this.badgesKey = '';
     this.powerKey = '';

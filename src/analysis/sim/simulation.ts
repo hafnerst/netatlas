@@ -421,6 +421,7 @@ export class Simulation {
 
   private keepAction(a: ActionRecord): ActionRecord {
     this.acts.push(a);
+    this.actionCount++;
     // bounded: the oldest finished ones go first (a hard limit of twice as many, the oldest whatever their state)
     const views = (): ActionView[] => this.acts.map((x) => actionView(x, this.actionContext()));
     if (this.acts.length > MAX_ACTIONS) {
@@ -956,6 +957,8 @@ export class Simulation {
   private runs: TestRun[] = [];
   private runSeq = 0;
   private acts: ActionRecord[] = [];
+  /** Network events submitted since the start (the pacing: what the scenario shows after one is news again) */
+  actionCount = 0;
   private actSeq = 0;
 
   private keepRun(r: TestRun): void {
