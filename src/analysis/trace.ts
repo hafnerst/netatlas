@@ -385,6 +385,19 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   if (dnat) w.dnat = dnat;
   out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
   out.truncated = w.truncated;
+  // an address several devices have: the destination is the device the paths reach (all of them the same one), else none
+  if (dst.kind === 'address' && !w.destDev && destDev !== undefined && !dnat) {
+    const ends = Array.from(new Set(out.paths.map((p) => (p.end.kind === 'reached' ? `${p.end.device}|${p.end.iface || ''}` : ''))));
+    const reached = ends.length === 1 && out.paths.every((p) => p.end.kind === 'reached') ? ends[0].split('|') : null;
+    if (reached) {
+      out.dest.device = reached[0];
+      if (reached[1]) out.dest.iface = reached[1];
+      else delete out.dest.iface;
+    } else {
+      delete out.dest.device;
+      delete out.dest.iface;
+    }
+  }
   // a protocol break: a transfer to one of its listening ports ends there, and the gateway starts the second leg itself
   const main = out.paths[0];
   if (main && main.end.kind === 'reached' && main.end.iface !== undefined && svc && svc.proto !== 'icmp' && srcAddr) {

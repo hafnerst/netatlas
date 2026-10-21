@@ -773,6 +773,7 @@ export class Simulation {
       const src = st.source ? st.upstreams.find((u) => u.addr === st.source) : undefined;
       const t: SnapTiming = { dev, protocol: 'ntp', synchronized: this.ntp.synchronized(dev), text: this.ntp.text(dev) };
       if (src && src.dev && t.synchronized) t.source = src.dev;
+      if (src && t.synchronized && !src.byDevice) t.address = src.addr;
       timing.push(t);
     }
     for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {

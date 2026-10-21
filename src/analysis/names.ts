@@ -61,6 +61,16 @@ export interface NameAnswer {
 }
 
 /** The device that has an address (configured), if exactly one does; else the first by id. */
+/** Every device that has an address on one of its interfaces (an address two VRFs both have: both), sorted by id. */
+export function addressHolders(model: Model, address: string): string[] {
+  const a = parseAddress(address);
+  if (!a) return [];
+  return model.devices
+    .map((d) => d.id)
+    .sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+    .filter((d) => connectedOf(model, d).some((c) => compareAddr(c.addr, a) === 0));
+}
+
 export function addressOwner(model: Model, address: string): string | undefined {
   const a = parseAddress(address);
   if (!a) return undefined;

@@ -14,18 +14,18 @@
  * logical view along their relation, and answers the engine (what is up,
  * which virtual addresses a device holds).
  */
-import { IpAddr } from '../../model/ip';
+import { IpAddr, parseAddress } from '../../model/ip';
 import { lookupProtocol, protocolBase } from '../../model/protocols';
 import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles';
 import { Model, Relation, relationDevices } from '../../model/types';
-import { compareAddr, formatAddr } from '../ipmath';
+import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { DvTables, isisCircuit, relParam, routingProtocol } from '../routing';
 import { RipSim } from './rip';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus, SnoopResult } from './types';
-import { serviceRelations } from './service-relations';
+import { serviceRelations, upstreamOf } from './service-relations';
 import type { Transport } from './transport';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -294,6 +294,30 @@ export class ProtocolSim implements Protocols {
   }
 
   /**
+   * The sides of a relation that asks one exact address (an NTP upstream, service-relations.ts): the server is
+   * that address on the interface that has it; the client sends from its address of the same family on a network
+   * it shares with that address, else from the one it would use towards the server (pairSides, the same family).
+   * Never another address of the server. Null: not such a relation (or the address is gone from the server).
+   */
+  private exactSides(r: Relation, a: string, b: string): { a: Side; b: Side; shared: boolean } | null {
+    const up = upstreamOf(r);
+    const target = up ? parseAddress(up) : null;
+    if (!target) return null;
+    const sb = this.sd(b);
+    const sa = this.sd(a);
+    if (!sa || !sb) return null;
+    const l3 = Array.from(sb.l3.values()).find((l) => l.addrs.some((x) => compareAddr(x.addr, target) === 0));
+    if (!l3) return null;
+    const server: Side = { dev: b, l3, addr: target as IpAddr };
+    const own = Array.from(sa.l3.values()).sort((x, y) => cmp(x.id, y.id));
+    for (const l of own) for (const x of l.addrs) if (l.kind !== 'loopback' && x.addr.version === target.version && inPrefix(x.net, target as IpAddr)) return { a: { dev: a, l3: l, addr: x.addr }, b: server, shared: true };
+    const p = this.pairSides(r, a, b);
+    if (p && ipOf(p.a).version === target.version) return { a: p.a, b: server, shared: false };
+    for (const l of own) for (const x of l.addrs) if (l.kind !== 'loopback' && x.addr.version === target.version) return { a: { dev: a, l3: l, addr: x.addr }, b: server, shared: false };
+    return null;
+  }
+
+  /**
    * IS-IS's circuit between two routers (routing.ts isisCircuit: their
    * interfaces that one's frames reach, over a cable or through bridges,
    * the relation's endpoint interfaces when written) — its adjacency forms
@@ -327,7 +351,11 @@ export class ProtocolSim implements Protocols {
   /** Build the sessions of every relation (each pair, each side). */
   build(): void {
     // the model's relations, then the exchanges its services imply (service-relations.ts: not drawn, not in the model)
-    for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat(serviceRelations(this.m))) {
+    const owner = (client: string, address: string): string | null => {
+      const a = parseAddress(address);
+      return a ? this.e.ownerSeenFrom(client, '', a as IpAddr) : null;
+    };
+    for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat(serviceRelations(this.m, owner))) {
       const profile = this.profileOf(r);
       if (!this.behaviours.has(profile.behaviour)) continue;
       const devs = relationDevices(r);
@@ -352,7 +380,7 @@ export class ProtocolSim implements Protocols {
     // IS-IS forms its adjacency on the link itself (its PDUs are frames, not IP): the interfaces of a cable between the two,
     // whatever their IP addresses (other subnets, none at all)
     const l2 = profile.behaviour === 'isis' ? this.linkSides(r, a, b) : null;
-    const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.pairSides(r, a, b);
+    const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.exactSides(r, a, b) || this.pairSides(r, a, b);
     if (!sides) {
       // a DHCP client without its lease yet: its sessions wait for it
       const lease = [a, b].find((x) => !!this.e.waitsForLease(x));
