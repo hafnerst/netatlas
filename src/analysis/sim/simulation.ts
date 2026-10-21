@@ -421,6 +421,7 @@ export class Simulation {
 
   private keepAction(a: ActionRecord): ActionRecord {
     this.acts.push(a);
+    this.actionCount++;
     // bounded: the oldest finished ones go first (a hard limit of twice as many, the oldest whatever their state)
     const views = (): ActionView[] => this.acts.map((x) => actionView(x, this.actionContext()));
     if (this.acts.length > MAX_ACTIONS) {
@@ -789,7 +790,14 @@ export class Simulation {
   /** Run towards t, stopping at the first moment a message that `visible` accepts is sent; returns the time reached. */
   advance(t: number, visible: (f: Flight) => boolean): number {
     const from = this.engine.flightSerial;
-    this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    // (a jump, as runTo: past the presentation's hold — what it passes is history to the pacing)
+    const hold = this.engine.hold;
+    this.engine.hold = null;
+    try {
+      this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    } finally {
+      this.engine.hold = hold;
+    }
     return this.engine.now;
   }
 
@@ -956,6 +964,8 @@ export class Simulation {
   private runs: TestRun[] = [];
   private runSeq = 0;
   private acts: ActionRecord[] = [];
+  /** Network events submitted since the start (the pacing: what the scenario shows after one is news again) */
+  actionCount = 0;
   private actSeq = 0;
 
   private keepRun(r: TestRun): void {

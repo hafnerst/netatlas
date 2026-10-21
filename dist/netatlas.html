@@ -341,6 +341,10 @@ dialog#modal.palette-dialog .modal-btns { display: none; }
 .dropdown.menu > .menu-sep { height: 1px; padding: 0; margin: 4px 2px; background: var(--border); }
 .dropdown.menu > .menu-title { padding: 4px 8px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .dropdown.menu > #menu-examples { padding: 0; }
+/* one line per example: its file name (cut with an ellipsis when the menu is narrower), then "open · modified" when it is the open one */
+#menu-examples button .mi-label { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+#menu-examples button .mi-state { flex: 0 0 auto; }
+#menu-examples button .mi-state:empty { display: none; }
 /* a submenu opens in place, under its entry (a press or a key opens it; it never depends on hovering) */
 .dropdown.menu .submenu { margin: 0 0 2px 10px; padding: 0 0 0 6px; border-left: 2px solid var(--border); }
 .dropdown.menu [aria-haspopup="menu"][aria-expanded="true"] { background: var(--accent-soft); }
@@ -668,7 +672,7 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 .dropdown.menu #btn-save[data-modified="true"] .mi-label::after { content: " \25CF"; color: var(--warn); font-size: 9px; vertical-align: 2px; }
 .dropdown.menu .active-example { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
 .dropdown.menu .active-example .mi-label { font-weight: 600; }
-.dropdown.menu .active-example[data-modified="true"] .ex-state { color: var(--warn); }
+.dropdown.menu .active-example[data-modified="true"] .mi-state { color: var(--warn); }
 #status .errcount { color: var(--error); font-weight: 600; }
 .tabs button.has-errors { color: var(--error); }
 .tabs button { padding: 8px 2px; font-size: 12.5px; }
@@ -3744,7 +3748,7 @@ class App {
             else
                 b.removeAttribute('aria-current');
             b.setAttribute('data-modified', modified ? 'true' : 'false');
-            const hint = b.querySelector('.ex-state');
+            const hint = b.querySelector('.mi-state');
             hint.textContent = on ? (modified ? 'open · modified' : 'open') : '';
             b.title = on ? `The open model is this example${modified ? ', modified (not saved)' : ''}. Choosing it opens it again from the start.` : `Open the example ${examples_1.EXAMPLES[n] ? examples_1.EXAMPLES[n].name : ''}`;
         }
@@ -4470,7 +4474,7 @@ class App {
     }
     fillExamples() {
         const menu = this.$('menu-examples');
-        examples_1.EXAMPLES.forEach((ex, i) => menu.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [(0, dom_1.el)(this.doc, 'span', { class: 'mi-label' }, [ex.name]), (0, dom_1.el)(this.doc, 'span', { class: 'mi-hint ex-state' })])));
+        examples_1.EXAMPLES.forEach((ex, i) => menu.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [(0, dom_1.el)(this.doc, 'span', { class: 'mi-label' }, [ex.name]), (0, dom_1.el)(this.doc, 'span', { class: 'mi-hint mi-state' })])));
         // the start screen's picker names each example by its title
         const pick = this.$('start-example');
         examples_1.EXAMPLES.forEach((ex, i) => {
@@ -38576,6 +38580,12 @@ class Transport {
                 this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
             else
                 this.finish(t, false, `no answer within ${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
+            // the application gave up on a connection still being opened: it closes its socket, and a close in SYN-SENT
+            // deletes the connection (RFC 9293 §3.10.4) — no more SYN retransmissions of an attempt nobody waits for
+            // (its next periodic message or its retry opens a connection of its own)
+            const c = t.conn;
+            if (c && c.state === 'SYN_SENT' && this.alive(c))
+                this.closeConn(c, `connection attempt abandoned: ${t.from} gave up after its response timeout (${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))})`);
         });
         if (kind === 'icmp')
             this.ping(t, s.src, s.vrf);
@@ -40493,6 +40503,15 @@ class Engine {
         this.ptpHook = null;
         /** the IPv6 addresses ipv6.ts gave each interface ("dev:iface"): the simulation's, never the model's */
         this.dyn6 = new Map();
+        // ------------------------------------------------------------ time and events
+        /**
+         * The presentation's hold (the pacing's: is a flight's dot still on its way on screen?). runUntil stops
+         * before a delivery one of whose flights it holds, and leaves it and everything after it pending; run
+         * (the tests, a jump, an experiment's result) never asks. Null: nothing is held (headless).
+         */
+        this.hold = null;
+        /** the flight runUntil last stopped before (its hold), null when it did not stop for one */
+        this.held = null;
         // ------------------------------------------------------------ senders and causes
         /**
          * The origin of what the engine is handling now: while a received frame
@@ -40546,6 +40565,8 @@ class Engine {
         this.impair = null;
         /** the logical view's dots of a message, until its first frame's headers are known */
         this.logicalNoHdr = new WeakMap();
+        /** the logical view's dots of a message along its relation, to each device (what holds its delivery there on screen) */
+        this.lanes = new WeakMap();
         /**
          * The multicast forwarding decisions, by the flight that brought the
          * packet (the packet inspector: what the device it arrived at did with
@@ -40616,10 +40637,11 @@ class Engine {
                     if (a.addr.version === 4 && a.net.prefix <= 30)
                         this.bcasts.add((0, ipmath_1.formatAddr)(subnetBroadcast(a)));
     }
-    // ------------------------------------------------------------ time and events
-    /** Run fn at simulated time t (never before now). */
-    at(t, fn) {
+    /** Run fn at simulated time t (never before now); `gates`: the flights whose arrival it is (a delivery). */
+    at(t, fn, gates) {
         const item = { t: Math.max(t, this.now), seq: this.seq++, fn };
+        if (gates && gates.length)
+            item.gates = gates;
         const q = this.q;
         q.push(item);
         let i = q.length - 1;
@@ -40632,8 +40654,8 @@ class Engine {
         }
         q[i] = item;
     }
-    after(dt, fn) {
-        this.at(this.now + dt, fn);
+    after(dt, fn, gates) {
+        this.at(this.now + dt, fn, gates);
     }
     pop() {
         const q = this.q;
@@ -40669,25 +40691,52 @@ class Engine {
     /**
      * Process the events up to time t moment by moment, and stop after the
      * first moment at which `stop` says so (the clock is at that moment);
-     * else set the clock to t.
+     * else set the clock to t. A delivery whose dot the presentation holds
+     * (`hold`) stops it before that delivery, event by event — even within a
+     * moment, so what comes before it at the same time (by its sequence) is
+     * done and what comes after it is not: `held` names the flight, the
+     * clock stays at the last event done, and true is returned.
      */
     runUntil(t, stop) {
+        this.held = null;
         for (;;) {
             const n = this.nextTime();
             if (n === null || n > t)
                 break;
             while (this.nextTime() === n) {
+                const g = this.q[0].gates;
+                if (g && this.hold) {
+                    const h = this.holder(g);
+                    if (h !== null) {
+                        this.held = h;
+                        this.prune();
+                        return true;
+                    }
+                }
                 const it = this.pop();
                 this.now = it.t;
                 it.fn();
             }
             if (stop()) {
                 this.prune();
-                return;
+                return false;
             }
         }
         this.now = Math.max(this.now, t);
         this.prune();
+        return false;
+    }
+    /** The first of a delivery's flights the presentation holds (null: none). */
+    holder(gates) {
+        for (const g of gates)
+            if (g >= 0 && this.hold(g))
+                return g;
+        return null;
+    }
+    /** The delivery next due waits for a held flight (the pacing's status: what it waits for); null: none. */
+    heldNext() {
+        const g = this.q.length ? this.q[0].gates : undefined;
+        return g && this.hold ? this.holder(g) : null;
     }
     /** The serial number the next flight gets. */
     get flightSerial() {
@@ -41993,7 +42042,7 @@ class Engine {
                     this.testCtx = was.test;
                     this.causeFlight = was.flight;
                 }
-            });
+            }, [f.id]);
         };
         go(w.end);
         if (w.dup)
@@ -42722,9 +42771,17 @@ class Engine {
     deliverL3(dev, l3, frame, t, flight) {
         // the logical view: a message without a relation goes from its sender to the network and on to this receiver
         const em = this.emitting;
+        // (the dots that bring it, in either view: its last cable's, and the logical view's — the network line's second half,
+        // or its relation's lane to this device — so that the view on screen holds it until its dot is there)
+        const gates = [flight];
         if (em && em.net && em.dev !== dev && t > em.t && em.first !== null) {
             const mid = Math.min(em.t + this.hopTime() / 2, t);
-            this.flight(mid, Math.max(t, mid), frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame));
+            gates.push(this.flight(mid, Math.max(t, mid), frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame)).id);
+        }
+        else {
+            const lane = (this.lanes.get(frame.msg) || []).find((x) => x.track.to === dev);
+            if (lane)
+                gates.push(lane.id);
         }
         const d = { dev, l3, frame, flight, cancelled: false };
         this.pending.push(d);
@@ -42735,11 +42792,11 @@ class Engine {
             if (d.cancelled || this.off.has(dev))
                 return;
             this.caused(frame.msg, () => this.receive(dev, l3, frame), d.flight);
-        });
+        }, gates);
     }
     // ------------------------------------------------------------ flights (the dots)
     flight(t0, t1, msg, view, track, parent, encap) {
-        const f = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent };
+        const f = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent, type: msg.type };
         if (encap && encap.length)
             f.encap = encap;
         // sent while a delivery is handled: caused by the flight that delivered it (the display keeps that order)
@@ -42764,6 +42821,14 @@ class Engine {
                 l.push(f);
             else
                 this.logicalNoHdr.set(msg, [f]);
+            // a relation's lane (or a hub's spoke) to a device: the delivery there waits for it on screen
+            if (track.ref.indexOf('relation:') === 0 && track.to !== 'hub') {
+                const r = this.lanes.get(msg);
+                if (r)
+                    r.push(f);
+                else
+                    this.lanes.set(msg, [f]);
+            }
         }
         this.flights.push(f);
         this.flightById.set(f.id, f);
@@ -50773,7 +50838,8 @@ const MANUAL = [
         steps: [
             'Every message travels its whole way: in the **Physical** view hop by hop along every cable and through the switches, in the **Logical** view along the whole relation (inside its tunnel). It fades in at its sender, its label stays with it, and it ends with a pulse at the receiver; the devices sending and receiving are marked for that moment. A lost message stops where it was lost and shows ✕ for about 1.5 seconds.',
             '**Pacing: Readable** (the default) gives each hop about 3 seconds on screen, longer over a slow link and shorter over a fast one compared with the model’s other links, between 2 and 6 seconds; a dot never moves faster than 70 pixels a second at 100 % zoom, so a long cable takes longer. **Proportional to latency** shows each hop for its real time times a scale (*1 ms = 1 s*), with the same speed limit. The **Speed** (0.1× to 4×; 1× is the default) applies on top; the panel shows the pacing in use, e.g. *Readable · 3 s per hop · 1×*.',
-            '**Everything runs at once.** The simulated clock runs at its own rate whatever is on screen: one simulated second per second (times the speed) in Readable and Real time pacing, slowed by the scale in Proportional. Nothing waits for a dot: a protocol timer, an IGMP query, another connection’s next message happen when they are due, so independent exchanges are on their way together and a slow one never delays another. The dots follow each operation’s own order: a message continues on the next cable when it has arrived at the switch or router, an answer starts when its request has arrived, a packet that waited for ARP goes on when the ARP reply has arrived. So the tables and the log may be a few hops ahead of the dots. With **Skip idle time** on (the default), when nothing is on screen the clock jumps to the next message that will be shown (*⏩ 9.8 s skipped*). The time shown is always the real simulated time.',
+            '**The diagram first.** In Readable and Proportional pacing a delivery you see waits for its dot: the switch learns, the server answers, the next hop starts only once the dot has reached that device on screen, and then at the delivery’s own simulated time. So a packet that waited for ARP leaves when the ARP reply has visibly arrived, a SYN-ACK after the SYN, a switch’s member port after the report. Meanwhile everything already on its way keeps moving, so independent exchanges are on screen together, and the pacing text says what it waits for (*waiting for packet arrival (establishing TCP)*). Readable playback waits for displayed deliveries; network delays, protocol timers, application intervals and retries still use simulated time, so what happens never changes with the pacing, the speed or what you show.',
+            '**One of each, then the steady state.** The scenario’s messages are shown in detail one of each kind (an ARP request, a DHCP Discover, a TCP handshake, a Hello); the same kind again is cable activity (a lit cable with *protocol ×n*) and nothing waits for it, until your next Network event makes the scenario news again. Your own Network events, their prerequisites and the message you follow are always shown in detail. A stream is a flow on every cable of its tree, with one datagram after each join or leave shown hop by hop. **Real time** pacing is the overview: it waits for nothing. With **Skip idle time** on (the default), when nothing is on screen the clock jumps to the next message that will be shown (*⏩ 9.8 s skipped*). The time shown is always the real simulated time.',
             'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself when you close the inspector (**×**, `Esc`), or it is gone from the window — not when you click or tab elsewhere, or another window covers it for a while (**Play** resumes at once). If you paused it yourself, it stays paused; the state’s tooltip says who paused it and what ends it. **Follow message** keeps that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) always drawn, plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
             '**Step** moves to the next message event: a message arrives, or the next one starts at its sender. **Next exchange** moves on to the end of the exchange first on screen (an ARP request and its reply, a ping and its echo, a hello), or of the next one to start.',
             '**Your events in front.** While something you started under **Network events** runs (a send’s messages, a stream, a join until it is recorded, a leave until its cleanup settles, flapping), and until its last dots have arrived, its traffic is the foreground: everything it causes — its messages, their copies, the answers, the ARP it needs — is drawn normally, labelled and clickable. The scenario goes on underneath as the background: its dots keep moving, but **grey**, each kind with a short grey label (*IGMP Query*, *ARP*, *DHCP*, *UDP* — one per cable and kind, only where there is room), and the pointer goes through them and their labels (no outline, no inspector; the event log and the tables have them all). Several of your actions at once are all in front. A finished event, the membership a join leaves behind, or a card kept in Active events mutes nothing. The panel says *· your events in front*. One network and one clock: what you do (a shut, a join) changes what the scenario does, and the reverse.',
@@ -50947,6 +51013,7 @@ const MANUAL = [
             'In a simulation, **Network events → Send illustrative data**: choose the interconnect, who **initiates** it, where the data comes **from** and where it goes **to**. A controller reads a target by choosing the target as the source. **Non-IP failures** fail an interconnect, detach one attachment or shut a port; restore them from **Active events**.',
         ],
         notes: [
+            'The built-in example **vme-rack.yaml** is such a system: a VME64x crate whose CPUs and I/O boards share the VMEbus backplane, a MIL-STD-1553 bus from the crate to its remote terminals and a bus monitor, and RS-232 console lines to a console server; Ethernet is only the operators’ side.',
             'The physical view draws a point-to-point connection as a dashed line labelled with its technology and direction (*USB 2.0 ↔*, *RS-232 →*), a bus as a bar you can move with a tap and role badge per attachment, and opaque ports as diamonds. The **IP** and **Non-IP** switches show one side or both; the logical view never shows them. Find (`/`) finds them by technology, protocol or port.',
             'The data is illustrative: it shows where data can go and why it can’t, one way and without a reply. Nothing of USB, RS-485, CAN, VME or any protocol over them is simulated, and the packet inspector says so.',
         ],
@@ -51364,9 +51431,9 @@ exports.MANUAL_IMAGES = {
         "height": 149
     },
     "file-menu": {
-        "src": "data:image/webp;base64,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",
+        "src": "data:image/webp;base64,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",
         "width": 290,
-        "height": 516
+        "height": 544
     },
     "filter-list": {
         "src": "data:image/webp;base64,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",
@@ -61535,6 +61602,10 @@ exports.EXAMPLES = [
     {
         "name": "cross-domain.yaml",
         "text": "# netatlas example: a cross-domain boundary with a protocol break.\n#\n# cdg is a Security gateway between two domains, Red and Black (the names\n# are only labels: NetAtlas reads no classification, trust or direction\n# from them). Its implementation is a protocol break: nothing passes\n# through it. The Red workstation sends its web request to the gateway's\n# listening port (red0, port 443); the gateway's policy permits it (rule\n# red-web, transfer profile web), the first leg ends there, and the gateway\n# starts a second leg of its own to the Black web server. The answer comes\n# back on leg 2 and goes to the workstation on leg 1.\n#\n# The workstation also tries SSH to the Black server: no rule permits it, so\n# it ends at the gateway (an empty field never means \"any\", and everything\n# not permitted is denied). Black → Red is not a permitted direction at all.\n# The management interface mgmt0 belongs to neither domain and is never\n# forwarded: the management station reaches the gateway only.\n#\n# Analyze ▾ → Trace path… from red-ws to 10.10.0.1 with the service tcp/443\n# shows leg 1 and, correlated with it, leg 2; with tcp/22 to 10.20.0.80 the\n# trace stops at the gateway and says why. Simulate ▾ → Start simulation…\n# shows both legs and the denial in the timeline.\n#\n# This models the semantics of a protocol break. It does not reproduce a\n# particular product and gives no assurance of a real device's separation.\nnetatlas: 1\ntitle: Cross-domain boundary (protocol break)\ndescription: |\n  Red and Black domains joined by a Security gateway that breaks the\n  protocol: one permitted web transfer in two legs, one denied transfer,\n  and a management network that reaches the gateway only.\n\ngroups:\n  - id: red\n    label: Red domain\n    kind: zone\n  - id: black\n    label: Black domain\n    kind: zone\n  - id: mgmt\n    label: Management\n    kind: zone\n\ndevices:\n  - id: red-ws\n    label: red-ws (workstation)\n    type: endpoint\n    kind: pc\n    group: red\n    simulation: {test_traffic: \"on\", test_targets: \"10.10.0.1 tcp/443, 10.20.0.80 tcp/22\", test_interval: 10}\n    interfaces:\n      - {id: eth0, ip: 10.10.0.10/24}\n    routes:\n      - {prefix: 10.20.0.0/24, via: 10.10.0.1, name: towards Black (the gateway forwards nothing)}\n  - id: red-sw\n    type: switch\n    role: access\n    group: red\n    igmp_mld_snooping: {1: enabled}\n    interfaces:\n      - {id: p1, vlans: 1}\n      - {id: p2, vlans: 1}\n  - id: cdg\n    label: cdg (cross-domain)\n    type: security_gateway\n    services:\n      separation:\n        implementation: protocol_break\n        domains:\n          - {name: Red, interfaces: [red0]}\n          - {name: Black, interfaces: [black0]}\n        directions:\n          - {from: Red, to: Black}\n        profiles:\n          - id: web\n            type: https\n            listen: {interface: red0, port: 443}\n            forward: {address: 10.20.0.80, port: 443}\n        rules:\n          - id: red-web\n            description: Red workstations may fetch from the Black web server\n            from: Red\n            to: Black\n            source: 10.10.0.0/24\n            destination: 10.20.0.80\n            protocol: tcp\n            ports: \"443\"\n            profile: web\n    management: [mgmt0]\n    interfaces:\n      - {id: red0, ip: 10.10.0.1/24}\n      - {id: black0, ip: 10.20.0.1/24}\n      - {id: mgmt0, ip: 10.99.0.1/24}\n  - id: black-sw\n    type: switch\n    role: access\n    group: black\n    igmp_mld_snooping: {1: enabled}\n    interfaces:\n      - {id: p1, vlans: 1}\n      - {id: p2, vlans: 1}\n  - id: black-web\n    label: black-web\n    type: server\n    group: black\n    interfaces:\n      - {id: eth0, ip: 10.20.0.80/24}\n  - id: mgmt-st\n    label: mgmt-st (management)\n    type: endpoint\n    kind: pc\n    role: management\n    group: mgmt\n    interfaces:\n      - {id: eth0, ip: 10.99.0.10/24}\n\nlinks:\n  - {id: l-red-ws, a: \"red-ws:eth0\", b: \"red-sw:p1\", speed: 1G}\n  - {id: l-red-gw, a: \"red-sw:p2\", b: \"cdg:red0\", speed: 1G}\n  - {id: l-gw-black, a: \"cdg:black0\", b: \"black-sw:p1\", speed: 1G}\n  - {id: l-black-web, a: \"black-sw:p2\", b: \"black-web:eth0\", speed: 1G}\n  - {id: l-mgmt, a: \"mgmt-st:eth0\", b: \"cdg:mgmt0\", speed: 1G}\n\nrelations:\n  - id: web-leg1\n    protocol: https\n    label: web transfer, leg 1 (ends at the gateway)\n    endpoints: [red-ws, cdg]\n    direction: unidirectional\n  - id: web-leg2\n    protocol: https\n    label: web transfer, leg 2 (started by the gateway)\n    endpoints: [cdg, black-web]\n    direction: unidirectional\n  - id: ssh-denied\n    protocol: ssh\n    category: service\n    label: SSH Red → Black (not permitted)\n    endpoints: [red-ws, black-web]\n    direction: unidirectional\n  - id: mgmt-snmp\n    protocol: snmp\n    label: monitoring (management network only)\n    endpoints: [mgmt-st, cdg]\n    direction: unidirectional\n"
+    },
+    {
+        "name": "vme-rack.yaml",
+        "text": "netatlas: 1\ntitle: VME control rack\ndescription: \"An embedded control rack: a VME64x crate whose boards talk over the VMEbus backplane, a MIL-STD-1553 bus to the remote terminals in the field, RS-232 console lines to a console server, and Ethernet only for the operators. The non-IP interconnects carry illustrative data (Simulate → Send illustrative data); the IP side never uses them.\"\n\ngroups:\n  - {id: lab, label: Control room, kind: room}\n  - {id: rack, label: 19-inch rack, kind: rack, parent: lab}\n  - {id: crate, label: VME64x crate, kind: rack, parent: rack}\n  - {id: field, label: Field, kind: room}\n\ndevices:\n  # the operators' side: Ethernet\n  - id: sw\n    type: switch\n    label: Rack switch\n    group: rack\n    igmp_mld_snooping: {20: enabled}\n    interfaces: [{id: p1, vlans: 20}, {id: p2, vlans: 20}, {id: p3, vlans: 20}, {id: p4, vlans: 20}]\n  - id: ews\n    type: endpoint\n    label: Engineering workstation\n    group: lab\n    interfaces: [{id: eth0, ip: 10.20.0.50/24}]\n  - id: cons\n    type: system\n    purpose: host\n    label: Console server\n    group: rack\n    interfaces:\n      - {id: eth0, ip: 10.20.0.40/24}\n      - {id: s1, stack: opaque, label: port 1}\n      - {id: s2, stack: opaque, label: port 2}\n\n  # the crate: single-board computers and I/O boards on the backplane\n  - id: cpu1\n    type: server\n    label: SBC 1 (system controller)\n    group: crate\n    interfaces:\n      - {id: eth0, ip: 10.20.0.11/24}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: com1, stack: opaque, label: COM1}\n  - id: cpu2\n    type: server\n    label: SBC 2\n    group: crate\n    interfaces:\n      - {id: eth0, ip: 10.20.0.12/24}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: com1, stack: opaque, label: COM1}\n  - id: adc\n    type: endpoint\n    label: ADC board\n    group: crate\n    interfaces: [{id: vme, stack: opaque, label: P1/P2}]\n  - id: dio\n    type: endpoint\n    label: Digital I/O board\n    group: crate\n    interfaces: [{id: vme, stack: opaque, label: P1/P2}]\n  - id: mil\n    type: system\n    purpose: host\n    label: MIL-STD-1553 board\n    group: crate\n    interfaces:\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: bus-a, stack: opaque, label: bus A}\n\n  # the field: remote terminals and a bus monitor on the 1553 bus\n  - id: act\n    type: endpoint\n    label: Actuator (RT 3)\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: sens\n    type: endpoint\n    label: Sensor unit (RT 5)\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: mon\n    type: storage\n    label: Bus monitor\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n\nlinks:\n  - {id: l-ews, a: \"sw:p1\", b: \"ews:eth0\"}\n  - {id: l-cons, a: \"sw:p2\", b: \"cons:eth0\"}\n  - {id: l-cpu1, a: \"sw:p3\", b: \"cpu1:eth0\"}\n  - {id: l-cpu2, a: \"sw:p4\", b: \"cpu2:eth0\"}\n\nnetworks:\n  - {id: ctrl, label: Control LAN, cidr: 10.20.0.0/24, vlan: 20}\n\ninterconnects:\n  - id: vmebus\n    topology: shared\n    technology: {name: VME, version: VME64x}\n    connector: VME64x backplane (P1/P2)\n    access: controller_target\n    endpoints:\n      - {port: \"cpu1:vme\", role: controller_target, system_controller: true}\n      - {port: \"cpu2:vme\", role: controller_target}\n      - {port: \"adc:vme\", role: target}\n      - {port: \"dio:vme\", role: target}\n      - {port: \"mil:vme\", role: target}\n  - id: mil-bus\n    topology: shared\n    technology: {name: MIL-STD-1553, version: B}\n    connector: twinax, transformer-coupled stubs\n    access: controller_target\n    endpoints:\n      - {port: \"mil:bus-a\", role: controller}\n      - {port: \"act:bus-a\", role: target}\n      - {port: \"sens:bus-a\", role: target}\n      - {port: \"mon:bus-a\", role: monitor}\n  - id: console-1\n    topology: point_to_point\n    technology: {name: RS-232}\n    connector: DB-9\n    endpoints:\n      - {port: \"cpu1:com1\", role: peer}\n      - {port: \"cons:s1\", role: peer}\n  - id: console-2\n    topology: point_to_point\n    technology: {name: RS-232}\n    connector: DB-9\n    endpoints:\n      - {port: \"cpu2:com1\", role: peer}\n      - {port: \"cons:s2\", role: peer}\n"
     }
 ];
 
@@ -71517,6 +71588,8 @@ class Simulation {
         this.runs = [];
         this.runSeq = 0;
         this.acts = [];
+        /** Network events submitted since the start (the pacing: what the scenario shows after one is news again) */
+        this.actionCount = 0;
         this.actSeq = 0;
         this.model = model;
         this.engine = new engine_1.Engine(model, opts);
@@ -71725,6 +71798,7 @@ class Simulation {
     // ------------------------------------------------------------ Network events: the operations and their list
     keepAction(a) {
         this.acts.push(a);
+        this.actionCount++;
         // bounded: the oldest finished ones go first (a hard limit of twice as many, the oldest whatever their state)
         const views = () => this.acts.map((x) => (0, actions_1.actionView)(x, this.actionContext()));
         if (this.acts.length > actions_1.MAX_ACTIONS) {
@@ -72104,7 +72178,15 @@ class Simulation {
     /** Run towards t, stopping at the first moment a message that `visible` accepts is sent; returns the time reached. */
     advance(t, visible) {
         const from = this.engine.flightSerial;
-        this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+        // (a jump, as runTo: past the presentation's hold — what it passes is history to the pacing)
+        const hold = this.engine.hold;
+        this.engine.hold = null;
+        try {
+            this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+        }
+        finally {
+            this.engine.hold = hold;
+        }
         return this.engine.now;
     }
     /**
@@ -81380,6 +81462,8 @@ class OpaqueSim {
                 return;
             }
             parent = this.draw(run, d, h, parent);
+            // (the hop's arrival: the pacing holds it until its dot is there)
+            const dot = parent;
             this.e.after(exports.OPAQUE_HOP_MS, () => {
                 if (k + 1 < r.length)
                     step(k + 1);
@@ -81387,7 +81471,7 @@ class OpaqueSim {
                     this.end(run, d, true, 'delivered along the modelled connection');
                     this.note('message', toDev, fromDev, `Illustrative data ${n + 1} reached ${to}: delivered along the modelled connection (${d.path}) — ${exports.OPAQUE_NOTICE}`, run);
                 }
-            });
+            }, [dot]);
         };
         step(0);
     }
@@ -85592,6 +85676,8 @@ class SimController {
         this.pausedBy = null;
         this.stateSaid = '';
         this.inspectorTimer = null;
+        /** the view the pacing last showed */
+        this.viewSeen = null;
         /**
          * A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and
          * their sender is chosen. An experiment's: its own traffic only.
@@ -85651,12 +85737,14 @@ class SimController {
             foreground: () => !this.experiment && this.sim.foregroundActive(),
             until: () => (this.experiment ? this.experiment.until() : null),
             notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
+            epoch: () => this.sim.actionCount,
         }, sim_anim_1.MAX_DOTS);
         if (this.experiment) {
             // everything shown is the experiment's: nothing muted, nothing hidden holding it, its exchanges drawn rather than bundled
             this.pacer.mute = false;
             this.pacer.hiddenHoldsNothing = true;
             this.pacer.convLimit = 40;
+            this.pacer.summarizeRepeats = false;
             // its starting state is seen before anything is skipped
             this.pacer.rest();
         }
@@ -85741,7 +85829,8 @@ class SimController {
         if (this.power && this.power.parentNode)
             this.power.parentNode.removeChild(this.power);
         this.power = null;
-        // nothing scheduled sends again
+        // nothing scheduled sends again, and nothing waits for a dot
+        this.pacer.detach();
         this.sim.close();
         this.closeMenu();
         if (this.sendersUi)
@@ -85929,6 +86018,7 @@ class SimController {
         this.pacer.mode = mode;
         if (scale !== undefined && pacing_1.PACE_SCALES.indexOf(scale) >= 0)
             this.pacer.scale = scale;
+        this.pacer.reshow();
         this.refresh(true);
     }
     setSkipIdle(on) {
@@ -85970,6 +86060,7 @@ class SimController {
         this.shownChanged();
     }
     shownChanged() {
+        this.pacer.reshow();
         this.logKey = '';
         if (this.picker)
             this.picker.set(this.shown);
@@ -86014,6 +86105,7 @@ class SimController {
             this.sendersUi.set(this.senders);
         if (this.host.sendersChanged)
             this.host.sendersChanged(new Set(this.senders));
+        this.pacer.reshow();
         this.logKey = '';
         this.actionsKey = '';
         this.badgesKey = '';
@@ -86542,6 +86634,12 @@ class SimController {
     }
     /** The diagram was drawn again: the dots on the new scene. */
     sceneChanged() {
+        // (another view: what it shows of what was delivered meanwhile is history, not dots on their way)
+        const v = this.host.view();
+        if (v !== this.viewSeen) {
+            this.viewSeen = v;
+            this.pacer.reshow();
+        }
         this.lengths.clear();
         this.badgesKey = '';
         this.powerKey = '';
@@ -87728,7 +87826,7 @@ class SimController {
         this.updateClock();
         const drawn = q('sim-drawn');
         if (drawn)
-            drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `at most ${pacing_1.CONV_LIMIT} exchanges as dots at once`}).` : '';
+            drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `kinds of message already shown, and at most ${pacing_1.CONV_LIMIT} exchanges as dots at once`}).` : '';
         // behind for a while (more than 2 s of simulated time): say so, and suggest a smaller execution scope
         const bh = q('sim-behind');
         if (bh) {
@@ -88010,6 +88108,8 @@ exports.proportionalHop = proportionalHop;
 exports.scaleText = scaleText;
 exports.conversationKey = conversationKey;
 exports.flowKey = flowKey;
+exports.holdText = holdText;
+exports.repeatKey = repeatKey;
 exports.flightKey = flightKey;
 exports.PACE_SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4];
 /** Proportional: display ms per simulated ms ("1 ms = 0.1 s", "1 ms = 1 s", "1 ms = 10 s"). */
@@ -88105,6 +88205,28 @@ function flowKey(proto, src, dst, l4) {
     const b = dst + ':' + (l4.dport !== undefined ? l4.dport : '');
     return `${proto}|${a < b ? a + '|' + b : b + '|' + a}`;
 }
+/**
+ * What the simulation waits for on screen, in words, from the held hop
+ * itself: "waiting for packet arrival", and what for when its message says
+ * (an ARP or NDP message: neighbor resolution; a TCP segment with SYN:
+ * establishing TCP, or retransmitting SYN when it is one; an IGMP or MLD
+ * report or leave: a membership report in transit).
+ */
+function holdText(f) {
+    const p = f.protocol;
+    let what = '';
+    if (p === 'arp' || p === 'ndp')
+        what = 'neighbor resolution';
+    else if (f.flags && f.flags.indexOf('S') >= 0)
+        what = / \(retransmission\)/.test(f.label) ? 'retransmitting SYN' : 'establishing TCP';
+    else if ((p === 'igmp' || p === 'mld') && /Report|Leave|Done/.test(f.label))
+        what = 'membership report in transit';
+    return what ? `waiting for packet arrival (${what})` : 'waiting for packet arrival';
+}
+/** A kind of message in a view (its protocol, its type, a TCP segment's flags): another of it is the steady state. */
+function repeatKey(f) {
+    return `${f.view}|${f.protocol}|${f.type !== undefined ? f.type : f.label}|${f.flags || ''}`;
+}
 /** The key a hop's conversation has: its transport's when it has one (both views), else its headers'. */
 function flightKey(f, h) {
     return f.conv || conversationKey(f.protocol, h, f.label);
@@ -88148,14 +88270,75 @@ class Pacer {
         this.restUntil = -Infinity;
         /** where an idle jump that its budget cut short started (it goes on towards the same end next frame); null: none */
         this.jumpStart = null;
+        /** the scenario's hops are the muted background now (a Network event holds the front): they hold no delivery */
+        this.bgNow = false;
+        /** a kind of scenario message drawn before (since the last Network event) is the steady state: cable activity (an experiment: off) */
+        this.summarizeRepeats = true;
+        /** the kinds of the scenario's messages drawn as dots since the last Network event (repeatKey), and that event's count */
+        this.seen = new Set();
+        /** the transport conversations (Flight.conv) drawn as their kind's example: shown whole */
+        this.detailed = new Set();
+        this.seenEpoch = -1;
+        /** scenario hops summarized as repeats since the start */
+        this.repeats = 0;
         this.serial = host.engine.flightSerial;
+        host.engine.hold = (id) => this.holds(id);
     }
-    /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are. */
+    /** The pacing lets go of the engine (the simulation stopped, exited or replaced): nothing is held any more. */
+    detach() {
+        if (this.host.engine.hold)
+            this.host.engine.hold = null;
+    }
+    /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
     describe() {
         const sp = `${this.speed}×`;
         const behind = this.behind > 0 ? ' · behind' : '';
         const base = this.mode === 'readable' ? `Readable · ${exports.HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
-        return this.fgNow ? `${base} · your events in front` : base;
+        const h = this.holding();
+        const wait = h ? ` · ${holdText(h.f)}` : '';
+        return (this.fgNow ? `${base} · your events in front` : base) + wait;
+    }
+    /**
+     * Is a hop's arrival gated — does the simulation wait for its dot before it
+     * delivers it? Every hop drawn and shown as a dot, in Readable and
+     * Proportional pacing (Real time is an overview: it waits for nothing):
+     * the scenario's, a Network event's, the conversation followed. Not: what
+     * is not drawn (another view, a hidden protocol, bundled into cable
+     * activity, beyond the limit), what is lost or hidden, the scenario's
+     * muted background while Network events hold the front, and multicast
+     * data (a stream is a flow; its datagrams follow the forwarding state as
+     * it is when each copy is forwarded, which the gated reports change).
+     */
+    gated(it) {
+        const f = it.f;
+        return !!it.gate && this.mode !== 'realtime' && !f.hidden && f.dropped === undefined && this.host.shown(f);
+    }
+    /**
+     * Is a new hop one the simulation waits for — decided once, when it is taken in: a dot not waited for then (another
+     * pacing, the muted background) was not waited for, and never is later; it can only stop being waited for (lost,
+     * hidden, no longer shown, Real time). See gated.
+     */
+    gates(it) {
+        const f = it.f;
+        if (this.mode === 'realtime' || !it.drawn || f.hidden || f.dropped !== undefined || (f.protocol === 'mcast' && !it.example))
+            return false;
+        if (!this.host.shown(f))
+            return false;
+        return !(this.bgNow && !it.test && !(this.follow && this.follow.key === it.key));
+    }
+    /** The engine asks before a delivery: is that flight's dot still on its way on screen (registered first, if it is new)? */
+    holds(id) {
+        if (this.mode === 'realtime')
+            return false;
+        if (this.host.engine.flightSerial !== this.serial)
+            this.register();
+        const it = this.byId.get(id);
+        return !!it && this.gated(it) && this.clock < this.arrival(it) - EPS;
+    }
+    /** The hop whose arrival the simulation waits for now (null: it waits for none). */
+    holding() {
+        const id = this.host.engine.heldNext();
+        return id === null ? null : this.byId.get(id) || null;
     }
     /** The display time of a hop of `lat` simulated ms in a view. */
     hopTime(lat, view, length) {
@@ -88232,6 +88415,7 @@ class Pacer {
     /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
     refreshForeground() {
         this.fgNow = !!this.host.foreground && this.host.foreground();
+        this.bgNow = this.mute && this.fgActive();
     }
     drawnShown(it) {
         return it.drawn && !it.f.hidden && this.host.shown(it.f);
@@ -88244,9 +88428,14 @@ class Pacer {
     pending(it) {
         return this.onItsWay(it);
     }
-    /** Is anything drawn still to come or on its way on screen? */
+    /** Is anything drawn still to come or on its way on screen, or a cable lit by traffic not drawn as dots (the steady state goes on at its rate meanwhile, never skipped)? */
     busy() {
-        return this.items.some((it) => this.drawnShown(it) && this.pending(it));
+        return this.items.some((it) => this.drawnShown(it) && this.pending(it)) || this.lit();
+    }
+    /** Is a cable lit by traffic not drawn as dots now (cable activity, shown for ACTIVITY_MS)? */
+    lit() {
+        const a = this.act.length ? this.act[this.act.length - 1] : null;
+        return !!a && this.clock - a.at <= exports.ACTIVITY_MS && this.host.shown(a.f);
     }
     /** Take in the flights sent since the last look; returns the new hops. */
     register() {
@@ -88268,6 +88457,13 @@ class Pacer {
             else
                 onWay.set(x.key, [x]);
         };
+        // a Network event changed the network (a failure, a restore, a join …): what the scenario does now is news, drawn again
+        const ep = this.host.epoch ? this.host.epoch() : 0;
+        if (ep !== this.seenEpoch || this.seen.size + this.detailed.size > 4000) {
+            this.seenEpoch = ep;
+            this.seen.clear();
+            this.detailed.clear();
+        }
         if (fresh.length)
             for (const x of this.items) {
                 if (x.drawn && this.onItsWay(x))
@@ -88289,11 +88485,17 @@ class Pacer {
             // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
             if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS)
                 continue;
+            const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
+            const test = f.test !== undefined;
+            const h = this.host.headers ? this.host.headers(f) : undefined;
+            const key = flightKey(f, h);
             // multicast data (a stream's datagrams and their copies): each copy on its cable from the moment it is forwarded, not after
             // the copy before it has arrived on screen — a stream is a flow on every cable of its tree at once, and a change of the tree
-            // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones
-            const flow = f.protocol === 'mcast';
-            const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
+            // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones. One datagram of
+            // each stream after each Network event (a join, a leave …) is its example: shown hop by hop like any message, each copy
+            // after the one it was forwarded from has arrived, the simulation waiting for it — the tree as it is now, seen growing
+            const sample = f.protocol === 'mcast' && this.streamExample(f, pAny, key);
+            const flow = f.protocol === 'mcast' && !sample;
             // (a hidden hop holds nothing when hidden traffic must not delay what is shown)
             const parent = pAny && (!this.hiddenHoldsNothing || this.host.shown(pAny.f)) ? pAny : undefined;
             let after = parent && !flow ? this.arrival(parent) : -Infinity;
@@ -88302,9 +88504,6 @@ class Pacer {
             const cause = cAny && (!this.hiddenHoldsNothing || this.host.shown(cAny.f)) ? cAny : undefined;
             if (!parent && !flow && cause && cause.f.view === f.view)
                 after = Math.max(after, this.arrival(cause));
-            const test = f.test !== undefined;
-            const h = this.host.headers ? this.host.headers(f) : undefined;
-            const key = flightKey(f, h);
             // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side,
             // in the same view (the other view's hops are not on this screen: as the cause, they hold nothing here)
             if (!parent && f.sender !== undefined)
@@ -88327,9 +88526,24 @@ class Pacer {
             // is never cut in the middle; anything else needs room and is cable activity beyond LAG_MAX
             const goesOn = (!!parent && parent.drawn) || convs[f.view].has(key);
             const late = d0 - this.clock > (goesOn ? exports.LAG_CONT : exports.LAG_MAX);
-            const drawn = !shown || test || followed || (conv && !late && (goesOn || room));
+            // the steady state: a kind of message drawn before (its protocol, type and TCP flags, in this view) since the last Network
+            // event — a Hello, another host's DHCP Discover, a periodic test again — is cable activity, unless it goes on with what is drawn
+            // (then whole): one of each kind is seen walking, and the simulation does not wait for the rest
+            // (goes on: the next cable of a message drawn, or the next segment of a connection shown as its kind's example — not
+            // merely the same addresses: every host's DHCP has the same ones)
+            const rk = repeatKey(f);
+            const example = (!!parent && parent.drawn) || (f.conv !== undefined && this.detailed.has(f.conv));
+            const repeat = this.summarizeRepeats && !test && !followed && !example && this.seen.has(rk);
+            if (repeat && shown)
+                this.repeats++;
+            const drawn = !shown || test || followed || (!repeat && conv && !late && (goesOn || room));
             if (shown) {
                 if (drawn) {
+                    if (!test) {
+                        this.seen.add(rk);
+                        if (f.conv !== undefined)
+                            this.detailed.add(f.conv);
+                    }
                     live[f.view]++;
                     if (!test) {
                         convs[f.view].add(key);
@@ -88342,6 +88556,10 @@ class Pacer {
                 }
             }
             const it = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
+            if (sample)
+                it.example = true;
+            if (this.gates(it))
+                it.gate = true;
             this.items.push(it);
             if (drawn)
                 wayOf(it);
@@ -88369,6 +88587,16 @@ class Pacer {
         return Array.from(by.values())
             .sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))
             .map((x) => ({ ref: x.ref, view: x.view, track: x.track, counts: Array.from(x.m.entries()).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)) }));
+    }
+    /** Is a multicast datagram's hop its stream's example: the first one since the last Network event, and every copy forwarded from it? */
+    streamExample(f, parent, key) {
+        if (f.parent !== undefined)
+            return !!parent && !!parent.example;
+        const k = 'stream|' + f.view + '|' + key;
+        if (this.seen.has(k))
+            return false;
+        this.seen.add(k);
+        return true;
     }
     /** Forget what has left the screen. */
     prune() {
@@ -88413,11 +88641,18 @@ class Pacer {
         const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
         if (target > e.now + EPS) {
             const until = Date.now() + exports.JUMP_BUDGET;
-            e.runUntil(target, () => {
+            const held = e.runUntil(target, () => {
                 this.register();
                 return Date.now() > until;
             });
             this.register();
+            // waiting for a dot to arrive (a presentation hold, not a lag): the clock counts on from here once it is there,
+            // so the simulated time it waited is not made up in a burst afterwards
+            if (held) {
+                this.behind = 0;
+                this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
+                return;
+            }
             if (e.now < target - 1) {
                 this.behind = target - e.now;
                 this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
@@ -88489,8 +88724,9 @@ class Pacer {
         // a jump is work: at most JUMP_BUDGET ms of it per frame (a model whose messages are mostly hidden has many events between two shown ones); the next frame goes on
         const until = Date.now() + exports.JUMP_BUDGET;
         e.runUntil(t, () => {
+            // (a dot, or traffic shown as cable activity: something to see either way)
             for (const it of this.register())
-                if (this.drawnShown(it) && this.onItsWay(it))
+                if (it.drawn ? this.drawnShown(it) && this.onItsWay(it) : this.host.shown(it.f) && !it.f.hidden)
                     found = true;
             return found || Date.now() > until;
         });
@@ -88512,11 +88748,19 @@ class Pacer {
         if (next < Infinity) {
             this.clock = Math.max(this.clock, next);
             this.idleBudget = 0;
-            const skip = this.skipIdle;
-            // the arrival's consequences start now; the next quiet stretch waits for the next Step
-            this.skipIdle = false;
-            this.pump();
-            this.skipIdle = skip;
+            // the arrival is processed, at its own simulated time, and what it causes at once starts (an answer, the next
+            // hop: on screen at its sender); nothing later — the next delivery, a quiet stretch — waits for the next Step
+            const e = this.host.engine;
+            let due = e.now;
+            for (const it of this.items)
+                if (this.drawnShown(it) && Math.abs(this.arrival(it) - next) < EPS && it.f.dropped === undefined)
+                    due = Math.max(due, it.f.t1);
+            e.runUntil(due, () => {
+                this.register();
+                return false;
+            });
+            this.register();
+            this.rt = null;
         }
         else {
             const from = this.host.engine.now;
@@ -88553,6 +88797,23 @@ class Pacer {
     followed() {
         const f = this.follow;
         return f ? this.items.filter((it) => it.key === f.key) : [];
+    }
+    /**
+     * What is shown changed (the view, the protocols, the senders, the pacing): one path for every such change. A dot of
+     * what the simulation has delivered (or lost) already — not held while it was not shown, or not gated in the pacing
+     * before — is history now, not a dot still on its way: it leaves the screen. What is still to be delivered keeps its
+     * place, and its hold when it is shown now. Nothing is executed, resubmitted or reordered.
+     */
+    reshow() {
+        const now = this.host.engine.now;
+        this.items = this.items.filter((it) => {
+            const due = it.f.dropped !== undefined ? it.f.dropped : it.f.t1;
+            const keep = !(due < now - EPS && this.clock < this.arrival(it) - EPS);
+            if (!keep)
+                this.byId.delete(it.f.id);
+            return keep;
+        });
+        this.rt = null;
     }
     /** The simulation was moved on by other means (runTo): what arrived meanwhile is history, on screen or not. */
     resync() {

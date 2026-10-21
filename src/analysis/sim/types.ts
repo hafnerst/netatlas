@@ -150,6 +150,8 @@ export interface Flight {
   conv?: string;
   /** a TCP segment's flags (Msg.flags): what a short background label says of it */
   flags?: string;
+  /** its message's type (Msg.type: "ARP Request", "Hello", "Membership Report" …): the pacing's steady state is a kind seen before */
+  type?: string;
   /**
    * the flight whose arrival caused it (a frame forwarded on, an answer, an
    * ARP request for a packet, the packet released by the ARP reply …): the

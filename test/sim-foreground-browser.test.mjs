@@ -30,20 +30,28 @@ for (const theme of ['light', 'dark']) {
       await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.theme.set('${theme}'), netatlas.loadExampleNamed('protocol-simulation.yaml'), netatlas.setView('physical'), true`);
       await page.settle(150);
       await page.eval(`netatlas.startProtocolSimulation(), netatlas.fit(), true`);
-      await wait(4000);
-      // the scenario alone: a few exchanges as dots, the rest lit cables with their counts
+      // the scenario alone: a few exchanges as dots, the rest lit cables with their counts (once its first kinds were shown)
       let u = await ui();
+      for (let i = 0; i < 60 && !(u.lit > 0 && u.counts.length > 0); i++) {
+        await wait(1000);
+        u = await ui();
+      }
       // (six conversations, and a few more for protocols with nothing else on screen)
       assert.ok(u.convs <= 9, JSON.stringify(u));
       assert.ok(u.lit > 0 && u.counts.length > 0 && u.counts.every((c) => /^\S.* ×\d+/.test(c)), JSON.stringify(u.counts));
-      assert.match(u.drawn, /^\d+ more on their way as cable activity \(at most 6 exchanges as dots at once\)\.$/);
-      assert.equal(u.pace, 'Readable · 3 s per hop · 1×');
+      assert.match(u.drawn, /^\d+ more on their way as cable activity \(kinds of message already shown, and at most 6 exchanges as dots at once\)\.$/);
+      assert.match(u.pace, /^Readable · 3 s per hop · 1×( · waiting for packet arrival( \(.+\))?)?$/);
       // a stream from pc1: in front; the scenario behind as cable activity
       await page.eval(`netatlas.simController().startStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500), true`);
       const s0 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);
+      // (its first datagram is due now, after the deliveries the scenario's dots on screen bring: it starts once they have arrived, up to a hop's time)
       await wait(3000);
       u = await ui();
-      assert.equal(u.pace, 'Readable · 3 s per hop · 1× · your events in front');
+      for (let i = 0; i < 20 && !(u.fgDots > 0); i++) {
+        await wait(500);
+        u = await ui();
+      }
+      assert.match(u.pace, /^Readable · 3 s per hop · 1× · your events in front( · waiting for packet arrival( \(.+\))?)?$/);
       assert.ok(u.fgDots > 0, 'the stream’s dots');
       // a datagram every simulated second (the first at once), whatever the pacing
       const s1 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);

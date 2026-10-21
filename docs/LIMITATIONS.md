@@ -389,9 +389,11 @@ cloud's hosts behind its instances.
 ## Simulation time and display
 
 **Implemented.** A simulated clock with scheduled events; three pacings
-(Readable, Fast, Real time) that change what is shown, never what happens;
-Network events (sends, streams, joins, interface and device actions) from
-the user.
+(Readable, Proportional, Real time) that change what is shown and how long
+it takes, never what happens; in Readable and Proportional pacing a
+delivery drawn as a dot waits until its dot has arrived on screen (Real
+time waits for nothing); Network events (sends, streams, joins, interface
+and device actions) from the user.
 
 **Simplifications.**
 
@@ -409,10 +411,27 @@ the user.
   fixed seed; there is
   no queuing beyond each cable's serialization and no CPU limit. A broadcast
   storm follows each frame for 6 rounds.
+* **Waiting for the dots is strictly chronological.** While a delivery
+  waits for its dot, nothing later in simulated time happens — not even an
+  unrelated device's timer — so messages a few milliseconds apart are shown
+  one after the other, each a hop's display time. Only what was already on
+  its way moves meanwhile. A busy startup is therefore shown one message
+  of each kind (the steady state below); the examples' startups take one to
+  four minutes of Readable display before the simulation runs at its rate.
+* **The steady state is summarized.** A kind of the scenario's message (its
+  protocol, its message type and a TCP segment's flags) drawn once is cable
+  activity the next times, and nothing waits for it, until the next Network
+  event makes the scenario news again: a second host's DHCP Discover, the
+  next Hello, the next periodic test are lit cables, not dots. Your own
+  Network events, their prerequisites (the ARP a send needs) and the
+  conversation followed are always dots. A multicast stream is a flow on
+  every cable of its tree; one datagram after each Network event is shown
+  hop by hop. Real time pacing is an overview and waits for nothing.
 * **Foreground and background are a display choice.** Senders choose what is
-  shown, not what runs: every device's protocols are computed. In Readable
-  pacing the dots of a long chain run behind the tables, up to 15 s, beyond
-  which the exchange shows as cable activity — but what goes on with what
+  shown, not what runs: every device's protocols are computed. A dot not
+  waited for (the scenario's muted background while Network events run, a
+  stream's flow, Real time) may still run behind the tables, up to 15 s,
+  beyond which the exchange shows as cable activity — but what goes on with what
   is drawn (the next cable of a message on screen, the next message of a
   conversation on screen: a TCP handshake's SYN-ACK and ACK) up to 60 s,
   beyond the dot limit; at most 48 messages start being drawn at once and
@@ -421,7 +440,9 @@ the user.
   their ports (an ICMP echo its identifier), as its sender sent it — a
   conversation through NAT is two, one each side of the translation. Cable
   activity shows the last 3 s of display. A browser tab in the background
-  stops the display clock.
+  stops the display clock. Switching the view, the protocols or senders
+  shown, or the pacing removes the dots of what was delivered meanwhile
+  (history), rather than letting them travel behind the tables.
 * **Order on screen** follows the deliveries the engine records; a reply
   sent after a delay of its own (a service's response time, an ARP
   retransmission) is ordered by its conversation and counts as the

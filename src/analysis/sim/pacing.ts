@@ -23,17 +23,46 @@
  * switch it first crosses the switch (0.6 s). The arrival pulse and a lost
  * message's ✕ stay 1.5 s.
  *
- * Execution and display are apart. The simulated clock runs at its own
- * rate, × the speed, whatever is on screen: 1 s of simulated time per
- * second in Readable and Real time pacing, 1 ÷ the scale in Proportional
- * (its slow motion: "1 ms = 1 s"). No dot holds it: every event happens
- * when it is due — a protocol timer, an IGMP query, another connection's
- * next message — so independent exchanges are in flight together and a
- * slow one never delays an unrelated one. A frame does at most JUMP_BUDGET
- * ms of simulation work; what it can't do in time is left behind (said:
- * `behind`, never caught up in a burst), so heavy traffic never freezes the
- * page. With nothing on screen (and skipping idle time on, the default) it
- * jumps to the next message that will be shown; the jump is reported.
+ * Two clocks. The simulated clock runs at its own rate, × the speed: 1 s of
+ * simulated time per second in Readable and Real time pacing, 1 ÷ the scale
+ * in Proportional (its slow motion: "1 ms = 1 s"). The display clock moves
+ * the dots. Cable latencies, protocol timers, retransmissions, application
+ * intervals and retries are simulated time only; a dot's 3 s on screen is
+ * never 3 s of modelled network delay.
+ *
+ * The barrier (Readable and Proportional). A delivery a dot shows waits for
+ * it: the engine stops before that arrival (Engine.hold, asked event by
+ * event) until the dot has reached its receiver on screen, then processes it
+ * at its own simulated time — the learning, the answer, the next hop come
+ * after the dot, never before it. Everything after the held event waits too
+ * (nothing runs around it, so the order of events is never changed); what
+ * is on screen meanwhile goes on moving, so independent exchanges sent
+ * before it are in flight together, and the clock then counts on from where
+ * it waited (no burst). Waited for (`gated`, decided when a hop is taken
+ * in): every hop drawn as a dot in the view on screen — a Network event's,
+ * the conversation followed, the scenario's drawn ones — and one datagram of
+ * each stream after each Network event (its example: hop by hop). Not: what
+ * is not drawn (another view, a hidden protocol or sender, bundled into
+ * cable activity, the steady state below), the scenario's muted background
+ * while Network events hold the front, the rest of a stream (a flow),
+ * anything lost or hidden, and anything at all in Real time pacing (an
+ * overview). A change of what is shown goes through reshow: a dot of what
+ * was delivered meanwhile is history and leaves the screen. Headless runs,
+ * runTo and an experiment's result never wait (Engine.run).
+ *
+ * The steady state. A kind of the scenario's message (its protocol, its
+ * type and a TCP segment's flags) drawn once is cable activity the next
+ * times — another host's DHCP Discover, a Hello again, the next periodic
+ * test — not waited for, until the next Network event makes the scenario
+ * news again (`summarizeRepeats`; an experiment shows everything). The
+ * startup is shown one of each kind, step by step; then the simulation
+ * runs at its rate with the cables lit.
+ *
+ * A frame does at most JUMP_BUDGET ms of simulation work; what it can't do
+ * in time is left behind (said: `behind`, never caught up in a burst), so
+ * heavy traffic never freezes the page. With nothing on screen (no dot on
+ * its way, no cable lit) and skipping idle time on, the default, it jumps
+ * to the next message that will be shown; the jump is reported.
  *
  * The display follows the events, in their causal order. A hop starts on
  * screen when its frame is sent, or later when it must: a hop that
@@ -44,8 +73,8 @@
  * has arrived; and the first hop of a message that answers another of its
  * conversation (the same protocol between the same two ends, from the other
  * side) when that one has arrived. So each operation's steps show one after the other while
- * different operations overlap. The tables and the log may be ahead of the
- * dots (by the hops still to show); a hop that would start more than
+ * different operations overlap. The tables and the log are never ahead of a
+ * dot waited for; a hop not waited for that would start more than
  * LAG_MAX after it happened is not drawn as a dot (cable activity) — except
  * a Network event's and the conversation followed; one that goes on with
  * what is drawn (the next cable of a message on screen, the next message of
@@ -56,7 +85,8 @@
  * (tests compare the results).
  *
  * Following a message: its conversation is always drawn (beyond the
- * bundling and the dot limit) and keeps its trail; it holds nothing.
+ * bundling and the dot limit) and keeps its trail; its deliveries wait
+ * for their dots like any drawn hop's.
  *
  * Foreground and background. The traffic of Network events (its flights
  * carry the operation's id: a send's messages and their answers, a join's
@@ -82,8 +112,10 @@
  * model, run on the simulated clock: the pacing changes how fast they are
  * shown, never which datagrams exist.
  *
- * Next exchange (paused): on to the end of the exchange that is first on
- * screen (all its hops arrived), or of the next one to start.
+ * Step (paused): the next delivery on screen happens and what it causes at
+ * once appears; nothing later. Next exchange (paused): on to the end of the
+ * exchange that is first on screen (all its hops arrived), or of the next
+ * one to start.
  *
  * An experiment playing (analysis/sim/experiment.ts) is shown with the same
  * pacing, three things apart: only its traffic is shown (the host's `shown`
@@ -201,6 +233,27 @@ export function flowKey(proto: string, src: string, dst: string, l4: { sport?: n
   return `${proto}|${a < b ? a + '|' + b : b + '|' + a}`;
 }
 
+/**
+ * What the simulation waits for on screen, in words, from the held hop
+ * itself: "waiting for packet arrival", and what for when its message says
+ * (an ARP or NDP message: neighbor resolution; a TCP segment with SYN:
+ * establishing TCP, or retransmitting SYN when it is one; an IGMP or MLD
+ * report or leave: a membership report in transit).
+ */
+export function holdText(f: Flight): string {
+  const p = f.protocol;
+  let what = '';
+  if (p === 'arp' || p === 'ndp') what = 'neighbor resolution';
+  else if (f.flags && f.flags.indexOf('S') >= 0) what = / \(retransmission\)/.test(f.label) ? 'retransmitting SYN' : 'establishing TCP';
+  else if ((p === 'igmp' || p === 'mld') && /Report|Leave|Done/.test(f.label)) what = 'membership report in transit';
+  return what ? `waiting for packet arrival (${what})` : 'waiting for packet arrival';
+}
+
+/** A kind of message in a view (its protocol, its type, a TCP segment's flags): another of it is the steady state. */
+export function repeatKey(f: Flight): string {
+  return `${f.view}|${f.protocol}|${f.type !== undefined ? f.type : f.label}|${f.flags || ''}`;
+}
+
 /** The key a hop's conversation has: its transport's when it has one (both views), else its headers'. */
 export function flightKey(f: Flight, h: Headers | undefined): string {
   return f.conv || conversationKey(f.protocol, h, f.label);
@@ -225,6 +278,10 @@ export interface PaceItem {
   test: boolean;
   /** the hop it continues, while that is on screen */
   parent?: PaceItem;
+  /** a multicast datagram's hop shown as its stream's example (hop by hop, gated), not as the flow */
+  example?: boolean;
+  /** the simulation waits for its arrival on screen (decided when it is taken in: Pacer.gated) */
+  gate?: boolean;
 }
 
 /** Where a hop is on screen at a moment. */
@@ -245,10 +302,15 @@ export interface PacerHost {
   engine: {
     now: number;
     nextTime(): number | null;
-    runUntil(t: number, stop: () => boolean): void;
+    /** true when it stopped before a delivery the presentation holds */
+    runUntil(t: number, stop: () => boolean): boolean;
     run(t: number): void;
     readonly flightSerial: number;
     flightsSince(serial: number): Flight[];
+    /** the presentation's hold the engine asks before a delivery (the pacing installs it; null: none) */
+    hold: ((flight: number) => boolean) | null;
+    /** the flight of the delivery next due that is held, if any */
+    heldNext(): number | null;
   };
   /** is a flight one whose dot is drawn (its view, a protocol shown) */
   shown(f: Flight): boolean;
@@ -264,6 +326,8 @@ export interface PacerHost {
   foreground?(): boolean;
   /** the simulated time the clock never runs past (an experiment's end); null or none: no end */
   until?(): number | null;
+  /** counts the Network events submitted: after a new one, the scenario's messages are news again (drawn, not the steady state) */
+  epoch?(): number;
   /** the next moment after `t` an idle jump stops at and rests (an experiment's step, a boot's end); null or none: none */
   notable?(t: number): number | null;
 }
@@ -314,19 +378,81 @@ export class Pacer {
   /** where an idle jump that its budget cut short started (it goes on towards the same end next frame); null: none */
   private jumpStart: number | null = null;
 
+  /** the scenario's hops are the muted background now (a Network event holds the front): they hold no delivery */
+  private bgNow = false;
+  /** a kind of scenario message drawn before (since the last Network event) is the steady state: cable activity (an experiment: off) */
+  summarizeRepeats = true;
+  /** the kinds of the scenario's messages drawn as dots since the last Network event (repeatKey), and that event's count */
+  private seen = new Set<string>();
+  /** the transport conversations (Flight.conv) drawn as their kind's example: shown whole */
+  private detailed = new Set<string>();
+  private seenEpoch = -1;
+  /** scenario hops summarized as repeats since the start */
+  repeats = 0;
+
   constructor(
     private host: PacerHost,
     public limit = 48,
   ) {
     this.serial = host.engine.flightSerial;
+    host.engine.hold = (id) => this.holds(id);
   }
 
-  /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are. */
+  /** The pacing lets go of the engine (the simulation stopped, exited or replaced): nothing is held any more. */
+  detach(): void {
+    if (this.host.engine.hold) this.host.engine.hold = null;
+  }
+
+  /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
   describe(): string {
     const sp = `${this.speed}×`;
     const behind = this.behind > 0 ? ' · behind' : '';
     const base = this.mode === 'readable' ? `Readable · ${HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
-    return this.fgNow ? `${base} · your events in front` : base;
+    const h = this.holding();
+    const wait = h ? ` · ${holdText(h.f)}` : '';
+    return (this.fgNow ? `${base} · your events in front` : base) + wait;
+  }
+
+  /**
+   * Is a hop's arrival gated — does the simulation wait for its dot before it
+   * delivers it? Every hop drawn and shown as a dot, in Readable and
+   * Proportional pacing (Real time is an overview: it waits for nothing):
+   * the scenario's, a Network event's, the conversation followed. Not: what
+   * is not drawn (another view, a hidden protocol, bundled into cable
+   * activity, beyond the limit), what is lost or hidden, the scenario's
+   * muted background while Network events hold the front, and multicast
+   * data (a stream is a flow; its datagrams follow the forwarding state as
+   * it is when each copy is forwarded, which the gated reports change).
+   */
+  gated(it: PaceItem): boolean {
+    const f = it.f;
+    return !!it.gate && this.mode !== 'realtime' && !f.hidden && f.dropped === undefined && this.host.shown(f);
+  }
+
+  /**
+   * Is a new hop one the simulation waits for — decided once, when it is taken in: a dot not waited for then (another
+   * pacing, the muted background) was not waited for, and never is later; it can only stop being waited for (lost,
+   * hidden, no longer shown, Real time). See gated.
+   */
+  private gates(it: PaceItem): boolean {
+    const f = it.f;
+    if (this.mode === 'realtime' || !it.drawn || f.hidden || f.dropped !== undefined || (f.protocol === 'mcast' && !it.example)) return false;
+    if (!this.host.shown(f)) return false;
+    return !(this.bgNow && !it.test && !(this.follow && this.follow.key === it.key));
+  }
+
+  /** The engine asks before a delivery: is that flight's dot still on its way on screen (registered first, if it is new)? */
+  private holds(id: number): boolean {
+    if (this.mode === 'realtime') return false;
+    if (this.host.engine.flightSerial !== this.serial) this.register();
+    const it = this.byId.get(id);
+    return !!it && this.gated(it) && this.clock < this.arrival(it) - EPS;
+  }
+
+  /** The hop whose arrival the simulation waits for now (null: it waits for none). */
+  holding(): PaceItem | null {
+    const id = this.host.engine.heldNext();
+    return id === null ? null : this.byId.get(id) || null;
   }
 
   /** The display time of a hop of `lat` simulated ms in a view. */
@@ -407,6 +533,7 @@ export class Pacer {
   /** Is a Network event's traffic the foreground now (asked of the host; kept until the clock moves again)? */
   private refreshForeground(): void {
     this.fgNow = !!this.host.foreground && this.host.foreground();
+    this.bgNow = this.mute && this.fgActive();
   }
 
   private drawnShown(it: PaceItem): boolean {
@@ -423,9 +550,15 @@ export class Pacer {
     return this.onItsWay(it);
   }
 
-  /** Is anything drawn still to come or on its way on screen? */
+  /** Is anything drawn still to come or on its way on screen, or a cable lit by traffic not drawn as dots (the steady state goes on at its rate meanwhile, never skipped)? */
   busy(): boolean {
-    return this.items.some((it) => this.drawnShown(it) && this.pending(it));
+    return this.items.some((it) => this.drawnShown(it) && this.pending(it)) || this.lit();
+  }
+
+  /** Is a cable lit by traffic not drawn as dots now (cable activity, shown for ACTIVITY_MS)? */
+  private lit(): boolean {
+    const a = this.act.length ? this.act[this.act.length - 1] : null;
+    return !!a && this.clock - a.at <= ACTIVITY_MS && this.host.shown(a.f);
   }
 
   /** Take in the flights sent since the last look; returns the new hops. */
@@ -446,6 +579,13 @@ export class Pacer {
       if (l) l.push(x);
       else onWay.set(x.key, [x]);
     };
+    // a Network event changed the network (a failure, a restore, a join …): what the scenario does now is news, drawn again
+    const ep = this.host.epoch ? this.host.epoch() : 0;
+    if (ep !== this.seenEpoch || this.seen.size + this.detailed.size > 4000) {
+      this.seenEpoch = ep;
+      this.seen.clear();
+      this.detailed.clear();
+    }
     if (fresh.length)
       for (const x of this.items) {
         if (x.drawn && this.onItsWay(x)) wayOf(x);
@@ -464,11 +604,17 @@ export class Pacer {
       const lat = f.dropped !== undefined && f.dropped > f.t0 ? 2 * (f.dropped - f.t0) : Math.max(0, f.t1 - f.t0);
       // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
       if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS) continue;
+      const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
+      const test = f.test !== undefined;
+      const h = this.host.headers ? this.host.headers(f) : undefined;
+      const key = flightKey(f, h);
       // multicast data (a stream's datagrams and their copies): each copy on its cable from the moment it is forwarded, not after
       // the copy before it has arrived on screen — a stream is a flow on every cable of its tree at once, and a change of the tree
-      // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones
-      const flow = f.protocol === 'mcast';
-      const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
+      // (a join, a leave taking effect) shows with the next datagram instead of after a backlog of earlier ones. One datagram of
+      // each stream after each Network event (a join, a leave …) is its example: shown hop by hop like any message, each copy
+      // after the one it was forwarded from has arrived, the simulation waiting for it — the tree as it is now, seen growing
+      const sample = f.protocol === 'mcast' && this.streamExample(f, pAny, key);
+      const flow = f.protocol === 'mcast' && !sample;
       // (a hidden hop holds nothing when hidden traffic must not delay what is shown)
       const parent = pAny && (!this.hiddenHoldsNothing || this.host.shown(pAny.f)) ? pAny : undefined;
       let after = parent && !flow ? this.arrival(parent) : -Infinity;
@@ -476,9 +622,6 @@ export class Pacer {
       const cAny = f.cause !== undefined ? this.byId.get(f.cause) : undefined;
       const cause = cAny && (!this.hiddenHoldsNothing || this.host.shown(cAny.f)) ? cAny : undefined;
       if (!parent && !flow && cause && cause.f.view === f.view) after = Math.max(after, this.arrival(cause));
-      const test = f.test !== undefined;
-      const h = this.host.headers ? this.host.headers(f) : undefined;
-      const key = flightKey(f, h);
       // an answer (its first hop) after the message it answers has arrived on screen: a hop of its conversation (and of the same Network event, if any) from the other side,
       // in the same view (the other view's hops are not on this screen: as the cause, they hold nothing here)
       if (!parent && f.sender !== undefined)
@@ -499,9 +642,22 @@ export class Pacer {
       // is never cut in the middle; anything else needs room and is cable activity beyond LAG_MAX
       const goesOn = (!!parent && parent.drawn) || convs[f.view].has(key);
       const late = d0 - this.clock > (goesOn ? LAG_CONT : LAG_MAX);
-      const drawn = !shown || test || followed || (conv && !late && (goesOn || room));
+      // the steady state: a kind of message drawn before (its protocol, type and TCP flags, in this view) since the last Network
+      // event — a Hello, another host's DHCP Discover, a periodic test again — is cable activity, unless it goes on with what is drawn
+      // (then whole): one of each kind is seen walking, and the simulation does not wait for the rest
+      // (goes on: the next cable of a message drawn, or the next segment of a connection shown as its kind's example — not
+      // merely the same addresses: every host's DHCP has the same ones)
+      const rk = repeatKey(f);
+      const example = (!!parent && parent.drawn) || (f.conv !== undefined && this.detailed.has(f.conv));
+      const repeat = this.summarizeRepeats && !test && !followed && !example && this.seen.has(rk);
+      if (repeat && shown) this.repeats++;
+      const drawn = !shown || test || followed || (!repeat && conv && !late && (goesOn || room));
       if (shown) {
         if (drawn) {
+          if (!test) {
+            this.seen.add(rk);
+            if (f.conv !== undefined) this.detailed.add(f.conv);
+          }
           live[f.view]++;
           if (!test) {
             convs[f.view].add(key);
@@ -513,6 +669,8 @@ export class Pacer {
         }
       }
       const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
+      if (sample) it.example = true;
+      if (this.gates(it)) it.gate = true;
       this.items.push(it);
       if (drawn) wayOf(it);
       this.byId.set(f.id, it);
@@ -539,6 +697,15 @@ export class Pacer {
     return Array.from(by.values())
       .sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))
       .map((x) => ({ ref: x.ref, view: x.view, track: x.track, counts: Array.from(x.m.entries()).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)) }));
+  }
+
+  /** Is a multicast datagram's hop its stream's example: the first one since the last Network event, and every copy forwarded from it? */
+  private streamExample(f: Flight, parent: PaceItem | undefined, key: string): boolean {
+    if (f.parent !== undefined) return !!parent && !!parent.example;
+    const k = 'stream|' + f.view + '|' + key;
+    if (this.seen.has(k)) return false;
+    this.seen.add(k);
+    return true;
   }
 
   /** Forget what has left the screen. */
@@ -583,11 +750,18 @@ export class Pacer {
     const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
     if (target > e.now + EPS) {
       const until = Date.now() + JUMP_BUDGET;
-      e.runUntil(target, () => {
+      const held = e.runUntil(target, () => {
         this.register();
         return Date.now() > until;
       });
       this.register();
+      // waiting for a dot to arrive (a presentation hold, not a lag): the clock counts on from here once it is there,
+      // so the simulated time it waited is not made up in a burst afterwards
+      if (held) {
+        this.behind = 0;
+        this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
+        return;
+      }
       if (e.now < target - 1) {
         this.behind = target - e.now;
         this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
@@ -651,7 +825,8 @@ export class Pacer {
     // a jump is work: at most JUMP_BUDGET ms of it per frame (a model whose messages are mostly hidden has many events between two shown ones); the next frame goes on
     const until = Date.now() + JUMP_BUDGET;
     e.runUntil(t, () => {
-      for (const it of this.register()) if (this.drawnShown(it) && this.onItsWay(it)) found = true;
+      // (a dot, or traffic shown as cable activity: something to see either way)
+      for (const it of this.register()) if (it.drawn ? this.drawnShown(it) && this.onItsWay(it) : this.host.shown(it.f) && !it.f.hidden) found = true;
       return found || Date.now() > until;
     });
     this.register();
@@ -671,11 +846,17 @@ export class Pacer {
     if (next < Infinity) {
       this.clock = Math.max(this.clock, next);
       this.idleBudget = 0;
-      const skip = this.skipIdle;
-      // the arrival's consequences start now; the next quiet stretch waits for the next Step
-      this.skipIdle = false;
-      this.pump();
-      this.skipIdle = skip;
+      // the arrival is processed, at its own simulated time, and what it causes at once starts (an answer, the next
+      // hop: on screen at its sender); nothing later — the next delivery, a quiet stretch — waits for the next Step
+      const e = this.host.engine;
+      let due = e.now;
+      for (const it of this.items) if (this.drawnShown(it) && Math.abs(this.arrival(it) - next) < EPS && it.f.dropped === undefined) due = Math.max(due, it.f.t1);
+      e.runUntil(due, () => {
+        this.register();
+        return false;
+      });
+      this.register();
+      this.rt = null;
     } else {
       const from = this.host.engine.now;
       this.advance(Math.min(this.cap(), from + IDLE_HORIZON));
@@ -713,6 +894,23 @@ export class Pacer {
   followed(): PaceItem[] {
     const f = this.follow;
     return f ? this.items.filter((it) => it.key === f.key) : [];
+  }
+
+  /**
+   * What is shown changed (the view, the protocols, the senders, the pacing): one path for every such change. A dot of
+   * what the simulation has delivered (or lost) already — not held while it was not shown, or not gated in the pacing
+   * before — is history now, not a dot still on its way: it leaves the screen. What is still to be delivered keeps its
+   * place, and its hold when it is shown now. Nothing is executed, resubmitted or reordered.
+   */
+  reshow(): void {
+    const now = this.host.engine.now;
+    this.items = this.items.filter((it) => {
+      const due = it.f.dropped !== undefined ? it.f.dropped : it.f.t1;
+      const keep = !(due < now - EPS && this.clock < this.arrival(it) - EPS);
+      if (!keep) this.byId.delete(it.f.id);
+      return keep;
+    });
+    this.rt = null;
   }
 
   /** The simulation was moved on by other means (runTo): what arrived meanwhile is history, on screen or not. */

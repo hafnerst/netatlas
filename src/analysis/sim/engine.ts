@@ -204,6 +204,8 @@ interface QItem {
   t: number;
   seq: number;
   fn: () => void;
+  /** a delivery: the flights (dots) that bring it — a presentation hold on one of them stops runUntil before it */
+  gates?: number[];
 }
 
 interface ArpEntry {
@@ -475,9 +477,19 @@ export class Engine {
 
   // ------------------------------------------------------------ time and events
 
-  /** Run fn at simulated time t (never before now). */
-  at(t: number, fn: () => void): void {
-    const item = { t: Math.max(t, this.now), seq: this.seq++, fn };
+  /**
+   * The presentation's hold (the pacing's: is a flight's dot still on its way on screen?). runUntil stops
+   * before a delivery one of whose flights it holds, and leaves it and everything after it pending; run
+   * (the tests, a jump, an experiment's result) never asks. Null: nothing is held (headless).
+   */
+  hold: ((flight: number) => boolean) | null = null;
+  /** the flight runUntil last stopped before (its hold), null when it did not stop for one */
+  held: number | null = null;
+
+  /** Run fn at simulated time t (never before now); `gates`: the flights whose arrival it is (a delivery). */
+  at(t: number, fn: () => void, gates?: number[]): void {
+    const item: QItem = { t: Math.max(t, this.now), seq: this.seq++, fn };
+    if (gates && gates.length) item.gates = gates;
     const q = this.q;
     q.push(item);
     let i = q.length - 1;
@@ -490,8 +502,8 @@ export class Engine {
     q[i] = item;
   }
 
-  after(dt: number, fn: () => void): void {
-    this.at(this.now + dt, fn);
+  after(dt: number, fn: () => void, gates?: number[]): void {
+    this.at(this.now + dt, fn, gates);
   }
 
   private pop(): QItem | undefined {
@@ -527,24 +539,51 @@ export class Engine {
   /**
    * Process the events up to time t moment by moment, and stop after the
    * first moment at which `stop` says so (the clock is at that moment);
-   * else set the clock to t.
+   * else set the clock to t. A delivery whose dot the presentation holds
+   * (`hold`) stops it before that delivery, event by event — even within a
+   * moment, so what comes before it at the same time (by its sequence) is
+   * done and what comes after it is not: `held` names the flight, the
+   * clock stays at the last event done, and true is returned.
    */
-  runUntil(t: number, stop: () => boolean): void {
+  runUntil(t: number, stop: () => boolean): boolean {
+    this.held = null;
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
       while (this.nextTime() === n) {
+        const g = this.q[0].gates;
+        if (g && this.hold) {
+          const h = this.holder(g);
+          if (h !== null) {
+            this.held = h;
+            this.prune();
+            return true;
+          }
+        }
         const it = this.pop() as QItem;
         this.now = it.t;
         it.fn();
       }
       if (stop()) {
         this.prune();
-        return;
+        return false;
       }
     }
     this.now = Math.max(this.now, t);
     this.prune();
+    return false;
+  }
+
+  /** The first of a delivery's flights the presentation holds (null: none). */
+  private holder(gates: number[]): number | null {
+    for (const g of gates) if (g >= 0 && (this.hold as (f: number) => boolean)(g)) return g;
+    return null;
+  }
+
+  /** The delivery next due waits for a held flight (the pacing's status: what it waits for); null: none. */
+  heldNext(): number | null {
+    const g = this.q.length ? this.q[0].gates : undefined;
+    return g && this.hold ? this.holder(g) : null;
   }
 
   /** The serial number the next flight gets. */
@@ -1842,7 +1881,7 @@ export class Engine {
           this.testCtx = was.test;
           this.causeFlight = was.flight;
         }
-      });
+      }, [f.id]);
     };
     go(w.end);
     if (w.dup) go(w.end + 0.001);
@@ -1873,6 +1912,8 @@ export class Engine {
 
   /** the logical view's dots of a message, until its first frame's headers are known */
   private logicalNoHdr = new WeakMap<Msg, Flight[]>();
+  /** the logical view's dots of a message along its relation, to each device (what holds its delivery there on screen) */
+  private lanes = new WeakMap<Msg, Flight[]>();
 
   /**
    * A frame on a wireless link: a client silent for its access point's idle
@@ -2537,9 +2578,15 @@ export class Engine {
   private deliverL3(dev: string, l3: L3Iface, frame: Frame, t: number, flight: number): void {
     // the logical view: a message without a relation goes from its sender to the network and on to this receiver
     const em = this.emitting;
+    // (the dots that bring it, in either view: its last cable's, and the logical view's — the network line's second half,
+    // or its relation's lane to this device — so that the view on screen holds it until its dot is there)
+    const gates = [flight];
     if (em && em.net && em.dev !== dev && t > em.t && em.first !== null) {
       const mid = Math.min(em.t + this.hopTime() / 2, t);
-      this.flight(mid, Math.max(t, mid), frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame));
+      gates.push(this.flight(mid, Math.max(t, mid), frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame)).id);
+    } else {
+      const lane = (this.lanes.get(frame.msg) || []).find((x) => x.track.to === dev);
+      if (lane) gates.push(lane.id);
     }
     const d: Delivery = { dev, l3, frame, flight, cancelled: false };
     this.pending.push(d);
@@ -2548,13 +2595,13 @@ export class Engine {
       if (i >= 0) this.pending.splice(i, 1);
       if (d.cancelled || this.off.has(dev)) return;
       this.caused(frame.msg, () => this.receive(dev, l3, frame), d.flight);
-    });
+    }, gates);
   }
 
   // ------------------------------------------------------------ flights (the dots)
 
   flight(t0: number, t1: number, msg: Msg, view: Flight['view'], track: Track, parent?: number, encap?: string[]): Flight {
-    const f: Flight = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent };
+    const f: Flight = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent, type: msg.type };
     if (encap && encap.length) f.encap = encap;
     // sent while a delivery is handled: caused by the flight that delivered it (the display keeps that order)
     if (parent === undefined && this.causeFlight !== null && this.causeFlight !== f.id) f.cause = this.causeFlight;
@@ -2569,6 +2616,12 @@ export class Engine {
       const l = this.logicalNoHdr.get(msg);
       if (l) l.push(f);
       else this.logicalNoHdr.set(msg, [f]);
+      // a relation's lane (or a hub's spoke) to a device: the delivery there waits for it on screen
+      if (track.ref.indexOf('relation:') === 0 && track.to !== 'hub') {
+        const r = this.lanes.get(msg);
+        if (r) r.push(f);
+        else this.lanes.set(msg, [f]);
+      }
     }
     this.flights.push(f);
     this.flightById.set(f.id, f);

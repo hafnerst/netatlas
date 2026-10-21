@@ -330,6 +330,10 @@ dialog#modal.palette-dialog .modal-btns { display: none; }
 .dropdown.menu > .menu-sep { height: 1px; padding: 0; margin: 4px 2px; background: var(--border); }
 .dropdown.menu > .menu-title { padding: 4px 8px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .dropdown.menu > #menu-examples { padding: 0; }
+/* one line per example: its file name (cut with an ellipsis when the menu is narrower), then "open · modified" when it is the open one */
+#menu-examples button .mi-label { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+#menu-examples button .mi-state { flex: 0 0 auto; }
+#menu-examples button .mi-state:empty { display: none; }
 /* a submenu opens in place, under its entry (a press or a key opens it; it never depends on hovering) */
 .dropdown.menu .submenu { margin: 0 0 2px 10px; padding: 0 0 0 6px; border-left: 2px solid var(--border); }
 .dropdown.menu [aria-haspopup="menu"][aria-expanded="true"] { background: var(--accent-soft); }
@@ -657,7 +661,7 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 .dropdown.menu #btn-save[data-modified="true"] .mi-label::after { content: " \25CF"; color: var(--warn); font-size: 9px; vertical-align: 2px; }
 .dropdown.menu .active-example { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
 .dropdown.menu .active-example .mi-label { font-weight: 600; }
-.dropdown.menu .active-example[data-modified="true"] .ex-state { color: var(--warn); }
+.dropdown.menu .active-example[data-modified="true"] .mi-state { color: var(--warn); }
 #status .errcount { color: var(--error); font-weight: 600; }
 .tabs button.has-errors { color: var(--error); }
 .tabs button { padding: 8px 2px; font-size: 12.5px; }

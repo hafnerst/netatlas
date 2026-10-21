@@ -544,8 +544,8 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  // the 10 public examples, the 20 internal ones (test/examples/) and the 3 generated fixtures
-  assert.equal(files.length, 10 + 20 + 3);
+  // the 11 public examples, the 20 internal ones (test/examples/) and the 3 generated fixtures
+  assert.equal(files.length, 11 + 20 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);

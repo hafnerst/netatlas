@@ -248,7 +248,7 @@ test('the pacing on screen: every dot travels its way at the readable pace; a do
       await new Promise((r) => setTimeout(r, i ? 250 : 1500));
       p = await page.eval(PACE);
     }
-    assert.equal(p.text, 'Readable · 3 s per hop · 1×');
+    assert.match(p.text, /^Readable · 3 s per hop · 1×( · waiting for packet arrival( \(.+\))?)?$/);
     assert.ok(p.playing && p.clock > 1000, JSON.stringify(p));
     assert.ok(p.items.every((h) => h >= 2000), 'every hop at least 2 s');
     // a dot: at the moment one is drawn, click it; the simulation pauses and the inspector opens
@@ -284,10 +284,14 @@ test('the pacing on screen: every dot travels its way at the readable pace; a do
     // the speed, the proportional mode with its scale, skipping
     await page.eval(`(() => { const s = document.getElementById('sim-speed'); s.value = '2'; s.dispatchEvent(new Event('change')); const m = document.getElementById('sim-pace'); m.value = 'proportional'; m.dispatchEvent(new Event('change')); return true; })()`);
     await page.settle(60);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, document.getElementById('sim-pace-scale-wrap').hidden, Array.from(document.getElementById('sim-speed').options).map((o) => o.value).join(' ')]`), ['Proportional · 1 ms = 1 s · 2×', false, '0.1 0.25 0.5 1 2 4']);
+    const pm = await page.eval(`[document.getElementById('sim-pace-text').textContent, document.getElementById('sim-pace-scale-wrap').hidden, Array.from(document.getElementById('sim-speed').options).map((o) => o.value).join(' ')]`);
+    assert.match(pm[0], /^Proportional · 1 ms = 1 s · 2×( · waiting for packet arrival( \(.+\))?)?$/);
+    assert.deepEqual(pm.slice(1), [false, '0.1 0.25 0.5 1 2 4']);
     await page.eval(`(() => { const s = document.getElementById('sim-pace-scale'); s.value = '100'; s.dispatchEvent(new Event('change')); const k = document.getElementById('sim-skip'); k.click(); return true; })()`);
     await page.settle(60);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, netatlas.simController().pacer.skipIdle]`), ['Proportional · 1 ms = 0.1 s · 2×', false]);
+    const pm2 = await page.eval(`[document.getElementById('sim-pace-text').textContent, netatlas.simController().pacer.skipIdle]`);
+    assert.match(pm2[0], /^Proportional · 1 ms = 0\.1 s · 2×( · waiting for packet arrival( \(.+\))?)?$/);
+    assert.equal(pm2[1], false);
     // a skip is reported while it is recent (OSPF alone: its hellos are seconds apart)
     await page.eval(`(() => { const c = netatlas.simController(); const k = document.getElementById('sim-skip'); k.click(); const m = document.getElementById('sim-pace'); m.value = 'readable'; m.dispatchEvent(new Event('change')); c.setShownSet(new Set(['ospf'])); c.runTo(5000); c.setPlaying(true); return true; })()`);
     let skipped = '';

@@ -1,13 +1,14 @@
 // Pacing of the protocol simulation (analysis/sim/pacing.ts): the
-// simulated clock runs at its own rate (× the speed), held by no dot; every
+// simulated clock runs at its own rate (× the speed), and in Readable and
+// Proportional pacing it waits before a delivery until the dot that brings
+// it has arrived on screen (Real time waits for none); every
 // hop is shown for its paced time from its sender to its receiver, in its
 // causal order (a hop after the one it continues, an answer after what it
 // answers); the readable pacing scales with the link's latency within its
 // clamps, the proportional mode follows the scale, the speed applies on
 // top, idle time is skipped (or not), Step moves one message event at a
 // time, a lost message stops where it was lost, Follow message keeps its
-// conversation drawn (holding nothing), and no setting changes what the
-// simulation computes.
+// conversation drawn, and no setting changes what the simulation computes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { load, model, example } from './helpers.mjs';
@@ -31,6 +32,17 @@ function paced(text = PS, view = 'physical', set = {}) {
 }
 
 /**
+ * The barrier: no delivery a dot on its way on screen brings has happened —
+ * the simulated clock is not past the arrival of any gated hop that has not
+ * arrived on screen (the physical view's cables: a flight's arrival is its
+ * delivery's time).
+ */
+function barrierHolds(sim, p) {
+  for (const it of p.items)
+    if (it.f.view === 'physical' && p.gated(it) && p.clock < p.arrival(it) - 1e-6) assert.ok(sim.now <= it.f.t1 + 1e-9, `${it.f.label} is still on its way on screen, but the simulation is at ${sim.now} past its arrival at ${it.f.t1}`);
+}
+
+/**
  * Run the display for `ms` of real time in frames of `dt`; check every hop
  * taken in that it shows in its causal order: never before the hop it
  * continues has arrived on screen, and (the first hop of an answer) never
@@ -41,6 +53,7 @@ function play(sim, p, ms, dt = 16, check = true, view = 'physical') {
   for (let t = 0; t < ms; t += dt) {
     const before = new Set(p.items);
     p.frame(dt);
+    if (check) barrierHolds(sim, p);
     for (const it of p.items) {
       seen.add(it);
       if (!check || before.has(it) || !it.drawn || it.f.hidden || it.f.view !== view) continue;
@@ -138,9 +151,9 @@ test('a quiet screen with busy hidden traffic: a jump does a bounded amount of w
   assert.ok(sim.now > 1000, 'and it does move on');
 });
 
-test('every hop travels its whole way for its paced time, in its causal order (a continuing hop after the one before it, an answer after what it answers); the simulation is held by none', () => {
+test('every hop travels its whole way for its paced time, in its causal order (a continuing hop after the one before it, an answer after what it answers); the simulation waits for the dots', () => {
   const { sim, p } = paced();
-  const seen = play(sim, p, 12000);
+  const seen = play(sim, p, 30000);
   const drawn = Array.from(seen).filter((it) => it.drawn);
   assert.ok(drawn.length > 10, String(drawn.length));
   for (const it of drawn) {
@@ -149,20 +162,34 @@ test('every hop travels its whole way for its paced time, in its causal order (a
   }
   // a frame through a switch: the second cable starts after the first, with the crossing of the switch first
   assert.ok(drawn.some((it) => it.parent && it.transit === P.TRANSIT_MS));
-  // the simulation ran at its rate (1 s a second), held by no dot: 12 s of display, 12 s of simulated time (and more where idle time was skipped)
-  assert.ok(sim.now >= 12000 - 50, String(sim.now));
+  // the simulation waited for the dots (each delivery after its dot arrived: play checks it every frame): 30 s of display are far less than
+  // 30 s of simulated time while the network starts (its first messages at about 2 s), yet it moved on
+  assert.ok(sim.now > 2000 && sim.now < 30000, String(sim.now));
+  // and Real time waits for none: 12 s of display, 12 s of simulated time (less only what a slow machine could not do within a
+  // frame's work budget: left behind, said, never a hold)
+  const rt = paced(PS, 'physical', { mode: 'realtime' });
+  let lag = 0;
+  for (let t = 0; t < 12000; t += 16) {
+    rt.p.frame(16);
+    assert.equal(rt.sim.engine.held, null, 'Real time holds no delivery');
+    lag += rt.p.behind;
+  }
+  assert.ok(rt.sim.now + lag >= 12000 - 50, `${rt.sim.now} + ${lag} behind`);
 });
 
-test('execution is not held by the display: an IGMP query, an OSPF Hello and the scenario’s exchanges are due on their own timers and in flight together; only the dots follow their causal order', () => {
+test('the dots are not serialized: independent exchanges are in flight together; an IGMP query and the routers’ Hellos keep their own simulated times', () => {
   const { sim, p } = paced();
   play(sim, p, 6000);
-  // several conversations at once, of several protocols, on screen at the same moment
+  // several conversations at once, of several protocols, on screen at the same moment (the barrier waits for one arrival, not for a whole conversation)
   const live = p.items.filter((it) => it.drawn && p.state(it).phase === 'moving');
   assert.ok(new Set(live.map((it) => it.key)).size >= 2, `${live.length} moving`);
-  // the simulation is where its rate says (a few frames' worth), never waiting for a dot
-  assert.ok(sim.now >= 6000 - 50, String(sim.now));
-  // the routers' startup queries went at their own time (when their interfaces came up), not when the screen allowed
+  assert.ok(new Set(live.map((it) => it.f.protocol)).size >= 2, Array.from(new Set(live.map((it) => it.f.protocol))).join());
+  // the routers' startup queries are due at their own simulated time (when their interfaces came up), whenever the screen gets there
+  play(sim, p, 30000, 50, false);
   const q = sim.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query');
+  const ref = new S.Simulation(model(PS));
+  ref.runTo(sim.now);
+  assert.deepEqual(q.map((e) => e.t), ref.events().filter((e) => e.protocol === 'igmp' && e.what === 'Query').map((e) => e.t));
   assert.ok(q.length >= 1 && q.every((e) => e.t <= 4000), q.map((e) => e.t).join(','));
 });
 
@@ -295,7 +322,7 @@ test('a message lost on a failed cable stops where it was lost and shows there f
   assert.equal(p.state(it).phase, 'gone');
 });
 
-test('Follow message: its conversation is always drawn (beyond the bundling and the dot limit), holding nothing; the key pairs a request with its reply', () => {
+test('Follow message: its conversation is always drawn (beyond the bundling and the dot limit); the key pairs a request with its reply', () => {
   const k1 = P.conversationKey('arp', { arp: { senderIp: '10.0.0.1', targetIp: '10.0.0.2' }, l2: { src: 'a', dst: 'b' }, l3: [] }, 'ARP Request');
   const k2 = P.conversationKey('arp', { arp: { senderIp: '10.0.0.2', targetIp: '10.0.0.1' }, l2: { src: 'b', dst: 'a' }, l3: [] }, 'ARP Reply');
   assert.equal(k1, k2);
@@ -313,7 +340,7 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   assert.ok(it, 'an OSPF Hello on screen');
   assert.ok(p.followFlight(it.f.id));
   assert.equal(p.follow.key, it.key);
-  // its later hops are drawn whatever else is on screen (no room for anything else here); the simulation goes on at its rate
+  // its later hops are drawn whatever else is on screen (no room for anything else here); the simulation goes on as its dots arrive
   p.limit = 0;
   const t0 = sim.now;
   // what was on screen then: its next hops go on (a conversation drawn is drawn to its end), nothing new starts
@@ -333,7 +360,8 @@ test('Follow message: its conversation is always drawn (beyond the bundling and 
   assert.ok(others.length > 0, 'other traffic meanwhile');
   assert.ok(others.every((x) => !x.drawn || before.has(x.key)), 'no other conversation started (no room with limit 0)');
   assert.ok(others.some((x) => !x.drawn), 'others not drawn');
-  assert.ok(sim.now >= t0 + 4800 - 50, 'held by nothing');
+  assert.ok(sim.now > t0, 'it went on');
+  barrierHolds(sim, p);
   assert.ok(p.followFlight(null));
   assert.equal(p.follow, null);
   assert.ok(sim.now > 0);

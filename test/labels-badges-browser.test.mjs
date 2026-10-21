@@ -92,18 +92,19 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       const TV = `(() => { const c = netatlas.simController(); return Array.from(document.querySelectorAll('#canvas .layer-sim [data-flight]')).map((d) => c.pacer.find(Number(d.getAttribute('data-flight')))).filter((it) => it && it.f.protocol === 'mcast' && it.f.track.ref === 'link:w-tv').length; })()`;
       assert.equal(await page.eval(TV), 0, 'nobody joined: nothing towards the TV');
       await page.eval(`netatlas.simController().sim.joinGroup('tv', 'wlan0', '239.20.0.1', []), true`);
+      // (polled: the stream's example datagram is shown hop by hop first, the simulation waiting for it)
       let n = 0;
-      for (let i = 0; i < 20 && !n; i++) {
+      for (let i = 0; i < 300 && !n; i++) {
         await wait(200);
         n = await page.eval(TV);
       }
-      assert.ok(n > 0, 'within a few frames after the join: on the TV’s cable');
+      assert.ok(n > 0, 'after the join: on the TV’s cable');
       // (the leave's own moment, read in the same turn: the clock goes on between two calls)
       const t0 = await page.eval(`(() => { const s = netatlas.simController().sim; s.actLeave('tv', 'wlan0', '239.20.0.1'); return s.now; })()`);
       // the pending leave (2 s of simulated time), then the last copies' cable (a hop's time): nothing new towards the TV
       // (polled: a loaded machine's simulation may run behind real time)
       let gone = null;
-      for (let i = 0; i < 60 && gone === null; i++) {
+      for (let i = 0; i < 480 && gone === null; i++) {
         await wait(250);
         gone = await page.eval(`(() => { const e = netatlas.simController().sim.events().find((x) => x.device === 'core' && x.what === 'member port expired' && x.t >= ${t0}); return e ? e.t : null; })()`);
       }

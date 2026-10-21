@@ -4,8 +4,8 @@
 // is its configured pacing (Readable: about 3 s, by latency within 2–6 s)
 // for the first messages after the start and for messages a minute later,
 // within a small tolerance. Also after a slow first frame (the main thread
-// blocked as the simulation starts), through the startup burst (more hops
-// than the dot limit), and across a hidden tab: the clock never jumps.
+// blocked as the simulation starts), through the startup burst (many hops
+// at once), and across a hidden tab: the clock never jumps.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -62,14 +62,15 @@ test('the first packets and those a minute later take their configured screen ti
     await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), true`);
     await page.settle(150);
     // start, recording from the first frame, and keep the main thread busy for 400 ms before that frame
-    await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }); netatlas.simController().pacer.convLimit = 1000; ${RECORD_BODY}; const t = performance.now(); while (performance.now() - t < 400) {} return true; })()`);
+    await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }); netatlas.simController().pacer.convLimit = 1000; netatlas.simController().pacer.summarizeRepeats = false; ${RECORD_BODY}; const t = performance.now(); while (performance.now() - t < 400) {} return true; })()`);
     await wait(8000);
     const early = JSON.parse(await page.eval(READ));
     // the first frame counts nothing (the setup and the blocked thread are not display time); no frame jumps
     assert.equal(early.steps[0], 0, 'the clock starts with the first frame: ' + early.steps.slice(0, 5).join(', '));
     assert.ok(Math.max(...early.steps) <= P.FRAME_MAX * early.speed + 1e-6, 'no step beyond FRAME_MAX: ' + Math.max(...early.steps));
-    // the startup burst: more hops than the dot limit (bundling is off here: this measures each hop's own time, which bundling doesn't change)
-    assert.ok(early.recs.length > 48, 'the startup burst: more hops than the dot limit (' + early.recs.length + ')');
+    // the startup burst: many hops at once (bundling and the steady state's summary are off here: this measures each hop's own
+    // time, which neither changes; the simulation waits for the dots, so 8 s show the first of them)
+    assert.ok(early.recs.length >= 8, 'the startup burst: many hops at once (' + early.recs.length + ')');
     const r1 = ratios(early);
     assertPaced(r1, 'the first packets');
 

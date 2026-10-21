@@ -234,13 +234,15 @@ export class OpaqueSim {
         return;
       }
       parent = this.draw(run, d, h, parent);
+      // (the hop's arrival: the pacing holds it until its dot is there)
+      const dot = parent;
       this.e.after(OPAQUE_HOP_MS, () => {
         if (k + 1 < r.length) step(k + 1);
         else {
           this.end(run, d, true, 'delivered along the modelled connection');
           this.note('message', toDev, fromDev, `Illustrative data ${n + 1} reached ${to}: delivered along the modelled connection (${d.path}) — ${OPAQUE_NOTICE}`, run);
         }
-      });
+      }, [dot]);
     };
     step(0);
   }

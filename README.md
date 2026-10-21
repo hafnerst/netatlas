@@ -64,7 +64,7 @@ tools.
 2. **Open it** in a current Chrome, Edge, Firefox or Safari: double-click it or
    drag it into a browser window.
 3. **Start a model**: **New model**, **Open model…** for a YAML file, or
-   **Load example** for one of the ten built-in examples.
+   **Load example** for one of the eleven built-in examples.
 4. **Explore, analyze or simulate**: switch between **Physical** and
    **Logical** in the toolbar, select objects to edit them, and use the
    **Analyze** and **Simulate** menus.

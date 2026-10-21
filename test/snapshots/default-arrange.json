@@ -317,6 +317,34 @@
   ],
   "scene": "7bf38482e4897e18"
  },
+ "vme-rack.yaml physical": {
+  "positions": [
+   "act 1076 1396",
+   "adc 399 816",
+   "cons 680 557",
+   "cpu1 892 816",
+   "cpu2 625 816",
+   "dio 163 816",
+   "ews 680 110",
+   "mil 1183 816",
+   "mil-bus 850 1204",
+   "mon 843 1396",
+   "sens 600 1396",
+   "sw 680 354",
+   "vmebus 680 998"
+  ],
+  "scene": "419bdfa05af5d281"
+ },
+ "vme-rack.yaml logical": {
+  "positions": [
+   "cons 132 1016",
+   "cpu1 193 796",
+   "cpu2 468 796",
+   "ctrl 231 408",
+   "ews 210 109"
+  ],
+  "scene": "c83e6b0a0f388ef4"
+ },
  "addressing.yaml physical": {
   "positions": [
    "core 173 522",

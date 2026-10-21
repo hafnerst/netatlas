@@ -1605,7 +1605,7 @@ export class App {
       if (on) b.setAttribute('aria-current', 'true');
       else b.removeAttribute('aria-current');
       b.setAttribute('data-modified', modified ? 'true' : 'false');
-      const hint = b.querySelector('.ex-state') as HTMLElement;
+      const hint = b.querySelector('.mi-state') as HTMLElement;
       hint.textContent = on ? (modified ? 'open · modified' : 'open') : '';
       b.title = on ? `The open model is this example${modified ? ', modified (not saved)' : ''}. Choosing it opens it again from the start.` : `Open the example ${EXAMPLES[n] ? EXAMPLES[n].name : ''}`;
     }
@@ -2311,7 +2311,7 @@ export class App {
   private fillExamples(): void {
     const menu = this.$('menu-examples');
     EXAMPLES.forEach((ex, i) =>
-      menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name]), el(this.doc, 'span', { class: 'mi-hint ex-state' })])),
+      menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name]), el(this.doc, 'span', { class: 'mi-hint mi-state' })])),
     );
     // the start screen's picker names each example by its title
     const pick = this.$('start-example');
