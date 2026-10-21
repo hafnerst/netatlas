@@ -40,7 +40,7 @@ import { Device, Model, deviceInterfaces, ifaceKey } from '../model/types';
 import { NamedService, appListeners, namedServices, serviceListeners } from './listeners';
 import { answerAt, addressOwner, resolversOf } from './names';
 import { AnalysisContext, ResultInfo, Verdict, allOf, configuredContext, resultInfo } from './result';
-import { RoutingCtx, connectedIn } from './routing';
+import { RoutingCtx, connectedIn, lookup } from './routing';
 import { AnalysisSnapshot, ADDR_METHOD_TEXT, methodOf } from './snapshot';
 import { Trace, TraceEnd, TraceOutcome, TraceService, endpointChoices, isAsymmetric, outcomeLines, parseService, parseTraceEnd, returnRequest, traceOutcome, tracePath } from './trace';
 import { boundInterfaces, deviceListening, writtenListening } from './sim/transport';
@@ -181,6 +181,36 @@ export function appAddress(model: Model, dev: string, v: 4 | 6, bind: string | u
   });
   cands.sort((a, b) => kindOf(a.iface) - kindOf(b.iface) || (a.iface < b.iface ? -1 : a.iface > b.iface ? 1 : 0) || compareAddr(a.addr, b.addr));
   return cands.length ? { iface: cands[0].iface, address: formatAddr(cands[0].addr) } : null;
+}
+
+/**
+ * The interface and address a client sends from towards a destination, as the simulation's sender picks it
+ * (sim/transport.ts pickSource, its routed case): the default table when it has a route there, else the one VRF
+ * that has one; the egress interface of that route (the first of equal-cost next hops) gives its address of the
+ * family — not a link-local one —, an unnumbered egress an address in the same VRF, loopbacks first. Null when no
+ * route leaves the device (the caller keeps its own choice).
+ */
+export function egressSource(model: Model, dev: string, dest: string, ctx: RoutingCtx): { iface: string; address: string } | null {
+  const a = parseAddress(dest);
+  if (!a) return null;
+  const conn = connectedIn(model, dev, ctx).filter((c) => c.addr.version === a.version && !(a.version === 6 && c.addr.bytes[0] === 0xfe && (c.addr.bytes[1] & 0xc0) === 0x80) && (!ctx.up || ctx.up(dev, c.iface)));
+  const vrfs = Array.from(new Set(connectedIn(model, dev, ctx).map((c) => c.vrf))).sort();
+  const routed = (v: string): string | null => {
+    const d = lookup(model, dev, v, a, ctx);
+    return d.kind === 'forward' && d.hops.length ? d.hops[0].iface : null;
+  };
+  const withRoute = vrfs.filter((v) => routed(v) !== null);
+  const vrf = withRoute.indexOf('') >= 0 ? '' : withRoute.length === 1 ? withRoute[0] : null;
+  if (vrf === null) return null;
+  const out = routed(vrf) as string;
+  const own = conn.find((c) => c.iface === out);
+  if (own) return { iface: own.iface, address: formatAddr(own.addr) };
+  const isLo = (i: string): number => {
+    const x = model.index.interfaces.get(ifaceKey(dev, i));
+    return x && x.type === 'loopback' ? 0 : 1;
+  };
+  const same = conn.filter((c) => c.vrf === vrf).sort((x, y) => isLo(x.iface) - isLo(y.iface) || (x.iface < y.iface ? -1 : x.iface > y.iface ? 1 : 0));
+  return same.length ? { iface: same[0].iface, address: formatAddr(same[0].addr) } : null;
 }
 
 /** The interfaces of a device that take an address of a family at runtime (DHCP, SLAAC, DHCPv6). */
