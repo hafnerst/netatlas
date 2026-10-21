@@ -227,25 +227,50 @@ test('policy: a frozen snapshot uses the addresses acquired then — the same de
   assert.equal(PO.specMatches(deny, 'pc', IP.parseAddress('10.1.0.0'), ids), false);
 });
 
-test('policy: an expired lease is no identity any more; a renewed one still is (the same address)', () => {
+test('policy: a renewed lease is still the same address on the same interface, matched as pc; expired, it is nobody’s; reassigned, the new one is pc’s', () => {
   const m = model(POLICY(PERMIT_PC, 'deny', '60s'));
   const s = new S.Simulation(m);
   s.runTo(30000);
-  const lease = s.engine.effectiveAddrs('pc').find((x) => x.addr.version === 4).addr;
-  // renewed at T1 by the server: still pc's
+  const v4 = () => s.engine.effectiveAddrs('pc').filter((x) => x.addr.version === 4);
+  const text = (a) => a.bytes.join('.');
+  assert.equal(v4().length, 1);
+  const first = v4()[0];
+  assert.equal(first.iface, 'eth0');
+  const row = () => s.leaseTable('dsrv').find((r) => r.ip === text(first.addr));
+  const e1 = row().expires;
+  // renewed at T1 by the server: the same address on the same interface, its lease moved on
   s.runTo(30000 + 60000);
-  assert.ok(s.engine.effectiveAddrs('pc').some((x) => IP.compareAddr ? true : true));
-  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), true, 'renewed');
+  assert.deepEqual(v4().map((x) => [x.iface, text(x.addr)]), [['eth0', text(first.addr)]], 'the same address, still on eth0');
+  assert.ok(row().expires > e1, `renewed: ${row().expires} after ${e1}`);
+  assert.equal(row().client, 'pc:eth0');
+  const snap = s.snapshot();
+  const sa = snap.addresses.find((x) => x.device === 'pc' && x.version === 4);
+  assert.deepEqual([sa.iface, sa.text, sa.method, sa.state], ['eth0', text(first.addr), 'dhcpv4', 'bound']);
+  const ids = PO.ctxIds(m, snap.ctx);
+  assert.equal(PO.specMatches(m, 'pc', first.addr, ids), true, 'renewed: still pc');
+  assert.equal(PO.specMatches(m, 'pc:eth0', first.addr, ids), true);
+  assert.equal(PO.specMatches(m, 'st', first.addr, ids), false);
   assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true);
-  // the server gone: no renewal, the lease expires — the address is nobody's
+  // the server gone: no renewal, the lease expires — the address is nobody's, in the simulation and a snapshot
   s.powerOff('dsrv');
   s.runTo(s.now + 130000);
-  assert.ok(!s.engine.effectiveAddrs('pc').some((x) => x.addr.version === 4), 'expired');
-  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), false);
+  assert.deepEqual(v4(), [], 'expired');
+  const gone = s.snapshot();
+  assert.ok(!gone.addresses.some((x) => x.device === 'pc' && x.version === 4));
+  assert.equal(PO.specMatches(m, 'pc', first.addr, PO.ctxIds(m, gone.ctx)), false);
+  // the server back: a lease again (reassigned) — the new address is pc's, the old one only if it is the same
+  s.powerOn('dsrv');
+  for (let i = 0; i < 60 && !v4().length; i++) s.runTo(s.now + 10000);
+  assert.equal(v4().length, 1, 'leased again');
+  const again = v4()[0];
+  const ids2 = PO.ctxIds(m, s.snapshot().ctx);
+  assert.equal(PO.specMatches(m, 'pc', again.addr, ids2), true);
+  assert.equal(PO.specMatches(m, 'pc', first.addr, ids2), text(again.addr) === text(first.addr));
+  assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true);
 });
 
 // two VRFs of one firewall with the same host address on both sides: hostR and hostB are both 10.9.0.5
-// (each side its own gateway and server addresses: the tracer resolves a next hop to an address's first holder, not per segment)
+// (overlapping gateways and servers as well: test/policy-identity.test.mjs)
 const VRFS = `netatlas: 1
 title: overlapping VRFs
 devices:

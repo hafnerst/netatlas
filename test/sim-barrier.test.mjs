@@ -873,3 +873,49 @@ test('a large same-time batch: a frame stays within its budget (it yields within
   ref.runTo(ref.now + 10);
   assert.deepEqual(o2, want);
 });
+
+// ------------------------------------------------------------------ an action between two parts of one moment
+
+test('an action while a moment is partly done (a frame’s budget ended it): it takes effect then — after the events of the moment already done, before those still queued, which see it; the same as headless with the same part done; deterministic', () => {
+  // the contract: an action applies at the engine's time, between two events; what the moment had done is done, what it has
+  // queued runs after the action, in its own order
+  const N = 500;
+  const build = () => {
+    const sim = new S.Simulation(model(LAN()));
+    sim.runTo(3000);
+    const seen = [];
+    const T = sim.now + 5;
+    for (let i = 0; i < N; i++) sim.engine.at(T, () => seen.push(`${i}:${sim.engine.isShut('pc', 'eth0') ? 'shut' : 'up'}`));
+    return { sim, seen, T };
+  };
+  // paced: the first frame's budget ends the moment after the first 64 events; the user shuts pc:eth0 then
+  const a = build();
+  const p = new P.Pacer({ engine: a.sim.engine, shown: () => false, typical: () => a.sim.engine.hopTime(), headers: (f) => f.hdr }, 48);
+  const now = Date.now;
+  let clock = 0;
+  Date.now = () => (clock += 30);
+  try {
+    for (let i = 0; i < 2000 && a.seen.length === 0; i++) p.frame(50);
+  } finally {
+    Date.now = now;
+  }
+  assert.equal(a.sim.now, a.T, 'at the moment');
+  const done = a.seen.length;
+  assert.ok(done > 0 && done < N, `partly done: ${done} of ${N}`);
+  assert.ok(a.sim.actShut('pc', 'eth0').shut, 'the action, through its normal path');
+  for (let i = 0; i < 4000 && a.seen.length < N; i++) p.frame(50);
+  assert.equal(a.seen.length, N);
+  assert.ok(a.seen.slice(0, done).every((x) => /:up$/.test(x)), 'before the action: not shut');
+  assert.ok(a.seen.slice(done).every((x) => /:shut$/.test(x)), 'after it: shut');
+  assert.deepEqual(a.seen.map((x) => Number(x.split(':')[0])), Array.from({ length: N }, (_, k) => k), 'in their order');
+  // headless with the same part of the moment done (Engine.runUntil's yield after the same events), the same action: the same
+  const b = build();
+  let k = 0;
+  b.sim.engine.runUntil(b.T, () => false, () => ++k * 64 >= done);
+  assert.equal(b.seen.length, done);
+  b.sim.actShut('pc', 'eth0');
+  b.sim.runTo(b.T + 20000);
+  a.sim.runTo(b.T + 20000);
+  assert.deepEqual(a.seen, b.seen);
+  assert.deepEqual(simulated(a.sim, b.T + 20000).ev, simulated(b.sim, b.T + 20000).ev, 'the same events');
+});

@@ -298,28 +298,50 @@ test('a SYN-ACK at the response timeout’s own moment: the earlier event decide
   assert.deepEqual(run(at + 0.001, true).log, after.log);
 });
 
-test('a persistent session after a failure and its recovery: one new connection, established again; the attempts while it was down never pile up', () => {
-  const { s, made } = counted(example('datacenter-evpn.yaml'));
-  s.runTo(90000);
-  const bgp = () => made.filter((m) => /^(BGP|EVPN) /.test(m.what));
-  const before = bgp().length;
-  const one = bgp()[0];
-  // the cable under one session: fail it, then restore
-  const rel = s.model.relations.find((r) => /BGP|EVPN/i.test(r.protocol) && one.what.indexOf(r.id) >= 0) || null;
-  const link = s.model.links.find((l) => [l.a.device, l.b.device].indexOf(one.dev) >= 0 && s.model.index.devices.get(l.a.device === one.dev ? l.b.device : l.a.device).type !== 'endpoint');
-  void rel;
-  assert.ok(s.fail('link:' + link.id));
-  s.runTo(s.now + 60000);
+// two BGP speakers over one cable: the session, its connections, its state
+const PAIR = `netatlas: 1
+title: bgp pair
+devices:
+  - {id: a, type: router, interfaces: [{id: g0, ip: 10.0.0.1/30}], protocols: {bgp: {asn: 65001}}}
+  - {id: b, type: router, interfaces: [{id: g0, ip: 10.0.0.2/30}], protocols: {bgp: {asn: 65002}}}
+links:
+  - {id: l, a: "a:g0", b: "b:g0"}
+relations:
+  - {id: ebgp, protocol: bgp, endpoints: ["a:g0", "b:g0"]}
+`;
+const sessionState = (s, protocol, dev) => (s.status().find((x) => x.protocol === protocol && x.device === dev) || { state: 'none' }).state;
+
+test('a persistent session after a failure and its recovery: established before, down by the failure, established again after the restore — with new connections of that session only, bounded, one attempt at a time', () => {
+  const { s, made } = counted(PAIR);
+  s.runTo(6000);
+  // 1–2: which session, established before the failure, with its one connection
+  assert.deepEqual([sessionState(s, 'bgp', 'a'), sessionState(s, 'bgp', 'b')], ['Established', 'Established']);
+  const mine = () => made.filter((m) => m.dev === 'a' || m.dev === 'b');
+  assert.equal(mine().length, 1, 'one connection for the session');
+  assert.match(mine()[0].what, /BGP/);
+  const before = mine().length;
+  // 3: the failure takes the session down
+  assert.ok(s.fail('link:l'));
+  s.runTo(s.now + 200000);
+  assert.notEqual(sessionState(s, 'bgp', 'a'), 'Established', 'down after the failure');
+  assert.notEqual(sessionState(s, 'bgp', 'b'), 'Established');
+  // 4: the restore brings it back
+  assert.ok(s.restore('link:l'));
   let peak = 0;
-  assert.ok(s.restore('link:' + link.id));
-  for (let t = 0; t < 120000; t += 1000) {
+  let back = null;
+  for (let t = 0; t < 180000 && back === null; t += 1000) {
     s.runTo(s.now + 1000);
-    peak = Math.max(peak, synSent(s, one.dev));
+    peak = Math.max(peak, synSent(s, 'a'), synSent(s, 'b'));
+    if (sessionState(s, 'bgp', 'a') === 'Established' && sessionState(s, 'bgp', 'b') === 'Established') back = s.now;
   }
-  const per = new Map();
-  for (const m of bgp().slice(before)) per.set(m.what, (per.get(m.what) || 0) + 1);
-  for (const [what, n] of per) assert.ok(n <= 3, `${what}: ${n} new connections after the recovery (bounded)`);
-  assert.ok(peak <= Math.max(1, per.size), `at most one attempt per session at a time (${peak})`);
+  assert.ok(back !== null, 'established again after the restore');
+  // 5: its new connections: at least one (the session needs one), all of this session, bounded, never piled up
+  const after = mine().slice(before);
+  assert.ok(after.length >= 1, 'a new connection for the session');
+  assert.ok(after.length <= 4, `${after.length} new connections (bounded)`);
+  for (const m of after) assert.match(m.what, /BGP/);
+  assert.equal(made.length, mine().length, 'no other device opened anything');
+  assert.ok(peak <= 1, `at most one attempt in SYN-SENT at a time (${peak})`);
 });
 
 test('an established connection whose application gives up (a slow answer): the test times out, the connection does not stay open for ever, a late answer opens nothing; a retry is a connection of its own', () => {
@@ -356,24 +378,33 @@ test('in-progress ownership: an MQTT client stopped while its connection is bein
   assert.equal(mq.made.length, n, 'no reconnection after Stop');
   assert.equal(synSent(s, 'pc'), 0, 'its attempt is gone');
   assert.deepEqual(syns(s, 'pc', stopAt + 1e-6), [], 'no SYN after Stop');
-  // LDP: the metro ring's sessions, a ring cable failed and restored — bounded attempts, one at a time per session
+  // LDP: one of the metro ring's sessions — established, taken down by its cable's failure, back after the restore, its new
+  // connections its own and bounded, one attempt at a time
   const ld = counted(example('metro-ring.yaml'));
   ld.s.runTo(60000);
   const ldp = () => ld.made.filter((m) => /LDP/.test(m.what));
-  const before = ldp().length;
-  assert.ok(before >= 1, 'LDP sessions over TCP');
+  assert.ok(ldp().length >= 1, 'LDP sessions over TCP');
   const first = ldp()[0];
-  const link = ld.s.model.links.find((l) => l.a.device === first.dev || l.b.device === first.dev);
+  const rel = ld.s.model.relations.find((r) => /ldp/i.test(r.protocol) && r.endpoints.some((e) => e.device === first.dev));
+  const peer = rel.endpoints.map((e) => e.device).find((d) => d !== first.dev);
+  const ldpUp = (dev) => ld.s.status().some((x) => x.protocol === 'ldp' && x.device === dev && x.peer === (dev === first.dev ? peer : first.dev) && /Operational|Established|OPERATIONAL/.test(x.state));
+  assert.ok(ldpUp(first.dev), `${first.dev}–${peer} LDP up before: ${JSON.stringify(ld.s.status().filter((x) => x.protocol === 'ldp' && x.device === first.dev))}`);
+  const link = ld.s.model.links.find((l) => [l.a.device, l.b.device].indexOf(first.dev) >= 0 && [l.a.device, l.b.device].indexOf(peer) >= 0);
+  assert.ok(link, 'the cable between them');
+  const before = ldp().filter((m) => m.dev === first.dev || m.dev === peer).length;
   assert.ok(ld.s.fail('link:' + link.id));
-  ld.s.runTo(ld.s.now + 30000);
+  ld.s.runTo(ld.s.now + 200000);
+  assert.ok(!ldpUp(first.dev), 'down after the failure');
   assert.ok(ld.s.restore('link:' + link.id));
-  const per = new Map();
   let peak = 0;
-  for (let t = 0; t < 120000; t += 1000) {
+  let back = false;
+  for (let t = 0; t < 240000 && !back; t += 1000) {
     ld.s.runTo(ld.s.now + 1000);
-    for (const d of ld.s.model.devices) peak = Math.max(peak, synSent(ld.s, d.id));
+    for (const d of [first.dev, peer]) peak = Math.max(peak, synSent(ld.s, d));
+    back = ldpUp(first.dev);
   }
-  for (const m of ldp().slice(before)) per.set(`${m.dev}|${m.what}`, (per.get(`${m.dev}|${m.what}`) || 0) + 1);
-  for (const [what, k] of per) assert.ok(k <= 4, `${what}: ${k} connections after the failure (bounded)`);
-  assert.ok(peak <= 2, `attempts in SYN-SENT at once on one device: ${peak}`);
+  assert.ok(back, 'up again after the restore');
+  const after = ldp().filter((m) => m.dev === first.dev || m.dev === peer).slice(before);
+  assert.ok(after.length >= 1 && after.length <= 4, `${after.length} new connections of the session`);
+  assert.ok(peak <= 1, `attempts in SYN-SENT at once: ${peak}`);
 });
