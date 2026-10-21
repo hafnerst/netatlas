@@ -278,6 +278,8 @@ interface Walk {
   srcDev?: string;
   destDev?: string;
   svc?: TraceService | null;
+  /** the walk of a tunnel's outer packet: its protocol is known — an IP protocol without ports (GRE, ESP …), 'other' to a policy */
+  outer?: boolean;
 }
 
 interface Dnat {
@@ -1138,7 +1140,7 @@ function networkPolicyDenied(w: Walk, dev: Device, inIface: string, outIface: st
   const ids = w.ctx.leases ? ctxIds(w.model, w.ctx) : configuredIds(w.model, w.ctx);
   const flow: PolicyFlow = { src: w.src, dst: w.dest, proto: w.svc ? (w.svc.proto as PolicyFlow['proto']) : 'other', srcDev: owner(w.src, w.srcDev), dstDev: owner(w.dest, w.dnat ? undefined : w.destDev), inIface, outIface, ids };
   if (w.svc && w.svc.proto !== 'icmp') flow.dport = w.svc.port;
-  const d = policyDecision(w.model, dev, flow, !!w.svc);
+  const d = policyDecision(w.model, dev, flow, !!w.svc || !!w.outer);
   if (!d) return null;
   // (undecided: said, and recorded as what it lacks — the communication check reads that, never the text)
   if (undecided(d) && w.und) w.und.push({ device: dev.id, by: d.undecidedBy as PolicyUnknown, text: d.text });
@@ -1322,8 +1324,22 @@ function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): T
       inside: w.inside.concat(device + ':' + t.id),
       truncated: false,
     };
+    // (the outer packet's own source: the tunnel's source address — a policy on the way decides it by it, as the simulation)
+    const src = t.source && t.source.iface !== undefined ? pickAddress(model, device, t.source.iface, [outer.dest.version], undefined, w.ctx) : null;
+    if (src) {
+      inner.src = src.addr;
+      inner.srcText = formatAddr(src.addr);
+    }
+    inner.srcDev = device;
+    inner.outer = true;
     const paths = walk(inner, { device, vrf: outer.vrf }, [], new Set());
     const p = paths[0];
+    // a policy on the way denies the outer packet: the tunnel carries nothing (never "not in the model" instead)
+    if (p && p.end.kind === 'stopped' && p.end.reason === 'denied') {
+      res.underlay = p;
+      res.stop = { reason: 'denied', detail: `the tunnel's outer packet (${inner.srcText || '?'} → ${formatAddr(outer.dest)}) is denied: ${p.end.detail}` };
+      return res;
+    }
     if (p && p.end.kind === 'reached' && p.end.device === farDevice) {
       res.underlay = p;
       for (const h of p.hops) {

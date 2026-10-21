@@ -12,6 +12,28 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Correctness after #95:
+
+- **IKEv2**: an IKE SA rekey whose response was lost no longer fails — the
+  old SA keeps its responder state until its Delete (a retransmitted
+  request answered from the kept response, a DPD on its way answered);
+  what waited behind the rekey goes in the new SA.
+- **Policy owners**: a router on the way that has the destination's
+  address only in another VRF is not its owner; the packet's own next hop
+  decides among gateways that share an interface.
+- **Written policies** decide GRE, ESP and the other IP protocols without
+  ports too (a default deny no longer lets them through); the path tracer
+  applies the rules to a tunnel's outer packet.
+- **EIGRP**: an ACK of an earlier adjacency no longer acknowledges a new
+  init Update; a neighbour's restart settles (the init that reset the
+  adjacency is not kept for the new one: the two routers no longer reset
+  each other without end, at one instant).
+- **A cold start** has no learned route before its adjacency (resolving an
+  NTP upstream's owner had seeded the routers' first tables).
+- **First-hop redundancy**: each group takes its own relation's
+  attributes. **IGMPv3 / MLDv2**: a BLOCK of unknown sources changes
+  nothing.
+
 Protocol realism after #94: what a protocol recognizes, when it acts and
 what it sends now follow its specification within the modelled subset —
 first-hop redundancy, NTP, policy ownership, OSPF, and a bounded audit of

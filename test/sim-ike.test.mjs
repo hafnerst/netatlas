@@ -227,3 +227,135 @@ test('IKEv2: the responder’s own lifetime shorter — it rekeys its Child SA i
   assert.equal(msgs(e, 'b', 'CREATE_CHILD_SA').filter((x) => /; request/.test(x.detail)).length, 0);
   assert.ok(msgs(e, 'a', 'CREATE_CHILD_SA').filter((x) => /; request/.test(x.detail)).length >= 3);
 });
+
+// ------------------------------------------------------------------ an IKE SA rekey across loss, delay and requests waiting
+
+// the tunnel the IKE SA protects carries the hosts' traffic
+const TUN = (sim) => `netatlas: 1
+title: ipsec tunnel
+devices:
+  - id: a
+    type: router
+    interfaces: [{id: wan, ip: 192.0.2.1/30}, {id: lan, ip: 10.1.0.1/24}]
+    logical_interfaces: [{id: tun0, type: tunnel, ip: 172.16.0.1/30, source: wan, destination: 192.0.2.2}]
+    routes: [{prefix: 10.2.0.0/24, via: 172.16.0.2}]
+  - id: b
+    type: router
+    interfaces: [{id: wan, ip: 192.0.2.2/30}, {id: lan, ip: 10.2.0.1/24}]
+    logical_interfaces: [{id: tun0, type: tunnel, ip: 172.16.0.2/30, source: wan, destination: 192.0.2.1}]
+    routes: [{prefix: 10.1.0.0/24, via: 172.16.0.1}]
+  - {id: ha, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}
+  - {id: hb, type: endpoint, interfaces: [{id: eth0, ip: 10.2.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.2.0.1}]}
+links:
+  - {id: l, a: "a:wan", b: "b:wan"}
+  - {id: la, a: "a:lan", b: "ha:eth0"}
+  - {id: lb, a: "b:lan", b: "hb:eth0"}
+relations:
+  - {id: vpn, protocol: ipsec, endpoints: ["a:tun0", "b:tun0"], simulation: ${sim}}
+`;
+const ikeX = (s, dev) => Array.from(s.protocols.sessions.values()).find((x) => x.protocol === 'ipsec' && x.dev === dev).x;
+const ping = (s) => {
+  const t = s.sendTest({ from: 'ha', to: '10.2.0.10', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  return t.ok;
+};
+/** what must hold after the rekey: one IKE SA on both ends (the same), no reset, no expiry, the tunnel carrying traffic */
+function converged(s, t0) {
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  assert.equal(ikeX(s, 'a').sa, ikeX(s, 'b').sa, 'both ends in the same IKE SA');
+  assert.equal(s.events().filter((e) => e.t >= t0 && e.kind === 'state' && e.protocol === 'ipsec' && /^(Idle|No Child SA|IKE_SA_INIT)$/.test(e.what)).length, 0, 'no reset, no expiry');
+  assert.equal(ping(s), true, 'the tunnel carries traffic');
+}
+
+test('IKEv2: an IKE SA rekey’s response lost once, then twice — the request is sent again on the old SA with its message ID, the responder answers from its kept response there (RFC 7296 §2.1, §2.18); both ends end in the same new SA, the old one deleted; the tunnel carries traffic throughout', () => {
+  for (const losses of [1, 2]) {
+    const s = new S.Simulation(model(TUN('{ike_lifetime: 120, dpd_interval: 600}')));
+    s.runTo(30000);
+    assert.equal(ping(s), true);
+    let lost = 0;
+    s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === 'CREATE_CHILD_SA' && (f.msg.data || {}).response && (f.msg.data || {}).what === 'ike' && lost++ < losses ? { lose: true } : null);
+    const t0 = s.now;
+    s.runTo(t0 + 50000);
+    assert.equal(lost >= losses, true);
+    const req = msgs(s, 'a', 'CREATE_CHILD_SA', t0).filter((e) => /rekeys the IKE SA/.test(e.detail));
+    assert.equal(req.length, losses + 1, req.map((e) => e.detail).join('\n'));
+    const mids = req.map((e) => Number(/message ID (\d+)/.exec(e.detail)[1]));
+    assert.ok(mids.every((m) => m === mids[0]), 'the same message ID each time');
+    const replays = msgs(s, 'b', 'CREATE_CHILD_SA', t0).filter((e) => /sent again on the old IKE SA: the request came again/.test(e.detail));
+    assert.equal(replays.length, losses, 'each retransmission answered from the kept response');
+    assert.equal(msgs(s, 'b', 'CREATE_CHILD_SA', t0).filter((e) => /response \(message ID \d+\): the new IKE SA/.test(e.detail)).length, 1, 'one exchange, not another');
+    assert.equal(s.events().filter((e) => e.t >= t0 && e.kind === 'drop' && e.protocol === 'ipsec' && /does not have|outside the window/.test(e.detail)).length, 0);
+    assert.ok(notes(s, 'a', 'old IKE SA deleted', t0).length === 1);
+    assert.equal(ikeX(s, 'b').old, undefined, 'the old SA’s state gone with its Delete');
+    converged(s, t0);
+    // in the new SA each side's requests start at message ID 0
+    s.runTo(s.now + 70000);
+    const next = msgs(s, 'a', 'CREATE_CHILD_SA', req[req.length - 1].t + 1).find((e) => /rekeys the IKE SA/.test(e.detail));
+    assert.ok(next && /request \(message ID 0\)/.test(next.detail), next && next.detail);
+  }
+});
+
+test('IKEv2: the IKE SA rekey request delayed past its retransmission — the retransmission rekeys, the old SA is deleted, then the late original arrives: dropped, no second exchange, no second new SA', () => {
+  const s = new S.Simulation(model(TUN('{ike_lifetime: 120, dpd_interval: 600}')));
+  s.runTo(30000);
+  let n = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === 'CREATE_CHILD_SA' && !(f.msg.data || {}).response && (f.msg.data || {}).what === 'ike' && n++ === 0 ? { delay: 3000 } : null);
+  const t0 = s.now;
+  s.runTo(t0 + 50000);
+  assert.ok(n >= 2, 'the original and its retransmission');
+  assert.equal(msgs(s, 'b', 'CREATE_CHILD_SA', t0).filter((e) => /the new IKE SA/.test(e.detail)).length, 1, 'answered once');
+  assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'drop' && e.device === 'b' && /CREATE_CHILD_SA request .* of an IKE SA it does not have/.test(e.detail)), 'the late copy dropped');
+  converged(s, t0);
+});
+
+test('IKEv2: a Child SA rekey falling due while the IKE SA rekey is outstanding waits, and goes after it in the new IKE SA with message ID 0 — never on the old SA with the old message ID', () => {
+  // the IKE SA rekey's response delayed 1.5 s; the Child SA rekey falls due 1 s after the IKE SA's
+  const s = new S.Simulation(model(TUN('{ike_lifetime: 120, child_lifetime: 122, dpd_interval: 600}')));
+  s.runTo(30000);
+  s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === 'CREATE_CHILD_SA' && (f.msg.data || {}).response && (f.msg.data || {}).what === 'ike' ? { delay: 1500 } : null);
+  const t0 = s.now;
+  s.runTo(t0 + 50000);
+  const waited = notes(s, 'a', 'request waits', t0).filter((e) => /CREATE_CHILD_SA \(Child SA\) waits for the response to its CREATE_CHILD_SA/.test(e.detail));
+  assert.equal(waited.length, 1, 'the Child SA rekey waited');
+  const child = msgs(s, 'a', 'CREATE_CHILD_SA', t0).find((e) => /rekeys the Child SA/.test(e.detail));
+  const ikeRekey = msgs(s, 'a', 'CREATE_CHILD_SA', t0).find((e) => /rekeys the IKE SA/.test(e.detail));
+  assert.ok(child.t > ikeRekey.t + 1000, 'after the IKE SA rekey’s response');
+  assert.match(child.detail, /request \(message ID 0\)/, 'the new SA’s first message ID');
+  assert.ok(msgs(s, 'b', 'CREATE_CHILD_SA', t0).some((e) => /response \(message ID 0\): the new Child SA/.test(e.detail)), 'answered in the new SA');
+  assert.equal(s.events().filter((e) => e.t >= t0 && e.kind === 'drop' && e.protocol === 'ipsec' && !/lost on/.test(e.detail)).length, 0);
+  converged(s, t0);
+});
+
+test('IKEv2: the responder’s DPD on its way across the IKE SA rekey (delayed past the old SA’s Delete) — it ends with the old SA, the next DPD goes in the new one; the responder never takes the peer for dead', () => {
+  const s = new S.Simulation(model(TUN('{ike_lifetime: 120, dpd_interval: 20}')));
+  s.runTo(30000);
+  // b's DPD requests around the rekey (about 62 s) arrive a second late
+  s.engine.impair = (link, f) => {
+    const d = f.msg.data || {};
+    return f.msg.protocol === 'ipsec' && f.msg.type === 'INFORMATIONAL' && f.msg.sender === 'b' && !d.response && !d.del && s.now >= 60000 && s.now <= 63000 ? { delay: 1000 } : null;
+  };
+  const t0 = s.now;
+  s.runTo(t0 + 80000);
+  assert.ok(notes(s, 'a', 'old IKE SA deleted', t0).length >= 1);
+  assert.equal(s.events().filter((e) => e.t >= t0 && e.kind === 'state' && /Dead Peer Detection/.test(e.detail)).length, 0, 'nobody deleted its SAs by DPD');
+  // b's DPD after the rekey: in the new SA, answered
+  const dpdAfter = msgs(s, 'b', 'INFORMATIONAL', 64000).filter((e) => /request \(message ID \d+\): DPD/.test(e.detail));
+  assert.ok(dpdAfter.length >= 1);
+  assert.ok(msgs(s, 'a', 'INFORMATIONAL', 64000).some((e) => /response \(message ID \d+\): DPD/.test(e.detail)));
+  converged(s, t0);
+});
+
+test('IKEv2: the responder rekeys the IKE SA itself (its own lifetime shorter), its response lost once — the initiator answers the retransmission from its kept response on the old SA; both in the new SA', () => {
+  const t = TUN('{dpd_interval: 600}').replace('  - id: b\n    type: router\n', '  - id: b\n    type: router\n    simulation: {ike_lifetime: 120}\n');
+  const s = new S.Simulation(model(t));
+  s.runTo(30000);
+  let lost = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === 'CREATE_CHILD_SA' && (f.msg.data || {}).response && (f.msg.data || {}).what === 'ike' && lost++ === 0 ? { lose: true } : null);
+  const t0 = s.now;
+  s.runTo(t0 + 80000);
+  const req = msgs(s, 'b', 'CREATE_CHILD_SA', t0).filter((e) => /rekeys the IKE SA/.test(e.detail));
+  assert.ok(req.length >= 2, req.map((e) => e.detail).join('\n'));
+  assert.ok(msgs(s, 'a', 'CREATE_CHILD_SA', t0).some((e) => /sent again on the old IKE SA/.test(e.detail)));
+  assert.ok(notes(s, 'b', 'old IKE SA deleted', t0).length === 1);
+  converged(s, t0);
+});

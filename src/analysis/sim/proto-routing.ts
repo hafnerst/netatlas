@@ -758,7 +758,7 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     );
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { init?: boolean; seq?: number };
+    const d = (msg.data || {}) as { init?: boolean; seq?: number; ack?: number };
     const hold = P.timer(s, s.profile, 'dead');
     if (msg.type === 'Hello') {
       deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
@@ -771,15 +771,18 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     if (msg.type === 'Update' && d.init) {
       // the same init Update again (its sequence number: our ACK was lost): acknowledged again, nothing else
       if (s.x.peerInit && d.seq === s.x.peerInitSeq) {
-        P.unicast(s, 'ACK', `acknowledges the init Update again (sequence ${d.seq}: a retransmission)`);
+        P.unicast(s, 'ACK', `acknowledges the init Update again (sequence ${d.seq}: a retransmission)`, { ack: d.seq });
         return;
       }
-      // a new init Update from a neighbour that is Up: it restarted — the adjacency starts over (RFC 7868 §5.3.1)
+      // a new init Update from a neighbour that is Up: it restarted — the neighbour is reset and the adjacency starts over
+      // from its next Hello (RFC 7868 §5.3.1); the init that reset it is not taken for the new adjacency, which would come
+      // up at once on it and be reset by the neighbour's own new init in turn, without end
       if (s.state === 'Up') {
         eigrp.down(P, s, `init Update from ${s.peer} while Up: it restarted`);
         deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
+        return;
       }
-      P.unicast(s, 'ACK', 'acknowledges the init Update');
+      P.unicast(s, 'ACK', `acknowledges the init Update (sequence ${d.seq})`, { ack: d.seq });
       s.x.peerInit = true;
       s.x.peerInitSeq = d.seq;
       if (s.state === 'Down') P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
@@ -787,7 +790,13 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
       eigrpUp(P, s);
       return;
     }
+    // an ACK completes the init only when it acknowledges this init's sequence number (RFC 7868 §5.3: the acknowledgment
+    // number) — never one of an earlier adjacency, delayed, which would stop the new init's retransmission
     if (msg.type === 'ACK' && s.state === 'Pending' && s.x.sentInit) {
+      if (d.ack !== s.x.initSeq) {
+        P.e.note('drop', 'eigrp', s.dev, s.peer, 'ACK', s.state, `EIGRP ${s.rel.id}: ${s.dev} ignores an ACK of sequence ${d.ack === undefined ? '?' : d.ack} from ${s.peer}: its init Update is sequence ${s.x.initSeq} (an ACK of an earlier exchange)`);
+        return;
+      }
       s.x.initAcked = true;
       eigrpUp(P, s);
       return;
@@ -801,6 +810,7 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     if (s.state === 'Down') return;
     P.restart(s);
     s.x.sentInit = s.x.peerInit = s.x.initAcked = false;
+    s.x.initSeq = undefined;
     P.setState(s, 'Down', false, why);
   },
 };
@@ -818,6 +828,7 @@ function eigrpInit(P: ProtocolSim, s: Sess): void {
   const g = s.gen;
   // (its sequence number: a retransmission carries the same one, a restart a new one)
   const seq = 1 + (hashIndex(`${s.key}|${P.e.now}|${g}`, 1000000) as number);
+  s.x.initSeq = seq;
   const send = (n: number): void => {
     if (s.gen !== g || s.state !== 'Pending' || s.x.initAcked) return;
     if (n >= EIGRP_RETRIES) {

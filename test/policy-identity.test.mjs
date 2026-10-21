@@ -347,3 +347,178 @@ test('equal-cost paths to two holders of one address: asked for srvB, the path t
   assert.ok(r.some((x) => x.ok) && r.some((x) => !x.ok), r.map((x) => x.ok).join(','));
   assert.ok(r.filter((x) => !x.ok).every((x) => /dropped at fw: .*no rule matches/.test(x.result)));
 });
+
+// ------------------------------------------------------------------ the owner is local in the routing context walked; the packet's own next hop
+
+// the firewall forwards in blue to r (its blue interface); r has 10.8.0.10 on a red loopback and routes it in blue to srvB
+const VRFLO = (rule, def = 'deny', o = {}) => `netatlas: 1
+title: owner local in another VRF
+devices:
+  - {id: hostB, type: endpoint, interfaces: [{id: eth0, ip: 10.7.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.7.0.1}]}
+  - {id: srvB, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - id: fw
+    type: firewall
+    interfaces:
+      - {id: b-in, ip: 10.7.0.1/24}
+      - {id: b-out, ip: 10.0.0.1/30}
+    routes: [{prefix: 10.8.0.0/24, via: 10.0.0.2}]
+    policy:
+      default: ${def}
+      rules:
+${rule}
+  - id: r
+    type: router
+    interfaces:
+      - {id: blue-in, ip: 10.0.0.2/30}
+      - {id: blue-out, ip: 10.8.0.1/24}
+    logical_interfaces: [{id: ${o.loName || 'lo-red'}, type: loopback, ip: 10.8.0.10/32, vrf: red}]
+    routes: [{prefix: 10.7.0.0/24, via: 10.0.0.1}]
+links:
+  - {id: a, a: "hostB:eth0", b: "fw:b-in"}
+  - {id: c, a: "fw:b-out", b: "r:blue-in"}
+  - {id: f, a: "r:blue-out", b: "srvB:eth0"}
+`;
+
+test('the owner several hops away is local in the routing context walked: r has 10.8.0.10 only in red, the blue flow is srvB’s — a rule naming srvB permits it (and one denying srvB denies it), whatever r’s loopback is called; static, simulation, snapshot', () => {
+  const a = IP.parseAddress('10.8.0.10');
+  for (const loName of ['lo-red', 'a-lo-red', 'zz-lo-red']) {
+    const m = model(VRFLO('        - {action: permit, destination: srvB, proto: tcp, dport: 80}', 'deny', { loName }));
+    const s = new S.Simulation(m);
+    s.runTo(5000);
+    assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'b-out', IP.parseAddress('10.0.0.2')), 'srvB', loName);
+    assert.equal(tcp(s, 'hostB', '10.8.0.10').ok, true, `${loName}: permitted to srvB`);
+    assert.equal(check(m, 'hostB', 'srvB').verdict, 'satisfied');
+    const snap = s.snapshot();
+    assert.equal(check(m, 'hostB', 'srvB', 'tcp/80', snap).verdict, 'satisfied');
+    const d = new S.Simulation(model(VRFLO('        - {action: deny, destination: srvB, proto: tcp, dport: 80}', 'permit', { loName })));
+    d.runTo(5000);
+    const t = tcp(d, 'hostB', '10.8.0.10');
+    assert.equal(t.ok, false, `${loName}: denied to srvB`);
+    assert.match(t.result, /dropped at fw: .*rule 1/);
+  }
+});
+
+test('the owner local in the current context: r has 10.8.0.10 on a blue loopback (another device has it elsewhere) — the flow is r’s; srvB’s link failing never makes r the owner of a red-only address', () => {
+  const a = IP.parseAddress('10.8.0.10');
+  // (srvB keeps 10.8.0.10; r's loopback in blue now: r answers for it in blue — local, the owner)
+  const blue = model(VRFLO('        - {action: permit, destination: r, proto: icmp}', 'deny').replace('ip: 10.8.0.10/32, vrf: red', 'ip: 10.8.0.10/32'));
+  const s = new S.Simulation(blue);
+  s.runTo(5000);
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'b-out', IP.parseAddress('10.0.0.2')), 'r');
+  // red only: srvB's link down — no owner on the blue side (r has it only in red), not r
+  const red = new S.Simulation(model(VRFLO('        - {action: permit, destination: srvB, proto: tcp, dport: 80}')));
+  red.runTo(5000);
+  red.fail('link:f');
+  red.runTo(red.now + 5000);
+  assert.equal(red.engine.ownerSeenFrom('fw', '', a, 'b-out', IP.parseAddress('10.0.0.2')), null);
+  red.restore('link:f');
+  red.runTo(red.now + 5000);
+  assert.equal(red.engine.ownerSeenFrom('fw', '', a, 'b-out', IP.parseAddress('10.0.0.2')), 'srvB');
+  assert.equal(tcp(red, 'hostB', '10.8.0.10').ok, true);
+});
+
+// two equal-cost gateways on one LAN behind the firewall's one interface: dr1 leads to srvB, dr2 to srvX, both 10.8.0.10
+const SHARED = `netatlas: 1
+title: two gateways on one LAN
+devices:
+  - {id: hostB, type: endpoint, interfaces: [{id: eth0, ip: 10.7.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.7.0.1}]}
+  - {id: srvB, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - {id: srvX, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - id: fw
+    type: firewall
+    interfaces: [{id: b-in, ip: 10.7.0.1/24}, {id: o1, ip: 10.0.1.1/24}]
+    routes: [{prefix: 10.8.0.0/24, via: 10.0.1.2}, {prefix: 10.8.0.0/24, via: 10.0.1.3}]
+    policy:
+      default: deny
+      rules:
+        - {action: permit, destination: srvB, proto: tcp, dport: 80}
+  - {id: dr1, type: router, interfaces: [{id: in, ip: 10.0.1.2/24}, {id: out, ip: 10.8.0.1/24}], routes: [{prefix: 10.7.0.0/24, via: 10.0.1.1}]}
+  - {id: dr2, type: router, interfaces: [{id: in, ip: 10.0.1.3/24}, {id: out, ip: 10.8.0.1/24}], routes: [{prefix: 10.7.0.0/24, via: 10.0.1.1}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+links:
+  - {id: a, a: "hostB:eth0", b: "fw:b-in"}
+  - {id: s1, a: "fw:o1", b: "sw:p1"}
+  - {id: s2, a: "dr1:in", b: "sw:p2"}
+  - {id: s3, a: "dr2:in", b: "sw:p3"}
+  - {id: x1, a: "dr1:out", b: "srvB:eth0"}
+  - {id: x2, a: "dr2:out", b: "srvX:eth0"}
+`;
+
+test('two equal-cost gateways sharing the firewall’s interface, towards two holders of 10.8.0.10: the owner follows the packet’s own next hop (not merely its interface) — flows through dr1 are srvB’s and permitted, flows through dr2 srvX’s and denied by the rule, none left undecided', () => {
+  const a = IP.parseAddress('10.8.0.10');
+  const s = new S.Simulation(model(SHARED));
+  s.runTo(5000);
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o1'), null, 'the interface alone: both gateways, two owners — not guessed');
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o1', IP.parseAddress('10.0.1.2')), 'srvB');
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o1', IP.parseAddress('10.0.1.3')), 'srvX');
+  const r = [];
+  for (let k = 0; k < 8; k++) r.push(tcp(s, 'hostB', '10.8.0.10'));
+  assert.ok(r.some((x) => x.ok) && r.some((x) => !x.ok), r.map((x) => x.ok).join(','));
+  for (const x of r.filter((y) => !y.ok)) assert.match(x.result, /dropped at fw: .*no rule matches/, 'srvX’s: no rule permits it — decided, not undecided');
+  assert.equal(s.events().filter((e) => e.kind === 'drop' && e.device === 'fw' && /by which device an address is|can't be told/.test(e.detail)).length, 0);
+});
+
+// ------------------------------------------------------------------ a written rule base and IP protocols without ports (GRE …)
+
+// a GRE tunnel between r1 and r2 whose outer packets cross the firewall; h1 and h2 talk through the tunnel
+const GRE = (rules, def = 'deny') => `netatlas: 1
+title: gre through a firewall
+devices:
+  - id: r1
+    type: router
+    interfaces: [{id: wan, ip: 198.51.100.1/30}, {id: lan, ip: 10.1.0.1/24}]
+    logical_interfaces: [{id: tun0, type: tunnel, ip: 172.16.0.1/30, source: wan, destination: 203.0.113.1}]
+    routes: [{prefix: 203.0.113.0/30, via: 198.51.100.2}, {prefix: 10.2.0.0/24, via: 172.16.0.2}]
+  - id: r2
+    type: router
+    interfaces: [{id: wan, ip: 203.0.113.1/30}, {id: lan, ip: 10.2.0.1/24}]
+    logical_interfaces: [{id: tun0, type: tunnel, ip: 172.16.0.2/30, source: wan, destination: 198.51.100.1}]
+    routes: [{prefix: 198.51.100.0/30, via: 203.0.113.2}, {prefix: 10.1.0.0/24, via: 172.16.0.1}]
+  - id: fw
+    type: firewall
+    interfaces: [{id: a, ip: 198.51.100.2/30}, {id: b, ip: 203.0.113.2/30}]
+    policy:
+      default: ${def}
+      rules:${rules ? '\n' + rules : ' []'}
+  - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}
+  - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.2.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.2.0.1}]}
+links:
+  - {id: l1, a: "r1:wan", b: "fw:a"}
+  - {id: l2, a: "fw:b", b: "r2:wan"}
+  - {id: la, a: "r1:lan", b: "h1:eth0"}
+  - {id: lb, a: "r2:lan", b: "h2:eth0"}
+relations:
+  - {id: gre, protocol: gre, endpoints: ["r1:tun0", "r2:tun0"]}
+`;
+
+test('a written rule base decides an IP protocol without ports too: default deny with no rules drops the GRE tunnel’s outer packets (it stays down, h1 cannot reach h2); a proto-any address rule permits them (a stateful session by their address pair, the tunnel up, the traffic through); a tcp rule does not match them — static and simulation alike', () => {
+  const run = (rules) => {
+    const m = model(GRE(rules));
+    const s = new S.Simulation(m);
+    s.runTo(30000);
+    const t = s.sendTest({ from: 'h1', to: '10.2.0.10', kind: 'icmp' });
+    s.runTo(s.now + 5000);
+    return { m, s, t, c: check(m, 'h1', 'h2', 'icmp') };
+  };
+  // default deny, no rules
+  let r = run('');
+  const drop = r.s.events().find((e) => e.kind === 'drop' && e.device === 'fw' && /GRE Keepalive/.test(e.detail));
+  assert.ok(drop, 'the firewall decided the outer packet');
+  assert.match(drop.detail, /drops IP 198\.51\.100\.1 → 203\.0\.113\.1 \(GRE Keepalive\): no rule matches \(its default action, deny\)/);
+  assert.equal(r.s.sessions('r1', 'gre')[0].state, 'Down');
+  assert.equal(r.t.ok, false);
+  assert.equal(r.c.verdict, 'violated', r.c.headline);
+  assert.match(r.c.trace.paths[0].end.detail, /the tunnel's outer packet \(198\.51\.100\.1 → 203\.0\.113\.1\) is denied/);
+  // permitted by address, proto any — one direction written, the answers by the session
+  r = run('        - {action: permit, source: 198.51.100.1, destination: 203.0.113.1, proto: any}');
+  assert.ok(r.s.events().some((e) => e.kind === 'table' && e.device === 'fw' && /opens a session IP 198\.51\.100\.1 → 203\.0\.113\.1 \(permit 198\.51\.100\.1 → 203\.0\.113\.1/.test(e.detail)));
+  assert.equal(r.s.sessions('r1', 'gre')[0].state, 'Up');
+  assert.equal(r.t.ok, true, r.t.result);
+  assert.equal(r.c.verdict, 'satisfied', r.c.headline);
+  assert.ok(r.s.sessionTable('fw').some((x) => x.proto === 'other' && /^IP 198\.51\.100\.1 → 203\.0\.113\.1$/.test(x.flow)), JSON.stringify(r.s.sessionTable('fw')));
+  // a tcp rule says nothing about GRE: still the default
+  r = run('        - {action: permit, source: 198.51.100.1, destination: 203.0.113.1, proto: tcp}');
+  assert.equal(r.s.sessions('r1', 'gre')[0].state, 'Down');
+  assert.equal(r.t.ok, false);
+  assert.equal(r.c.verdict, 'violated', r.c.headline);
+});

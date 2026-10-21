@@ -381,6 +381,10 @@ test('EIGRP: a new init Update from an Up neighbour (it restarted its side) rese
   assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.device === 'r2' && e.what === 'Down' && /init Update from r1 while Up: it restarted/.test(e.detail)));
   s.runTo(t0 + 60000);
   assert.deepEqual(eStates(s), ['Up', 'Up']);
+  // the restart settles: each side reset once (r2 by the init, r1 by r2's new init), not reset by each other's inits again and again
+  const resets = s.events().filter((e) => e.t >= t0 && e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Down');
+  assert.ok(resets.length <= 2, `${resets.length} resets: ${resets.slice(0, 4).map((e) => `${e.device} ${Math.round(e.t - t0)} ms`).join(', ')}`);
+  assert.ok(!s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up' && e.t < t0 + 1000), 'not Up again on the init that reset it');
   // r1's inits never arrive: r1 retries, then resets r2 (Down), and starts over at r2's next Hello
   s = new S.Simulation(model(EPAIR));
   s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'Update' && f.msg.data.init && f.msg.data.from === 'r1' ? { lose: true } : null);
@@ -390,4 +394,53 @@ test('EIGRP: a new init Update from an Up neighbour (it restarted its side) rese
   assert.ok(reset.t >= 2000 + 15 * 5000 && reset.t <= 2000 + 16 * 5000 + 100, `after 16 tries (${Math.round(reset.t)} ms)`);
   assert.ok(!s.events().some((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up'), 'never Up');
   assert.equal(s.routeLookup('r2', '1.1.1.1').kind, 'none');
+});
+
+// r1 and r2 through a switch: what is on its way on r2's side survives a flap of r1's port
+const EPAIR_SW = `netatlas: 1
+title: eigrp pair through a switch
+devices:
+  - {id: r1, type: router, router_id: 10.255.0.1, interfaces: [{id: g0, ip: 10.0.12.1/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 1.1.1.1/32}], protocols: {eigrp: {asn: 10}}}
+  - {id: r2, type: router, router_id: 10.255.0.2, interfaces: [{id: g0, ip: 10.0.12.2/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 2.2.2.2/32}], protocols: {eigrp: {asn: 10}}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+links:
+  - {id: l1, a: "r1:g0", b: "sw:p1"}
+  - {id: l2, a: "sw:p2", b: "r2:g0"}
+relations:
+  - {id: e, protocol: eigrp, endpoints: ["r1:g0", "r2:g0"]}
+`;
+
+test('EIGRP: an ACK of the earlier adjacency delayed past a restart does not acknowledge the new init — r1 keeps sending its init (lost meanwhile), is not Up and learns nothing; once its init gets through, both Up with routes', () => {
+  const s = new S.Simulation(model(EPAIR_SW));
+  let first = true;
+  let dropInit = false;
+  s.engine.impair = (link, f) => {
+    const d = f.msg.data || {};
+    if (f.msg.protocol !== 'eigrp') return null;
+    // r2's first ACK (of r1's first init) held on r2's side for 26 s: it reaches r1 after r1's restart
+    if (f.msg.type === 'ACK' && d.from === 'r2' && first && link === 'l2') {
+      first = false;
+      return { delay: 26000 };
+    }
+    if (dropInit && f.msg.type === 'Update' && d.init && d.from === 'r1') return { lose: true };
+    return null;
+  };
+  s.runTo(20000);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  dropInit = true;
+  assert.ok(s.shut('r1', 'g0'));
+  s.runTo(20500);
+  assert.ok(s.noShut('r1', 'g0'));
+  s.runTo(45000);
+  const ignored = s.events().find((e) => e.kind === 'drop' && e.device === 'r1' && /ignores an ACK of sequence \d+ from r2: its init Update is sequence \d+ \(an ACK of an earlier exchange\)/.test(e.detail));
+  assert.ok(ignored, 'the old ACK arrived and was not taken');
+  const again = s.events().filter((e) => e.t > ignored.t && e.kind === 'message' && e.device === 'r1' && e.what === 'Update' && /init flag set.*sent again/.test(e.detail));
+  assert.ok(again.length >= 2, `r1 keeps sending its init (${again.length})`);
+  assert.equal(s.sessions('r1', 'eigrp')[0].state, 'Pending');
+  assert.equal(s.routeLookup('r1', '2.2.2.2').kind, 'none', 'nothing learned before the adjacency is up');
+  dropInit = false;
+  s.runTo(80000);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  assert.equal(s.routeLookup('r1', '2.2.2.2').kind, 'forward');
+  assert.equal(s.routeLookup('r2', '1.1.1.1').kind, 'forward');
 });

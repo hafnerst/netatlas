@@ -371,7 +371,8 @@ export interface GridTable {
 
 /** A row of a firewall's session table. */
 export interface SessionRow {
-  proto: 'tcp' | 'udp' | 'icmp';
+  /** 'other': an IP protocol without ports (GRE, ESP …), by its address pair */
+  proto: 'tcp' | 'udp' | 'icmp' | 'other';
   /** "10.0.0.5:49152 → 10.1.1.10:443" */
   flow: string;
   state: string;

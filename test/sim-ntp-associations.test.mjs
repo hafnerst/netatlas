@@ -183,3 +183,44 @@ test('a response from an address that is none of the client’s upstreams is not
   assert.ok(s.events().some((e) => e.kind === 'drop' && e.device === 'cl' && /response from 10\.0\.0\.1: none of its upstreams \(192\.0\.2\.1\) is that address/.test(e.detail)));
   assert.equal(s.ntp.synchronized('cl'), false);
 });
+
+// ------------------------------------------------------------------ a cold start: the upstream is reached only once the IGP has converged
+
+// cl reaches 10.5.0.1 through OSPF only; another device has 10.5.0.1 in an isolated VRF (two holders: the owner is resolved)
+const IGP_UP = `netatlas: 1
+title: ntp owner after convergence
+devices:
+  - {id: cl, type: server, interfaces: [{id: eth0, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}], services: {ntp: {upstreams: [10.5.0.1]}}}
+  - id: r1
+    type: router
+    router_id: 10.255.0.1
+    interfaces: [{id: c, ip: 10.1.0.1/24}, {id: t, ip: 10.0.12.1/30}]
+    protocols: {ospf: {}}
+  - id: r2
+    type: router
+    router_id: 10.255.0.2
+    interfaces: [{id: t, ip: 10.0.12.2/30}, {id: s, ip: 10.5.0.254/24}, {id: x, ip: 10.5.0.254/24, vrf: iso}]
+    protocols: {ospf: {}}
+  - {id: ref, type: server, interfaces: [{id: eth0, ip: 10.5.0.1/24}], routes: [{prefix: 0.0.0.0/0, via: 10.5.0.254}], services: {ntp: {stratum: 1}}}
+  - {id: other, type: server, interfaces: [{id: eth0, ip: 10.5.0.1/24}], services: {ntp: {stratum: 3}}}
+links:
+  - {id: a, a: "cl:eth0", b: "r1:c"}
+  - {id: b, a: "r1:t", b: "r2:t"}
+  - {id: c, a: "r2:s", b: "ref:eth0"}
+  - {id: d, a: "r2:x", b: "other:eth0"}
+relations:
+  - {id: igp, protocol: ospf, endpoints: ["r1:t", "r2:t"]}
+`;
+
+test('a cold start: the upstream is reached through OSPF only — no router has a learned route before its adjacency is Full (resolving the upstream’s owner never seeds the tables), so the client is synchronized only after the IGP converged, by the reached server', () => {
+  const s = sim(IGP_UP);
+  s.runTo(1000);
+  assert.equal(s.routeLookup('r1', '10.5.0.1').kind, 'none', 'nothing learned before an adjacency');
+  s.runTo(200000);
+  const full = s.events().find((e) => e.kind === 'state' && e.protocol === 'ospf' && e.device === 'r1' && e.what === 'Full');
+  const syncd = s.events().find((e) => e.kind === 'state' && e.protocol === 'ntp' && e.device === 'cl' && e.what === 'synchronized');
+  assert.ok(full && syncd && syncd.t > full.t, `synchronized at ${syncd && syncd.t}, OSPF Full at ${full && full.t}`);
+  assert.ok(s.events().every((e) => !(e.protocol === 'ntp' && e.what === 'Server response' && e.t < full.t)), 'no answer before the route existed');
+  assert.equal(row(s, '10.5.0.1')[1], 'ref');
+  assert.equal(s.ntp.stratum('cl'), 2);
+});

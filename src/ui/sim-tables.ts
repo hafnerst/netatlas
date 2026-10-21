@@ -356,7 +356,7 @@ export class TablePanels {
     for (const r of d.rows) {
       tb.appendChild(
         el(this.doc, 'tr', { 'data-state': r.state }, [
-          el(this.doc, 'td', {}, [r.proto.toUpperCase()]),
+          el(this.doc, 'td', {}, [r.proto === 'other' ? 'IP' : r.proto.toUpperCase()]),
           el(this.doc, 'td', { class: 'mono' }, [r.flow]),
           el(this.doc, 'td', {}, [r.state]),
           el(this.doc, 'td', {}, [r.rule]),
