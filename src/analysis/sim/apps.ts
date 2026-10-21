@@ -27,6 +27,7 @@
 import { IpAddr, parseAddress } from '../../model/ip';
 import { APP_DEFAULTS, AppInstance, AppProfile, appFamily, appProfile, parsePeer } from '../../model/applications';
 import { formatAddr } from '../ipmath';
+import { fmtSec } from './engine';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
 import { SessionStatus } from './types';
@@ -54,8 +55,8 @@ export interface AppRun {
   /** every message sent, retries included */
   tests: Test[];
   retried: number;
-  /** messages that could not be sent at all, with why */
-  skipped: Array<{ n: number; t: number; why: string }>;
+  /** attempts that could not be sent at all, with why (retry: which attempt of message n; 0 or absent: its first) */
+  skipped: Array<{ n: number; t: number; why: string; retry?: number }>;
   stopped: boolean;
   stoppedAt?: number;
   /** a run of Network events with an interval: its real-time schedule entry */
@@ -70,15 +71,33 @@ interface PeerNow {
   name?: string;
 }
 
+/** How many finished runs the history keeps (a run still going on always stays: it is the simulation's own state). */
+const RUN_HISTORY = 200;
+
+/** An application that starts with the simulation, until it has started: due, waiting for its device, started, refused. */
+interface Configured {
+  dev: string;
+  app: AppInstance;
+  state: 'due' | 'waiting' | 'started' | 'refused';
+  why?: string;
+  /** the latest attempt scheduled (a device that becomes operational again schedules a new one, the earlier void) */
+  gen: number;
+}
+
 export class AppSim {
   private seq = 0;
   readonly runs: AppRun[] = [];
+  private configured = new Map<string, Configured>();
 
   constructor(
     private P: ProtocolSim,
     private T: Transport,
   ) {
     P.bootHooks.push(() => this.startConfigured());
+    // a device that becomes operational: what waited for it to start with the simulation is tried again
+    P.deviceHooks.push((dev, up) => {
+      if (up) this.deviceUp(dev);
+    });
     P.extraStatus.push(() => this.status());
   }
 
@@ -178,13 +197,17 @@ export class AppSim {
     if (why) return why;
     const a = this.app(dev, id) as AppInstance;
     const p = appProfile(a.profile) as AppProfile;
-    if (p.id === 'mqtt_client') return (this.mqttStart as NonNullable<AppSim['mqttStart']>)(dev, a, how);
+    if (p.id === 'mqtt_client') {
+      const r = (this.mqttStart as NonNullable<AppSim['mqttStart']>)(dev, a, how);
+      this.prune();
+      return r;
+    }
     const peer = this.peerNow(dev, a);
     const interval = a.interval || 0;
     const count = interval ? (a.count !== undefined ? a.count : null) : 1;
     const run: AppRun = { id: this.nextId(), dev, app: a, how, target: typeof peer === 'string' ? a.peer || '?' : peer.target, t0: this.e.now, count, interval, sent: 0, tests: [], retried: 0, skipped: [], stopped: false };
     this.runs.push(run);
-    if (this.runs.length > 200) this.runs.splice(0, this.runs.length - 200);
+    this.prune();
     const fire = (n: number): void => {
       if (run.stopped || (run.count !== null && n >= run.count)) return;
       this.message(run, p, n + 1, 0);
@@ -203,10 +226,14 @@ export class AppSim {
     return run;
   }
 
-  /** Stop a run: no more messages (those on their way finish); an MQTT client unsubscribes and disconnects. */
+  /**
+   * Stop a run: no more messages and no more retries; a message not sent yet (waiting for its DHCP lease, a DNS answer)
+   * is not sent, one on its way finishes. Also while its last message is still on its way (a retry may follow it). An
+   * MQTT client unsubscribes and disconnects.
+   */
   stop(run: AppRun): boolean {
     if (run.app.profile === 'mqtt_client') return !!this.mqttStop && this.mqttStop(run);
-    if (run.stopped || !this.pending(run)) return false;
+    if (run.stopped || !this.active(run)) return false;
     run.stopped = true;
     run.stoppedAt = this.e.now;
     for (const t of run.tests) this.T.cancel(t, 'not sent: cancelled (Stop)');
@@ -223,17 +250,30 @@ export class AppSim {
     return this.pending(r) || r.tests.some((t) => !t.done);
   }
 
+  /** The history bounded: the oldest finished runs leave it, never one still going on (an MQTT client until stopped). */
+  private prune(): void {
+    let over = this.runs.length - RUN_HISTORY;
+    for (let i = 0; over > 0 && i < this.runs.length; ) {
+      const r = this.runs[i];
+      if (r.app.profile === 'mqtt_client' ? !r.stopped : this.active(r)) i++;
+      else {
+        this.runs.splice(i, 1);
+        over--;
+      }
+    }
+  }
+
   /** Message n (try 0, or a retry): to its peer as it is now. */
   private message(run: AppRun, p: AppProfile, n: number, retry: number): void {
     const a = run.app;
     if (retry === 0) run.sent = n;
     if (!this.e.deviceOn(run.dev)) {
-      run.skipped.push({ n, t: this.e.now, why: `not sent: ${run.dev} is powered off` });
+      run.skipped.push({ n, t: this.e.now, why: `not sent: ${run.dev} is powered off`, retry });
       return;
     }
     const peer = this.peerNow(run.dev, a);
     if (typeof peer === 'string') {
-      run.skipped.push({ n, t: this.e.now, why: `not sent: ${peer}` });
+      run.skipped.push({ n, t: this.e.now, why: `not sent: ${peer}`, retry });
       return;
     }
     const v = this.family(a);
@@ -265,28 +305,74 @@ export class AppSim {
         this.message(run, p, n, retry + 1);
       },
     });
-    if (typeof t === 'string') run.skipped.push({ n, t: this.e.now, why: `not sent: ${t}` });
+    if (typeof t === 'string') run.skipped.push({ n, t: this.e.now, why: `not sent: ${t}`, retry });
     else run.tests.push(t);
   }
 
-  /** The applications that start with the simulation (their own start setting; the Senders choose only what is shown), once the network had time to come up. */
+  /**
+   * The applications that start with the simulation (their own start setting; the Senders choose only what is shown),
+   * once the network had time to come up: 3 s after the start — or, for a device not operational then (booting, off,
+   * waiting for its host), 3 s after it has booted. Each starts once: a run of it already going on is not doubled.
+   */
   private startConfigured(): void {
     for (const d of this.P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
       for (const a of d.applications || []) {
         if (a.start !== 'simulation_start') continue;
         const p = appProfile(a.profile);
         if (!p || !p.client) continue;
-        this.e.at(3000 + this.e.jitter(d.id), () => {
-          const r = this.start(d.id, a.id, 'start');
-          if (typeof r === 'string') this.e.note('note', p.transport, d.id, '', 'application not started', '', `${d.id}/${a.id} (${a.name}) does not start with the simulation: ${r}`);
-        });
+        const key = `${d.id}/${a.id}`;
+        this.configured.set(key, { dev: d.id, app: a, state: 'due', gen: 0 });
+        this.e.at(3000 + this.e.jitter(d.id), () => this.startOne(key, 0));
       }
     }
+  }
+
+  /** A device became operational: what waited for it is tried once the network had time to come up (the latest boot only). */
+  private deviceUp(dev: string): void {
+    for (const [key, c] of this.configured) {
+      if (c.dev !== dev || c.state !== 'waiting') continue;
+      const g = ++c.gen;
+      this.e.at(this.e.now + 3000 + this.e.jitter(dev), () => this.startOne(key, g));
+    }
+  }
+
+  /** One attempt of an application that starts with the simulation: started; waiting for its device (said once); refused (said). */
+  private startOne(key: string, g: number): void {
+    const c = this.configured.get(key);
+    if (!c || c.gen !== g || c.state === 'started' || c.state === 'refused') return;
+    const { dev, app: a } = c;
+    const p = appProfile(a.profile) as AppProfile;
+    const proto = p.id === 'mqtt_client' ? 'mqtt' : p.transport;
+    // not operational yet (booting, powered off, waiting for its host): it waits — not a refusal
+    const ps = this.e.powerState(dev);
+    if (ps ? ps.state !== 'on' : !this.e.deviceOn(dev)) {
+      const why = ps && ps.state === 'booting' ? `${dev} is booting (up at t = ${fmtSec(ps.until as number)})` : `${dev} is powered off${ps && ps.why ? ` (${ps.why})` : ''}`;
+      if (c.state !== 'waiting' || c.why !== why) this.e.note('note', proto, dev, '', 'application waiting', '', `${key} (${a.name}) starts with the simulation once ${dev} is operational: ${why}`);
+      c.state = 'waiting';
+      c.why = why;
+      return;
+    }
+    const r = this.start(dev, a.id, 'start');
+    if (typeof r !== 'string') {
+      c.state = 'started';
+      c.why = undefined;
+      return;
+    }
+    // (started meanwhile from Network events or an experiment: that run goes on, not a second one)
+    c.state = /is running already/.test(r) ? 'started' : 'refused';
+    c.why = r;
+    this.e.note('note', proto, dev, '', 'application not started', '', `${key} (${a.name}) does not start with the simulation: ${r}`);
   }
 
   /** The runs started with the simulation, as status rows (those of Network events are in Active events). */
   private status(): SessionStatus[] {
     const out: SessionStatus[] = [];
+    // what waits for its device to start with the simulation (not started yet: no run)
+    for (const [key, c] of this.configured) {
+      if (c.state !== 'waiting') continue;
+      const p = appProfile(c.app.profile) as AppProfile;
+      out.push({ protocol: p.id === 'mqtt_client' ? 'mqtt' : p.transport, name: `${key}: ${c.app.name}`, device: c.dev, peer: '', state: 'Waiting', up: false, detail: `starts with the simulation once ${c.dev} is operational: ${c.why}` });
+    }
     for (const r of this.runs) {
       if (r.how !== 'start' || r.app.profile === 'mqtt_client') continue;
       const o = appOutcome(r);
@@ -305,21 +391,29 @@ export class AppSim {
   }
 }
 
-/** A run's messages as outcomes: answered (or, one-way, received), failed, pending, cancelled; retries not counted twice. */
+/**
+ * A run's messages as outcomes, one per original message: answered (or, one-way, received), failed, pending, cancelled.
+ * Its last attempt decides each — a try sent, or one that could not be sent (a skipped retry fails that message once,
+ * not again); the retries are counted apart.
+ */
 export function appOutcome(r: AppRun): { ok: number; failed: number; pending: number; cancelled: number; retries: number } {
-  // the last try of each message decides it
-  const last = new Map<number, Test>();
+  const last = new Map<number, { retry: number; t?: Test }>();
   for (const t of r.tests) {
     const k = t.msg || 1;
     const was = last.get(k);
-    if (!was || (t.retry || 0) >= (was.retry || 0)) last.set(k, t);
+    if (!was || (t.retry || 0) >= was.retry) last.set(k, { retry: t.retry || 0, t });
+  }
+  for (const s of r.skipped) {
+    const was = last.get(s.n);
+    if (!was || (s.retry || 0) >= was.retry) last.set(s.n, { retry: s.retry || 0 });
   }
   let ok = 0;
-  let failed = r.skipped.length;
+  let failed = 0;
   let pending = 0;
   let cancelled = 0;
-  for (const t of last.values()) {
-    if (!t.done) pending++;
+  for (const { t } of last.values()) {
+    if (!t) failed++;
+    else if (!t.done) pending++;
     else if (/cancelled \(Stop\)/.test(t.result)) cancelled++;
     else if (t.ok) ok++;
     else failed++;

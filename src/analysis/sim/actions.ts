@@ -286,7 +286,8 @@ export function appView(a: ActionRecord, c: ActionContext): ActionView {
     progress: { done: r.sent, total: r.count, unit: 'sent' },
     outcome: { ok: o.ok, failed: o.failed, pending: o.pending, unknown: 0, cancelled: o.cancelled, rate: true, basis: details[1] },
     summary: appSummaryText(r, o),
-    controls: active && !r.stopped && (r.count === null || r.sent < r.count) ? [{ op: 'stop', label: 'Stop' }] : [],
+    // (Stop also while its last message is on its way: no retry of it follows)
+    controls: active && !r.stopped ? [{ op: 'stop', label: 'Stop' }] : [],
     details,
     tests: r.tests.map((t) => t.id),
   };
