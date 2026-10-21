@@ -772,14 +772,34 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
  * session shows the neighbour heard (Heard), Down after the timeout without
  * any Response from it — its routes time out on their own.
  */
+/**
+ * RIP's Request for the whole table (RFC 2453 §3.9.1): when the router comes up — its first boot, after a power cycle —
+ * and when the interface comes up again; once per interface (its sessions there share it).
+ */
+function ripRequest(P: ProtocolSim, s: Sess): void {
+  if (!P.shared.has('rip-hooks')) {
+    P.shared.set('rip-hooks', true);
+    // powered off: it asks again when it boots
+    P.deviceHooks.push((dev, up) => {
+      if (up) return;
+      for (const k of Array.from(P.shared.keys())) if (k.indexOf(`rip-req|${dev}|`) === 0) P.shared.delete(k);
+    });
+  }
+  const key = `rip-req|${s.dev}|${s.local.l3.id}`;
+  // (an interface still down sends nothing: it asks when it comes up)
+  if (P.shared.has(key) || !P.e.isL3Up(s.dev, s.local.l3.id)) return;
+  P.shared.set(key, true);
+  const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+  P.multicast(s, group, 'Request', 'asks for the whole table');
+}
+
 const rip: Behaviour = {
   start(P, s) {
     const R = P.ripSim();
+    ripRequest(P, s);
     const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
-    P.multicast(s, group, 'Request', 'asks for the whole table');
     const upd = (): number => P.timer(s, s.profile, 'hello').ms;
     P.periodic(
       () => true,
@@ -808,7 +828,10 @@ const rip: Behaviour = {
     R.response(s, ((msg.data || {}) as { rip?: RipEntry[] }).rip || []);
   },
   iface(P, s, up) {
-    if (!up) P.ripSim().ifaceDown(s);
+    if (!up) {
+      P.ripSim().ifaceDown(s);
+      P.shared.delete(`rip-req|${s.dev}|${s.local.l3.id}`);
+    } else if (P.e.deviceOn(s.dev)) ripRequest(P, s);
   },
 };
 

@@ -194,3 +194,29 @@ test('RIP: power-off and a quick reboot — the old table’s timers (timeouts, 
   assert.equal(route(s, 'r2', '10.1.0.10').kind, 'forward');
   assert.equal(route(s, 'r2', '10.3.0.10').kind, 'forward');
 });
+
+test('RIP: a router asks for its neighbours’ tables when it comes up — at its first boot, after a power cycle (once its interface is up, not while it is still down), and when an interface comes up again (RFC 2453 §3.9.1)', () => {
+  const s = sim(CHAIN());
+  const requests = (dev, t0) => s.events().filter((e) => e.kind === 'message' && e.protocol === 'rip' && e.device === dev && e.what === 'Request' && e.t >= t0);
+  s.runTo(30000);
+  assert.ok(requests('r2', 0).length >= 1, 'at its first boot');
+  s.powerOff('r2');
+  s.runTo(31000);
+  const t0 = s.now;
+  s.powerOn('r2');
+  s.runTo(t0 + 120000);
+  const after = requests('r2', t0);
+  assert.equal(after.length, 2, `once per interface after the reboot: ${after.map((e) => Math.round(e.t)).join()}`);
+  assert.ok(!s.events().some((e) => e.t >= t0 && e.kind === 'drop' && e.device === 'r2' && e.what === 'Request'), 'never into an interface still down');
+  // the neighbours answer it
+  assert.ok(s.events().some((e) => e.t >= after[0].t && e.kind === 'message' && e.protocol === 'rip' && e.device === 'r1' && e.what === 'Response' && /answer to the request/.test(e.detail)));
+  // an interface shut and brought up again: one more Request from that interface
+  const t1 = s.now;
+  s.shut('r2', 'g1');
+  s.runTo(t1 + 1000);
+  s.noShut('r2', 'g1');
+  s.runTo(t1 + 10000);
+  const again = requests('r2', t1);
+  assert.equal(again.length, 1);
+  assert.match(again[0].detail, /on g1/);
+});
