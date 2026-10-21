@@ -30,11 +30,19 @@
  * nothing on for 1.5 × the keep alive [MQTT-3.1.2-24]. A client whose
  * connection closed (or could not be opened) connects again after a
  * reconnect delay (a modelling default of 5 s) until it is stopped; Stop
- * unsubscribes, disconnects (DISCONNECT, then FIN) and ends the run.
+ * unsubscribes, disconnects (DISCONNECT, then FIN) and ends the run. A
+ * periodic publisher's schedule is its run's, not its connection's: it
+ * goes on across reconnections (one round per interval; a round that falls
+ * while it is not connected is not published, the next one is).
+ *
+ * Packet identifiers: 1–65535, each side its own (§2.3.1), wrapping after
+ * 65535 and skipping one still waiting for its acknowledgment; SUBACK and
+ * UNSUBACK complete only the request of their identifier.
  *
  * Not modelled: QoS 2, persistent sessions, retained messages, wills,
  * user names and passwords, TLS, payload contents. Message sizes follow
- * the packets' fixed and variable headers (the payload as configured).
+ * the packets' fixed and variable headers (their strings in UTF-8 bytes,
+ * §1.5.3), the payload as configured.
  */
 import { IpAddr } from '../../model/ip';
 import { APP_DEFAULTS, AppInstance, mqttClientId, mqttRole, topicFilterProblem, topicMatches } from '../../model/applications';
@@ -55,7 +63,38 @@ export const RECONNECT_DELAY = 5000;
 function packetBytes(rest: number): number {
   return 1 + (rest < 128 ? 1 : rest < 16384 ? 2 : rest < 2097152 ? 3 : 4) + rest;
 }
-const str = (s: string): number => 2 + s.length;
+/** The bytes of a string in UTF-8 (MQTT's encoding of its strings, 3.1.1 §1.5.3): one to four per character, by code point. */
+export function utf8Bytes(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const u = s.charCodeAt(i);
+    if (u < 0x80) n += 1;
+    else if (u < 0x800) n += 2;
+    else if (u >= 0xd800 && u <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      // a surrogate pair: one code point beyond the BMP, four bytes
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
+}
+/** A UTF-8 encoded string of an MQTT packet: its two-byte length and its bytes (3.1.1 §1.5.3). */
+const str = (s: string): number => 2 + utf8Bytes(s);
+
+/** Packet identifiers are 16 bits, never 0 (3.1.1 §2.3.1). */
+const PID_MAX = 65535;
+/**
+ * The next packet identifier of one side (client and broker each have their own, 3.1.1 §2.3.1): counting on from the last
+ * one, wrapping after 65535 to 1, skipping one still in use by an exchange not yet acknowledged; null when all 65535 are.
+ */
+function nextPid(holder: { nextPid: number }, inUse: (pid: number) => boolean): number | null {
+  for (let k = 0; k < PID_MAX; k++) {
+    const pid = holder.nextPid >= 1 && holder.nextPid <= PID_MAX ? holder.nextPid : 1;
+    holder.nextPid = pid === PID_MAX ? 1 : pid + 1;
+    if (!inUse(pid)) return pid;
+  }
+  return null;
+}
 
 /** A broker's session of one client. */
 interface BrokerSession {
@@ -108,6 +147,9 @@ export interface MqttRun {
   /** QoS 1 publications waiting for PUBACK */
   inflight: Map<number, { topic: string; bytes: number; tries: number; gen: number }>;
   nextPid: number;
+  /** the packet identifiers of its SUBSCRIBE and UNSUBSCRIBE waiting for SUBACK / UNSUBACK (null: none) */
+  subPid: number | null;
+  unsubPid: number | null;
   /** what it received, by topic */
   received: Map<string, number>;
   /** the last control packet it sent (its keep alive counts from it) */
@@ -116,6 +158,15 @@ export interface MqttRun {
   gen: number;
   /** publication rounds done (one PUBLISH per topic each) */
   rounds: number;
+  /**
+   * The run's publication schedule (its token; 0: none): one per run, kept across its connections — a round that falls
+   * while it is not connected is not published (nor counted), the next one is once it is connected again
+   */
+  sched: number;
+  /** rounds not published: not connected at their time */
+  missed: number;
+  /** the connection whose first missed round was said (once per connection lost) */
+  missedSaid: number;
   lost: number;
   lastClose?: string;
   /** its traffic id (Network events): what it sends and causes is the foreground */
@@ -126,6 +177,7 @@ export interface MqttRun {
 export class MqttSim {
   readonly brokers = new Map<string, Broker>();
   readonly clients: MqttRun[] = [];
+  private schedSeq = 0;
 
   constructor(
     private P: ProtocolSim,
@@ -189,7 +241,7 @@ export class MqttSim {
     const b = this.brokers.get(a.broker as string) as Broker;
     const interval = a.publish.length ? a.interval || 0 : 0;
     const run: AppRun = { id: this.A.nextId(), dev, app: a, how, target: `${a.broker}:${b.port}`, t0: this.e.now, count: a.publish.length && a.count !== undefined ? a.count : a.publish.length && !interval ? 1 : null, interval, sent: 0, tests: [], retried: 0, skipped: [], stopped: false };
-    const c: MqttRun = { run, clientId: mqttClientId(dev, a), broker: b.dev, port: b.port, state: 'Disconnected', sock: null, connects: 0, granted: new Map(), published: 0, pubacked: 0, inflight: new Map(), nextPid: 1, received: new Map(), lastSent: this.e.now, pingAt: null, gen: 0, rounds: 0, lost: 0, traffic: how !== 'start' ? this.T.reserveId() : undefined };
+    const c: MqttRun = { run, clientId: mqttClientId(dev, a), broker: b.dev, port: b.port, state: 'Disconnected', sock: null, connects: 0, granted: new Map(), published: 0, pubacked: 0, inflight: new Map(), nextPid: 1, subPid: null, unsubPid: null, received: new Map(), lastSent: this.e.now, pingAt: null, gen: 0, rounds: 0, sched: 0, missed: 0, missedSaid: -1, lost: 0, traffic: how !== 'start' ? this.T.reserveId() : undefined };
     (run as AppRun & { mqtt?: MqttRun }).mqtt = c;
     this.clients.push(c);
     this.A.runs.push(run);
@@ -224,15 +276,18 @@ export class MqttSim {
       return;
     }
     c.gen++;
+    const g = c.gen;
     c.state = 'Connecting';
     c.connects++;
     c.granted.clear();
+    c.sock = null;
     const s = this.as(c, () =>
       this.T.appConnect(c.run.dev, ip, c.port, `MQTT client ${c.clientId}`, {
         open: (sk) => this.as(c, () => this.opened(c, sk)),
         message: (sk, m) => this.as(c, () => this.clientIn(c, sk, m)),
+        // (this attempt's own socket — also when it closes before appConnect returns it: its first SYN failed at once)
         closed: (sk, w) => {
-          if (c.sock === sk) this.as(c, () => this.lostConnection(c, w, true));
+          if (c.gen === g && (c.sock === sk || c.sock === null)) this.as(c, () => this.lostConnection(c, w, true));
         },
       }, undefined, { protocol: 'mqtt', label: 'MQTT' }),
     );
@@ -242,6 +297,8 @@ export class MqttSim {
       this.reconnectSoon(c, s);
       return;
     }
+    // (closed already, while it was being opened: lostConnection said so and connects again)
+    if (c.gen !== g) return;
     c.sock = s;
     this.note(c, 'connecting', 'Connecting', `${this.name(c)} opens a TCP connection to the broker ${c.broker} at ${formatAddr(ip)}:${c.port} (${c.connects === 1 ? why : 'reconnection ' + (c.connects - 1) + ': ' + why})`);
   }
@@ -275,11 +332,15 @@ export class MqttSim {
           return;
         }
         c.state = 'Connected';
+        // (a clean session: nothing of the last one is in flight — its packet identifiers start over)
+        c.nextPid = 1;
+        c.subPid = c.unsubPid = null;
         this.note(c, 'connected', 'Connected', `${this.name(c)} is connected to ${c.broker} (CONNACK 0: accepted, no session present: a clean session)`);
         const subs = c.run.app.subscribe;
         if (subs.length) {
           const qos = c.run.app.qos || 0;
-          const pid = c.nextPid++;
+          const pid = nextPid(c, (x) => this.clientPidInUse(c, x)) as number;
+          c.subPid = pid;
           this.send(c, s, 'SUBSCRIBE', subs.length === 1 ? subs[0] : `${subs.length} filters`, `MQTT SUBSCRIBE (packet ${pid}) from ${c.clientId}: ${subs.map((f) => `${f} (QoS ${qos})`).join(', ')}`, packetBytes(2 + subs.reduce((n, f) => n + str(f) + 1, 0)), { pid, filters: subs.map((f) => ({ filter: f, qos })) });
         }
         this.armKeepalive(c);
@@ -287,6 +348,9 @@ export class MqttSim {
         return;
       }
       case 'MQTT SUBACK': {
+        // (only the SUBACK of its SUBSCRIBE: the same packet identifier, [MQTT-3.8.4-2])
+        if (d.pid !== c.subPid) return;
+        c.subPid = null;
         const codes = (d.codes as number[]) || [];
         c.run.app.subscribe.forEach((f, k) => c.granted.set(f, codes[k] !== undefined ? codes[k] : 0x80));
         this.note(c, 'subscribed', 'Connected', `${this.name(c)}: SUBACK ${c.run.app.subscribe.map((f, k) => `${f} → ${codes[k] === 0x80 ? 'refused (0x80)' : 'QoS ' + codes[k]}`).join(', ')}`);
@@ -309,6 +373,8 @@ export class MqttSim {
         c.pingAt = null;
         return;
       case 'MQTT UNSUBACK':
+        if (d.pid !== c.unsubPid) return;
+        c.unsubPid = null;
         if (c.run.stopped) this.disconnect(c, s);
         return;
     }
@@ -335,32 +401,60 @@ export class MqttSim {
     this.later(c, Math.max(1000, ka / 4), tick);
   }
 
-  /** Publications: one to each topic now, then every interval of simulated time. */
+  /** Is a client's packet identifier in use (a QoS 1 publication, a SUBSCRIBE or UNSUBSCRIBE not yet acknowledged)? */
+  private clientPidInUse(c: MqttRun, pid: number): boolean {
+    return c.inflight.has(pid) || pid === c.subPid || pid === c.unsubPid;
+  }
+
+  private publishedAll(c: MqttRun): boolean {
+    return c.run.count !== null && c.rounds >= c.run.count;
+  }
+
+  /**
+   * Connected (CONNACK): the first round of publications at once, then the run's own schedule every interval of simulated
+   * time — one schedule per run, kept across reconnections (a reconnection neither restarts nor duplicates it). A publisher
+   * whose rounds are all done and that subscribes to nothing ends once they are acknowledged — also when it got there on
+   * an earlier connection (what was unacknowledged then was lost with the clean session).
+   */
   private startPublishing(c: MqttRun): void {
     const r = c.run;
-    if (!r.app.publish.length || (r.count !== null && c.rounds >= r.count)) return;
-    if (c.rounds > 0 && r.interval) return;
-    const round = (): void => {
-      if (c.state !== 'Connected' || r.stopped || (r.count !== null && c.rounds >= r.count)) return;
-      c.rounds++;
-      r.sent = c.rounds;
-      for (const t of r.app.publish) this.publish(c, t);
-      if (r.count !== null && c.rounds >= r.count) {
-        // a publisher without subscriptions is done when its last publications are acknowledged
-        if (!r.app.subscribe.length) this.finishWhenAcked(c);
-      }
-    };
-    round();
-    if (!r.interval) return;
-    const g = c.gen;
+    if (!r.app.publish.length) return;
+    if (this.publishedAll(c)) {
+      if (!r.app.subscribe.length) this.finishWhenAcked(c);
+      return;
+    }
+    if (c.sched || c.rounds > 0) return;
+    this.round(c);
+    if (!r.interval || this.publishedAll(c)) return;
+    const token = ++this.schedSeq;
+    c.sched = token;
     const next = (): void => {
       this.e.after(r.interval, () => {
-        if (c.gen !== g || c.state === 'Stopped') return;
-        this.as(c, round);
-        if (c.state === 'Connected' && (r.count === null || c.rounds < r.count)) next();
+        if (c.sched !== token || c.state === 'Stopped' || r.stopped) return;
+        if (c.state === 'Connected') this.as(c, () => this.round(c));
+        else {
+          c.missed++;
+          if (c.missedSaid !== c.gen) {
+            c.missedSaid = c.gen;
+            this.note(c, 'not published', c.state, `${this.name(c)}: not connected at its publication time — the round is not published; it publishes again at its next one once connected`);
+          }
+        }
+        if (this.publishedAll(c)) c.sched = 0;
+        else next();
       });
     };
     next();
+  }
+
+  /** One round of publications: one PUBLISH to each topic. */
+  private round(c: MqttRun): void {
+    const r = c.run;
+    if (c.state !== 'Connected' || r.stopped || this.publishedAll(c)) return;
+    c.rounds++;
+    r.sent = c.rounds;
+    for (const t of r.app.publish) this.publish(c, t);
+    // a publisher without subscriptions is done when its last publications are acknowledged
+    if (this.publishedAll(c) && !r.app.subscribe.length) this.finishWhenAcked(c);
   }
 
   private publish(c: MqttRun, topic: string): void {
@@ -368,7 +462,11 @@ export class MqttSim {
     if (!s || !s.open) return;
     const qos = c.run.app.qos || 0;
     const size = c.run.app.payloadSize !== undefined ? c.run.app.payloadSize : APP_DEFAULTS.mqttPayload;
-    const pid = qos ? c.nextPid++ : 0;
+    const pid = qos ? nextPid(c, (x) => this.clientPidInUse(c, x)) : 0;
+    if (pid === null) {
+      this.note(c, 'not published', c.state, `${this.name(c)}: no packet identifier free (all ${PID_MAX} wait for PUBACK): the publication to ${topic} is not sent`);
+      return;
+    }
     c.published++;
     const bytes = packetBytes(str(topic) + (qos ? 2 : 0) + size);
     this.send(c, s, 'PUBLISH', topic, `MQTT PUBLISH from ${c.clientId} to ${topic}: QoS ${qos}${qos ? `, packet ${pid}` : ''}, a payload of ${size} bytes (its contents are not modelled)`, bytes, { topic, qos, pid, dup: false, payload: size, from: c.run.dev });
@@ -378,7 +476,8 @@ export class MqttSim {
     const retry = c.run.app.retryInterval !== undefined ? c.run.app.retryInterval : APP_DEFAULTS.mqttRetry;
     const again = (): void => {
       this.later(c, retry, () => {
-        if (!c.inflight.has(pid) || !c.sock || !c.sock.open) return;
+        // (this publication's own: its packet identifier, once acknowledged, may be another's later)
+        if (c.inflight.get(pid) !== f || !c.sock || !c.sock.open) return;
         f.tries++;
         c.run.retried++;
         this.send(c, c.sock, 'PUBLISH', `${topic} (DUP)`, `MQTT PUBLISH from ${c.clientId} to ${topic} again: QoS 1, packet ${pid}, DUP (no PUBACK within ${durationText(retry)})`, bytes, { topic, qos, pid, dup: true, payload: size, from: c.run.dev });
@@ -423,7 +522,8 @@ export class MqttSim {
       if (s && s.open && c.state === 'Connected') {
         const subs = c.run.app.subscribe;
         if (subs.length) {
-          const pid = c.nextPid++;
+          const pid = nextPid(c, (x) => this.clientPidInUse(c, x)) as number;
+          c.unsubPid = pid;
           this.send(c, s, 'UNSUBSCRIBE', subs.length === 1 ? subs[0] : `${subs.length} filters`, `MQTT UNSUBSCRIBE (packet ${pid}) from ${c.clientId}: ${subs.join(', ')}`, packetBytes(2 + subs.reduce((n, f) => n + str(f), 0)), { pid, filters: subs });
           // (no UNSUBACK in time: it disconnects all the same)
           this.later(c, 3000, () => {
@@ -562,7 +662,11 @@ export class MqttSim {
 
   private deliver(b: Broker, s: BrokerSession, topic: string, q: 0 | 1, payload: number): void {
     if (!s.sock.open) return;
-    const pid = q ? s.nextPid++ : 0;
+    const pid = q ? nextPid(s, (x) => s.inflight.has(x)) : 0;
+    if (pid === null) {
+      this.e.note('drop', 'mqtt', b.dev, s.dev, 'not delivered', '', `MQTT broker ${b.dev}: no packet identifier free for ${s.clientId} (all ${PID_MAX} wait for PUBACK): the publication to ${topic} is not delivered to it`);
+      return;
+    }
     const bytes = packetBytes(str(topic) + (q ? 2 : 0) + payload);
     b.delivered++;
     s.delivered++;
@@ -574,7 +678,7 @@ export class MqttSim {
     const g = s.gen;
     const again = (): void => {
       this.e.after(b.retry, () => {
-        if (s.gen !== g || !s.inflight.has(pid) || !s.sock.open) return;
+        if (s.gen !== g || s.inflight.get(pid) !== f || !s.sock.open) return;
         f.tries++;
         this.e.withTest(traffic, () => s.sock.send(mqttMsg('PUBLISH', `${topic} (DUP)`, `MQTT PUBLISH from the broker ${b.dev} to ${s.clientId} again: ${topic}, QoS 1, packet ${pid}, DUP (no PUBACK within ${durationText(b.retry)})`, bytes, { topic, qos: q, pid, dup: true, payload })));
         again();
