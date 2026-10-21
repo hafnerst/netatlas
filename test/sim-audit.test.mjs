@@ -241,3 +241,66 @@ test('LLDP: a neighbour is kept for the time-to-live its own advertisement annou
   const msg = s.events().find((e) => e.kind === 'message' && e.protocol === 'lldp' && e.device === 'b');
   assert.match(msg.detail, /TTL 2 min/);
 });
+
+// ---- BFD for its clients: one transmit stream, its own clients only, the slow rate until Up (RFC 5880, RFC 5882)
+
+const PAIR2 = `netatlas: 1
+title: bfd for ospf
+devices:
+  - {id: r1, type: router, router_id: 10.255.0.1, interfaces: [{id: g0, ip: 10.0.12.1/30}, {id: g1, ip: 10.0.21.1/30}], protocols: {ospf: {}, bfd: {}}}
+  - {id: r2, type: router, router_id: 10.255.0.2, interfaces: [{id: g0, ip: 10.0.12.2/30}, {id: g1, ip: 10.0.21.2/30}], protocols: {ospf: {}, bfd: {}}}
+links:
+  - {id: l1, a: "r1:g0", b: "r2:g0"}
+  - {id: l2, a: "r1:g1", b: "r2:g1"}
+relations:
+  - {id: oa, protocol: ospf, endpoints: ["r1:g0", "r2:g0"]}
+  - {id: ob, protocol: ospf, endpoints: ["r1:g1", "r2:g1"]}
+  - {id: bfd1, protocol: bfd, endpoints: ["r1:g0", "r2:g0"]}
+`;
+const controls = (s, dev, a, b) => s.events().filter((e) => e.kind === 'message' && e.protocol === 'bfd' && e.device === dev && e.what === 'Control' && e.t >= a && e.t < b);
+
+test('BFD waiting for its client: a power cycle while it waits and Controls arriving before the waiter fires start one transmit stream, not two (the same rate as without the cycle)', () => {
+  const rate = (cycle) => {
+    const s = new S.Simulation(model(PAIR2));
+    s.runTo(10000);
+    if (cycle) {
+      s.powerOff('r1');
+      s.runTo(11000);
+      s.powerOn('r1');
+    }
+    s.runTo(200000);
+    assert.ok(['r1', 'r2'].every((d) => s.sessions(d, 'bfd')[0].state === 'Up'));
+    return ['r1', 'r2'].map((d) => controls(s, d, 180000, 200000).length);
+  };
+  // (20 s at 300 ms: 66 or 67 by the phase; a second stream would double it)
+  for (const n of rate(false).concat(rate(true))) assert.ok(n >= 66 && n <= 67, `one stream at 300 ms: ${n}`);
+});
+
+test('BFD while not Up sends at least 1 s apart and says so (RFC 5880 §6.8.3); Up, at its configured 300 ms', () => {
+  const s = new S.Simulation(model(PAIR2));
+  // r2's Controls lost: r1 never gets past Down
+  s.engine.impair = (link, f) => (f.msg.protocol === 'bfd' && f.msg.data && f.msg.data.from === 'r2' ? { lose: true } : null);
+  s.runTo(80000);
+  const down = controls(s, 'r1', 60000, 80000);
+  assert.ok(down.length >= 15 && down.slice(1).every((e, i) => e.t - down[i].t >= 999), down.map((e) => Math.round(e.t)).join());
+  assert.match(down[0].detail, /state Down, desired min TX 1 s \(at least 1 s while not Up\), required min RX 0\.3 s/);
+  s.engine.impair = null;
+  s.runTo(120000);
+  assert.equal(s.sessions('r1', 'bfd')[0].state, 'Up');
+  const up = controls(s, 'r1', 110000, 120000);
+  assert.ok(up.length >= 30, `${up.length} Controls in 10 s once Up`);
+  assert.match(up[up.length - 1].detail, /state Up, desired min TX 0\.3 s,/);
+});
+
+test('BFD Down tells its own clients only (RFC 5882 §4): OSPF on the BFD session’s link goes down, OSPF on the parallel link without BFD stays Full', () => {
+  const s = new S.Simulation(model(PAIR2));
+  s.runTo(100000);
+  const ospf = (rel) => s.sessions('r1', 'ospf').find((x) => x.name.indexOf(rel + ':') === 0 || x.relation === rel);
+  assert.ok(['oa', 'ob'].every((r) => ospf(r) && ospf(r).state === 'Full'));
+  s.engine.impair = (link, f) => (link === 'l1' && f.msg.protocol === 'bfd' ? { lose: true } : null);
+  s.runTo(102000);
+  assert.equal(s.sessions('r1', 'bfd')[0].state, 'Down');
+  assert.equal(ospf('oa').state, 'Down');
+  assert.equal(ospf('ob').state, 'Full', 'the other link’s adjacency is not BFD’s');
+  assert.ok(!s.events().some((e) => e.t >= 100000 && e.kind === 'state' && e.protocol === 'ospf' && e.what === 'Down' && /^OSPF ob:/.test(e.detail)));
+});

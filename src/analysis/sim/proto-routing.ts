@@ -48,11 +48,22 @@ function every(P: ProtocolSim, s: Sess, ms: () => number, fn: () => void): void 
   P.periodic(() => s.gen === g, ms, fn);
 }
 
-/** Tell the protocols that use BFD between two devices that it went down. */
-export function bfdDown(P: ProtocolSim, dev: string, peer: string): void {
+/**
+ * The BFD sessions that serve a client session: those on its interface or between its addresses; a client between
+ * loopbacks (BGP …), not on a link of its own, every BFD session of the device to that peer.
+ */
+function bfdFor(P: ProtocolSim, c: Sess): Sess[] {
+  const all = Array.from(P.sessions.values()).filter((b) => b.profile.behaviour === 'bfd' && b.dev === c.dev && b.peer === c.peer);
+  const same = all.filter((b) => b.local.l3.id === c.local.l3.id || (formatAddr(ipOf(b.local)) === formatAddr(ipOf(c.local)) && formatAddr(ipOf(b.remote)) === formatAddr(ipOf(c.remote))));
+  return same.length || c.local.l3.kind !== 'loopback' ? same : all;
+}
+
+/** Tell the protocols that BFD session serves (RFC 5882 §4: its own clients — on its interface, between its addresses) that it went down. */
+export function bfdDown(P: ProtocolSim, bs: Sess): void {
   for (const s of Array.from(P.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
-    if (s.dev !== dev || s.peer !== peer || !s.up) continue;
+    if (s.dev !== bs.dev || s.peer !== bs.peer || !s.up) continue;
     if (['ospf', 'isis', 'eigrp', 'bgp', 'evpn', 'l3vpn'].indexOf(s.protocol) < 0) continue;
+    if (bfdFor(P, s).indexOf(bs) < 0) continue;
     const b = P.behaviours.get(s.profile.behaviour) as Behaviour & { down?: (P: ProtocolSim, s: Sess, why: string) => void };
     if (b.down) b.down(P, s, 'BFD session down');
   }
@@ -1135,6 +1146,12 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
 
 // ------------------------------------------------------------------ BFD
 
+/** A BFD session's Desired Min TX: its interval, at least 1 s while it is not Up (RFC 5880 §6.8.3). */
+function bfdTx(P: ProtocolSim, s: Sess): number {
+  const iv = P.timer(s, s.profile, 'interval').ms;
+  return s.state === 'Up' ? iv : Math.max(1000, iv);
+}
+
 const bfd: Behaviour = {
   refresh(P, s) {
     const iv = P.timer(s, s.profile, 'interval');
@@ -1144,6 +1161,9 @@ const bfd: Behaviour = {
   },
   start(P, s) {
     bfd.refresh!(P, s);
+    // one transmit stream per generation: a Control received while it waits for its client (dispatch starts the session),
+    // and the waiter firing later, never start a second one
+    if (s.x.stream === s.gen) return;
     // BFD runs for a client: it starts when a routing session to the same peer asks for it (is up); with no client, at once
     const clients = P.sessionsOf(s.dev).filter((o) => o.peer === s.peer && o.profile.behaviour !== 'bfd' && ['ospf', 'bgp', 'isis', 'eigrp', 'ldp', 'rip'].indexOf(o.profile.behaviour) >= 0);
     if (clients.length && !clients.some((o) => o.up)) {
@@ -1152,14 +1172,24 @@ const bfd: Behaviour = {
         P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `BFD to ${s.peer} waiting for its client (${Array.from(new Set(clients.map((o) => o.profile.label))).join(', ')}) to ask for the session`);
       }
       s.x.started = false;
-      P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => P.startNow(s));
+      // (one waiter per generation; a restart or a power cycle makes the old one do nothing)
+      if (s.x.waiting !== s.gen) {
+        s.x.waiting = s.gen;
+        const g = s.gen;
+        P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => {
+          if (s.gen === g && s.x.stream !== g) P.startNow(s);
+        });
+      }
       return;
     }
-    // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2)
-    every(P, s, () => Math.max(P.timer(s, s.profile, 'interval').ms, typeof s.x.peerMinRx === 'number' ? (s.x.peerMinRx as number) : 0), () => {
+    s.x.stream = s.gen;
+    // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2),
+    // and at least 1 s while the session is not Up (RFC 5880 §6.8.3)
+    every(P, s, () => Math.max(bfdTx(P, s), typeof s.x.peerMinRx === 'number' ? (s.x.peerMinRx as number) : 0), () => {
       const iv = P.timer(s, s.profile, 'interval');
+      const tx = bfdTx(P, s);
       const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired min TX ${fmtSec(iv.ms)}, required min RX ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: iv.ms, minRx: iv.ms, mult: n });
+      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired min TX ${fmtSec(tx)}${tx !== iv.ms ? ' (at least 1 s while not Up)' : ''}, required min RX ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: tx, minRx: iv.ms, mult: n });
     });
   },
   rx(P, s, msg) {
@@ -1177,7 +1207,7 @@ const bfd: Behaviour = {
       if (s.gen !== g || s.state === 'Down') return;
       if (P.e.now - s.heard >= detect - 1) {
         P.setState(s, 'Down', false, `detection time expired (${fmtSec(detect)}: the peer's multiplier ${n} × ${fmtSec(rate)})`);
-        bfdDown(P, s.dev, s.peer);
+        bfdDown(P, s);
       }
     });
     // RFC 5880 6.8.6
@@ -1188,7 +1218,7 @@ const bfd: Behaviour = {
       if (peerState === 'Init' || peerState === 'Up') P.setState(s, 'Up', true, `Control with state ${peerState}`);
     } else if (s.state === 'Up' && peerState === 'Down') {
       P.setState(s, 'Down', false, 'the peer reports Down');
-      bfdDown(P, s.dev, s.peer);
+      bfdDown(P, s);
     }
   },
 };
