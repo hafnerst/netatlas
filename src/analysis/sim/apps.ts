@@ -25,7 +25,7 @@
  * results (actions.ts); several run side by side.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
-import { APP_DEFAULTS, AppInstance, AppProfile, appProfile, parsePeer } from '../../model/applications';
+import { APP_DEFAULTS, AppInstance, AppProfile, appFamily, appProfile, parsePeer } from '../../model/applications';
 import { formatAddr } from '../ipmath';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
@@ -103,8 +103,7 @@ export class AppSim {
 
   /** The address family an application uses: its peer address's, else its ip_version, else IPv4. */
   family(a: AppInstance): 4 | 6 {
-    const pa = a.peer ? parseAddress(a.peer) : null;
-    return pa ? pa.version : a.ipVersion || 4;
+    return appFamily(a);
   }
 
   /**

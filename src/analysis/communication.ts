@@ -31,7 +31,7 @@
  * a TCP session or a stateful return decision is not evaluated (said so, and
  * the simulation is offered for it, never started). Pure and deterministic.
  */
-import { AppInstance, AppProfile, appProfile, topicMatches } from '../model/applications';
+import { AppInstance, AppProfile, appFamily, appProfile, topicMatches } from '../model/applications';
 import { parseAddress } from '../model/ip';
 import { capabilities } from '../model/capabilities';
 import { autoIpv6 } from '../model/ipv6';
@@ -258,10 +258,7 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   // ---- the address family: the client's (ip_version, an address peer), else what the ends have
   const famOf = (): 4 | 6 | undefined => {
     if (req.family) return req.family;
-    if (clientApp) {
-      const pa = clientApp.app.peer ? parseAddress(clientApp.app.peer) : null;
-      return pa ? pa.version : clientApp.app.ipVersion || 4;
-    }
+    if (clientApp) return appFamily(clientApp.app);
     if (to && typeof to !== 'string' && to.kind === 'end' && to.end.kind === 'address') {
       const a = parseAddress(to.end.address);
       return a ? a.version : undefined;
