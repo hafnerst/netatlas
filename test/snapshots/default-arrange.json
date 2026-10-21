@@ -319,37 +319,43 @@
  },
  "vme-rack.yaml physical": {
   "positions": [
-   "act 640 1426",
-   "adc 1043 841",
-   "cons 632 572",
-   "cpu1 194 841",
-   "cpu2 769 841",
-   "dio 1554 841",
-   "drive-can 994 1234",
+   "act 867 1778",
+   "adc 1043 1193",
+   "cons 632 599",
+   "cpu1 194 1193",
+   "cpu2 769 1193",
+   "dio 1279 1193",
+   "drive-can 855 1586",
    "ews 858 115",
-   "fsw 478 841",
-   "gps 863 572",
-   "mil 1293 841",
-   "mil-bus 750 1234",
-   "mon 874 1426",
-   "pump 1100 1426",
-   "sens 390 1426",
-   "stick 1089 572",
-   "sw 858 364",
-   "valve 1334 1426",
-   "vmebus 858 1028"
+   "fsw 478 1193",
+   "gps 863 599",
+   "mil 1539 1193",
+   "mil-bus 1099 1586",
+   "mon 1100 1778",
+   "pump 633 1778",
+   "sens 1343 1778",
+   "stick 1089 599",
+   "sw 858 378",
+   "valve 399 1778",
+   "vmebus 858 1380",
+   "vsw 858 917"
   ],
-  "scene": "a37d27191bcebdef"
+  "scene": "5667028eca6fcabc"
  },
  "vme-rack.yaml logical": {
   "positions": [
-   "cons 132 896",
-   "cpu1 193 663",
-   "cpu2 468 663",
-   "ctrl 607 376",
-   "ews 753 114"
+   "adc 620 1568",
+   "cons 1168 827",
+   "cpu1 193 1156",
+   "cpu2 286 1474",
+   "crate-net 526 1227",
+   "ctrl 537 432",
+   "dio 769 981",
+   "ews 554 132",
+   "mil 859 1302",
+   "vsw 429 883"
   ],
-  "scene": "717e4a8ccbc887d7"
+  "scene": "fc02635d4050269e"
  },
  "addressing.yaml physical": {
   "positions": [

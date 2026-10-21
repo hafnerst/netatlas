@@ -56,7 +56,16 @@ export interface PolicyDecision {
   kind: 'explicit' | 'implicit';
   /** the default action decided */
   byDefault: boolean;
+  /**
+   * no decision: what it waits for — the source address (none given), the service (none given), or the
+   * runtime identity of a device or interface a rule names (an address it takes at runtime, or one several
+   * devices have); `permit` then says nothing (undecided)
+   */
+  undecidedBy?: PolicyUnknown;
 }
+
+/** What an undecided policy decision lacks. */
+export type PolicyUnknown = 'source' | 'service' | 'identity';
 
 /** Does a device apply a policy, and which? */
 export function policyKind(model: Model, dev: Device): 'explicit' | 'implicit' | null {
@@ -82,13 +91,21 @@ const svcWhat = (f: PolicyFlow): string => (f.proto === 'icmp' ? 'ICMP' : f.prot
  */
 export interface PolicyIds {
   addrs(dev: string): Array<{ iface: string; addr: IpAddr }>;
+  /** the devices that have an address (several: which one a flow's address is needs its owner) */
+  holders?(a: IpAddr): string[];
   /** interfaces whose address of a family is acquired at runtime and unknown here (none: everything is known) */
   pending?(dev: string): Array<{ iface: string; version: 4 | 6 }>;
 }
 
+/** The devices of a model that have an address, by the addresses `ids` gives them. */
+function holdersBy(model: Model, addrs: PolicyIds['addrs']): (a: IpAddr) => string[] {
+  return (a) => model.devices.filter((d) => addrs(d.id).some((x) => compareAddr(x.addr, a) === 0)).map((d) => d.id);
+}
+
 /** The configured model's: the written addresses; DHCP and SLAAC / DHCPv6 interfaces are pending. */
-export function configuredIds(model: Model): PolicyIds {
-  return {
+export function configuredIds(model: Model, ctx?: RoutingCtx): PolicyIds {
+  void ctx;
+  const ids: PolicyIds = {
     addrs: (dev) => {
       const d = model.index.devices.get(dev);
       const out: Array<{ iface: string; addr: IpAddr }> = [];
@@ -108,11 +125,14 @@ export function configuredIds(model: Model): PolicyIds {
       return out;
     },
   };
+  ids.holders = holdersBy(model, ids.addrs);
+  return ids;
 }
 
 /** A routing context's (a snapshot's, the simulation's): the written addresses and what it has acquired (its leases); nothing pending. */
 export function ctxIds(model: Model, ctx: RoutingCtx): PolicyIds {
-  return { addrs: (dev) => connectedIn(model, dev, ctx).map((c) => ({ iface: c.iface, addr: c.addr })) };
+  const addrs = (dev: string): Array<{ iface: string; addr: IpAddr }> => connectedIn(model, dev, ctx).map((c) => ({ iface: c.iface, addr: c.addr }));
+  return { addrs, holders: holdersBy(model, addrs) };
 }
 
 /**
@@ -123,7 +143,9 @@ export function ctxIds(model: Model, ctx: RoutingCtx): PolicyIds {
  * A device or interface holds the address among its effective ones
  * (`ids`, the configured model's when none) — never a whole subnet — and,
  * when the flow knows the address's owner (`owner`: two devices of
- * different VRFs may hold the same address), only if it is that owner.
+ * different VRFs may hold the same address), only if it is that owner; an
+ * address several devices have, its owner not known, is 'unknown' — never
+ * every device that has it. A prefix or an address rule is the address.
  */
 export function specMatches(model: Model, spec: string, a: IpAddr, ids?: PolicyIds, owner?: string | null): boolean | 'unknown' {
   if (spec === 'any') return true;
@@ -132,7 +154,11 @@ export function specMatches(model: Model, spec: string, a: IpAddr, ids?: PolicyI
   const by = ids || configuredIds(model);
   const owns = (dev: string, iface?: string): boolean | 'unknown' => {
     if (owner && owner !== dev) return false;
-    if (by.addrs(dev).some((x) => (iface === undefined || x.iface === iface) && compareAddr(x.addr, a) === 0)) return true;
+    if (by.addrs(dev).some((x) => (iface === undefined || x.iface === iface) && compareAddr(x.addr, a) === 0)) {
+      // an address several devices have, its owner not known: it is not every one of them
+      if (!owner && by.holders && by.holders(a).length > 1) return 'unknown';
+      return true;
+    }
     // an address it takes at runtime, unknown here: not a non-match unless the address is known to be another device's
     if (!owner && by.pending && by.pending(dev).some((x) => (iface === undefined || x.iface === iface) && x.version === a.version)) return 'unknown';
     return false;
@@ -160,31 +186,43 @@ function anyMatches(model: Model, specs: string[], a: IpAddr, ids: PolicyIds | u
 }
 
 /** Does a rule match a flow: true, false, or 'service' when it depends on a protocol or port that is not known. */
-function ruleMatches(model: Model, pol: NetPolicy, r: PolicyRule, f: PolicyFlow, svcKnown: boolean): boolean | 'service' | 'source' | 'identity' {
+/**
+ * Does a rule match a flow: true, false, or what it can't be decided without. Every condition that is known
+ * not to hold is checked first — a known protocol or port that differs makes the rule not match whatever is
+ * unknown —; only then does an unknown one (the source, the service, a runtime identity) leave it undecided.
+ */
+function ruleMatches(model: Model, pol: NetPolicy, r: PolicyRule, f: PolicyFlow, svcKnown: boolean): boolean | PolicyUnknown {
   if (r.in.length && (f.inIface === undefined || r.in.indexOf(f.inIface) < 0)) return false;
   if (r.out.length && (f.outIface === undefined || r.out.indexOf(f.outIface) < 0)) return false;
   const inZone = (z: string, i: string | undefined): boolean => i !== undefined && pol.zones.some((x) => x.name === z && x.interfaces.indexOf(i) >= 0);
   if (r.fromZone !== undefined && !inZone(r.fromZone, f.inIface)) return false;
   if (r.toZone !== undefined && !inZone(r.toZone, f.outIface)) return false;
-  // (a device or interface by its effective addresses; one whose runtime address is not known decides nothing)
-  let identity = false;
+  const unknown: PolicyUnknown[] = [];
+  // (a device or interface by its effective addresses; one whose runtime identity is not known decides nothing)
   if (r.destination.length) {
     const m = anyMatches(model, r.destination, f.dst, f.ids, f.dstDev);
     if (m === false) return false;
-    if (m === 'unknown') identity = true;
+    if (m === 'unknown') unknown.push('identity');
   }
   if (r.source.length) {
-    if (!f.src) return 'source';
-    const m = anyMatches(model, r.source, f.src, f.ids, f.srcDev);
-    if (m === false) return false;
-    if (m === 'unknown') identity = true;
+    if (!f.src) unknown.push('source');
+    else {
+      const m = anyMatches(model, r.source, f.src, f.ids, f.srcDev);
+      if (m === false) return false;
+      if (m === 'unknown') unknown.push('identity');
+    }
   }
-  if (identity) return 'identity';
-  if (r.proto === 'any' && r.sport === undefined && r.dport === undefined) return true;
-  if (!svcKnown) return 'service';
-  if (r.proto !== 'any' && r.proto !== f.proto) return false;
-  if (r.dport !== undefined && (f.dport === undefined || !portInSpec(r.dport, f.dport))) return false;
-  if (r.sport !== undefined && (f.sport === undefined || !portInSpec(r.sport, f.sport))) return false;
+  const service = !(r.proto === 'any' && r.sport === undefined && r.dport === undefined);
+  if (service) {
+    if (!svcKnown) unknown.push('service');
+    else {
+      if (r.proto !== 'any' && r.proto !== f.proto) return false;
+      if (r.dport !== undefined && (f.dport === undefined || !portInSpec(r.dport, f.dport))) return false;
+      if (r.sport !== undefined && (f.sport === undefined || !portInSpec(r.sport, f.sport))) return false;
+    }
+  }
+  // (what is missing first, in the order a user can supply it: a source, a service; then a runtime identity)
+  for (const k of ['source', 'service', 'identity'] as PolicyUnknown[]) if (unknown.indexOf(k) >= 0) return k;
   return true;
 }
 
@@ -233,14 +271,14 @@ export function policyDecision(model: Model, dev: Device, f: PolicyFlow, svcKnow
       const r = pol.rules[k];
       const m = ruleMatches(model, pol, r, f, svcKnown);
       if (m === false) continue;
-      if (m === 'service' || m === 'source') return { permit: true, text: `${dev.id}’s policy decides by ${m === 'service' ? 'the service' : 'the source address'} at rule ${k + 1} (${policyRuleText(r)}): give ${m === 'service' ? 'a service' : 'a source'} to evaluate it`, kind, byDefault: false, rule: -(k + 1) };
-      if (m === 'identity') return { permit: true, text: `${dev.id}’s policy decides at rule ${k + 1} (${policyRuleText(r)}) by an address a device takes at runtime (DHCP, SLAAC): the configured model does not know it — analyze a simulation snapshot to evaluate it`, kind, byDefault: false, rule: -(k + 1) };
+      if (m === 'service' || m === 'source') return { permit: true, text: `${dev.id}’s policy decides by ${m === 'service' ? 'the service' : 'the source address'} at rule ${k + 1} (${policyRuleText(r)}): give ${m === 'service' ? 'a service' : 'a source'} to evaluate it`, kind, byDefault: false, rule: -(k + 1), undecidedBy: m };
+      if (m === 'identity') return { permit: true, text: `${dev.id}’s policy decides at rule ${k + 1} (${policyRuleText(r)}) by which device an address is: one taken at runtime (DHCP, SLAAC) that the configured model does not know, or one several devices have — analyze a simulation snapshot, or name the address`, kind, byDefault: false, rule: -(k + 1), undecidedBy: m };
       return { permit: r.action === 'permit', text: `${dev.id} ${r.action === 'permit' ? 'permits' : 'denies'} ${what}${between}: rule ${k + 1} (${policyRuleText(r)})`, rule: k + 1, ruleText: policyRuleText(r), kind, byDefault: false };
     }
     return { permit: pol.default === 'permit', text: `${dev.id} ${pol.default === 'permit' ? 'permits' : 'denies'} ${what}${between}: no rule matches (its default action, ${pol.default})`, kind, byDefault: true };
   }
   // the implicit policy of a firewall: its relations, its allow list, default deny
-  if (!svcKnown) return { permit: true, text: `${dev.id} filters what it forwards (the relations through it, its allow list): give a service to trace its decision`, kind, byDefault: false, rule: -1 };
+  if (!svcKnown) return { permit: true, text: `${dev.id} filters what it forwards (the relations through it, its allow list): give a service to trace its decision`, kind, byDefault: false, rule: -1, undecidedBy: 'service' };
   if (f.proto !== 'icmp' && f.proto !== 'other') {
     const rel = relationPermitting(model, f.srcDev, f.dstDev, f.proto, f.dport || 0);
     if (rel) {
@@ -253,7 +291,7 @@ export function policyDecision(model: Model, dev: Device, f: PolicyFlow, svcKnow
   return { permit: false, text: `${dev.id} denies ${what}${between}: no relation of the model between them and no allow entry permits it (its default action)`, kind, byDefault: true };
 }
 
-/** Is a decision one that waits for a service or a source (not a decision)? */
+/** Is a decision one that waits for something (a service, a source, a runtime identity): no decision? */
 export function undecided(d: PolicyDecision | null): boolean {
-  return !!d && d.rule !== undefined && d.rule < 0;
+  return !!d && d.undecidedBy !== undefined;
 }

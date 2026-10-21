@@ -209,7 +209,7 @@ test('policy: a frozen snapshot uses the addresses acquired then — the same de
   const flow = { src: IP.parseAddress('10.1.0.50'), dst: IP.parseAddress('10.1.0.150'), proto: 'tcp', dport: 80, srcDev: 'st', dstDev: null, inIface: 'lan', outIface: 'lan' };
   const d = PO.policyDecision(deny, deny.index.devices.get('fw'), flow, true);
   assert.ok(PO.undecided(d), d.text);
-  assert.match(d.text, /an address a device takes at runtime/);
+  assert.equal(d.undecidedBy, 'identity', d.text);
   // known to be another device's: a definite non-match (a static address, the configured model)
   const d2 = PO.policyDecision(deny, deny.index.devices.get('fw'), { ...flow, dst: IP.parseAddress('10.1.0.5'), dstDev: 'dsrv' }, true);
   assert.equal(PO.undecided(d2), false);
@@ -227,25 +227,50 @@ test('policy: a frozen snapshot uses the addresses acquired then — the same de
   assert.equal(PO.specMatches(deny, 'pc', IP.parseAddress('10.1.0.0'), ids), false);
 });
 
-test('policy: an expired lease is no identity any more; a renewed one still is (the same address)', () => {
+test('policy: a renewed lease is still the same address on the same interface, matched as pc; expired, it is nobody’s; reassigned, the new one is pc’s', () => {
   const m = model(POLICY(PERMIT_PC, 'deny', '60s'));
   const s = new S.Simulation(m);
   s.runTo(30000);
-  const lease = s.engine.effectiveAddrs('pc').find((x) => x.addr.version === 4).addr;
-  // renewed at T1 by the server: still pc's
+  const v4 = () => s.engine.effectiveAddrs('pc').filter((x) => x.addr.version === 4);
+  const text = (a) => a.bytes.join('.');
+  assert.equal(v4().length, 1);
+  const first = v4()[0];
+  assert.equal(first.iface, 'eth0');
+  const row = () => s.leaseTable('dsrv').find((r) => r.ip === text(first.addr));
+  const e1 = row().expires;
+  // renewed at T1 by the server: the same address on the same interface, its lease moved on
   s.runTo(30000 + 60000);
-  assert.ok(s.engine.effectiveAddrs('pc').some((x) => IP.compareAddr ? true : true));
-  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), true, 'renewed');
+  assert.deepEqual(v4().map((x) => [x.iface, text(x.addr)]), [['eth0', text(first.addr)]], 'the same address, still on eth0');
+  assert.ok(row().expires > e1, `renewed: ${row().expires} after ${e1}`);
+  assert.equal(row().client, 'pc:eth0');
+  const snap = s.snapshot();
+  const sa = snap.addresses.find((x) => x.device === 'pc' && x.version === 4);
+  assert.deepEqual([sa.iface, sa.text, sa.method, sa.state], ['eth0', text(first.addr), 'dhcpv4', 'bound']);
+  const ids = PO.ctxIds(m, snap.ctx);
+  assert.equal(PO.specMatches(m, 'pc', first.addr, ids), true, 'renewed: still pc');
+  assert.equal(PO.specMatches(m, 'pc:eth0', first.addr, ids), true);
+  assert.equal(PO.specMatches(m, 'st', first.addr, ids), false);
   assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true);
-  // the server gone: no renewal, the lease expires — the address is nobody's
+  // the server gone: no renewal, the lease expires — the address is nobody's, in the simulation and a snapshot
   s.powerOff('dsrv');
   s.runTo(s.now + 130000);
-  assert.ok(!s.engine.effectiveAddrs('pc').some((x) => x.addr.version === 4), 'expired');
-  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), false);
+  assert.deepEqual(v4(), [], 'expired');
+  const gone = s.snapshot();
+  assert.ok(!gone.addresses.some((x) => x.device === 'pc' && x.version === 4));
+  assert.equal(PO.specMatches(m, 'pc', first.addr, PO.ctxIds(m, gone.ctx)), false);
+  // the server back: a lease again (reassigned) — the new address is pc's, the old one only if it is the same
+  s.powerOn('dsrv');
+  for (let i = 0; i < 60 && !v4().length; i++) s.runTo(s.now + 10000);
+  assert.equal(v4().length, 1, 'leased again');
+  const again = v4()[0];
+  const ids2 = PO.ctxIds(m, s.snapshot().ctx);
+  assert.equal(PO.specMatches(m, 'pc', again.addr, ids2), true);
+  assert.equal(PO.specMatches(m, 'pc', first.addr, ids2), text(again.addr) === text(first.addr));
+  assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true);
 });
 
 // two VRFs of one firewall with the same host address on both sides: hostR and hostB are both 10.9.0.5
-// (each side its own gateway and server addresses: the tracer resolves a next hop to an address's first holder, not per segment)
+// (overlapping gateways and servers as well: test/policy-identity.test.mjs)
 const VRFS = `netatlas: 1
 title: overlapping VRFs
 devices:
@@ -660,4 +685,75 @@ test('broadcast source: the VRF asked for, a usable address, an interface that i
   s.shut('r', 'b0');
   s.runTo(s.now + 1000);
   assert.equal(s.transport.pickSource('r', IP.parseAddress('255.255.255.255'), undefined, 'blue').l3.id, 'c0');
+});
+
+// ------------------------------------------------------------------ capacity follows the application's resolved ends
+
+// srv: eth0 on the client's LAN (100 Mbit/s), mgmt behind r on a 1 Mbit/s cable; the client reaches mgmt through r.
+// IPv6 only on the mgmt side: an IPv6 application's way is the slow one, an IPv4 one's the fast one
+const BIND = (app, listener = '{id: files, name: Files, profile: tcp_server, port: 445, response_size: 100, bind: mgmt}') => `netatlas: 1
+title: bound listener
+devices:
+  - id: cli
+    type: server
+    interfaces: [{id: eth0, ip: [10.0.10.1/24, "fd00:10::1/64"]}]
+    routes: [{prefix: 10.0.99.0/24, via: 10.0.10.254}, {prefix: "::/0", via: "fd00:10::254"}]
+    services:
+      applications:
+${app}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+  - id: r
+    type: router
+    interfaces: [{id: lan, ip: [10.0.10.254/24, "fd00:10::254/64"]}, {id: m, ip: [10.0.99.1/24, "fd00:99::1/64"]}]
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.2/24}, {id: mgmt, ip: [10.0.99.2/24, "fd00:99::2/64"]}]
+    routes: [{prefix: "::/0", via: "fd00:99::1"}]
+    services:
+      applications:
+        - ${listener}
+links:
+  - {id: l-cli, a: "cli:eth0", b: "sw:p1", speed: 100M}
+  - {id: l-r, a: "r:lan", b: "sw:p2", speed: 100M}
+  - {id: l-srv, a: "srv:eth0", b: "sw:p3", speed: 100M}
+  - {id: l-mgmt, a: "r:m", b: "srv:mgmt", speed: 1M}
+`;
+// (the requests are the large flow: 60 000 bytes ten times a second, 4.8 Mbit/s; the answers small — and a server's answers to
+// the client's own subnet leave by its connected interface whatever address they come from: routing is by destination)
+const requests = (r) => r.demands.find((x) => x.demand.id === 'app:cli/get>');
+
+test('capacity: an application’s transfer follows its peer listener’s bind interface — the slow management cable is the bottleneck, not the server’s fast default address; before and after a failure', () => {
+  // 60 000 bytes ten times a second: 4.8 Mbit/s of answers
+  const m = model(BIND('        - {id: get, name: Get, profile: tcp_client, peer: srv/files, interval: 100ms, request_size: 60000}'));
+  const r = CA.capacityAnalysis(m);
+  const a = requests(r);
+  assert.match(a.ends, /^cli:eth0 10\.0\.10\.1 → srv:mgmt 10\.0\.99\.2$/, a.ends);
+  assert.equal(a.verdict, 'exceeds', a.text);
+  assert.match(a.text, /link|l-mgmt/);
+  const mg = r.loads.filter((x) => x.resource.id === 'link:l-mgmt');
+  assert.deepEqual(mg.map((x) => x.resource.direction), ['r → srv'], 'the requests towards the bound listener');
+  assert.ok(mg.find((x) => x.resource.direction === 'r → srv').worst >= 4.8e6 - 1);
+  assert.ok(!r.loads.some((x) => x.resource.id === 'link:l-srv' && x.resource.direction === 'sw → srv'), 'the fast cable carries none of the requests');
+  // the management cable failed: no longer carried (not rerouted over the data interface: the listener is bound to mgmt)
+  const w = W.whatIf(m, ['l-mgmt']);
+  const ch = w.capacity.changes.find((x) => x.demand.id === 'app:cli/get>');
+  assert.equal(ch.after.connectivity, 'lost');
+  // the same listener unbound: the server's address of the family on the client's LAN, the fast cable — fits
+  const u = model(BIND('        - {id: get, name: Get, profile: tcp_client, peer: srv/files, interval: 100ms, request_size: 60000}', '{id: files, name: Files, profile: tcp_server, port: 445, response_size: 100}'));
+  const ua = requests(CA.capacityAnalysis(u));
+  assert.match(ua.ends, / → srv:eth0 10\.0\.10\.2$/);
+  assert.equal(ua.verdict, 'fits');
+});
+
+test('capacity: an IPv6 application is traced in IPv6 — its way (the slow cable) differs from the IPv4 one; a device peer with a port resolves its listener', () => {
+  const v6 = model(BIND('        - {id: get, name: Get, profile: tcp_client, peer: srv, port: 445, ip_version: 6, interval: 100ms, request_size: 60000}', '{id: files, name: Files, profile: tcp_server, port: 445, response_size: 100}'));
+  const a6 = requests(CA.capacityAnalysis(v6));
+  assert.match(a6.ends, /^cli:eth0 fd00:10::1 → srv:mgmt fd00:99::2$/, a6.ends);
+  assert.equal(a6.verdict, 'exceeds');
+  const v4 = model(BIND('        - {id: get, name: Get, profile: tcp_client, peer: srv, port: 445, interval: 100ms, request_size: 60000}', '{id: files, name: Files, profile: tcp_server, port: 445, response_size: 100}'));
+  const a4 = requests(CA.capacityAnalysis(v4));
+  assert.match(a4.ends, / → srv:eth0 10\.0\.10\.2$/);
+  assert.equal(a4.verdict, 'fits');
+  // the answers keep the responder's size
+  assert.equal(CA.capacityAnalysis(v4).demands.find((x) => x.demand.id === 'app:cli/get<').demand.bps, 100 * 8 * 10);
 });

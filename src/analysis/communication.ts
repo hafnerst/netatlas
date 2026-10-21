@@ -31,7 +31,7 @@
  * a TCP session or a stateful return decision is not evaluated (said so, and
  * the simulation is offered for it, never started). Pure and deterministic.
  */
-import { AppInstance, AppProfile, appProfile, topicMatches } from '../model/applications';
+import { AppInstance, AppProfile, appFamily, appProfile, topicMatches } from '../model/applications';
 import { parseAddress } from '../model/ip';
 import { capabilities } from '../model/capabilities';
 import { autoIpv6 } from '../model/ipv6';
@@ -258,10 +258,7 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   // ---- the address family: the client's (ip_version, an address peer), else what the ends have
   const famOf = (): 4 | 6 | undefined => {
     if (req.family) return req.family;
-    if (clientApp) {
-      const pa = clientApp.app.peer ? parseAddress(clientApp.app.peer) : null;
-      return pa ? pa.version : clientApp.app.ipVersion || 4;
-    }
+    if (clientApp) return appFamily(clientApp.app);
     if (to && typeof to !== 'string' && to.kind === 'end' && to.end.kind === 'address') {
       const a = parseAddress(to.end.address);
       return a ? a.version : undefined;
@@ -462,6 +459,7 @@ function policyLayer(model: Model, t: Trace, o: TraceOutcome, svc: TraceService 
   const said: string[] = [];
   const filters = new Set<string>();
   let unknown = false;
+  const lacks: string[] = [];
   for (const p of t.paths) {
     p.hops.forEach((h, k) => {
       const d = model.index.devices.get(h.device);
@@ -472,15 +470,23 @@ function policyLayer(model: Model, t: Trace, o: TraceOutcome, svc: TraceService 
       for (const x of h.why ? h.why.policy : []) {
         const line = `${h.device}: ${x}`;
         if (said.indexOf(line) < 0) said.push(line);
-        if (/give a service|give a source/.test(x)) unknown = true;
       }
     });
+    // (what a filtering device could not decide, as recorded: a service, a source, or which device an address is)
+    for (const h of p.hops) for (const u of h.why && h.why.policyUndecided ? h.why.policyUndecided : []) {
+      unknown = true;
+      filters.add(u.device);
+      if (lacks.indexOf(u.by) < 0) lacks.push(u.by);
+    }
     for (const h of p.hops) for (const l2 of h.l2) {
       const d = model.index.devices.get(l2);
       if (d && capabilities(d).securityGateway) filters.add(l2);
     }
   }
   if (!filters.size) return { id: 'policy', verdict: 'satisfied', text: 'No modeled policy on the path', detail: [], refs: [] };
+  // undecided is never permitted: indeterminate, saying what it lacks
+  if (unknown && lacks.indexOf('identity') >= 0) return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} decide${filters.size === 1 ? 's' : ''} by which device an address is (one taken at runtime, or one several devices have): not established here — analyze a simulation snapshot, or name the address`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
+  if (unknown && lacks.indexOf('source') >= 0 && lacks.indexOf('service') < 0) return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} decide${filters.size === 1 ? 's' : ''} by the source address: give a source to evaluate the decision`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
   if (unknown || (!svc && filters.size)) return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} filter${filters.size === 1 ? 's' : ''} by service: give a service (or an application) to evaluate the decision`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
   return { id: 'policy', verdict: 'satisfied', text: `Permitted by ${Array.from(filters).join(', ')}`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
 }

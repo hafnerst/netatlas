@@ -40,7 +40,7 @@ import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex 
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
 import { CommRequest, checkCommunication } from '../analysis/communication';
-import { commIdentity, compareRun, expectationFields, handoffOf, planMatches, staleProblem } from '../analysis/comm-identity';
+import { commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
 import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { portL2 } from '../model/derive';
 import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
@@ -4140,9 +4140,9 @@ export class App {
     if (!r || !r.identity || !this.simCtl || this.traceCompareBlocked()) return false;
     const id = r.identity;
     // (the newest send that carries it: testRuns lists the newest first)
-    const run = this.simCtl.sim.testRuns().find((x) => planMatches(id, x.plan, r.model));
+    const run = this.simCtl.sim.testRuns().find((x) => runMatches(id, x, r.model));
     if (!run) {
-      this.toast('Nothing to compare yet: no send carries this check (the same source interface, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
+      this.toast('Nothing to compare yet: no send carries this check (the same source interface — and the source address, for a check from an exact address —, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
       return false;
     }
     r.compare = compareRun(r.model, r.check, run, this.simCtl.snapshot());

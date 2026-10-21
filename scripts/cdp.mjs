@@ -158,6 +158,13 @@ export async function openPage(url, { width = 1440, height = 900, dark = false, 
       if (r.exceptionDetails) throw new Error(`${expr}: ${r.exceptionDetails.exception ? r.exceptionDetails.exception.description : r.exceptionDetails.text}`);
       return r.result.value;
     },
+    /** call a function in the page with arguments passed as values (nothing of them becomes page code); its JSON value */
+    async call(fn, ...args) {
+      const g = await cmd('Runtime.evaluate', { expression: 'globalThis' });
+      const r = await cmd('Runtime.callFunctionOn', { objectId: g.result.objectId, functionDeclaration: fn.toString(), arguments: args.map((value) => ({ value })), awaitPromise: true, returnByValue: true });
+      if (r.exceptionDetails) throw new Error(`${fn.name || 'call'}: ${r.exceptionDetails.exception ? r.exceptionDetails.exception.description : r.exceptionDetails.text}`);
+      return r.result.value;
+    },
     /** let the page render (two animation frames and a short pause) */
     settle: (ms = 60) => page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, ${ms}))))`),
     /** the bounding box of the first element matching a selector */

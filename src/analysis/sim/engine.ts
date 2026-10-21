@@ -4401,6 +4401,48 @@ export class Engine {
     return { vlan: d.vlan === null ? 0 : d.vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: d.links.slice().sort(cmp) };
   }
 
+  /** The one device that has an address on the segment a device's interface reaches now (its broadcast domain); null: none or several. */
+  holderOnSegment(dev: string, iface: string, a: IpAddr): string | null {
+    const d = l2Domain(this.net, { dev, iface }, {
+      cableUp: (id) => this.cableUp(id),
+      portUp: (x, port) => this.portUp(x, port),
+      forwards: (x) => !(this.off.has(x) && !this.bypass.has(x)),
+      blocked: (x, bp, v) => this.blocked(x, bp, v),
+      memberReady: (x, port) => this.memberReady(x, port),
+    });
+    const found = new Set<string>();
+    for (const r of d.reached) if (r.dev !== dev && this.effectiveAddrs(r.dev).some((x) => x.iface === r.l3.id && compareAddr(x.addr, a) === 0)) found.add(r.dev);
+    return found.size === 1 ? Array.from(found)[0] : null;
+  }
+
+  /**
+   * Which device an address is, seen from a device in a VRF: the one device that has it; else, following the
+   * routes from there, the holder of each next hop on the segment it is reached on, to the one that has the
+   * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Null when
+   * that can't be told (no route, several on one segment, or more than 16 hops).
+   */
+  ownerSeenFrom(dev: string, vrf: string, a: IpAddr): string | null {
+    const all = Array.from(this.net.devices.keys()).filter((x) => this.effectiveAddrs(x).some((y) => compareAddr(y.addr, a) === 0));
+    if (all.length <= 1) return all.length ? all[0] : null;
+    let at = dev;
+    let v = vrf;
+    for (let k = 0; k < 16; k++) {
+      if (this.effectiveAddrs(at).some((y) => compareAddr(y.addr, a) === 0) && at !== dev) return at;
+      const d = lookup(this.model, at, v, a, this.ctx(at));
+      if (d.kind === 'local') return at;
+      if (d.kind !== 'forward' || !d.hops.length) return null;
+      const h = d.hops[0];
+      const target = h.gateway || a;
+      const next = this.holderOnSegment(at, h.iface, target);
+      if (!next) return null;
+      if (!h.gateway) return next;
+      const nl = Array.from((this.net.devices.get(next) as SimDevice).l3.values()).find((l) => l.addrs.some((x) => compareAddr(x.addr, target) === 0));
+      at = next;
+      v = nl ? nl.vrf : '';
+    }
+    return null;
+  }
+
   /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */
   broadcastIfaces(dev: string): string[] {
     const sd = this.net.devices.get(dev);

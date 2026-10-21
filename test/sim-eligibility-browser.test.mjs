@@ -45,7 +45,7 @@ test('a held dot whose track leaves the scene (device filter, collapsed group, I
     await page.settle(300);
     const all = await page.eval(`JSON.stringify(netatlas.session.model.devices.map((d) => d.id))`);
     // 1. a device filter: a ping from the workstation to SBC 1, held on a cable; the workstation filtered out
-    await page.eval(`netatlas.simController().sim.actSend({ delivery: 'unicast', from: 'ews', kind: 'icmp', target: '10.20.0.11' }), true`);
+    await page.eval(`netatlas.simController().sim.actSend({ delivery: 'unicast', from: 'ews', kind: 'icmp', target: '10.30.0.11' }), true`);
     let s = await heldOn(page, (h) => h.ref === 'link:l-ews');
     await page.eval(`netatlas.session.setDevices(${all}.filter((d) => d !== 'ews')), netatlas.render(), true`);
     await wait(400);
@@ -83,7 +83,7 @@ test('a held dot whose track leaves the scene (device filter, collapsed group, I
     await wait(300);
     assert.deepEqual(JSON.parse(await page.eval(STATE)).stale, []);
     // 4. the scene redrawn (the same tracks): the hold stays what it was, nothing stale
-    await page.eval(`netatlas.simController().sim.actSend({ delivery: 'unicast', from: 'ews', kind: 'icmp', target: '10.20.0.12' }), true`);
+    await page.eval(`netatlas.simController().sim.actSend({ delivery: 'unicast', from: 'ews', kind: 'icmp', target: '10.30.0.12' }), true`);
     s = await heldOn(page, (h) => h.renderable);
     await page.eval(`netatlas.render(), true`);
     await wait(100);

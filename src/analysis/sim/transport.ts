@@ -50,7 +50,7 @@
  * session timeouts. Pure and deterministic.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
-import { PolicyDecision, policyDecision, policyStateful } from '../policy';
+import { PolicyDecision, policyDecision, undecided, policyStateful } from '../policy';
 import { Relation, relationDevices, TRANSFER_PROFILES, ServiceInstance, Device, Model } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
@@ -114,6 +114,8 @@ export interface Test {
   from: string;
   /** the source interface chosen (Send test…), else the one the route gives */
   via?: string;
+  /** the source address it was sent from (when it was sent): what a comparison checks an exact source binding against */
+  srcAddr?: string;
   /** a Send test's series and this message's number in it (1 …) */
   run?: number;
   msg?: number;
@@ -899,6 +901,7 @@ export class Transport {
       return;
     }
     const s = pick;
+    t.srcAddr = formatAddr(s.src);
     if (s.how) this.e.note('note', t.kind, dev, '', 'source', '', `Test ${t.series}: from ${formatAddr(s.src)} ${s.how}`);
     const o = { dst: t.dst };
     const kind = t.kind;
@@ -2273,20 +2276,19 @@ export class Transport {
     if (dd && dd.policy) {
       // (a device or interface named by a rule: its effective addresses now — leases, SLAAC — and the source's owner its
       // sender when the address is the sender's own, so an address two VRFs both have is told apart)
-      const ids = { addrs: (x: string) => this.e.effectiveAddrs(x) };
-      // (an owner only where it is certain: one device holds the address; else the rule decides by the address)
-      const only = (a: IpAddr): string | undefined => {
-        let found: string | undefined;
-        for (const x of this.e.net.devices.keys()) {
-          if (!ids.addrs(x).some((y) => compareAddr(y.addr, a) === 0)) continue;
-          if (found !== undefined) return undefined;
-          found = x;
-        }
-        return found;
-      };
+      const addrs = (x: string): Array<{ iface: string; addr: IpAddr }> => this.e.effectiveAddrs(x);
+      const ids = { addrs, holders: (a: IpAddr) => Array.from(this.e.net.devices.keys()).filter((x) => addrs(x).some((y) => compareAddr(y.addr, a) === 0)) };
+      // (the owners: the source its sender when the address is the sender's own, the destination the device this traffic goes
+      // to — followed from here in its VRF, segment by segment; an address two VRFs have is the one it reaches, never both)
       const sender = pkt.msg.sender;
-      const srcDev = sender && ids.addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : only(pkt.src);
-      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev: only(pkt.dst), inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
+      const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src);
+      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst);
+      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
+      // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
+      if (undecided(d)) {
+        this.e.note('drop', proto, dev, '', 'dropped', '', `${dev} drops ${pkt.msg.label}: ${d.text}`);
+        return false;
+      }
       // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
       if (d.permit && (!stateful || (opening && echoReq))) {
         if (stateful) {

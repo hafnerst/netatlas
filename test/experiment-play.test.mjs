@@ -318,3 +318,61 @@ test('the public examples’ experiments: a cold-start host gets an address and 
   const sc = EX.experimentScope(ph, ph.experiments.find((x) => x.id === 'tv-stream'));
   assert.ok(sc.devices.has('tv') && sc.devices.has('thermostat') && sc.devices.size < ph.devices.length, Array.from(sc.devices).join(', '));
 });
+
+test('the cap: a large moment exactly at the end, with budget yields inside it, the run’s end in it, and a held delivery after it — the clock at the cap is not the run done; the order of the moment is kept, nothing runs past the cap; the same result as run at once', () => {
+  const m = model(example('private-house.yaml'));
+  const e = m.experiments.find((x) => x.id === 'cold-tv');
+  const headless = new EX.ExperimentRunner(m, e, 'fp').runAll();
+  const r = new EX.ExperimentRunner(m, e, 'fp');
+  const eng = r.simulation.engine;
+  const T = r.endTime;
+  // (batch A small enough that the held dot, drawn from just before the end, is still on its way when its delivery is due)
+  const N = 2000;
+  const NA = 200;
+  const order = [];
+  // (the pacer first: it takes in the flights made after it, each from the moment it is sent)
+  let held = { id: -1 };
+  const pacer = new P.Pacer({ engine: eng, shown: (f) => f.id === held.id || r.relevance.classify(f) !== null, typical: () => 1, until: () => T }, 48);
+  pacer.mute = false;
+  pacer.hiddenHoldsNothing = true;
+  // batch A at the end, scheduled before the run is prepared: before its end event in the order of the moment
+  for (let i = 0; i < NA; i++) eng.at(T, () => order.push(['A', i, r.over]));
+  r.prepare();
+  // a delivery sent just before the end (its dot drawn then), at the end, and batch B after it: after the end event
+  const msg = { protocol: 'icmp', type: 'probe', label: 'probe', detail: '', data: {} };
+  eng.at(T - 1, () => {
+    held = eng.flight(T - 1, T, msg, 'physical', { ref: 'link:x', from: 'a', to: 'b' });
+    eng.at(T, () => order.push(['held', 0, r.over]), [held.id]);
+    for (let i = 0; i < N; i++) eng.at(T, () => order.push(['B', i, r.over]));
+  });
+  // every look at the clock spends the budget: the frame yields within the moment again and again
+  const now = Date.now;
+  let clock = 0;
+  Date.now = () => (clock += 30);
+  let atCapNotOver = 0;
+  let heldSeen = 0;
+  let frames = 0;
+  try {
+    for (; frames < 200000 && order.length < NA + N + 1; frames++) {
+      pacer.frame(100);
+      if (Math.abs(eng.now - T) < 1e-9 && !r.over) atCapNotOver++;
+      if (pacer.holding() && pacer.holding().f.id === held.id) heldSeen++;
+      // the barrier at the cap: before the held dot arrived, nothing after it ran
+      const it = pacer.find(held.id);
+      if (it && pacer.clock < pacer.arrival(it) - 1e-6) assert.ok(!order.some((x) => x[0] === 'held' || x[0] === 'B'));
+      assert.ok(eng.now <= T + 1e-9, 'never past the cap');
+    }
+  } finally {
+    Date.now = now;
+  }
+  assert.ok(r.over, 'it ended');
+  assert.ok(atCapNotOver > 1, `frames with the clock at the cap and the run not done: ${atCapNotOver}`);
+  assert.ok(heldSeen > 0, 'the delivery at the cap was held for its dot');
+  // every event of the moment ran, in its order: batch A before the run's end, the held delivery and batch B after it
+  assert.equal(order.length, NA + N + 1);
+  assert.deepEqual(order.map((x) => x[0]).filter((x, k, all) => all.indexOf(x) === k), ['A', 'held', 'B']);
+  assert.ok(order.filter((x) => x[0] === 'A').every((x) => x[2] === false), 'batch A before the end');
+  assert.ok(order.filter((x) => x[0] !== 'A').every((x) => x[2] === true), 'the rest after it');
+  const sig = (x) => JSON.stringify([x.observations.map((o) => [o.index, o.outcome, o.at, o.actual]), x.actions.map((a) => [a.index, a.state, a.at])]);
+  assert.equal(sig(r.result()), sig(headless), 'the same result as run at once');
+});

@@ -1,6 +1,6 @@
 netatlas: 1
 title: VME control rack
-description: "An embedded control rack, IP and non-IP side by side: a VME64x crate whose boards share the VMEbus backplane and a switched serial fabric overlaid on it (VXS: SRIO through a switch card), a MIL-STD-1553 bus to the remote terminals in the field, a CAN bus to the drives, RS-232 console lines and a GPS receiver's NMEA line, a USB log stick, and Ethernet for the operators. Every non-IP interconnect carries illustrative data while the simulation runs (its traffic:), and the IP side its applications; Simulate → Send illustrative data sends more. The IP side never uses the non-IP interconnects."
+description: "An embedded control rack, IP and non-IP side by side: a VME64x crate whose boards share the VMEbus backplane and a switched serial fabric overlaid on it (VXS: SRIO through a switch card), a VME Layer 2/3 Ethernet switch board that gives every board its IP connection over the backplane and routes the crate to the operators' LAN, a MIL-STD-1553 bus to the remote terminals in the field, a CAN bus to the drives, RS-232 console lines and a GPS receiver's NMEA line, a USB log stick, and Ethernet for the operators. Every non-IP interconnect carries illustrative data while the simulation runs (its traffic:), and the IP side its applications; Simulate → Send illustrative data sends more. The IP side never uses the non-IP interconnects."
 
 groups:
   - {id: lab, label: Control room, kind: room}
@@ -15,12 +15,13 @@ devices:
     label: Rack switch
     group: rack
     igmp_mld_snooping: {20: enabled}
-    interfaces: [{id: p1, vlans: 20}, {id: p2, vlans: 20}, {id: p3, vlans: 20}, {id: p4, vlans: 20}]
+    interfaces: [{id: p1, vlans: 20}, {id: p2, vlans: 20}, {id: p3, vlans: 20, label: to the crate}]
   - id: ews
     type: endpoint
     label: Engineering workstation
     group: lab
     interfaces: [{id: eth0, ip: 10.20.0.50/24}]
+    routes: [{prefix: 10.30.0.0/24, via: 10.20.0.1, name: the crate via its switch board}]
     services:
       applications:
         # polls the controller's telemetry, logs in on the console server, collects the CPUs' syslog
@@ -42,17 +43,42 @@ devices:
       - {id: eth0, ip: 10.20.0.40/24}
       - {id: s1, stack: opaque, label: port 1}
       - {id: s2, stack: opaque, label: port 2}
+    routes: [{prefix: 10.30.0.0/24, via: 10.20.0.1, name: the crate via its switch board}]
     services:
       applications:
         - {id: ssh, name: SSH to the console ports, profile: tcp_server, port: 22, response_size: 400}
 
-  # the crate: single-board computers and I/O boards on the backplane (P1/P2) and the fabric (P0)
+  # the crate's Ethernet switch board: a VME board itself (a target on the VMEbus), switching each board's Ethernet over the
+  # backplane's rear I/O into the crate VLAN and routing it to the operators' LAN — a 6U VME64x Layer 2/3 switch board of the
+  # kind several vendors build; the vendor and model here are made up
+  - id: vsw
+    type: switch
+    layer3: true
+    label: Crate Ethernet switch
+    group: crate
+    igmp_mld_snooping: {20: enabled, 30: enabled}
+    description: 6U VME64x Layer 2/3 Ethernet switch board in a VME slot. Its ports reach the boards over the backplane (P2 rear I/O); its uplink goes to the rack switch; it routes between the crate VLAN (30) and the control LAN (20).
+    attrs: {vendor: Kestrel Embedded (fictional), model: VLS-6420 (fictional), form factor: 6U VME64x, slot: 7}
+    interfaces:
+      - {id: up, vlans: 20, label: front-panel uplink}
+      - {id: e1, vlans: 30, label: to SBC 1}
+      - {id: e2, vlans: 30, label: to SBC 2}
+      - {id: e3, vlans: 30, label: to ADC}
+      - {id: e4, vlans: 30, label: to DIO}
+      - {id: e5, vlans: 30, label: to 1553}
+      - {id: vme, stack: opaque, label: P1/P2}
+    logical_interfaces:
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.0.1/24}
+      - {id: Vlan30, type: virtual, vlan: 30, ip: 10.30.0.1/24}
+
+  # the crate: single-board computers and I/O boards on the backplane (P1/P2), the fabric (P0) and the switch board (P2 Ethernet)
   - id: cpu1
     type: server
     label: SBC 1 (system controller)
     group: crate
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]
     interfaces:
-      - {id: eth0, ip: 10.20.0.11/24}
+      - {id: eth0, ip: 10.30.0.11/24, label: P2 Ethernet}
       - {id: vme, stack: opaque, label: P1/P2}
       - {id: p0, stack: opaque, label: P0 (fabric)}
       - {id: com1, stack: opaque, label: COM1}
@@ -64,8 +90,9 @@ devices:
     type: server
     label: SBC 2
     group: crate
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]
     interfaces:
-      - {id: eth0, ip: 10.20.0.12/24}
+      - {id: eth0, ip: 10.30.0.12/24, label: P2 Ethernet}
       - {id: vme, stack: opaque, label: P1/P2}
       - {id: p0, stack: opaque, label: P0 (fabric)}
       - {id: com1, stack: opaque, label: COM1}
@@ -91,14 +118,18 @@ devices:
     type: endpoint
     label: ADC board
     group: crate
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]
     interfaces:
+      - {id: eth0, ip: 10.30.0.21/24, label: P2 Ethernet}
       - {id: vme, stack: opaque, label: P1/P2}
       - {id: p0, stack: opaque, label: P0 (fabric)}
   - id: dio
     type: endpoint
     label: Digital I/O board
     group: crate
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]
     interfaces:
+      - {id: eth0, ip: 10.30.0.22/24, label: P2 Ethernet}
       - {id: vme, stack: opaque, label: P1/P2}
       - {id: can0, stack: opaque, label: CAN}
   - id: mil
@@ -106,9 +137,20 @@ devices:
     purpose: host
     label: MIL-STD-1553 board
     group: crate
+    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]
     interfaces:
+      - {id: eth0, ip: 10.30.0.23/24, label: P2 Ethernet}
       - {id: vme, stack: opaque, label: P1/P2}
       - {id: bus-a, stack: opaque, label: bus A}
+    services:
+      applications:
+        - id: syslog
+          name: Bus status to syslog
+          profile: udp_sender
+          peer: ews/syslog
+          interval: 20s
+          start: simulation_start
+          request_size: 120
 
   # in the rack beside the crate: the GPS receiver, the USB log stick
   - id: gps
@@ -152,11 +194,17 @@ devices:
 links:
   - {id: l-ews, a: "sw:p1", b: "ews:eth0"}
   - {id: l-cons, a: "sw:p2", b: "cons:eth0"}
-  - {id: l-cpu1, a: "sw:p3", b: "cpu1:eth0"}
-  - {id: l-cpu2, a: "sw:p4", b: "cpu2:eth0"}
+  - {id: l-up, a: "sw:p3", b: "vsw:up"}
+  # each board's Ethernet to the switch board over the backplane's rear I/O
+  - {id: l-cpu1, a: "vsw:e1", b: "cpu1:eth0", label: backplane}
+  - {id: l-cpu2, a: "vsw:e2", b: "cpu2:eth0", label: backplane}
+  - {id: l-adc, a: "vsw:e3", b: "adc:eth0", label: backplane}
+  - {id: l-dio, a: "vsw:e4", b: "dio:eth0", label: backplane}
+  - {id: l-mil, a: "vsw:e5", b: "mil:eth0", label: backplane}
 
 networks:
   - {id: ctrl, label: Control LAN, cidr: 10.20.0.0/24, vlan: 20}
+  - {id: crate-net, label: Crate LAN, cidr: 10.30.0.0/24, vlan: 30}
 
 interconnects:
   # a shared backplane, controller / target: two CPUs that are both (one of them the system controller), three target boards
@@ -171,6 +219,7 @@ interconnects:
       - {port: "adc:vme", role: target}
       - {port: "dio:vme", role: target}
       - {port: "mil:vme", role: target}
+      - {port: "vsw:vme", role: target}
     traffic:
       # a read (the target's data to the controller that initiates it) and a write
       - {initiator: "cpu1:vme", from: "adc:vme", to: "cpu1:vme", interval: 1s, size: 256}

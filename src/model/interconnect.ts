@@ -25,7 +25,7 @@
  *
  * DOM-free.
  */
-import { Device, IcAccess, IcAttachment, IcData, IcRole, IcTopology, Interconnect, OpaquePort } from './types';
+import { Device, IcAccess, IcAttachment, IcData, IcRole, IcTopology, IcTraffic, Interconnect, OpaquePort } from './types';
 import { Support } from './support';
 
 export const IC_TOPOLOGIES: readonly IcTopology[] = ['point_to_point', 'shared'];
@@ -126,17 +126,21 @@ export function keptInterconnects(interconnects: Interconnect[], keep: (device: 
   for (const ic of interconnects) {
     const eps = ic.endpoints.filter((e) => keep(e.device));
     if (eps.length < 2 || (ic.topology === 'point_to_point' && eps.length !== ic.endpoints.length)) continue;
-    if (eps.length === ic.endpoints.length) {
-      out.push(ic);
-      continue;
-    }
-    // its traffic: what starts and comes from the part kept, to the recipients kept
+    // its traffic: what starts and comes from the part kept, to the recipients kept — whether or not its own attachments
+    // changed (a recipient on another interconnect may be left out while every attachment of this one stays)
     const dev = (k: string): string => k.slice(0, k.indexOf(':'));
-    const traffic = ic.traffic
-      .filter((x) => keep(dev(x.initiator)) && keep(dev(x.from)))
-      .map((x) => ({ ...x, to: x.to.filter((k) => keep(dev(k))) }))
-      .filter((x) => x.to.length > 0);
-    out.push({ ...ic, endpoints: eps, traffic });
+    let changed = eps.length !== ic.endpoints.length;
+    const traffic: IcTraffic[] = [];
+    for (const x of ic.traffic) {
+      if (!keep(dev(x.initiator)) || !keep(dev(x.from))) {
+        changed = true;
+        continue;
+      }
+      const to = x.to.filter((k) => keep(dev(k)));
+      if (to.length !== x.to.length) changed = true;
+      if (to.length) traffic.push(to.length === x.to.length ? x : { ...x, to });
+    }
+    out.push(changed ? { ...ic, endpoints: eps, traffic } : ic);
   }
   return out;
 }
@@ -160,6 +164,116 @@ export function hopRule(ic: Interconnect, from: IcAttachment, to: IcAttachment, 
   if (!initiates(ic, initiator)) return `${name(initiator)} is ${ROLE_TEXT[initiator.role].toLowerCase()} on ${ic.id}: only a controller initiates a transfer`;
   if (initiator !== from && initiator !== to) return `the controller ${name(initiator)} is neither the source nor the recipient: a transfer between two other participants needs one of them to be its initiator`;
   return null;
+}
+
+/** One hop: on an interconnect, from an attachment to another, started by an initiator (after a transit: the forwarding device). */
+export interface OpaqueHop {
+  ic: Interconnect;
+  from: IcAttachment;
+  to: IcAttachment;
+  initiator: IcAttachment;
+  /** the System it crossed to reach this hop's interconnect (its transit group) */
+  via?: string;
+}
+
+/** What the route search reads of a model (its index, or a scoped model's). */
+export interface OpaqueIndex {
+  devices: Map<string, Device>;
+  interconnects: Map<string, Interconnect>;
+  portInterconnect: Map<string, string>;
+}
+
+const cmpS = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A port's attachment: its interconnect and how it is attached; null when it is on none. */
+export function attachmentOf(index: OpaqueIndex, key: string): { ic: Interconnect; a: IcAttachment } | null {
+  const id = index.portInterconnect.get(key);
+  const ic = id ? index.interconnects.get(id) : undefined;
+  const a = ic ? ic.endpoints.find((x) => `${x.device}:${x.port}` === key) : undefined;
+  return ic && a ? { ic, a } : null;
+}
+
+/**
+ * The way from a data source to a recipient (fewest hops, deterministic):
+ * along interconnects and through explicit transit groups only. Every hop
+ * is checked by its interconnect's rule before the search takes it, so an
+ * invalid alternative (a lexically earlier receive-only port, a target that
+ * can't initiate) is passed over and a valid one further on is still
+ * found; a string says why there is none (the first refusal on the way to
+ * the recipient, else that no modelled connection leads there).
+ */
+export function opaqueRoute(index: OpaqueIndex, from: string, to: string, initiator: string): OpaqueHop[] | string {
+  const src = attachmentOf(index, from);
+  if (!src) return `${from} is on no interconnect`;
+  const init = attachmentOf(index, initiator);
+  if (!init) return `the initiator ${initiator} is on no interconnect`;
+  if (!attachmentOf(index, to)) return `${to} is on no interconnect`;
+  if (init.ic.id !== src.ic.id) return `the initiator ${initiator} is not on ${src.ic.id}, the data source's interconnect`;
+  type State = { at: { ic: Interconnect; a: IcAttachment }; hops: OpaqueHop[]; via?: string };
+  const seen = new Set<string>([from]);
+  let refusedTo: string | null = null;
+  let refused: string | null = null;
+  let layer: State[] = [{ at: src, hops: [] }];
+  for (let depth = 0; depth < 32 && layer.length; depth++) {
+    const next: State[] = [];
+    for (const st of layer) {
+      const others = st.at.ic.endpoints.filter((x) => x !== st.at.a).sort((x, y) => cmpS(`${x.device}:${x.port}`, `${y.device}:${y.port}`));
+      for (const b of others) {
+        const hop: OpaqueHop = { ic: st.at.ic, from: st.at.a, to: b, initiator: st.hops.length ? st.at.a : init.a, via: st.via };
+        const key = `${b.device}:${b.port}`;
+        // (a hop its interconnect's rule refuses is never taken: it marks nothing and ends nothing)
+        const why = hopRule(hop.ic, hop.from, hop.to, hop.initiator);
+        if (why) {
+          if (key === to) refusedTo = refusedTo || why;
+          else refused = refused || why;
+          continue;
+        }
+        if (key === to) return st.hops.concat([hop]);
+        // through a System's transit group: on from the group's other ports (the same technology, never converted)
+        const dev = index.devices.get(b.device);
+        const group = dev ? dev.opaqueTransit.find((g) => g.ports.indexOf(b.port) >= 0) : undefined;
+        if (!group) continue;
+        for (const p of group.ports.slice().sort(cmpS)) {
+          const k = `${b.device}:${p}`;
+          if (p === b.port || seen.has(k)) continue;
+          const on = attachmentOf(index, k);
+          if (!on) continue;
+          seen.add(k);
+          next.push({ at: on, hops: st.hops.concat([hop]), via: b.device });
+        }
+      }
+    }
+    layer = next;
+  }
+  if (refusedTo) return refusedTo;
+  return `no modelled connection from ${from} to ${to} (interconnects and explicit transit groups only)${refused ? `; refused on the way: ${refused}` : ''}`;
+}
+
+
+/**
+ * An interconnect's traffic in a part of a model (an execution scope): a transfer runs only where its initiator
+ * and data source are kept, to the recipients kept whose way — in the whole model — crosses kept devices only
+ * (a transit device left out takes its recipients with it; a way the whole model has none of is kept as it is:
+ * it fails there as here). Returns the traffic and what was left out, in words.
+ */
+export function scopedTraffic(index: OpaqueIndex, ic: Interconnect, keep: (device: string) => boolean): { traffic: IcTraffic[]; left: string[] } {
+  const dev = (k: string): string => k.slice(0, k.indexOf(':'));
+  const traffic: IcTraffic[] = [];
+  const left: string[] = [];
+  for (const x of ic.traffic) {
+    if (!keep(dev(x.initiator)) || !keep(dev(x.from))) {
+      left.push(`${ic.id}: ${x.from} → ${x.to.join(', ')} (its ${!keep(dev(x.initiator)) ? 'initiator' : 'source'} is outside)`);
+      continue;
+    }
+    const to = x.to.filter((k) => {
+      if (!keep(dev(k))) return false;
+      const r = opaqueRoute(index, x.from, k, x.initiator);
+      return typeof r === 'string' || r.every((h) => keep(h.from.device) && keep(h.to.device));
+    });
+    for (const k of x.to) if (to.indexOf(k) < 0) left.push(`${ic.id}: ${x.from} → ${k} (${keep(dev(k)) ? 'its way crosses a device outside' : 'the recipient is outside'})`);
+    if (to.length) traffic.push(to.length === x.to.length ? x : { ...x, to });
+  }
+  return { traffic, left };
 }
 
 /** What NetAtlas does for the non-IP interconnects (the support catalog, docs/SUPPORT.md). */

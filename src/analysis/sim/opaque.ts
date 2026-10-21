@@ -36,15 +36,16 @@
  * interconnects): along a point-to-point line, or up a bus's tap and down
  * the recipient's. DOM-free.
  */
-import { IcAttachment, Interconnect, Model } from '../../model/types';
-import { DATA_TEXT, ROLE_TEXT, hopRule, receives, sends, technologyText } from '../../model/interconnect';
+import { IcAttachment, Model } from '../../model/types';
+import { DATA_TEXT, OpaqueHop, ROLE_TEXT, attachmentOf, opaqueRoute, receives, sends, technologyText } from '../../model/interconnect';
+
+export type { OpaqueHop };
 import type { Engine } from './engine';
 import { Flight, Msg } from './types';
 
 /** One hop of illustrative data, in simulated ms: a display parameter of the model (no timing is predicted). */
 export const OPAQUE_HOP_MS = 1;
 
-const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export interface OpaqueSpec {
   /** "device:port" of the attachment that starts the transfer */
@@ -59,16 +60,6 @@ export interface OpaqueSpec {
   interval: number;
   /** illustrative payload size in bytes (shown only) */
   size: number;
-}
-
-/** One hop: on an interconnect, from an attachment to another, started by an initiator (after a transit: the forwarding device). */
-export interface OpaqueHop {
-  ic: Interconnect;
-  from: IcAttachment;
-  to: IcAttachment;
-  initiator: IcAttachment;
-  /** the System it crossed to reach this hop's interconnect (its transit group) */
-  via?: string;
 }
 
 /** What became of one transfer to one recipient. */
@@ -143,68 +134,15 @@ export class OpaqueSim {
     private reserveId: () => number,
   ) {}
 
-  /** A port's attachment: its interconnect and how it is attached; null when it is on none. */
-  attachment(key: string): { ic: Interconnect; a: IcAttachment } | null {
-    const id = this.m.index.portInterconnect.get(key);
-    const ic = id ? this.m.index.interconnects.get(id) : undefined;
-    const a = ic ? ic.endpoints.find((x) => `${x.device}:${x.port}` === key) : undefined;
-    return ic && a ? { ic, a } : null;
+  /** A port's attachment: its interconnect and how it is attached; null when it is on none (model/interconnect.ts attachmentOf). */
+  attachment(key: string): ReturnType<typeof attachmentOf> {
+    return attachmentOf(this.m.index, key);
   }
 
-  /**
-   * The way from a data source to a recipient (fewest hops, deterministic):
-   * along interconnects and through explicit transit groups only. Every hop
-   * is checked by its interconnect's rule before the search takes it, so an
-   * invalid alternative (a lexically earlier receive-only port, a target that
-   * can't initiate) is passed over and a valid one further on is still
-   * found; a string says why there is none (the first refusal on the way to
-   * the recipient, else that no modelled connection leads there).
-   */
+
+  /** The way from a data source to a recipient (model/interconnect.ts opaqueRoute: the one search, here on the model the simulation runs). */
   route(from: string, to: string, initiator: string): OpaqueHop[] | string {
-    const src = this.attachment(from);
-    if (!src) return `${from} is on no interconnect`;
-    const init = this.attachment(initiator);
-    if (!init) return `the initiator ${initiator} is on no interconnect`;
-    if (!this.attachment(to)) return `${to} is on no interconnect`;
-    if (init.ic.id !== src.ic.id) return `the initiator ${initiator} is not on ${src.ic.id}, the data source's interconnect`;
-    type State = { at: { ic: Interconnect; a: IcAttachment }; hops: OpaqueHop[]; via?: string };
-    const seen = new Set<string>([from]);
-    let refusedTo: string | null = null;
-    let refused: string | null = null;
-    let layer: State[] = [{ at: src, hops: [] }];
-    for (let depth = 0; depth < 32 && layer.length; depth++) {
-      const next: State[] = [];
-      for (const st of layer) {
-        const others = st.at.ic.endpoints.filter((x) => x !== st.at.a).sort((x, y) => cmp(`${x.device}:${x.port}`, `${y.device}:${y.port}`));
-        for (const b of others) {
-          const hop: OpaqueHop = { ic: st.at.ic, from: st.at.a, to: b, initiator: st.hops.length ? st.at.a : init.a, via: st.via };
-          const key = `${b.device}:${b.port}`;
-          // (a hop its interconnect's rule refuses is never taken: it marks nothing and ends nothing)
-          const why = hopRule(hop.ic, hop.from, hop.to, hop.initiator);
-          if (why) {
-            if (key === to) refusedTo = refusedTo || why;
-            else refused = refused || why;
-            continue;
-          }
-          if (key === to) return st.hops.concat([hop]);
-          // through a System's transit group: on from the group's other ports (the same technology, never converted)
-          const dev = this.m.index.devices.get(b.device);
-          const group = dev ? dev.opaqueTransit.find((g) => g.ports.indexOf(b.port) >= 0) : undefined;
-          if (!group) continue;
-          for (const p of group.ports.slice().sort(cmp)) {
-            const k = `${b.device}:${p}`;
-            if (p === b.port || seen.has(k)) continue;
-            const on = this.attachment(k);
-            if (!on) continue;
-            seen.add(k);
-            next.push({ at: on, hops: st.hops.concat([hop]), via: b.device });
-          }
-        }
-      }
-      layer = next;
-    }
-    if (refusedTo) return refusedTo;
-    return `no modelled connection from ${from} to ${to} (interconnects and explicit transit groups only)${refused ? `; refused on the way: ${refused}` : ''}`;
+    return opaqueRoute(this.m.index, from, to, initiator);
   }
 
   /** Why a hop can't be taken now (null: it can): devices on, ports not shut, attachments in place, the interconnect not failed. */

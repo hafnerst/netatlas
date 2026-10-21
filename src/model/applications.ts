@@ -31,6 +31,7 @@
  */
 import type { SvcParam, SvcValues } from './service-registry';
 import type { Support } from './support';
+import { parseAddress } from './ip';
 
 export type AppProfileId = 'tcp_server' | 'tcp_client' | 'udp_server' | 'udp_client' | 'udp_receiver' | 'udp_sender' | 'mqtt_client';
 
@@ -175,6 +176,12 @@ export interface AppInstance {
   bind?: string;
   description?: string;
   line: number;
+}
+
+/** The address family an application uses to its peer: its peer address's, else its ip_version, else IPv4 (no fallback to the other). */
+export function appFamily(a: { peer?: string; ipVersion?: 4 | 6 }): 4 | 6 {
+  const pa = a.peer ? parseAddress(a.peer) : null;
+  return pa ? pa.version : a.ipVersion || 4;
 }
 
 /** A peer as written: another device's application, or a device, address or name with the port. */

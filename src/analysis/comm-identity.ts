@@ -206,6 +206,14 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
   const pre: SendPrefill = { from: s.device, kind: svc ? svc.proto : 'icmp' };
   if (s.iface) pre.via = s.iface;
   else not.push(`Source interface: the check resolved none (${s.device} has several): the simulation’s routes choose it`);
+  // an exact source address: a send names the interface, which sends from an address of its own choosing (its first usable
+  // one of the family) — said when the interface has others, and a run counts as this check's only if it was sent from it
+  if (s.binding === 'address' && s.address && s.iface) {
+    const i = model.index.interfaces.get(s.device + ':' + s.iface);
+    const fam = famOf(s.address);
+    const same = i ? i.addresses.map((x) => x.split('/')[0]).filter((x) => famOf(x) === fam) : [];
+    if (same.length > 1) not.push(`Source address: a send names ${s.device}:${s.iface}, which has ${same.length} IPv${fam} addresses (${same.join(', ')}), not the address ${s.address}: it sends from the one it chooses — only a run actually sent from ${s.address} is compared with this check`);
+  }
   if (svc && svc.proto !== 'icmp') pre.port = svc.port;
   carried.push(`Source: ${s.device}${s.iface ? ':' + s.iface : ''}${s.address ? ` (${s.binding === 'address' ? s.address : s.note ? 'its lease when sent' : s.address})` : ''}`);
   if (t.binding === 'name' && t.name) {
@@ -274,7 +282,8 @@ export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boole
   if (t.binding === 'name') {
     if (p.target !== t.name || id.family === 6) return false;
   } else if (t.binding === 'address') {
-    if (p.target !== t.address) return false;
+    // (that exact address: typed, or a device's interface sent to with it — not its lease)
+    if (p.target !== t.address && !(p.target === undefined && p.toAddr === t.address)) return false;
   } else if (p.target !== undefined) {
     // (a device's address typed as an address: the same only when it is no lease that may change)
     if (t.note || p.target !== t.address) return false;
@@ -287,6 +296,19 @@ export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boole
     if (si && (si.vrf || '') !== id.vrf) return false;
   }
   return true;
+}
+
+/**
+ * Does a send carry this identity, as it was sent: its plan (planMatches) and, for a check bound to an exact
+ * source address, every message of it sent from that address (Test.srcAddr, as the transport chose it) — an
+ * interface carried is not an address carried.
+ */
+export function runMatches(id: CommIdentity, run: SendRun, model?: Model): boolean {
+  if (!planMatches(id, run.plan, model)) return false;
+  const s = id.source;
+  if (s.binding !== 'address' || !s.address) return true;
+  const sent = run.tests.filter((t) => t.srcAddr !== undefined);
+  return sent.length > 0 && sent.every((t) => t.srcAddr === s.address);
 }
 
 /** The static result beside what the simulation did, and why they differ. */

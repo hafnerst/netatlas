@@ -34,11 +34,13 @@
  * demand larger than one member of an aggregate fits only as several
  * flows. Pure and deterministic.
  */
-import { APP_DEFAULTS, AppInstance, appProfile, parsePeer, topicMatches } from '../model/applications';
+import { APP_DEFAULTS, AppInstance, appFamily, appProfile, parsePeer, topicMatches } from '../model/applications';
 import { bpsText, parseSpeed } from '../model/speed';
 import { Model } from '../model/types';
 import { RoutingCtx } from './routing';
-import { Path, Trace, tracePath } from './trace';
+import { Path, Trace, TraceRequest, tracePath } from './trace';
+import { appAddress } from './communication';
+import { parseAddress } from '../model/ip';
 
 export interface CapDemand {
   id: string;
@@ -51,6 +53,13 @@ export interface CapDemand {
   ref: string;
   /** what it assumes (an answer size its responder does not state) */
   note?: string;
+  /**
+   * an application's transfer: the ends as the application has them — its address family, the client device, and
+   * the peer: an application or a listener (its bind interface's address), a device (its address of the family),
+   * or an address — resolved when traced, in the state traced (communication.ts appAddress, as the simulation's
+   * applications pick it); `answers`: the peer's way back to the client
+   */
+  app?: { family: 4 | 6; client: string; peer: { device?: string; bind?: string; address?: string }; answers?: boolean };
 }
 
 export interface CapResource {
@@ -88,6 +97,8 @@ export interface DemandResult {
   /** a single flow larger than an aggregate member on its way */
   perFlow?: string;
   paths: number;
+  /** the ends it was traced between ("cli 10.0.1.1 → srv:mgmt 10.9.9.2") */
+  ends?: string;
 }
 
 export interface CapacityResult {
@@ -112,14 +123,26 @@ export function capacityDemands(model: Model): CapDemand[] {
       const ref = `app:${dev.id}/${a.id}`;
       // (a size written is that size, 0 included; empty: the profile's modelling default)
       const size = (v: number | undefined, dflt: number): number => (v !== undefined ? v : dflt);
-      if (p.id === 'udp_sender' && a.peer) out.push({ id: ref, label: `${dev.id}/${a.id}`, from: dev.id, to: a.peer.indexOf('/') > 0 ? a.peer.slice(0, a.peer.indexOf('/')) : a.peer, bps: size(a.requestSize, APP_DEFAULTS.udpRequest) * per, source: 'application', ref });
+      // (the ends as the application has them: its family, its peer's listener and that listener's bind interface)
+      const fam = appFamily(a);
+      const peerOf = (): NonNullable<CapDemand['app']>['peer'] => {
+        const r = responder(model, a, p.transport);
+        if (r.app) {
+          const owner = (model.devices.find((x) => (x.applications || []).indexOf(r.app as AppInstance) >= 0) as { id: string }).id;
+          return { device: owner, bind: r.app.bind };
+        }
+        const pa = a.peer ? parseAddress(a.peer) : null;
+        return pa ? { address: a.peer } : { device: a.peer };
+      };
+      if (p.id === 'udp_sender' && a.peer) out.push({ id: ref, label: `${dev.id}/${a.id}`, from: dev.id, to: a.peer.indexOf('/') > 0 ? a.peer.slice(0, a.peer.indexOf('/')) : a.peer, bps: size(a.requestSize, APP_DEFAULTS.udpRequest) * per, source: 'application', ref, app: { family: fam, client: dev.id, peer: peerOf() } });
       else if ((p.id === 'tcp_client' || p.id === 'udp_client') && a.peer) {
         const to = a.peer.indexOf('/') > 0 ? a.peer.slice(0, a.peer.indexOf('/')) : a.peer;
-        out.push({ id: ref + '>', label: `${dev.id}/${a.id} (requests)`, from: dev.id, to, bps: size(a.requestSize, p.id === 'tcp_client' ? APP_DEFAULTS.tcpRequest : APP_DEFAULTS.udpRequest) * per, source: 'application', ref });
+        const peer = peerOf();
+        out.push({ id: ref + '>', label: `${dev.id}/${a.id} (requests)`, from: dev.id, to, bps: size(a.requestSize, p.id === 'tcp_client' ? APP_DEFAULTS.tcpRequest : APP_DEFAULTS.udpRequest) * per, source: 'application', ref, app: { family: fam, client: dev.id, peer } });
         // the answer is the responder's: its listener's response size (a client has none of its own)
         const dflt = p.id === 'tcp_client' ? APP_DEFAULTS.tcpResponse : APP_DEFAULTS.udpResponse;
         const r = responder(model, a, p.transport);
-        const ans: CapDemand = { id: ref + '<', label: `${dev.id}/${a.id} (answers)`, from: to, to: dev.id, bps: size(r.app ? r.app.responseSize : undefined, dflt) * per, source: 'application', ref };
+        const ans: CapDemand = { id: ref + '<', label: `${dev.id}/${a.id} (answers)`, from: to, to: dev.id, bps: size(r.app ? r.app.responseSize : undefined, dflt) * per, source: 'application', ref, app: { family: fam, client: dev.id, peer, answers: true } };
         if (!r.app) ans.note = `${r.why}: its answers are assumed ${dflt} bytes (the modelling default)`;
         else if (r.app.responseSize === undefined) ans.note = `${r.text} states no response size: ${dflt} bytes (the modelling default)`;
         out.push(ans);
@@ -127,13 +150,13 @@ export function capacityDemands(model: Model): CapDemand[] {
         // one publication per topic every interval; each subscriber gets each publication it matches once (overlapping filters or not)
         const payload = size(a.payloadSize, APP_DEFAULTS.mqttPayload);
         const topics = a.publish.filter((t, k) => a.publish.indexOf(t) === k);
-        out.push({ id: ref + '>', label: `${dev.id}/${a.id} (publish${topics.length > 1 ? `, ${topics.length} topics` : ''})`, from: dev.id, to: a.broker, bps: payload * topics.length * per, source: 'application', ref });
+        out.push({ id: ref + '>', label: `${dev.id}/${a.id} (publish${topics.length > 1 ? `, ${topics.length} topics` : ''})`, from: dev.id, to: a.broker, bps: payload * topics.length * per, source: 'application', ref, app: { family: fam, client: dev.id, peer: { device: a.broker } } });
         for (const sd of model.devices) {
           for (const sa of sd.applications || []) {
             if (sa.profile !== 'mqtt_client' || sa.broker !== a.broker || (sd.id === dev.id && sa.id === a.id)) continue;
             const matched = topics.filter((t) => sa.subscribe.some((f) => topicMatches(f, t)));
             if (!matched.length) continue;
-            out.push({ id: `${ref}>${sd.id}/${sa.id}`, label: `${dev.id}/${a.id} → ${sd.id}/${sa.id} (via ${a.broker}${matched.length > 1 ? `, ${matched.length} topics` : ''})`, from: a.broker, to: sd.id, bps: payload * matched.length * per, source: 'application', ref });
+            out.push({ id: `${ref}>${sd.id}/${sa.id}`, label: `${dev.id}/${a.id} → ${sd.id}/${sa.id} (via ${a.broker}${matched.length > 1 ? `, ${matched.length} topics` : ''})`, from: a.broker, to: sd.id, bps: payload * matched.length * per, source: 'application', ref, app: { family: appFamily(sa), client: sd.id, peer: { device: a.broker }, answers: true } });
           }
         }
       }
@@ -163,6 +186,21 @@ function responder(model: Model, a: AppInstance, transport: string): { app?: App
   });
   if (ls.length === 1) return { app: ls[0], text: `${d.id}/${ls[0].id}`, why: '' };
   return { text: peer, why: ls.length ? `${ls.length} applications of ${peer} listen on ${transport}/${a.port}: its responder is ambiguous` : `no application of ${peer} listens on ${transport}/${a.port}` };
+}
+
+/**
+ * What to trace for a demand: a demand's ends as written; an application's as the application has them (its
+ * family; the peer listener's bind interface's address, else the peer device's address of the family, as the
+ * simulation's applications pick it — communication.ts appAddress), in the state traced.
+ */
+function demandRequest(model: Model, d: CapDemand, ctx: RoutingCtx): TraceRequest {
+  if (!d.app) return { from: d.from, to: d.to };
+  const x = d.app;
+  // (a listener bound to an interface without an address of the family now — down under a failure: that interface, which the
+  // tracer then says has none; never the device's other address)
+  const fallback = x.peer.device !== undefined ? (x.peer.bind !== undefined ? `${x.peer.device}:${x.peer.bind}` : x.peer.device) : d.to;
+  const peer = x.peer.address !== undefined ? x.peer.address : x.peer.device !== undefined ? (appAddress(model, x.peer.device, x.family, x.peer.bind, ctx) || { address: fallback }).address : d.to;
+  return x.answers ? { from: peer, to: x.client, family: x.family } : { from: x.client, to: peer, family: x.family };
 }
 
 /** A cable's speed: the link's, else the smaller of its ends' (null: none written). */
@@ -268,7 +306,7 @@ export function capacityAnalysis(model: Model, ctx: RoutingCtx = {}): CapacityRe
   const loads = new Map<string, ResourceLoad>();
   const perDemand: Array<{ d: CapDemand; trace: Trace; reached: Path[]; resources: CapResource[]; keys: string[] }> = [];
   for (const d of demands) {
-    const t = tracePath(model, { from: d.from, to: d.to }, ctx);
+    const t = tracePath(model, demandRequest(model, d, ctx), ctx);
     const reached = t.error ? [] : t.paths.filter((p) => p.end.kind === 'reached' || p.end.kind === 'delivered');
     const seenAny = new Map<string, CapResource>();
     reached.forEach((p) => {
@@ -305,6 +343,7 @@ export function capacityAnalysis(model: Model, ctx: RoutingCtx = {}): CapacityRe
     own.sort((a, b) => rank.indexOf(a.verdict) - rank.indexOf(b.verdict) || (b.worst / (b.resource.capacity || Infinity)) - (a.worst / (a.resource.capacity || Infinity)));
     const top = own[0];
     const out: DemandResult = { demand: d, connectivity: 'retained', verdict: top ? top.verdict : 'fits', text: '', paths: reached.length };
+    if (trace.source && trace.dest) out.ends = `${trace.source.device}${trace.source.iface ? ':' + trace.source.iface : ''} ${trace.source.address || ''} → ${trace.dest.device ? trace.dest.device + (trace.dest.iface ? ':' + trace.dest.iface : '') + ' ' : ''}${trace.dest.address}`;
     const r = top ? top.resource : null;
     const where = (x: CapResource): string => x.what + (x.direction ? `, ${x.direction}` : '');
     out.text = !top ? 'fits (no cable on its way)' : top.verdict === 'unknown' ? `insufficient information: ${r!.what} has no speed written` : `${top.verdict === 'fits' ? 'fits' : top.verdict === 'exceeds' ? 'exceeds' : 'depends on the distribution at'} ${where(r!)}: ${bpsText(top.equal)} split equally, ${bpsText(top.worst)} on one path, of ${bpsText(r!.capacity as number)}`;
