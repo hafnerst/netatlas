@@ -183,6 +183,26 @@ test('grandmaster loss and recovery: gm2 takes over after the announce receipt t
   assert.equal(clock(s, 'rx1').parent.gmDev, 'gm1');
 });
 
+test('the announce receipt timeout counts from the last Announce (IEEE 1588-2019 §9.2.6.12): gm1 off at any point of its announce interval — gm2 and the boundary clock forget it exactly 3 × 2 s after its last Announce, never later', () => {
+  for (const offset of [300, 1100, 1900]) {
+    const s = sim(NET({ gm2: ', priority1: 110' }));
+    s.runTo(120000);
+    const announces = () => s.events().filter((e) => e.kind === 'message' && e.device === 'gm1' && e.what === 'PTP Announce');
+    const last = announces().pop().t;
+    s.runTo(last + offset);
+    s.powerOff('gm1');
+    assert.equal(announces().pop().t, last, 'no Announce after its last one');
+    s.runTo(last + 15000);
+    for (const d of ['gm2', 'bc1']) {
+      const lost = s.events().filter((e) => e.t > last && e.device === d && e.what === 'foreign master lost');
+      assert.equal(lost.length, 1, `${d}, off ${offset} ms after the last Announce`);
+      assert.ok(Math.abs(lost[0].t - last - 6000) < 1, `${d}: lost ${(lost[0].t - last).toFixed(3)} ms after the last Announce (receipt timeout 6 s)`);
+    }
+    const gm = s.events().find((e) => e.t > last && e.device === 'gm2' && /PTP grandmaster/.test(e.what));
+    assert.ok(gm && gm.t - last < 6001, 'gm2 takes over then');
+  }
+});
+
 test('the boundary clock’s upstream fails: its receivers lose their time (holdover or unsynchronized), and get it back when the link returns', () => {
   const s = sim();
   settle(s, 30000);
