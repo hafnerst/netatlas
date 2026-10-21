@@ -1399,6 +1399,8 @@ export class Transport {
    * (tcp_retries2): then the connection is given up.
    */
   private armRtx(c: Conn): void {
+    // (a connection closed meanwhile — its own segment could not even leave, closeConn: rtx -1 — is never armed again)
+    if (c.rtx === -1) return;
     const tok = ++this.rtxTok;
     c.rtx = tok;
     if (c.tcp.idle) {
