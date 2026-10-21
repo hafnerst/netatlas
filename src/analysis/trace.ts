@@ -379,7 +379,8 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   if (srcAddr) w.srcText = formatAddr(srcAddr);
   if (srcAddr) w.src = srcAddr;
   w.srcDev = srcDev;
-  if (destDev !== undefined) w.destDev = destDev;
+  // (the destination's device when it is certain: asked for as a device or an interface, or the one holder of its address)
+  if (destDev !== undefined && (dst.kind !== 'address' || holders(model, destAddr, ctx, null).length === 1)) w.destDev = destDev;
   w.svc = svc;
   if (dnat) w.dnat = dnat;
   out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
@@ -568,9 +569,20 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   }
   if (hop.nat) why.nat = hop.notes.slice(n1).join('; ');
   // the next device: the one with the next-hop address (or the destination, when it is connected)
-  const owners = holders(model, target, w.ctx, at.device);
+  let owners = holders(model, target, w.ctx, at.device);
+  // an address several devices have (two VRFs, two segments): the one this hop reaches — the destination asked for first,
+  // then the one on the segment the egress interface is on — never merely the first of them all
+  if (owners.length > 1) {
+    const dest = compareAddr(target, w.dest) === 0 && w.destDev !== undefined ? owners.filter((o) => o.device === w.destDev) : [];
+    const vlan0 = outNet ? vlanOfNet(model, outNet.net) : undefined;
+    const onSeg = iface && iface.type === 'tunnel' ? [] : owners.filter((o) => l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: o.device, iface: o.iface }, vlan0).kind !== 'none');
+    const picked = dest.filter((o) => onSeg.length === 0 || onSeg.indexOf(o) >= 0).concat(onSeg.filter((o) => dest.indexOf(o) < 0));
+    if (picked.length) {
+      if (picked.length > 1 || owners.length > picked.length) hop.notes.push(`${formatAddr(target)} is an address of ${owners.map((o) => o.device + ':' + o.iface).join(' and ')}; the one this hop reaches is ${picked[0].device}`);
+      owners = picked;
+    } else hop.notes.push(`${formatAddr(target)} is an address of ${owners.map((o) => o.device + ':' + o.iface).join(' and ')}; none of them is on the segment of ${at.device}:${h.iface}: the trace follows ${owners[0].device}`);
+  }
   let next: { device: string; iface: string; vrf: string; address: string } | null = owners.length ? owners[0] : null;
-  if (owners.length > 1) hop.notes.push(`${formatAddr(target)} is an address of ${owners.map((o) => o.device + ':' + o.iface).join(' and ')}; the trace follows ${owners[0].device}`);
   if (!next) {
     const vip = vipHolder(model, target, w.ctx, at.device);
     if (vip) {
@@ -1099,14 +1111,15 @@ function crossDenied(w: Walk, dev: Device, inPort: string | undefined, outPort: 
  */
 function networkPolicyDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
   if (!policyKind(w.model, dev)) return null;
-  // (the owner of an address: the traced end's device when it holds it, else its first holder)
+  // (the owner of an address: the traced end's device when it holds it, else its one holder; several and no traced end: not known)
   const owner = (a: IpAddr | undefined, end: string | undefined): string | null => {
     if (!a) return null;
     const h = holders(w.model, a, w.ctx, null);
-    return end !== undefined && h.some((x) => x.device === end) ? end : h.length ? h[0].device : null;
+    const devs = h.map((x) => x.device).filter((x, k, all) => all.indexOf(x) === k);
+    return end !== undefined && devs.indexOf(end) >= 0 ? end : devs.length === 1 ? devs[0] : null;
   };
   // (a device spec's addresses: what the routing context has acquired — a snapshot's, the simulation's leases — else the configured model's, its runtime ones unknown)
-  const ids = w.ctx.leases ? ctxIds(w.model, w.ctx) : configuredIds(w.model);
+  const ids = w.ctx.leases ? ctxIds(w.model, w.ctx) : configuredIds(w.model, w.ctx);
   const flow: PolicyFlow = { src: w.src, dst: w.dest, proto: w.svc ? (w.svc.proto as PolicyFlow['proto']) : 'other', srcDev: owner(w.src, w.srcDev), dstDev: owner(w.dest, w.dnat ? undefined : w.destDev), inIface, outIface, ids };
   if (w.svc && w.svc.proto !== 'icmp') flow.dport = w.svc.port;
   const d = policyDecision(w.model, dev, flow, !!w.svc);

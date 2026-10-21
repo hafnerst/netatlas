@@ -91,13 +91,21 @@ const svcWhat = (f: PolicyFlow): string => (f.proto === 'icmp' ? 'ICMP' : f.prot
  */
 export interface PolicyIds {
   addrs(dev: string): Array<{ iface: string; addr: IpAddr }>;
+  /** the devices that have an address (several: which one a flow's address is needs its owner) */
+  holders?(a: IpAddr): string[];
   /** interfaces whose address of a family is acquired at runtime and unknown here (none: everything is known) */
   pending?(dev: string): Array<{ iface: string; version: 4 | 6 }>;
 }
 
+/** The devices of a model that have an address, by the addresses `ids` gives them. */
+function holdersBy(model: Model, addrs: PolicyIds['addrs']): (a: IpAddr) => string[] {
+  return (a) => model.devices.filter((d) => addrs(d.id).some((x) => compareAddr(x.addr, a) === 0)).map((d) => d.id);
+}
+
 /** The configured model's: the written addresses; DHCP and SLAAC / DHCPv6 interfaces are pending. */
-export function configuredIds(model: Model): PolicyIds {
-  return {
+export function configuredIds(model: Model, ctx?: RoutingCtx): PolicyIds {
+  void ctx;
+  const ids: PolicyIds = {
     addrs: (dev) => {
       const d = model.index.devices.get(dev);
       const out: Array<{ iface: string; addr: IpAddr }> = [];
@@ -117,11 +125,14 @@ export function configuredIds(model: Model): PolicyIds {
       return out;
     },
   };
+  ids.holders = holdersBy(model, ids.addrs);
+  return ids;
 }
 
 /** A routing context's (a snapshot's, the simulation's): the written addresses and what it has acquired (its leases); nothing pending. */
 export function ctxIds(model: Model, ctx: RoutingCtx): PolicyIds {
-  return { addrs: (dev) => connectedIn(model, dev, ctx).map((c) => ({ iface: c.iface, addr: c.addr })) };
+  const addrs = (dev: string): Array<{ iface: string; addr: IpAddr }> => connectedIn(model, dev, ctx).map((c) => ({ iface: c.iface, addr: c.addr }));
+  return { addrs, holders: holdersBy(model, addrs) };
 }
 
 /**
@@ -132,7 +143,9 @@ export function ctxIds(model: Model, ctx: RoutingCtx): PolicyIds {
  * A device or interface holds the address among its effective ones
  * (`ids`, the configured model's when none) — never a whole subnet — and,
  * when the flow knows the address's owner (`owner`: two devices of
- * different VRFs may hold the same address), only if it is that owner.
+ * different VRFs may hold the same address), only if it is that owner; an
+ * address several devices have, its owner not known, is 'unknown' — never
+ * every device that has it. A prefix or an address rule is the address.
  */
 export function specMatches(model: Model, spec: string, a: IpAddr, ids?: PolicyIds, owner?: string | null): boolean | 'unknown' {
   if (spec === 'any') return true;
@@ -141,7 +154,11 @@ export function specMatches(model: Model, spec: string, a: IpAddr, ids?: PolicyI
   const by = ids || configuredIds(model);
   const owns = (dev: string, iface?: string): boolean | 'unknown' => {
     if (owner && owner !== dev) return false;
-    if (by.addrs(dev).some((x) => (iface === undefined || x.iface === iface) && compareAddr(x.addr, a) === 0)) return true;
+    if (by.addrs(dev).some((x) => (iface === undefined || x.iface === iface) && compareAddr(x.addr, a) === 0)) {
+      // an address several devices have, its owner not known: it is not every one of them
+      if (!owner && by.holders && by.holders(a).length > 1) return 'unknown';
+      return true;
+    }
     // an address it takes at runtime, unknown here: not a non-match unless the address is known to be another device's
     if (!owner && by.pending && by.pending(dev).some((x) => (iface === undefined || x.iface === iface) && x.version === a.version)) return 'unknown';
     return false;
