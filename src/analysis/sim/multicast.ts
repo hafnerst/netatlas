@@ -112,6 +112,12 @@ interface RGroup {
   sources: string[];
   /** IGMPv3 / MLDv2 source timers (RFC 3376 §6.2.3, RFC 3810 §7.2.3): until when each source of `sources` is wanted */
   srcUntil?: Map<string, number>;
+  /**
+   * until when a member wants every source (EXCLUDE {}: an IGMPv3 / MLDv2 report without sources, an IGMPv2 / MLDv1
+   * report) — the group timer of EXCLUDE mode (RFC 3376 §6.2.1, RFC 3810 §7.2.1); while it runs every source is
+   * forwarded, also beside members of named sources; when it runs out the group falls back to those (§6.5, §7.5)
+   */
+  anyUntil?: number;
   /** group-specific queries still to send after a leave */
   gsq: number;
   /** a member left: the group goes unless the group-specific queries are answered */
@@ -603,6 +609,20 @@ export class Multicast {
     return a ? { l3, addr: a.addr } : null;
   }
 
+  /**
+   * The source of a host's multicast data on an interface (its streams): IPv4 its address; IPv6 an address of the
+   * interface that is not link-local — the group is never link-scoped (a stream's groups are routable), and a source of
+   * smaller scope than its destination is not chosen (RFC 6724 §5, rule 2), nor routed (RFC 4291 §2.5.6). Unlike its
+   * MLD messages, which go from its link-local address.
+   */
+  private dataAddr(dev: string, iface: string, v: 4 | 6): { l3: L3Iface; addr: IpAddr } | null {
+    if (v === 4) return this.hostAddr(dev, iface, 4);
+    const sd = this.P.sd(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    const a = l3 ? l3.addrs.find((x) => x.addr.version === 6 && !(x.addr.bytes[0] === 0xfe && (x.addr.bytes[1] & 0xc0) === 0x80)) : undefined;
+    return l3 && a ? { l3, addr: a.addr } : null;
+  }
+
   /** A router's own address on an interface for its queries and the querier election: IPv4 its address, MLD its valid link-local address (none yet: it does not query). */
   private queryAddr(ri: RIface): IpAddr | null {
     if (ri.addr.version === 4) return ri.addr;
@@ -1087,6 +1107,7 @@ export class Multicast {
           const g = ri.groups.get(d.group) as RGroup;
           g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev, null, this.at(ri)) * this.e.params.num('igmp-lmqi', dev, null, this.at(ri)));
           if (g.srcUntil) for (const s of g.sources) g.srcUntil.set(s, Math.min(g.srcUntil.get(s) || g.expires, g.expires));
+          if (g.anyUntil !== undefined) g.anyUntil = Math.min(g.anyUntil, g.expires);
           g.leaving = true;
           this.expireAt(g.expires);
         }
@@ -1129,6 +1150,7 @@ export class Multicast {
   private memberReported(ri: RIface, group: string, reporter: string, msg: Msg, sources: string[]): void {
     const isNew = !ri.groups.has(group);
     const g: RGroup = ri.groups.get(group) || { group, reporter, version: '', expires: 0, sources: [], gsq: 0, leaving: false };
+    const wasAny = this.anySource(g);
     g.leaving = false;
     g.reporter = reporter;
     g.version = (msg.data && (msg.data as { version?: string }).version) || this.verName(A(group).version, sources.length ? 'v3' : this.ver(this.e.ownerOf(A(reporter)) || ri.dev));
@@ -1140,17 +1162,31 @@ export class Multicast {
     if (sources.length) {
       if (!g.srcUntil) g.srcUntil = new Map();
       for (const s of sources) g.srcUntil.set(s, g.expires);
-    }
+    } else g.anyUntil = g.expires;
     ri.groups.set(group, g);
     if (this.onMember) this.onMember(ri.dev, ri.l3.id, group, reporter);
     if (isNew) {
       this.e.note('table', 'igmp', ri.dev, '', 'member', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member (${reporter}${sources.length ? ', sources ' + sources.join(', ') : ''}); kept for ${durationText(this.gmi(ri.dev))} without a report (robustness × query interval + response interval)`);
+      this.membersChanged(ri.dev, ri.l3, group);
+    } else if (!sources.length && !wasAny) {
+      // a known group of named sources with a member for every source now (EXCLUDE {}): every source is forwarded
+      this.e.note('table', 'igmp', ri.dev, '', 'any source', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member for every source too (${reporter}); every source goes out, not only ${g.sources.join(', ')}`);
       this.membersChanged(ri.dev, ri.l3, group);
     } else if (added.length) {
       // a known group with a new source (ALLOW): its (S, G) too
       this.e.note('table', 'igmp', ri.dev, '', 'source added', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member for ${added.join(', ')} too (${reporter}); each source kept for ${durationText(this.gmi(ri.dev))} without a report`);
       this.membersChanged(ri.dev, ri.l3, group);
     }
+  }
+
+  /** Does a member want every source of the group (its EXCLUDE {} group timer running)? */
+  private anySource(g: RGroup): boolean {
+    return g.anyUntil !== undefined && g.anyUntil > this.e.now;
+  }
+
+  /** Until when a group lasts: its any-source interest or its latest source, whichever lasts longer. */
+  private groupUntil(g: RGroup): number {
+    return Math.max(g.anyUntil !== undefined ? g.anyUntil : -Infinity, this.lastSource(g));
   }
 
   /** The latest source timer of a group with sources (it lasts as long as one of its sources does). */
@@ -1172,17 +1208,19 @@ export class Multicast {
     // a BLOCK of sources it does not have (RFC 3376 §6.4.2: INCLUDE(A) + BLOCK(B) queries A*B — none): nothing changes; only a
     // leave without sources (TO_IN {}, an IGMPv2 / MLDv1 Leave) is the whole group's
     if (sources.length && !blocked.length) {
-      this.e.note('table', 'igmp', ri.dev, '', 'block ignored', '', `${ri.dev}:${ri.l3.id}: ${who} blocks ${sources.join(', ')} of ${group}, which it has no member for: nothing changes (its sources ${g.sources.join(', ') || 'none'} stay)`);
+      this.e.note('table', 'igmp', ri.dev, '', 'block ignored', '', `${ri.dev}:${ri.l3.id}: ${who} blocks ${sources.join(', ')} of ${group}, which it has no member for: nothing changes (${this.anySource(g) ? 'a member wants every source' : 'its sources ' + (g.sources.join(', ') || 'none') + ' stay'})`);
       return;
     }
     if (blocked.length) {
       for (const s of blocked) g.srcUntil!.set(s, Math.min(g.srcUntil!.get(s) as number, lmqt));
-      g.expires = this.lastSource(g);
+      // (a member for every source keeps the group: the blocked sources only stop being named)
+      g.expires = this.groupUntil(g);
       g.leaving = g.expires <= lmqt;
       this.expireAt(lmqt);
     } else {
       g.expires = Math.min(g.expires, lmqt);
       if (g.srcUntil) for (const s of g.sources) g.srcUntil.set(s, Math.min(g.srcUntil.get(s) || lmqt, lmqt));
+      if (g.anyUntil !== undefined) g.anyUntil = Math.min(g.anyUntil, lmqt);
       g.leaving = true;
       this.expireAt(g.expires);
     }
@@ -1561,7 +1599,9 @@ export class Multicast {
       return;
     }
     const mode = this.mode(dev, g);
-    const keys = mode === 'ssm' || (rg && rg.sources.length) ? (rg ? rg.sources : []).map((s) => s + '|' + group) : ['*|' + group];
+    // a member for every source: the shared tree's (*, G) (never in the SSM range, RFC 4607 §2); else each named source's (S, G)
+    const any = !!rg && mode !== 'ssm' && (this.anySource(rg) || !rg.sources.length);
+    const keys = any ? ['*|' + group] : (rg ? rg.sources : []).map((s) => s + '|' + group);
     if (mode === 'dense') {
       // dense mode: un-prune (graft) the entries of the group
       for (const e of this.table(dev).values()) {
@@ -1583,12 +1623,13 @@ export class Multicast {
           this.e.note('table', 'pim', dev, '', 'oif added', '', `${dev}: ${this.entryName(e)} goes out of ${l3.id} too (members there)`);
         }
       }
-      // members for some sources only: a source no member wants any more leaves this interface (pruned when nothing wants it)
-      if (rg.sources.length) {
+      // members for some sources only (none for every source): a source no member wants any more leaves this interface, the
+      // shared tree's (*, G) too (pruned when nothing wants them)
+      if (!any) {
         for (const e of Array.from(this.table(dev).values())) {
-          if (e.g !== group || e.s === '*' || rg.sources.indexOf(e.s) >= 0 || e.oil.get(l3.id) !== Infinity) continue;
+          if (e.g !== group || rg.sources.indexOf(e.s) >= 0 || e.oil.get(l3.id) !== Infinity) continue;
           e.oil.delete(l3.id);
-          this.e.note('table', 'pim', dev, '', 'oif removed', '', `${dev}: ${this.entryName(e)} no longer goes out of ${l3.id} (no member there wants ${e.s})`);
+          this.e.note('table', 'pim', dev, '', 'oif removed', '', `${dev}: ${this.entryName(e)} no longer goes out of ${l3.id} (${e.s === '*' ? 'no member there wants every source, only ' + rg.sources.join(', ') : 'no member there wants ' + e.s})`);
           this.maybePrune(dev, e);
         }
       }
@@ -1987,7 +2028,7 @@ export class Multicast {
   streamProblem(dev: string, iface: string, group: string): string | null {
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
-    if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
+    if (!this.dataAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address${g.version === 6 ? ' beyond its link-local one' : ''}`;
     if (this.streams.some((x) => x.dev === dev && x.iface === iface && x.group === formatAddr(g) && x.running)) return `${dev}:${iface} already streams to ${formatAddr(g)}`;
     return null;
   }
@@ -2027,7 +2068,7 @@ export class Multicast {
       return;
     }
     const g = A(st.group);
-    const h = this.hostAddr(st.dev, st.iface, g.version);
+    const h = this.dataAddr(st.dev, st.iface, g.version);
     if (!h) return;
     st.sent++;
     if (st.lastAt !== undefined) st.gap = this.e.now - st.lastAt;
@@ -2132,16 +2173,27 @@ export class Multicast {
     const now = this.e.now;
     for (const ri of Array.from(this.rifs.values()).sort((a, b) => cmp(a.dev + a.l3.id, b.dev + b.l3.id))) {
       for (const [k, g] of Array.from(ri.groups)) {
-        // a source whose timer ran out goes (its (S, G) out of this interface with it); the group stays while one source does
+        // a source whose timer ran out goes (its (S, G) out of this interface with it); the group stays while one source does,
+        // or a member for every source
+        let changed = false;
         if (g.srcUntil && g.expires > now) {
           const gone = g.sources.filter((s) => (g.srcUntil!.get(s) || 0) <= now);
           if (gone.length) {
             g.sources = g.sources.filter((s) => gone.indexOf(s) < 0);
             for (const s of gone) g.srcUntil.delete(s);
-            this.e.note('table', 'igmp', ri.dev, '', 'source expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member for ${gone.join(', ')} any more (${g.leaving || g.gsq > 0 ? 'nobody answered the group-specific queries' : 'no report within the membership interval'}); ${g.sources.length ? 'still for ' + g.sources.join(', ') : ''}`);
-            if (g.sources.length) this.membersChanged(ri.dev, ri.l3, k);
-            else g.expires = now;
+            changed = true;
+            this.e.note('table', 'igmp', ri.dev, '', 'source expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member for ${gone.join(', ')} any more (${g.leaving || g.gsq > 0 ? 'nobody answered the group-specific queries' : 'no report within the membership interval'}); ${this.anySource(g) ? 'a member still wants every source' : g.sources.length ? 'still for ' + g.sources.join(', ') : ''}`);
           }
+        }
+        // the group timer of EXCLUDE mode ran out (RFC 3376 §6.5): no member wants every source any more — the named ones stay
+        if (g.anyUntil !== undefined && g.anyUntil <= now) {
+          g.anyUntil = undefined;
+          changed = true;
+          if (g.sources.length && this.lastSource(g) > now) this.e.note('table', 'igmp', ri.dev, '', 'any source expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member for every source any more (${g.leaving || g.gsq > 0 ? 'nobody answered the group-specific queries' : 'no report within the membership interval'}); still for ${g.sources.join(', ')}`);
+        }
+        if (changed) {
+          g.expires = Math.min(g.expires, this.groupUntil(g));
+          if (g.expires > now) this.membersChanged(ri.dev, ri.l3, k);
         }
         if (g.expires > now) continue;
         ri.groups.delete(k);
@@ -2314,7 +2366,7 @@ export class Multicast {
     for (const ri of Array.from(this.rifs.values()).filter((x) => x.dev === dev).sort((a, b) => cmp(a.l3.id, b.l3.id))) {
       const role = this.roleOf(ri);
       notes.push(`${ri.l3.id} (${formatAddr(ri.addr)}, ${ri.lan}): ${role === 'querier' ? 'the querier' : role === 'starting' ? 'the querier for now (starting: its startup queries)' : role === 'non-querier' ? 'not the querier (' + (ri.otherAddr || '?') + ' queries)' : role === 'off' ? 'no querier candidate (its querier is off)' : 'down'}`);
-      for (const g of Array.from(ri.groups.values()).sort((a, b) => cmp(a.group, b.group))) rows.push([ri.l3.id, g.group, g.reporter, g.version, g.sources.join(', ') || 'any', dur(g.expires - this.e.now)]);
+      for (const g of Array.from(ri.groups.values()).sort((a, b) => cmp(a.group, b.group))) rows.push([ri.l3.id, g.group, g.reporter, g.version, this.anySource(g) || !g.sources.length ? (g.sources.length ? `any (also named: ${g.sources.join(', ')})` : 'any') : g.sources.join(', '), dur(g.expires - this.e.now)]);
     }
     return { caption: `IGMP / MLD groups of ${dev}`, cols: ['Interface', 'Group', 'Last reporter', 'Version', 'Sources', 'Expires in'], rows, empty: 'No group has members on its interfaces.', timers: ['igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'igmp-version'].map((k) => this.timer(k, dev)), notes };
   }
