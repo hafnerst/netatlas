@@ -194,3 +194,186 @@ test('the examples: connections opened in two minutes are the configured ones (a
     }
   }
 });
+
+// ------------------------------------------------------------------ lifecycle boundaries
+
+const P = load('analysis/sim/pacing.js');
+const synSent = (s, dev) => (s.transport.conns.get(dev) ? Array.from(s.transport.conns.get(dev).values()).filter((c) => c.state === 'SYN_SENT').length : 0);
+
+test('Stop during an ARP wait or a DHCP wait: nothing new is sent after it; a message already started ends by its own timeout, its attempt abandoned — no SYN after that, none when the peer appears later', () => {
+  // the peer is on pc's own subnet and off: ARP goes unanswered
+  const arp = counted(CHAIN({ pc: `\n    services:\n      applications:\n        - {id: get, name: Get, profile: tcp_client, peer: 10.0.1.77, port: 80, interval: 2s, timeout: 3s}` }).replace('  - {id: srv,', '  - {id: near, type: server, interfaces: [{id: eth0, ip: 10.0.1.77/24}], simulation: {listening: "tcp/80"}}\n  - {id: srv,').replace('  - {id: l1, a: "pc:eth0", b: "r1:g0"}', '  - {id: l1, a: "pc:eth0", b: "sw:p1"}\n  - {id: l0, a: "r1:g0", b: "sw:p2"}\n  - {id: ln, a: "near:eth0", b: "sw:p3"}').replace('links:', '  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}\nlinks:'));
+  const s = arp.s;
+  s.runTo(2500);
+  s.powerOff('near');
+  s.runTo(4000);
+  const a = s.actApp('pc', 'get');
+  assert.ok(!a.error, a.error);
+  s.runTo(s.now + 300);
+  const madeAtStop = arp.made.length;
+  assert.ok(s.actionControl(a.id, 'stop'));
+  const stopAt = s.now;
+  s.runTo(stopAt + 1500);
+  s.powerOn('near');
+  s.runTo(stopAt + 60000);
+  assert.equal(arp.made.length, madeAtStop, 'no connection after Stop');
+  const ended = Math.max(...a.app.tests.map((t) => t.ended || 0));
+  assert.ok(ended <= stopAt + 3000 + 1, 'the started message ended by its own timeout');
+  assert.deepEqual(syns(s, 'pc', ended + 1e-6), [], 'no SYN once it ended, though the peer came back');
+  assert.equal(synSent(s, 'pc'), 0);
+  // a DHCP wait: the message waits for its lease (no connection yet); Stop cancels it, the lease later sends nothing
+  const dh = counted(`netatlas: 1
+title: dhcp wait
+devices:
+  - id: pc
+    type: endpoint
+    interfaces: [{id: eth0, ipv4: dhcp}]
+    services:
+      applications:
+        - {id: get, name: Get, profile: tcp_client, peer: 10.0.1.5, port: 80, interval: 2s}
+  - id: dsrv
+    type: server
+    simulation: {listening: "tcp/80"}
+    services:
+      dhcp:
+        scopes: [{network: lan, range: 10.0.1.100-10.0.1.199, gateway: 10.0.1.1, dns: [10.0.1.5]}]
+    interfaces: [{id: eth0, ip: 10.0.1.5/24}]
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+links:
+  - {id: a, a: "pc:eth0", b: "sw:p1"}
+  - {id: b, a: "dsrv:eth0", b: "sw:p2"}
+networks:
+  - {id: lan, cidr: 10.0.1.0/24}
+`);
+  dh.s.powerOff('dsrv');
+  dh.s.runTo(3000);
+  const b = dh.s.actApp('pc', 'get');
+  dh.s.runTo(dh.s.now + 500);
+  assert.match(b.app.tests[0].result, /waiting for a DHCP lease/);
+  assert.ok(dh.s.actionControl(b.id, 'stop'));
+  dh.s.powerOn('dsrv');
+  // (the client's DHCP retransmissions back off: its next Discover can be minutes away)
+  dh.s.runTo(dh.s.now + 600000);
+  assert.ok(dh.s.engine.effectiveAddrs('pc').some((x) => x.addr.version === 4), 'the lease came');
+  assert.equal(dh.made.filter((m) => m.dev === 'pc').length, 0, 'the cancelled message never connects');
+  assert.match(b.app.tests[0].result, /cancelled \(Stop\)/);
+});
+
+test('a SYN-ACK at the response timeout’s own moment: the earlier event decides, deterministically — the attempt abandoned (the late SYN-ACK finds no connection), or established and closed normally when it comes first; the same paced', () => {
+  // the handshake's SYN-ACK reaches pc when pc sends the handshake ACK: measured, then the response timeout set exactly there
+  const probe = counted(CHAIN());
+  probe.s.runTo(2500);
+  const t0 = probe.s.now;
+  const pt = probe.s.sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
+  probe.s.runTo(t0 + 5000);
+  assert.equal(pt.ok, true);
+  const ack = probe.s.events().find((e) => e.t >= t0 && e.device === 'pc' && e.kind === 'message' && e.hdr && e.hdr.l4 && e.hdr.l4.proto === 'tcp' && e.hdr.l4.flags.join() === 'ACK');
+  const at = ack.t - t0;
+  const run = (timeout, paced) => {
+    const { s, made } = counted(CHAIN());
+    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, typical: () => s.engine.hopTime(), headers: (f) => f.hdr }, 8) : null;
+    s.runTo(2500);
+    const r = s.transport.resolveTarget('pc', { to: 'srv' }, 'tcp');
+    const t = s.transport.run({ from: 'pc', target: 'srv', dst: r.dst, kind: 'tcp', port: 80, source: 'manual', timeout: { value: timeout } });
+    if (pacer) for (let i = 0; i < 4000 && s.now < 2500 + 70000; i++) pacer.frame(16);
+    s.runTo(2500 + 70000);
+    const log = s.events().filter((e) => e.t >= 2500).map((e) => `${e.t.toFixed(6)} ${e.kind} ${e.device} ${e.detail}`);
+    return { t, conn: made[made.length - 1].conn, log, s };
+  };
+  // exactly then: the timeout was scheduled first (when the test started), so it comes first — the attempt in SYN-SENT is
+  // abandoned; the SYN-ACK arrives for no connection
+  const exact = run(at, false);
+  assert.match(exact.t.result, /timed out/);
+  assert.ok(exact.log.some((x) => /connection attempt abandoned/.test(x)), 'abandoned');
+  assert.equal(exact.conn.state, 'CLOSED');
+  assert.ok(!exact.log.some((x) => / pc .*\[P,A\]/.test(x) && /→ 10\.0\.2\.10:80/.test(x)), 'no request sent on an abandoned attempt');
+  // a microsecond later: the SYN-ACK came first — established, not abandoned (the test still times out: no answer yet), and
+  // the connection then ends normally, nothing left open
+  const after = run(at + 0.001, false);
+  assert.match(after.t.result, /timed out/);
+  assert.ok(!after.log.some((x) => /connection attempt abandoned/.test(x)), 'not abandoned once established');
+  assert.ok(after.conn.state === 'CLOSED' || after.conn.state === 'TIME_WAIT' || !after.s.transport.alive(after.conn), after.conn.state);
+  // the same paced, at both boundaries
+  assert.deepEqual(run(at, true).log, exact.log);
+  assert.deepEqual(run(at + 0.001, true).log, after.log);
+});
+
+test('a persistent session after a failure and its recovery: one new connection, established again; the attempts while it was down never pile up', () => {
+  const { s, made } = counted(example('datacenter-evpn.yaml'));
+  s.runTo(90000);
+  const bgp = () => made.filter((m) => /^(BGP|EVPN) /.test(m.what));
+  const before = bgp().length;
+  const one = bgp()[0];
+  // the cable under one session: fail it, then restore
+  const rel = s.model.relations.find((r) => /BGP|EVPN/i.test(r.protocol) && one.what.indexOf(r.id) >= 0) || null;
+  const link = s.model.links.find((l) => [l.a.device, l.b.device].indexOf(one.dev) >= 0 && s.model.index.devices.get(l.a.device === one.dev ? l.b.device : l.a.device).type !== 'endpoint');
+  void rel;
+  assert.ok(s.fail('link:' + link.id));
+  s.runTo(s.now + 60000);
+  let peak = 0;
+  assert.ok(s.restore('link:' + link.id));
+  for (let t = 0; t < 120000; t += 1000) {
+    s.runTo(s.now + 1000);
+    peak = Math.max(peak, synSent(s, one.dev));
+  }
+  const per = new Map();
+  for (const m of bgp().slice(before)) per.set(m.what, (per.get(m.what) || 0) + 1);
+  for (const [what, n] of per) assert.ok(n <= 3, `${what}: ${n} new connections after the recovery (bounded)`);
+  assert.ok(peak <= Math.max(1, per.size), `at most one attempt per session at a time (${peak})`);
+});
+
+test('an established connection whose application gives up (a slow answer): the test times out, the connection does not stay open for ever, a late answer opens nothing; a retry is a connection of its own', () => {
+  const slow = CHAIN({ pc: `\n    services:\n      applications:\n        - {id: get, name: Get, profile: tcp_client, peer: srv/web, interval: 20s, count: 1, timeout: 2s, retries: 1, start: simulation_start}` }).replace('{id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.2.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}], simulation: {listening: "tcp/80"}}', `{id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.2.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}], services: {applications: [{id: web, name: Web, profile: tcp_server, port: 80, response_delay: 5s}]}}`);
+  const { s, made } = counted(slow);
+  s.runTo(60000);
+  const run = s.apps.runs.find((r) => r.dev === 'pc');
+  assert.equal(run.tests.length, 2, 'the try and its one retry');
+  for (const t of run.tests) assert.match(t.result, /timed out/);
+  const mine = made.filter((m) => m.dev === 'pc');
+  assert.equal(mine.length, 2, 'one connection per try');
+  assert.equal(new Set(mine.map((m) => m.lport)).size, 2);
+  // a minute later: neither is left established, half-open or retransmitting
+  s.runTo(240000);
+  for (const m of mine) assert.ok(m.conn.state === 'CLOSED' || m.conn.state === 'TIME_WAIT' || !s.transport.alive(m.conn), `${m.lport}: ${m.conn.state}`);
+  assert.equal(made.filter((m) => m.dev === 'pc').length, 2, 'nothing new');
+});
+
+test('in-progress ownership: an MQTT client stopped while its connection is being opened leaves no attempt behind and never reconnects; LDP sessions after a failure keep one attempt each at a time', () => {
+  // the broker behind r2: every SYN-ACK lost, so the client stays connecting
+  const mq = counted(CHAIN({ pc: `\n    services:\n      applications:\n        - {id: m, name: Telemetry, profile: mqtt_client, broker: srv, publish: [plant/t], interval: 5s}` }).replace('simulation: {listening: "tcp/80"}', 'services: {mqtt_broker: {}}'));
+  const s = mq.s;
+  s.runTo(2500);
+  loseSynAcks(s, 'l3');
+  const a = s.actApp('pc', 'm');
+  assert.ok(!a.error, a.error);
+  s.runTo(s.now + 1500);
+  assert.ok(synSent(s, 'pc') >= 1, 'connecting');
+  const n = mq.made.length;
+  assert.ok(s.actionControl(a.id, 'stop'));
+  const stopAt = s.now;
+  s.engine.impair = null;
+  s.runTo(stopAt + 60000);
+  assert.equal(mq.made.length, n, 'no reconnection after Stop');
+  assert.equal(synSent(s, 'pc'), 0, 'its attempt is gone');
+  assert.deepEqual(syns(s, 'pc', stopAt + 1e-6), [], 'no SYN after Stop');
+  // LDP: the metro ring's sessions, a ring cable failed and restored — bounded attempts, one at a time per session
+  const ld = counted(example('metro-ring.yaml'));
+  ld.s.runTo(60000);
+  const ldp = () => ld.made.filter((m) => /LDP/.test(m.what));
+  const before = ldp().length;
+  assert.ok(before >= 1, 'LDP sessions over TCP');
+  const first = ldp()[0];
+  const link = ld.s.model.links.find((l) => l.a.device === first.dev || l.b.device === first.dev);
+  assert.ok(ld.s.fail('link:' + link.id));
+  ld.s.runTo(ld.s.now + 30000);
+  assert.ok(ld.s.restore('link:' + link.id));
+  const per = new Map();
+  let peak = 0;
+  for (let t = 0; t < 120000; t += 1000) {
+    ld.s.runTo(ld.s.now + 1000);
+    for (const d of ld.s.model.devices) peak = Math.max(peak, synSent(ld.s, d.id));
+  }
+  for (const m of ldp().slice(before)) per.set(`${m.dev}|${m.what}`, (per.get(`${m.dev}|${m.what}`) || 0) + 1);
+  for (const [what, k] of per) assert.ok(k <= 4, `${what}: ${k} connections after the failure (bounded)`);
+  assert.ok(peak <= 2, `attempts in SYN-SENT at once on one device: ${peak}`);
+});

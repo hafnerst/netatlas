@@ -17,10 +17,18 @@
  *   its own), peers send their own data; a hop after a transit is started
  *   by the forwarding port. A transfer is one direction: nothing answers,
  *   whatever "both" says.
+ *   The search takes only hops that rule allows: an invalid alternative is
+ *   passed over, never the end of the search.
  *   When a hop is due it needs its devices on (a transit device too), its
  *   ports not shut, its attachment not detached and its interconnect not
  *   failed; otherwise the data stops there and the result says why. A
- *   passive interconnect has no power state of its own.
+ *   failure while a hop is on its way stops it there and then (its dot is
+ *   lost where it is, nothing goes on from it, a restore does not bring it
+ *   back), and its arrival is checked again. A passive interconnect has no
+ *   power state of its own.
+ *   Besides Send illustrative data (a Network event: the foreground), an
+ *   interconnect's `traffic:` runs with the simulation (the scenario's: the
+ *   background, every interval of simulated time).
  *   Each hop takes OPAQUE_HOP_MS of simulated time — a display parameter of
  *   the model, never a prediction of throughput or latency.
  *
@@ -45,6 +53,7 @@ export interface OpaqueSpec {
   from: string;
   /** "device:port" of each recipient */
   to: string[];
+  /** transfers in all (Infinity: the model's traffic without a count, until the simulation ends) */
   count: number;
   /** ms between two transfers of the series */
   interval: number;
@@ -78,14 +87,33 @@ export interface OpaqueDelivery {
 export interface OpaqueRun {
   id: number;
   spec: OpaqueSpec;
+  /** Send illustrative data (a Network event), or the model's traffic started with the simulation */
+  how: 'event' | 'start';
   t0: number;
   sent: number;
+  /** transfers delivered and not delivered, in all (what `deliveries` no longer keeps included) */
+  delivered: number;
+  failed: number;
+  /** what is on its way, and the last OPAQUE_KEEP settled */
   deliveries: OpaqueDelivery[];
   stopped: boolean;
   stoppedAt?: number;
-  /** the id its dots and log lines carry (the foreground of the display, as a Send network packets' messages) */
-  traffic: number;
+  /** the id its dots and log lines carry (the foreground of the display, as a Send network packets' messages); null: the model's traffic (the scenario's) */
+  traffic: number | null;
+  /** the model's traffic: where it is written ("mil-bus.traffic[0]") */
+  source?: string;
 }
+
+/** A hop on its way: its transfer, and its dots. */
+interface LiveHop {
+  run: OpaqueRun;
+  d: OpaqueDelivery;
+  h: OpaqueHop;
+  flights: Flight[];
+}
+
+/** The settled transfers a series keeps (its counts keep them all). */
+export const OPAQUE_KEEP = 50;
 
 /** What the inspector shows of an illustrative dot: no layers, these rows, and the notice. */
 export interface OpaqueInfo {
@@ -103,9 +131,10 @@ export class OpaqueSim {
   readonly detached = new Set<string>();
   /** opaque ports shut (administratively down), "device:port" */
   readonly shut = new Set<string>();
+  /** the series still sending or with a transfer on its way (a finished one is kept by its Network event only) */
   readonly runs: OpaqueRun[] = [];
-  /** the inspector's rows of each dot, by flight id */
-  readonly info = new Map<number, OpaqueInfo>();
+  /** the hops on their way now (their transfer cut when a failure takes their interconnect, port, attachment or device) */
+  private live = new Set<LiveHop>();
   private seq = 0;
 
   constructor(
@@ -125,7 +154,11 @@ export class OpaqueSim {
   /**
    * The way from a data source to a recipient (fewest hops, deterministic):
    * along interconnects and through explicit transit groups only. Every hop
-   * checked by its interconnect's rule; a string says why there is none.
+   * is checked by its interconnect's rule before the search takes it, so an
+   * invalid alternative (a lexically earlier receive-only port, a target that
+   * can't initiate) is passed over and a valid one further on is still
+   * found; a string says why there is none (the first refusal on the way to
+   * the recipient, else that no modelled connection leads there).
    */
   route(from: string, to: string, initiator: string): OpaqueHop[] | string {
     const src = this.attachment(from);
@@ -136,6 +169,8 @@ export class OpaqueSim {
     if (init.ic.id !== src.ic.id) return `the initiator ${initiator} is not on ${src.ic.id}, the data source's interconnect`;
     type State = { at: { ic: Interconnect; a: IcAttachment }; hops: OpaqueHop[]; via?: string };
     const seen = new Set<string>([from]);
+    let refusedTo: string | null = null;
+    let refused: string | null = null;
     let layer: State[] = [{ at: src, hops: [] }];
     for (let depth = 0; depth < 32 && layer.length; depth++) {
       const next: State[] = [];
@@ -144,14 +179,14 @@ export class OpaqueSim {
         for (const b of others) {
           const hop: OpaqueHop = { ic: st.at.ic, from: st.at.a, to: b, initiator: st.hops.length ? st.at.a : init.a, via: st.via };
           const key = `${b.device}:${b.port}`;
-          if (key === to) {
-            const path = st.hops.concat([hop]);
-            for (const h of path) {
-              const why = hopRule(h.ic, h.from, h.to, h.initiator);
-              if (why) return why;
-            }
-            return path;
+          // (a hop its interconnect's rule refuses is never taken: it marks nothing and ends nothing)
+          const why = hopRule(hop.ic, hop.from, hop.to, hop.initiator);
+          if (why) {
+            if (key === to) refusedTo = refusedTo || why;
+            else refused = refused || why;
+            continue;
           }
+          if (key === to) return st.hops.concat([hop]);
           // through a System's transit group: on from the group's other ports (the same technology, never converted)
           const dev = this.m.index.devices.get(b.device);
           const group = dev ? dev.opaqueTransit.find((g) => g.ports.indexOf(b.port) >= 0) : undefined;
@@ -168,7 +203,8 @@ export class OpaqueSim {
       }
       layer = next;
     }
-    return `no modelled connection from ${from} to ${to} (interconnects and explicit transit groups only)`;
+    if (refusedTo) return refusedTo;
+    return `no modelled connection from ${from} to ${to} (interconnects and explicit transit groups only)${refused ? `; refused on the way: ${refused}` : ''}`;
   }
 
   /** Why a hop can't be taken now (null: it can): devices on, ports not shut, attachments in place, the interconnect not failed. */
@@ -188,16 +224,43 @@ export class OpaqueSim {
     if (!this.attachment(spec.from)) return `${spec.from || 'the data source'} is on no interconnect`;
     if (!spec.to.length) return 'choose a recipient';
     if (!(spec.count >= 1)) return 'the count is at least 1';
-    const run: OpaqueRun = { id: ++this.seq, spec, t0: this.e.now, sent: 0, deliveries: [], stopped: false, traffic: this.reserveId() };
+    const run: OpaqueRun = { id: ++this.seq, spec, how: 'event', t0: this.e.now, sent: 0, delivered: 0, failed: 0, deliveries: [], stopped: false, traffic: this.reserveId() };
     this.runs.push(run);
     for (let n = 0; n < spec.count; n++) {
       this.e.at(this.e.now + n * Math.max(0, spec.interval), () => {
         if (run.stopped) return;
         run.sent++;
         for (const to of spec.to) this.transfer(run, n, to);
+        this.settle(run);
       });
     }
     return run;
+  }
+
+  /**
+   * The interconnects' own traffic (`traffic:`), with the simulation: the
+   * scenario's, 3 s after the start as the applications that start with it,
+   * every interval of simulated time, its count or until the simulation
+   * ends. Its dots carry no Network event's id (the background).
+   */
+  startConfigured(): void {
+    for (const ic of this.m.interconnects) {
+      ic.traffic.forEach((x, i) => {
+        const spec: OpaqueSpec = { initiator: x.initiator, from: x.from, to: x.to.slice(), count: x.count !== undefined ? x.count : Infinity, interval: x.interval, size: x.size };
+        const run: OpaqueRun = { id: ++this.seq, spec, how: 'start', t0: 0, sent: 0, delivered: 0, failed: 0, deliveries: [], stopped: false, traffic: null, source: `${ic.id}.traffic[${i}]` };
+        const send = (n: number): void => {
+          if (run.stopped || n >= spec.count) return;
+          if (n === 0) run.t0 = this.e.now;
+          run.sent++;
+          for (const to of spec.to) this.transfer(run, n, to);
+          // (the next one on the simulated clock, one at a time: a series without a count never piles up)
+          if (n + 1 < spec.count) this.e.after(spec.interval, () => send(n + 1));
+          this.settle(run);
+        };
+        this.runs.push(run);
+        this.e.at(3000 + this.e.jitter(x.initiator.split(':')[0]), () => send(0));
+      });
+    }
   }
 
   /** Stop a series: what is not sent yet is not sent; what is on its way arrives or stops on its own. */
@@ -206,10 +269,18 @@ export class OpaqueSim {
     if (!r || r.stopped || r.sent >= r.spec.count) return false;
     r.stopped = true;
     r.stoppedAt = this.e.now;
+    this.settle(r);
     return true;
   }
 
-  /** One transfer to one recipient: its way hop by hop, each hop checked when it is due. */
+  /** A series with nothing more to send and nothing on its way leaves the list (its Network event keeps what it came to). */
+  private settle(run: OpaqueRun): void {
+    if (!(run.stopped || run.sent >= run.spec.count) || run.deliveries.some((d) => d.ok === null)) return;
+    const i = this.runs.indexOf(run);
+    if (i >= 0) this.runs.splice(i, 1);
+  }
+
+  /** One transfer to one recipient: its way hop by hop, each hop checked when it is due and again when it arrives. */
   private transfer(run: OpaqueRun, n: number, to: string): void {
     const s = run.spec;
     const d: OpaqueDelivery = { n, to, t: this.e.now, ok: null, why: '', path: '', flights: [] };
@@ -217,15 +288,18 @@ export class OpaqueSim {
     const r = this.route(s.from, to, s.initiator);
     const [fromDev] = s.from.split(':');
     const [toDev] = to.split(':');
+    const of = run.spec.count === Infinity ? '' : ` of ${s.count}`;
     if (typeof r === 'string') {
       this.end(run, d, false, r);
       this.note('drop', fromDev, toDev, `Illustrative data ${n + 1} from ${s.from} to ${to} not sent: ${r}`, run);
       return;
     }
     d.path = [s.from].concat(r.map((h) => `${h.to.device}:${h.to.port}`)).join(' → ');
-    this.note('message', fromDev, toDev, `Illustrative data ${n + 1} of ${s.count}: ${s.size} bytes from ${s.from} to ${to}, initiated by ${s.initiator} (${d.path}) — ${OPAQUE_NOTICE}`, run);
+    this.note('message', fromDev, toDev, `Illustrative data ${n + 1}${of}: ${s.size} bytes from ${s.from} to ${to}, initiated by ${s.initiator} (${d.path}) — ${OPAQUE_NOTICE}`, run);
     let parent: number | undefined;
     const step = (k: number): void => {
+      // (cut on its way: nothing goes on)
+      if (d.ok !== null) return;
       const h = r[k];
       const why = this.blocked(h);
       if (why) {
@@ -233,10 +307,17 @@ export class OpaqueSim {
         this.note('drop', h.from.device, h.to.device, `Illustrative data ${n + 1} to ${to} stops at ${h.from.device}:${h.from.port}: ${why}`, run);
         return;
       }
-      parent = this.draw(run, d, h, parent);
+      const live: LiveHop = { run, d, h, flights: [] };
+      parent = this.draw(run, d, h, parent, live.flights);
+      this.live.add(live);
       // (the hop's arrival: the pacing holds it until its dot is there)
       const dot = parent;
       this.e.after(OPAQUE_HOP_MS, () => {
+        this.live.delete(live);
+        if (d.ok !== null) return;
+        // what took the hop away while it was on its way (and was not cut then): it does not arrive
+        const late = this.blocked(h);
+        if (late) return this.cut(live, late);
         if (k + 1 < r.length) step(k + 1);
         else {
           this.end(run, d, true, 'delivered along the modelled connection');
@@ -247,20 +328,69 @@ export class OpaqueSim {
     step(0);
   }
 
+  /**
+   * A hop on its way whose interconnect, port, attachment or device a
+   * failure took: its transfer stops there, now — its dot is lost where it
+   * is (what it had still to cross is never drawn), nothing goes on from it,
+   * and a restore later does not bring it back.
+   */
+  private cut(live: LiveHop, why: string): void {
+    const { run, d, h } = live;
+    this.live.delete(live);
+    if (d.ok !== null) return;
+    const now = this.e.now;
+    const dead = new Set<number>();
+    for (const f of live.flights) {
+      // (arrived: an earlier half of a bus hop, its own end reached and nothing of it pending)
+      if (!f.due && f.t1 <= now) continue;
+      if (f.parent !== undefined && dead.has(f.parent)) f.hidden = true;
+      else {
+        f.dropped = Math.max(now, f.t0);
+        f.t1 = f.dropped;
+      }
+      dead.add(f.id);
+    }
+    const at = `${h.from.device}:${h.from.port} → ${h.to.device}:${h.to.port}`;
+    this.end(run, d, false, `stopped on its way (${at}): ${why}`);
+    this.note('drop', h.from.device, h.to.device, `Illustrative data ${d.n + 1} to ${d.to} stops on its way (${at}): ${why}`, run);
+    this.settle(run);
+  }
+
+  /** A failure took effect: every hop on its way that it blocks stops now (in the order they were sent). */
+  private invalidate(): void {
+    for (const live of Array.from(this.live)) {
+      const why = this.blocked(live.h);
+      if (why) this.cut(live, why);
+    }
+  }
+
+  /** A device was powered off: its hops on their way stop (a hop due later stops when it is due). */
+  deviceDown(): void {
+    this.invalidate();
+  }
+
   private end(run: OpaqueRun, d: OpaqueDelivery, ok: boolean, why: string): void {
     d.ok = ok;
     d.why = why;
     d.ended = this.e.now;
-    void run;
+    if (ok) run.delivered++;
+    else run.failed++;
+    // bounded: what is on its way, and the last OPAQUE_KEEP settled (the counts keep the rest)
+    if (run.deliveries.length > 2 * OPAQUE_KEEP) {
+      let drop = run.deliveries.length - OPAQUE_KEEP;
+      run.deliveries = run.deliveries.filter((x) => x.ok === null || drop-- <= 0);
+    }
+    this.settle(run);
   }
 
   /** A hop's dots: along the line (point to point), or up the sender's tap and down the recipient's (a bus). */
-  private draw(run: OpaqueRun, d: OpaqueDelivery, h: OpaqueHop, parent: number | undefined): number {
+  private draw(run: OpaqueRun, d: OpaqueDelivery, h: OpaqueHop, parent: number | undefined, out: Flight[]): number {
     const s = run.spec;
     const fk = `${h.from.device}:${h.from.port}`;
     const tk = `${h.to.device}:${h.to.port}`;
     const label = `${technologyText(h.ic)} data · ${s.size} B`;
-    const msg = (): Msg => ({ protocol: 'opaque' as Msg['protocol'], type: 'Illustrative data', label, detail: `${fk} → ${tk} on ${h.ic.id}`, data: { from: h.from.device }, test: run.traffic, sender: s.from.split(':')[0], origin: s.initiator.split(':')[0] });
+    // (its kind is its interconnect's: each one's data is a kind of its own)
+    const msg = (): Msg => ({ protocol: 'opaque' as Msg['protocol'], type: `Illustrative data on ${h.ic.id}`, label, detail: `${fk} → ${tk} on ${h.ic.id}`, data: { from: h.from.device }, ...(run.traffic !== null ? { test: run.traffic } : {}), sender: s.from.split(':')[0], origin: s.initiator.split(':')[0] });
     const ref = 'interconnect:' + h.ic.id;
     const t0 = this.e.now;
     const info: OpaqueInfo = {
@@ -272,12 +402,15 @@ export class OpaqueSim {
         ['This hop', `${fk} (${DATA_TEXT[h.from.data].toLowerCase()}) → ${tk} (${DATA_TEXT[h.to.data].toLowerCase()})${h.via ? `, after crossing ${h.via}'s transit` : ''}`],
         ['Way', d.path],
         ['Decision', `allowed: ${fk} ${sends(h.from) ? 'sends' : '—'}, ${tk} ${receives(h.to) ? 'receives' : '—'}; ${h.ic.access === 'peer' ? 'peers send their own data' : `the controller ${h.initiator.device}:${h.initiator.port} initiates`}`],
+        ...(run.source ? [['Started by', `the model (${run.source}), with the simulation`] as [string, string]] : []),
       ],
       notice: OPAQUE_NOTICE,
     };
+    // (the inspector's rows go with the dot: kept as long as the flight is, by the engine or on screen)
     const add = (f: Flight): number => {
-      this.info.set(f.id, info);
+      f.illustrative = info;
       d.flights.push(f.id);
+      out.push(f);
       return f.id;
     };
     if (h.ic.topology === 'point_to_point') return add(this.e.flight(t0, t0 + OPAQUE_HOP_MS, msg(), 'physical', { ref, from: fk, to: tk }, parent));
@@ -291,12 +424,13 @@ export class OpaqueSim {
 
   // ------------------------------------------------------------ failures (each with its way back)
 
-  /** Fail an interconnect (a point-to-point connection, a bus segment): nothing crosses it until restored. */
+  /** Fail an interconnect (a point-to-point connection, a bus segment): nothing crosses it until restored, what is on it stops. */
   failInterconnect(id: string): string | null {
     if (!this.m.index.interconnects.has(id)) return `no interconnect ${id}`;
     if (this.failed.has(id)) return `${id} is failed already`;
     this.failed.add(id);
     this.e.note('state', 'opaque', '', '', 'interconnect failed', 'failed', `The interconnect ${id} is failed: no illustrative data crosses it (no electrical fault beyond it is inferred)`);
+    this.invalidate();
     return null;
   }
 
@@ -306,7 +440,7 @@ export class OpaqueSim {
     return true;
   }
 
-  /** Detach a participant from its interconnect (an attachment failure): that port alone is disconnected. */
+  /** Detach a participant from its interconnect (an attachment failure): that port alone is disconnected (its hops on their way stop). */
   detach(key: string): string | null {
     const at = this.attachment(key);
     if (!at) return `${key} is on no interconnect`;
@@ -314,6 +448,7 @@ export class OpaqueSim {
     if (this.detached.has(k)) return `${key} is detached already`;
     this.detached.add(k);
     this.e.note('state', 'opaque', key.split(':')[0], '', 'detached', 'detached', `${key} is detached from ${at.ic.id}: it sends and receives nothing there; the others go on`);
+    this.invalidate();
     return null;
   }
 
@@ -324,12 +459,13 @@ export class OpaqueSim {
     return true;
   }
 
-  /** Shut an opaque port (administratively down) / bring it up again. */
+  /** Shut an opaque port (administratively down; its hops on their way stop) / bring it up again. */
   shutPort(key: string): string | null {
     if (!this.m.index.opaquePorts.has(key)) return `${key} is no opaque port`;
     if (this.shut.has(key)) return `${key} is shut already`;
     this.shut.add(key);
     this.e.note('state', 'opaque', key.split(':')[0], '', 'port shut', 'shut', `The opaque port ${key} is shut`);
+    this.invalidate();
     return null;
   }
 

@@ -4140,9 +4140,9 @@ export class App {
     if (!r || !r.identity || !this.simCtl || this.traceCompareBlocked()) return false;
     const id = r.identity;
     // (the newest send that carries it: testRuns lists the newest first)
-    const run = this.simCtl.sim.testRuns().find((x) => planMatches(id, x.plan));
+    const run = this.simCtl.sim.testRuns().find((x) => planMatches(id, x.plan, r.model));
     if (!run) {
-      this.toast('Nothing to compare yet: prepare it in the simulation and send it first.');
+      this.toast('Nothing to compare yet: no send carries this check (the same source interface, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
       return false;
     }
     r.compare = compareRun(r.model, r.check, run, this.simCtl.snapshot());

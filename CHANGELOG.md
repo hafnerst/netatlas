@@ -12,6 +12,15 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Targeted correctness: a presentation hold only for a dot the diagram
+draws, aggregation that starts afresh after failures and recovery, equal
+times told apart by each delivery's lifecycle; the address family,
+effective addresses in policy rules, the whole Analyze-to-Simulate
+identity and provisional comparisons in Analyze; application-derived
+capacity, NTP chain feasibility and a broadcast's source VRF; non-IP route
+discovery, transfers stopped by a failure on their way and bounded
+retention; a System's transit groups in the Edit tab; and the VME rack
+example with every interconnect configuration and real traffic.
 Readable playback that waits for the dots — a delivery happens only once
 the dot that brings it has arrived on screen, so the diagram is never
 behind the tables and the log — with the steady state summarized as cable
@@ -46,6 +55,91 @@ context and coverage, communication checks by application and service,
 allocation-aware addressing, service impact and what-if checks of failure
 domains, saved expectations, and contextual Focus. Earlier in this release:
 applications on host-capable devices, IPv6 host
+
+### Fixed (playback and simulation)
+
+- **Only a dot the diagram draws holds the simulation.** A delivery waited
+  for its dot even when the dot's track was filtered out, inside a
+  collapsed group or switched off by IP / Non-IP — the simulation waited
+  for something not drawn. It waits only while the scene has the track;
+  when the track comes back, what was delivered meanwhile is not drawn as
+  on its way.
+- **Failures and recovery make the scenario news again.** The steady state
+  started afresh only with an entry of Active events: a failure or
+  restore, a power change, a shut or no shut from the diagram's menus left
+  the recovery traffic summarized. Every successful change from outside
+  counts now (flapping you started and its transitions too; not the
+  model's own flapping, not packets).
+- **Equal simulated times.** A delivery processed at the engine's own time
+  could stay drawn as travelling towards it after a change of view, filter
+  or pacing. Each flight now knows whether its delivery is pending or
+  processed.
+- **A moment of very many events** no longer runs in one frame: the frame
+  budget holds within it, in order.
+- **A broadcast's source interface** follows the VRF asked for, a usable
+  address and an interface that is up (it could leave by another VRF's
+  interface that sorted first).
+
+### Fixed (Analyze)
+
+- **The family asked for is the one evaluated.** An IPv6 check between
+  dual-stack devices traced IPv4, and one to an IPv4-only host came out
+  reachable over IPv4. Both ends are now in the family asked for, or the
+  check says the family is missing; identity, saved expectation and
+  prefill keep it (a host name can't carry IPv6 into Send network packets,
+  and the handoff says so).
+- **Policy rules and effective addresses.** A rule naming a device or
+  interface matched its written addresses only: a DHCP or SLAAC host was
+  never the device its rule named (dropped in the simulation, "denied" in
+  a snapshot), and an address two VRFs both have matched either host. A
+  device is its effective addresses now (acquired ones in the simulation
+  and a snapshot), checked against the address's owner when known; in the
+  configured model a rule that depends on a runtime address is undecided.
+- **Compare with simulation** took any send from the source device to the
+  destination as the check's evidence — another source interface, the
+  destination's other address, another family. It takes only a send with
+  the check's whole identity, and while messages are on their way or still
+  to be sent the comparison is provisional, never "They agree".
+- **Capacity**: one MQTT publication per topic (a subscriber each matching
+  publication once); a client's answers at its responder's size (not
+  always the default); a written zero is zero; a single flow limited by
+  the aggregate's members that are up; each direction of a full-duplex
+  cable its own budget.
+- **NTP chains** must be feasible: a reference's stratum plus the hops to
+  the client at most 15 (a stratum-15 upstream, or three hops below a
+  stratum-13 reference, is not a valid source chain); the best feasible
+  alternative is taken.
+
+### Fixed (non-IP interconnects)
+
+- **Route discovery** checked a way's rules only on arriving at the
+  recipient, so an invalid hop sorted first ended the search though a
+  valid way existed. Hops are checked before they are taken.
+- **A failure while data is on its way** (an interconnect, an attachment,
+  a port, a device) let the hop arrive "delivered", even when restored
+  before its end. It stops there now, its dot lost where it is.
+- **Retention**: every series, transfer and inspector row was kept for
+  good. A series keeps its last transfers and counts; finished ones are
+  released; the rows go with the dots.
+
+### Added (interconnect traffic; transit editing)
+
+- **`traffic:` on an interconnect**: illustrative data that runs with the
+  simulation (an initiator, a data source, recipients, an interval, a
+  count, a size), drawn every time as the scenario's, shown or hidden as
+  **Non-IP data** in the setup's list — which the model's illustrative
+  dots needed: before, they were never drawn. Format stays `netatlas: 1`.
+- **A System's transit groups in the Edit tab**: added, edited (its opaque
+  ports only), removed, with undo and renames.
+
+### Changed (VME rack example)
+
+- **vme-rack.yaml** shows every interconnect configuration — a VMEbus
+  backplane, an overlay SRIO fabric through a switch card, MIL-STD-1553
+  with a monitor, a CAN bus of peers, RS-232 both ways and one way, USB —
+  each carrying data while the simulation runs, and the Ethernet side
+  runs applications (a telemetry poll, console sessions, syslog): before,
+  only gratuitous ARP was shown.
 
 ### Changed (Readable playback waits for the dots)
 

@@ -103,6 +103,8 @@ export const REASSEMBLY_MS = 30000;
 export const STORM_ROUNDS = 6;
 /** Flights are kept this long after they end (for the animation and the export). */
 const FLIGHT_KEEP = 4000;
+/** Within one moment, the presentation's frame budget is asked every this many events (runUntil's yieldNow). */
+const YIELD_EVERY = 64;
 /** The jitter of starts and timers: up to this share of a typical hop's time. */
 export const JITTER_SHARE = 0.6;
 /** A message's payload in bytes when its protocol says nothing (for the serialization time). */
@@ -272,6 +274,8 @@ export interface Flap {
   down: boolean;
   done: number;
   token: number;
+  /** the model's own (an interface's flapping attribute): the scenario, not a change from outside */
+  configured?: boolean;
   /** how it ended (its cycles done, or Stop flapping) and when; unset while it flaps */
   ended?: 'done' | 'stopped';
   endedAt?: number;
@@ -326,6 +330,8 @@ export class Engine {
   private fwdAt = new Map<string, number>();
   /** bumped whenever what the diagram marks changes (an event, a cable going down or up) */
   stateVersion = 0;
+  /** the transitions of flapping ports so far (each down and each up): the presentation's epoch counts them (Simulation.presentationEpoch) */
+  flapTransitions = 0;
   private stp = new Map<number, Tree>();
   private arp = new Map<string, Map<string, ArpEntry>>();
   private macs = new Map<string, Map<string, MacEntry>>();
@@ -430,6 +436,19 @@ export class Engine {
     return l3.addrs.some((x) => compareAddr(x.addr, a) === 0 && this.usableAddr(l3, x.addr)) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
   }
 
+  /**
+   * A device's addresses now, each with its interface: its written ones that are usable (not tentative, not a
+   * duplicate), what SLAAC and DHCPv6 added to them, and its DHCP leases — the identity a policy's device or
+   * interface spec has in the simulation (analysis/policy.ts PolicyIds). An expired lease is not one.
+   */
+  effectiveAddrs(dev: string): Array<{ iface: string; addr: IpAddr }> {
+    const out: Array<{ iface: string; addr: IpAddr }> = [];
+    const sd = this.net.devices.get(dev);
+    if (sd) for (const l of sd.l3.values()) for (const a of l.addrs) if (this.usableAddr(l, a.addr)) out.push({ iface: l.id, addr: a.addr });
+    for (const c of this.leaseConnected(dev)) if (!out.some((x) => x.iface === c.iface && compareAddr(x.addr, c.addr) === 0)) out.push({ iface: c.iface, addr: c.addr });
+    return out;
+  }
+
   /** Is one of an interface's written addresses usable now (not a tentative or duplicate IPv6 address)? */
   usableAddr(l3: L3Iface, a: IpAddr): boolean {
     return !l3.unusable || !l3.unusable.length || l3.unusable.indexOf(formatAddr(a)) < 0;
@@ -489,7 +508,14 @@ export class Engine {
   /** Run fn at simulated time t (never before now); `gates`: the flights whose arrival it is (a delivery). */
   at(t: number, fn: () => void, gates?: number[]): void {
     const item: QItem = { t: Math.max(t, this.now), seq: this.seq++, fn };
-    if (gates && gates.length) item.gates = gates;
+    if (gates && gates.length) {
+      item.gates = gates;
+      // (each flight knows its deliveries still queued: pending until processed, whatever their time — Flight.due)
+      for (const g of gates) {
+        const f = this.flightById.get(g);
+        if (f) f.due = (f.due || 0) + 1;
+      }
+    }
     const q = this.q;
     q.push(item);
     let i = q.length - 1;
@@ -543,13 +569,18 @@ export class Engine {
    * (`hold`) stops it before that delivery, event by event — even within a
    * moment, so what comes before it at the same time (by its sequence) is
    * done and what comes after it is not: `held` names the flight, the
-   * clock stays at the last event done, and true is returned.
+   * clock stays at the last event done, and true is returned. `yieldNow`
+   * (the presentation's frame budget) is asked every YIELD_EVERY events
+   * within a moment too: a moment of very many events may end partway
+   * (false is returned, the clock at that moment); the rest stays queued in
+   * its order and the next call goes on with it.
    */
-  runUntil(t: number, stop: () => boolean): boolean {
+  runUntil(t: number, stop: () => boolean, yieldNow?: () => boolean): boolean {
     this.held = null;
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
+      let k = 0;
       while (this.nextTime() === n) {
         const g = this.q[0].gates;
         if (g && this.hold) {
@@ -560,9 +591,11 @@ export class Engine {
             return true;
           }
         }
-        const it = this.pop() as QItem;
-        this.now = it.t;
-        it.fn();
+        this.exec(this.pop() as QItem);
+        if (yieldNow && ++k % YIELD_EVERY === 0 && this.nextTime() === n && yieldNow()) {
+          this.prune();
+          return false;
+        }
       }
       if (stop()) {
         this.prune();
@@ -603,12 +636,24 @@ export class Engine {
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
-      const it = this.pop() as QItem;
-      this.now = it.t;
-      it.fn();
+      this.exec(this.pop() as QItem);
     }
     this.now = Math.max(this.now, t);
     this.prune();
+  }
+
+  /** Do an event; a delivery's flights are processed then (no longer pending), whatever the delivery found (it may have been cancelled). */
+  private exec(it: QItem): void {
+    this.now = it.t;
+    if (it.gates)
+      for (const g of it.gates) {
+        const f = this.flightById.get(g);
+        if (f && f.due) {
+          f.due--;
+          f.delivered = true;
+        }
+      }
+    it.fn();
   }
 
   private prune(): void {
@@ -3730,10 +3775,11 @@ export class Engine {
    * for the up time, for the cycles (0: until stopped); its cable follows (down while the port is). A cable is
    * no target, and one cable flaps from one of its ends at a time.
    */
-  startFlap(ref: string, why = ''): boolean {
+  startFlap(ref: string, why = '', configured = false): boolean {
     const link = this.flapLink(ref);
     if (!link || this.flaps.has(link)) return false;
     const fl: Flap = { link, ref, since: this.now, down: false, done: 0, token: ++this.tokens };
+    if (configured) fl.configured = true;
     this.flaps.set(link, fl);
     const p = (k: string): string => resolvedText(this.params.get(k));
     this.note('link', 'link', '', '', 'Flapping', 'flapping', `Port ${ref.slice(6)} starts flapping${why} (its cable ${link} follows): down ${p('flap-down')}, up ${p('flap-up')}, ${p('flap-cycles')} cycles`);
@@ -3746,6 +3792,9 @@ export class Engine {
     if (this.flaps.get(fl.link) !== fl) return;
     fl.down = !fl.down;
     if (!fl.down) fl.done++;
+    // (a transition of flapping started from outside changes the network: the display's steady state starts afresh;
+    // the model's own flapping is the scenario)
+    if (!fl.configured) this.flapTransitions++;
     const cycles = this.params.num('flap-cycles');
     this.note('link', 'link', '', '', fl.down ? 'Flap down' : 'Flap up', fl.down ? 'down' : 'up', `Flapping port ${fl.ref.slice(6)}: ${fl.down ? 'down' : 'up'}, its cable ${fl.link} with it (cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''})`);
     this.updateCable(fl.link);
@@ -4172,7 +4221,7 @@ export class Engine {
     for (const d of this.model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
       for (const i of d.interfaces) {
         if (!i.simulation || i.simulation.get('flapping') !== 'on') continue;
-        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)'));
+        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)', true));
       }
     }
   }

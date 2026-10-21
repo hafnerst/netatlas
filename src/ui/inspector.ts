@@ -3925,6 +3925,25 @@ export class Editor {
       kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(ppath), 'data-what': 'port pair' }, ['+ Add port pair'])]));
       out.push(this.group('Port pairs', kids, 'port-pairs'));
     }
+    // opaque transit: the groups of its opaque ports it passes illustrative data between (a System only; none is assumed)
+    const tpath = base.concat('opaque_transit');
+    if (caps.opaqueTransit || doc.get(tpath)) {
+      const opaque = doc.interfaceEntries(devIndex).filter((e) => e.kind === 'interface' && e.id && doc.text(e.path.concat('stack')) === 'opaque').map((e) => e.id as string);
+      const kids: Array<HTMLElement | null> = [this.e('p', { class: 'help' }, [opaque.length ? 'Passes data only between the ports of one group (a fabric switch, an active hub), of one technology: nothing is converted, and without a group nothing passes.' : 'No opaque port yet: set a port’s stack to Opaque first.'])];
+      const tn = doc.get(tpath);
+      const n = tn && tn.kind === 'seq' ? tn.items.length : 0;
+      for (let j = 0; j < n; j++) {
+        const gp = tpath.concat(j);
+        kids.push(
+          this.e('div', { class: 'svc-card transit-card', role: 'group', 'aria-label': `Transit group ${j + 1}` }, [
+            this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [`Transit group ${j + 1}`]), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(gp), title: 'Delete this transit group', 'aria-label': `Delete transit group ${j + 1}` }, ['×'])]),
+            this.chipsField(gp.concat('ports'), 'Ports', opaque, 'Two or more of its opaque ports; a port is in one group at most.', 'Add a port'),
+          ]),
+        );
+      }
+      kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(tpath), 'data-what': 'transit group', ...(opaque.length < 2 ? { disabled: '' } : {}) }, ['+ Add transit group'])]));
+      out.push(this.group('Opaque transit', kids, 'opaque-transit'));
+    }
     // management interfaces
     const mpath = base.concat('management');
     if (caps.managementInterfaces || doc.get(mpath)) {

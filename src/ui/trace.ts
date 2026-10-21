@@ -363,7 +363,12 @@ function resultBody(doc: Document, model: Model, run: TraceRun, view: TraceViewS
     const k = run.compare;
     const sec = el(doc, 'section', { class: 'trace-compare', id: 'trace-compare-res', 'aria-label': 'Compared with the simulation' });
     sec.appendChild(el(doc, 'h4', {}, ['Compared with the simulation']));
-    sec.appendChild(el(doc, 'p', { class: 'small', 'data-agree': k.agree ? 'yes' : 'no' }, [el(doc, 'strong', {}, [k.runtime === 'pending' ? 'Not finished: ' : k.agree ? 'They agree: ' : 'They differ: ']), `static analysis ${verdictText(k.expected, 'reach').toLowerCase()}; the simulation ${k.runtime === 'delivered' ? 'delivered it' : k.runtime === 'failed' ? 'did not deliver it' : k.runtime === 'mixed' ? 'delivered some messages' : 'is still sending'}.`]));
+    // (provisional while messages are on their way or still to be sent: the evidence so far, never an agreement)
+    const n = k.counts;
+    const so = [n.delivered ? `${n.delivered} delivered` : '', n.failed ? `${n.failed} not delivered` : '', n.pending ? `${n.pending} on their way` : '', n.unsent ? `${n.unsent} still to be sent` : '', n.cancelled ? `${n.cancelled} cancelled by Stop` : ''].filter((x) => !!x).join(', ');
+    const differs = !!k.unexplained || k.lines.length > 0;
+    const head = !k.final ? (differs ? 'Provisional, they differ so far: ' : 'Provisional: ') : k.agree ? 'They agree: ' : 'They differ: ';
+    sec.appendChild(el(doc, 'p', { class: 'small', 'data-agree': k.agree ? 'yes' : !k.final && !differs ? 'provisional' : 'no' }, [el(doc, 'strong', {}, [head]), `static analysis ${verdictText(k.expected, 'reach').toLowerCase()}; the simulation ${k.final ? '' : 'so far '}${k.runtime === 'delivered' ? 'delivered it' : k.runtime === 'failed' ? 'did not deliver it' : k.runtime === 'mixed' ? 'delivered some messages' : 'has no result yet'}${so ? ` (${so})` : ''}.`]));
     const ul = el(doc, 'ul', { class: 'small' });
     for (const l of k.lines) ul.appendChild(el(doc, 'li', {}, [l]));
     if (k.unexplained) ul.appendChild(el(doc, 'li', { class: 'muted' }, [k.unexplained]));

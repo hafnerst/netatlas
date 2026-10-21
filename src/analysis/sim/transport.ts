@@ -450,16 +450,19 @@ export class Transport {
     }
     const ifs = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
     if (isMulticastIp(dst) || this.e.isBroadcastAddr(dst)) {
-      // a broadcast or a group: the interface whose subnet it is, else the first with an address of the family
+      // a broadcast or a group: the interface whose subnet it is, else the first with an address of the family — either way
+      // in the VRF asked for, with a usable address (not tentative, not a duplicate), on an interface that is up
+      const fits = (l: L3Iface): boolean => (vrf === undefined || l.vrf === vrf) && this.e.isL3Up(dev, l.id);
       for (const l of ifs) {
-        const a = l.addrs.find((x) => x.addr.version === dst.version && inNet(x, dst));
-        if (a && l.kind !== 'loopback') return { src: a.addr, vrf: l.vrf, l3: l };
+        const a = l.addrs.find((x) => usable(l, x) && inNet(x, dst));
+        if (a && l.kind !== 'loopback' && fits(l)) return { src: a.addr, vrf: l.vrf, l3: l };
       }
       for (const l of ifs) {
         const a = l.addrs.find((x) => usable(l, x));
-        if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf)) return { src: a.addr, vrf: l.vrf, l3: l };
+        if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && fits(l)) return { src: a.addr, vrf: l.vrf, l3: l };
       }
-      return { why: `${dev} has no ${fam} address to send from` };
+      const down = ifs.find((l) => l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf) && l.addrs.some((x) => usable(l, x)) && !this.e.isL3Up(dev, l.id));
+      return down ? { why: `${dev}:${down.id} is down: no interface that is up has a ${fam} address to send from`, transient: true } : { why: `${dev} has no ${fam} address to send from${vrf !== undefined ? ' in ' + (vrf ? 'VRF ' + vrf : 'its default table') : ''}` };
     }
     const vrfs = Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp);
     const routed = (v: string): { l3: L3Iface | null; local: boolean } | null => {
@@ -2268,7 +2271,22 @@ export class Transport {
     const echoReq = proto !== 'icmp' || l4.icmpType === 8 || l4.icmpType === 128;
     // a written network policy: its rules decide each packet (analysis/policy.ts, the engine the path tracer uses)
     if (dd && dd.policy) {
-      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev: this.e.ownerOf(pkt.src), dstDev: this.e.ownerOf(pkt.dst), inIface: from.id, outIface: to.id }) as PolicyDecision;
+      // (a device or interface named by a rule: its effective addresses now — leases, SLAAC — and the source's owner its
+      // sender when the address is the sender's own, so an address two VRFs both have is told apart)
+      const ids = { addrs: (x: string) => this.e.effectiveAddrs(x) };
+      // (an owner only where it is certain: one device holds the address; else the rule decides by the address)
+      const only = (a: IpAddr): string | undefined => {
+        let found: string | undefined;
+        for (const x of this.e.net.devices.keys()) {
+          if (!ids.addrs(x).some((y) => compareAddr(y.addr, a) === 0)) continue;
+          if (found !== undefined) return undefined;
+          found = x;
+        }
+        return found;
+      };
+      const sender = pkt.msg.sender;
+      const srcDev = sender && ids.addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : only(pkt.src);
+      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev: only(pkt.dst), inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
       // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
       if (d.permit && (!stateful || (opening && echoReq))) {
         if (stateful) {

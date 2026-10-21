@@ -126,7 +126,17 @@ export function keptInterconnects(interconnects: Interconnect[], keep: (device: 
   for (const ic of interconnects) {
     const eps = ic.endpoints.filter((e) => keep(e.device));
     if (eps.length < 2 || (ic.topology === 'point_to_point' && eps.length !== ic.endpoints.length)) continue;
-    out.push(eps.length === ic.endpoints.length ? ic : { ...ic, endpoints: eps });
+    if (eps.length === ic.endpoints.length) {
+      out.push(ic);
+      continue;
+    }
+    // its traffic: what starts and comes from the part kept, to the recipients kept
+    const dev = (k: string): string => k.slice(0, k.indexOf(':'));
+    const traffic = ic.traffic
+      .filter((x) => keep(dev(x.initiator)) && keep(dev(x.from)))
+      .map((x) => ({ ...x, to: x.to.filter((k) => keep(dev(k))) }))
+      .filter((x) => x.to.length > 0);
+    out.push({ ...ic, endpoints: eps, traffic });
   }
   return out;
 }

@@ -2163,6 +2163,7 @@ interconnects:
 | `connector` | | The connector, as text (`USB-B`, `DB9`, `M12`). |
 | `access` | | `peer` (the default): every participant may send its own data. `controller_target`: controllers initiate every transfer with targets (Master / Slave). |
 | `endpoints` | yes | The attachments: `{port: device:port, role, data, system_controller}`. `port` names an opaque port; a port is attached to one interconnect only. |
+| `traffic` | | Illustrative data it carries while the simulation runs ([below](#illustrative-data-on-interconnects)): a list of `{initiator, from, to, interval, count, size}`. |
 | `label`, `description`, `attrs` | | |
 
 An endpoint's keys:
@@ -2226,8 +2227,38 @@ arbitration, collisions, framing, acknowledgment or timing). The result
 says "delivered along the modelled connection", or where and why the data
 stopped. **Non-IP failures** fail an interconnect (a point-to-point
 connection or a bus segment), detach one attachment or shut one opaque
-port, each restored from Active events. Interconnects are passive: they
-take no power and do not boot.
+port, each restored from Active events. A failure (or a device powered
+off) while data is on its way stops that transfer where it is: its dot is
+lost there, nothing goes on from it, and a restore does not bring it back.
+Interconnects are passive: they take no power and do not boot.
+
+An interconnect's **`traffic`** is illustrative data that runs whenever
+the simulation runs — the scenario's, as the applications that start with
+it (3 s after the start, every `interval` of simulated time, `count`
+transfers or until the simulation ends):
+
+```yaml
+  - id: meter-bus
+    # … topology, technology, access, endpoints as above
+    traffic:
+      - {initiator: "ctl:rs485", to: ["meter1:rs485", "meter2:rs485"], interval: 1s, size: 8}
+      - {initiator: "ctl:rs485", from: "meter1:rs485", to: "ctl:rs485", interval: 2s, size: 16}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `initiator` | yes | The attachment that starts each transfer (`device:port`, an endpoint of this interconnect). |
+| `from` | | Where the data comes from (an endpoint of this interconnect); the initiator when not written. A controller reads a target by naming the target here. |
+| `to` | yes | The recipients: one `device:port` or a list; any opaque port, reached over interconnects and transit groups. |
+| `interval` | yes | Between two transfers (`500ms`, `2s`; a bare number is seconds), 100 ms to 1 day. |
+| `count` | | Transfers in all; empty: until the simulation ends. |
+| `size` | | Illustrative size in bytes, shown only (0–65536; empty: 64). |
+
+The same rules apply as to Send illustrative data, checked when each
+transfer is sent (a transfer the rules refuse says why in the log). Its
+dots are the background's and are drawn every time (the setup's list
+shows or hides them as **Non-IP data**), never summarized as the steady
+state and never waited for: they cause nothing on the IP side.
 
 ### In the diagram
 

@@ -58,9 +58,10 @@
  * startup is shown one of each kind, step by step; then the simulation
  * runs at its rate with the cables lit.
  *
- * A frame does at most JUMP_BUDGET ms of simulation work; what it can't do
- * in time is left behind (said: `behind`, never caught up in a burst), so
- * heavy traffic never freezes the page. With nothing on screen (no dot on
+ * A frame does at most JUMP_BUDGET ms of simulation work — a moment of very
+ * many events too: it may end partway, the rest in its order next frame —;
+ * what it can't do in time is left behind (said: `behind`, never caught up
+ * in a burst), so heavy traffic never freezes the page. With nothing on screen (no dot on
  * its way, no cable lit) and skipping idle time on, the default, it jumps
  * to the next message that will be shown; the jump is reported.
  *
@@ -249,6 +250,32 @@ export function holdText(f: Flight): string {
   return what ? `waiting for packet arrival (${what})` : 'waiting for packet arrival';
 }
 
+/**
+ * Is a hop history at the engine's time `now` — its delivery processed (or
+ * its loss passed), not merely due? A flight with a delivery (Flight.due /
+ * delivered, the engine's lifecycle) is pending while one is queued, even at
+ * `now` itself (the engine can stop partway through a moment), and history
+ * once it was processed, whatever the times; a lost one (its delivery
+ * cancelled) once its loss is past; one without a delivery of its own (it ends on screen only) once its
+ * end (`end`) is past.
+ */
+export function history(f: Flight, now: number, end: number): boolean {
+  if (f.dropped !== undefined) return f.dropped < now - EPS;
+  if (f.due) return false;
+  if (f.delivered) return true;
+  return end < now - EPS;
+}
+
+/**
+ * The scenario's illustrative data on a non-IP interconnect (an
+ * interconnect's `traffic:`, opaque.ts): drawn as a flow — every transfer a
+ * dot, never the steady state, never waited for (it causes nothing on the
+ * IP side; Send illustrative data, a Network event's, is waited for).
+ */
+export function illustrativeFlow(f: Flight): boolean {
+  return f.protocol === 'opaque' && f.test === undefined;
+}
+
 /** A kind of message in a view (its protocol, its type, a TCP segment's flags): another of it is the steady state. */
 export function repeatKey(f: Flight): string {
   return `${f.view}|${f.protocol}|${f.type !== undefined ? f.type : f.label}|${f.flags || ''}`;
@@ -302,8 +329,8 @@ export interface PacerHost {
   engine: {
     now: number;
     nextTime(): number | null;
-    /** true when it stopped before a delivery the presentation holds */
-    runUntil(t: number, stop: () => boolean): boolean;
+    /** true when it stopped before a delivery the presentation holds; `yieldNow`: the frame budget, asked within a moment too */
+    runUntil(t: number, stop: () => boolean, yieldNow?: () => boolean): boolean;
     run(t: number): void;
     readonly flightSerial: number;
     flightsSince(serial: number): Flight[];
@@ -436,7 +463,7 @@ export class Pacer {
    */
   private gates(it: PaceItem): boolean {
     const f = it.f;
-    if (this.mode === 'realtime' || !it.drawn || f.hidden || f.dropped !== undefined || (f.protocol === 'mcast' && !it.example)) return false;
+    if (this.mode === 'realtime' || !it.drawn || f.hidden || f.dropped !== undefined || (f.protocol === 'mcast' && !it.example) || illustrativeFlow(f)) return false;
     if (!this.host.shown(f)) return false;
     return !(this.bgNow && !it.test && !(this.follow && this.follow.key === it.key));
   }
@@ -603,7 +630,7 @@ export class Pacer {
       // a creation-time loss puts the flight's end where it was lost: midway
       const lat = f.dropped !== undefined && f.dropped > f.t0 ? 2 * (f.dropped - f.t0) : Math.max(0, f.t1 - f.t0);
       // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
-      if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS) continue;
+      if (history(f, e.now, f.t0 + lat)) continue;
       const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
@@ -649,7 +676,8 @@ export class Pacer {
       // merely the same addresses: every host's DHCP has the same ones)
       const rk = repeatKey(f);
       const example = (!!parent && parent.drawn) || (f.conv !== undefined && this.detailed.has(f.conv));
-      const repeat = this.summarizeRepeats && !test && !followed && !example && this.seen.has(rk);
+      // (the model's illustrative data on the non-IP interconnects is what shows them at work: every transfer drawn, a flow)
+      const repeat = this.summarizeRepeats && !test && !followed && !example && !illustrativeFlow(f) && this.seen.has(rk);
       if (repeat && shown) this.repeats++;
       const drawn = !shown || test || followed || (!repeat && conv && !late && (goesOn || room));
       if (shown) {
@@ -750,10 +778,15 @@ export class Pacer {
     const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
     if (target > e.now + EPS) {
       const until = Date.now() + JUMP_BUDGET;
-      const held = e.runUntil(target, () => {
-        this.register();
-        return Date.now() > until;
-      });
+      const over = (): boolean => Date.now() > until;
+      const held = e.runUntil(
+        target,
+        () => {
+          this.register();
+          return over();
+        },
+        over,
+      );
       this.register();
       // waiting for a dot to arrive (a presentation hold, not a lag): the clock counts on from here once it is there,
       // so the simulated time it waited is not made up in a burst afterwards
@@ -824,11 +857,15 @@ export class Pacer {
     let found = false;
     // a jump is work: at most JUMP_BUDGET ms of it per frame (a model whose messages are mostly hidden has many events between two shown ones); the next frame goes on
     const until = Date.now() + JUMP_BUDGET;
-    e.runUntil(t, () => {
-      // (a dot, or traffic shown as cable activity: something to see either way)
-      for (const it of this.register()) if (it.drawn ? this.drawnShown(it) && this.onItsWay(it) : this.host.shown(it.f) && !it.f.hidden) found = true;
-      return found || Date.now() > until;
-    });
+    e.runUntil(
+      t,
+      () => {
+        // (a dot, or traffic shown as cable activity: something to see either way)
+        for (const it of this.register()) if (it.drawn ? this.drawnShown(it) && this.onItsWay(it) : this.host.shown(it.f) && !it.f.hidden) found = true;
+        return found || Date.now() > until;
+      },
+      () => Date.now() > until,
+    );
     this.register();
   }
 
@@ -905,8 +942,8 @@ export class Pacer {
   reshow(): void {
     const now = this.host.engine.now;
     this.items = this.items.filter((it) => {
-      const due = it.f.dropped !== undefined ? it.f.dropped : it.f.t1;
-      const keep = !(due < now - EPS && this.clock < this.arrival(it) - EPS);
+      // (processed, not merely due: at the engine's own time a delivery may still be pending — Flight.due)
+      const keep = !(history(it.f, now, it.f.t1) && this.clock < this.arrival(it) - EPS);
       if (!keep) this.byId.delete(it.f.id);
       return keep;
     });
@@ -920,7 +957,7 @@ export class Pacer {
     this.register();
     const now = this.host.engine.now;
     this.items = this.items.filter((it) => {
-      const keep = (it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat) >= now - EPS;
+      const keep = !history(it.f, now, it.f.t0 + it.lat);
       if (!keep) this.byId.delete(it.f.id);
       return keep;
     });

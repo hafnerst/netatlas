@@ -159,6 +159,18 @@ export interface Flight {
    * timer or a Network event starts
    */
   cause?: number;
+  /**
+   * Its delivery's lifecycle (the engine's events its arrival is, Engine.at
+   * with it as a gate): `due` of them still queued — pending, whatever their
+   * time, even at the engine's own time when it stopped partway through a
+   * moment — and `delivered` once one was processed (it may have found the
+   * delivery cancelled). Neither: it has no delivery of its own (it ends on
+   * screen only). Kept with the flight, nothing more.
+   */
+  due?: number;
+  delivered?: boolean;
+  /** illustrative data on a non-IP interconnect (opaque.ts): the inspector's rows of it, and its notice (no headers) */
+  illustrative?: { title: string; rows: Array<[string, string]>; notice: string };
 }
 
 /**

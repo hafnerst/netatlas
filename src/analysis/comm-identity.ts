@@ -104,12 +104,20 @@ function endIface(model: Model, dev: string, named: string | undefined, v: 4 | 6
   return a ? { iface: i.id, address: a } : { iface: i.id };
 }
 
+/** A device's one interface of the IP stack that has or takes an address (none: several or none). */
+function onlyIface(model: Model, dev: string): string | undefined {
+  const d = model.index.devices.get(dev);
+  const usable = d ? deviceInterfaces(d).filter((i) => i.type !== 'loopback' && i.type !== 'tunnel' && (i.addresses.length > 0 || i.dhcp || autoIpv6(i.ipv6))) : [];
+  return usable.length === 1 ? usable[0].id : undefined;
+}
+
 /** The identity a communication check resolved (null when it named nothing it could check). */
 export function commIdentity(model: Model, c: CommCheck): CommIdentity | null {
   if (c.error || !c.from) return null;
   const from = parseCommEnd(model, c.request.from);
   if (typeof from === 'string') return null;
-  const fam = famOf(c.from.address) || famOf(c.to ? c.to.address : undefined) || c.request.family;
+  // (the family asked for decides; else the one the check's addresses have)
+  const fam = c.request.family || famOf(c.from.address) || famOf(c.to ? c.to.address : undefined);
   // (the ends the check resolved; where it stopped first, what the request names)
   const sAt = c.from.iface ? { iface: c.from.iface, address: c.from.address } : endIface(model, c.from.device, from.kind === 'end' && from.end.kind === 'iface' ? from.end.iface : from.kind === 'app' ? from.app.bind : undefined, fam);
   const srcRuntime = runtimeAddressed(model, c.from.device, sAt.iface, fam);
@@ -203,6 +211,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
   if (t.binding === 'name' && t.name) {
     pre.target = t.name;
     carried.push(`Destination: ${t.name}, ${BINDING_TEXT.name}`);
+    if (id.family === 6) not.push(`Family: Send network packets resolves ${t.name} for IPv4 (an A record); the IPv6 check (AAAA) can't be carried over: write its IPv6 address under To instead`);
   } else if (t.binding === 'address' && t.address) {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}, ${BINDING_TEXT.address}`);
@@ -216,7 +225,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}`);
   } else return null;
-  carried.push(`Protocol: ${svcText}${id.family ? `, IPv${id.family}` : ''}`);
+  carried.push(`Protocol: ${svcText}${id.family && !(t.binding === 'name' && id.family === 6) ? `, IPv${id.family}` : ''}`);
   // the routing context: the simulation sends in the source interface's VRF
   const si = s.iface ? model.index.interfaces.get(s.device + ':' + s.iface) : undefined;
   if (id.request.vrf !== undefined && si && (si.vrf || '') !== id.request.vrf) not.push(`VRF: the simulation sends in the VRF of ${s.device}:${s.iface} (${si.vrf || 'the default table'}); the VRF chosen here (${id.request.vrf || 'the default table'}) can't be set for a send`);
@@ -242,22 +251,57 @@ export function staleProblem(simModel: Model, id: CommIdentity): string | null {
   return null;
 }
 
-/** Does a send's plan carry this identity (the same source, destination, protocol and port)? */
-export function planMatches(id: CommIdentity, p: TestPlan): boolean {
+/**
+ * Does a send's plan carry this identity — every field a send can carry,
+ * by its binding: the source device and its interface (the one the check
+ * resolved; none: as the routes choose, never another one), the
+ * destination (a host name that name, in IPv4 only: a send resolves an A
+ * record; an exact address that address; a device's interface that
+ * interface and its address, or its lease when it takes one at runtime),
+ * the family, the transport and port, and the routing context (a send's is
+ * its source interface's VRF). A send that differs in any of them is no
+ * evidence for the check.
+ */
+export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boolean {
   if (p.delivery !== 'unicast' || !id.source.device || p.from !== id.source.device) return false;
   const svc = id.service;
   if ((svc ? svc.proto : 'icmp') !== p.kind) return false;
   if (svc && svc.proto !== 'icmp' && p.port !== svc.port) return false;
+  // (a device with one interface of the IP stack: a send that names none goes from it all the same — the form leaves it out)
+  if ((p.via || undefined) !== (id.source.iface || undefined) && !(p.via === undefined && model && onlyIface(model, id.source.device) === id.source.iface)) return false;
   const t = id.destination;
-  if (p.target !== undefined) return p.target === (t.name || t.address);
-  return p.to === t.device && (t.iface === undefined || p.toIface === t.iface);
+  if (t.binding === 'application') return false;
+  if (t.binding === 'name') {
+    if (p.target !== t.name || id.family === 6) return false;
+  } else if (t.binding === 'address') {
+    if (p.target !== t.address) return false;
+  } else if (p.target !== undefined) {
+    // (a device's address typed as an address: the same only when it is no lease that may change)
+    if (t.note || p.target !== t.address) return false;
+  } else if (p.to !== t.device || p.toIface !== t.iface || p.toAddr !== (t.note ? 'dhcp' : t.address)) return false;
+  const sent = famOf(p.toAddr && p.toAddr !== 'dhcp' ? p.toAddr : p.target);
+  if (id.family && sent && sent !== id.family) return false;
+  if (p.toAddr === 'dhcp' && id.family === 6) return false;
+  if (model && id.vrf !== undefined && id.source.iface) {
+    const si = model.index.interfaces.get(id.source.device + ':' + id.source.iface);
+    if (si && (si.vrf || '') !== id.vrf) return false;
+  }
+  return true;
 }
 
 /** The static result beside what the simulation did, and why they differ. */
 export interface RunComparison {
-  /** the static verdict, and what the simulation's messages did */
+  /** the static verdict, and what the simulation's messages did so far (delivered, failed — not sent at all included —, both, nothing yet) */
   expected: Verdict;
   runtime: 'delivered' | 'failed' | 'mixed' | 'pending';
+  /**
+   * the run is settled: every message sent (or the rest cancelled by Stop) and each delivered or failed; until then
+   * the comparison is provisional — the evidence so far, never a final agreement
+   */
+  final: boolean;
+  /** its messages: delivered, failed (not sent at all included), on their way, still to be sent, cancelled by Stop */
+  counts: { delivered: number; failed: number; pending: number; unsent: number; cancelled: number };
+  /** final, and they agree (never while provisional) */
   agree: boolean;
   /** the evidence for a difference (empty when they agree, or when nothing recorded explains it: then `unexplained`) */
   lines: string[];
@@ -278,12 +322,25 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
   const tests = run.tests;
   const done = tests.filter((t) => t.done);
   const ok = done.filter((t) => t.ok);
-  const runtime: RunComparison['runtime'] = !done.length ? 'pending' : ok.length === done.length ? 'delivered' : ok.length ? 'mixed' : 'failed';
-  const results = tests.slice(0, 5).map((t) => `#${t.msg || 1}: ${t.done ? t.result : 'on its way'}`);
+  // (a message that could not be sent at all is a failure of the run; what Stop cancelled is no result either way)
+  const failed = done.length - ok.length + run.skipped.length;
+  const counts = { delivered: ok.length, failed, pending: tests.length - done.length, unsent: run.stopped ? 0 : Math.max(0, run.count - run.sent), cancelled: run.stopped ? Math.max(0, run.count - run.sent) : 0 };
+  const final = counts.pending === 0 && counts.unsent === 0;
+  const runtime: RunComparison['runtime'] = !ok.length && !failed ? 'pending' : !failed ? 'delivered' : ok.length ? 'mixed' : 'failed';
+  const results = tests.slice(0, 5).map((t) => `#${t.msg || 1}: ${t.done ? t.result : 'on its way'}`).concat(run.skipped.slice(0, 2).map((x) => `#${x.n}: ${x.why}`));
+  if (counts.cancelled) results.push(`${counts.cancelled} message${counts.cancelled === 1 ? '' : 's'} not sent: stopped`);
   const expected = check.verdict;
-  const agree = runtime === 'pending' || (expected === 'satisfied' && runtime === 'delivered') || (expected === 'violated' && runtime === 'failed') || expected === 'partial';
-  const out: RunComparison = { expected, runtime, agree, lines: [], results };
+  const consistent = (expected === 'satisfied' && runtime === 'delivered') || (expected === 'violated' && runtime === 'failed') || (expected === 'partial' && runtime !== 'pending');
+  const agree = final && consistent;
+  const out: RunComparison = { expected, runtime, final, counts, agree, lines: [], results };
   if (agree) return out;
+  // provisional: explained only where the evidence so far already differs (a failure where it should pass, a delivery where it should not)
+  const differsSoFar = (expected === 'satisfied' && failed > 0) || (expected === 'violated' && ok.length > 0);
+  if (!final && !differsSoFar) return out;
+  if (final && runtime === 'pending') {
+    out.unexplained = 'Nothing was sent: the run was stopped before its first message.';
+    return out;
+  }
   // the same check on the simulation's state now: which layer differs
   const now = checkCommunication(model, check.request, snap, 'Selected endpoints', 0);
   const layer = (c: CommCheck, id: string) => c.layers.find((l) => l.id === id);
@@ -343,7 +400,7 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
     const why = check.layers.filter((l) => l.id !== 'runtime' && l.verdict !== 'satisfied');
     if (why.some((l) => l.verdict === 'indeterminate' || l.verdict === 'unsupported')) out.lines.push(`Static analysis did not establish it: ${why.map((l) => `${LAYER_LABEL[l.id]} ${verdictText(l.verdict, 'check').toLowerCase()} (${l.text})`).join('; ')}; the simulation exchanged it.`);
   }
-  if (!out.lines.length) out.unexplained = `The static result (${verdictText(expected, 'reach')}) and the simulation (${runtime}) differ, and the recorded state at ${at} does not explain it: compare the hop evidence with the event log.`;
+  if (!out.lines.length && (final || differsSoFar)) out.unexplained = `The static result (${verdictText(expected, 'reach')}) and the simulation (${runtime}${final ? '' : ', so far'}) differ, and the recorded state at ${at} does not explain it: compare the hop evidence with the event log.`;
   return out;
 }
 

@@ -319,31 +319,37 @@
  },
  "vme-rack.yaml physical": {
   "positions": [
-   "act 1076 1396",
-   "adc 399 816",
-   "cons 680 557",
-   "cpu1 892 816",
-   "cpu2 625 816",
-   "dio 163 816",
-   "ews 680 110",
-   "mil 1183 816",
-   "mil-bus 850 1204",
-   "mon 843 1396",
-   "sens 600 1396",
-   "sw 680 354",
-   "vmebus 680 998"
+   "act 640 1426",
+   "adc 1043 841",
+   "cons 632 572",
+   "cpu1 194 841",
+   "cpu2 769 841",
+   "dio 1554 841",
+   "drive-can 994 1234",
+   "ews 858 115",
+   "fsw 478 841",
+   "gps 863 572",
+   "mil 1293 841",
+   "mil-bus 750 1234",
+   "mon 874 1426",
+   "pump 1100 1426",
+   "sens 390 1426",
+   "stick 1089 572",
+   "sw 858 364",
+   "valve 1334 1426",
+   "vmebus 858 1028"
   ],
-  "scene": "419bdfa05af5d281"
+  "scene": "a37d27191bcebdef"
  },
  "vme-rack.yaml logical": {
   "positions": [
-   "cons 132 1016",
-   "cpu1 193 796",
-   "cpu2 468 796",
-   "ctrl 231 408",
-   "ews 210 109"
+   "cons 132 896",
+   "cpu1 193 663",
+   "cpu2 468 663",
+   "ctrl 607 376",
+   "ews 753 114"
   ],
-  "scene": "c83e6b0a0f388ef4"
+  "scene": "717e4a8ccbc887d7"
  },
  "addressing.yaml physical": {
   "positions": [

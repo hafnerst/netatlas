@@ -297,8 +297,9 @@ export function appView(a: ActionRecord, c: ActionContext): ActionView {
 function opaqueView(a: ActionRecord, now: number): ActionView {
   const r = a.opaque as OpaqueRun;
   const s = r.spec;
-  const ok = r.deliveries.filter((d) => d.ok === true).length;
-  const failed = r.deliveries.filter((d) => d.ok === false).length;
+  // (the counts: every transfer; the list keeps what is on its way and the last ones settled)
+  const ok = r.delivered;
+  const failed = r.failed;
   const pending = r.deliveries.filter((d) => d.ok === null).length;
   const total = s.count * s.to.length;
   const more = !r.stopped && r.sent < s.count;
@@ -323,7 +324,7 @@ function opaqueView(a: ActionRecord, now: number): ActionView {
       ...r.deliveries.slice(-6).map((d) => `#${d.n + 1} to ${d.to}: ${d.ok === null ? 'on its way' : d.why}${d.path ? ' (' + d.path + ')' : ''}`),
       'Illustrative traffic — protocol behaviour not simulated: no enumeration, addressing, arbitration, acknowledgment or timing.',
     ],
-    tests: [r.traffic],
+    tests: [r.traffic as number],
   };
   void now;
 }

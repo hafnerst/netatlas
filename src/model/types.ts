@@ -238,6 +238,29 @@ export interface IcAttachment {
 }
 
 /**
+ * Illustrative data an interconnect carries while the simulation runs
+ * (`traffic:` of an interconnect): a transfer every interval, started by an
+ * attachment of that interconnect, from a data source on it to recipients
+ * reached along the modelled connections — what Send illustrative data does
+ * once, written into the model as the scenario's. No protocol is simulated.
+ */
+export interface IcTraffic {
+  /** "device:port": the attachment that starts each transfer (on this interconnect) */
+  initiator: string;
+  /** "device:port": where the data comes from (on this interconnect; the initiator when not written) */
+  from: string;
+  /** "device:port" of each recipient */
+  to: string[];
+  /** ms between two transfers */
+  interval: number;
+  /** transfers in all (none: until the simulation ends) */
+  count?: number;
+  /** illustrative size in bytes (shown only) */
+  size: number;
+  line: number;
+}
+
+/**
  * A non-IP physical interconnect (`interconnects:`, model/interconnect.ts):
  * a point-to-point connection or a shared medium between opaque ports, its
  * technology (a name and a version, as text), the protocol it carries if
@@ -252,6 +275,8 @@ export interface Interconnect {
   connector?: string;
   access: IcAccess;
   endpoints: IcAttachment[];
+  /** illustrative transfers that run with the simulation (`traffic:`), started by one of its attachments */
+  traffic: IcTraffic[];
   label?: string;
   description?: string;
   attrs: Attrs;

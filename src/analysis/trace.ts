@@ -44,7 +44,7 @@ import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
-import { PolicyFlow, policyDecision, policyKind, undecided } from './policy';
+import { PolicyFlow, configuredIds, ctxIds, policyDecision, policyKind, undecided } from './policy';
 import type { Verdict } from './result';
 import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
 import { deviceTypeInText, deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
@@ -217,6 +217,8 @@ export interface TraceRequest {
   service?: string;
   /** the VRF of the source's table ('' the default table); none: the source interface's VRF, else the default table */
   vrf?: string;
+  /** the address family asked for: both ends in it only, never the other one instead; none: the ends' (the source's families, IPv4 first) */
+  family?: 4 | 6;
 }
 
 export interface Trace {
@@ -268,6 +270,9 @@ interface Walk {
   dnat?: Dnat;
   /** the source address, and what is sent (a Security gateway's policy decides by them) */
   src?: IpAddr;
+  /** the traced ends' devices: the owners a policy's device spec is checked against (an address two VRFs have is theirs here) */
+  srcDev?: string;
+  destDev?: string;
   svc?: TraceService | null;
 }
 
@@ -302,8 +307,11 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   let srcDev: string;
   let srcIface: string | undefined;
   let srcAddr: IpAddr | undefined;
+  const fam = req.family;
+  const famText = fam ? `IPv${fam} ` : '';
   if (src.kind === 'address') {
     const a = parseAddress(src.address) as IpAddr;
+    if (fam && a.version !== fam) return { ...out, error: `Source: ${src.address} is an IPv${a.version} address, not IPv${fam}` };
     const owners = holders(model, a, ctx, null).filter((h) => vrfGiven === undefined || h.vrf === vrfGiven);
     if (!owners.length) return { ...out, error: `Source: ${src.address} is not an address of a device in the model${vrfGiven !== undefined ? ' in ' + vrfName(vrfGiven) : ''}` };
     srcDev = owners[0].device;
@@ -317,9 +325,11 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   let destAddr: IpAddr | null = null;
   let destDev: string | undefined;
   let destIface: string | undefined;
-  const srcFamilies = familiesOf(model, srcDev, srcIface, ctx);
+  const srcFamilies = fam ? familiesOf(model, srcDev, srcIface, ctx).filter((v) => v === fam) : familiesOf(model, srcDev, srcIface, ctx);
+  if (fam && !srcFamilies.length) return { ...out, error: `Source: ${srcIface !== undefined ? `${srcDev}:${srcIface}` : srcDev} has no IPv${fam} address` };
   if (dst.kind === 'address') {
     destAddr = parseAddress(dst.address);
+    if (fam && destAddr && destAddr.version !== fam) return { ...out, error: `Destination: ${dst.address} is an IPv${destAddr.version} address, not IPv${fam}` };
     const owners = destAddr ? holders(model, destAddr, ctx, null) : [];
     if (owners.length) {
       destDev = owners[0].device;
@@ -329,7 +339,8 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
     destDev = dst.device;
     destIface = dst.kind === 'iface' ? dst.iface : undefined;
     const c = pickAddress(model, dst.device, destIface, srcFamilies, undefined, ctx);
-    if (!c) return { ...out, error: `Destination: ${traceEndText(dst)} has no address to trace to` };
+    // (a family asked for is that family's address or none: pickAddress prefers, it does not restrict)
+    if (!c || (fam && c.addr.version !== fam)) return { ...out, error: `Destination: ${traceEndText(dst)} has no ${famText}address to trace to` };
     destAddr = c.addr;
     destIface = c.iface;
   }
@@ -363,6 +374,8 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   const w: Walk = { model, ctx, dest: walkDest, destText: formatAddr(walkDest), destInModel: destDev !== undefined, encap: [], depth: 0, inside: [], truncated: false };
   if (srcAddr) w.srcText = formatAddr(srcAddr);
   if (srcAddr) w.src = srcAddr;
+  w.srcDev = srcDev;
+  if (destDev !== undefined) w.destDev = destDev;
   w.svc = svc;
   if (dnat) w.dnat = dnat;
   out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
@@ -1076,12 +1089,15 @@ function crossDenied(w: Walk, dev: Device, inPort: string | undefined, outPort: 
  */
 function networkPolicyDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
   if (!policyKind(w.model, dev)) return null;
-  const owner = (a: IpAddr | undefined): string | null => {
+  // (the owner of an address: the traced end's device when it holds it, else its first holder)
+  const owner = (a: IpAddr | undefined, end: string | undefined): string | null => {
     if (!a) return null;
     const h = holders(w.model, a, w.ctx, null);
-    return h.length ? h[0].device : null;
+    return end !== undefined && h.some((x) => x.device === end) ? end : h.length ? h[0].device : null;
   };
-  const flow: PolicyFlow = { src: w.src, dst: w.dest, proto: w.svc ? (w.svc.proto as PolicyFlow['proto']) : 'other', srcDev: owner(w.src), dstDev: owner(w.dest), inIface, outIface };
+  // (a device spec's addresses: what the routing context has acquired — a snapshot's, the simulation's leases — else the configured model's, its runtime ones unknown)
+  const ids = w.ctx.leases ? ctxIds(w.model, w.ctx) : configuredIds(w.model);
+  const flow: PolicyFlow = { src: w.src, dst: w.dest, proto: w.svc ? (w.svc.proto as PolicyFlow['proto']) : 'other', srcDev: owner(w.src, w.srcDev), dstDev: owner(w.dest, w.dnat ? undefined : w.destDev), inIface, outIface, ids };
   if (w.svc && w.svc.proto !== 'icmp') flow.dport = w.svc.port;
   const d = policyDecision(w.model, dev, flow, !!w.svc);
   if (!d) return null;

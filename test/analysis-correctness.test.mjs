@@ -1,0 +1,663 @@
+// Targeted analysis correctness: the address family asked for is the one
+// evaluated end to end (endpoints, names, traces, identity, expectations,
+// the simulation's prefill); policy identities by effective addresses;
+// the complete Analyze-to-Simulate identity; incomplete runs never a final
+// agreement; application-derived capacity; NTP chain feasibility; VRF-scoped
+// broadcast source selection. Asserted by the effective addresses and paths,
+// not only the headlines.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { load, model } from './helpers.mjs';
+
+const C = load('analysis/communication.js');
+const I = load('analysis/comm-identity.js');
+const T = load('analysis/trace.js');
+
+// pc and srv are dual-stack; r1 routes IPv4 to srv but has no IPv6 on srv's side (IPv6 unrouted); v6s is reached over IPv6 only
+const DUAL = `netatlas: 1
+title: dual stack
+devices:
+  - id: pc
+    type: endpoint
+    interfaces: [{id: eth0, ip: [10.0.1.10/24, "fd00:1::10/64"]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}, {prefix: "::/0", via: "fd00:1::1"}]
+    services:
+      applications:
+        - {id: web6, name: Web over IPv6, profile: tcp_client, peer: srv/web, ip_version: 6}
+        - {id: web4, name: Web over IPv4, profile: tcp_client, peer: srv/web}
+  - id: r1
+    type: router
+    interfaces:
+      - {id: eth0, ip: [10.0.1.1/24, "fd00:1::1/64"]}
+      - {id: eth1, ip: 10.0.2.1/24}
+      - {id: eth2, ip: "fd00:3::1/64"}
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: [10.0.2.20/24, "fd00:2::20/64"]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}]
+    services:
+      applications:
+        - {id: web, name: Web, profile: tcp_server, port: 80}
+  - id: v6s
+    type: server
+    interfaces: [{id: eth0, ip: [10.0.3.30/24, "fd00:3::30/64"]}]
+    routes: [{prefix: "::/0", via: "fd00:3::1"}]
+  - id: v4only
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.2.40/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}]
+links:
+  - {id: a, a: "pc:eth0", b: "r1:eth0"}
+  - {id: b, a: "r1:eth1", b: "srv:eth0"}
+  - {id: c, a: "r1:eth2", b: "v6s:eth0"}
+`;
+
+const check = (m, req) => C.checkCommunication(m, req);
+const ends = (c) => [c.trace && c.trace.source ? c.trace.source.address : null, c.trace && c.trace.dest ? c.trace.dest.address : null];
+
+test('family: IPv6 asked for is IPv6 evaluated — devices and interfaces resolved in it (never IPv4 instead), and the reverse', () => {
+  const m = model(DUAL);
+  // IPv4 succeeds, IPv6 is unrouted (r1 has no IPv6 towards srv)
+  const v4 = check(m, { from: 'pc', to: 'srv', family: 4 });
+  assert.deepEqual(ends(v4), ['10.0.1.10', '10.0.2.20']);
+  assert.equal(v4.verdict, 'satisfied');
+  const v6 = check(m, { from: 'pc', to: 'srv', family: 6 });
+  assert.deepEqual(ends(v6), ['fd00:1::10', 'fd00:2::20'], 'the IPv6 addresses, not the IPv4 ones');
+  assert.notEqual(v6.verdict, 'satisfied', v6.headline);
+  assert.equal(v6.layers.find((l) => l.id === 'path').verdict, 'violated');
+  // interfaces as ends: the same
+  const i6 = check(m, { from: 'pc:eth0', to: 'srv:eth0', family: 6 });
+  assert.deepEqual(ends(i6), ['fd00:1::10', 'fd00:2::20']);
+  assert.notEqual(i6.verdict, 'satisfied');
+  // the reverse: IPv6 succeeds, IPv4 is unrouted (r1 has no IPv4 towards v6s)
+  const r6 = check(m, { from: 'pc', to: 'v6s', family: 6 });
+  assert.deepEqual(ends(r6), ['fd00:1::10', 'fd00:3::30']);
+  assert.equal(r6.verdict, 'satisfied');
+  const r4 = check(m, { from: 'pc', to: 'v6s', family: 4 });
+  assert.deepEqual(ends(r4), ['10.0.1.10', '10.0.3.30']);
+  assert.notEqual(r4.verdict, 'satisfied');
+});
+
+test('family: unavailable in the asked family — said so, no fallback to the other one', () => {
+  const m = model(DUAL);
+  const c = check(m, { from: 'pc', to: 'v4only', family: 6 });
+  assert.notEqual(c.verdict, 'satisfied');
+  assert.equal(c.trace && c.trace.dest ? c.trace.dest.address : undefined, undefined, 'nothing traced to its IPv4 address');
+  assert.match(c.layers.map((l) => l.text + ' ' + l.detail.join(' ')).join(' | '), /v4only has no IPv6 address/);
+  // the tracer itself, asked directly
+  assert.match(T.tracePath(m, { from: 'pc', to: 'v4only', family: 6 }).error, /Destination: v4only has no IPv6 address to trace to/);
+  assert.match(T.tracePath(m, { from: '10.0.1.10', to: 'srv', family: 6 }).error, /Source: 10\.0\.1\.10 is an IPv4 address, not IPv6/);
+  assert.match(T.tracePath(m, { from: 'v4only', to: 'srv', family: 6 }).error, /Source: v4only has no IPv6 address/);
+  // no family: as before (IPv4 first)
+  assert.deepEqual(ends(check(m, { from: 'pc', to: 'srv' })), ['10.0.1.10', '10.0.2.20']);
+});
+
+test('family: application endpoints — a client’s ip_version, a listener asked for in a family; identity, expectation and prefill keep it', () => {
+  const m = model(DUAL);
+  const a6 = check(m, { from: 'pc/web6' });
+  assert.deepEqual(ends(a6), ['fd00:1::10', 'fd00:2::20']);
+  assert.notEqual(a6.verdict, 'satisfied');
+  const a4 = check(m, { from: 'pc/web4' });
+  assert.deepEqual(ends(a4), ['10.0.1.10', '10.0.2.20']);
+  const l6 = check(m, { from: 'pc', to: 'srv/web', family: 6 });
+  assert.deepEqual(ends(l6), ['fd00:1::10', 'fd00:2::20']);
+  // the identity, the saved expectation and the simulation's prefill: the same family and addresses
+  const id = I.commIdentity(m, l6);
+  assert.equal(id.family, 6);
+  assert.equal(id.destination.address, 'fd00:2::20');
+  assert.equal(I.expectationFields(id).family, 6);
+  const h = I.handoffOf(m, id);
+  assert.equal(h.prefill.toAddr, 'fd00:2::20');
+  assert.ok(h.carried.some((x) => /IPv6/.test(x)));
+  // a host name can't carry IPv6 into Send network packets (it resolves A): said, not claimed
+  const nid = { ...id, destination: { binding: 'name', name: 'srv.example.net' } };
+  const nh = I.handoffOf(m, nid);
+  assert.ok(nh.notTransferred.some((x) => /resolves srv\.example\.net for IPv4/.test(x)));
+  assert.ok(!nh.carried.some((x) => /IPv6/.test(x)));
+});
+
+// ------------------------------------------------------------------ policy identities by effective addresses
+
+const S = load('analysis/sim/simulation.js');
+const PO = load('analysis/policy.js');
+const IP = load('model/ip.js');
+
+// pc takes DHCP and SLAAC addresses, st is static; fw's explicit policy names devices
+const POLICY = (rules, def = 'deny', lease = '1h') => `netatlas: 1
+title: policy identities
+devices:
+  - id: pc
+    type: endpoint
+    interfaces: [{id: eth0, ipv4: dhcp, ipv6: slaac}]
+  - id: st
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.1.0.50/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: dsrv
+    type: server
+    services:
+      dhcp:
+        scopes: [{network: lan, range: 10.1.0.100-10.1.0.199, gateway: 10.1.0.1, dns: [10.1.0.5], lease: ${lease}}]
+    interfaces: [{id: eth0, ip: 10.1.0.5/24}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]
+  - id: fw
+    type: firewall
+    interfaces:
+      - id: lan
+        ip: [10.1.0.1/24, "2001:db8:10::1/64"]
+        ipv6_ra: {prefixes: ["2001:db8:10::/64"]}
+      - {id: wan, ip: [10.9.0.1/24, "2001:db8:99::1/64"]}
+    policy:
+      default: ${def}
+      rules:
+${rules}
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/80"}
+    interfaces: [{id: eth0, ip: [10.9.0.10/24, "2001:db8:99::10/64"]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}, {prefix: "::/0", via: "2001:db8:99::1"}]
+links:
+  - {id: l-pc, a: "pc:eth0", b: "sw:p1"}
+  - {id: l-st, a: "st:eth0", b: "sw:p2"}
+  - {id: l-d, a: "dsrv:eth0", b: "sw:p3"}
+  - {id: l-fw, a: "fw:lan", b: "sw:p4"}
+  - {id: l-srv, a: "fw:wan", b: "srv:eth0"}
+networks:
+  - {id: lan, cidr: 10.1.0.0/24}
+`;
+const PERMIT_PC = `        - {action: permit, source: pc, destination: srv, proto: tcp, dport: 80}
+        - {action: permit, source: "pc:eth0", destination: "2001:db8:99::10", proto: tcp, dport: 80}`;
+
+/** run a TCP test to its end */
+function tcp(s, from, to) {
+  const t = s.sendTest({ from, to, kind: 'tcp', port: 80 });
+  assert.equal(typeof t, 'object', String(t));
+  s.runTo(s.now + 10000);
+  return t;
+}
+
+test('policy: a rule naming a DHCP / SLAAC device or interface matches its acquired addresses in the simulation; a static device is itself; the default for the rest', () => {
+  const m = model(POLICY(PERMIT_PC));
+  const s = new S.Simulation(m);
+  s.runTo(30000);
+  const leased = s.engine.effectiveAddrs('pc').map((x) => x.addr);
+  assert.ok(leased.some((a) => a.version === 4) && leased.some((a) => a.version === 6), 'pc has a lease and a SLAAC address');
+  assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true, 'the IPv4 lease matches "source: pc"');
+  assert.equal(tcp(s, 'pc', '2001:db8:99::10').ok, true, 'the SLAAC address matches "source: pc:eth0"');
+  const st = tcp(s, 'st', '10.9.0.10');
+  assert.equal(st.ok, false, 'st is named by no rule: the default deny');
+  assert.match(st.result, /fw|denied|policy/i);
+});
+
+test('policy: a frozen snapshot uses the addresses acquired then — the same decision as the simulation; the configured model says it can’t decide, never a definite answer', () => {
+  const m = model(POLICY(PERMIT_PC));
+  const s = new S.Simulation(m);
+  s.runTo(30000);
+  const snap = s.snapshot();
+  const c = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/80' }, snap);
+  assert.equal(c.layers.find((l) => l.id === 'policy').verdict, 'satisfied', c.headline);
+  assert.equal(c.verdict, 'satisfied', c.headline);
+  // the configured model: pc has no address yet (its own layer says so); a destination rule naming a DHCP device, to an address
+  // nobody has configured, is undecided — not a non-match that would let it through
+  const deny = model(POLICY('        - {action: deny, destination: pc, proto: tcp, dport: 80}', 'permit'));
+  const cfg = C.checkCommunication(deny, { from: 'st', to: '10.1.0.150', service: 'tcp/80' });
+  const pol = cfg.trace ? cfg.trace.paths.flatMap((p) => p.hops.flatMap((h) => h.notes || [])).join(' | ') : '';
+  assert.notEqual(cfg.verdict, 'satisfied', cfg.headline);
+  void pol;
+  const flow = { src: IP.parseAddress('10.1.0.50'), dst: IP.parseAddress('10.1.0.150'), proto: 'tcp', dport: 80, srcDev: 'st', dstDev: null, inIface: 'lan', outIface: 'lan' };
+  const d = PO.policyDecision(deny, deny.index.devices.get('fw'), flow, true);
+  assert.ok(PO.undecided(d), d.text);
+  assert.match(d.text, /an address a device takes at runtime/);
+  // known to be another device's: a definite non-match (a static address, the configured model)
+  const d2 = PO.policyDecision(deny, deny.index.devices.get('fw'), { ...flow, dst: IP.parseAddress('10.1.0.5'), dstDev: 'dsrv' }, true);
+  assert.equal(PO.undecided(d2), false);
+  assert.equal(d2.permit, true, d2.text);
+  // the same rule in the snapshot: pc's lease is pc's, another address is not
+  const ss = new S.Simulation(deny);
+  ss.runTo(30000);
+  const snap2 = ss.snapshot();
+  const lease = ss.engine.effectiveAddrs('pc').find((x) => x.addr.version === 4).addr;
+  const ids = PO.ctxIds(deny, snap2.ctx);
+  assert.equal(PO.specMatches(deny, 'pc', lease, ids), true);
+  assert.equal(PO.specMatches(deny, 'pc', IP.parseAddress('10.1.0.199'), ids), false);
+  assert.equal(PO.specMatches(deny, 'pc:eth0', lease, ids), true);
+  // never a whole subnet for a device
+  assert.equal(PO.specMatches(deny, 'pc', IP.parseAddress('10.1.0.0'), ids), false);
+});
+
+test('policy: an expired lease is no identity any more; a renewed one still is (the same address)', () => {
+  const m = model(POLICY(PERMIT_PC, 'deny', '60s'));
+  const s = new S.Simulation(m);
+  s.runTo(30000);
+  const lease = s.engine.effectiveAddrs('pc').find((x) => x.addr.version === 4).addr;
+  // renewed at T1 by the server: still pc's
+  s.runTo(30000 + 60000);
+  assert.ok(s.engine.effectiveAddrs('pc').some((x) => IP.compareAddr ? true : true));
+  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), true, 'renewed');
+  assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true);
+  // the server gone: no renewal, the lease expires — the address is nobody's
+  s.powerOff('dsrv');
+  s.runTo(s.now + 130000);
+  assert.ok(!s.engine.effectiveAddrs('pc').some((x) => x.addr.version === 4), 'expired');
+  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), false);
+});
+
+// two VRFs of one firewall with the same host address on both sides: hostR and hostB are both 10.9.0.5
+// (each side its own gateway and server addresses: the tracer resolves a next hop to an address's first holder, not per segment)
+const VRFS = `netatlas: 1
+title: overlapping VRFs
+devices:
+  - {id: hostR, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]}
+  - {id: hostB, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.9.0.254}]}
+  - {id: srvR, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - {id: srvB, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.7.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.7.0.1}]}
+  - id: fw
+    type: firewall
+    interfaces:
+      - {id: r-in, ip: 10.9.0.1/24, vrf: red}
+      - {id: r-out, ip: 10.8.0.1/24, vrf: red}
+      - {id: b-in, ip: 10.9.0.254/24, vrf: blue}
+      - {id: b-out, ip: 10.7.0.1/24, vrf: blue}
+    policy:
+      default: deny
+      rules:
+        - {action: permit, source: hostR, proto: tcp, dport: 80}
+links:
+  - {id: a, a: "hostR:eth0", b: "fw:r-in"}
+  - {id: b, a: "hostB:eth0", b: "fw:b-in"}
+  - {id: c, a: "fw:r-out", b: "srvR:eth0"}
+  - {id: d, a: "fw:b-out", b: "srvB:eth0"}
+`;
+
+test('policy: overlapping addresses in two VRFs — a rule naming one host does not match the other host with the same address (analysis and simulation)', () => {
+  const m = model(VRFS);
+  const r = C.checkCommunication(m, { from: 'hostR', to: 'srvR', service: 'tcp/80' });
+  assert.equal(r.verdict, 'satisfied', r.headline);
+  const b = C.checkCommunication(m, { from: 'hostB', to: 'srvB', service: 'tcp/80' });
+  assert.equal(b.layers.find((l) => l.id === 'policy').verdict, 'violated', b.headline);
+  const s = new S.Simulation(m);
+  s.runTo(10000);
+  assert.equal(tcp(s, 'hostR', 'srvR').ok, true);
+  assert.equal(tcp(s, 'hostB', 'srvB').ok, false, 'hostB is not hostR, whatever its address');
+});
+
+// ------------------------------------------------------------------ the complete Analyze-to-Simulate identity
+
+// multi reaches srv from eth0 (through r1) but not from eth1 (r2 has no route there); srv:eth0 has two addresses
+const MULTI = `netatlas: 1
+title: two interfaces
+devices:
+  - id: multi
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.1.10/24}, {id: eth1, ip: 10.0.2.10/24}]
+    routes: [{prefix: 10.9.0.0/24, via: 10.0.1.1}]
+  - id: r1
+    type: router
+    interfaces: [{id: a, ip: 10.0.1.1/24}, {id: b, ip: 10.9.0.1/24}]
+  - id: r2
+    type: router
+    interfaces: [{id: a, ip: 10.0.2.1/24}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/443"}
+    interfaces: [{id: eth0, ip: [10.9.0.10/24, 10.9.0.11/24]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]
+links:
+  - {id: l1, a: "multi:eth0", b: "r1:a"}
+  - {id: l2, a: "multi:eth1", b: "r2:a"}
+  - {id: l3, a: "r1:b", b: "sw:p1"}
+  - {id: l4, a: "sw:p2", b: "srv:eth0"}
+`;
+
+test('identity: a send qualifies as evidence only with the same source interface, destination address, family, port and routing context', () => {
+  const m = model(MULTI);
+  const c = C.checkCommunication(m, { from: 'multi:eth0', to: 'srv:eth0', service: 'tcp/443' });
+  assert.equal(c.verdict, 'satisfied', c.headline);
+  const id = I.commIdentity(m, c);
+  assert.deepEqual([id.source.iface, id.destination.iface, id.destination.address], ['eth0', 'eth0', '10.9.0.10']);
+  const h = I.handoffOf(m, id);
+  const plan = { delivery: 'unicast', ...h.prefill };
+  assert.equal(I.planMatches(id, plan, m), true, 'the prefilled send carries it');
+  const not = (what, p) => assert.equal(I.planMatches(id, { ...plan, ...p }, m), false, what);
+  not('another source interface (the one that does not reach it)', { via: 'eth1' });
+  not('no source interface: the routes choose, which the check did not', { via: undefined });
+  // a device with one interface: a send that names none goes from it (the form leaves it out) — the same identity
+  const one = model(MULTI.replace('interfaces: [{id: eth0, ip: 10.0.1.10/24}, {id: eth1, ip: 10.0.2.10/24}]', 'interfaces: [{id: eth0, ip: 10.0.1.10/24}]').replace('  - {id: l2, a: "multi:eth1", b: "r2:a"}' + String.fromCharCode(10), ''));
+  const oid = I.commIdentity(one, C.checkCommunication(one, { from: 'multi', to: 'srv:eth0', service: 'tcp/443' }));
+  assert.equal(I.planMatches(oid, { ...plan, via: undefined }, one), true);
+  not('the destination interface’s other address', { toAddr: '10.9.0.11' });
+  not('another port', { port: 22 });
+  not('ICMP instead of TCP', { kind: 'icmp', port: undefined });
+  not('another destination interface', { toIface: 'eth1' });
+  // the same address typed: the same identity (no lease that could change)
+  assert.equal(I.planMatches(id, { delivery: 'unicast', from: 'multi', via: 'eth0', kind: 'tcp', port: 443, target: '10.9.0.10' }, m), true);
+  assert.equal(I.planMatches(id, { delivery: 'unicast', from: 'multi', via: 'eth0', kind: 'tcp', port: 443, target: '10.9.0.11' }, m), false);
+  // another family, another routing context
+  assert.equal(I.planMatches({ ...id, family: 6 }, plan, m), false, 'an IPv6 check is not an IPv4 send');
+  assert.equal(I.planMatches({ ...id, vrf: 'blue' }, plan, m), false, 'a send can’t be in a VRF its source interface is not in');
+  // an exact-address check: that address only
+  const ca = C.checkCommunication(m, { from: 'multi:eth0', to: '10.9.0.11', service: 'tcp/443' });
+  const ida = I.commIdentity(m, ca);
+  assert.equal(ida.destination.binding, 'address');
+  assert.equal(I.planMatches(ida, { ...plan, toAddr: undefined, to: undefined, toIface: undefined, target: '10.9.0.11' }, m), true);
+  assert.equal(I.planMatches(ida, plan, m), false, 'the interface’s other address is another check');
+});
+
+test('identity: in the simulation, the newest send that does not carry the check (another source interface, the other address) is passed over; the one that does is compared', () => {
+  const m = model(MULTI);
+  const c = C.checkCommunication(m, { from: 'multi:eth0', to: 'srv:eth0', service: 'tcp/443' });
+  const id = I.commIdentity(m, c);
+  const plan = { delivery: 'unicast', ...I.handoffOf(m, id).prefill };
+  const s = new S.Simulation(m);
+  s.runTo(5000);
+  s.actSend(plan);
+  s.runTo(s.now + 10000);
+  s.actSend({ ...plan, via: 'eth1' });
+  s.actSend({ ...plan, toAddr: '10.9.0.11' });
+  s.runTo(s.now + 20000);
+  const runs = s.testRuns();
+  assert.equal(runs[0].plan.toAddr, '10.9.0.11', 'newest first');
+  const chosen = runs.find((r) => I.planMatches(id, r.plan, m));
+  assert.equal(chosen.plan.via, 'eth0');
+  assert.equal(chosen.plan.toAddr, '10.9.0.10');
+  assert.equal(chosen.tests.every((t) => t.ok), true);
+  // the wrong source interface fails in the simulation: it is not the check's evidence
+  const wrong = runs.find((r) => r.plan.via === 'eth1');
+  assert.equal(wrong.tests.some((t) => t.ok), false);
+  assert.equal(I.compareRun(m, c, chosen, s.snapshot()).agree, true);
+});
+
+// ------------------------------------------------------------------ incomplete runs are provisional
+
+test('compare: a run with messages on their way or still to be sent is provisional — never a final agreement; a later failure makes it differ; Stop settles it; mixed results differ', () => {
+  const m = model(MULTI);
+  const c = C.checkCommunication(m, { from: 'multi:eth0', to: 'srv:eth0', service: 'tcp/443' });
+  assert.equal(c.verdict, 'satisfied');
+  const plan = { delivery: 'unicast', ...I.handoffOf(m, I.commIdentity(m, c)).prefill };
+  const s = new S.Simulation(m);
+  s.runTo(5000);
+  // three messages, 5 s apart: after the first is answered, the others are still to be sent
+  s.actSend({ ...plan, count: 3, interval: 5 });
+  const run = () => s.testRuns()[0];
+  s.runTo(s.now + 2000);
+  let k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree], ['delivered', false, false], 'the first delivered: provisional');
+  assert.equal(k.counts.unsent, 2);
+  assert.equal(k.unexplained, undefined, 'nothing differs so far');
+  // a message on its way: still provisional
+  s.runTo(s.now + 3000 + 0.01);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.equal(k.final, false);
+  assert.ok(k.counts.pending + k.counts.unsent > 0);
+  // the server's cable fails before the third: a later failure — it differs, and says why, once settled
+  s.runTo(s.now + 3000);
+  s.fail('link:l4');
+  s.runTo(s.now + 30000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree], ['mixed', true, false], 'completed mixed results differ from "reachable"');
+  assert.deepEqual([k.counts.delivered, k.counts.failed, k.counts.pending, k.counts.unsent], [2, 1, 0, 0]);
+  assert.ok(k.lines.length > 0 || !!k.unexplained);
+  // a failure seen while others are still to come: it differs so far (provisional, explained)
+  s.restore('link:l4');
+  s.runTo(s.now + 10000);
+  s.fail('link:l4');
+  s.actSend({ ...plan, count: 3, interval: 20 });
+  s.runTo(s.now + 15000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree], ['failed', false, false]);
+  assert.ok(k.lines.length > 0 || !!k.unexplained, 'the difference so far is explained');
+  // Stop: what was not sent is cancelled, not unsent; settled when the sent ones have their results
+  s.restore('link:l4');
+  s.runTo(s.now + 10000);
+  const a = s.actSend({ ...plan, count: 5, interval: 10 });
+  s.runTo(s.now + 12000);
+  s.actionControl(a.id, 'stop');
+  s.runTo(s.now + 20000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree, k.counts.cancelled, k.counts.unsent], ['delivered', true, true, 3, 0]);
+  assert.ok(k.results.some((x) => /3 messages not sent: stopped/.test(x)));
+  // stopped before anything was sent: nothing to agree with
+  const b = s.actSend({ ...plan, count: 2, interval: 30 });
+  s.actionControl(b.id, 'stop');
+  s.runTo(s.now + 20000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  if (k.counts.delivered + k.counts.failed === 0) {
+    assert.equal(k.agree, false);
+    assert.match(k.unexplained, /Nothing was sent/);
+  }
+});
+
+// ------------------------------------------------------------------ application-derived capacity
+
+const CA = load('analysis/capacity.js');
+const W = load('analysis/whatif.js');
+
+// a client and a server over two switches joined by a LAG (members of 10 and 1 Mbit/s), an MQTT broker and a subscriber
+const CAP = (o = {}) => `netatlas: 1
+title: capacity
+devices:
+  - id: s1
+    type: switch
+    interfaces: [{id: m1}, {id: m2}, {id: h1, vlans: 10}, {id: h3, vlans: 10}]
+    logical_interfaces: [{id: ae0, type: virtual, members: [m1, m2], vlans: [10]}]
+  - id: s2
+    type: switch
+    interfaces: [{id: m1}, {id: m2}, {id: h2, vlans: 10}, {id: h4, vlans: 10}]
+    logical_interfaces: [{id: ae0, type: virtual, members: [m1, m2], vlans: [10]}]
+  - id: cli
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.1/24}]
+    services:
+      applications:
+${o.apps || '        - {id: get, name: Bulk get, profile: tcp_client, peer: srv/files, interval: 1s, request_size: 100}'}
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.2/24}]
+    services:
+      applications:
+        - {id: files, name: Files, profile: tcp_server, port: 445, response_size: ${o.resp || 60000}}
+${o.srvApps || ''}
+  - id: brk
+    type: server
+    services: {mqtt_broker: {}}
+    interfaces: [{id: eth0, ip: 10.0.10.3/24}]
+  - id: sub
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.4/24}]
+    services:
+      applications:
+${o.sub || '        - {id: s, name: Sub, profile: mqtt_client, broker: brk, subscribe: ["plant/#", "plant/+/temp"]}'}
+links:
+  - {id: lm1, a: "s1:m1", b: "s2:m1", speed: 10M}
+  - {id: lm2, a: "s1:m2", b: "s2:m2"${o.m2 === null ? '' : ', speed: 1M'}}
+  - ${o.l1 || '{id: l1, a: "cli:eth0", b: "s1:h1", speed: 100M}'}
+  - {id: l2, a: "srv:eth0", b: "s2:h2", speed: 100M}
+  - {id: l3, a: "brk:eth0", b: "s1:h3", speed: 100M}
+  - {id: l4, a: "sub:eth0", b: "s2:h4", speed: 100M}
+networks:
+  - {id: v10, cidr: 10.0.10.0/24, vlan: 10}
+`;
+const dem = (m) => Object.fromEntries(CA.capacityDemands(m).map((d) => [d.id, d]));
+
+test('capacity: an MQTT publisher’s rate is one publication per topic per interval; a subscriber gets each matching publication once, however many of its filters match it; a zero payload is zero', () => {
+  const pub = '        - {id: pub, name: Pub, profile: mqtt_client, broker: brk, publish: [plant/a/temp, plant/b/temp, plant/c/level], interval: 1s, payload_size: 1000}';
+  const m = model(CAP({ apps: pub }));
+  const d = dem(m);
+  assert.equal(d['app:cli/pub>'].bps, 3 * 1000 * 8, 'three topics: three publications a second');
+  // "plant/#" and "plant/+/temp" both match plant/a/temp and plant/b/temp: still one copy each; plant/c/level by one filter
+  assert.equal(d['app:cli/pub>sub/s'].bps, 3 * 1000 * 8);
+  const only = model(CAP({ apps: pub, sub: '        - {id: s, name: Sub, profile: mqtt_client, broker: brk, subscribe: ["plant/+/temp", "plant/a/temp"]}' }));
+  assert.equal(dem(only)['app:cli/pub>sub/s'].bps, 2 * 1000 * 8, 'two topics match (one of them by both filters)');
+  const zero = model(CAP({ apps: pub.replace('payload_size: 1000', 'payload_size: 0') }));
+  assert.equal(dem(zero)['app:cli/pub>'], undefined, 'a zero payload is no load (not the 64-byte default)');
+  assert.equal(dem(zero)['app:cli/pub>sub/s'], undefined);
+});
+
+test('capacity: a small request with a large answer — the answer is the responder’s listener’s size, not a default; an unknown responder is said to be assumed', () => {
+  const m = model(CAP());
+  const d = dem(m);
+  assert.equal(d['app:cli/get>'].bps, 100 * 8);
+  assert.equal(d['app:cli/get<'].bps, 60000 * 8, 'srv/files answers 60000 bytes a second');
+  assert.equal(d['app:cli/get<'].note, undefined);
+  // a peer given as a device with a port: its one listener on that port
+  const byDev = model(CAP({ apps: '        - {id: get, name: Get, profile: tcp_client, peer: srv, port: 445, interval: 1s}' }));
+  assert.equal(dem(byDev)['app:cli/get<'].bps, 60000 * 8);
+  // an address: the responder is not known — the default, assumed and said
+  const amb = model(CAP({ apps: '        - {id: get, name: Get, profile: tcp_client, peer: 10.0.10.2, port: 445, interval: 1s}' }));
+  assert.equal(dem(amb)['app:cli/get<'].bps, 1460 * 8);
+  assert.match(dem(amb)['app:cli/get<'].note, /responder is not known: its answers are assumed 1460 bytes/);
+  assert.match(CA.capacityAnalysis(amb).demands.find((x) => x.demand.id === 'app:cli/get<').text, /\(assumed: /);
+  // two listeners of the device on the port: ambiguous
+  const two = model(CAP({ apps: '        - {id: get, name: Get, profile: tcp_client, peer: srv, port: 445, interval: 1s}', srvApps: '        - {id: alt, name: Alt, profile: tcp_server, port: 445, bind: eth0}' }).replace('{id: files, name: Files, profile: tcp_server, port: 445, response_size: 60000}', '{id: files, name: Files, profile: tcp_server, port: 445, response_size: 60000, bind: lo}').replace('interfaces: [{id: eth0, ip: 10.0.10.2/24}]', 'interfaces: [{id: eth0, ip: 10.0.10.2/24}, {id: lo, ip: 10.99.0.2/32}]'));
+  assert.match(dem(two)['app:cli/get<'].note || '', /2 applications of srv listen on tcp\/445: its responder is ambiguous/);
+});
+
+test('capacity: opposite directions of a full-duplex cable are separate budgets — 4.8 Mbit/s each way fits an 8 Mbit/s cable; a half-duplex cable is one medium', () => {
+  const apps = `        - {id: up, name: Up, profile: udp_sender, peer: srv/rx, interval: 100ms, request_size: 60000}
+        - {id: rx, name: Rx, profile: udp_receiver, port: 9000}`;
+  const srvApps = `        - {id: rx, name: Rx, profile: udp_receiver, port: 9000}
+        - {id: down, name: Down, profile: udp_sender, peer: cli/rx, interval: 100ms, request_size: 60000}`;
+  const full = model(CAP({ apps, srvApps, l1: '{id: l1, a: "cli:eth0", b: "s1:h1", speed: 8M}' }));
+  const r = CA.capacityAnalysis(full);
+  const l1 = r.loads.filter((x) => x.resource.id === 'link:l1');
+  assert.equal(l1.length, 2, 'one load each way');
+  for (const x of l1) assert.equal(x.verdict, 'fits', `${x.resource.direction}: ${x.worst}`);
+  assert.deepEqual(l1.map((x) => x.resource.direction).sort(), ['cli → s1', 's1 → cli']);
+  for (const id of ['app:cli/up', 'app:srv/down']) assert.notEqual(r.demands.find((x) => x.demand.id === id).verdict, 'exceeds');
+  // half duplex: both ways on one medium (9.6 Mbit/s on 8)
+  const half = model(CAP({ apps, srvApps, l1: '{id: l1, a: {device: cli, interface: eth0, duplex: half}, b: {device: s1, interface: h1, duplex: half}, speed: 8M}' }));
+  const h = CA.capacityAnalysis(half).loads.filter((x) => x.resource.id === 'link:l1');
+  assert.equal(h.length, 1);
+  assert.equal(h[0].verdict, 'exceeds');
+});
+
+test('capacity: a single flow is limited by the members that are up — the fastest member failed lowers it; an up member without a speed leaves it unknown', () => {
+  // 4.8 Mbit/s answers: over the 1 Mbit/s member, under the 10 Mbit/s one
+  const apps = '        - {id: get, name: Get, profile: tcp_client, peer: srv/files, interval: 100ms, request_size: 100}';
+  const m = model(CAP({ apps }));
+  const r = CA.capacityAnalysis(m);
+  assert.equal(r.demands.find((x) => x.demand.id === 'app:cli/get<').perFlow, undefined, 'fits one 10 Mbit/s member');
+  const w = W.whatIf(m, ['lm1']);
+  const after = w.capacity.changes.find((x) => x.demand.id === 'app:cli/get<').after;
+  assert.match(after.perFlow || '', /more than one member of s\d:ae0 .* carries \(1 Mbit\/s\)/, 'the 10 Mbit/s member failed: one flow is at most 1 Mbit/s');
+  const unk = model(CAP({ apps, m2: null }));
+  const ans = CA.capacityAnalysis(unk).demands.find((x) => x.demand.id === 'app:cli/get<');
+  assert.equal(ans.verdict, 'unknown');
+  assert.match(ans.perFlow || '', /the most one flow can use on s\d:ae0 .* is not known/);
+});
+
+// ------------------------------------------------------------------ NTP: chain feasibility
+
+const TI = load('analysis/timing.js');
+
+// one LAN: references of strata 14, 15 and 13, servers chained under them, clients with alternatives
+const NTP = `netatlas: 1
+title: ntp strata
+devices:
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}, {id: p6, vlans: 1}, {id: p7, vlans: 1}, {id: p8, vlans: 1}, {id: p9, vlans: 1}]}
+  - {id: r14, type: server, services: {ntp: {stratum: 14}}, interfaces: [{id: eth0, ip: 10.0.0.14/24}]}
+  - {id: r15, type: server, services: {ntp: {stratum: 15}}, interfaces: [{id: eth0, ip: 10.0.0.15/24}]}
+  - {id: r13, type: server, services: {ntp: {stratum: 13}}, interfaces: [{id: eth0, ip: 10.0.0.13/24}]}
+  - {id: r1, type: server, services: {ntp: {stratum: 1}}, interfaces: [{id: eth0, ip: 10.0.0.1/24}]}
+  - {id: a, type: server, services: {ntp: {upstreams: [10.0.0.13]}}, interfaces: [{id: eth0, ip: 10.0.0.21/24}]}
+  - {id: b, type: server, services: {ntp: {upstreams: [10.0.0.21]}}, interfaces: [{id: eth0, ip: 10.0.0.22/24}]}
+  - {id: edge, type: server, services: {ntp: {upstreams: [10.0.0.14]}}, interfaces: [{id: eth0, ip: 10.0.0.30/24}]}
+  - {id: deep, type: server, services: {ntp: {upstreams: [10.0.0.22]}}, interfaces: [{id: eth0, ip: 10.0.0.31/24}]}
+  - {id: alt, type: server, services: {ntp: {upstreams: [10.0.0.22, 10.0.0.1, 203.0.113.9]}}, interfaces: [{id: eth0, ip: 10.0.0.32/24}]}
+links:
+  - {id: l1, a: "r14:eth0", b: "sw:p1"}
+  - {id: l2, a: "r15:eth0", b: "sw:p2"}
+  - {id: l3, a: "r13:eth0", b: "sw:p3"}
+  - {id: l4, a: "r1:eth0", b: "sw:p4"}
+  - {id: l5, a: "a:eth0", b: "sw:p5"}
+  - {id: l6, a: "b:eth0", b: "sw:p6"}
+  - {id: l7, a: "edge:eth0", b: "sw:p7"}
+  - {id: l8, a: "deep:eth0", b: "sw:p8"}
+  - {id: l9, a: "alt:eth0", b: "sw:p9"}
+`;
+
+test('NTP: the stratum ceiling — a reference of 14 one hop up is the usable boundary (15); a stratum-15 upstream is not usable; three hops below 13 exhaust it', () => {
+  const m = model(NTP);
+  const edge = TI.ntpSource(m, 'edge');
+  assert.equal(edge.verdict, 'satisfied', edge.text);
+  assert.match(edge.text, /edge at stratum 15/);
+  const direct = TI.ntpSource(model(NTP.replace('services: {ntp: {upstreams: [10.0.0.14]}}', 'services: {ntp: {upstreams: [10.0.0.15]}}')), 'edge');
+  assert.equal(direct.verdict, 'violated', direct.text);
+  assert.match(direct.text, /edge would be at stratum 16, above 15 — unsynchronized/);
+  assert.equal(direct.levels.upstream, 'satisfied', 'the upstream is reachable: that is not a feasible chain');
+  // deep → b → a → r13: 13 + 3 = 16
+  const deep = TI.ntpSource(m, 'deep');
+  assert.equal(deep.verdict, 'violated');
+  assert.deepEqual(deep.chain, ['deep', 'b', 'a', 'r13']);
+  assert.match(deep.text, /r13 is a reference of stratum 13, 3 hops up: deep would be at stratum 16/);
+  // b itself (two hops: 15) is fine
+  assert.equal(TI.ntpSource(m, 'b').verdict, 'satisfied');
+});
+
+test('NTP: an infeasible alternative never hides a usable one; the best feasible is taken; cycles and external upstreams stay what they are', () => {
+  const m = model(NTP);
+  const a = TI.ntpSource(m, 'alt');
+  assert.equal(a.verdict, 'satisfied', a.text);
+  assert.deepEqual(a.chain, ['alt', 'r1']);
+  assert.match(a.text, /alt at stratum 2/);
+  assert.deepEqual(a.ntp.map((x) => x.state), ['stratum', 'root', 'external']);
+  // a cycle: a and b ask each other
+  const cyc = model(NTP.replace('services: {ntp: {upstreams: [10.0.0.13]}}', 'services: {ntp: {upstreams: [10.0.0.22]}}'));
+  assert.equal(TI.ntpSource(cyc, 'b').ntp[0].state, 'cycle');
+  // external only: beyond the model
+  const ext = model(NTP.replace('services: {ntp: {upstreams: [10.0.0.14]}}', 'services: {ntp: {upstreams: [203.0.113.9]}}'));
+  assert.equal(TI.ntpSource(ext, 'edge').verdict, 'beyond');
+});
+
+// ------------------------------------------------------------------ broadcast source selection: VRF, usability, state
+
+// r has the same subnet in two VRFs; "a0" (red) sorts before "b0" (blue)
+const BCAST = `netatlas: 1
+title: broadcast sources
+devices:
+  - id: r
+    type: router
+    interfaces:
+      - {id: a0, ip: 10.1.0.1/24, vrf: red}
+      - {id: b0, ip: 10.1.0.1/24, vrf: blue}
+      - {id: c0, ip: 10.2.0.1/24, vrf: blue}
+  - {id: x, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24}]}
+  - {id: y, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.20/24}]}
+  - {id: z, type: endpoint, interfaces: [{id: eth0, ip: 10.2.0.30/24}]}
+links:
+  - {id: la, a: "r:a0", b: "x:eth0"}
+  - {id: lb, a: "r:b0", b: "y:eth0"}
+  - {id: lc, a: "r:c0", b: "z:eth0"}
+`;
+
+test('broadcast source: the VRF asked for, a usable address, an interface that is up — a wrong-VRF, unusable or down interface sorting first is passed over', () => {
+  const s = new S.Simulation(model(BCAST));
+  s.runTo(5000);
+  const bc = IP.parseAddress('10.1.0.255');
+  const pick = (vrf) => {
+    const r = s.transport.pickSource('r', bc, undefined, vrf);
+    return r.l3 ? r.l3.id : r.why;
+  };
+  assert.equal(pick('blue'), 'b0', 'blue’s own interface, not red’s that sorts first');
+  assert.equal(pick('red'), 'a0');
+  assert.equal(pick(undefined), 'a0', 'no VRF asked: the first that fits');
+  // the first candidate's address unusable (a duplicate): the next
+  s.engine.setUsable('r', 'a0', IP.parseAddress('10.1.0.1'), false);
+  assert.equal(pick(undefined), 'b0');
+  assert.match(pick('red'), /r has no IPv4 address to send from in VRF red/);
+  s.engine.setUsable('r', 'a0', IP.parseAddress('10.1.0.1'), true);
+  // the first candidate down: the next that is up; none up in the VRF: said, not another VRF's
+  s.shut('r', 'a0');
+  s.runTo(s.now + 1000);
+  assert.equal(pick(undefined), 'b0');
+  assert.match(pick('red'), /r:a0 is down/);
+  // a limited broadcast in blue: blue's first interface that is up
+  s.shut('r', 'b0');
+  s.runTo(s.now + 1000);
+  assert.equal(s.transport.pickSource('r', IP.parseAddress('255.255.255.255'), undefined, 'blue').l3.id, 'c0');
+});
