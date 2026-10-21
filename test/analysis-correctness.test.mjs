@@ -609,3 +609,51 @@ test('NTP: an infeasible alternative never hides a usable one; the best feasible
   const ext = model(NTP.replace('services: {ntp: {upstreams: [10.0.0.14]}}', 'services: {ntp: {upstreams: [203.0.113.9]}}'));
   assert.equal(TI.ntpSource(ext, 'edge').verdict, 'beyond');
 });
+
+// ------------------------------------------------------------------ broadcast source selection: VRF, usability, state
+
+// r has the same subnet in two VRFs; "a0" (red) sorts before "b0" (blue)
+const BCAST = `netatlas: 1
+title: broadcast sources
+devices:
+  - id: r
+    type: router
+    interfaces:
+      - {id: a0, ip: 10.1.0.1/24, vrf: red}
+      - {id: b0, ip: 10.1.0.1/24, vrf: blue}
+      - {id: c0, ip: 10.2.0.1/24, vrf: blue}
+  - {id: x, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24}]}
+  - {id: y, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.20/24}]}
+  - {id: z, type: endpoint, interfaces: [{id: eth0, ip: 10.2.0.30/24}]}
+links:
+  - {id: la, a: "r:a0", b: "x:eth0"}
+  - {id: lb, a: "r:b0", b: "y:eth0"}
+  - {id: lc, a: "r:c0", b: "z:eth0"}
+`;
+
+test('broadcast source: the VRF asked for, a usable address, an interface that is up — a wrong-VRF, unusable or down interface sorting first is passed over', () => {
+  const s = new S.Simulation(model(BCAST));
+  s.runTo(5000);
+  const bc = IP.parseAddress('10.1.0.255');
+  const pick = (vrf) => {
+    const r = s.transport.pickSource('r', bc, undefined, vrf);
+    return r.l3 ? r.l3.id : r.why;
+  };
+  assert.equal(pick('blue'), 'b0', 'blue’s own interface, not red’s that sorts first');
+  assert.equal(pick('red'), 'a0');
+  assert.equal(pick(undefined), 'a0', 'no VRF asked: the first that fits');
+  // the first candidate's address unusable (a duplicate): the next
+  s.engine.setUsable('r', 'a0', IP.parseAddress('10.1.0.1'), false);
+  assert.equal(pick(undefined), 'b0');
+  assert.match(pick('red'), /r has no IPv4 address to send from in VRF red/);
+  s.engine.setUsable('r', 'a0', IP.parseAddress('10.1.0.1'), true);
+  // the first candidate down: the next that is up; none up in the VRF: said, not another VRF's
+  s.shut('r', 'a0');
+  s.runTo(s.now + 1000);
+  assert.equal(pick(undefined), 'b0');
+  assert.match(pick('red'), /r:a0 is down/);
+  // a limited broadcast in blue: blue's first interface that is up
+  s.shut('r', 'b0');
+  s.runTo(s.now + 1000);
+  assert.equal(s.transport.pickSource('r', IP.parseAddress('255.255.255.255'), undefined, 'blue').l3.id, 'c0');
+});

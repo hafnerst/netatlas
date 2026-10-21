@@ -450,16 +450,19 @@ export class Transport {
     }
     const ifs = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
     if (isMulticastIp(dst) || this.e.isBroadcastAddr(dst)) {
-      // a broadcast or a group: the interface whose subnet it is, else the first with an address of the family
+      // a broadcast or a group: the interface whose subnet it is, else the first with an address of the family — either way
+      // in the VRF asked for, with a usable address (not tentative, not a duplicate), on an interface that is up
+      const fits = (l: L3Iface): boolean => (vrf === undefined || l.vrf === vrf) && this.e.isL3Up(dev, l.id);
       for (const l of ifs) {
-        const a = l.addrs.find((x) => x.addr.version === dst.version && inNet(x, dst));
-        if (a && l.kind !== 'loopback') return { src: a.addr, vrf: l.vrf, l3: l };
+        const a = l.addrs.find((x) => usable(l, x) && inNet(x, dst));
+        if (a && l.kind !== 'loopback' && fits(l)) return { src: a.addr, vrf: l.vrf, l3: l };
       }
       for (const l of ifs) {
         const a = l.addrs.find((x) => usable(l, x));
-        if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf)) return { src: a.addr, vrf: l.vrf, l3: l };
+        if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && fits(l)) return { src: a.addr, vrf: l.vrf, l3: l };
       }
-      return { why: `${dev} has no ${fam} address to send from` };
+      const down = ifs.find((l) => l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf) && l.addrs.some((x) => usable(l, x)) && !this.e.isL3Up(dev, l.id));
+      return down ? { why: `${dev}:${down.id} is down: no interface that is up has a ${fam} address to send from`, transient: true } : { why: `${dev} has no ${fam} address to send from${vrf !== undefined ? ' in ' + (vrf ? 'VRF ' + vrf : 'its default table') : ''}` };
     }
     const vrfs = Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp);
     const routed = (v: string): { l3: L3Iface | null; local: boolean } | null => {
