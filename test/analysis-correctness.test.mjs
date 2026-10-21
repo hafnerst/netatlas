@@ -367,3 +367,63 @@ test('identity: in the simulation, the newest send that does not carry the check
   assert.equal(wrong.tests.some((t) => t.ok), false);
   assert.equal(I.compareRun(m, c, chosen, s.snapshot()).agree, true);
 });
+
+// ------------------------------------------------------------------ incomplete runs are provisional
+
+test('compare: a run with messages on their way or still to be sent is provisional — never a final agreement; a later failure makes it differ; Stop settles it; mixed results differ', () => {
+  const m = model(MULTI);
+  const c = C.checkCommunication(m, { from: 'multi:eth0', to: 'srv:eth0', service: 'tcp/443' });
+  assert.equal(c.verdict, 'satisfied');
+  const plan = { delivery: 'unicast', ...I.handoffOf(m, I.commIdentity(m, c)).prefill };
+  const s = new S.Simulation(m);
+  s.runTo(5000);
+  // three messages, 5 s apart: after the first is answered, the others are still to be sent
+  s.actSend({ ...plan, count: 3, interval: 5 });
+  const run = () => s.testRuns()[0];
+  s.runTo(s.now + 2000);
+  let k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree], ['delivered', false, false], 'the first delivered: provisional');
+  assert.equal(k.counts.unsent, 2);
+  assert.equal(k.unexplained, undefined, 'nothing differs so far');
+  // a message on its way: still provisional
+  s.runTo(s.now + 3000 + 0.01);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.equal(k.final, false);
+  assert.ok(k.counts.pending + k.counts.unsent > 0);
+  // the server's cable fails before the third: a later failure — it differs, and says why, once settled
+  s.runTo(s.now + 3000);
+  s.fail('link:l4');
+  s.runTo(s.now + 30000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree], ['mixed', true, false], 'completed mixed results differ from "reachable"');
+  assert.deepEqual([k.counts.delivered, k.counts.failed, k.counts.pending, k.counts.unsent], [2, 1, 0, 0]);
+  assert.ok(k.lines.length > 0 || !!k.unexplained);
+  // a failure seen while others are still to come: it differs so far (provisional, explained)
+  s.restore('link:l4');
+  s.runTo(s.now + 10000);
+  s.fail('link:l4');
+  s.actSend({ ...plan, count: 3, interval: 20 });
+  s.runTo(s.now + 15000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree], ['failed', false, false]);
+  assert.ok(k.lines.length > 0 || !!k.unexplained, 'the difference so far is explained');
+  // Stop: what was not sent is cancelled, not unsent; settled when the sent ones have their results
+  s.restore('link:l4');
+  s.runTo(s.now + 10000);
+  const a = s.actSend({ ...plan, count: 5, interval: 10 });
+  s.runTo(s.now + 12000);
+  s.actionControl(a.id, 'stop');
+  s.runTo(s.now + 20000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  assert.deepEqual([k.runtime, k.final, k.agree, k.counts.cancelled, k.counts.unsent], ['delivered', true, true, 3, 0]);
+  assert.ok(k.results.some((x) => /3 messages not sent: stopped/.test(x)));
+  // stopped before anything was sent: nothing to agree with
+  const b = s.actSend({ ...plan, count: 2, interval: 30 });
+  s.actionControl(b.id, 'stop');
+  s.runTo(s.now + 20000);
+  k = I.compareRun(m, c, run(), s.snapshot());
+  if (k.counts.delivered + k.counts.failed === 0) {
+    assert.equal(k.agree, false);
+    assert.match(k.unexplained, /Nothing was sent/);
+  }
+});

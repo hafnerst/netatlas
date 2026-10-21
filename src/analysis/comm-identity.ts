@@ -283,9 +283,17 @@ export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boole
 
 /** The static result beside what the simulation did, and why they differ. */
 export interface RunComparison {
-  /** the static verdict, and what the simulation's messages did */
+  /** the static verdict, and what the simulation's messages did so far (delivered, failed — not sent at all included —, both, nothing yet) */
   expected: Verdict;
   runtime: 'delivered' | 'failed' | 'mixed' | 'pending';
+  /**
+   * the run is settled: every message sent (or the rest cancelled by Stop) and each delivered or failed; until then
+   * the comparison is provisional — the evidence so far, never a final agreement
+   */
+  final: boolean;
+  /** its messages: delivered, failed (not sent at all included), on their way, still to be sent, cancelled by Stop */
+  counts: { delivered: number; failed: number; pending: number; unsent: number; cancelled: number };
+  /** final, and they agree (never while provisional) */
   agree: boolean;
   /** the evidence for a difference (empty when they agree, or when nothing recorded explains it: then `unexplained`) */
   lines: string[];
@@ -306,12 +314,25 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
   const tests = run.tests;
   const done = tests.filter((t) => t.done);
   const ok = done.filter((t) => t.ok);
-  const runtime: RunComparison['runtime'] = !done.length ? 'pending' : ok.length === done.length ? 'delivered' : ok.length ? 'mixed' : 'failed';
-  const results = tests.slice(0, 5).map((t) => `#${t.msg || 1}: ${t.done ? t.result : 'on its way'}`);
+  // (a message that could not be sent at all is a failure of the run; what Stop cancelled is no result either way)
+  const failed = done.length - ok.length + run.skipped.length;
+  const counts = { delivered: ok.length, failed, pending: tests.length - done.length, unsent: run.stopped ? 0 : Math.max(0, run.count - run.sent), cancelled: run.stopped ? Math.max(0, run.count - run.sent) : 0 };
+  const final = counts.pending === 0 && counts.unsent === 0;
+  const runtime: RunComparison['runtime'] = !ok.length && !failed ? 'pending' : !failed ? 'delivered' : ok.length ? 'mixed' : 'failed';
+  const results = tests.slice(0, 5).map((t) => `#${t.msg || 1}: ${t.done ? t.result : 'on its way'}`).concat(run.skipped.slice(0, 2).map((x) => `#${x.n}: ${x.why}`));
+  if (counts.cancelled) results.push(`${counts.cancelled} message${counts.cancelled === 1 ? '' : 's'} not sent: stopped`);
   const expected = check.verdict;
-  const agree = runtime === 'pending' || (expected === 'satisfied' && runtime === 'delivered') || (expected === 'violated' && runtime === 'failed') || expected === 'partial';
-  const out: RunComparison = { expected, runtime, agree, lines: [], results };
+  const consistent = (expected === 'satisfied' && runtime === 'delivered') || (expected === 'violated' && runtime === 'failed') || (expected === 'partial' && runtime !== 'pending');
+  const agree = final && consistent;
+  const out: RunComparison = { expected, runtime, final, counts, agree, lines: [], results };
   if (agree) return out;
+  // provisional: explained only where the evidence so far already differs (a failure where it should pass, a delivery where it should not)
+  const differsSoFar = (expected === 'satisfied' && failed > 0) || (expected === 'violated' && ok.length > 0);
+  if (!final && !differsSoFar) return out;
+  if (final && runtime === 'pending') {
+    out.unexplained = 'Nothing was sent: the run was stopped before its first message.';
+    return out;
+  }
   // the same check on the simulation's state now: which layer differs
   const now = checkCommunication(model, check.request, snap, 'Selected endpoints', 0);
   const layer = (c: CommCheck, id: string) => c.layers.find((l) => l.id === id);
@@ -371,7 +392,7 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
     const why = check.layers.filter((l) => l.id !== 'runtime' && l.verdict !== 'satisfied');
     if (why.some((l) => l.verdict === 'indeterminate' || l.verdict === 'unsupported')) out.lines.push(`Static analysis did not establish it: ${why.map((l) => `${LAYER_LABEL[l.id]} ${verdictText(l.verdict, 'check').toLowerCase()} (${l.text})`).join('; ')}; the simulation exchanged it.`);
   }
-  if (!out.lines.length) out.unexplained = `The static result (${verdictText(expected, 'reach')}) and the simulation (${runtime}) differ, and the recorded state at ${at} does not explain it: compare the hop evidence with the event log.`;
+  if (!out.lines.length && (final || differsSoFar)) out.unexplained = `The static result (${verdictText(expected, 'reach')}) and the simulation (${runtime}${final ? '' : ', so far'}) differ, and the recorded state at ${at} does not explain it: compare the hop evidence with the event log.`;
   return out;
 }
 
