@@ -274,7 +274,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
       { name: 'LSU', does: 'Link-State Update carrying LSAs; flooded again when the topology changes' },
       { name: 'LSAck', does: 'acknowledges an LSU' },
     ],
-    transport: 'IP protocol 89; Hello and LSU to 224.0.0.5 / ff02::5 (AllSPFRouters), DBD and LSR unicast',
+    transport: 'IP protocol 89; Hello to 224.0.0.5 / ff02::5 (AllSPFRouters); DBD, LSR, LSU and LSAck unicast to the neighbour (the simulation floods adjacency by adjacency: a router multicasts its first flood to AllSPFRouters / AllDRouters, RFC 2328 §13.3)',
     proto: 'IP 89',
     group4: '224.0.0.5',
     group6: 'ff02::5',
