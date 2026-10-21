@@ -1169,6 +1169,12 @@ export class Multicast {
     // BLOCK of some of the group's sources (RFC 3376 §6.4.2): only those sources' timers are lowered to the last member
     // query time — the group's other sources stay; a TO_IN {} (or a v2 Leave) lowers the group's
     const blocked = sources.filter((s) => g.srcUntil && g.srcUntil.has(s));
+    // a BLOCK of sources it does not have (RFC 3376 §6.4.2: INCLUDE(A) + BLOCK(B) queries A*B — none): nothing changes; only a
+    // leave without sources (TO_IN {}, an IGMPv2 / MLDv1 Leave) is the whole group's
+    if (sources.length && !blocked.length) {
+      this.e.note('table', 'igmp', ri.dev, '', 'block ignored', '', `${ri.dev}:${ri.l3.id}: ${who} blocks ${sources.join(', ')} of ${group}, which it has no member for: nothing changes (its sources ${g.sources.join(', ') || 'none'} stay)`);
+      return;
+    }
     if (blocked.length) {
       for (const s of blocked) g.srcUntil!.set(s, Math.min(g.srcUntil!.get(s) as number, lmqt));
       g.expires = this.lastSource(g);

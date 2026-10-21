@@ -681,3 +681,26 @@ test('IGMPv3 sources: a second source on a group already known is joined (its ow
   const rb2 = s.multicastReceived('rxb', '232.1.1.1');
   assert.ok(rb2.last > t0 + 55000);
 });
+
+test('IGMPv3: a BLOCK naming only sources the router does not know (RFC 3376 §6.4.2: INCLUDE(A) + BLOCK(B) queries A*B — empty) changes nothing: the known source’s timer stays, no group-specific query; even with the member’s answers lost, rxa keeps receiving', () => {
+  const s = sim(SSM2);
+  s.runTo(90000);
+  // rxb's reports never reach r2: its join of (G, s2) is unknown there
+  s.engine.impair = (link, f) => (f.msg.protocol === 'igmp' && f.msg.type === 'Report' && (f.msg.data || {}).from === 'rxb' && !(f.msg.data || {}).leave ? { lose: true } : null);
+  assert.equal(s.joinGroup('rxb', 'eth0', '232.1.1.1', ['10.1.0.11']), null);
+  s.runTo(100000);
+  assert.deepEqual(s.igmpTable('r2').rows.map((r) => r[4]), ['10.1.0.10'], 'r2 knows s1 only');
+  // rxb leaves: a BLOCK {s2} that does reach r2; rxa's answers lost from now on
+  s.engine.impair = (link, f) => (f.msg.protocol === 'igmp' && f.msg.type === 'Report' && (f.msg.data || {}).from === 'rxa' ? { lose: true } : null);
+  assert.equal(s.leaveGroup('rxb', 'eth0', '232.1.1.1'), true);
+  const t0 = s.now;
+  s.runTo(t0 + 10000);
+  assert.ok(ev(s, (e) => e.device === 'rxb' && e.what === 'Report' && e.t >= t0 && /BLOCK \(232\.1\.1\.1, \{10\.1\.0\.11\}\)/.test(e.detail)).length === 1, 'the BLOCK was sent');
+  assert.equal(ev(s, (e) => e.device === 'r2' && e.t >= t0 && e.what === 'Query' && /232\.1\.1\.1/.test(e.detail)).length, 0, 'no group-specific query');
+  assert.equal(ev(s, (e) => e.device === 'r2' && e.t >= t0 && /expired/.test(e.what)).length, 0, 'nothing expired');
+  assert.deepEqual(s.igmpTable('r2').rows.map((r) => r[4]), ['10.1.0.10']);
+  s.engine.impair = null;
+  s.runTo(t0 + 30000);
+  const ra = s.multicastReceived('rxa', '232.1.1.1');
+  assert.ok(ra && ra.last > t0 + 25000, 'rxa still receives s1');
+});
