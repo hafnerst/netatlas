@@ -1636,6 +1636,11 @@ export class Multicast {
         if (e && !e.rptPruned.has(d.s + '|' + l3.id)) {
           e.rptPruned.add(d.s + '|' + l3.id);
           this.e.note('table', 'pim', dev, s.peer, 'RPT prune', '', `${dev}: ${d.s}'s traffic for ${d.g} no longer goes down the shared tree out of ${l3.id} (${s.peer} is on the source's tree)`);
+          // RFC 7761 §4.5.7: JoinDesired(S, G) — an (S, G) of its own (the RP's, joined towards the source) with no outgoing
+          // interface of its own and nothing left to inherit from (*, G) for this source is pruned towards the source
+          const sg = t.get(d.s + '|' + d.g);
+          const inherits = Array.from(e.oil).some(([i, until]) => until > this.e.now && !e.rptPruned.has(d.s + '|' + i));
+          if (sg && !inherits) this.maybePrune(dev, sg);
         }
         return true;
       }

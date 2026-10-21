@@ -345,6 +345,28 @@ test('PIM-SM with the RP elsewhere: Register, Register-Stop once the RP gets the
   assert.equal(status(never, 'rxa member of 239.1.1.1').state, 'Receiving');
 });
 
+test('PIM-SM: after the SPT switchover the RP, its (S, G) left with no outgoing interface and nothing to inherit (the shared tree pruned for S), prunes (S, G) towards the source at once (RFC 7761 §4.5.7) — the first hop stops sending to it; the receiver keeps getting the stream', () => {
+  const s = sim(NET({ r1pim: 'rp: 10.255.0.3', r2pim: 'rp: 10.255.0.3' }));
+  s.runTo(30000);
+  const sw = ev(s, (e) => e.device === 'r2' && e.what === 'SPT switchover')[0];
+  assert.ok(sw, 'r2 switched to the source’s tree');
+  const rpt = ev(s, (e) => e.device === 'r3' && e.what === 'RPT prune')[0];
+  const prune = ev(s, (e) => e.device === 'r3' && e.kind === 'message' && e.what === 'Join/Prune' && /prune \(10\.1\.0\.10, 239\.1\.1\.1\)/.test(e.detail));
+  assert.equal(prune.length, 1, 'one Prune(S, G) from the RP towards r1');
+  assert.ok(prune[0].t >= rpt.t && prune[0].t - rpt.t < 1, 'when the shared tree was pruned for S, not after a holdtime');
+  assert.match(prune[0].detail, /on g0/);
+  // r1 sends (S, G) only towards r2 (g1), no more towards the RP (g2); the RP keeps no (S, G)
+  const oil = (dev, sg) => (s.mrouteTable(dev).rows.find((r) => r[0] === sg) || [])[2];
+  assert.match(oil('r1', '(10.1.0.10, 239.1.1.1)'), /^g1 \(/);
+  assert.equal(oil('r3', '(10.1.0.10, 239.1.1.1)'), undefined);
+  assert.ok(ev(s, (e) => e.device === 'r1' && e.kind === 'route' && /forwards \(10\.1\.0\.10, 239\.1\.1\.1\) from g0 out of g1 \(/.test(e.detail) && e.t > prune[0].t).length >= 1);
+  s.runTo(240000);
+  assert.ok(!ev(s, (e) => e.device === 'r1' && e.t > prune[0].t + 1 && /out of g2/.test(e.detail) && /239\.1\.1\.1/.test(e.detail)).length, 'nothing out of g2 afterwards (it no longer waits for the 210 s holdtime)');
+  assert.equal(ev(s, (e) => e.device === 'r1' && e.what === 'Register' && e.t > prune[0].t).length, 0, 'no Register again');
+  const rx = s.multicastReceived('rxa', '239.1.1.1');
+  assert.ok(rx.last > 239000 && rx.count > 220, JSON.stringify(rx));
+});
+
 test('the RPF check, and the tree moving when a link fails: new joins on the new RPF interface, prunes to the old neighbour; the receivers get the stream again', () => {
   const s = sim(NET());
   s.runTo(30000);
