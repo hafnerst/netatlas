@@ -2281,8 +2281,8 @@ export class Transport {
       // (the owners: the source its sender when the address is the sender's own, the destination the device this traffic goes
       // to — followed from here in its VRF, segment by segment; an address two VRFs have is the one it reaches, never both)
       const sender = pkt.msg.sender;
-      const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src);
-      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst);
+      const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src, from.id);
+      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst, to.id);
       const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
       // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
       if (undecided(d)) {

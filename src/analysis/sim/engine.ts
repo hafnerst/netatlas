@@ -4401,8 +4401,11 @@ export class Engine {
     return { vlan: d.vlan === null ? 0 : d.vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: d.links.slice().sort(cmp) };
   }
 
-  /** The one device that has an address on the segment a device's interface reaches now (its broadcast domain); null: none or several. */
-  holderOnSegment(dev: string, iface: string, a: IpAddr): string | null {
+  /**
+   * The one device that has an address on the segment a device's interface reaches now (its broadcast domain), with the
+   * interface it has it on (its VRF is that interface's); null: none or several.
+   */
+  holderOnSegment(dev: string, iface: string, a: IpAddr): { dev: string; iface: string } | null {
     const d = l2Domain(this.net, { dev, iface }, {
       cableUp: (id) => this.cableUp(id),
       portUp: (x, port) => this.portUp(x, port),
@@ -4410,37 +4413,68 @@ export class Engine {
       blocked: (x, bp, v) => this.blocked(x, bp, v),
       memberReady: (x, port) => this.memberReady(x, port),
     });
-    const found = new Set<string>();
-    for (const r of d.reached) if (r.dev !== dev && this.effectiveAddrs(r.dev).some((x) => x.iface === r.l3.id && compareAddr(x.addr, a) === 0)) found.add(r.dev);
-    return found.size === 1 ? Array.from(found)[0] : null;
+    const found = new Map<string, { dev: string; iface: string }>();
+    for (const r of d.reached) if (r.dev !== dev && this.effectiveAddrs(r.dev).some((x) => x.iface === r.l3.id && compareAddr(x.addr, a) === 0)) found.set(`${r.dev}:${r.l3.id}`, { dev: r.dev, iface: r.l3.id });
+    const devs = new Set(Array.from(found.values()).map((x) => x.dev));
+    return found.size === 1 && devs.size === 1 ? Array.from(found.values())[0] : null;
   }
 
   /**
    * Which device an address is, seen from a device in a VRF: the one device that has it; else, following the
    * routes from there, the holder of each next hop on the segment it is reached on, to the one that has the
-   * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Null when
-   * that can't be told (no route, several on one segment, or more than 16 hops).
+   * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Each next
+   * hop is continued in the VRF of the interface it was reached on (never another interface of that device that
+   * happens to have the same address). Equal-cost next hops are all followed: the owner is the one they all lead
+   * to. `out`: the interface the packet actually leaves by (the forwarding choice already made) — only its next
+   * hops are followed from here. Null when that can't be told (no route, several on one segment, next hops leading
+   * to different owners, or more than 16 hops).
    */
-  ownerSeenFrom(dev: string, vrf: string, a: IpAddr): string | null {
+  ownerSeenFrom(dev: string, vrf: string, a: IpAddr, out?: string): string | null {
     const all = Array.from(this.net.devices.keys()).filter((x) => this.effectiveAddrs(x).some((y) => compareAddr(y.addr, a) === 0));
     if (all.length <= 1) return all.length ? all[0] : null;
-    let at = dev;
-    let v = vrf;
-    for (let k = 0; k < 16; k++) {
-      if (this.effectiveAddrs(at).some((y) => compareAddr(y.addr, a) === 0) && at !== dev) return at;
+    const has = (x: string): boolean => this.effectiveAddrs(x).some((y) => compareAddr(y.addr, a) === 0);
+    const owners = new Set<string>();
+    let unknown = false;
+    const seen = new Set<string>();
+    const walk = (at: string, v: string, depth: number): void => {
+      if (unknown) return;
+      if (depth > 16) {
+        unknown = true;
+        return;
+      }
+      if (at !== dev && has(at)) {
+        owners.add(at);
+        return;
+      }
+      const key = `${at}|${v}`;
+      if (seen.has(key)) return;
+      seen.add(key);
       const d = lookup(this.model, at, v, a, this.ctx(at));
-      if (d.kind === 'local') return at;
-      if (d.kind !== 'forward' || !d.hops.length) return null;
-      const h = d.hops[0];
-      const target = h.gateway || a;
-      const next = this.holderOnSegment(at, h.iface, target);
-      if (!next) return null;
-      if (!h.gateway) return next;
-      const nl = Array.from((this.net.devices.get(next) as SimDevice).l3.values()).find((l) => l.addrs.some((x) => compareAddr(x.addr, target) === 0));
-      at = next;
-      v = nl ? nl.vrf : '';
-    }
-    return null;
+      if (d.kind === 'local') {
+        owners.add(at);
+        return;
+      }
+      if (d.kind !== 'forward' || !d.hops.length) {
+        unknown = true;
+        return;
+      }
+      const chosen = depth === 0 && out !== undefined ? d.hops.filter((h) => h.iface === out) : [];
+      for (const h of chosen.length ? chosen : d.hops) {
+        const target = h.gateway || a;
+        const next = this.holderOnSegment(at, h.iface, target);
+        if (!next) {
+          unknown = true;
+          return;
+        }
+        if (!h.gateway) owners.add(next.dev);
+        else {
+          const nl = (this.net.devices.get(next.dev) as SimDevice).l3.get(next.iface);
+          walk(next.dev, nl ? nl.vrf : '', depth + 1);
+        }
+      }
+    };
+    walk(dev, vrf, 0);
+    return !unknown && owners.size === 1 ? Array.from(owners)[0] : null;
   }
 
   /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */

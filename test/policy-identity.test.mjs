@@ -180,3 +180,117 @@ function c0(c) {
   const h = c.trace ? c.trace.paths[0].hops.find((x) => x.device === 'fw') : null;
   return h && h.why.policyUndecided ? h.why.policyUndecided : undefined;
 }
+
+// ------------------------------------------------------------------ the owner across several hops (Engine.ownerSeenFrom)
+
+// the firewall's next hop is a router that reuses 10.0.0.2 (and 10.8.0.1) in red and in blue; srvR and srvB beyond it share
+// 10.8.0.10 — the router's interfaces listed red first or blue first
+const MH = (order, rule = '        - {action: permit, destination: srvR, proto: tcp, dport: 80}') => `netatlas: 1
+title: multihop duplicates
+devices:
+  - {id: hostR, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]}
+  - {id: hostB, type: endpoint, interfaces: [{id: eth0, ip: 10.7.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.7.0.1}]}
+  - {id: srvR, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - {id: srvB, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - id: fw
+    type: firewall
+    interfaces:
+      - {id: r-in, ip: 10.9.0.1/24, vrf: red}
+      - {id: r-out, ip: 10.0.0.1/30, vrf: red}
+      - {id: b-in, ip: 10.7.0.1/24, vrf: blue}
+      - {id: b-out, ip: 10.0.0.1/30, vrf: blue}
+    routes: [{prefix: 10.8.0.0/24, via: 10.0.0.2, vrf: red}, {prefix: 10.8.0.0/24, via: 10.0.0.2, vrf: blue}]
+    policy:
+      default: deny
+      rules:
+${rule}
+  - id: dr
+    type: router
+    interfaces:
+${(order === 'red-first' ? ['red', 'blue'] : ['blue', 'red']).map((v) => `      - {id: ${v}-in, ip: 10.0.0.2/30, vrf: ${v}}\n      - {id: ${v}-out, ip: 10.8.0.1/24, vrf: ${v}}`).join('\n')}
+    routes: [{prefix: 10.9.0.0/24, via: 10.0.0.1, vrf: red}, {prefix: 10.7.0.0/24, via: 10.0.0.1, vrf: blue}]
+links:
+  - {id: a, a: "hostR:eth0", b: "fw:r-in"}
+  - {id: b, a: "hostB:eth0", b: "fw:b-in"}
+  - {id: c, a: "fw:r-out", b: "dr:red-in"}
+  - {id: d, a: "fw:b-out", b: "dr:blue-in"}
+  - {id: e, a: "dr:red-out", b: "srvR:eth0"}
+  - {id: f, a: "dr:blue-out", b: "srvB:eth0"}
+`;
+
+test('the owner several hops away: a downstream router reusing its address in two VRFs — the blue flow is srvB’s, the red flow srvR’s, whichever of the router’s interfaces is listed first (simulation, static, snapshot; permit and deny)', () => {
+  const a = IP.parseAddress('10.8.0.10');
+  for (const order of ['red-first', 'blue-first']) {
+    const m = model(MH(order));
+    const s = new S.Simulation(m);
+    s.runTo(5000);
+    assert.equal(s.engine.ownerSeenFrom('fw', 'blue', a), 'srvB', order);
+    assert.equal(s.engine.ownerSeenFrom('fw', 'red', a), 'srvR', order);
+    const b = tcp(s, 'hostB', '10.8.0.10');
+    assert.equal(b.ok, false, `${order}: the rule naming srvR permits nothing to srvB`);
+    assert.match(b.result, /dropped at fw: .*no rule matches/);
+    assert.equal(tcp(s, 'hostR', '10.8.0.10').ok, true, `${order}: srvR reached, permitted`);
+    assert.equal(layer(check(m, 'hostB', 'srvB'), 'policy').verdict, 'violated');
+    assert.equal(check(m, 'hostR', 'srvR').verdict, 'satisfied');
+    const snap = s.snapshot();
+    assert.equal(layer(check(m, 'hostB', 'srvB', 'tcp/80', snap), 'policy').verdict, 'violated');
+    assert.equal(check(m, 'hostR', 'srvR', 'tcp/80', snap).verdict, 'satisfied');
+    // deny srvR, permit the rest: the blue flow passes, the red one is denied
+    const d = new S.Simulation(model(MH(order, '        - {action: deny, destination: srvR, proto: tcp, dport: 80}').replace('default: deny', 'default: permit')));
+    d.runTo(5000);
+    assert.equal(tcp(d, 'hostB', '10.8.0.10').ok, true, `${order}: srvB is not srvR`);
+    assert.equal(tcp(d, 'hostR', '10.8.0.10').ok, false, `${order}: srvR denied`);
+  }
+});
+
+test('the owner across a failure and its recovery: srvB’s link down — no owner on the blue side (not guessed to be srvR), back up — srvB again; the red side unaffected', () => {
+  const a = IP.parseAddress('10.8.0.10');
+  const s = new S.Simulation(model(MH('red-first')));
+  s.runTo(5000);
+  s.fail('link:f');
+  s.runTo(s.now + 5000);
+  assert.equal(s.engine.ownerSeenFrom('fw', 'blue', a), null);
+  assert.equal(s.engine.ownerSeenFrom('fw', 'red', a), 'srvR');
+  s.restore('link:f');
+  s.runTo(s.now + 5000);
+  assert.equal(s.engine.ownerSeenFrom('fw', 'blue', a), 'srvB');
+});
+
+// equal-cost next hops from the firewall: through dr1 and dr2 to one LAN (srvB alone has 10.8.0.10 there), or to two LANs
+// where srvB and srvX both have it
+const ECMP = (split) => `netatlas: 1
+title: ecmp owners
+devices:
+  - {id: hostB, type: endpoint, interfaces: [{id: eth0, ip: 10.7.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.7.0.1}]}
+  - {id: srvB, type: server, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.2}]}
+${split ? '  - {id: srvX, type: server, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.3}]}\n' : ''}  - id: fw
+    type: firewall
+    interfaces:
+      - {id: b-in, ip: 10.7.0.1/24}
+      - {id: o1, ip: 10.0.1.1/30}
+      - {id: o2, ip: 10.0.2.1/30}
+    routes: [{prefix: 10.8.0.0/24, via: 10.0.1.2}, {prefix: 10.8.0.0/24, via: 10.0.2.2}]
+    policy: {default: permit, rules: []}
+  - {id: dr1, type: router, interfaces: [{id: in, ip: 10.0.1.2/30}, {id: out, ip: 10.8.0.2/24}], routes: [{prefix: 10.7.0.0/24, via: 10.0.1.1}]}
+  - {id: dr2, type: router, interfaces: [{id: in, ip: 10.0.2.2/30}, {id: out, ip: 10.8.0.3/24}], routes: [{prefix: 10.7.0.0/24, via: 10.0.2.1}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+${split ? '  - {id: sw2, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}\n' : ''}links:
+  - {id: a, a: "hostB:eth0", b: "fw:b-in"}
+  - {id: c1, a: "fw:o1", b: "dr1:in"}
+  - {id: c2, a: "fw:o2", b: "dr2:in"}
+  - {id: s1, a: "dr1:out", b: "sw:p1"}
+  - {id: s3, a: "srvB:eth0", b: "sw:p3"}
+${split ? '  - {id: s2, a: "dr2:out", b: "sw2:p1"}\n  - {id: s4, a: "srvX:eth0", b: "sw2:p2"}' : '  - {id: s2, a: "dr2:out", b: "sw:p2"}'}
+`;
+
+test('the owner over equal-cost next hops: both lead to srvB — srvB; they lead to srvB and srvX — not one owner, unless the packet’s own egress is given (the forwarding choice made)', () => {
+  const a = IP.parseAddress('10.8.0.10');
+  let s = new S.Simulation(model(ECMP(false)));
+  s.runTo(5000);
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a), 'srvB');
+  s = new S.Simulation(model(ECMP(true)));
+  s.runTo(5000);
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a), null, 'two owners behind two next hops: which one is not guessed');
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o1'), 'srvB', 'leaving by o1: srvB');
+  assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o2'), 'srvX', 'leaving by o2: srvX');
+});
