@@ -76506,10 +76506,13 @@ const eigrp = {
                 P.unicast(s, 'ACK', `acknowledges the init Update again (sequence ${d.seq}: a retransmission)`, { ack: d.seq });
                 return;
             }
-            // a new init Update from a neighbour that is Up: it restarted — the adjacency starts over (RFC 7868 §5.3.1)
+            // a new init Update from a neighbour that is Up: it restarted — the neighbour is reset and the adjacency starts over
+            // from its next Hello (RFC 7868 §5.3.1); the init that reset it is not taken for the new adjacency, which would come
+            // up at once on it and be reset by the neighbour's own new init in turn, without end
             if (s.state === 'Up') {
                 eigrp.down(P, s, `init Update from ${s.peer} while Up: it restarted`);
                 deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
+                return;
             }
             P.unicast(s, 'ACK', `acknowledges the init Update (sequence ${d.seq})`, { ack: d.seq });
             s.x.peerInit = true;
