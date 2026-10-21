@@ -1160,14 +1160,14 @@ test('capacity: an aggregate’s surviving members, a single flow’s limit, ove
   assert.equal(base.evaluated, true);
   const d = base.demands[0];
   assert.deepEqual([d.connectivity, d.verdict], ['retained', 'fits']);
-  assert.match(d.text, /fits s1:ae0 \(2 of 2 members up\): 1\.5 Gbit\/s split equally, 1\.5 Gbit\/s on one path, of 2 Gbit\/s/);
+  assert.match(d.text, /fits s1:ae0 \(2 of 2 members up\), s1 → s2: 1\.5 Gbit\/s split equally, 1\.5 Gbit\/s on one path, of 2 Gbit\/s/);
   assert.match(d.perFlow, /1\.5 Gbit\/s is more than one member of s1:ae0 .* carries \(1 Gbit\/s\): it fits only as several flows/);
   // one member fails: still carried, now more than the aggregate's surviving capacity
   const w = W.whatIf(m, ['lm1']);
   const ch = w.capacity.changes.find((x) => x.demand.id === 'demand:bulk');
   assert.equal(ch.change, 'overload');
   assert.equal(ch.after.connectivity, 'retained');
-  assert.match(ch.after.text, /^exceeds s1:ae0 \(1 of 2 members up\): 1\.5 Gbit\/s split equally/);
+  assert.match(ch.after.text, /^exceeds s1:ae0 \(1 of 2 members up\), s1 → s2: 1\.5 Gbit\/s split equally/);
 });
 
 test('capacity: VLANs on one uplink share it (counted once); without stated traffic it is not evaluated; a missing speed is insufficient information', () => {

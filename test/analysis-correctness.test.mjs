@@ -427,3 +427,122 @@ test('compare: a run with messages on their way or still to be sent is provision
     assert.match(k.unexplained, /Nothing was sent/);
   }
 });
+
+// ------------------------------------------------------------------ application-derived capacity
+
+const CA = load('analysis/capacity.js');
+const W = load('analysis/whatif.js');
+
+// a client and a server over two switches joined by a LAG (members of 10 and 1 Mbit/s), an MQTT broker and a subscriber
+const CAP = (o = {}) => `netatlas: 1
+title: capacity
+devices:
+  - id: s1
+    type: switch
+    interfaces: [{id: m1}, {id: m2}, {id: h1, vlans: 10}, {id: h3, vlans: 10}]
+    logical_interfaces: [{id: ae0, type: virtual, members: [m1, m2], vlans: [10]}]
+  - id: s2
+    type: switch
+    interfaces: [{id: m1}, {id: m2}, {id: h2, vlans: 10}, {id: h4, vlans: 10}]
+    logical_interfaces: [{id: ae0, type: virtual, members: [m1, m2], vlans: [10]}]
+  - id: cli
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.1/24}]
+    services:
+      applications:
+${o.apps || '        - {id: get, name: Bulk get, profile: tcp_client, peer: srv/files, interval: 1s, request_size: 100}'}
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.2/24}]
+    services:
+      applications:
+        - {id: files, name: Files, profile: tcp_server, port: 445, response_size: ${o.resp || 60000}}
+${o.srvApps || ''}
+  - id: brk
+    type: server
+    services: {mqtt_broker: {}}
+    interfaces: [{id: eth0, ip: 10.0.10.3/24}]
+  - id: sub
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.10.4/24}]
+    services:
+      applications:
+${o.sub || '        - {id: s, name: Sub, profile: mqtt_client, broker: brk, subscribe: ["plant/#", "plant/+/temp"]}'}
+links:
+  - {id: lm1, a: "s1:m1", b: "s2:m1", speed: 10M}
+  - {id: lm2, a: "s1:m2", b: "s2:m2"${o.m2 === null ? '' : ', speed: 1M'}}
+  - ${o.l1 || '{id: l1, a: "cli:eth0", b: "s1:h1", speed: 100M}'}
+  - {id: l2, a: "srv:eth0", b: "s2:h2", speed: 100M}
+  - {id: l3, a: "brk:eth0", b: "s1:h3", speed: 100M}
+  - {id: l4, a: "sub:eth0", b: "s2:h4", speed: 100M}
+networks:
+  - {id: v10, cidr: 10.0.10.0/24, vlan: 10}
+`;
+const dem = (m) => Object.fromEntries(CA.capacityDemands(m).map((d) => [d.id, d]));
+
+test('capacity: an MQTT publisher’s rate is one publication per topic per interval; a subscriber gets each matching publication once, however many of its filters match it; a zero payload is zero', () => {
+  const pub = '        - {id: pub, name: Pub, profile: mqtt_client, broker: brk, publish: [plant/a/temp, plant/b/temp, plant/c/level], interval: 1s, payload_size: 1000}';
+  const m = model(CAP({ apps: pub }));
+  const d = dem(m);
+  assert.equal(d['app:cli/pub>'].bps, 3 * 1000 * 8, 'three topics: three publications a second');
+  // "plant/#" and "plant/+/temp" both match plant/a/temp and plant/b/temp: still one copy each; plant/c/level by one filter
+  assert.equal(d['app:cli/pub>sub/s'].bps, 3 * 1000 * 8);
+  const only = model(CAP({ apps: pub, sub: '        - {id: s, name: Sub, profile: mqtt_client, broker: brk, subscribe: ["plant/+/temp", "plant/a/temp"]}' }));
+  assert.equal(dem(only)['app:cli/pub>sub/s'].bps, 2 * 1000 * 8, 'two topics match (one of them by both filters)');
+  const zero = model(CAP({ apps: pub.replace('payload_size: 1000', 'payload_size: 0') }));
+  assert.equal(dem(zero)['app:cli/pub>'], undefined, 'a zero payload is no load (not the 64-byte default)');
+  assert.equal(dem(zero)['app:cli/pub>sub/s'], undefined);
+});
+
+test('capacity: a small request with a large answer — the answer is the responder’s listener’s size, not a default; an unknown responder is said to be assumed', () => {
+  const m = model(CAP());
+  const d = dem(m);
+  assert.equal(d['app:cli/get>'].bps, 100 * 8);
+  assert.equal(d['app:cli/get<'].bps, 60000 * 8, 'srv/files answers 60000 bytes a second');
+  assert.equal(d['app:cli/get<'].note, undefined);
+  // a peer given as a device with a port: its one listener on that port
+  const byDev = model(CAP({ apps: '        - {id: get, name: Get, profile: tcp_client, peer: srv, port: 445, interval: 1s}' }));
+  assert.equal(dem(byDev)['app:cli/get<'].bps, 60000 * 8);
+  // an address: the responder is not known — the default, assumed and said
+  const amb = model(CAP({ apps: '        - {id: get, name: Get, profile: tcp_client, peer: 10.0.10.2, port: 445, interval: 1s}' }));
+  assert.equal(dem(amb)['app:cli/get<'].bps, 1460 * 8);
+  assert.match(dem(amb)['app:cli/get<'].note, /responder is not known: its answers are assumed 1460 bytes/);
+  assert.match(CA.capacityAnalysis(amb).demands.find((x) => x.demand.id === 'app:cli/get<').text, /\(assumed: /);
+  // two listeners of the device on the port: ambiguous
+  const two = model(CAP({ apps: '        - {id: get, name: Get, profile: tcp_client, peer: srv, port: 445, interval: 1s}', srvApps: '        - {id: alt, name: Alt, profile: tcp_server, port: 445, bind: eth0}' }).replace('{id: files, name: Files, profile: tcp_server, port: 445, response_size: 60000}', '{id: files, name: Files, profile: tcp_server, port: 445, response_size: 60000, bind: lo}').replace('interfaces: [{id: eth0, ip: 10.0.10.2/24}]', 'interfaces: [{id: eth0, ip: 10.0.10.2/24}, {id: lo, ip: 10.99.0.2/32}]'));
+  assert.match(dem(two)['app:cli/get<'].note || '', /2 applications of srv listen on tcp\/445: its responder is ambiguous/);
+});
+
+test('capacity: opposite directions of a full-duplex cable are separate budgets — 4.8 Mbit/s each way fits an 8 Mbit/s cable; a half-duplex cable is one medium', () => {
+  const apps = `        - {id: up, name: Up, profile: udp_sender, peer: srv/rx, interval: 100ms, request_size: 60000}
+        - {id: rx, name: Rx, profile: udp_receiver, port: 9000}`;
+  const srvApps = `        - {id: rx, name: Rx, profile: udp_receiver, port: 9000}
+        - {id: down, name: Down, profile: udp_sender, peer: cli/rx, interval: 100ms, request_size: 60000}`;
+  const full = model(CAP({ apps, srvApps, l1: '{id: l1, a: "cli:eth0", b: "s1:h1", speed: 8M}' }));
+  const r = CA.capacityAnalysis(full);
+  const l1 = r.loads.filter((x) => x.resource.id === 'link:l1');
+  assert.equal(l1.length, 2, 'one load each way');
+  for (const x of l1) assert.equal(x.verdict, 'fits', `${x.resource.direction}: ${x.worst}`);
+  assert.deepEqual(l1.map((x) => x.resource.direction).sort(), ['cli → s1', 's1 → cli']);
+  for (const id of ['app:cli/up', 'app:srv/down']) assert.notEqual(r.demands.find((x) => x.demand.id === id).verdict, 'exceeds');
+  // half duplex: both ways on one medium (9.6 Mbit/s on 8)
+  const half = model(CAP({ apps, srvApps, l1: '{id: l1, a: {device: cli, interface: eth0, duplex: half}, b: {device: s1, interface: h1, duplex: half}, speed: 8M}' }));
+  const h = CA.capacityAnalysis(half).loads.filter((x) => x.resource.id === 'link:l1');
+  assert.equal(h.length, 1);
+  assert.equal(h[0].verdict, 'exceeds');
+});
+
+test('capacity: a single flow is limited by the members that are up — the fastest member failed lowers it; an up member without a speed leaves it unknown', () => {
+  // 4.8 Mbit/s answers: over the 1 Mbit/s member, under the 10 Mbit/s one
+  const apps = '        - {id: get, name: Get, profile: tcp_client, peer: srv/files, interval: 100ms, request_size: 100}';
+  const m = model(CAP({ apps }));
+  const r = CA.capacityAnalysis(m);
+  assert.equal(r.demands.find((x) => x.demand.id === 'app:cli/get<').perFlow, undefined, 'fits one 10 Mbit/s member');
+  const w = W.whatIf(m, ['lm1']);
+  const after = w.capacity.changes.find((x) => x.demand.id === 'app:cli/get<').after;
+  assert.match(after.perFlow || '', /more than one member of s\d:ae0 .* carries \(1 Mbit\/s\)/, 'the 10 Mbit/s member failed: one flow is at most 1 Mbit/s');
+  const unk = model(CAP({ apps, m2: null }));
+  const ans = CA.capacityAnalysis(unk).demands.find((x) => x.demand.id === 'app:cli/get<');
+  assert.equal(ans.verdict, 'unknown');
+  assert.match(ans.perFlow || '', /the most one flow can use on s\d:ae0 .* is not known/);
+});
