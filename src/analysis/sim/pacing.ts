@@ -58,9 +58,10 @@
  * startup is shown one of each kind, step by step; then the simulation
  * runs at its rate with the cables lit.
  *
- * A frame does at most JUMP_BUDGET ms of simulation work; what it can't do
- * in time is left behind (said: `behind`, never caught up in a burst), so
- * heavy traffic never freezes the page. With nothing on screen (no dot on
+ * A frame does at most JUMP_BUDGET ms of simulation work — a moment of very
+ * many events too: it may end partway, the rest in its order next frame —;
+ * what it can't do in time is left behind (said: `behind`, never caught up
+ * in a burst), so heavy traffic never freezes the page. With nothing on screen (no dot on
  * its way, no cable lit) and skipping idle time on, the default, it jumps
  * to the next message that will be shown; the jump is reported.
  *
@@ -328,8 +329,8 @@ export interface PacerHost {
   engine: {
     now: number;
     nextTime(): number | null;
-    /** true when it stopped before a delivery the presentation holds */
-    runUntil(t: number, stop: () => boolean): boolean;
+    /** true when it stopped before a delivery the presentation holds; `yieldNow`: the frame budget, asked within a moment too */
+    runUntil(t: number, stop: () => boolean, yieldNow?: () => boolean): boolean;
     run(t: number): void;
     readonly flightSerial: number;
     flightsSince(serial: number): Flight[];
@@ -777,10 +778,15 @@ export class Pacer {
     const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
     if (target > e.now + EPS) {
       const until = Date.now() + JUMP_BUDGET;
-      const held = e.runUntil(target, () => {
-        this.register();
-        return Date.now() > until;
-      });
+      const over = (): boolean => Date.now() > until;
+      const held = e.runUntil(
+        target,
+        () => {
+          this.register();
+          return over();
+        },
+        over,
+      );
       this.register();
       // waiting for a dot to arrive (a presentation hold, not a lag): the clock counts on from here once it is there,
       // so the simulated time it waited is not made up in a burst afterwards
@@ -851,11 +857,15 @@ export class Pacer {
     let found = false;
     // a jump is work: at most JUMP_BUDGET ms of it per frame (a model whose messages are mostly hidden has many events between two shown ones); the next frame goes on
     const until = Date.now() + JUMP_BUDGET;
-    e.runUntil(t, () => {
-      // (a dot, or traffic shown as cable activity: something to see either way)
-      for (const it of this.register()) if (it.drawn ? this.drawnShown(it) && this.onItsWay(it) : this.host.shown(it.f) && !it.f.hidden) found = true;
-      return found || Date.now() > until;
-    });
+    e.runUntil(
+      t,
+      () => {
+        // (a dot, or traffic shown as cable activity: something to see either way)
+        for (const it of this.register()) if (it.drawn ? this.drawnShown(it) && this.onItsWay(it) : this.host.shown(it.f) && !it.f.hidden) found = true;
+        return found || Date.now() > until;
+      },
+      () => Date.now() > until,
+    );
     this.register();
   }
 

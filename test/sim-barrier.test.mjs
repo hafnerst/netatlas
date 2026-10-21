@@ -813,3 +813,63 @@ test('logical view: network lines and relation lanes hold their deliveries — t
   assert.deepEqual(simulated(m2.sim, m2.sim.now).tests, simulated(ref, m2.sim.now).tests, 'the same outcome as headless');
 });
 
+// ------------------------------------------------------------------ a moment of very many events
+
+test('a large same-time batch: a frame stays within its budget (it yields within the moment), the events keep their order, a held delivery in the middle still holds everything after it', () => {
+  // the intended budget (JUMP_BUDGET of simulation work per frame), the work measured (CPU per frame), and a tolerance for the
+  // environment (a loaded runner, the garbage collector) stated apart
+  const BUDGET = P.JUMP_BUDGET;
+  const TOLERANCE = 60;
+  const N = 30000;
+  const sim = withClock(new S.Simulation(model(LAN())));
+  sim.runTo(3000);
+  const e = sim.engine;
+  const p = new P.Pacer({ engine: e, shown: (f) => f.view === 'physical', typical: () => e.hopTime(), headers: (f) => f.hdr }, 48);
+  const T = e.now + 5;
+  const order = [];
+  const busy = () => {
+    const t0 = process.hrtime.bigint();
+    while (Number(process.hrtime.bigint() - t0) < 20000);
+  };
+  // a delivery in the middle of the moment whose dot is drawn: everything after it waits for that dot
+  const msg = { protocol: 'icmp', type: 'probe', label: 'probe', detail: '', data: {} };
+  const held = e.flight(e.now, T, msg, 'physical', { ref: 'link:a', from: 'a', to: 'b' });
+  for (let i = 0; i < N; i++) {
+    if (i === N / 2) e.at(T, () => order.push('held'), [held.id]);
+    e.at(T, () => {
+      busy();
+      order.push(i);
+    });
+  }
+  let worst = 0;
+  let frames = 0;
+  for (; frames < 4000 && order.length < N + 1; frames++) {
+    const c = process.cpuUsage();
+    p.frame(50);
+    const d = process.cpuUsage(c);
+    worst = Math.max(worst, (d.user + d.system) / 1000);
+    // the barrier: before the held dot arrived on screen, nothing after it ran
+    if (p.clock < p.arrival(p.find(held.id)) - 1e-6) assert.ok(order.indexOf('held') < 0 && order.length <= N / 2, `ran past the held delivery at ${order.length}`);
+  }
+  assert.equal(order.length, N + 1, 'all done');
+  assert.ok(frames > 4, `the batch took ${frames} frames (it yielded)`);
+  assert.ok(worst < BUDGET + TOLERANCE, `worst frame ${worst.toFixed(0)} ms of CPU (budget ${BUDGET} ms + tolerance ${TOLERANCE} ms)`);
+  // in order: the first half, the held delivery, the second half
+  const want = [];
+  for (let i = 0; i < N; i++) {
+    if (i === N / 2) want.push('held');
+    want.push(i);
+  }
+  assert.deepEqual(order, want);
+  // and headless the same order (Engine.run never yields nor holds)
+  const ref = new S.Simulation(model(LAN()));
+  ref.runTo(3000);
+  const o2 = [];
+  const h2 = ref.engine.flight(ref.engine.now, ref.engine.now + 5, msg, 'physical', { ref: 'link:a', from: 'a', to: 'b' });
+  for (let i = 0; i < N; i++) {
+    if (i === N / 2) ref.engine.at(ref.engine.now + 5, () => o2.push('held'), [h2.id]);
+    ref.engine.at(ref.engine.now + 5, () => o2.push(i));
+  }
+  ref.runTo(ref.now + 10);
+  assert.deepEqual(o2, want);
+});

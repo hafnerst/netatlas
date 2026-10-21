@@ -103,6 +103,8 @@ export const REASSEMBLY_MS = 30000;
 export const STORM_ROUNDS = 6;
 /** Flights are kept this long after they end (for the animation and the export). */
 const FLIGHT_KEEP = 4000;
+/** Within one moment, the presentation's frame budget is asked every this many events (runUntil's yieldNow). */
+const YIELD_EVERY = 64;
 /** The jitter of starts and timers: up to this share of a typical hop's time. */
 export const JITTER_SHARE = 0.6;
 /** A message's payload in bytes when its protocol says nothing (for the serialization time). */
@@ -567,13 +569,18 @@ export class Engine {
    * (`hold`) stops it before that delivery, event by event — even within a
    * moment, so what comes before it at the same time (by its sequence) is
    * done and what comes after it is not: `held` names the flight, the
-   * clock stays at the last event done, and true is returned.
+   * clock stays at the last event done, and true is returned. `yieldNow`
+   * (the presentation's frame budget) is asked every YIELD_EVERY events
+   * within a moment too: a moment of very many events may end partway
+   * (false is returned, the clock at that moment); the rest stays queued in
+   * its order and the next call goes on with it.
    */
-  runUntil(t: number, stop: () => boolean): boolean {
+  runUntil(t: number, stop: () => boolean, yieldNow?: () => boolean): boolean {
     this.held = null;
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
+      let k = 0;
       while (this.nextTime() === n) {
         const g = this.q[0].gates;
         if (g && this.hold) {
@@ -585,6 +592,10 @@ export class Engine {
           }
         }
         this.exec(this.pop() as QItem);
+        if (yieldNow && ++k % YIELD_EVERY === 0 && this.nextTime() === n && yieldNow()) {
+          this.prune();
+          return false;
+        }
       }
       if (stop()) {
         this.prune();
