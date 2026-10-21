@@ -818,9 +818,14 @@ test('logical view: network lines and relation lanes hold their deliveries — t
 test('a large same-time batch: a frame stays within its budget (it yields within the moment), the events keep their order, a held delivery in the middle still holds everything after it', () => {
   // the intended budget (JUMP_BUDGET of simulation work per frame), the work measured (CPU per frame), and a tolerance for the
   // environment (a loaded runner, the garbage collector) stated apart
-  const BUDGET = P.JUMP_BUDGET;
-  const TOLERANCE = 60;
+  // the intended budget: the frame stops at its first look at the clock past JUMP_BUDGET, and looks every 64 events within a
+  // moment — with a clock that is always past it, a frame does at most 64 of these events (deterministic, any machine); the
+  // CPU measured per frame is checked against the environment's tolerance the other frame tests use
+  const PER_LOOK = 64;
+  const TOLERANCE = 250;
   const N = 30000;
+  // (the delivery held early in the moment: 64 events a frame reach it while its dot is still on its way)
+  const H = 1280;
   const sim = withClock(new S.Simulation(model(LAN())));
   sim.runTo(3000);
   const e = sim.engine;
@@ -835,29 +840,41 @@ test('a large same-time batch: a frame stays within its budget (it yields within
   const msg = { protocol: 'icmp', type: 'probe', label: 'probe', detail: '', data: {} };
   const held = e.flight(e.now, T, msg, 'physical', { ref: 'link:a', from: 'a', to: 'b' });
   for (let i = 0; i < N; i++) {
-    if (i === N / 2) e.at(T, () => order.push('held'), [held.id]);
+    if (i === H) e.at(T, () => order.push('held'), [held.id]);
     e.at(T, () => {
       busy();
       order.push(i);
     });
   }
   let worst = 0;
+  let most = 0;
+  let heldOnce = false;
   let frames = 0;
+  const realNow = Date.now;
+  let fake = 0;
+  Date.now = () => (fake += 1000);
   for (; frames < 4000 && order.length < N + 1; frames++) {
+    const before = order.length;
     const c = process.cpuUsage();
     p.frame(50);
     const d = process.cpuUsage(c);
     worst = Math.max(worst, (d.user + d.system) / 1000);
+    most = Math.max(most, order.length - before);
+    if (p.holding() && p.holding().f.id === held.id) heldOnce = true;
     // the barrier: before the held dot arrived on screen, nothing after it ran
-    if (p.clock < p.arrival(p.find(held.id)) - 1e-6) assert.ok(order.indexOf('held') < 0 && order.length <= N / 2, `ran past the held delivery at ${order.length}`);
+    const hi = p.find(held.id);
+    if (hi && p.clock < p.arrival(hi) - 1e-6) assert.ok(order.indexOf('held') < 0 && order.length <= H, `ran past the held delivery at ${order.length}`);
   }
+  Date.now = realNow;
   assert.equal(order.length, N + 1, 'all done');
+  assert.ok(heldOnce, 'the delivery in the middle was held for its dot');
   assert.ok(frames > 4, `the batch took ${frames} frames (it yielded)`);
-  assert.ok(worst < BUDGET + TOLERANCE, `worst frame ${worst.toFixed(0)} ms of CPU (budget ${BUDGET} ms + tolerance ${TOLERANCE} ms)`);
+  assert.ok(most <= PER_LOOK + 1, `at most ${PER_LOOK} events of the moment per frame once the budget is spent: ${most}`);
+  assert.ok(worst < P.JUMP_BUDGET + TOLERANCE, `worst frame ${worst.toFixed(0)} ms of CPU (budget ${P.JUMP_BUDGET} ms + environment tolerance ${TOLERANCE} ms)`);
   // in order: the first half, the held delivery, the second half
   const want = [];
   for (let i = 0; i < N; i++) {
-    if (i === N / 2) want.push('held');
+    if (i === H) want.push('held');
     want.push(i);
   }
   assert.deepEqual(order, want);
@@ -867,7 +884,7 @@ test('a large same-time batch: a frame stays within its budget (it yields within
   const o2 = [];
   const h2 = ref.engine.flight(ref.engine.now, ref.engine.now + 5, msg, 'physical', { ref: 'link:a', from: 'a', to: 'b' });
   for (let i = 0; i < N; i++) {
-    if (i === N / 2) ref.engine.at(ref.engine.now + 5, () => o2.push('held'), [h2.id]);
+    if (i === H) ref.engine.at(ref.engine.now + 5, () => o2.push('held'), [h2.id]);
     ref.engine.at(ref.engine.now + 5, () => o2.push(i));
   }
   ref.runTo(ref.now + 10);
