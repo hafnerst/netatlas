@@ -25,6 +25,7 @@ import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine'
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus, SnoopResult } from './types';
+import { tunnelOuter } from '../trace';
 import { serviceRelations, upstreamOf } from './service-relations';
 import type { Transport } from './transport';
 
@@ -742,6 +743,9 @@ export class ProtocolSim implements Protocols {
     s.up = up;
     s.since = this.e.now;
     this.e.note('state', s.protocol, s.dev, s.peer, state, state, `${s.profile.label} ${s.rel.id}: ${s.dev} → ${s.peer} ${state}${why ? ' (' + why + ')' : ''}`);
+    // (a tunnel interface whose tunnel's own session says whether it is up — GRE with keepalives, WireGuard, OpenVPN …:
+    // its state follows, tunnelUp)
+    if (s.local.l3.kind === 'tunnel' && s.profile.behaviour === 'session' && s.profile.keepalive) this.e.syncInterfaces();
     if (was !== this.adjUpOf(s)) this.e.routingChanged();
     // a session up: what waited for it (BFD for its client, traffic over a tunnel) goes
     if (up) {
@@ -1081,6 +1085,15 @@ export class ProtocolSim implements Protocols {
     // drops what the other still sends until that one's dead peer detection finds out)
     if (p.behaviour === 'ike') return list.some((s) => s.up && list.some((o) => o.dev === s.peer && o.peer === s.dev && o.up));
     return true;
+  }
+
+  outerL4(relation: string, dev: string): L4 | undefined {
+    const list = this.byRel.get(relation) || [];
+    const s = list.find((x) => x.dev === dev) || list[0];
+    const o = s ? tunnelOuter(this.m, s.rel.protocol) : null;
+    if (!s || !o) return undefined;
+    // (UDP: from and to the ports its own packets use — WireGuard 51820 both ways, VXLAN from an ephemeral port …)
+    return o.proto === 'other' ? { proto: 'other', num: o.num } : this.l4Of(s);
   }
 
   // ------------------------------------------------------------ learned routing state

@@ -173,6 +173,8 @@ export interface Protocols {
   tunnelUp(dev: string, iface: string): boolean;
   /** is a relation's own state up (a session over it) */
   sessionUp?(relation: string): boolean;
+  /** the outer header of what a tunnel relation carries from a device: its data's transport (ESP; IP 4, 47; UDP 51820, 4789 …) */
+  outerL4?(relation: string, dev: string): L4 | undefined;
   /** a device was powered off: its sessions, groups and timers stop */
   deviceDown?(dev: string): void;
   /** a device finished booting: its sessions start afresh */
@@ -3225,7 +3227,10 @@ export class Engine {
       const proto = layer.relation ? this.relProtocol(layer.relation) : 'gre';
       const msg: Msg = { ...pkt.msg, label: pkt.msg.label, detail: `${pkt.msg.detail} — in ${layers.map((l) => l.label).slice(0, layers.indexOf(layer) + 1).join(' in ')} (${formatAddr(e.src)} → ${formatAddr(e.dst)})`, data: { ...(pkt.msg.data || {}), encap: (((pkt.msg.data || {}) as { encap?: string[] }).encap || []).concat([layer.label]), outer: proto } };
       cur = { ...this.newPacket(e.src, e.dst, '', msg, rides.slice()), inner: cur, encap: layer.label, df: cur.df };
-      cur.l4 = /ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 };
+      // (the outer header the relation's own data has — IP-in-IP 4, WireGuard and VXLAN UDP to their port, IPsec ESP; a tunnel
+      // without a relation: GRE)
+      const o = layer.relation && this.protocols && this.protocols.outerL4 ? this.protocols.outerL4(layer.relation, dev) : undefined;
+      cur.l4 = o || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
     }
     this.forward(dev, cur, null);
   }
@@ -3276,7 +3281,7 @@ export class Engine {
     if (!src) return;
     this.icmpLast.set(dev, this.now);
     const t = icmpType(kind, v);
-    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, echoId: pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.echoId : undefined, pkt: pkt.id, flow: pkt.flow };
+    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, echoId: pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.echoId : undefined, num: pkt.l4 ? pkt.l4.num : undefined, pkt: pkt.id, flow: pkt.flow };
     const name = v === 4 ? 'ICMP' : 'ICMPv6';
     const label = `${name} ${t.short}${kind === 'frag' ? ` (MTU ${o.mtu})` : ''} from ${formatAddr(src)}`;
     const detail = `${dev} (${formatAddr(src)}) → ${formatAddr(pkt.src)}: ${name} ${t.name} (type ${t.type}, code ${t.code}${kind === 'frag' ? ', MTU ' + o.mtu : ''}) about ${quoteText(quote)}: ${pkt.msg.label}`;
@@ -4683,8 +4688,9 @@ export function isLimitedBroadcast(a: IpAddr): boolean {
 
 /** The IP protocol of a packet as the inspector names it ("TCP (6)", "GRE (47)"). */
 function protoText(p: Pkt): string {
-  if (p.inner) return /ESP/i.test(p.encap || '') ? 'ESP (50)' : 'GRE (47)';
   const l = p.l4;
+  // (an encapsulation: its outer header's protocol — ESP, GRE, IP-in-IP, or UDP for WireGuard, VXLAN …)
+  if (p.inner && (!l || l.proto === 'other')) return l && l.num === 4 ? 'IP-in-IP (4)' : l && l.num === 50 ? 'ESP (50)' : !l && /ESP/i.test(p.encap || '') ? 'ESP (50)' : l && l.num !== 47 ? `${l.num}` : 'GRE (47)';
   if (!l) return '—';
   if (l.proto === 'icmp') return p.dst.version === 4 ? 'ICMP (1)' : 'ICMPv6 (58)';
   if (l.proto === 'tcp') return 'TCP (6)';

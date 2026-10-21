@@ -857,29 +857,36 @@ function ikeUp(P: ProtocolSim, s: Sess): void {
 
 // ------------------------------------------------------------------ generic sessions (GRE, WireGuard, OpenVPN, L2TP, MLAG …)
 
-/** GRE's keepalives are outer packets between the tunnel's source and destination (inside ESP when the tunnel is carried over IPsec). */
-function greSend(P: ProtocolSim, s: Sess, type: string, detail: string): void {
+/**
+ * A tunnel's own packets — GRE's keepalives, WireGuard's handshakes and keepalives, OpenVPN's, L2TP's … — are outer packets
+ * between the tunnel's source and destination with its data's header (inside ESP when the tunnel is carried over IPsec),
+ * never sent to the tunnel's inner addresses, which the tunnel carries only once they made it up. False: not a tunnel
+ * interface, or no outer header the model knows (sent as the protocol's own unicast).
+ */
+function tunnelSend(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}): boolean {
   const ends = P.e.tunnelEnds(s.dev, s.local.l3.id);
-  if (s.local.l3.kind !== 'tunnel' || !ends.length) {
-    P.unicast(s, type, detail);
-    return;
-  }
+  const hdr = s.local.l3.kind === 'tunnel' && ends.length ? P.outerL4(s.rel.id, s.dev) : undefined;
+  if (!hdr) return false;
   const e = ends[0];
-  const m = P.msg(s, type, `${s.dev} (${formatAddr(e.src)}) → ${s.peer} (${formatAddr(e.dst)}), IP 47; ${detail}`);
+  const m = P.msg(s, type, `${s.dev} (${formatAddr(e.src)}) → ${s.peer} (${formatAddr(e.dst)}), ${hdr.proto === 'udp' ? 'UDP ' + hdr.dport : 'IP ' + hdr.num}; ${detail}`, data);
   P.e.note('message', s.protocol, s.dev, s.peer, type, '', m.detail);
   P.lane(s.rel, s.dev, s.peer, m, P.e.estimate(s.dev, e.dst));
   let pkt: Pkt = P.e.newPacket(e.src, e.dst, '', m, [s.rel.id]);
+  // (its header — and each layer carrying it its own: ESP 50 …; a policy keeps them apart from another protocol's)
+  pkt.l4 = hdr;
   for (const layer of encapStack(P.m, s.rel).slice(1)) {
     if (layer.relation && !P.sessionUp(layer.relation)) {
       // the tunnel's keepalives wait for what carries it (the newest only: they are periodic)
       const rid = layer.relation;
       P.e.waitFor('rel:' + rid, `${layer.label} ${rid}`, s.dev, m, () => P.e.send(s.dev, pkt), `${s.dev}|${s.protocol}|${type}`);
-      return;
+      return true;
     }
     const outer: Msg = { ...m, data: { ...(m.data || {}), outer: layer.relation ? P.e.relProtocol(layer.relation) : '' } };
     pkt = { ...P.e.newPacket(e.src, e.dst, '', outer, pkt.rides.concat(layer.relation ? [layer.relation] : [])), inner: pkt, encap: layer.label };
+    pkt.l4 = (layer.relation && P.outerL4(layer.relation, s.dev)) || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
   }
   P.e.send(s.dev, pkt);
+  return true;
 }
 
 /** Does a session's profile run over TCP (SSL VPN): its handshake starts with the connection of the common transport. */
@@ -896,8 +903,8 @@ function afterTcp(s: Sess): number {
 }
 
 function sessionSend(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}): void {
-  if (s.protocol === 'gre') greSend(P, s, type, detail);
-  else if (overTcp(s)) tcpSend(P, s, type, detail, 64, data);
+  if (overTcp(s)) tcpSend(P, s, type, detail, 64, data);
+  else if (tunnelSend(P, s, type, detail, data)) return;
   else P.unicast(s, type, detail, data);
 }
 
@@ -1020,7 +1027,6 @@ const session: TcpBehaviour = {
       const dead = P.timer(s, p, 'dead');
       deadCheck(P, s, dead.ms, () => {
         if (s.up) P.setState(s, p.states[0], false, `nothing heard for ${dead.text}`);
-        if (s.protocol === 'gre') P.e.syncInterfaces();
       });
     };
     s.x.check = check;
@@ -1053,7 +1059,6 @@ const session: TcpBehaviour = {
     const up = (): void => {
       if (!s.up) {
         P.setState(s, p.states[p.states.length - 1], true, 'answered');
-        if (s.protocol === 'gre') P.e.syncInterfaces();
       }
       if (typeof s.x.check === "function") (s.x.check as () => void)();
     };

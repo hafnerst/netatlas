@@ -304,7 +304,7 @@ export class AppSocket {
 
 interface FwSession {
   key: string;
-  /** 'other': an IP protocol without ports (GRE, ESP …), tracked by its address pair */
+  /** 'other': an IP protocol without ports (GRE, ESP …), tracked by its address pair and its protocol number */
   proto: 'tcp' | 'udp' | 'icmp' | 'other';
   flow: string;
   state: string;
@@ -337,6 +337,11 @@ export function profileTransport(proto: string): { proto: 'tcp' | 'udp' | 'other
   }
   const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(proto);
   return { proto: 'other', ports: [], num: ip ? Number(ip[1]) : 0 };
+}
+
+/** A firewall session's protocol in its key: TCP, UDP, ICMP; an IP protocol without ports by its number ('other/47'; none known: 'other/ip'). */
+function fwProtoKey(proto: 'tcp' | 'udp' | 'icmp' | 'other', num: number | undefined): string {
+  return proto === 'other' ? `other/${num !== undefined ? num : 'ip'}` : proto;
 }
 
 /** Is a destination scoped to the link (IPv4 224.0.0.0/24, IPv6 ff02::/16 and fe80::/10)? Routers never forward it. */
@@ -2332,16 +2337,23 @@ export class Transport {
     const dp = !l4 || proto === 'other' ? 0 : proto === 'icmp' ? l4.echoId || 0 : l4.dport || 0;
     // (what the log calls a packet without ports: its IP protocol)
     const ipName = !l4 ? 'IP' : l4.proto === 'igmp' ? 'IGMP' : `IP protocol ${l4.num}`;
-    // (a session is its opening packet's ingress VRF's: overlapping addresses in two VRFs are two sessions; a reply leaves by that VRF)
-    const fwd = `${from.vrf}|${proto}|${formatAddr(pkt.src)}:${sp}>${formatAddr(pkt.dst)}:${dp}`;
-    const rev = `${to.vrf}|${proto}|${formatAddr(pkt.dst)}:${dp}>${formatAddr(pkt.src)}:${sp}`;
+    // (a session is its opening packet's ingress VRF's: overlapping addresses in two VRFs are two sessions; a reply leaves by that
+    // VRF. One without ports is its IP protocol's — GRE 47, ESP 50, IP-in-IP 4 … — never another protocol's between the same pair)
+    const pk = fwProtoKey(proto, l4 ? l4.num : undefined);
+    const fwd = `${from.vrf}|${pk}|${formatAddr(pkt.src)}:${sp}>${formatAddr(pkt.dst)}:${dp}`;
+    const rev = `${to.vrf}|${pk}|${formatAddr(pkt.dst)}:${dp}>${formatAddr(pkt.src)}:${sp}`;
     const flags = (l4 && l4.flags) || [];
     if (stateful) {
-      // an ICMP error about a session's packet belongs to it
+      // an ICMP error about a session's packet belongs to it (RELATED): the quoted header keyed as the session is — an echo by
+      // its identifier, a protocol without ports by its number (RFC 1191 / 8201: Fragmentation Needed and Packet Too Big get through)
       if (proto === 'icmp' && l4 && l4.quote) {
         const q = l4.quote;
-        const qk = `${to.vrf}|${q.proto}|${q.src}:${q.sport || 0}>${q.dst}:${q.dport || 0}`;
-        const qr = `${from.vrf}|${q.proto}|${q.dst}:${q.dport || 0}>${q.src}:${q.sport || 0}`;
+        const qp = q.proto === 'tcp' || q.proto === 'udp' || q.proto === 'icmp' ? q.proto : 'other';
+        const qs = qp === 'other' ? 0 : qp === 'icmp' ? q.echoId || 0 : q.sport || 0;
+        const qd = qp === 'other' ? 0 : qp === 'icmp' ? q.echoId || 0 : q.dport || 0;
+        const qpk = fwProtoKey(qp, q.num);
+        const qk = `${to.vrf}|${qpk}|${q.src}:${qs}>${q.dst}:${qd}`;
+        const qr = `${from.vrf}|${qpk}|${q.dst}:${qd}>${q.src}:${qs}`;
         if (tab.has(qk) || tab.has(qr)) return true;
       }
       const s = tab.get(fwd) || tab.get(rev);
