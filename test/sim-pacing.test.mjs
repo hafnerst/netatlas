@@ -165,10 +165,16 @@ test('every hop travels its whole way for its paced time, in its causal order (a
   // the simulation waited for the dots (each delivery after its dot arrived: play checks it every frame): 30 s of display are far less than
   // 30 s of simulated time while the network starts (its first messages at about 2 s), yet it moved on
   assert.ok(sim.now > 2000 && sim.now < 30000, String(sim.now));
-  // and Real time waits for none: 12 s of display, 12 s of simulated time
+  // and Real time waits for none: 12 s of display, 12 s of simulated time (less only what a slow machine could not do within a
+  // frame's work budget: left behind, said, never a hold)
   const rt = paced(PS, 'physical', { mode: 'realtime' });
-  play(rt.sim, rt.p, 12000, 16, false);
-  assert.ok(rt.sim.now >= 12000 - 50, String(rt.sim.now));
+  let lag = 0;
+  for (let t = 0; t < 12000; t += 16) {
+    rt.p.frame(16);
+    assert.equal(rt.sim.engine.held, null, 'Real time holds no delivery');
+    lag += rt.p.behind;
+  }
+  assert.ok(rt.sim.now + lag >= 12000 - 50, `${rt.sim.now} + ${lag} behind`);
 });
 
 test('the dots are not serialized: independent exchanges are in flight together; an IGMP query and the routers’ Hellos keep their own simulated times', () => {

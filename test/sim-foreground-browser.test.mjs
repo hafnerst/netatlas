@@ -44,8 +44,13 @@ for (const theme of ['light', 'dark']) {
       // a stream from pc1: in front; the scenario behind as cable activity
       await page.eval(`netatlas.simController().startStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500), true`);
       const s0 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);
+      // (its first datagram is due now, after the deliveries the scenario's dots on screen bring: it starts once they have arrived, up to a hop's time)
       await wait(3000);
       u = await ui();
+      for (let i = 0; i < 20 && !(u.fgDots > 0); i++) {
+        await wait(500);
+        u = await ui();
+      }
       assert.match(u.pace, /^Readable · 3 s per hop · 1× · your events in front( · waiting for packet arrival( \(.+\))?)?$/);
       assert.ok(u.fgDots > 0, 'the stream’s dots');
       // a datagram every simulated second (the first at once), whatever the pacing
