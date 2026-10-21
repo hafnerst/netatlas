@@ -418,6 +418,7 @@ export class Engine {
     if (a) l3.ll = a;
     else delete l3.ll;
     this.stateVersion++;
+    if (a) this.recheckWaits();
   }
 
   /** Duplicate address detection: a Neighbor Solicitation from :: for a tentative address, to its solicited-node group (RFC 4862 §5.4.2). */
@@ -782,6 +783,13 @@ export class Engine {
       // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen); IPv4 traffic's
       const [dev, iface] = cond.slice(6).split(':');
       return iface !== undefined ? this.addressReady(dev, iface) : !this.waitsForLease(dev);
+    }
+    if (cond.indexOf('ll:') === 0) {
+      // "ll:<device>|<interface>": the interface's link-local address valid (duplicate address detection passed)
+      const [dev, iface] = cond.slice(3).split('|');
+      const sd = this.net.devices.get(dev);
+      const l3 = sd ? sd.l3.get(iface) : undefined;
+      return !!(l3 && l3.ll);
     }
     if (cond.indexOf('route:') === 0) {
       const [dev, vrf, a] = cond.slice(6).split('|');

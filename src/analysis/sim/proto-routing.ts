@@ -13,7 +13,7 @@ import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
 import { fmtSec, hashIndex } from './engine';
 import { durationText } from './params';
-import { ADV_RXMT, Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
+import { ADV_RXMT, Behaviour, ipOf, ProtocolSim, protoOf, Sess } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 import { RipEntry } from './rip';
 
@@ -875,8 +875,20 @@ function ripRequest(P: ProtocolSim, s: Sess): void {
   // (an interface still down sends nothing: it asks when it comes up)
   if (P.shared.has(key) || !P.e.isL3Up(s.dev, s.local.l3.id)) return;
   P.shared.set(key, true);
-  const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
-  P.multicast(s, group, 'Request', 'asks for the whole table');
+  const v6 = ipOf(s.local).version === 6;
+  const group = addr(v6 ? (s.profile.group6 as string) : (s.profile.group4 as string));
+  if (!v6) {
+    P.multicast(s, group, 'Request', 'asks for the whole table');
+    return;
+  }
+  // RIPng speaks from the interface's link-local address (RFC 2080 §2.5.2: the source its neighbours take): its Request
+  // waits until that address is valid — not from an address still tentative (RFC 4862 §5.4)
+  const ask = (): void => {
+    if (P.shared.get(key) !== true || !P.e.isL3Up(s.dev, s.local.l3.id) || !P.e.deviceOn(s.dev) || !s.local.l3.ll) return;
+    P.multicast(s, group, 'Request', 'asks for the whole table', {}, '', { src: s.local.l3.ll.addr });
+  };
+  if (s.local.l3.ll) ask();
+  else P.e.waitFor(`ll:${s.dev}|${s.local.l3.id}`, `the link-local address of ${s.dev}:${s.local.l3.id} (RIPng sends from it)`, s.dev, P.msg(s, 'Request', 'asks for the whole table'), ask, key);
 }
 
 const rip: Behaviour = {
@@ -897,14 +909,40 @@ const rip: Behaviour = {
       upd(),
     );
   },
-  rx(P, s, msg) {
+  rx(P, s, msg, pkt) {
     const R = P.ripSim();
+    const v6 = ipOf(s.local).version === 6;
     if (msg.type === 'Request') {
       const list = R.entries(s);
-      P.unicast(s, 'Response', `answer to the request: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`, { rip: list });
+      const text = `answer to the request: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`;
+      // RIPng: to the requester's address (and port, RFC 2080 §2.1), from the link-local address — the requester takes it as
+      // a Response like any (§2.4.2); RIPv2 to the peer
+      if (v6 && pkt) {
+        const to = pkt.src;
+        const answer = (): void => {
+          const ll = s.local.l3.ll;
+          if (!ll || !P.e.isL3Up(s.dev, s.local.l3.id) || !P.e.deviceOn(s.dev)) return;
+          const now = R.entries(s);
+          P.unicast(s, 'Response', `answer to the request: ${now.length ? now.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`, { rip: now }, '', { src: ll.addr, to });
+        };
+        // (its own link-local address not valid yet: the answer goes once it is)
+        if (s.local.l3.ll) answer();
+        else P.e.waitFor(`ll:${s.dev}|${s.local.l3.id}`, `the link-local address of ${s.dev}:${s.local.l3.id} (RIPng answers from it)`, s.dev, P.msg(s, 'Response', `answer to ${s.peer}'s Request`), answer, `rip-ans|${s.key}`);
+      } else P.unicast(s, 'Response', text, { rip: list });
       return;
     }
     if (msg.type !== 'Response') return;
+    // what a Response must be to be taken (RFC 2453 §3.9.2, RFC 2080 §2.4.2): from the RIP port; RIPng's from a
+    // link-local address, and one to the group (periodic, triggered) with a hop count of 255 — it is from a neighbour
+    if (pkt) {
+      const port = Number((/UDP\s+([0-9]+)/.exec(protoOf(s)) || [])[1]);
+      const ll6 = pkt.src.version === 6 && pkt.src.bytes[0] === 0xfe && (pkt.src.bytes[1] & 0xc0) === 0x80;
+      const bad = pkt.l4 && pkt.l4.sport !== port ? `not from the RIP port ${port} (from ${pkt.l4.sport})` : v6 && !ll6 ? `its source ${formatAddr(pkt.src)} is not link-local` : v6 && pkt.dst.bytes[0] === 0xff && pkt.ttl !== 255 ? `hop count ${pkt.ttl}, not 255` : '';
+      if (bad) {
+        P.e.note('drop', 'rip', s.dev, s.peer, 'Response', s.state, `${s.dev} ignores ${s.peer}'s ${msg.label}: ${bad}`);
+        return;
+      }
+    }
     const timeout = P.timer(s, s.profile, 'dead');
     deadCheck(P, s, timeout.ms, () => {
       P.restart(s);

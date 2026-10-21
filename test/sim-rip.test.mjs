@@ -220,3 +220,84 @@ test('RIP: a router asks for its neighbours’ tables when it comes up — at it
   assert.equal(again.length, 1);
   assert.match(again[0].detail, /on g1/);
 });
+
+// ------------------------------------------------------------------ RIPng: its own port, link-local sources, hop count 255
+
+/** The chain over IPv6 only: lan1 — r1 — r2 — r3 — lan3, RIPng on both links. */
+const CHAIN6 = `netatlas: 1
+title: ripng
+devices:
+  - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8:1::10/64"}], routes: [{prefix: "::/0", via: "2001:db8:1::1"}]}
+  - {id: r1, type: router, interfaces: [{id: lan, ip: "2001:db8:1::1/64"}, {id: g1, ip: "2001:db8:12::1/64"}], protocols: {rip: {}}}
+  - {id: r2, type: router, interfaces: [{id: g0, ip: "2001:db8:12::2/64"}, {id: g1, ip: "2001:db8:23::1/64"}], protocols: {rip: {}}}
+  - {id: r3, type: router, interfaces: [{id: g0, ip: "2001:db8:23::2/64"}, {id: lan, ip: "2001:db8:3::1/64"}], protocols: {rip: {}}}
+  - {id: h3, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8:3::10/64"}], routes: [{prefix: "::/0", via: "2001:db8:3::1"}]}
+links:
+  - {id: a, a: "h1:eth0", b: "r1:lan"}
+  - {id: b, a: "r1:g1", b: "r2:g0"}
+  - {id: c, a: "r2:g1", b: "r3:g0"}
+  - {id: d, a: "r3:lan", b: "h3:eth0"}
+relations:
+  - {id: rip12, protocol: rip, endpoints: ["r1:g1", "r2:g0"]}
+  - {id: rip23, protocol: rip, endpoints: ["r2:g1", "r3:g0"]}
+`;
+/** the RIP messages sent, with their headers as sent */
+const ripSent = (s, t0 = 0) => s.events().filter((e) => e.kind === 'message' && e.protocol === 'rip' && e.t >= t0 && e.hdr && e.hdr.l4);
+const isLL = (a) => /^fe[89ab][0-9a-f]:/i.test(a);
+const hdrText = (e) => `${e.device} ${e.what} ${e.hdr.l3[0].src} → ${e.hdr.l3[0].dst} UDP ${e.hdr.l4.sport}>${e.hdr.l4.dport} hop ${e.hdr.l3[0].ttl}`;
+
+test('RIPng (RFC 2080) on an IPv6-only chain — each message class as sent: Requests from and to UDP 521, to ff02::9; periodic and triggered Responses to ff02::9 from the link-local address with hop count 255; the answer to a Request unicast from the link-local address to the requester; the routes learned and used end to end', () => {
+  const s = sim(CHAIN6);
+  s.runTo(70000);
+  const all = ripSent(s);
+  assert.ok(all.length > 6);
+  assert.ok(all.every((e) => e.hdr.l4.proto === 'udp' && e.hdr.l4.sport === 521 && e.hdr.l4.dport === 521), all.filter((e) => e.hdr.l4.sport !== 521 || e.hdr.l4.dport !== 521).map(hdrText).join(' | '));
+  const req = all.filter((e) => e.what === 'Request');
+  assert.ok(req.length >= 4 && req.every((e) => e.hdr.l3[0].dst === 'ff02::9'), req.map(hdrText).join(' | '));
+  const periodic = all.filter((e) => e.what === 'Response' && /periodic update/.test(e.detail));
+  assert.ok(periodic.length >= 4, `${periodic.length} periodic Responses`);
+  assert.ok(periodic.every((e) => e.hdr.l3[0].dst === 'ff02::9' && isLL(e.hdr.l3[0].src) && e.hdr.l3[0].ttl === 255), periodic.map(hdrText).join(' | '));
+  // routes, and traffic over them
+  const r1 = s.routeLookup('r1', '2001:db8:3::10');
+  assert.equal(r1.kind, 'forward', r1.text);
+  const t = s.sendTest({ from: 'h1', to: 'h3', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(t.ok, true, t.result);
+  // a triggered Response: r3's lan goes down
+  const t0 = s.now;
+  s.fail('link:d');
+  s.runTo(t0 + 8000);
+  const trig = ripSent(s, t0).filter((e) => e.what === 'Response' && /triggered update/.test(e.detail));
+  assert.ok(trig.length >= 1, 'a triggered Response');
+  assert.ok(trig.every((e) => e.hdr.l3[0].dst === 'ff02::9' && isLL(e.hdr.l3[0].src) && e.hdr.l3[0].ttl === 255 && e.hdr.l4.sport === 521), trig.map(hdrText).join(' | '));
+  // the answer to a Request: r2's g1 comes back up and asks; r3 answers it unicast, from its link-local address, to r2's request source
+  s.restore('link:d');
+  const t1 = s.now;
+  s.fail('link:c');
+  s.runTo(t1 + 2000);
+  s.restore('link:c');
+  s.runTo(t1 + 6000);
+  const ask = ripSent(s, t1).find((e) => e.what === 'Request' && e.device === 'r2' && /g1/.test(e.detail));
+  assert.ok(ask, 'r2 asks again on g1');
+  const answer = ripSent(s, t1).find((e) => e.what === 'Response' && e.device === 'r3' && /answer to the request/.test(e.detail));
+  assert.ok(answer, 'r3 answers');
+  assert.deepEqual([answer.hdr.l3[0].dst, isLL(answer.hdr.l3[0].src), answer.hdr.l4.sport, answer.hdr.l4.dport], [ask.hdr.l3[0].src, true, 521, 521], hdrText(answer));
+  assert.ok(!s.events().some((e) => e.kind === 'drop' && e.protocol === 'rip' && /ignores/.test(e.detail)), 'every Response taken');
+});
+
+test('RIPng input checks (RFC 2080 §2.4.2): a Response to the group with a hop count other than 255, or not from a link-local address, is ignored — the neighbour’s routes are not learned from it', () => {
+  for (const bad of ['hop', 'src']) {
+    const s = sim(CHAIN6);
+    // r2's Responses as an off-link sender would send them: a hop count of 254, or a global source
+    s.engine.impair = (link, f) => {
+      if (f.msg.protocol !== 'rip' || f.msg.type !== 'Response' || (f.msg.data || {}).from !== 'r2' || !f.ip) return null;
+      if (bad === 'hop') f.ip.ttl = 254;
+      else f.ip.src = s.engine.net.devices.get('r2').l3.get('g0').addrs.find((x) => x.addr.version === 6).addr;
+      return null;
+    };
+    s.runTo(70000);
+    const why = bad === 'hop' ? /hop count 254, not 255/ : /is not link-local/;
+    assert.ok(s.events().some((e) => e.kind === 'drop' && e.device === 'r1' && why.test(e.detail)), bad);
+    assert.equal(s.routeLookup('r1', '2001:db8:3::10').kind, 'none', `${bad}: nothing learned from r2`);
+  }
+});

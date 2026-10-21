@@ -89,6 +89,11 @@ export function ipOf(x: Side): IpAddr {
   return x.addr;
 }
 
+/** A session's transport as its family has it (RIPng UDP 521, RIPv2 UDP 520): the profile's `proto6` over IPv6. */
+export function protoOf(s: Sess): string {
+  return s.profile.proto6 && s.local.addr && s.local.addr.version === 6 ? s.profile.proto6 : s.profile.proto;
+}
+
 /** One device's view of a session with a peer. */
 export interface Sess {
   key: string;
@@ -848,7 +853,7 @@ export class ProtocolSim implements Protocols {
    * here (a profile with only TCP gets none).
    */
   l4Of(s: Sess, group = false): L4 | undefined {
-    const p = s.profile.proto;
+    const p = protoOf(s);
     const udp = /\bUDP(?:\/TCP)?\s+([0-9]{1,5})/.exec(p);
     const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(p);
     const first = [udp, ip].filter((x): x is RegExpExecArray => !!x).sort((a, b) => a.index - b.index)[0];
@@ -866,23 +871,32 @@ export class ProtocolSim implements Protocols {
     return { proto: 'udp', num: 17, sport, dport };
   }
 
-  /** Unicast to the peer (its address), along the routing tables. */
-  unicast(s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
-    const to = (s.x.replyTo as IpAddr | undefined) || ipOf(s.remote);
-    const at = to === ipOf(s.remote) ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
-    const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
+  /**
+   * Unicast to the peer (its address), along the routing tables. `via`: a protocol that fixes the addresses itself
+   * (RIPng's answer to a Request: from its link-local address to the requester's, out of the session's interface).
+   */
+  unicast(s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}, state = '', via?: { src: IpAddr; to: IpAddr }): void {
+    const to = via ? via.to : (s.x.replyTo as IpAddr | undefined) || ipOf(s.remote);
+    const src = via ? via.src : ipOf(s.local);
+    const at = via || to === ipOf(s.remote) ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
+    const m = this.msg(s, type, `${s.dev} (${formatAddr(src)}) → ${s.peer} (${at}), ${protoOf(s)}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id], s.profile.ttl || 0);
+    const pkt = this.e.newPacket(src, to, s.local.l3.vrf, m, [s.rel.id], s.profile.ttl || 0);
     pkt.l4 = this.l4Of(s);
     this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
-    this.e.send(s.dev, pkt);
+    this.e.send(s.dev, pkt, via ? s.local.l3 : undefined);
   }
 
-  /** Multicast to a group out of the session's interface (OSPF Hello …): the peers on the segment receive it. */
-  multicast(s: Sess, group: IpAddr, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
-    const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
+  /**
+   * Multicast to a group out of the session's interface (OSPF Hello …): the peers on the segment receive it — with a hop
+   * limit of 1, from the session's address, unless the protocol fixes them (`opt`: RIPng's Responses from its link-local
+   * address with a hop count of 255, RFC 2080 §2.4.2, §2.5.2).
+   */
+  multicast(s: Sess, group: IpAddr, type: string, detail: string, data: { [k: string]: unknown } = {}, state = '', opt?: { src?: IpAddr; hop?: number }): void {
+    const src = (opt && opt.src) || ipOf(s.local);
+    const m = this.msg(s, type, `${s.dev} (${formatAddr(src)}) → ${formatAddr(group)} on ${s.local.l3.id}, ${protoOf(s)}${opt && opt.hop ? ', hop limit ' + opt.hop : ''}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(ipOf(s.local), group, s.local.l3.vrf, m, [s.rel.id], 1);
+    const pkt = this.e.newPacket(src, group, s.local.l3.vrf, m, [s.rel.id], (opt && opt.hop) || 1);
     pkt.l4 = this.l4Of(s, true);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
