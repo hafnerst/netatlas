@@ -202,12 +202,18 @@ test('IGMPv3 and MLD: reports with records (and sources), to 224.0.0.22 / ff02::
   const s = sim(LAN({ h1j: ', multicast: {join: [{group: 232.9.9.9, sources: [10.9.0.1]}, "ff05::9"]}', q1: ', simulation: {igmp_query_interval: 10}' }));
   s.runTo(5000);
   const v3 = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /232\.9\.9\.9/.test(e.detail))[0];
-  assert.match(v3.detail, /IGMPv3 Report from h1 \(10\.5\.0\.11\) to 224\.0\.0\.22: ALLOW \/ IS_IN \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/);
+  assert.match(v3.detail, /IGMPv3 Report from h1 \(10\.5\.0\.11\) to 224\.0\.0\.22: ALLOW \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/);
   assert.deepEqual([v3.hdr.l4.igmp.version, v3.hdr.l4.igmp.sources], ['IGMPv3', ['10.9.0.1']]);
   const mld = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /ff05::9/.test(e.detail))[0];
   // (its first Report, at once when its link is up, goes from :: — its link-local address is still tentative: RFC 3590)
-  assert.match(mld.detail, /MLDv2 Report from h1 \((::|fe80::[0-9a-f:]+)\) to ff02::16: IS_EX \(ff05::9, \{\}\)/);
+  assert.match(mld.detail, /MLDv2 Report from h1 \((::|fe80::[0-9a-f:]+)\) to ff02::16: TO_EX \(ff05::9, \{\}\)/);
   assert.equal(mld.hdr.l4.icmpType, 143);
+  // a join is a state change (TO_EX / ALLOW, RFC 3376 §5.1); an answer to a query is the current state (IS_EX / IS_IN)
+  s.runTo(40000);
+  const answered = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /answers the general query/.test(e.detail));
+  assert.ok(answered.some((e) => /: IS_IN \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/.test(e.detail)), answered.map((e) => e.detail).join(' | '));
+  assert.ok(answered.some((e) => /: IS_EX \(ff05::9, \{\}\)/.test(e.detail)));
+  assert.ok(!ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /joins \(unsolicited/.test(e.detail)).some((e) => /IS_IN|IS_EX/.test(e.detail)), 'never a current-state record in a join');
   const t = s.igmpTable('q1');
   assert.ok(t.rows.some((r) => r[1] === '232.9.9.9' && r[4] === '10.9.0.1'));
   assert.ok(t.rows.some((r) => r[1] === 'ff05::9'));

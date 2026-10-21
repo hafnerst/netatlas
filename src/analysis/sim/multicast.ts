@@ -607,8 +607,12 @@ export class Multicast {
     return ri.l3.ll ? ri.l3.ll.addr : null;
   }
 
-  /** A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). */
-  private report(dev: string, iface: string, hg: HostGroup, why: string, leave = false): void {
+  /**
+   * A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). `answer`: a
+   * current-state record answering a query (IS_EX {} / IS_IN {S}); otherwise a state change, its join (TO_EX {} /
+   * ALLOW {S}, RFC 3376 §5.1, RFC 3810 §6.1).
+   */
+  private report(dev: string, iface: string, hg: HostGroup, why: string, leave = false, answer = false): void {
     const g = A(hg.group);
     const h = this.hostAddr(dev, iface, g.version);
     if (!h || !this.e.deviceOn(dev)) return;
@@ -630,7 +634,7 @@ export class Multicast {
       this.igmpSend(dev, h.l3, h.addr, g, 'Report', `${n} Report ${hg.group}`, `${vn} Membership Report from ${dev} (${formatAddr(h.addr)}) to ${hg.group}: ${why}`, { type: 'Membership Report', version: vn, group: hg.group }, { group: hg.group });
     } else {
       const all = A(g.version === 4 ? '224.0.0.22' : 'ff02::16');
-      const rec = hg.sources.length ? `ALLOW / IS_IN (${hg.group}, {${hg.sources.join(', ')}})` : `IS_EX (${hg.group}, {})`;
+      const rec = hg.sources.length ? `${answer ? 'IS_IN' : 'ALLOW'} (${hg.group}, {${hg.sources.join(', ')}})` : `${answer ? 'IS_EX' : 'TO_EX'} (${hg.group}, {})`;
       this.igmpSend(dev, h.l3, h.addr, all, 'Report', `${n} Report ${hg.group}`, `${vn} Report from ${dev} (${formatAddr(h.addr)}) to ${formatAddr(all)}: ${rec}, ${why}`, { type: 'Membership Report', version: vn, group: hg.group, sources: hg.sources, records: [rec] }, { group: hg.group, sources: hg.sources });
     }
   }
@@ -1104,7 +1108,7 @@ export class Multicast {
         const tok = ++hg.answer;
         this.e.after(delay, () => {
           if (hg.answer !== tok || m.get(hg.group) !== hg) return;
-          this.report(dev, l3.id, hg, `answers the ${d.group ? 'group-specific' : 'general'} query of ${formatAddr(pkt.src)} after ${durationText(delay)} (random, up to ${durationText(mrt)})`);
+          this.report(dev, l3.id, hg, `answers the ${d.group ? 'group-specific' : 'general'} query of ${formatAddr(pkt.src)} after ${durationText(delay)} (random, up to ${durationText(mrt)})`, false, true);
         });
       }
       return;
