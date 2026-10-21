@@ -326,3 +326,28 @@ test('DHCP: a message to the wrong port is not taken (the handler does not make 
   s.runTo(s.now + 2000);
   assert.ok(!s.events().slice(n).some((e) => e.what === 'DHCPOFFER' && e.device === 'srv'));
 });
+
+test('a DHCP server powered off and on during its offer delay sends no offer for the DISCOVER it had before: the client is offered only after asking again', () => {
+  const t = LAN(SCOPE(', simulation: {offer_delay: 3s}')).replace('{id: srv, type: server,', '{id: srv, type: server, simulation: {boot_time: 0.1},');
+  const s = sim(t);
+  let disc = null;
+  for (let at = 100; at < 20000 && disc === null; at += 50) {
+    s.runTo(at);
+    const d = s.events().find((e) => e.kind === 'message' && e.device === 'pc' && e.what === 'DHCPDISCOVER');
+    if (d) disc = d.t;
+  }
+  assert.ok(disc !== null, 'a DISCOVER');
+  s.runTo(disc + 500);
+  s.powerOff('srv');
+  s.runTo(disc + 800);
+  s.powerOn('srv');
+  s.runTo(disc + 3500);
+  const offers = (from, to) => s.events().filter((e) => e.t >= from && e.t < to && e.kind === 'message' && e.device === 'srv' && e.what === 'DHCPOFFER');
+  assert.equal(offers(disc, disc + 3500).length, 0, 'the offer due at +3 s is not sent');
+  s.runTo(disc + 60000);
+  // the client asks again (its backoff); that DISCOVER is offered, after the delay
+  const again = s.events().find((e) => e.t > disc && e.kind === 'message' && e.device === 'pc' && e.what === 'DHCPDISCOVER');
+  assert.ok(again, 'a second DISCOVER');
+  const o = offers(again.t, Infinity);
+  assert.ok(o.length >= 1 && o[0].t - again.t >= 3000 - 1, `offered after the delay: ${o.map((e) => e.t - again.t)}`);
+});

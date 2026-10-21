@@ -618,3 +618,25 @@ test('the response timeout of a test on an open connection: the client aborts it
   assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'srv' && e.kind === 'table' && /reset by 10\.0\.1\.10/.test(e.detail)));
   assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'pc' && e.kind === 'table' && /aborted: pc gave up after its response timeout/.test(e.detail)));
 });
+
+test('an answer due after the service response time is not sent by a server powered off and on meanwhile (a rebooted server knows no request): the UDP test times out, no UDP answer leaves the server', () => {
+  const s = sim(CHAIN({ srv: ', response_time: 4000, boot_time: 0.1' }).replace('listening: "tcp/80"', 'listening: "tcp/80, udp/53"'));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'udp', port: 53 });
+  s.runTo(t0 + 300);
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'r2' && e.kind === 'route' && e.protocol === 'udp' && /10\.0\.1\.10 → 10\.0\.2\.10/.test(e.detail)), 'the request was routed to srv before the power-off');
+  s.powerOff('srv');
+  s.runTo(t0 + 600);
+  s.powerOn('srv');
+  s.runTo(t0 + 10000);
+  assert.equal(r.ok, false);
+  assert.match(r.result, /no answer within 5 s/);
+  assert.equal(s.events().filter((e) => e.t >= t0 && e.device === 'srv' && e.what === 'UDP answer').length, 0);
+  // without the power cycle the same request is answered after 4 s
+  const u = sim(CHAIN({ srv: ', response_time: 4000, boot_time: 0.1' }).replace('listening: "tcp/80"', 'listening: "tcp/80, udp/53"'));
+  u.runTo(3000);
+  const ok = u.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'udp', port: 53 });
+  u.runTo(u.now + 10000);
+  assert.equal(ok.ok, true, ok.result);
+});

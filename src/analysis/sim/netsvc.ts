@@ -525,7 +525,10 @@ export class NetServicesSim {
         return;
       }
       s.leases.set(formatAddr(ip), { ip: formatAddr(ip), mac: d.chaddr, client: `${d.from}:${d.iface || ''}`, state: 'offered', expires: now + OFFER_HOLD, scope: s.index });
+      // (the offer after its delay: not by a server powered off meanwhile)
+      const epoch = this.P.e.powerEpoch(dev);
       this.P.e.after(delay, () => {
+        if (this.P.e.powerEpoch(dev) !== epoch || !this.P.e.deviceOn(dev)) return;
         const a: DhcpData = { xid: d.xid, chaddr: d.chaddr, from: d.from, iface: d.iface, yiaddr: formatAddr(ip), server: formatAddr(me), giaddr: d.giaddr, prefix: s.net.prefix, gateway: s.gateway ? formatAddr(s.gateway) : undefined, dns: s.dns.map(formatAddr), lease: s.lease, domain: s.domain };
         const m = this.msg('DHCPOFFER', `DHCPOFFER ${formatAddr(ip)} · lease ${leaseText(s.lease)}`, `DHCPOFFER from ${dev} (${formatAddr(me)}) to ${d.from} (${d.chaddr}): ${formatAddr(ip)}/${s.net.prefix}, lease ${durationText(s.lease)}${s.gateway ? ', gateway ' + formatAddr(s.gateway) : ''}${s.dns.length ? ', DNS ' + s.dns.map(formatAddr).join(', ') : ''}${delay > 0 ? ` (after ${ping.value === 'on' ? 'the ping check and ' : ''}${durationText(delay)})` : ''}`, a);
         this.answer(dev, l3, me, m, d);

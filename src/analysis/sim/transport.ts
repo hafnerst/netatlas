@@ -1129,7 +1129,10 @@ export class Transport {
     const src = own ? own.addr : pkt.dst;
     const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${durationText(app.responseDelay)} (${dev}/${app.id}'s response delay)` } : this.serviceTime(dev, 'udp', l4.dport as number);
     const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
+    // (an answer due after the response time: not by a device powered off meanwhile — after a reboot it knows no request)
+    const epoch = this.e.powerEpoch(dev);
     const answer = (): void => {
+      if (this.e.powerEpoch(dev) !== epoch || !this.e.deviceOn(dev)) return;
       const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
       this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('udp'));
     };

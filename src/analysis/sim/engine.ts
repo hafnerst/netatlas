@@ -870,6 +870,14 @@ export class Engine {
     return !this.off.has(dev);
   }
 
+  /** how many times each device was powered off: what a device scheduled before it went off checks it is still the same run */
+  private powerEpochs = new Map<string, number>();
+
+  /** A device's power epoch: it changes when the device is powered off (what it meant to do before is void after a reboot). */
+  powerEpoch(dev: string): number {
+    return this.powerEpochs.get(dev) || 0;
+  }
+
   /**
    * A device's lifecycle now, from the same state packet processing reads (`off`, `booting`): on
    * (powered and booted), booting (powered on, until its boot time is over; it takes no part yet), off
@@ -3964,6 +3972,7 @@ export class Engine {
       return true;
     }
     this.off.set(dev, this.now);
+    this.powerEpochs.set(dev, this.powerEpoch(dev) + 1);
     const open = sd.caps.inspection && this.params.str('ips-fail', dev) === 'open';
     if (open) this.bypass.add(dev);
     const mode = sd.caps.inspection ? ` It fails ${open ? 'open: frames pass through unchecked' : 'closed: nothing passes'} (${resolvedText(this.params.get('ips-fail', dev))}).` : '';
