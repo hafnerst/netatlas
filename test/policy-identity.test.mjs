@@ -326,3 +326,24 @@ relations:
   p.runTo(150000);
   assert.ok(p.events().filter((e) => e.kind === 'message' && e.what === 'Server response').length >= 2);
 });
+
+test('equal-cost paths to two holders of one address: asked for srvB, the path to srvX does not count as reaching it — partial, never “satisfied” on the strength of a permission judged for srvB on both; the simulation’s flows split the same way', () => {
+  const t = ECMP(true)
+    .replace('policy: {default: permit, rules: []}', 'policy:\n      default: deny\n      rules:\n        - {action: permit, destination: srvB, proto: tcp, dport: 80}')
+    .replace(/\{id: srv([BX]), type: server,/g, '{id: srv$1, type: server, simulation: {listening: "tcp/80"},');
+  const m = model(t);
+  const c = check(m, 'hostB', 'srvB');
+  assert.equal(c.verdict, 'partial', c.headline);
+  const ends = c.trace.paths.map((p) => `${p.end.kind}:${p.end.device}`).sort();
+  assert.deepEqual(ends, ['reached:srvB', 'stopped:srvX']);
+  assert.match(c.trace.paths.find((p) => p.end.device === 'srvX').end.detail, /srvX has 10\.8\.0\.10 too: this path reaches srvX, not srvB/);
+  // the address alone: which holder can't be told — indeterminate, as before
+  assert.equal(layer(check(m, 'hostB', '10.8.0.10'), 'policy').verdict, 'indeterminate');
+  // the simulation: flows over o1 reach srvB (permitted), flows over o2 are srvX's (no rule permits them): both kinds occur
+  const s = new S.Simulation(m);
+  s.runTo(5000);
+  const r = [];
+  for (let k = 0; k < 6; k++) r.push(tcp(s, 'hostB', '10.8.0.10'));
+  assert.ok(r.some((x) => x.ok) && r.some((x) => !x.ok), r.map((x) => x.ok).join(','));
+  assert.ok(r.filter((x) => !x.ok).every((x) => /dropped at fw: .*no rule matches/.test(x.result)));
+});
