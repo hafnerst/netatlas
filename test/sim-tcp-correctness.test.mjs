@@ -640,3 +640,53 @@ test('an answer due after the service response time is not sent by a server powe
   u.runTo(u.now + 10000);
   assert.equal(ok.ok, true, ok.result);
 });
+
+// ------------------------------------------------------------------ the retransmission timeout from the round trip (RFC 6298)
+
+test('RTO from the round trip (RFC 6298 §2–3): a 1.6 s round trip — the SYN goes again at the initial 1 s and 2 s (no sample from a retransmitted SYN: Karn’s rule), but after the handshake no data, answer or FIN is sent again, the connection closes without a reset', () => {
+  const s = sim(CHAIN().replace('{id: l2, a: "r1:g1", b: "r2:g0"}', '{id: l2, a: "r1:g1", b: "r2:g0", simulation: {latency: 800ms}}'));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'tcp', port: 80 });
+  s.runTo(t0 + 20000);
+  assert.equal(r.ok, true, r.result);
+  const pc = segs(s, 'pc', t0);
+  const srv = segs(s, 'srv', t0);
+  assert.deepEqual(pc.filter((x) => x.flags === '[S]').map((x) => Math.round(x.t - t0)), [0, 1000, 3000], 'the SYN at the initial RTO, doubled');
+  for (const [who, list] of [['pc', pc], ['srv', srv]]) {
+    const again = list.filter((x) => x.flags !== '[S]' && x.flags !== '[S,A]' && /retransmission/.test(x.label));
+    assert.deepEqual(again.map((x) => `${Math.round(x.t - t0)} ${x.label}`), [], `${who}: nothing after the handshake sent again`);
+  }
+  assert.ok(!srv.some((x) => x.flags === '[R]') && !pc.some((x) => x.flags === '[R]' || x.flags === '[R,A]'), 'closed without a reset');
+});
+
+test('RTO after a SYN timed out (RFC 6298 §5.7): the request lost once is sent again after 3 s, not the initial 1 s; with a clean handshake the round trip measured gives the floor of 1 s', () => {
+  const run = (loseSyn) => {
+    const s = sim(CHAIN());
+    s.runTo(3000);
+    let synLost = !loseSyn;
+    let dataLost = false;
+    s.engine.impair = (l, f) => {
+      if (l !== 'l1' || !f.ip || !f.ip.l4 || f.ip.l4.proto !== 'tcp' || f.ip.l4.dport !== 80) return null;
+      const fl = f.ip.l4.flags || [];
+      if (fl.includes('SYN') && !synLost) {
+        synLost = true;
+        return { lose: true };
+      }
+      if (fl.includes('PSH') && !dataLost) {
+        dataLost = true;
+        return { lose: true };
+      }
+      return null;
+    };
+    const t0 = s.now;
+    const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'tcp', port: 80 });
+    s.runTo(t0 + 15000);
+    assert.equal(r.ok, true, r.result);
+    const data = segs(s, 'pc', t0).filter((x) => x.flags === '[P,A]');
+    assert.equal(data.length, 2);
+    return data[1].t - data[0].t;
+  };
+  assert.equal(Math.round(run(true)), 3000);
+  assert.equal(Math.round(run(false)), 1000);
+});

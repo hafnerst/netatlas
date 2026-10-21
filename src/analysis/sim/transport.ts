@@ -58,7 +58,7 @@ import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { isLinkLocal6 } from './engine';
 import { L3Iface } from './net';
-import { Seg, StreamMark, TcpStream, initialSeq, segmentLabel, tcpFlagsText, tcpHeaderLen } from './tcp';
+import { Seg, StreamMark, TcpStream, initialSeq, segSpace, segmentLabel, tcpFlagsText, tcpHeaderLen } from './tcp';
 import { ParamValue, PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
 import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
@@ -184,6 +184,12 @@ interface Conn {
   timer: number | null;
   /** retransmissions of the earliest unacknowledged segment so far (the timeout doubles with each) */
   tries: number;
+  /** RFC 6298: the smoothed round-trip time and its variation (once measured), the retransmission timeout before backoff (unset: the initial one) */
+  srtt?: number;
+  rttvar?: number;
+  rtoBase?: number;
+  /** its SYN or SYN-ACK was sent again: data starts with a timeout of 3 s unless a round trip was measured (RFC 6298 §5.7) */
+  synRetx?: boolean;
   /** the running retransmission timer's token (0: none, -1: closed) */
   rtx: number;
   /** bumped by the state timers (TIME_WAIT, FIN_WAIT_2, keepalive): an older one does nothing */
@@ -1280,8 +1286,36 @@ export class Transport {
     this.sendSyn(c);
   }
 
+  /** The retransmission timeout now (RFC 6298 §2, §5.5): its current value (the initial one until measured), doubled per retransmission, at most 120 s. */
   private rto(c: Conn): number {
-    return Math.min(RTO_MAX, this.e.params.num('tcp-rto', c.dev) * Math.pow(2, c.tries));
+    return Math.min(RTO_MAX, (c.rtoBase !== undefined ? c.rtoBase : this.e.params.num('tcp-rto', c.dev)) * Math.pow(2, c.tries));
+  }
+
+  /**
+   * An acknowledgment up to `ack` arrived: a round-trip sample from the last segment it acknowledges whole that was
+   * sent once only (Karn's rule: never one sent again), and the timeout from it (RFC 6298 §2: the first sample sets
+   * SRTT = R, RTTVAR = R/2; then RTTVAR = 3/4 RTTVAR + 1/4 |SRTT − R|, SRTT = 7/8 SRTT + 1/8 R; RTO = SRTT + 4 RTTVAR,
+   * at least 1 s — or the configured initial timeout when that is lower —, at most 120 s).
+   */
+  private rttSample(c: Conn, ack: number): void {
+    const whole = c.tcp.out.filter((s) => s.seq + segSpace(s) <= ack);
+    const last = whole[whole.length - 1];
+    if (!last || last.sent > 0 || last.at === undefined) return;
+    const r = this.e.now - last.at;
+    if (c.srtt === undefined || c.rttvar === undefined) {
+      c.srtt = r;
+      c.rttvar = r / 2;
+    } else {
+      c.rttvar = 0.75 * c.rttvar + 0.25 * Math.abs(c.srtt - r);
+      c.srtt = 0.875 * c.srtt + 0.125 * r;
+    }
+    const floor = Math.min(1000, this.e.params.num('tcp-rto', c.dev));
+    c.rtoBase = Math.min(RTO_MAX, Math.max(floor, c.srtt + 4 * c.rttvar));
+  }
+
+  /** The handshake is done: a SYN (or SYN-ACK) sent again and no round trip measured — data starts with a 3 s timeout (RFC 6298 §5.7). */
+  private handshakeDone(c: Conn): void {
+    if (c.synRetx && c.srtt === undefined) c.rtoBase = Math.max(3000, c.rtoBase !== undefined ? c.rtoBase : 0);
   }
 
   private sendSyn(c: Conn): void {
@@ -1377,6 +1411,7 @@ export class Transport {
       }
       c.tries++;
       s.sent++;
+      if (s.syn) c.synRetx = true;
       this.emit(c, s, `, retransmission ${c.tries} (timeout ${durationText(this.rto({ ...c, tries: c.tries - 1 }))})`);
       if (s.syn && c.test && c.state === 'SYN_SENT') c.test.pktIds.push(this.lastPkt);
       this.armRtx(c);
@@ -1461,6 +1496,7 @@ export class Transport {
     if (app) data.appType = app.type;
     const msg: Msg = { protocol: (app ? app.protocol : sh ? sh.protocol : 'tcp') as Msg['protocol'], type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : sh ? sh.relation : undefined };
     if (app && app.waited && s.sent === 0) msg.waited = app.waited;
+    if (s.at === undefined) s.at = this.e.now;
     const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, tcpHeaderLen(l4) + s.len, true, this.e.ownerOf(c.remote) || '', c.conv);
     this.lastPkt = p.id;
     return p;
@@ -1590,8 +1626,10 @@ export class Transport {
       if (!has('SYN') || !has('ACK')) return;
       c.heard = this.e.now;
       this.peerSyn(c, l4);
+      this.rttSample(c, l4.ack as number);
       c.tcp.ack(l4.ack as number);
       c.tries = 0;
+      this.handshakeDone(c);
       this.armRtx(c);
       this.setState(c, 'ESTABLISHED');
       this.e.note('table', 'tcp', dev, this.e.ownerOf(c.remote) || '', 'connection established', 'ESTABLISHED', `${dev} ${formatAddr(c.local)}:${c.lport} → ${formatAddr(c.remote)}:${c.rport} established (${c.what}; ISS ${c.tcp.iss}, IRS ${c.tcp.irs}; sends segments of at most ${this.mss(c)} bytes: the peer's MSS ${c.peerMss})`);
@@ -1623,6 +1661,7 @@ export class Transport {
         const s = c.tcp.earliest();
         if (s && s.syn) {
           s.sent++;
+          c.synRetx = true;
           this.emit(c, s, ' (the client sent its SYN again)');
         }
         return;
@@ -1640,8 +1679,10 @@ export class Transport {
         return;
       }
       c.heard = this.e.now;
+      this.rttSample(c, l4.ack as number);
       c.tcp.ack(l4.ack as number);
       c.tries = 0;
+      this.handshakeDone(c);
       this.armRtx(c);
       this.setState(c, 'ESTABLISHED');
       this.idle(c);
@@ -1671,6 +1712,7 @@ export class Transport {
       }
     }
     // an acknowledgment: what it covers leaves the retransmission queue (the timer starts again for the rest)
+    if (l4.ack !== undefined && l4.ack > c.tcp.sndUna && l4.ack <= c.tcp.sndNxt) this.rttSample(c, l4.ack);
     if (l4.ack !== undefined && c.tcp.ack(l4.ack)) {
       c.tries = 0;
       this.armRtx(c);
