@@ -489,7 +489,14 @@ export class Engine {
   /** Run fn at simulated time t (never before now); `gates`: the flights whose arrival it is (a delivery). */
   at(t: number, fn: () => void, gates?: number[]): void {
     const item: QItem = { t: Math.max(t, this.now), seq: this.seq++, fn };
-    if (gates && gates.length) item.gates = gates;
+    if (gates && gates.length) {
+      item.gates = gates;
+      // (each flight knows its deliveries still queued: pending until processed, whatever their time — Flight.due)
+      for (const g of gates) {
+        const f = this.flightById.get(g);
+        if (f) f.due = (f.due || 0) + 1;
+      }
+    }
     const q = this.q;
     q.push(item);
     let i = q.length - 1;
@@ -560,9 +567,7 @@ export class Engine {
             return true;
           }
         }
-        const it = this.pop() as QItem;
-        this.now = it.t;
-        it.fn();
+        this.exec(this.pop() as QItem);
       }
       if (stop()) {
         this.prune();
@@ -603,12 +608,24 @@ export class Engine {
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
-      const it = this.pop() as QItem;
-      this.now = it.t;
-      it.fn();
+      this.exec(this.pop() as QItem);
     }
     this.now = Math.max(this.now, t);
     this.prune();
+  }
+
+  /** Do an event; a delivery's flights are processed then (no longer pending), whatever the delivery found (it may have been cancelled). */
+  private exec(it: QItem): void {
+    this.now = it.t;
+    if (it.gates)
+      for (const g of it.gates) {
+        const f = this.flightById.get(g);
+        if (f && f.due) {
+          f.due--;
+          f.delivered = true;
+        }
+      }
+    it.fn();
   }
 
   private prune(): void {

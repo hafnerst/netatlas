@@ -249,6 +249,22 @@ export function holdText(f: Flight): string {
   return what ? `waiting for packet arrival (${what})` : 'waiting for packet arrival';
 }
 
+/**
+ * Is a hop history at the engine's time `now` — its delivery processed (or
+ * its loss passed), not merely due? A flight with a delivery (Flight.due /
+ * delivered, the engine's lifecycle) is pending while one is queued, even at
+ * `now` itself (the engine can stop partway through a moment), and history
+ * once it was processed, whatever the times; a lost one (its delivery
+ * cancelled) once its loss is past; one without a delivery of its own (it ends on screen only) once its
+ * end (`end`) is past.
+ */
+export function history(f: Flight, now: number, end: number): boolean {
+  if (f.dropped !== undefined) return f.dropped < now - EPS;
+  if (f.due) return false;
+  if (f.delivered) return true;
+  return end < now - EPS;
+}
+
 /** A kind of message in a view (its protocol, its type, a TCP segment's flags): another of it is the steady state. */
 export function repeatKey(f: Flight): string {
   return `${f.view}|${f.protocol}|${f.type !== undefined ? f.type : f.label}|${f.flags || ''}`;
@@ -603,7 +619,7 @@ export class Pacer {
       // a creation-time loss puts the flight's end where it was lost: midway
       const lat = f.dropped !== undefined && f.dropped > f.t0 ? 2 * (f.dropped - f.t0) : Math.max(0, f.t1 - f.t0);
       // what arrived before the display saw it (a jump of the tests, runTo) is history: not drawn
-      if ((f.dropped !== undefined ? f.dropped : f.t0 + lat) < e.now - EPS) continue;
+      if (history(f, e.now, f.t0 + lat)) continue;
       const pAny = f.parent !== undefined ? this.byId.get(f.parent) : undefined;
       const test = f.test !== undefined;
       const h = this.host.headers ? this.host.headers(f) : undefined;
@@ -905,8 +921,8 @@ export class Pacer {
   reshow(): void {
     const now = this.host.engine.now;
     this.items = this.items.filter((it) => {
-      const due = it.f.dropped !== undefined ? it.f.dropped : it.f.t1;
-      const keep = !(due < now - EPS && this.clock < this.arrival(it) - EPS);
+      // (processed, not merely due: at the engine's own time a delivery may still be pending — Flight.due)
+      const keep = !(history(it.f, now, it.f.t1) && this.clock < this.arrival(it) - EPS);
       if (!keep) this.byId.delete(it.f.id);
       return keep;
     });
@@ -920,7 +936,7 @@ export class Pacer {
     this.register();
     const now = this.host.engine.now;
     this.items = this.items.filter((it) => {
-      const keep = (it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat) >= now - EPS;
+      const keep = !history(it.f, now, it.f.t0 + it.lat);
       if (!keep) this.byId.delete(it.f.id);
       return keep;
     });
