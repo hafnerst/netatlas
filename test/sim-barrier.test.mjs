@@ -936,3 +936,27 @@ test('an action while a moment is partly done (a frame’s budget ended it): it 
   assert.deepEqual(a.seen, b.seen);
   assert.deepEqual(simulated(a.sim, b.T + 20000).ev, simulated(b.sim, b.T + 20000).ev, 'the same events');
 });
+
+test('semantic invariance with non-IP traffic (vme-rack.yaml): the interconnects’ configured traffic and its applications the same headless, paced, with non-IP hidden, IP hidden, the logical view and a dot limit — display settings never change what is sent (configured illustrative traffic is never held: its flows are not gated)', () => {
+  const text = example('vme-rack.yaml');
+  const END = 30000;
+  const ref = new S.Simulation(model(text));
+  traced(ref);
+  ref.runTo(END);
+  const want = simulated(ref, END);
+  const opaque = want.ev.filter((e) => e.split('|')[2] === 'opaque');
+  assert.ok(opaque.length > 20, `${opaque.length} opaque events`);
+  for (const [name, o] of Object.entries({
+    readable: {},
+    'non-IP hidden': { hide: (f) => f.protocol === 'opaque' },
+    'IP hidden': { hide: (f) => f.protocol !== 'opaque' },
+    logical: { view: 'logical' },
+    'dot limit 2': { limit: 2, set: { convLimit: 1 } },
+  })) {
+    const m = paced(text, o);
+    m.to(END);
+    const got = simulated(m.sim, END);
+    assert.deepEqual(got.ev, want.ev, `${name}: the log`);
+    assert.deepEqual(got.fl, want.fl, `${name}: the flights`);
+  }
+});
