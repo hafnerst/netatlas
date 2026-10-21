@@ -60,7 +60,7 @@ import { DEFAULT_LEASE, inRange, inZone } from '../../model/netservices';
 import { durationText, ifaceRef, scopeRef, zoneRef } from './params';
 import { L3Iface, Lease, SimAddr } from './net';
 import { ProtocolSim } from './protocols';
-import { Msg, Pkt } from './types';
+import { Msg, Pkt, Quote } from './types';
 import { dnsNameKey } from '../../model/dns';
 import { zoneRecords } from '../names';
 
@@ -679,6 +679,21 @@ export class NetServicesSim {
     });
   }
 
+  /**
+   * An ICMP error reached a host about one of its DNS queries (its server runs no DNS: port unreachable): the
+   * query goes to its next server at once — no point waiting out the timeout. True when it was one of its queries.
+   */
+  queryRefused(dev: string, q: Quote, what: string): boolean {
+    if (q.dport !== 53 || q.sport === undefined) return false;
+    const query = Array.from(this.queries.values()).find((x) => !x.done && x.dev === dev && !x.forFor && 49152 + (x.id % 16000) === q.sport && x.si < x.servers.length && formatAddr(x.servers[x.si]) === q.dst);
+    if (!query) return false;
+    this.P.e.note('note', 'dns', dev, this.P.e.ownerOf(query.servers[query.si]) || '', 'Query refused', '', `${dev}: ${what} about its DNS query to ${q.dst}: ${q.dst} runs no DNS — ${query.si + 1 < query.servers.length ? 'it asks its next DNS server, ' + formatAddr(query.servers[query.si + 1]) : 'it has no other DNS server'}`);
+    query.si++;
+    query.attempt = 0;
+    this.ask(query);
+    return true;
+  }
+
   private srcTo(dev: string, dst: IpAddr): IpAddr | null {
     const sd = this.P.sd(dev);
     if (!sd) return null;
@@ -711,7 +726,11 @@ export class NetServicesSim {
     if (msg.type !== 'Query') return;
     const sd = this.P.m.index.devices.get(dev);
     const dns = sd && sd.netServices ? sd.netServices.dns : undefined;
-    if (!dns) return;
+    if (!dns) {
+      // a host that runs no DNS server: its port 53 is closed (ICMP port unreachable, RFC 1122 §4.1.3.1), never silence
+      if (this.P.transport && pkt.l4) this.P.transport.refuseService(dev, l3, pkt, 'it runs no DNS server');
+      return;
+    }
     // a server that listens on one address only answers there
     if (dns.listen && formatAddr(pkt.dst) !== dns.listen) {
       this.P.e.note('drop', 'dns', dev, d.from, 'Query', '', `${dev} listens for DNS on ${dns.listen} only: ${msg.label} to ${formatAddr(pkt.dst)} is not answered`);
@@ -736,16 +755,21 @@ export class NetServicesSim {
       return;
     }
     const ttl = this.P.e.params.num('dns-ttl', dev, null, zoneRef(dev, zone.name));
-    const look = (name: string, depth: number): { answer: string[]; cname?: string } => {
-      const recs = this.zoneRecords(dev, zone.name);
+    // a CNAME is followed within the server's zones (RFC 1034 §4.3.2 step 3a): its target in whichever of them holds it
+    // (the most specific); a target in none of them ends the answer with the CNAME alone
+    const zoneOf = (name: string) => dns.zones.filter((z) => inZone(name, z.name)).sort((a, b) => b.name.length - a.name.length)[0];
+    const look = (name: string, zname: string, depth: number): { answer: string[]; cname?: string } => {
+      const recs = this.zoneRecords(dev, zname);
       const cn = recs.find((r) => r.name === name && r.type === 'CNAME');
       if (cn && depth < 8) {
-        const r = look(dnsNameKey(cn.value), depth + 1);
+        const target = dnsNameKey(cn.value);
+        const tz = zoneOf(target);
+        const r = tz ? look(target, tz.name, depth + 1) : { answer: [] };
         return { answer: r.answer, cname: cn.value };
       }
       return { answer: recs.filter((r) => r.name === name && r.type === d.qtype).map((r) => r.value) };
     };
-    const r = look(d.name, 0);
+    const r = look(d.name, zone.name, 0);
     if (!r.answer.length) {
       const exists = this.zoneRecords(dev, zone.name).some((x) => x.name === d.name);
       this.reply(dev, l3, pkt, exists ? 'NOERROR' : 'NXDOMAIN', [], ttl, r.cname);

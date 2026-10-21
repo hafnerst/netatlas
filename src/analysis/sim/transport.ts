@@ -631,6 +631,21 @@ export class Transport {
     return false;
   }
 
+  /**
+   * A message for a service the device does not run (a DNS query to a host without a DNS server): refused as at any
+   * closed port (RFC 1122 §4.1.3.1: ICMP port unreachable) — unless its written listening ports include the port
+   * (something listens there that is not that service: no answer, said).
+   */
+  refuseService(dev: string, l3: L3Iface, pkt: Pkt, why: string): void {
+    const l4 = pkt.l4 as L4;
+    const ls = this.listening(dev);
+    if (ls.written && portsMatch(ls.rules, l4.proto, l4.dport as number)) {
+      this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${dev} listens on ${l4.proto.toUpperCase()} ${l4.dport} but ${why}: ${pkt.msg.label} is not answered`);
+      return;
+    }
+    this.refuse(dev, l3, pkt, why);
+  }
+
   /** A closed port: TCP RST (not to a RST), UDP ICMP port unreachable (not about a broadcast or multicast); nothing when the device does not reply to closed ports. */
   private refuse(dev: string, l3: L3Iface, pkt: Pkt, why: string): void {
     const l4 = pkt.l4 as L4;
@@ -1051,6 +1066,8 @@ export class Transport {
       if (c.test) this.finish(c.test, false, what);
       return;
     }
+    // a DNS query of this device's resolver refused (its server runs no DNS): it asks the next server at once
+    if (this.netsvc && this.netsvc.queryRefused(dev, q, what)) return;
     this.e.note('message', 'icmp', dev, '', pkt.msg.type, '', `${dev} received ${pkt.msg.label} about ${q.src} → ${q.dst}`);
   }
 

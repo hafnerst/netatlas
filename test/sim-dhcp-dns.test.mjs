@@ -351,3 +351,51 @@ test('a DHCP server powered off and on during its offer delay sends no offer for
   const o = offers(again.t, Infinity);
   assert.ok(o.length >= 1 && o[0].t - again.t >= 3000 - 1, `offered after the delay: ${o.map((e) => e.t - again.t)}`);
 });
+
+// ------------------------------------------------------------------ DNS: a CNAME into another zone; a server that runs no DNS
+
+const ZONES = (pcDns) => `netatlas: 1
+title: zones
+devices:
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.0.10/24}]
+    services: {dns: {zones: [{name: a.example, records: [{name: www, type: CNAME, value: web.b.example}, {name: out, type: CNAME, value: x.elsewhere.example}]}, {name: b.example, records: [{name: web, type: A, value: 10.0.0.20}]}]}}
+  - {id: web, type: server, interfaces: [{id: eth0, ip: 10.0.0.20/24}]}
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.30/24}], dns_servers: [${pcDns}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+links:
+  - {id: a, a: "srv:eth0", b: "sw:p1"}
+  - {id: b, a: "pc:eth0", b: "sw:p2"}
+  - {id: c, a: "web:eth0", b: "sw:p3"}
+`;
+
+test('DNS: a CNAME into another zone of the same server is followed there (RFC 1034 §4.3.2 step 3a): the answer carries the CNAME and the target’s address; a target in none of its zones: the CNAME alone', () => {
+  const s = sim(ZONES('10.0.0.10'));
+  s.runTo(3000);
+  const r = s.sendTest({ from: 'pc', to: 'www.a.example', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(r.ok, true, r.result);
+  const resp = ev(s, (e) => e.kind === 'message' && e.device === 'srv' && e.what === 'Response')[0];
+  assert.match(resp.detail, /NOERROR www\.a\.example \(CNAME web\.b\.example\) A 10\.0\.0\.20/);
+  const o = s.sendTest({ from: 'pc', to: 'out.a.example', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(o.ok, false);
+  assert.match(o.result, /could not resolve out\.a\.example \(NOERROR\)/);
+});
+
+test('DNS: a query to a host that runs no DNS server is refused with ICMP port unreachable (RFC 1122 §4.1.3.1), and the resolver asks its next server at once — not after its timeouts', () => {
+  const s = sim(ZONES('10.0.0.20, 10.0.0.10'));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: 'web.b.example', kind: 'icmp' });
+  s.runTo(t0 + 15000);
+  assert.equal(r.ok, true, r.result);
+  const pu = ev(s, (e) => e.t >= t0 && e.kind === 'message' && e.device === 'web' && e.what === 'Port Unreachable');
+  assert.equal(pu.length, 1);
+  assert.equal(pu[0].hdr.l4.icmpCode, 3);
+  const q = ev(s, (e) => e.t >= t0 && e.kind === 'message' && e.device === 'pc' && e.what === 'Query');
+  assert.deepEqual(q.map((e) => /to (\S+):53/.exec(e.detail)[1]), ['10.0.0.20', '10.0.0.10'], 'one query each, no retry to the refusing host');
+  assert.ok(q[1].t - q[0].t < 50, `the next server asked right after the error (${q[1].t - q[0].t} ms)`);
+  assert.match(r.resolved, /\(DNS: [0-9.]+ ms\)/);
+});
