@@ -38,7 +38,7 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   {
     id: 'policy',
     name: 'Network policy',
-    does: 'One engine for Trace path, the communication checks and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named; a firewall without one: its relations and allow list.',
+    does: 'One engine for Trace path, the communication checks and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named (also for the packets of relations and tunnels through it); a firewall without one: its relations and allow list. A rule naming a device: that device’s addresses, checked against the device the traffic reaches (an address several devices have and no owner known: undecided, never permitted).',
     not: 'a return decision statically (the simulation keeps a stateful policy’s sessions); application identification, TLS inspection, user identities, NAT rules, VLAN ACLs.',
   },
   {
@@ -74,7 +74,7 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   {
     id: 'timing',
     name: 'Timing source paths',
-    does: 'By the method asked for (PTP, NTP, or either: both reported). PTP: a source-capable clock of the domain and profile on the clock’s VLAN-scoped segments or behind boundary clocks. NTP: the configured source chain, upstream by upstream (each reachable on UDP 123: path, policy, listener) to a configured reference, with cycles, chains without a reference, upstreams outside the model and alternative roots said apart from a merely reachable upstream; a snapshot adds the synchronization the simulation observed.',
+    does: 'By the method asked for (PTP, NTP, or either: both reported). PTP: a source-capable clock of the domain and profile on the clock’s VLAN-scoped segments or behind boundary clocks. NTP: the configured source chain, upstream by upstream — each an address, reachable on UDP 123 (path, policy, listener), the device it is the one its traffic reaches — to a configured reference, with cycles, chains without a reference, upstreams outside the model and alternative roots said apart from a merely reachable upstream; a snapshot adds the synchronization the simulation observed.',
     not: 'accuracy (the simulation models the protocol states, not oscillators or clock discipline); precedence or bridging between NTP and PTP.',
   },
   {
