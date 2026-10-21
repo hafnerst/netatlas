@@ -26,7 +26,12 @@ devices:
   - {id: b, type: server, interfaces: [{id: p0, stack: opaque}]}
 interconnects:
   - {id: la, topology: point_to_point, technology: {name: SRIO}, endpoints: [{port: "a:p0"}, {port: "fsw:f1"}]}
-  - {id: lb, topology: point_to_point, technology: {name: SRIO}, endpoints: [{port: "b:p0"}, {port: "fsw:f2"}]}
+  - id: lb
+    topology: point_to_point
+    technology: {name: SRIO}
+    endpoints: [{port: "b:p0"}, {port: "fsw:f2"}]
+    traffic:
+      - {initiator: "b:p0", to: ["a:p0"], interval: 2s, size: 64}
 `;
 
 test('a System’s transit groups through the Edit tab: an opaque port made, a group added, its ports added and removed, renames followed, undo, removed, exported and reloaded', { skip, timeout: 240000 }, async () => {
@@ -40,9 +45,10 @@ test('a System’s transit groups through the Edit tab: an opaque port made, a g
       await page.eval(`netatlas.select('device:fsw'), netatlas.showTab && netatlas.showTab('edit'), true`);
       await page.settle(150);
     };
-    const q = (s) => `document.querySelector('#side ${s.replace(/'/g, "\\'")}')`;
-    const change = (s, v) => page.eval(`(() => { const e = ${q(s)}; if (!e) throw new Error('no ${s.replace(/'/g, '')}'); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-    const click = (s) => page.eval(`(() => { const e = ${q(s)}; if (!e) throw new Error('no ${s.replace(/'/g, '')}'); e.click(); return true; })()`);
+    // (the selector goes into the page as a JSON string literal: nothing of it is page code)
+    const q = (s) => `document.querySelector(${JSON.stringify('#side ' + s)})`;
+    const change = (s, v) => page.eval(`(() => { const e = ${q(s)}; if (!e) throw new Error('no ' + ${JSON.stringify(s)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    const click = (s) => page.eval(`(() => { const e = ${q(s)}; if (!e) throw new Error('no ' + ${JSON.stringify(s)}); e.click(); return true; })()`);
     const P = (p) => `[data-p='${JSON.stringify(p)}']`;
     await sel();
     // the group is offered on a System; its management port made opaque in the Edit tab (the Port stack select)
@@ -112,6 +118,17 @@ test('a System’s transit groups through the Edit tab: an opaque port made, a g
     const again = JSON.parse(await page.eval(`JSON.stringify({ g: netatlas.session.model.index.devices.get('fsw').opaqueTransit.map((g) => g.ports), text: netatlas.exportText() })`));
     assert.deepEqual(again.g, [['f1', 'f2']]);
     assert.equal(again.text, text);
+    // a device its interconnect's traffic names, renamed in the Edit tab: the traffic follows, undo restores
+    await page.eval(`netatlas.select('device:a'), netatlas.showTab && netatlas.showTab('edit'), true`);
+    await page.settle(150);
+    await change(`input${P(['devices', 1, 'id'])}`, 'payload');
+    await page.settle(150);
+    y = await yaml();
+    assert.match(y, /- \{initiator: "b:p0", to: \["payload:p0"\], interval: 2s, size: 64\}/);
+    assert.equal(await page.eval(`netatlas.session.model.interconnects.find((x) => x.id === 'lb').traffic[0].to.join()`), 'payload:p0');
+    await page.eval('netatlas.undo(), true');
+    await page.settle(150);
+    assert.match(await yaml(), /to: \["a:p0"\]/);
   } finally {
     await page.close();
   }

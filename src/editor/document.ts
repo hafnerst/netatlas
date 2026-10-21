@@ -2327,6 +2327,25 @@ export class ModelDoc {
             const inf = c < 0 ? undefined : t.slice(c + 1);
             if (dev === id && (iface === undefined || inf === iface)) out.push(['interconnects', i, 'endpoints', k, 'port']);
           });
+          // its traffic: the initiator, the data source, each recipient ("device:port"; a recipient may be on another interconnect)
+          const tr = ent.kind === 'map' ? ent.entries.get('traffic') : undefined;
+          if (!tr || tr.value.kind !== 'seq') return;
+          tr.value.items.forEach((x, k) => {
+            if (x.kind !== 'map') return;
+            const names = (t: string | undefined): boolean => {
+              if (t === undefined) return false;
+              const c = t.indexOf(':');
+              return (c < 0 ? t : t.slice(0, c)) === id && (iface === undefined || (c >= 0 && t.slice(c + 1) === iface));
+            };
+            for (const key of ['initiator', 'from']) {
+              const e = x.entries.get(key);
+              if (e && names(scalarText(e.value))) out.push(['interconnects', i, 'traffic', k, key]);
+            }
+            const to = x.entries.get('to');
+            if (!to) return;
+            if (to.value.kind === 'seq') to.value.items.forEach((r, j) => names(scalarText(r)) && out.push(['interconnects', i, 'traffic', k, 'to', j]));
+            else if (names(scalarText(to.value))) out.push(['interconnects', i, 'traffic', k, 'to']);
+          });
         });
       // a System's opaque transit groups name its own ports
       if (iface !== undefined) {
@@ -2591,7 +2610,7 @@ export class ModelDoc {
       } else if (p[0] === 'devices' && p[2] === 'opaque_transit') {
         // a transit group's port: a bare id of the same device
         nt = newIf !== undefined ? newIf : t;
-      } else if (/^(a|b|destination|port)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
+      } else if (/^(a|b|destination|port)$/.test(String(last)) || p[p.length - 2] === 'endpoints' || (p[0] === 'interconnects' && p[2] === 'traffic')) {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);
