@@ -246,7 +246,8 @@ export class SimController implements SimulationMode {
     this.pacer = new Pacer(
       {
         engine: this.sim.engine,
-        shown: (f) => f.view === this.host.view() && this.flightShown(f),
+        // (shown: in the view on screen, of what is shown, and drawn there — a track of the scene the dot can travel)
+        shown: (f) => f.view === this.host.view() && this.flightShown(f) && this.renderable(f),
         typical: (v) => this.typical(v),
         headers: (f) => f.hdr,
         length: (f) => this.trackLength(f),
@@ -1075,6 +1076,14 @@ export class SimController implements SimulationMode {
     return out;
   }
 
+  /**
+   * Can a flight be drawn in the scene on screen: its track is there (not filtered out, collapsed, switched off by
+   * IP / Non-IP, or without geometry)? Outside the pan and zoom is still there. No scene (yet): as it is.
+   */
+  private renderable(f: Flight): boolean {
+    return !this.host.scene() || this.trackLength(f) !== null;
+  }
+
   /** The on-screen length of a flight's line (diagram units), in the view on screen; null elsewhere. */
   private lengths = new Map<string, number | null>();
   private trackLength(f: Flight): number | null {
@@ -1157,13 +1166,16 @@ export class SimController implements SimulationMode {
 
   /** The diagram was drawn again: the dots on the new scene. */
   sceneChanged(): void {
-    // (another view: what it shows of what was delivered meanwhile is history, not dots on their way)
+    // (another view, or a hop's track gone from the scene or back — a filter, a collapsed group, IP / Non-IP: what it
+    // shows of what was delivered meanwhile is history, not dots on their way; a hold on a dot no longer drawn is let go)
     const v = this.host.view();
-    if (v !== this.viewSeen) {
+    const before = this.pacer.items.map((it) => this.lengths.get(`${it.f.view}|${it.f.track.ref}|${it.f.track.from}|${it.f.track.to}`));
+    this.lengths.clear();
+    const moved = this.pacer.items.some((it, i) => before[i] !== undefined && (before[i] === null) !== (this.trackLength(it.f) === null));
+    if (v !== this.viewSeen || moved) {
       this.viewSeen = v;
       this.pacer.reshow();
     }
-    this.lengths.clear();
     this.badgesKey = '';
     this.powerKey = '';
     this.refresh(false);
