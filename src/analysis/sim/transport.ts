@@ -2268,7 +2268,22 @@ export class Transport {
     const echoReq = proto !== 'icmp' || l4.icmpType === 8 || l4.icmpType === 128;
     // a written network policy: its rules decide each packet (analysis/policy.ts, the engine the path tracer uses)
     if (dd && dd.policy) {
-      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev: this.e.ownerOf(pkt.src), dstDev: this.e.ownerOf(pkt.dst), inIface: from.id, outIface: to.id }) as PolicyDecision;
+      // (a device or interface named by a rule: its effective addresses now — leases, SLAAC — and the source's owner its
+      // sender when the address is the sender's own, so an address two VRFs both have is told apart)
+      const ids = { addrs: (x: string) => this.e.effectiveAddrs(x) };
+      // (an owner only where it is certain: one device holds the address; else the rule decides by the address)
+      const only = (a: IpAddr): string | undefined => {
+        let found: string | undefined;
+        for (const x of this.e.net.devices.keys()) {
+          if (!ids.addrs(x).some((y) => compareAddr(y.addr, a) === 0)) continue;
+          if (found !== undefined) return undefined;
+          found = x;
+        }
+        return found;
+      };
+      const sender = pkt.msg.sender;
+      const srcDev = sender && ids.addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : only(pkt.src);
+      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev: only(pkt.dst), inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
       // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
       if (d.permit && (!stateful || (opening && echoReq))) {
         if (stateful) {

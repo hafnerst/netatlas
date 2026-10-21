@@ -434,6 +434,19 @@ export class Engine {
     return l3.addrs.some((x) => compareAddr(x.addr, a) === 0 && this.usableAddr(l3, x.addr)) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
   }
 
+  /**
+   * A device's addresses now, each with its interface: its written ones that are usable (not tentative, not a
+   * duplicate), what SLAAC and DHCPv6 added to them, and its DHCP leases — the identity a policy's device or
+   * interface spec has in the simulation (analysis/policy.ts PolicyIds). An expired lease is not one.
+   */
+  effectiveAddrs(dev: string): Array<{ iface: string; addr: IpAddr }> {
+    const out: Array<{ iface: string; addr: IpAddr }> = [];
+    const sd = this.net.devices.get(dev);
+    if (sd) for (const l of sd.l3.values()) for (const a of l.addrs) if (this.usableAddr(l, a.addr)) out.push({ iface: l.id, addr: a.addr });
+    for (const c of this.leaseConnected(dev)) if (!out.some((x) => x.iface === c.iface && compareAddr(x.addr, c.addr) === 0)) out.push({ iface: c.iface, addr: c.addr });
+    return out;
+  }
+
   /** Is one of an interface's written addresses usable now (not a tentative or duplicate IPv6 address)? */
   usableAddr(l3: L3Iface, a: IpAddr): boolean {
     return !l3.unusable || !l3.unusable.length || l3.unusable.indexOf(formatAddr(a)) < 0;

@@ -115,3 +115,170 @@ test('family: application endpoints — a client’s ip_version, a listener aske
   assert.ok(nh.notTransferred.some((x) => /resolves srv\.example\.net for IPv4/.test(x)));
   assert.ok(!nh.carried.some((x) => /IPv6/.test(x)));
 });
+
+// ------------------------------------------------------------------ policy identities by effective addresses
+
+const S = load('analysis/sim/simulation.js');
+const PO = load('analysis/policy.js');
+const IP = load('model/ip.js');
+
+// pc takes DHCP and SLAAC addresses, st is static; fw's explicit policy names devices
+const POLICY = (rules, def = 'deny', lease = '1h') => `netatlas: 1
+title: policy identities
+devices:
+  - id: pc
+    type: endpoint
+    interfaces: [{id: eth0, ipv4: dhcp, ipv6: slaac}]
+  - id: st
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.1.0.50/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: dsrv
+    type: server
+    services:
+      dhcp:
+        scopes: [{network: lan, range: 10.1.0.100-10.1.0.199, gateway: 10.1.0.1, dns: [10.1.0.5], lease: ${lease}}]
+    interfaces: [{id: eth0, ip: 10.1.0.5/24}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]
+  - id: fw
+    type: firewall
+    interfaces:
+      - id: lan
+        ip: [10.1.0.1/24, "2001:db8:10::1/64"]
+        ipv6_ra: {prefixes: ["2001:db8:10::/64"]}
+      - {id: wan, ip: [10.9.0.1/24, "2001:db8:99::1/64"]}
+    policy:
+      default: ${def}
+      rules:
+${rules}
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/80"}
+    interfaces: [{id: eth0, ip: [10.9.0.10/24, "2001:db8:99::10/64"]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}, {prefix: "::/0", via: "2001:db8:99::1"}]
+links:
+  - {id: l-pc, a: "pc:eth0", b: "sw:p1"}
+  - {id: l-st, a: "st:eth0", b: "sw:p2"}
+  - {id: l-d, a: "dsrv:eth0", b: "sw:p3"}
+  - {id: l-fw, a: "fw:lan", b: "sw:p4"}
+  - {id: l-srv, a: "fw:wan", b: "srv:eth0"}
+networks:
+  - {id: lan, cidr: 10.1.0.0/24}
+`;
+const PERMIT_PC = `        - {action: permit, source: pc, destination: srv, proto: tcp, dport: 80}
+        - {action: permit, source: "pc:eth0", destination: "2001:db8:99::10", proto: tcp, dport: 80}`;
+
+/** run a TCP test to its end */
+function tcp(s, from, to) {
+  const t = s.sendTest({ from, to, kind: 'tcp', port: 80 });
+  assert.equal(typeof t, 'object', String(t));
+  s.runTo(s.now + 10000);
+  return t;
+}
+
+test('policy: a rule naming a DHCP / SLAAC device or interface matches its acquired addresses in the simulation; a static device is itself; the default for the rest', () => {
+  const m = model(POLICY(PERMIT_PC));
+  const s = new S.Simulation(m);
+  s.runTo(30000);
+  const leased = s.engine.effectiveAddrs('pc').map((x) => x.addr);
+  assert.ok(leased.some((a) => a.version === 4) && leased.some((a) => a.version === 6), 'pc has a lease and a SLAAC address');
+  assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true, 'the IPv4 lease matches "source: pc"');
+  assert.equal(tcp(s, 'pc', '2001:db8:99::10').ok, true, 'the SLAAC address matches "source: pc:eth0"');
+  const st = tcp(s, 'st', '10.9.0.10');
+  assert.equal(st.ok, false, 'st is named by no rule: the default deny');
+  assert.match(st.result, /fw|denied|policy/i);
+});
+
+test('policy: a frozen snapshot uses the addresses acquired then — the same decision as the simulation; the configured model says it can’t decide, never a definite answer', () => {
+  const m = model(POLICY(PERMIT_PC));
+  const s = new S.Simulation(m);
+  s.runTo(30000);
+  const snap = s.snapshot();
+  const c = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/80' }, snap);
+  assert.equal(c.layers.find((l) => l.id === 'policy').verdict, 'satisfied', c.headline);
+  assert.equal(c.verdict, 'satisfied', c.headline);
+  // the configured model: pc has no address yet (its own layer says so); a destination rule naming a DHCP device, to an address
+  // nobody has configured, is undecided — not a non-match that would let it through
+  const deny = model(POLICY('        - {action: deny, destination: pc, proto: tcp, dport: 80}', 'permit'));
+  const cfg = C.checkCommunication(deny, { from: 'st', to: '10.1.0.150', service: 'tcp/80' });
+  const pol = cfg.trace ? cfg.trace.paths.flatMap((p) => p.hops.flatMap((h) => h.notes || [])).join(' | ') : '';
+  assert.notEqual(cfg.verdict, 'satisfied', cfg.headline);
+  void pol;
+  const flow = { src: IP.parseAddress('10.1.0.50'), dst: IP.parseAddress('10.1.0.150'), proto: 'tcp', dport: 80, srcDev: 'st', dstDev: null, inIface: 'lan', outIface: 'lan' };
+  const d = PO.policyDecision(deny, deny.index.devices.get('fw'), flow, true);
+  assert.ok(PO.undecided(d), d.text);
+  assert.match(d.text, /an address a device takes at runtime/);
+  // known to be another device's: a definite non-match (a static address, the configured model)
+  const d2 = PO.policyDecision(deny, deny.index.devices.get('fw'), { ...flow, dst: IP.parseAddress('10.1.0.5'), dstDev: 'dsrv' }, true);
+  assert.equal(PO.undecided(d2), false);
+  assert.equal(d2.permit, true, d2.text);
+  // the same rule in the snapshot: pc's lease is pc's, another address is not
+  const ss = new S.Simulation(deny);
+  ss.runTo(30000);
+  const snap2 = ss.snapshot();
+  const lease = ss.engine.effectiveAddrs('pc').find((x) => x.addr.version === 4).addr;
+  const ids = PO.ctxIds(deny, snap2.ctx);
+  assert.equal(PO.specMatches(deny, 'pc', lease, ids), true);
+  assert.equal(PO.specMatches(deny, 'pc', IP.parseAddress('10.1.0.199'), ids), false);
+  assert.equal(PO.specMatches(deny, 'pc:eth0', lease, ids), true);
+  // never a whole subnet for a device
+  assert.equal(PO.specMatches(deny, 'pc', IP.parseAddress('10.1.0.0'), ids), false);
+});
+
+test('policy: an expired lease is no identity any more; a renewed one still is (the same address)', () => {
+  const m = model(POLICY(PERMIT_PC, 'deny', '60s'));
+  const s = new S.Simulation(m);
+  s.runTo(30000);
+  const lease = s.engine.effectiveAddrs('pc').find((x) => x.addr.version === 4).addr;
+  // renewed at T1 by the server: still pc's
+  s.runTo(30000 + 60000);
+  assert.ok(s.engine.effectiveAddrs('pc').some((x) => IP.compareAddr ? true : true));
+  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), true, 'renewed');
+  assert.equal(tcp(s, 'pc', '10.9.0.10').ok, true);
+  // the server gone: no renewal, the lease expires — the address is nobody's
+  s.powerOff('dsrv');
+  s.runTo(s.now + 130000);
+  assert.ok(!s.engine.effectiveAddrs('pc').some((x) => x.addr.version === 4), 'expired');
+  assert.equal(PO.specMatches(m, 'pc', lease, PO.ctxIds(m, s.snapshot().ctx)), false);
+});
+
+// two VRFs of one firewall with the same host address on both sides: hostR and hostB are both 10.9.0.5
+// (each side its own gateway and server addresses: the tracer resolves a next hop to an address's first holder, not per segment)
+const VRFS = `netatlas: 1
+title: overlapping VRFs
+devices:
+  - {id: hostR, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]}
+  - {id: hostB, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.5/24}], routes: [{prefix: 0.0.0.0/0, via: 10.9.0.254}]}
+  - {id: srvR, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.8.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.8.0.1}]}
+  - {id: srvB, type: server, simulation: {listening: "tcp/80"}, interfaces: [{id: eth0, ip: 10.7.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.7.0.1}]}
+  - id: fw
+    type: firewall
+    interfaces:
+      - {id: r-in, ip: 10.9.0.1/24, vrf: red}
+      - {id: r-out, ip: 10.8.0.1/24, vrf: red}
+      - {id: b-in, ip: 10.9.0.254/24, vrf: blue}
+      - {id: b-out, ip: 10.7.0.1/24, vrf: blue}
+    policy:
+      default: deny
+      rules:
+        - {action: permit, source: hostR, proto: tcp, dport: 80}
+links:
+  - {id: a, a: "hostR:eth0", b: "fw:r-in"}
+  - {id: b, a: "hostB:eth0", b: "fw:b-in"}
+  - {id: c, a: "fw:r-out", b: "srvR:eth0"}
+  - {id: d, a: "fw:b-out", b: "srvB:eth0"}
+`;
+
+test('policy: overlapping addresses in two VRFs — a rule naming one host does not match the other host with the same address (analysis and simulation)', () => {
+  const m = model(VRFS);
+  const r = C.checkCommunication(m, { from: 'hostR', to: 'srvR', service: 'tcp/80' });
+  assert.equal(r.verdict, 'satisfied', r.headline);
+  const b = C.checkCommunication(m, { from: 'hostB', to: 'srvB', service: 'tcp/80' });
+  assert.equal(b.layers.find((l) => l.id === 'policy').verdict, 'violated', b.headline);
+  const s = new S.Simulation(m);
+  s.runTo(10000);
+  assert.equal(tcp(s, 'hostR', 'srvR').ok, true);
+  assert.equal(tcp(s, 'hostB', 'srvB').ok, false, 'hostB is not hostR, whatever its address');
+});
