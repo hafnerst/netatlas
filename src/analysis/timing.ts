@@ -18,10 +18,14 @@
  *         (a communication check: path, policy, listener). The analysis
  *         says apart: an upstream reachable; a structurally valid chain to
  *         a root (cycles, a chain without a modeled root, an upstream
- *         outside the model or without NTP are not); the synchronization a
- *         simulation snapshot observed; and that accuracy is never
- *         evaluated. A reachable NTP server is not taken to be
- *         synchronized.
+ *         outside the model or without NTP are not); a feasible one — each
+ *         hop adds one to the stratum, and a client of a server at 15 would
+ *         be at 16, unsynchronized (RFC 5905: a reference's stratum plus
+ *         the hops down to the client is at most 15; the best feasible
+ *         alternative is taken, an infeasible one never hides it); the
+ *         synchronization a simulation snapshot observed; and that
+ *         accuracy is never evaluated. A reachable NTP server is not taken
+ *         to be synchronized.
  *
  * The method is explicit (TimingMethod): PTP, NTP, or either when either is
  * accepted (both are evaluated and both reported). No clock-discipline
@@ -45,12 +49,14 @@ export { TIMING_METHODS };
 export interface NtpAlternative {
   /** the upstream address as configured */
   upstream: string;
-  /** root: a modeled reference; the others say why the chain is not valid */
-  state: 'root' | 'cycle' | 'no-root' | 'external' | 'no-ntp' | 'unreachable' | 'unknown';
+  /** root: a modeled reference within reach of the stratum ceiling; stratum: a reference too far down for it; the others say why the chain is not valid */
+  state: 'root' | 'stratum' | 'cycle' | 'no-root' | 'external' | 'no-ntp' | 'unreachable' | 'unknown';
   /** the devices from the client to where it ends */
   chain: string[];
-  /** the reference's stratum (root) */
+  /** the reference's stratum (root, stratum) */
   stratum?: number;
+  /** the stratum the client would have through it: the reference's plus the hops (root, stratum) */
+  client?: number;
   text: string;
 }
 
@@ -174,6 +180,8 @@ function ntpOf(model: Model, dev: string): { stratum?: number; upstreams: string
 
 /** At most this many hops are followed up an NTP chain (NTP's stratum ceiling). */
 const NTP_MAX_DEPTH = 15;
+/** The highest stratum a synchronized client can have (RFC 5905: 16 is unsynchronized). */
+const NTP_MAX_STRATUM = 15;
 
 /**
  * Follow a device's configured NTP upstreams (see the module comment): each
@@ -211,7 +219,11 @@ function ntpChains(model: Model, dev: string, ctx: RoutingCtx | undefined, path:
       continue;
     }
     if (oc.stratum !== undefined) {
-      out.push({ upstream: up, state: 'root', chain: path.concat([owner]), stratum: oc.stratum, text: `${path.concat([owner]).join(' → ')}: ${owner} is a configured reference (stratum ${oc.stratum}, its reference clock taken as given)` });
+      // (each hop down adds one: the client of the chain's first device is at the reference's stratum plus the hops)
+      const chain = path.concat([owner]);
+      const client = oc.stratum + chain.length - 1;
+      if (client > NTP_MAX_STRATUM) out.push({ upstream: up, state: 'stratum', chain, stratum: oc.stratum, client, text: `${chain.join(' → ')}: ${owner} is a reference of stratum ${oc.stratum}, ${chain.length - 1} hop${chain.length === 2 ? '' : 's'} up: ${chain[0]} would be at stratum ${client}, above ${NTP_MAX_STRATUM} — unsynchronized, the chain is not usable` });
+      else out.push({ upstream: up, state: 'root', chain, stratum: oc.stratum, client, text: `${chain.join(' → ')}: ${owner} is a configured reference (stratum ${oc.stratum}, its reference clock taken as given; ${chain[0]} at stratum ${client})` });
       continue;
     }
     if (!oc.upstreams.length || path.length >= NTP_MAX_DEPTH) {
@@ -222,12 +234,14 @@ function ntpChains(model: Model, dev: string, ctx: RoutingCtx | undefined, path:
     const key = owner + '|' + path.join('>');
     const sub = memo.get(key) || ntpChains(model, owner, ctx, path.concat([owner]), memo);
     memo.set(key, sub);
-    const best = sub.find((x) => x.state === 'root') || sub.find((x) => x.state === 'unknown') || sub.find((x) => x.state === 'external') || sub[0];
+    // (the feasible root with the lowest stratum for the client first; an infeasible one never hides a usable alternative)
+    const roots = sub.filter((x) => x.state === 'root').sort((a, b) => (a.client as number) - (b.client as number));
+    const best = roots[0] || sub.find((x) => x.state === 'unknown') || sub.find((x) => x.state === 'external') || sub.find((x) => x.state === 'stratum') || sub[0];
     if (!best) {
       out.push({ upstream: up, state: 'no-root', chain: path.concat([owner]), text: `${owner}'s upstreams lead nowhere` });
       continue;
     }
-    out.push({ upstream: up, state: best.state, chain: best.chain, stratum: best.stratum, text: best.text });
+    out.push({ upstream: up, state: best.state, chain: best.chain, stratum: best.stratum, client: best.client, text: best.text });
   }
   return out;
 }
@@ -242,7 +256,7 @@ export function ntpSource(model: Model, dev: string, ctx?: RoutingCtx, snap?: An
     return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
   }
   const alts = ntpChains(model, dev, ctx, [dev], new Map());
-  const roots = alts.filter((x) => x.state === 'root');
+  const roots = alts.filter((x) => x.state === 'root').sort((a, b) => (a.client as number) - (b.client as number));
   const first = alts.filter((x) => x.state !== 'external' && x.state !== 'no-ntp' && x.state !== 'unreachable' && x.state !== 'unknown');
   const upstream: Verdict = first.length ? 'satisfied' : alts.some((x) => x.state === 'unknown') ? 'indeterminate' : alts.every((x) => x.state === 'external') ? 'beyond' : 'violated';
   const detail = alts.map((x) => `${x.upstream}: ${x.text}`);
@@ -252,9 +266,9 @@ export function ntpSource(model: Model, dev: string, ctx?: RoutingCtx, snap?: An
   if (roots.length) {
     const r = roots[0];
     const more = roots.length > 1 ? `; ${roots.length - 1} alternative root${roots.length === 2 ? '' : 's'} (${roots.slice(1).map((x) => x.chain[x.chain.length - 1]).join(', ')})` : '';
-    return { ...base, verdict: 'satisfied', text: `A structurally valid NTP source chain exists: ${r.chain.join(' → ')} (a configured reference, stratum ${r.stratum})${more}; ${observed ? 'the snapshot: ' + observed : 'runtime synchronization is not established'}; accuracy is not evaluated`, chain: r.chain, levels: { upstream, chain: 'satisfied' } };
+    return { ...base, verdict: 'satisfied', text: `A structurally valid NTP source chain exists: ${r.chain.join(' → ')} (a configured reference, stratum ${r.stratum}; ${dev} at stratum ${r.client})${more}; ${observed ? 'the snapshot: ' + observed : 'runtime synchronization is not established'}; accuracy is not evaluated`, chain: r.chain, levels: { upstream, chain: 'satisfied' } };
   }
-  const why = alts.find((x) => x.state === 'cycle') || alts.find((x) => x.state === 'no-root') || alts.find((x) => x.state === 'unreachable') || alts.find((x) => x.state === 'no-ntp');
+  const why = alts.find((x) => x.state === 'stratum') || alts.find((x) => x.state === 'cycle') || alts.find((x) => x.state === 'no-root') || alts.find((x) => x.state === 'unreachable') || alts.find((x) => x.state === 'no-ntp');
   if (alts.some((x) => x.state === 'unknown')) {
     const u = alts.find((x) => x.state === 'unknown') as NtpAlternative;
     return { ...base, verdict: 'indeterminate', text: `The NTP source chain can't be established: ${u.text}`, chain: u.chain, levels: { upstream, chain: 'indeterminate' } };

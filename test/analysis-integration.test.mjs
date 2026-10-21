@@ -638,7 +638,7 @@ test('timing: an NTP source chain to a modeled reference, alternatives, cycles a
   const c = TI.ntpSource(m, 'c');
   assert.equal(c.verdict, 'satisfied');
   assert.deepEqual(c.chain, ['c', 'b', 'a', 'ref']);
-  assert.match(c.text, /^A structurally valid NTP source chain exists: c → b → a → ref \(a configured reference, stratum 1\); runtime synchronization is not established; accuracy is not evaluated$/);
+  assert.match(c.text, /^A structurally valid NTP source chain exists: c → b → a → ref \(a configured reference, stratum 1; c at stratum 4\); runtime synchronization is not established; accuracy is not evaluated$/);
   assert.deepEqual(c.ntp.map((x) => [x.upstream, x.state]), [['203.0.113.5', 'external'], ['10.0.0.3', 'root']], 'each upstream with where it ends');
   assert.deepEqual(c.levels, { upstream: 'satisfied', chain: 'satisfied' });
   // a cycle without a reference: upstreams reachable, no source chain

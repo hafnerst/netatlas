@@ -546,3 +546,66 @@ test('capacity: a single flow is limited by the members that are up — the fast
   assert.equal(ans.verdict, 'unknown');
   assert.match(ans.perFlow || '', /the most one flow can use on s\d:ae0 .* is not known/);
 });
+
+// ------------------------------------------------------------------ NTP: chain feasibility
+
+const TI = load('analysis/timing.js');
+
+// one LAN: references of strata 14, 15 and 13, servers chained under them, clients with alternatives
+const NTP = `netatlas: 1
+title: ntp strata
+devices:
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}, {id: p6, vlans: 1}, {id: p7, vlans: 1}, {id: p8, vlans: 1}, {id: p9, vlans: 1}]}
+  - {id: r14, type: server, services: {ntp: {stratum: 14}}, interfaces: [{id: eth0, ip: 10.0.0.14/24}]}
+  - {id: r15, type: server, services: {ntp: {stratum: 15}}, interfaces: [{id: eth0, ip: 10.0.0.15/24}]}
+  - {id: r13, type: server, services: {ntp: {stratum: 13}}, interfaces: [{id: eth0, ip: 10.0.0.13/24}]}
+  - {id: r1, type: server, services: {ntp: {stratum: 1}}, interfaces: [{id: eth0, ip: 10.0.0.1/24}]}
+  - {id: a, type: server, services: {ntp: {upstreams: [10.0.0.13]}}, interfaces: [{id: eth0, ip: 10.0.0.21/24}]}
+  - {id: b, type: server, services: {ntp: {upstreams: [10.0.0.21]}}, interfaces: [{id: eth0, ip: 10.0.0.22/24}]}
+  - {id: edge, type: server, services: {ntp: {upstreams: [10.0.0.14]}}, interfaces: [{id: eth0, ip: 10.0.0.30/24}]}
+  - {id: deep, type: server, services: {ntp: {upstreams: [10.0.0.22]}}, interfaces: [{id: eth0, ip: 10.0.0.31/24}]}
+  - {id: alt, type: server, services: {ntp: {upstreams: [10.0.0.22, 10.0.0.1, 203.0.113.9]}}, interfaces: [{id: eth0, ip: 10.0.0.32/24}]}
+links:
+  - {id: l1, a: "r14:eth0", b: "sw:p1"}
+  - {id: l2, a: "r15:eth0", b: "sw:p2"}
+  - {id: l3, a: "r13:eth0", b: "sw:p3"}
+  - {id: l4, a: "r1:eth0", b: "sw:p4"}
+  - {id: l5, a: "a:eth0", b: "sw:p5"}
+  - {id: l6, a: "b:eth0", b: "sw:p6"}
+  - {id: l7, a: "edge:eth0", b: "sw:p7"}
+  - {id: l8, a: "deep:eth0", b: "sw:p8"}
+  - {id: l9, a: "alt:eth0", b: "sw:p9"}
+`;
+
+test('NTP: the stratum ceiling — a reference of 14 one hop up is the usable boundary (15); a stratum-15 upstream is not usable; three hops below 13 exhaust it', () => {
+  const m = model(NTP);
+  const edge = TI.ntpSource(m, 'edge');
+  assert.equal(edge.verdict, 'satisfied', edge.text);
+  assert.match(edge.text, /edge at stratum 15/);
+  const direct = TI.ntpSource(model(NTP.replace('services: {ntp: {upstreams: [10.0.0.14]}}', 'services: {ntp: {upstreams: [10.0.0.15]}}')), 'edge');
+  assert.equal(direct.verdict, 'violated', direct.text);
+  assert.match(direct.text, /edge would be at stratum 16, above 15 — unsynchronized/);
+  assert.equal(direct.levels.upstream, 'satisfied', 'the upstream is reachable: that is not a feasible chain');
+  // deep → b → a → r13: 13 + 3 = 16
+  const deep = TI.ntpSource(m, 'deep');
+  assert.equal(deep.verdict, 'violated');
+  assert.deepEqual(deep.chain, ['deep', 'b', 'a', 'r13']);
+  assert.match(deep.text, /r13 is a reference of stratum 13, 3 hops up: deep would be at stratum 16/);
+  // b itself (two hops: 15) is fine
+  assert.equal(TI.ntpSource(m, 'b').verdict, 'satisfied');
+});
+
+test('NTP: an infeasible alternative never hides a usable one; the best feasible is taken; cycles and external upstreams stay what they are', () => {
+  const m = model(NTP);
+  const a = TI.ntpSource(m, 'alt');
+  assert.equal(a.verdict, 'satisfied', a.text);
+  assert.deepEqual(a.chain, ['alt', 'r1']);
+  assert.match(a.text, /alt at stratum 2/);
+  assert.deepEqual(a.ntp.map((x) => x.state), ['stratum', 'root', 'external']);
+  // a cycle: a and b ask each other
+  const cyc = model(NTP.replace('services: {ntp: {upstreams: [10.0.0.13]}}', 'services: {ntp: {upstreams: [10.0.0.22]}}'));
+  assert.equal(TI.ntpSource(cyc, 'b').ntp[0].state, 'cycle');
+  // external only: beyond the model
+  const ext = model(NTP.replace('services: {ntp: {upstreams: [10.0.0.14]}}', 'services: {ntp: {upstreams: [203.0.113.9]}}'));
+  assert.equal(TI.ntpSource(ext, 'edge').verdict, 'beyond');
+});
