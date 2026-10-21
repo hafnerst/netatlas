@@ -38,6 +38,17 @@ other's back:
   differ from the entire model*; its results are the scope's.
 * Analyses that would blend two states refuse: a hypothetical failure is
   applied to the configured model only, never to a snapshot.
+* **Compare with simulation** takes only a send that carried the check's
+  identity: its source interface — and, for a check from an exact
+  address, a send that left from that address as recorded when it was
+  sent (an interface is not an address: Send network packets names the
+  interface, which sends from an address of its own choosing, and says
+  so) —, the destination by its binding, the family, the port and the
+  routing context. While messages are on their way or still to be sent
+  the comparison is provisional.
+* An execution scope keeps an interconnect's `traffic:` only where its
+  initiator, its source, the recipient and every transit device on the
+  way are inside; the scope says which transfers it leaves out.
 
 **Not supported.** Runtime behaviour that no static analysis establishes
 (that an application accepts a connection, authenticates, answers or
@@ -256,14 +267,24 @@ to the host's address, DNAT for published ports) in both.
 * **A rule's device or interface is its effective addresses.** In the
   simulation and a snapshot: its written addresses that are usable and
   what DHCP, SLAAC or DHCPv6 gave it (an expired lease none); where the
-  owner of an address is known (the traced ends; the sender of a packet
-  for its own address), only that device — so an address two VRFs both
-  have names one host. In the configured model a device that takes its
-  address at runtime is not known: a rule naming it, for an address nobody
-  is known to have, decides nothing (analyze a snapshot). The path tracer
-  still resolves a next hop or a destination to an address's first holder,
-  not per segment: overlapping addresses in two VRFs on one path are
-  traced by the first.
+  owner of an address is known, only that device — so an address two VRFs
+  both have is not one identity. The owner comes from the forwarding
+  context: in the path tracer the traced ends, and among several holders
+  of a next hop or a destination the one on the segment the hop reaches;
+  in the simulation the packet's sender for its own source, and for a
+  destination the device the firewall's routes lead to, segment by
+  segment. An address several devices have and no owner known (only the
+  address given): the rule decides nothing — never every holder. In the
+  configured model a device that takes its address at runtime is not
+  known: a rule naming it, for an address nobody is known to have,
+  decides nothing (analyze a snapshot).
+* **Unknown is not permitted.** A decision that lacks the source, the
+  service or a runtime identity is undecided: the communication check's
+  policy layer is indeterminate and says what it lacks (an expectation
+  keeps it), never "Permitted"; the simulation drops a packet whose
+  decision can't be made and says why. A rule a known protocol or port
+  can't match is no reason for an undecided decision; an earlier undecided
+  rule still stops the evaluation (first match).
 * **NAT is one translation per flow** — TCP and UDP by their ports, an ICMP
   echo by its identifier; an ICMP error about a translated packet goes back
   to the inside host with its quoted header translated back (PMTUD through
@@ -446,7 +467,11 @@ and device actions) from the user.
   geometry, it holds nothing; a track outside the pan and zoom still holds.
   When it comes back, what was delivered meanwhile is not drawn as on its
   way. A very large moment (thousands of events at one simulated time)
-  may take several frames, in its order. Your own
+  may take several frames, in its order; at the playback's end (an
+  experiment's) the rest of such a moment is still processed, never
+  beyond it. An action of yours while a moment is partly done takes
+  effect then: after its events already done, before those still queued
+  (they see it). Your own
   Network events, their prerequisites (the ARP a send needs) and the
   conversation followed are always dots. A multicast stream is a flow on
   every cable of its tree; one datagram after each Network event is shown
@@ -556,7 +581,12 @@ statically; contextual focus.
   does. The single points of failure fail each cable, device and LAG alone;
   combinations are what-if conditions you choose, never enumerated. The
   structural impact is an object count, not a business criticality.
-* **Capacity is stated traffic against stated speeds.** Demands and
+* **Capacity is stated traffic against stated speeds.** An application's
+  transfer is traced between its own ends — its family, the peer
+  listener's bind interface's address (else its device's address of the
+  family), as the simulation's applications pick them; a bound listener
+  whose interface is down is not carried, never rerouted to another
+  address. Demands and
   applications with an interval (payload rates: one MQTT publication per
   topic, each subscriber a matching publication once; a client's answers
   at its responder's response size, assumed and said when the responder is
@@ -610,7 +640,8 @@ with the simulation).
   series keeps its last 50 transfers in detail and counts all of them.
 * **Editing.** Interconnects, their endpoints and a System's transit
   groups have their controls in the Edit tab; an interconnect's `traffic:`
-  is written in YAML.
+  is written in YAML, and its references (initiator, source, recipients)
+  follow a renamed device or port and are reported when one is deleted.
 * **Text, not semantics.** Technology, version, protocol and connector are
   free text: nothing checks that a USB version matches on both ends, that
   a connector fits, or that an RS-232 line is short enough.

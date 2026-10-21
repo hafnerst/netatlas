@@ -12,6 +12,54 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Remaining correctness after #93: a policy rule's device is the device the
+traffic reaches (overlapping addresses in two VRFs), an undecided policy
+is never "permitted", an exact source address is compared only with a
+send that left from it, configured non-IP traffic follows renames and
+execution scopes, application capacity follows the application's own
+ends, and a playback's end no longer stalls on a moment a frame left
+unfinished; the VME rack gains a VME Layer 2/3 switch board.
+
+### Fixed (after #93)
+
+- **Overlapping addresses in two VRFs.** A rule permitting srvR permitted
+  traffic to srvB with the same address in another VRF (the simulation),
+  and the path tracer followed an address's first holder in the model
+  (it could not reach the other VRF's device). The owner of an address is
+  now the device the traffic reaches — the holder on the segment a hop
+  reaches, the firewall's routes in the simulation; with several holders
+  and none known, a rule naming one decides nothing.
+- **Undecided policy decisions** are carried as what they lack (the
+  source, the service, a runtime identity) into the communication check:
+  a rule depending on a DHCP host's address showed "Permitted"; it is
+  indeterminate now. A TCP/80 rule no longer makes a UDP/53 flow
+  undecided.
+- **Compare with simulation** took a send from another address of the
+  source interface as the evidence of a check from an exact address. It
+  needs a send that left from that address (recorded when sent); the
+  handoff says an interface is not an address.
+- **Renaming a device or an opaque port** left an interconnect's
+  `traffic:` naming the old one (the model invalid). Its initiator,
+  source and recipients follow now, in one undo step, and deleting
+  reports them.
+- **Execution scopes** kept a transfer to a recipient outside the scope
+  (it failed at runtime). A transfer is kept only where its ends and
+  every transit device are inside, said in the scope's caveats.
+- **Capacity** traced an application's transfer to its peer device's
+  default address: a listener bound to a slow management interface
+  "fit" on the fast data cable, an IPv6 application went over IPv4. It
+  follows the application's resolved ends now.
+- **Playback at its end.** A moment exactly at an experiment's end that
+  a frame's budget ended partway was never finished: the run never
+  ended (a regression of #93's budget within a moment).
+
+### Changed (VME rack)
+
+- **vme-rack.yaml** has a VME Layer 2/3 Ethernet switch board (a
+  fictional model of a kind several vendors build): a target on the
+  VMEbus that gives every board its IP connection over the backplane and
+  routes the crate to the operators' LAN.
+
 Targeted correctness: a presentation hold only for a dot the diagram
 draws, aggregation that starts afresh after failures and recovery, equal
 times told apart by each delivery's lifecycle; the address family,
