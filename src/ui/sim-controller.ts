@@ -255,7 +255,7 @@ export class SimController implements SimulationMode {
         foreground: () => !this.experiment && this.sim.foregroundActive(),
         until: () => (this.experiment ? this.experiment.until() : null),
         notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
-        epoch: () => this.sim.actionCount,
+        epoch: () => this.sim.presentationEpoch,
       },
       MAX_DOTS,
     );

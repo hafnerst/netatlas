@@ -30,7 +30,7 @@ devices:
   - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.0.20/24}], simulation: {listening: "tcp/80"}}
   - {id: rx, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.30/24}]}
 links:
-  - {id: a, a: "pc:eth0", b: "sw1:p1"${x.lat ? ', simulation: {latency: ' + x.lat + '}' : ''}}
+  - {id: a, a: "pc:eth0", b: "sw1:p1"${x.lat !== undefined ? ', simulation: {latency: ' + x.lat + '}' : ''}}
   - {id: b, a: "pcb:eth0", b: "sw1:p2"}
   - {id: c, a: "sw1:p3", b: "sw2:p1"}
   - {id: d, a: "sw2:p2", b: "srv:eth0"}
@@ -58,7 +58,7 @@ function paced(text, o = {}) {
     typical: () => sim.engine.hopTime(),
     headers: (f) => f.hdr,
     foreground: () => sim.foregroundActive(),
-    epoch: () => sim.actionCount,
+    epoch: () => sim.presentationEpoch,
     until: () => st.cap,
   };
   const p = new P.Pacer(host, o.limit || 48);
@@ -282,6 +282,10 @@ test('the engine: a held delivery stops runUntil before it, event by event — w
 
 test('a zero-latency cable: its dot still gets its screen time and the delivery waits for it (registered by the hold itself, within the same batch)', () => {
   const m = paced(LAN({ lat: 0 }));
+  // (the fixture really is zero: the cable's own latency, resolved as written)
+  const r = m.sim.engine.latency('a');
+  assert.deepEqual([r.value, r.source], [0, 'configured']);
+  assert.notEqual(paced(LAN()).sim.engine.latency('a').value, 0, 'the default is not zero');
   m.to(3000);
   const t = m.sim.sendTest({ from: 'pc', to: '10.0.0.20', kind: 'icmp' });
   let min = Infinity;
@@ -466,4 +470,156 @@ test('the words of a hold: neighbor resolution, establishing TCP, retransmitting
   assert.equal(P.holdText(f({ protocol: 'igmp', label: 'IGMPv3 Report 239.1.1.1' })), 'waiting for packet arrival (membership report in transit)');
   assert.equal(P.holdText(f({ protocol: 'tcp', label: 'TCP [P,A] · 120 B', flags: '[P,A]' })), 'waiting for packet arrival');
   assert.equal(P.holdText(f({ protocol: 'ospf', label: 'OSPF Hello' })), 'waiting for packet arrival');
+});
+
+// ------------------------------------------------------------------ presentation eligibility, aggregation epochs, equal times
+
+test('a held dot loses its drawing (a filter, a collapsed group, IP / Non-IP, no geometry: not shown any more): its hold is let go at once — no obsolete hold, no reordering, the headless outcome', () => {
+  const run = (hideHeld) => {
+    const m = paced(LAN());
+    m.to(3000);
+    const t = m.sim.sendTest({ from: 'pc', to: '10.0.0.20', kind: 'tcp', port: 80 });
+    let cut = null;
+    if (hideHeld) {
+      // as the page does when the track of the held dot leaves the scene: shown says no, and the change goes through reshow
+      m.until(() => !!m.p.holding());
+      cut = m.p.holding().f.track.ref;
+      m.st.hide = (f) => f.track.ref === cut;
+      m.p.reshow();
+      m.frame();
+      const h = m.p.holding();
+      assert.ok(!h || h.f.track.ref !== cut, 'no hold on a dot that is not drawn');
+      // nothing on that track waits from now on
+      for (const it of m.p.items) if (it.f.track.ref === cut) assert.equal(m.p.gated(it), false);
+    }
+    m.until(() => t.done);
+    m.to(20000);
+    return { sim: simulated(m.sim, 20000), ok: t.ok, cut };
+  };
+  const shown = run(false);
+  const hidden = run(true);
+  assert.ok(hidden.cut, 'a dot was held and its track hidden');
+  assert.equal(hidden.ok, true);
+  assert.deepEqual(hidden.sim, shown.sim, 'the same events, flights and outcomes');
+});
+
+test('aggregation after failures and recovery: a failure and its restore through the plain API (no event of the list) make the scenario news again, then it is summarized again', () => {
+  const m = paced(PS);
+  m.to(30000);
+  assert.ok(m.p.repeats > 0, 'the steady state is summarized');
+  const seen = (pred) => {
+    const s = new Set();
+    m.hooks.push(() => {
+      for (const it of m.p.items) if (it.drawn && it.f.test === undefined && it.f.view === 'physical' && pred(it)) s.add(P.repeatKey(it.f));
+    });
+    return s;
+  };
+  for (const [what, act] of [
+    ['fail', () => m.sim.fail('link:l-acc-core1')],
+    ['restore', () => m.sim.restore('link:l-acc-core1')],
+    ['power off', () => m.sim.powerOff('pc2')],
+    ['power on', () => m.sim.powerOn('pc2')],
+  ]) {
+    // a quiet stretch first: what the scenario sends is the steady state (cable activity)
+    for (let i = 0; i < 200; i++) m.frame();
+    const e0 = m.sim.presentationEpoch;
+    assert.ok(act(), what);
+    assert.equal(m.sim.presentationEpoch, e0 + 1, `${what} moves the presentation's epoch`);
+    const t0 = m.sim.now;
+    const after = seen((it) => it.f.t0 >= t0);
+    const r0 = m.p.repeats;
+    m.until(() => after.size >= 1, 300000);
+    // and bounded: the same kinds become the steady state again
+    m.until(() => m.p.repeats > r0, 600000);
+  }
+  // the network's own changes and packets do not move it
+  const e1 = m.sim.presentationEpoch;
+  for (let i = 0; i < 400; i++) m.frame();
+  assert.equal(m.sim.presentationEpoch, e1);
+});
+
+test('the presentation epoch: each successful outside change counts once, a refused one not at all; flapping counts its transitions', () => {
+  const sim = new S.Simulation(model(PS));
+  sim.runTo(20000);
+  const e = () => sim.presentationEpoch;
+  const steps = [
+    ['shut', () => sim.shut('pc1', 'eth0'), 1],
+    ['shut again', () => sim.shut('pc1', 'eth0'), 0],
+    ['no shut', () => sim.noShut('pc1', 'eth0'), 1],
+    ['fail', () => sim.fail('link:l-pc2'), 1],
+    ['fail unknown', () => sim.fail('link:nope'), 0],
+    ['restore', () => sim.restore('link:l-pc2'), 1],
+    ['power off', () => sim.powerOff('pc2'), 1],
+    ['power on', () => sim.powerOn('pc2'), 1],
+  ];
+  for (const [what, act, n] of steps) {
+    const before = e();
+    act();
+    assert.equal(e() - before, n, what);
+  }
+  const f0 = e();
+  assert.ok(!sim.actFlap('iface:pc1:eth0').error);
+  sim.runTo(sim.now + 30000);
+  assert.ok(e() >= f0 + 3, 'its event, and its transitions while it flaps');
+});
+
+test('equal timestamps: a delivery processed at the engine’s own time is history, one still pending at that time keeps its dot and its hold; the order of events is kept', () => {
+  const sim = withClock(new S.Simulation(model(LAN())));
+  sim.runTo(3000);
+  const e = sim.engine;
+  const order = [];
+  const msg = (n) => ({ protocol: 'icmp', type: 'probe ' + n, label: 'probe ' + n, detail: '', data: {} });
+  // f1 not drawn (filtered), f2 drawn: the engine does f1 at t1 and stops before f2 — at the same time
+  const st = { hide: (f) => f.id === f1.id };
+  const p = new P.Pacer({ engine: e, shown: (f) => f.view === 'physical' && !st.hide(f), typical: () => e.hopTime(), headers: (f) => f.hdr }, 48);
+  const t1 = e.now + 1;
+  const f1 = e.flight(e.now, t1, msg(1), 'physical', { ref: 'link:a', from: 'a', to: 'b' });
+  const f2 = e.flight(e.now, t1, msg(2), 'physical', { ref: 'link:b', from: 'a', to: 'b' });
+  e.at(t1, () => order.push(1), [f1.id]);
+  e.at(t1, () => order.push(2), [f2.id]);
+  assert.deepEqual([f1.due, f2.due], [1, 1], 'both pending');
+  for (let i = 0; i < 1000 && order.length < 1; i++) p.frame(16);
+  assert.deepEqual(order, [1]);
+  assert.equal(e.now, t1, 'stopped partway through the moment');
+  assert.deepEqual([f1.due, f1.delivered, f2.due, !!f2.delivered], [0, true, 1, false]);
+  assert.equal(p.holding() && p.holding().f.id, f2.id);
+  assert.deepEqual([P.history(f1, e.now, f1.t1), P.history(f2, e.now, f2.t1)], [true, false], 'the same time, told apart by the lifecycle');
+  // the filter is lifted between the two: f1 (processed) is not drawn travelling towards its arrival; f2 keeps its place and its hold
+  st.hide = () => false;
+  p.reshow();
+  assert.ok(!p.find(f1.id), 'processed: not revived as pending');
+  assert.ok(p.find(f2.id) && p.holding().f.id === f2.id, 'pending: kept, still held');
+  // a change of pacing between them neither
+  p.mode = 'proportional';
+  p.reshow();
+  p.mode = 'readable';
+  assert.ok(p.find(f2.id));
+  for (let i = 0; i < 1000 && order.length < 2; i++) p.frame(16);
+  assert.deepEqual(order, [1, 2], 'in their order');
+  assert.deepEqual([f2.due, f2.delivered], [0, true]);
+  // a zero-time flight (its arrival at its own start): pending until its delivery runs
+  const f3 = e.flight(e.now, e.now, msg(3), 'physical', { ref: 'link:a', from: 'a', to: 'b' });
+  e.at(e.now, () => order.push(3), [f3.id]);
+  assert.equal(P.history(f3, e.now, f3.t1), false);
+  sim.runTo(e.now);
+  assert.equal(P.history(f3, e.now, f3.t1), true);
+  assert.deepEqual(order, [1, 2, 3]);
+});
+
+test('a receiving device’s state stays as it was until its dot arrives: the server learns the client’s address only when the held request is processed', () => {
+  const m = paced(LAN());
+  m.to(3000);
+  m.sim.sendTest({ from: 'pc', to: '10.0.0.20', kind: 'icmp' });
+  // the request's last cable to the server: held; the server knows nothing of pc until its delivery runs
+  m.until(() => {
+    const h = m.p.holding();
+    return !!h && h.f.protocol === 'arp' && h.f.track.ref === 'link:d';
+  });
+  const h = m.p.holding();
+  const knows = () => m.sim.arpTable('srv').some((r) => JSON.stringify(r).indexOf('10.0.0.10') >= 0);
+  assert.equal(h.f.due, 1, 'its delivery is pending');
+  assert.equal(knows(), false, 'nothing learned before the delivery');
+  m.until(() => !h.f.due);
+  assert.equal(h.f.delivered, true);
+  assert.equal(knows(), true, 'learned when it is processed');
 });

@@ -282,48 +282,67 @@ export class Simulation {
   /** Fail a cable or relation ("link:x", "relation:x"). */
   fail(ref: string): boolean {
     if (!failableRef(this.model, ref) || (ref.indexOf('link:') !== 0 && ref.indexOf('relation:') !== 0)) return false;
-    return this.engine.fail(ref);
+    return this.changed(this.engine.fail(ref));
   }
 
   restore(ref: string): boolean {
-    return this.engine.restore(ref);
+    return this.changed(this.engine.restore(ref));
   }
 
   /** Start flapping a cabled port ("iface:dev:port"; its cable follows). A cable is no target: false. */
   startFlap(ref: string): boolean {
-    return this.engine.startFlap(ref);
+    return this.changed(this.engine.startFlap(ref));
   }
 
   stopFlap(ref: string): boolean {
-    return this.engine.stopFlap(ref);
+    return this.changed(this.engine.stopFlap(ref));
   }
 
   shut(dev: string, iface: string): boolean {
-    return this.engine.shut(dev, iface);
+    return this.changed(this.engine.shut(dev, iface));
   }
 
   noShut(dev: string, iface: string): boolean {
-    const ok = this.engine.noShut(dev, iface);
+    const ok = this.changed(this.engine.noShut(dev, iface));
     if (ok) for (const a of this.acts) if (a.shut && a.shut.dev === dev && a.shut.iface === iface && a.shut.upAt === undefined) a.shut.upAt = this.now;
     return ok;
   }
 
   powerOff(dev: string): boolean {
-    return this.engine.powerOff(dev);
+    return this.changed(this.engine.powerOff(dev));
   }
 
   powerOn(dev: string): boolean {
-    return this.engine.powerOn(dev);
+    return this.changed(this.engine.powerOn(dev));
   }
 
   /** Stop a device's container engine (its containers and container networks stop). */
   stopEngine(dev: string): boolean {
-    return this.engine.stopEngine(dev);
+    return this.changed(this.engine.stopEngine(dev));
   }
 
   /** Start a device's container engine again (its containers as their restart policy says). */
   startEngine(dev: string): boolean {
-    return this.engine.startEngine(dev);
+    return this.changed(this.engine.startEngine(dev));
+  }
+
+  /** the network changed from outside (a failure, a restore, a power change, a shut …), successfully: counted */
+  private changes = 0;
+  private changed(ok: boolean): boolean {
+    if (ok) this.changes++;
+    return ok;
+  }
+
+  /**
+   * The presentation's epoch: it moves with every change of the network from outside — an event of the list,
+   * a failure or restore (cables, relations, the non-IP side), a power change, a shut or no shut, flapping
+   * started, stopped or going down or up (not the model's own flapping: the scenario), a container engine stopped or started, a membership joined or left,
+   * a stream stopped — never with a packet or the network's own state changes. The display's steady state
+   * (pacing.ts: what was seen once is cable activity) starts afresh with it, so what such a change causes is
+   * shown, then summarized again.
+   */
+  get presentationEpoch(): number {
+    return this.actionCount + this.changes + this.engine.flapTransitions;
   }
 
   /** End an event of the list (Restore, Stop flapping, No shut, Power on, Start engine). */
@@ -344,7 +363,7 @@ export class Simulation {
       if (ev.kind === 'join') return this.leaveGroup(dev, iface, g);
       if (ev.kind === 'leave') return this.joinGroup(dev, iface, g, []) === null;
       if (ev.kind === 'stream') return this.stopStream(dev, iface, g);
-      return this.multicast.restartStream(dev, iface, g);
+      return this.changed(this.multicast.restartStream(dev, iface, g));
     }
     return this.powerOn(id);
   }
@@ -360,6 +379,7 @@ export class Simulation {
   joinGroup(dev: string, iface: string, group: string, sources: string[]): string | null {
     const r = this.multicast.join(dev, iface, group, sources, 'event');
     if (r === null) this.engine.stateVersion++;
+    this.changed(r === null);
     return r;
   }
 
@@ -617,7 +637,7 @@ export class Simulation {
       const f = a.icfail;
       const done = f.what === 'interconnect' ? this.opaque.restoreInterconnect(f.key) : f.what === 'attachment' ? this.opaque.reattach(f.key) : this.opaque.noShutPort(f.key);
       if (done) f.restoredAt = this.now;
-      return done;
+      return this.changed(done);
     }
     return false;
   }
@@ -682,6 +702,7 @@ export class Simulation {
     const r = this.multicast.addStream(dev, iface, group, port, interval, size, 'event');
     if (typeof r === 'string') return r;
     this.engine.stateVersion++;
+    this.changed(true);
     return null;
   }
 
@@ -710,7 +731,7 @@ export class Simulation {
   }
 
   stopStream(dev: string, iface: string, group: string): boolean {
-    return this.multicast.stopStream(dev, iface, group);
+    return this.changed(this.multicast.stopStream(dev, iface, group));
   }
 
   /** A router's IGMP / MLD groups, a switch's multicast table, a router's multicast routes. */

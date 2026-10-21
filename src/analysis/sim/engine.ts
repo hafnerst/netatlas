@@ -272,6 +272,8 @@ export interface Flap {
   down: boolean;
   done: number;
   token: number;
+  /** the model's own (an interface's flapping attribute): the scenario, not a change from outside */
+  configured?: boolean;
   /** how it ended (its cycles done, or Stop flapping) and when; unset while it flaps */
   ended?: 'done' | 'stopped';
   endedAt?: number;
@@ -326,6 +328,8 @@ export class Engine {
   private fwdAt = new Map<string, number>();
   /** bumped whenever what the diagram marks changes (an event, a cable going down or up) */
   stateVersion = 0;
+  /** the transitions of flapping ports so far (each down and each up): the presentation's epoch counts them (Simulation.presentationEpoch) */
+  flapTransitions = 0;
   private stp = new Map<number, Tree>();
   private arp = new Map<string, Map<string, ArpEntry>>();
   private macs = new Map<string, Map<string, MacEntry>>();
@@ -3747,10 +3751,11 @@ export class Engine {
    * for the up time, for the cycles (0: until stopped); its cable follows (down while the port is). A cable is
    * no target, and one cable flaps from one of its ends at a time.
    */
-  startFlap(ref: string, why = ''): boolean {
+  startFlap(ref: string, why = '', configured = false): boolean {
     const link = this.flapLink(ref);
     if (!link || this.flaps.has(link)) return false;
     const fl: Flap = { link, ref, since: this.now, down: false, done: 0, token: ++this.tokens };
+    if (configured) fl.configured = true;
     this.flaps.set(link, fl);
     const p = (k: string): string => resolvedText(this.params.get(k));
     this.note('link', 'link', '', '', 'Flapping', 'flapping', `Port ${ref.slice(6)} starts flapping${why} (its cable ${link} follows): down ${p('flap-down')}, up ${p('flap-up')}, ${p('flap-cycles')} cycles`);
@@ -3763,6 +3768,9 @@ export class Engine {
     if (this.flaps.get(fl.link) !== fl) return;
     fl.down = !fl.down;
     if (!fl.down) fl.done++;
+    // (a transition of flapping started from outside changes the network: the display's steady state starts afresh;
+    // the model's own flapping is the scenario)
+    if (!fl.configured) this.flapTransitions++;
     const cycles = this.params.num('flap-cycles');
     this.note('link', 'link', '', '', fl.down ? 'Flap down' : 'Flap up', fl.down ? 'down' : 'up', `Flapping port ${fl.ref.slice(6)}: ${fl.down ? 'down' : 'up'}, its cable ${fl.link} with it (cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''})`);
     this.updateCable(fl.link);
@@ -4189,7 +4197,7 @@ export class Engine {
     for (const d of this.model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
       for (const i of d.interfaces) {
         if (!i.simulation || i.simulation.get('flapping') !== 'on') continue;
-        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)'));
+        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)', true));
       }
     }
   }
