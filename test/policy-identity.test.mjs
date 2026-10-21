@@ -294,3 +294,35 @@ test('the owner over equal-cost next hops: both lead to srvB — srvB; they lead
   assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o1'), 'srvB', 'leaving by o1: srvB');
   assert.equal(s.engine.ownerSeenFrom('fw', '', a, 'o2'), 'srvX', 'leaving by o2: srvX');
 });
+
+// ------------------------------------------------------------------ a written rule base and the relations through it
+
+test('a written rule base decides the packets of a relation through the firewall too, as the path tracer does: an ntp relation of the model denied by rule 1 never answers; permitted, it does', () => {
+  const T = (action) => `netatlas: 1
+title: a relation through a rule base
+devices:
+  - {id: cl, type: server, interfaces: [{id: eth0, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}
+  - id: fw
+    type: firewall
+    interfaces: [{id: in, ip: 10.1.0.1/24}, {id: out, ip: 10.2.0.254/24}]
+    policy:
+      default: permit
+      rules:
+        - {action: ${action}, destination: 10.2.0.1/32, proto: udp, dport: 123}
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.2.0.1/24}], routes: [{prefix: 0.0.0.0/0, via: 10.2.0.254}]}
+links:
+  - {id: a, a: "cl:eth0", b: "fw:in"}
+  - {id: b, a: "fw:out", b: "srv:eth0"}
+relations:
+  - {id: n, protocol: ntp, endpoints: ["cl", "srv"]}
+`;
+  const m = model(T('deny'));
+  assert.equal(layer(check(m, 'cl', '10.2.0.1', 'udp/123'), 'policy').verdict, 'violated');
+  const s = new S.Simulation(m);
+  s.runTo(150000);
+  assert.ok(s.events().some((e) => e.kind === 'drop' && e.device === 'fw' && /10\.2\.0\.1:123.*rule 1/.test(e.detail)), 'the firewall drops the relation’s requests by its rule');
+  assert.equal(s.events().filter((e) => e.kind === 'message' && e.what === 'Server response').length, 0);
+  const p = new S.Simulation(model(T('permit')));
+  p.runTo(150000);
+  assert.ok(p.events().filter((e) => e.kind === 'message' && e.what === 'Server response').length >= 2);
+});

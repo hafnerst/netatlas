@@ -2229,8 +2229,9 @@ export class Transport {
   private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
     const l4 = pkt.l4;
     const dd = this.P.m.index.devices.get(dev);
-    // the model's relations (and its demands) are the firewall's policy; protocols without a transport header (and IGMP) pass
-    if (pkt.msg.relation || pkt.rides.length || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
+    // the model's relations (and its demands) are the firewall's implicit policy; a written rule base decides their packets
+    // too, as it does in the path tracer and the communication check; protocols without a transport header (and IGMP) pass
+    if ((!(dd && dd.policy) && (pkt.msg.relation || pkt.rides.length)) || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
     const proto = l4.proto as 'tcp' | 'udp' | 'icmp';
     const tab = this.fwTable(dev);
     // (a written policy says whether it is stateful; a firewall's sessions otherwise; a router's policy is stateless)
