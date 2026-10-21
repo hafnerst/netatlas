@@ -120,6 +120,66 @@ test('LACP: the members of an aggregate are bundled only with one partner aggreg
   assert.ok(bad.events().some((e) => e.device === 'sw1' && e.what === 'not bundled' && /differs from the aggregate's other members'/.test(e.detail)));
 });
 
+// sw1's aggregate with LACP rate fast (or both slow); two members
+const LAG2 = (fast) => `netatlas: 1
+title: lag
+devices:
+  - id: sw1
+    type: switch
+    interfaces: [{id: p1}, {id: p2}]
+    logical_interfaces: [{id: po1, type: virtual, members: [p1, p2], vlans: [10]${fast ? ', simulation: {lacp_rate: fast}' : ''}}]
+  - id: sw2
+    type: switch
+    interfaces: [{id: p1}, {id: p2}]
+    logical_interfaces: [{id: po1, type: virtual, members: [p1, p2], vlans: [10]}]
+links:
+  - {id: a, a: "sw1:p1", b: "sw2:p1"}
+  - {id: b, a: "sw1:p2", b: "sw2:p2"}
+`;
+const lacpOf = (s, dev, port) => s.status().find((x) => x.protocol === 'lacp' && x.device === dev && x.name.indexOf(`member ${port} `) > 0);
+
+test('LACP rates (IEEE 802.1AX periodic machine): sw1 fast (a 3 s timeout), sw2 slow — sw2 sends every second because sw1’s LACPDUs say its timeout is short; sw1 never times out, the members stay bundled', () => {
+  const s = new S.Simulation(model(LAG2(true)));
+  s.runTo(100000);
+  for (const d of ['sw1', 'sw2']) for (const p of ['p1', 'p2']) assert.equal(lacpOf(s, d, p).state, 'Collecting / Distributing', `${d}:${p}`);
+  assert.equal(s.events().filter((e) => e.protocol === 'lacp' && e.kind === 'state' && e.what === 'Detached').length, 0, 'no time-out on sw1');
+  // the LACPDUs carry their actor's timeout; sw2's arrive every second on each member after the first exchange
+  const sw1pdu = s.events().filter((e) => e.kind === 'message' && e.protocol === 'lacp' && e.device === 'sw1');
+  assert.ok(sw1pdu.every((e) => /LACP_Timeout short/.test(e.detail)));
+  const sw2p1 = s.events().filter((e) => e.kind === 'message' && e.protocol === 'lacp' && e.device === 'sw2' && /sw2:p1/.test(e.detail) && e.t > 10000);
+  const gaps = sw2p1.slice(1).map((e, k) => e.t - sw2p1[k].t);
+  assert.ok(gaps.length > 80 && gaps.every((g) => g > 900 && g < 1100), `sw2's gaps: ${gaps.slice(0, 6).map((g) => Math.round(g)).join(', ')}`);
+  assert.ok(sw2p1.every((e) => /LACP_Timeout long/.test(e.detail)), 'sw2 itself stays slow (a 90 s timeout)');
+  assert.match(lacpOf(s, 'sw2', 'p1').detail, /^LACPDU every 1 s \(its partner’s timeout is short\), timeout 1 min 30 s|^LACPDU every 1 s \(its partner’s timeout is short\), timeout 90 s/);
+  assert.match(lacpOf(s, 'sw1', 'p1').detail, /^LACPDU every 30 s \(its partner’s timeout is long\), timeout 3 s/);
+  // both slow: every 30 s either way
+  const slow = new S.Simulation(model(LAG2(false)));
+  slow.runTo(100000);
+  const p = slow.events().filter((e) => e.kind === 'message' && e.protocol === 'lacp' && e.device === 'sw2' && /sw2:p1/.test(e.detail) && e.t > 10000);
+  assert.ok(p.length >= 2 && p.length <= 4, `${p.length} slow LACPDUs`);
+});
+
+test('LACP mux machine: sw2’s LACPDUs lost on one member — sw1 times it out, says so at once (not in sync), and sw2 stops collecting and distributing on that member (Attached, its traffic held); the other member stays bundled', () => {
+  const s = new S.Simulation(model(LAG2(false)));
+  s.runTo(15000);
+  s.engine.impair = (link, f) => (link === 'a' && f.msg.protocol === 'lacp' && (f.msg.data || {}).from === 'sw2' ? { lose: true } : null);
+  s.runTo(300000);
+  const det = s.events().find((e) => e.kind === 'state' && e.device === 'sw1' && e.what === 'Detached');
+  const att = s.events().find((e) => e.t > 15000 && e.kind === 'state' && e.device === 'sw2' && e.what === 'Attached');
+  assert.ok(det && att, 'both transitions');
+  assert.ok(att.t - det.t < 10, `sw2 learns at once (${att.t - det.t} ms): sw1 sends when its state changes`);
+  assert.match(att.detail, /its partner sw1:p1 is not in sync/);
+  assert.equal(lacpOf(s, 'sw2', 'p1').state, 'Attached');
+  assert.equal(lacpOf(s, 'sw2', 'p1').up, false);
+  assert.equal(s.engine.memberReady('sw2', 'p1'), false, 'sw2 carries no traffic on it any more');
+  assert.equal(s.engine.memberReady('sw2', 'p2'), true);
+  for (const d of ['sw1', 'sw2']) assert.equal(lacpOf(s, d, 'p2').state, 'Collecting / Distributing', `${d}:p2`);
+  // restored: back to Collecting / Distributing on both sides
+  s.engine.impair = null;
+  s.runTo(s.now + 70000);
+  for (const d of ['sw1', 'sw2']) assert.equal(lacpOf(s, d, 'p1').state, 'Collecting / Distributing', `${d}:p1 again`);
+});
+
 // ---- LLDP / CDP: a neighbour known from its advertisements only
 
 const LLDP = `netatlas: 1

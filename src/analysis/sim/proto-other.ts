@@ -1146,9 +1146,14 @@ const pim: Behaviour = {
 
 // ------------------------------------------------------------------ LACP
 
-/** LACP on every aggregate's member links: LACPDUs both ways, members attached, collecting and distributing; a member whose link goes down is detached at once. */
+/**
+ * LACP on every aggregate's member links: LACPDUs both ways, members attached, collecting and distributing; a member
+ * whose link goes down is detached at once. IEEE 802.1AX: each LACPDU carries its actor's LACP_Timeout; a member
+ * transmits at the rate its partner's timeout asks for (fast while it is short) and times out by its own; a member
+ * collecting and distributing goes back to Attached when its partner says it is not in sync (the mux machine).
+ */
 export function installLacp(P: ProtocolSim): void {
-  type Mem = { dev: string; agg: string; port: string; peer: string; peerPort: string; state: string; heard: number; gen: number; rel?: Relation; partner?: string };
+  type Mem = { dev: string; agg: string; port: string; peer: string; peerPort: string; state: string; heard: number; gen: number; rel?: Relation; partner?: string; partnerShort?: boolean; txGen: number };
   const mems: Mem[] = [];
   const LACP_MAC = '01:80:c2:00:00:02';
   for (const d of P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
@@ -1159,7 +1164,7 @@ export function installLacp(P: ProtocolSim): void {
         if (!e) continue;
         const o = otherEnd(P.e.net, e);
         const rel = P.m.relations.find((r) => P.e.base(r) === 'lacp' && relationDevices(r).indexOf(d.id) >= 0 && relationDevices(r).indexOf(o.device) >= 0);
-        mems.push({ dev: d.id, agg: i.id, port, peer: o.device, peerPort: o.port, state: 'Detached', heard: -1, gen: 0, rel });
+        mems.push({ dev: d.id, agg: i.id, port, peer: o.device, peerPort: o.port, state: 'Detached', heard: -1, gen: 0, rel, txGen: 0 });
       }
     }
   }
@@ -1170,6 +1175,9 @@ export function installLacp(P: ProtocolSim): void {
     const fast = r.value === 'fast';
     return { every: fast ? 1000 : 30000, timeout: fast ? 3000 : 90000, text: P.paramText(r) };
   };
+  /** how often a member sends: fast while its partner's LACP_Timeout (in its last LACPDU) is short, else slow (802.1AX periodic machine) */
+  const txEvery = (m: Mem): number => (m.partnerShort ? 1000 : 30000);
+  const txText = (m: Mem): string => (m.partnerShort ? 'its partner’s timeout is short' : m.partnerShort === false ? 'its partner’s timeout is long' : 'no partner heard yet');
   const set = (m: Mem, st: string, why: string): void => {
     if (m.state === st) return;
     m.state = st;
@@ -1178,8 +1186,21 @@ export function installLacp(P: ProtocolSim): void {
     P.e.holdMember(m.dev, m.port, st !== 'Collecting / Distributing');
   };
   const send = (m: Mem, why: string): void => {
-    const detail = `LACPDU from ${m.dev}:${m.port} (${m.agg}) to ${LACP_MAC}: actor state ${m.state === 'Collecting / Distributing' ? 'in sync, collecting, distributing' : m.state === 'Attached' ? 'in sync' : 'not in sync'}${why ? '; ' + why : ''}`;
-    P.onPort('lacp', m.dev, m.port, LACP_MAC, 'LACPDU', 'LACP LACPDU', detail, { agg: m.agg, state: m.state }, m.peer, m.rel);
+    const short = rate(m).timeout === 3000;
+    const detail = `LACPDU from ${m.dev}:${m.port} (${m.agg}) to ${LACP_MAC}: actor state ${m.state === 'Collecting / Distributing' ? 'in sync, collecting, distributing' : m.state === 'Attached' ? 'in sync' : 'not in sync'}, LACP_Timeout ${short ? 'short' : 'long'}${why ? '; ' + why : ''}`;
+    P.onPort('lacp', m.dev, m.port, LACP_MAC, 'LACPDU', 'LACP LACPDU', detail, { agg: m.agg, state: m.state, timeout: short ? 'short' : 'long' }, m.peer, m.rel);
+  };
+  /** the member's periodic LACPDUs, from `first` ms on, every txEvery; a new start ends the old one */
+  const startTx = (m: Mem, first: number | undefined, why: string, onlyUp: boolean): void => {
+    const g = ++m.txGen;
+    P.periodic(
+      () => m.txGen === g,
+      () => txEvery(m),
+      () => {
+        if (!onlyUp || P.e.portUp(m.dev, m.port)) send(m, why);
+      },
+      first,
+    );
   };
   // until LACP bundles a member, the aggregate's traffic waits for it
   for (const m of mems) P.e.holdMember(m.dev, m.port, true, true);
@@ -1189,14 +1210,7 @@ export function installLacp(P: ProtocolSim): void {
     for (const m of mems) {
       P.whenPortUp(m.dev, m.port, () => {
         started.add(m);
-        const g = m.gen;
-        P.periodic(
-          () => m.gen === g,
-          () => rate(m).every,
-          () => {
-            if (P.e.portUp(m.dev, m.port)) send(m, 'periodic');
-          },
-        );
+        startTx(m, undefined, 'periodic', true);
       });
     }
   });
@@ -1206,10 +1220,22 @@ export function installLacp(P: ProtocolSim): void {
     const m = mems.find((x) => x.dev === dev && frame && P.e.net.ends.get(portKey(dev, x.port)) && x.peer === ((msg.data || {}) as { from?: string }).from && x.peerPort === ((msg.data || {}) as { port?: string }).port);
     if (!m) return;
     m.heard = P.e.now;
+    // the partner's LACP_Timeout: short — this member transmits fast from now on (the periodic machine's FAST_PERIODIC: the next
+    // LACPDU within a fast period), long — slow again
+    const short = ((msg.data || {}) as { timeout?: string }).timeout === 'short';
+    if (m.partnerShort !== short) {
+      const was = m.partnerShort;
+      m.partnerShort = short;
+      if (started.has(m) && (short || was !== undefined)) startTx(m, short ? 1000 : 30000, 'periodic', true);
+    }
     const g = m.gen;
     const timeout = rate(m).timeout;
     P.e.after(timeout, () => {
-      if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)} (LACP rate ${rate(m).text})`);
+      if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') {
+        set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)} (LACP rate ${rate(m).text})`);
+        // (its state changed: it tells its partner at once — need to transmit, 802.1AX — not at its next periodic LACPDU)
+        if (P.e.portUp(m.dev, m.port)) send(m, 'its partner timed out');
+      }
     });
     const theirs = ((msg.data || {}) as { state?: string }).state || 'Detached';
     // the partner as its LACPDU names it (its system and its aggregate's key): every member of an aggregate must have the same
@@ -1231,6 +1257,10 @@ export function installLacp(P: ProtocolSim): void {
     } else if (m.state === 'Attached' && theirs !== 'Detached') {
       set(m, 'Collecting / Distributing', 'partner in sync');
       send(m, 'in sync');
+    } else if (m.state === 'Collecting / Distributing' && theirs === 'Detached') {
+      // the mux machine: the partner is not in sync — this member stops collecting and distributing (Attached), and says so
+      set(m, 'Attached', `its partner ${m.peer}:${m.peerPort} is not in sync`);
+      send(m, 'partner not in sync');
     }
   });
   P.linkHooks.push((ref, up) => {
@@ -1242,17 +1272,12 @@ export function installLacp(P: ProtocolSim): void {
         set(m, 'Detached', 'its link went down');
       } else if (started.has(m)) {
         m.gen++;
-        const g = m.gen;
-        P.periodic(
-          () => m.gen === g,
-          () => rate(m).every,
-          () => send(m, 'link up again'),
-          200,
-        );
+        m.partnerShort = undefined;
+        startTx(m, 200, 'link up again', false);
       }
     }
   });
-  P.extraStatus.push((): SessionStatus[] => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${fmtSec(rate(m).every)}, timeout ${fmtSec(rate(m).timeout)} (LACP rate ${rate(m).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
+  P.extraStatus.push((): SessionStatus[] => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${fmtSec(txEvery(m))} (${txText(m)}), timeout ${fmtSec(rate(m).timeout)} (LACP rate ${rate(m).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
 }
 
 // ------------------------------------------------------------------ STP, LLDP, CDP (where the model has their relations)
