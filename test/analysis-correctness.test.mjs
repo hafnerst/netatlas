@@ -209,7 +209,7 @@ test('policy: a frozen snapshot uses the addresses acquired then — the same de
   const flow = { src: IP.parseAddress('10.1.0.50'), dst: IP.parseAddress('10.1.0.150'), proto: 'tcp', dport: 80, srcDev: 'st', dstDev: null, inIface: 'lan', outIface: 'lan' };
   const d = PO.policyDecision(deny, deny.index.devices.get('fw'), flow, true);
   assert.ok(PO.undecided(d), d.text);
-  assert.match(d.text, /an address a device takes at runtime/);
+  assert.equal(d.undecidedBy, 'identity', d.text);
   // known to be another device's: a definite non-match (a static address, the configured model)
   const d2 = PO.policyDecision(deny, deny.index.devices.get('fw'), { ...flow, dst: IP.parseAddress('10.1.0.5'), dstDev: 'dsrv' }, true);
   assert.equal(PO.undecided(d2), false);

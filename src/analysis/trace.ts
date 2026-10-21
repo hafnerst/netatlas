@@ -44,7 +44,7 @@ import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
-import { PolicyFlow, configuredIds, ctxIds, policyDecision, policyKind, undecided } from './policy';
+import { PolicyFlow, PolicyUnknown, configuredIds, ctxIds, policyDecision, policyKind, undecided } from './policy';
 import type { Verdict } from './result';
 import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
 import { deviceTypeInText, deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
@@ -196,6 +196,8 @@ export interface HopWhy {
   l2?: string;
   /** what a filtering device decided (permitted, or the denial) */
   policy: string[];
+  /** the decisions a filtering device could not make here, and what each lacks (structured: never read from the text) */
+  policyUndecided?: Array<{ device: string; by: PolicyUnknown; text: string }>;
   nat?: string;
   tunnel?: string;
   /** the first unmet prerequisite, where the path stops at this hop */
@@ -270,6 +272,8 @@ interface Walk {
   dnat?: Dnat;
   /** the source address, and what is sent (a Security gateway's policy decides by them) */
   src?: IpAddr;
+  /** where the policy decisions a step could not make are collected (step: into its hop's why) */
+  und?: Array<{ device: string; by: PolicyUnknown; text: string }>;
   /** the traced ends' devices: the owners a policy's device spec is checked against (an address two VRFs have is theirs here) */
   srcDev?: string;
   destDev?: string;
@@ -534,7 +538,10 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   if (before.length > 0 && at.ingress !== undefined) {
     const dev = model.index.devices.get(at.device) as Device;
     const n0 = hop.notes.length;
+    w.und = [];
     const denied = forwardDenied(w, dev, at.ingress, h.iface, hop.notes);
+    if (w.und.length) why.policyUndecided = (why.policyUndecided || []).concat(w.und);
+    w.und = undefined;
     for (const n of hop.notes.slice(n0)) why.policy.push(n);
     if (denied) {
       hop.via = { kind: 'none', text: denied };
@@ -600,7 +607,10 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
     }
   } else {
     const vlan = outNet ? vlanOfNet(model, outNet.net) : undefined;
+    w.und = [];
     const seg = l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: next.device, iface: next.iface }, vlan, (dev, inPort, outPort, notes) => crossDenied(w, dev, inPort, outPort, notes));
+    if (w.und.length) why.policyUndecided = (why.policyUndecided || []).concat(w.und);
+    w.und = undefined;
     if (seg.kind === 'none') {
       why.l2 = (vlan !== undefined ? `VLAN ${vlan}: ` : '') + seg.detail;
       if (seg.denied) why.policy.push(seg.detail);
@@ -1101,6 +1111,8 @@ function networkPolicyDenied(w: Walk, dev: Device, inIface: string, outIface: st
   if (w.svc && w.svc.proto !== 'icmp') flow.dport = w.svc.port;
   const d = policyDecision(w.model, dev, flow, !!w.svc);
   if (!d) return null;
+  // (undecided: said, and recorded as what it lacks — the communication check reads that, never the text)
+  if (undecided(d) && w.und) w.und.push({ device: dev.id, by: d.undecidedBy as PolicyUnknown, text: d.text });
   if (undecided(d) || d.permit) {
     notes.push(d.text);
     return null;
@@ -1141,7 +1153,9 @@ function policyDenied(w: Walk, dev: Device, inIface: string, outIface: string, n
     const d = decide(dev, { inIface, outIface, src: w.src, dst: w.dest, proto: 'other' });
     return d.text;
   }
-  notes.push(`${dev.id} permits only ${rules.map((r) => `${ruleServiceText(r)} (rule ${r.id})`).join(', ')} between these addresses; give a service to trace it exactly`);
+  const text = `${dev.id} permits only ${rules.map((r) => `${ruleServiceText(r)} (rule ${r.id})`).join(', ')} between these addresses; give a service to trace it exactly`;
+  notes.push(text);
+  if (w.und) w.und.push({ device: dev.id, by: 'service', text });
   return null;
 }
 
