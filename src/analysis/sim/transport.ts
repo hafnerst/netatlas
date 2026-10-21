@@ -388,7 +388,7 @@ export class Transport {
     // a segment of a connection, whatever protocol it is drawn as (a BGP session's, an MQTT client's)
     P.tcpHook = (dev, l3, pkt) => this.tcpIn(dev, l3, pkt);
     P.transport = this;
-    P.filterHook = (dev, pkt, from, to) => this.filter(dev, pkt, from, to);
+    P.filterHook = (dev, pkt, from, to, via) => this.filter(dev, pkt, from, to, via);
     P.localErrorHook = (dev, pkt, kind, text, mtu) => this.localError(dev, pkt, kind, text, mtu);
     P.portHook = (dev, pkt, l3) => this.portOpen(dev, pkt, l3);
     P.sweepHooks.push(() => this.sweep());
@@ -2301,7 +2301,7 @@ export class Transport {
     return m;
   }
 
-  private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
+  private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null): boolean {
     const l4 = pkt.l4;
     const dd = this.P.m.index.devices.get(dev);
     // the model's relations (and its demands) are the firewall's implicit policy; a written rule base decides their packets
@@ -2358,7 +2358,7 @@ export class Transport {
       // to — followed from here in its VRF, segment by segment; an address two VRFs have is the one it reaches, never both)
       const sender = pkt.msg.sender;
       const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src, from.id);
-      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst, to.id);
+      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst, to.id, via);
       const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
       // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
       if (undecided(d)) {

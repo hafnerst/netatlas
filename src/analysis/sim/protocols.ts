@@ -215,7 +215,8 @@ export class ProtocolSim implements Protocols {
   /** a device was powered off (false) or has booted (true) */
   readonly deviceHooks: Array<(dev: string, up: boolean) => void> = [];
   /** the transport layer (transport.ts): a firewall's policy, a sender's own errors, closed ports, the sweep */
-  filterHook: ((dev: string, pkt: Pkt, from: L3Iface, to: L3Iface) => boolean) | null = null;
+  /** a firewall's or a router's policy on a packet it forwards (`via`: the next hop forwarding chose, null: the destination is connected) */
+  filterHook: ((dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null) => boolean) | null = null;
   localErrorHook: ((dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number) => void) | null = null;
   portHook: ((dev: string, pkt: Pkt, l3: L3Iface) => boolean) | null = null;
   readonly sweepHooks: Array<() => void> = [];
@@ -968,8 +969,8 @@ export class ProtocolSim implements Protocols {
     this.learn(s, msg);
   }
 
-  filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
-    return !this.filterHook || this.filterHook(dev, pkt, from, to);
+  filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null): boolean {
+    return !this.filterHook || this.filterHook(dev, pkt, from, to, via);
   }
 
   localError(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void {

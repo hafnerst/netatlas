@@ -180,7 +180,7 @@ export interface Protocols {
   /** parameters changed: periodic timers are rescheduled */
   paramsChanged?(changes: ParamChange[]): void;
   /** a firewall's policy for a packet it would forward: pass, or dropped / rejected (it logs and answers itself) */
-  filter?(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean;
+  filter?(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null): boolean;
   /** a packet a device sent itself could not go (no route, no ARP answer, too big): the sender's own error, no ICMP on the wire */
   localError?(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void;
   /** the table sweep (once a second): the transport's timers and the firewalls' sessions */
@@ -2970,7 +2970,7 @@ export class Engine {
     // a VPN gateway forwards only to and from its VPN
     if (came && sd.caps.vpnOnlyTransit && !this.vpnTransit(sd, came.l3, out, pkt)) return;
     // a firewall, or a router with a network policy, applies it to what it forwards (it logs and rejects itself)
-    if (came && (sd.caps.firewallPolicy || !!sd.dev.policy) && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
+    if (came && (sd.caps.firewallPolicy || !!sd.dev.policy) && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out, hop.gateway || null)) return;
     // then source NAT on the way out (its policy saw the packet as it came, its sessions stay those of the inside addresses):
     // a container bridge's masquerade, a NAT service's PAT / SNAT, the reply of a port forward
     if (came) pkt = this.snat(dev, came.l3, out, pkt);
@@ -4437,14 +4437,15 @@ export class Engine {
    * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Each next
    * hop is continued in the VRF of the interface it was reached on (never another interface of that device that
    * happens to have the same address). Equal-cost next hops are all followed: the owner is the one they all lead
-   * to. `out`: the interface the packet actually leaves by (the forwarding choice already made) — only its next
-   * hops are followed from here. Null when that can't be told (no route, several on one segment, next hops leading
-   * to different owners, or more than 16 hops).
+   * to. `out`, `via`: the interface the packet actually leaves by and its next hop there (the forwarding choice already
+   * made: two gateways can share an interface) — only that next hop is followed from here. A device on the way is the
+   * owner only when it has the address in the routing context walked (Engine.ownsAddress — what forwarding itself
+   * decides), never because it has it in another VRF. Null when that can't be told (no route, several on one segment,
+   * next hops leading to different owners, or more than 16 hops).
    */
-  ownerSeenFrom(dev: string, vrf: string, a: IpAddr, out?: string): string | null {
+  ownerSeenFrom(dev: string, vrf: string, a: IpAddr, out?: string, via?: IpAddr | null): string | null {
     const all = Array.from(this.net.devices.keys()).filter((x) => this.effectiveAddrs(x).some((y) => compareAddr(y.addr, a) === 0));
     if (all.length <= 1) return all.length ? all[0] : null;
-    const has = (x: string): boolean => this.effectiveAddrs(x).some((y) => compareAddr(y.addr, a) === 0);
     const owners = new Set<string>();
     let unknown = false;
     const seen = new Set<string>();
@@ -4454,7 +4455,7 @@ export class Engine {
         unknown = true;
         return;
       }
-      if (at !== dev && has(at)) {
+      if (at !== dev && this.ownsAddress(at, a, v)) {
         owners.add(at);
         return;
       }
@@ -4470,7 +4471,7 @@ export class Engine {
         unknown = true;
         return;
       }
-      const chosen = depth === 0 && out !== undefined ? d.hops.filter((h) => h.iface === out) : [];
+      const chosen = depth === 0 && out !== undefined ? d.hops.filter((h) => h.iface === out && (via === undefined || (via === null ? !h.gateway : !!h.gateway && compareAddr(h.gateway, via) === 0))) : [];
       for (const h of chosen.length ? chosen : d.hops) {
         const target = h.gateway || a;
         const next = this.holderOnSegment(at, h.iface, target);
