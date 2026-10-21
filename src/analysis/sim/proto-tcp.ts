@@ -14,6 +14,7 @@
  * there) is reset. Each message arrives at the behaviour's rx as if sent
  * by unicast; the connection opening and closing arrive at its `tcp`.
  */
+import type { IpAddr } from '../../model/ip';
 import { compareAddr, formatAddr } from '../ipmath';
 import { profileTransport } from './transport';
 import type { AppMessage, AppSocket } from './transport';
@@ -73,7 +74,40 @@ export function tcpListen(P: ProtocolSim, s: Sess): void {
   if (!P.transport || P.shared.has(key)) return;
   P.shared.set(key, true);
   const dev = s.dev;
+  /** the session whose addresses a connection has (its configured peer), started */
+  const byAddresses = (local: IpAddr, remote: IpAddr): Sess | undefined =>
+    Array.from(P.sessions.values())
+      .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && compareAddr(ipOf(x.local), local) === 0 && compareAddr(ipOf(x.remote), remote) === 0)
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))[0];
+  /** a connection becomes a session's: the protocol hears that it is open (false: it was closed, a collision) */
+  const bind = (sock: AppSocket, o: Sess, what: string): boolean => {
+    const cur = o.x.sock as AppSocket | null | undefined;
+    if (cur && cur !== sock && cur.open) {
+      // a second connection for a session that has one: the session keeps the one it has when it is up (RFC 4271 §6.8), else takes the new one
+      if (o.up) {
+        P.e.note('drop', o.protocol, dev, o.peer, what, o.state, `${o.profile.label} ${o.rel.id}: ${dev} already has its session with ${o.peer} up: the new connection is closed (connection collision)`);
+        sock.reset('connection collision: the session is up on another connection');
+        return false;
+      }
+      socks(P).delete(cur);
+      cur.reset('replaced by a new connection of the peer');
+    }
+    o.x.sock = sock;
+    socks(P).set(sock, o);
+    sock.show(o.protocol, o.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), o.rel.id);
+    const b = beh(P, o);
+    if (b.tcp) b.tcp(P, o, 'open', `${o.peer} connected from ${formatAddr(sock.remote)}`);
+    return true;
+  };
   P.transport.appListen(dev, port, `${s.profile.label.replace(/ \(.*\)$/, '')} (port ${port})`, {
+    // established: the session of the connection's addresses has it now (a BGP speaker sends its OPEN at once, RFC 4271 §8.2.2);
+    // a connection from an address no session has (translated on the way) is bound by its first message, as before
+    accept(sock) {
+      // (only the connection the peer's session opened — its SYN said so —, never a test's or an application's to the same port)
+      const syn = sock.c.synApp;
+      const o = byAddresses(sock.local, sock.remote);
+      if (o && syn && syn.protocol === o.protocol && (syn.relation === undefined || syn.relation === o.rel.id)) bind(sock, o, 'connection');
+    },
     message(sock, m) {
       let o = socks(P).get(sock);
       if (!o) {
@@ -84,22 +118,7 @@ export function tcpListen(P: ProtocolSim, s: Sess): void {
           sock.reset('no such session');
           return;
         }
-        const cur = o.x.sock as AppSocket | null | undefined;
-        if (cur && cur !== sock && cur.open) {
-          // a second connection for a session that has one: the session keeps the one it has when it is up (RFC 4271 §6.8), else takes the new one
-          if (o.up) {
-            P.e.note('drop', o.protocol, dev, o.peer, m.type, o.state, `${o.profile.label} ${o.rel.id}: ${dev} already has its session with ${o.peer} up: the new connection is closed (connection collision)`);
-            sock.reset('connection collision: the session is up on another connection');
-            return;
-          }
-          socks(P).delete(cur);
-          cur.reset('replaced by a new connection of the peer');
-        }
-        o.x.sock = sock;
-        socks(P).set(sock, o);
-        sock.show(o.protocol, o.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), o.rel.id);
-        const b = beh(P, o);
-        if (b.tcp) b.tcp(P, o, 'open', `${o.peer} connected from ${formatAddr(sock.remote)}`);
+        if (!bind(sock, o, m.type)) return;
       }
       deliver(P, o, m);
     },
@@ -108,9 +127,7 @@ export function tcpListen(P: ProtocolSim, s: Sess): void {
     },
   }, (local, remote) => {
     // the session whose addresses the connection has (its configured peer): its relation's handshake; else the protocol's
-    const o = Array.from(P.sessions.values())
-      .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && compareAddr(ipOf(x.local), local) === 0 && compareAddr(ipOf(x.remote), remote) === 0)
-      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))[0];
+    const o = byAddresses(local, remote);
     const by = o || s;
     return { protocol: by.protocol, label: by.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), relation: o ? o.rel.id : undefined };
   });

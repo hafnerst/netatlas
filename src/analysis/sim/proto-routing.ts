@@ -1080,9 +1080,11 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
   },
   tcp(P, s, ev, why) {
     if (ev === 'open') {
-      if (!s.initiator) return;
-      P.setState(s, 'OpenSent', false, 'TCP connection established');
-      s.x.waitedNext = [`TCP connection to ${formatAddr(ipOf(s.remote))}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
+      // RFC 4271 §8.2.2: the TCP connection established — both ends send their OPEN and go to OpenSent (the passive one too,
+      // without waiting for the peer's)
+      if (!s.initiator && s.state !== 'Active') return;
+      P.setState(s, 'OpenSent', false, s.initiator ? 'TCP connection established' : `TCP connection from ${s.peer} accepted`);
+      if (s.initiator) s.x.waitedNext = [`TCP connection to ${formatAddr(ipOf(s.remote))}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
       bgpSendOpen(P, s);
       return;
     }
@@ -1104,7 +1106,8 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
           bgpRefuse(P, s, err);
           return;
         }
-        if (!s.initiator) bgpSendOpen(P, s);
+        // (a passive side whose connection was bound only by this OPEN — it came from a translated address — sends its own now)
+        if (!s.initiator && s.state !== 'OpenSent') bgpSendOpen(P, s);
         bgpNegotiate(P, s, d.open as BgpOpen);
         P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer} (AS ${(d.open as BgpOpen).as}, hold ${(d.open as BgpOpen).hold} s, identifier ${(d.open as BgpOpen).id})`);
         tcpSend(P, s, 'KEEPALIVE', 'confirms the OPEN', 19);

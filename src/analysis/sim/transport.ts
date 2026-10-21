@@ -165,6 +165,8 @@ type ConnMsg = { kind: 'app'; app: AppMessage } | { kind: 'request' | 'response'
 interface Conn {
   /** its conversation (the client's connection made it; the server's end takes it from the SYN) */
   conv: string;
+  /** a listener's connection: the protocol and relation the SYN that opened it said it belongs to (a session's, a test's 'tcp') */
+  synApp?: { protocol: string; relation?: string };
   key: string;
   dev: string;
   proto: 'tcp';
@@ -1517,6 +1519,7 @@ export class Transport {
           return;
         }
         const sc = this.newConn({ dev, vrf, local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, state: 'SYN_RCVD', role: 'server', what: `serves ${formatAddr(pkt.src)}`, conv: pkt.msg.conv });
+        sc.synApp = { protocol: pkt.msg.protocol, relation: pkt.msg.relation };
         const lh = this.appListening.get(dev + '|' + (l4.dport as number));
         if (lh) {
           sc.sock = new AppSocket(this, sc, lh.h);
