@@ -7,6 +7,7 @@
  */
 import { CUSTOM_SUPPORT, SimGroup, simProfile } from '../../model/sim-profiles';
 import type { Support } from '../../model/support';
+import { IC_SUPPORT } from '../../model/interconnect';
 import { serviceDef } from '../../model/service-registry';
 import { autoIpv6, ipConfigured } from '../../model/ipv6';
 import { Model } from '../../model/types';
@@ -48,8 +49,8 @@ export interface SimProtocolEntry {
   group: SimEntryGroup;
   /** how many devices, relations, demands or streams use it */
   uses: number;
-  /** what `uses` counts: "device", "relation", "demand", "stream" */
-  unit: 'device' | 'relation' | 'demand' | 'stream';
+  /** what `uses` counts: "device", "relation", "demand", "stream", "interconnect" */
+  unit: 'device' | 'relation' | 'demand' | 'stream' | 'interconnect';
   /** what the simulation does for it (model/support.ts): a custom protocol's is drawn only */
   support: Support;
 }
@@ -68,6 +69,7 @@ const ENTRY_SUPPORT: { [id: string]: Support } = {
 function entrySupport(id: string): Support {
   if (ENTRY_SUPPORT[id]) return ENTRY_SUPPORT[id];
   if (id === 'mqtt') return (serviceDef('mqtt_broker') as { support: Support }).support;
+  if (id === 'opaque') return IC_SUPPORT;
   if (id === 'ptp') return (serviceDef('ptp') as { support: Support }).support;
   const p = simProfile(id);
   return p && p.support ? p.support : CUSTOM_SUPPORT;
@@ -1427,6 +1429,8 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
     if (querierVlans.some((v) => snoopingChoice(d, v) === 'enabled' && switchedVlans(d).indexOf(v) >= 0 && svi(v))) add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
     for (const i of ifs(d)) for (const st of i.multicast ? i.multicast.streams : []) add('mcast', 'Multicast streams', 'Multicast', 'stream', `${d.id}:${i.id}:${st.group}`);
   }
+  // the non-IP interconnects: their illustrative data (their own traffic, Send illustrative data) — shown or not like a protocol
+  for (const ic of model.interconnects) add('opaque', 'Non-IP data', 'Traffic', 'interconnect', ic.id);
   for (const e of seen.values()) e.uses = (users.get(e.id) as Set<string>).size;
   const order = (g: SimEntryGroup): number => ENTRY_GROUPS.indexOf(g);
   return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));

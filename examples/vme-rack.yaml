@@ -1,6 +1,6 @@
 netatlas: 1
 title: VME control rack
-description: "An embedded control rack: a VME64x crate whose boards talk over the VMEbus backplane, a MIL-STD-1553 bus to the remote terminals in the field, RS-232 console lines to a console server, and Ethernet only for the operators. The non-IP interconnects carry illustrative data (Simulate → Send illustrative data); the IP side never uses them."
+description: "An embedded control rack, IP and non-IP side by side: a VME64x crate whose boards share the VMEbus backplane and a switched serial fabric overlaid on it (VXS: SRIO through a switch card), a MIL-STD-1553 bus to the remote terminals in the field, a CAN bus to the drives, RS-232 console lines and a GPS receiver's NMEA line, a USB log stick, and Ethernet for the operators. Every non-IP interconnect carries illustrative data while the simulation runs (its traffic:), and the IP side its applications; Simulate → Send illustrative data sends more. The IP side never uses the non-IP interconnects."
 
 groups:
   - {id: lab, label: Control room, kind: room}
@@ -21,6 +21,12 @@ devices:
     label: Engineering workstation
     group: lab
     interfaces: [{id: eth0, ip: 10.20.0.50/24}]
+    services:
+      applications:
+        # polls the controller's telemetry, logs in on the console server, collects the CPUs' syslog
+        - {id: poll, name: Telemetry poll, profile: tcp_client, peer: cpu1/telemetry, interval: 5s, start: simulation_start, request_size: 64}
+        - {id: console, name: Console session, profile: tcp_client, peer: cons/ssh, interval: 15s, start: simulation_start}
+        - {id: syslog, name: Syslog collector, profile: udp_receiver, port: 514}
   - id: cons
     type: system
     purpose: host
@@ -30,8 +36,11 @@ devices:
       - {id: eth0, ip: 10.20.0.40/24}
       - {id: s1, stack: opaque, label: port 1}
       - {id: s2, stack: opaque, label: port 2}
+    services:
+      applications:
+        - {id: ssh, name: SSH to the console ports, profile: tcp_server, port: 22, response_size: 400}
 
-  # the crate: single-board computers and I/O boards on the backplane
+  # the crate: single-board computers and I/O boards on the backplane (P1/P2) and the fabric (P0)
   - id: cpu1
     type: server
     label: SBC 1 (system controller)
@@ -39,7 +48,12 @@ devices:
     interfaces:
       - {id: eth0, ip: 10.20.0.11/24}
       - {id: vme, stack: opaque, label: P1/P2}
+      - {id: p0, stack: opaque, label: P0 (fabric)}
       - {id: com1, stack: opaque, label: COM1}
+    services:
+      applications:
+        - {id: telemetry, name: Telemetry service, profile: tcp_server, port: 5000, response_size: 2048}
+        - {id: syslog, name: Syslog, profile: udp_sender, peer: ews/syslog, interval: 10s, start: simulation_start, request_size: 180}
   - id: cpu2
     type: server
     label: SBC 2
@@ -47,17 +61,40 @@ devices:
     interfaces:
       - {id: eth0, ip: 10.20.0.12/24}
       - {id: vme, stack: opaque, label: P1/P2}
+      - {id: p0, stack: opaque, label: P0 (fabric)}
       - {id: com1, stack: opaque, label: COM1}
+      - {id: com2, stack: opaque, label: COM2}
+      - {id: usb0, stack: opaque, label: front USB}
+    services:
+      applications:
+        - {id: syslog, name: Syslog, profile: udp_sender, peer: ews/syslog, interval: 10s, start: simulation_start, request_size: 180}
+  - id: fsw
+    type: system
+    purpose: host
+    label: Fabric switch card
+    group: crate
+    description: The VXS switch slot (VITA 41) of the crate. It passes SRIO between its payload ports (opaque_transit); its management port is outside that group.
+    interfaces:
+      - {id: f1, stack: opaque, label: to SBC 1}
+      - {id: f2, stack: opaque, label: to SBC 2}
+      - {id: f3, stack: opaque, label: to ADC}
+      - {id: mgmt, stack: opaque, label: management}
+    opaque_transit:
+      - {ports: [f1, f2, f3]}
   - id: adc
     type: endpoint
     label: ADC board
     group: crate
-    interfaces: [{id: vme, stack: opaque, label: P1/P2}]
+    interfaces:
+      - {id: vme, stack: opaque, label: P1/P2}
+      - {id: p0, stack: opaque, label: P0 (fabric)}
   - id: dio
     type: endpoint
     label: Digital I/O board
     group: crate
-    interfaces: [{id: vme, stack: opaque, label: P1/P2}]
+    interfaces:
+      - {id: vme, stack: opaque, label: P1/P2}
+      - {id: can0, stack: opaque, label: CAN}
   - id: mil
     type: system
     purpose: host
@@ -67,7 +104,19 @@ devices:
       - {id: vme, stack: opaque, label: P1/P2}
       - {id: bus-a, stack: opaque, label: bus A}
 
-  # the field: remote terminals and a bus monitor on the 1553 bus
+  # in the rack beside the crate: the GPS receiver, the USB log stick
+  - id: gps
+    type: endpoint
+    label: GPS receiver
+    group: rack
+    interfaces: [{id: com1, stack: opaque, label: NMEA out}]
+  - id: stick
+    type: storage
+    label: USB log stick
+    group: rack
+    interfaces: [{id: usb, stack: opaque}]
+
+  # the field: remote terminals and a bus monitor on the 1553 bus; drives on the CAN bus
   - id: act
     type: endpoint
     label: Actuator (RT 3)
@@ -83,6 +132,16 @@ devices:
     label: Bus monitor
     group: field
     interfaces: [{id: bus-a, stack: opaque}]
+  - id: pump
+    type: endpoint
+    label: Pump drive
+    group: field
+    interfaces: [{id: can0, stack: opaque}]
+  - id: valve
+    type: endpoint
+    label: Valve controller
+    group: field
+    interfaces: [{id: can0, stack: opaque}]
 
 links:
   - {id: l-ews, a: "sw:p1", b: "ews:eth0"}
@@ -94,6 +153,7 @@ networks:
   - {id: ctrl, label: Control LAN, cidr: 10.20.0.0/24, vlan: 20}
 
 interconnects:
+  # a shared backplane, controller / target: two CPUs that are both (one of them the system controller), three target boards
   - id: vmebus
     topology: shared
     technology: {name: VME, version: VME64x}
@@ -105,6 +165,40 @@ interconnects:
       - {port: "adc:vme", role: target}
       - {port: "dio:vme", role: target}
       - {port: "mil:vme", role: target}
+    traffic:
+      # a read (the target's data to the controller that initiates it) and a write
+      - {initiator: "cpu1:vme", from: "adc:vme", to: "cpu1:vme", interval: 1s, size: 256}
+      - {initiator: "cpu2:vme", to: "dio:vme", interval: 2s, size: 4}
+  # an overlay backplane: the switched serial fabric of the same crate (VXS), point-to-point lanes to the switch card,
+  # which passes data only within its written transit group (nothing goes through it otherwise)
+  - id: fab-cpu1
+    topology: point_to_point
+    technology: {name: SRIO, version: "3.1"}
+    connector: VXS P0
+    endpoints:
+      - {port: "cpu1:p0"}
+      - {port: "fsw:f1"}
+  - id: fab-cpu2
+    topology: point_to_point
+    technology: {name: SRIO, version: "3.1"}
+    connector: VXS P0
+    endpoints:
+      - {port: "cpu2:p0"}
+      - {port: "fsw:f2"}
+    traffic:
+      # SBC 2 to SBC 1 across the switch card
+      - {initiator: "cpu2:p0", to: "cpu1:p0", interval: 3s, size: 1024}
+  - id: fab-adc
+    topology: point_to_point
+    technology: {name: SRIO, version: "3.1"}
+    connector: VXS P0
+    endpoints:
+      - {port: "adc:p0", data: send}
+      - {port: "fsw:f3"}
+    traffic:
+      # the ADC's sample blocks to SBC 1 through the switch card (two hops, one transit)
+      - {initiator: "adc:p0", to: "cpu1:p0", interval: 1s, size: 4096}
+  # a command/response bus with a controller, two remote terminals and a monitor that only listens
   - id: mil-bus
     topology: shared
     technology: {name: MIL-STD-1553, version: B}
@@ -115,6 +209,24 @@ interconnects:
       - {port: "act:bus-a", role: target}
       - {port: "sens:bus-a", role: target}
       - {port: "mon:bus-a", role: monitor}
+    traffic:
+      # a read from a remote terminal (to the controller that initiates it), and a command to the other, which the monitor hears too
+      - {initiator: "mil:bus-a", from: "sens:bus-a", to: "mil:bus-a", interval: 1s, size: 64}
+      - {initiator: "mil:bus-a", to: ["act:bus-a", "mon:bus-a"], interval: 2s, size: 32}
+  # a bus of peers, one of them only listening (the valve controller sends nothing on it)
+  - id: drive-can
+    topology: shared
+    technology: {name: CAN, version: "2.0B"}
+    protocol: {name: CANopen}
+    connector: M12
+    endpoints:
+      - {port: "dio:can0"}
+      - {port: "pump:can0"}
+      - {port: "valve:can0", data: receive}
+    traffic:
+      - {initiator: "dio:can0", to: ["pump:can0", "valve:can0"], interval: 2s, size: 8}
+      - {initiator: "pump:can0", to: "dio:can0", interval: 3s, size: 8}
+  # point-to-point serial lines: both ways (consoles), and one way (the GPS sends, the CPU only receives)
   - id: console-1
     topology: point_to_point
     technology: {name: RS-232}
@@ -122,6 +234,8 @@ interconnects:
     endpoints:
       - {port: "cpu1:com1", role: peer}
       - {port: "cons:s1", role: peer}
+    traffic:
+      - {initiator: "cpu1:com1", to: "cons:s1", interval: 5s, size: 80}
   - id: console-2
     topology: point_to_point
     technology: {name: RS-232}
@@ -129,3 +243,27 @@ interconnects:
     endpoints:
       - {port: "cpu2:com1", role: peer}
       - {port: "cons:s2", role: peer}
+    traffic:
+      - {initiator: "cons:s2", to: "cpu2:com1", interval: 7s, size: 16}
+  - id: gps-nmea
+    topology: point_to_point
+    technology: {name: RS-232}
+    protocol: {name: NMEA 0183}
+    connector: DB-9
+    endpoints:
+      - {port: "gps:com1", data: send}
+      - {port: "cpu2:com2", data: receive}
+    traffic:
+      - {initiator: "gps:com1", to: "cpu2:com2", interval: 1s, size: 82}
+  # USB: the CPU is the host (controller), the stick a device (target)
+  - id: log-usb
+    topology: point_to_point
+    technology: {name: USB, version: "2.0"}
+    protocol: {name: USB Mass Storage}
+    connector: USB-A
+    access: controller_target
+    endpoints:
+      - {port: "cpu2:usb0", role: controller}
+      - {port: "stick:usb", role: target}
+    traffic:
+      - {initiator: "cpu2:usb0", to: "stick:usb", interval: 10s, size: 512}

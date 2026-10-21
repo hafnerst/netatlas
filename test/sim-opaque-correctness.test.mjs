@@ -278,3 +278,44 @@ test('traffic: validation — its initiator and data source are endpoints of its
   assert.match(bad('{initiator: "ctl:usb0", to: "scope:usb0", interval: 2s, rate: 9}').join('\n'), /unknown key "rate"/);
   assert.deepEqual(errorsOf(TRAFFIC), []);
 });
+
+test('vme-rack.yaml: a reference for a mixed architecture — every interconnect configuration, each carrying data with the simulation, the IP side its applications, nothing refused', () => {
+  const m = model(example('vme-rack.yaml'));
+  const ics = new Map(m.interconnects.map((ic) => [ic.id, ic]));
+  const has = (pred, what) => assert.ok(m.interconnects.some(pred), what);
+  has((ic) => ic.topology === 'shared' && ic.access === 'controller_target' && ic.endpoints.some((e) => e.systemController) && ic.endpoints.filter((e) => e.role === 'controller_target').length >= 2, 'a backplane: several controller-and-target cards, a system controller');
+  has((ic) => ic.topology === 'shared' && ic.access === 'controller_target' && ic.endpoints.some((e) => e.role === 'monitor'), 'a command/response bus with a monitor');
+  has((ic) => ic.topology === 'shared' && ic.access === 'peer' && ic.endpoints.some((e) => e.data === 'receive') && !!ic.protocol, 'a bus of peers with a receive-only node and its protocol');
+  has((ic) => ic.topology === 'point_to_point' && ic.access === 'peer' && ic.endpoints.every((e) => e.data === 'both'), 'a serial line both ways');
+  has((ic) => ic.topology === 'point_to_point' && ic.endpoints.some((e) => e.data === 'send') && ic.endpoints.some((e) => e.data === 'receive') && !!ic.protocol, 'a serial line one way, with its protocol');
+  has((ic) => ic.topology === 'point_to_point' && ic.access === 'controller_target' && /USB/.test(ic.technology.name), 'USB: a host and a device');
+  const fsw = m.index.devices.get('fsw');
+  assert.ok(fsw.opaqueTransit.length === 1 && fsw.opaqueTransit[0].ports.length === 3 && fsw.opaquePorts.some((p) => fsw.opaqueTransit[0].ports.indexOf(p.id) < 0), 'an overlay fabric through a switch card: an explicit transit group, a port outside it');
+  assert.ok(m.devices.some((d) => d.opaquePorts.length && d.interfaces.some((i) => i.addresses.length)), 'opaque ports beside IP interfaces on one board');
+  // the simulation: every interconnect with traffic carries it, every transfer delivered; the applications answered
+  const s = new S.Simulation(m);
+  const reached = new Set();
+  const e = s.engine;
+  const fl = e.flight.bind(e);
+  e.flight = (...a) => {
+    const x = fl(...a);
+    if (x.protocol === 'opaque') reached.add(x.track.ref.slice('interconnect:'.length));
+    return x;
+  };
+  s.runTo(60000);
+  const withTraffic = m.interconnects.filter((ic) => ic.traffic.length).map((ic) => ic.id);
+  assert.ok(withTraffic.length >= 9);
+  for (const id of withTraffic) assert.ok(reached.has(id), `${id} carries data`);
+  // the fabric's transit: the lanes without traffic of their own are crossed through the switch card
+  assert.ok(reached.has('fab-cpu1') && ics.get('fab-cpu1').traffic.length === 0);
+  const opaque = s.events().filter((x) => x.protocol === 'opaque');
+  assert.ok(opaque.some((x) => /reached cpu1:p0: delivered along the modelled connection \(adc:p0 → fsw:f3 → cpu1:p0\)/.test(x.detail)), 'through the switch card');
+  assert.deepEqual(opaque.filter((x) => x.kind === 'drop').map((x) => x.detail), [], 'nothing refused or stopped');
+  const apps = s.apps.runs.map((r) => [r.dev + '/' + r.app.id, r.tests.length > 0 && r.tests.every((t) => t.ok)]);
+  assert.deepEqual(apps.sort(), [['cpu1/syslog', true], ['cpu2/syslog', true], ['ews/console', true], ['ews/poll', true]]);
+  assert.ok(s.events().some((x) => x.protocol === 'tcp' && x.kind === 'message'), 'real TCP traffic, not only ARP');
+  // the setup's list offers the non-IP data like a protocol (shown or hidden)
+  const entry = S.protocolEntriesOf(m).find((x) => x.id === 'opaque');
+  assert.deepEqual([entry.label, entry.group, entry.uses, entry.unit, entry.support.level], ['Non-IP data', 'Traffic', m.interconnects.length, 'interconnect', 'configured']);
+  assert.equal(S.protocolEntriesOf(model(example('private-house.yaml'))).some((x) => x.id === 'opaque'), false, 'only where there are interconnects');
+});
