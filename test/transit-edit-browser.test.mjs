@@ -45,14 +45,30 @@ test('a System’s transit groups through the Edit tab: an opaque port made, a g
       await page.eval(`netatlas.select('device:fsw'), netatlas.showTab && netatlas.showTab('edit'), true`);
       await page.settle(150);
     };
-    // (the selector goes into the page as a JSON string literal: nothing of it is page code)
-    const q = (s) => `document.querySelector(${JSON.stringify('#side ' + s)})`;
-    const change = (s, v) => page.eval(`(() => { const e = ${q(s)}; if (!e) throw new Error('no ' + ${JSON.stringify(s)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-    const click = (s) => page.eval(`(() => { const e = ${q(s)}; if (!e) throw new Error('no ' + ${JSON.stringify(s)}); e.click(); return true; })()`);
+    // (selectors and values go into the page as arguments: nothing of them is page code)
+    const change = (s, v) =>
+      page.call(
+        (s, v) => {
+          const e = document.querySelector('#side ' + s);
+          if (!e) throw new Error('no ' + s);
+          e.value = v;
+          e.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        },
+        s,
+        v,
+      );
+    const click = (s) =>
+      page.call((s) => {
+        const e = document.querySelector('#side ' + s);
+        if (!e) throw new Error('no ' + s);
+        e.click();
+        return true;
+      }, s);
     const P = (p) => `[data-p='${JSON.stringify(p)}']`;
     await sel();
     // the group is offered on a System; its management port made opaque in the Edit tab (the Port stack select)
-    assert.ok(await page.eval(`!!${q('[data-what="transit group"]')}`), 'the Opaque transit group is there');
+    assert.ok(await page.call(() => !!document.querySelector('#side [data-what="transit group"]')), 'the Opaque transit group is there');
     await change(`select${P(['devices', 0, 'interfaces', 3, 'stack'])}`, 'opaque');
     await page.settle(150);
     assert.match(await yaml(), /\{id: mgmt, stack: opaque\}/);
@@ -72,7 +88,7 @@ test('a System’s transit groups through the Edit tab: an opaque port made, a g
     assert.deepEqual(JSON.parse(m), [['f1', 'f2', 'f3']]);
     // the choices offered are its opaque ports only (not a network port)
     await sel();
-    const offered = await page.eval(`Array.from(${q(`select${P(['devices', 0, 'opaque_transit', 0, 'ports'])}`)}.options).map((o) => o.value).filter((x) => x)`);
+    const offered = await page.call((s) => Array.from(document.querySelector('#side ' + s).options).map((o) => o.value).filter((x) => x), `select${P(['devices', 0, 'opaque_transit', 0, 'ports'])}`);
     assert.deepEqual(offered, ['mgmt']);
     // a port removed from the group
     await click(`[data-member="f3"] button`);

@@ -58,7 +58,7 @@ for (const [fam, from, other, dst] of [
     const s = new S.Simulation(m);
     s.runTo(5000);
     const { h, run } = sendFromHandoff(s, m, id);
-    assert.ok(h.notTransferred.some((x) => new RegExp(`Source address: .*not the address ${from.replace(/[.:]/g, '\\$&')}`).test(x)), h.notTransferred.join(' | '));
+    assert.ok(h.notTransferred.some((x) => x.startsWith('Source address:') && x.includes(`not the address ${from}`)), h.notTransferred.join(' | '));
     // the transport chose the interface's first usable address: the other one — denied, and no evidence for this check
     assert.equal(run.tests[0].srcAddr, other);
     assert.equal(run.tests[0].ok, false);
