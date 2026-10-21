@@ -135,6 +135,11 @@ export function solicitedNode(a: IpAddr): IpAddr {
 
 /** The virtual MAC of a first-hop redundancy group (RFC 5798; HSRP v1; GLBP's first forwarder; CARP as VRRP). */
 export function virtualMac(protocol: string, group: number, version: 4 | 6 = 4): string {
+  // HSRP: version 1 (IPv4, groups 0–255) 0000.0c07.acGG; version 2 — needed for IPv6 and for groups above 255 — 0005.73a0.0GGG
+  // in IPv6, 0000.0c9f.fGGG in IPv4 (Cisco, HSRP version 2 and HSRP for IPv6)
+  const hi = ((group >> 8) & 0xf).toString(16);
+  if (protocol === 'hsrp' && version === 6) return `00:05:73:a0:0${hi}:${hex2(group & 0xff)}`;
+  if (protocol === 'hsrp' && group > 255) return `00:00:0c:9f:f${hi}:${hex2(group & 0xff)}`;
   if (protocol === 'hsrp') return `00:00:0c:07:ac:${hex2(group & 0xff)}`;
   if (protocol === 'glbp') return `00:07:b4:00:${hex2((group >> 2) & 0xff)}:${hex2(((group & 3) << 6) | 1)}`;
   return `00:00:5e:00:0${version === 6 ? 2 : 1}:${hex2(group & 0xff)}`;

@@ -4682,7 +4682,7 @@ function inNetAddr(a: { net: IpAddr & { prefix: number } }, ip: IpAddr): boolean
 
 /** Is it the virtual MAC of a VRRP / CARP, HSRP or GLBP group? */
 export function isVirtual(mac: string): boolean {
-  return /^00:00:5e:00:0[12]:/.test(mac) || /^00:00:0c:07:ac:/.test(mac) || /^00:07:b4:/.test(mac);
+  return /^00:00:5e:00:0[12]:/.test(mac) || /^00:00:0c:07:ac:/.test(mac) || /^00:00:0c:9f:f/.test(mac) || /^00:05:73:a0:0/.test(mac) || /^00:07:b4:/.test(mac);
 }
 
 /** The protocols of the encapsulation a frame's packet is in (outermost last). */

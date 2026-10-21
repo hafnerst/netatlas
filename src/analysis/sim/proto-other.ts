@@ -40,6 +40,7 @@ function deadCheck(P: ProtocolSim, s: Sess, ms: number, dead: () => void): void 
 // ------------------------------------------------------------------ first-hop redundancy
 
 interface FhrpMember {
+  /** this member's own bookkeeping (device, interface, group, family): never on the wire, never compared with a peer's */
   key: string;
   protocol: string;
   dev: string;
@@ -57,6 +58,8 @@ interface FhrpMember {
   heardAt: number;
   active?: { at: number; prio: number; ip: string; dev: string };
   standby?: { at: number; prio: number; ip: string; dev: string };
+  /** VRRP: the lower-priority master whose advertisements this preempting backup discards (since it became Backup) */
+  lower?: { dev: string; prio: number };
   rel?: Relation;
 }
 
@@ -67,18 +70,32 @@ function hsrpLike(protocol: string): boolean {
   return protocol === 'hsrp' || protocol === 'glbp';
 }
 
+/** the state a member is in while its interface is down, by its protocol's name for it (RFC 5798 Initialize, RFC 2281 Initial, carp(4) INIT) */
+function initState(protocol: string): string {
+  return protocol === 'vrrp' ? 'Initialize' : protocol === 'carp' ? 'Init' : 'Initial';
+}
+
 /**
  * The redundancy groups on the interfaces, each protocol's own way:
  *
  *   VRRP (RFC 5798) and CARP: the master alone advertises (IP protocol
  *   112 to 224.0.0.18 / ff02::12, TTL 255 — a receiver takes only TTL 255,
- *   §7.1); a backup becomes master after the master down interval (3 ×
- *   the interval + the skew of its priority); the owner of the virtual
+ *   §7.1; IPv6 from the interface's link-local address, §5.1.2.1); a
+ *   backup becomes master after the master down interval (3 × the
+ *   interval + the skew of its priority); the owner of the virtual
  *   address (an address of its interface) has priority 255 and is master
- *   at once; a backup with a higher priority preempts (the default).
+ *   at once. VRRP preemption (the default): a backup discards the
+ *   advertisements of a lower priority — an equal one it accepts — and
+ *   becomes master when its master down timer expires (§6.4.2); a master
+ *   steps down for a higher priority, or an equal one from a higher
+ *   primary address (§6.4.3). CARP: a preempting backup that outranks the
+ *   master takes over at once (carp(4)).
  *   HSRP (RFC 2281) and GLBP's gateway election: the Active and the
- *   Standby router both send Hellos (UDP 1985 to 224.0.0.2 with TTL 1;
- *   GLBP UDP 3222 to 224.0.0.102); the others Listen silently. A router
+ *   Standby router both send Hellos (HSRP version 1: UDP 1985 to 224.0.0.2
+ *   with TTL 1; version 2 — Cisco's, for groups above 255 and for IPv6 —
+ *   224.0.0.102, in IPv6 UDP 2029 to ff02::66 from the link-local address;
+ *   GLBP UDP 3222 to 224.0.0.102 / ff02::66, TTL 255); the others Listen
+ *   silently. A router
  *   that hears no Active (or no Standby) for the hold time Speaks — says
  *   hello and takes part — and after a hold time Speaking without a better
  *   one it becomes Standby, or Active when there is none; the Standby
@@ -88,6 +105,12 @@ function hsrpLike(protocol: string): boolean {
  *
  * The holder of the virtual address answers for it with the virtual MAC
  * and announces it with a gratuitous ARP when it takes it over.
+ *
+ * What a router matches a received advertisement or Hello by is what the
+ * protocol carries: the group (VRID, VHID) of its address family, on the
+ * interface it arrived on — never the receiver's VRF or another local
+ * name. A different virtual address is logged (VRRP, HSRP, GLBP) or, for
+ * CARP (its HMAC covers the addresses), discarded.
  */
 export function installFhrp(P: ProtocolSim): void {
   const members: FhrpMember[] = [];
@@ -104,7 +127,7 @@ export function installFhrp(P: ProtocolSim): void {
         const prio = owner ? 255 : Number(sv.values.get('priority') || '100');
         const rel = P.m.relations.find((r) => P.e.base(r) === sv.id && relationDevices(r).indexOf(d.id) >= 0);
         const pre = rel ? rel.attrs.find(([k]) => k === 'preempt') : undefined;
-        members.push({ key: `${sv.id}|${l3.vrf}|${g}|${formatAddr(vip)}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: virtualMac(sv.id, g, vip.version), prio, owner, preempt: owner || (pre ? pre[1] !== 'false' : !hsrpLike(sv.id)), state: 'Initialize', gen: 0, heardAt: -1, rel });
+        members.push({ key: `${sv.id}|${d.id}|${i.id}|${g}|${vip.version}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: virtualMac(sv.id, g, vip.version), prio, owner, preempt: owner || (pre ? pre[1] !== 'false' : !hsrpLike(sv.id)), state: initState(sv.id), gen: 0, heardAt: -1, rel });
       }
     }
   }
@@ -118,10 +141,18 @@ export function installFhrp(P: ProtocolSim): void {
     const down = hsrpLike(m.protocol) ? (hold ? hold.seconds : 10) * 1000 : 3 * a + Math.round(((256 - m.prio) / 256) * a);
     return { adv: a, down };
   };
-  const ownIp = (m: FhrpMember): string => {
-    const a = m.l3.addrs.find((x) => x.addr.version === m.vip.version);
-    return a ? formatAddr(a.addr) : '0.0.0.0';
+  /** its source and primary address: IPv4 the interface's first, IPv6 its link-local one (RFC 5798 §1.6, §5.1.2.1) */
+  const srcOf = (m: FhrpMember): IpAddr | null => {
+    if (m.vip.version === 6) return m.l3.ll ? m.l3.ll.addr : null;
+    const a = m.l3.addrs.find((x) => x.addr.version === 4);
+    return a ? a.addr : null;
   };
+  const ownIp = (m: FhrpMember): string => {
+    const a = srcOf(m);
+    return a ? formatAddr(a) : m.vip.version === 6 ? '::' : '0.0.0.0';
+  };
+  /** the members a member's messages are for (the lane drawn): the same relation, protocol, group and family */
+  const peersOf = (m: FhrpMember): FhrpMember[] => members.filter((o) => o !== m && o.rel === m.rel && o.protocol === m.protocol && o.group === m.group && o.vip.version === m.vip.version);
   /** does (priority, address) a outrank b (higher priority, then the higher address)? */
   const outranks = (pa: number, ia: string, pb: number, ib: string): boolean => pa > pb || (pa === pb && compareAddr(addr(ia), addr(ib)) > 0);
   const holds = (st: string): boolean => st === 'Master' || st === 'Active';
@@ -142,18 +173,23 @@ export function installFhrp(P: ProtocolSim): void {
     const p = simProfile(m.protocol);
     const hs = hsrpLike(m.protocol);
     const type = hs ? op || 'Hello' : 'Advertisement';
-    const group = addr(m.vip.version === 4 ? (p && p.group4) || '224.0.0.18' : (p && p.group6) || 'ff02::12');
-    const src = m.l3.addrs.find((a) => a.addr.version === m.vip.version);
+    const v2 = m.protocol === 'hsrp' && (m.vip.version === 6 || m.group > 255);
+    const group = addr(m.vip.version === 6 ? (hs ? 'ff02::66' : (p && p.group6) || 'ff02::12') : v2 ? '224.0.0.102' : (p && p.group4) || '224.0.0.18');
+    const src = srcOf(m);
     if (!src || !P.e.isL3Up(m.dev, m.l3.id)) return;
     // the Active (and the VRRP master) sends from the virtual MAC; a Standby or Speaking router from its own
     const smac = holds(m.state) ? m.vmac : m.l3.mac;
-    const port = m.protocol === 'hsrp' ? 1985 : 3222;
-    const msg: Msg = { protocol: m.protocol, type, label: `${label(m)} ${type}${hs ? ' (' + m.state + ')' : ''}`, detail: `${label(m)} ${type}: group ${m.group}, ${hs ? 'state ' + m.state + ', ' : ''}priority ${m.prio}${m.owner ? ' (the address owner)' : ''}, virtual ${formatAddr(m.vip)}, from ${m.dev}:${m.l3.id} (source MAC ${smac}${smac === m.vmac ? ', the virtual MAC' : ''}) to ${formatAddr(group)} (${multicastMac(group)})${hs ? `, UDP ${port}, TTL 1` : ', IP protocol 112, TTL 255'}`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, key: m.key, prio: m.prio, ip: formatAddr(src.addr), state: m.state, op: type } };
+    const port = m.protocol === 'hsrp' ? (m.vip.version === 6 ? 2029 : 1985) : 3222;
+    // HSRP in IPv4 (v1, v2): TTL 1 (RFC 2281 §5); in IPv6 255 (a link-local message, as ND's); GLBP: 255 (Cisco's GLBP, Wireshark's
+    // check of 224.0.0.102); VRRP and CARP: 255 (RFC 5798 §5.1.1.3)
+    const ttl = m.protocol === 'hsrp' && m.vip.version === 4 ? 1 : 255;
+    const msg: Msg = { protocol: m.protocol, type, label: `${label(m)} ${type}${hs ? ' (' + m.state + ')' : ''}`, detail: `${label(m)}${v2 ? ' version 2' : ''} ${type}: group ${m.group}, ${hs ? 'state ' + m.state + ', ' : ''}priority ${m.prio}${m.owner ? ' (the address owner)' : ''}, virtual ${formatAddr(m.vip)}, from ${m.dev}:${m.l3.id} ${formatAddr(src)} (source MAC ${smac}${smac === m.vmac ? ', the virtual MAC' : ''}) to ${formatAddr(group)} (${multicastMac(group)})${hs ? `, UDP ${port}` : ', IP protocol 112'}, ${m.vip.version === 6 ? 'hop limit' : 'TTL'} ${ttl}`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, group: m.group, vip: formatAddr(m.vip), prio: m.prio, ip: formatAddr(src), state: m.state, op: type } };
     P.e.note('message', m.protocol, m.dev, '', type, m.state, msg.detail, P.e.now, msg);
-    if (m.rel) for (const o of members) if (o.key === m.key && o !== m) P.lane(m.rel, m.dev, o.dev, msg, 2 * P.e.hopTime());
-    const pkt = P.e.newPacket(src.addr, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], m.protocol === 'hsrp' ? 1 : 255);
+    if (m.rel) for (const o of peersOf(m)) P.lane(m.rel, m.dev, o.dev, msg, 2 * P.e.hopTime());
+    const pkt = P.e.newPacket(src, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], ttl);
     pkt.l4 = hs ? { proto: 'udp', num: 17, sport: port, dport: port } : { proto: 'other', num: 112 };
-    pkt.len = hs ? 8 + 20 : 8 + 4 * (1 + 0);
+    // HSRP: UDP + its 20 bytes; VRRP / CARP: the 8-byte header + the one virtual address (4 or 16 bytes, RFC 5798 §5.1)
+    pkt.len = hs ? 8 + (v2 ? (m.vip.version === 6 ? 52 : 40) : 20) : 8 + (m.vip.version === 6 ? 16 : 4);
     P.e.emit(m.dev, m.l3, { src: smac, dst: multicastMac(group), msg, ip: pkt });
   };
 
@@ -172,11 +208,13 @@ export function installFhrp(P: ProtocolSim): void {
   };
   const backup = (m: FhrpMember, why: string): void => {
     m.gen++;
+    m.lower = undefined;
     set(m, 'Backup', why);
     const g = m.gen;
     const wait = (): void => {
       if (m.gen !== g || m.state !== 'Backup') return;
-      if (P.e.now - m.heardAt >= timers(m).down - 1) master(m, m.heardAt < 0 ? 'no master heard' : `master down interval expired (${fmtSec(timers(m).down)}): no advertisement from the master`);
+      const lower = m.lower;
+      if (P.e.now - m.heardAt >= timers(m).down - 1) master(m, lower && P.e.now - m.heardAt >= timers(m).down - 1 ? `preempts ${lower.dev} (priority ${m.prio} > ${lower.prio}): master down interval expired (${fmtSec(timers(m).down)}) with only its advertisements heard` : m.heardAt < 0 ? 'no master heard' : `master down interval expired (${fmtSec(timers(m).down)}): no advertisement from the master`);
       else P.e.after(timers(m).down - (P.e.now - m.heardAt), wait);
     };
     P.e.after(timers(m).down, wait);
@@ -192,10 +230,18 @@ export function installFhrp(P: ProtocolSim): void {
       return;
     }
     const theirs = d.prio || 0;
-    const higher = outranks(theirs, d.ip || '0.0.0.0', m.prio, ownIp(m));
+    const higher = outranks(theirs, d.ip || ownIp(m), m.prio, ownIp(m));
     if (m.state === 'Backup') {
-      if (higher || !m.preempt) m.heardAt = P.e.now;
-      else master(m, `preempts ${d.from} (priority ${m.prio} > ${theirs})`);
+      if (m.protocol === 'carp') {
+        // carp(4): a preempting backup that would advertise more often than the master takes over at once; else it listens
+        if (m.preempt && m.prio > theirs) master(m, `preempts ${d.from} (priority ${m.prio} > ${theirs})`);
+        else m.heardAt = P.e.now;
+      } else if (!m.preempt || theirs >= m.prio) m.heardAt = P.e.now;
+      else {
+        // RFC 5798 §6.4.2: a lower priority's advertisement is discarded (the master down timer runs on): it takes over when that expires
+        m.lower = { dev: d.from || '', prio: theirs };
+        P.e.note('drop', m.protocol, m.dev, d.from || '', 'Advertisement', m.state, `${m.dev} (priority ${m.prio}, preempt) discards ${d.from}'s advertisement with priority ${theirs}: it becomes Master when its master down timer expires (RFC 5798 §6.4.2)`);
+      }
     } else if (m.state === 'Master' && higher) {
       m.heardAt = P.e.now;
       backup(m, `${d.from} has priority ${theirs}`);
@@ -207,7 +253,7 @@ export function installFhrp(P: ProtocolSim): void {
     // every hello time: the Active, the Standby and a Speaking router say hello; the timers decide the next state
     const g = m.gen;
     P.periodic(
-      () => m.gen === g && m.state !== 'Initialize',
+      () => m.gen === g && m.state !== initState(m.protocol),
       () => timers(m).adv,
       () => {
         if (m.state === 'Active' || m.state === 'Standby' || m.state === 'Speak') say(m);
@@ -281,9 +327,18 @@ export function installFhrp(P: ProtocolSim): void {
   });
   for (const proto of FHRP) {
     P.handlers.set(proto, (dev, l3, msg, pkt) => {
-      const d = (msg.data || {}) as { key?: string; prio?: number; ip?: string; from?: string; state?: string; op?: string };
+      const d = (msg.data || {}) as { group?: number; vip?: string; prio?: number; ip?: string; from?: string; state?: string; op?: string };
+      const fam = pkt ? pkt.dst.version : d.vip && parseAddress(d.vip) ? (parseAddress(d.vip) as IpAddr).version : 4;
       for (const m of members) {
-        if (m.dev !== dev || !l3 || m.l3.id !== l3.id || m.key !== d.key || d.from === dev || m.state === 'Initialize') continue;
+        // what the protocol carries: its group of this family, on the interface it arrived on
+        if (m.protocol !== proto || m.dev !== dev || !l3 || m.l3.id !== l3.id || m.group !== d.group || m.vip.version !== fam || d.from === dev || m.state === initState(m.protocol)) continue;
+        if (d.vip !== formatAddr(m.vip)) {
+          const drop = m.protocol === 'carp';
+          P.e.note(drop ? 'drop' : 'message', m.protocol, m.dev, d.from || '', msg.type, m.state, `${m.dev}:${m.l3.id}: ${label(m)} group ${m.group} from ${d.from} names virtual address ${d.vip}, here ${formatAddr(m.vip)} — a misconfiguration${drop ? '; discarded (its HMAC covers the addresses)' : ', logged (RFC 5798 §7.1)'}`);
+          if (drop) continue;
+        }
+        // RFC 5798 §7.1: the owner of the address discards the advertisements of its group
+        if (m.protocol === 'vrrp' && m.owner) continue;
         if (hsrpLike(m.protocol)) hsIn(m, d);
         else vrIn(m, d, pkt ? pkt.ttl : 255);
       }
@@ -294,13 +349,13 @@ export function installFhrp(P: ProtocolSim): void {
       if (m.dev !== dev || m.l3.id !== l3.id) continue;
       if (!up) {
         m.gen++;
-        set(m, 'Initialize', `interface ${l3.id} went down`);
+        set(m, initState(m.protocol), `interface ${l3.id} went down`);
       } else if (hsrpLike(m.protocol)) hsStart(m, `interface ${l3.id} came up`);
       else vrStart(m, `interface ${l3.id} came up`);
     }
   });
   P.extraStatus.push((): SessionStatus[] =>
-    members.map((m) => ({ protocol: m.protocol, name: `group ${m.group} (${formatAddr(m.vip)}): ${m.dev}:${m.l3.id}`, device: m.dev, peer: '', state: m.state, detail: `priority ${m.prio}${m.owner ? ' (address owner)' : ''}${m.preempt ? ', preempt' : ''}; virtual MAC ${m.vmac}`, up: m.state !== 'Initialize', relation: m.rel ? m.rel.id : undefined })),
+    members.map((m) => ({ protocol: m.protocol, name: `group ${m.group} (${formatAddr(m.vip)}): ${m.dev}:${m.l3.id}`, device: m.dev, peer: '', state: m.state, detail: `priority ${m.prio}${m.owner ? ' (address owner)' : ''}${m.preempt ? ', preempt' : ''}; virtual MAC ${m.vmac}`, up: m.state !== initState(m.protocol), relation: m.rel ? m.rel.id : undefined })),
   );
 }
 
