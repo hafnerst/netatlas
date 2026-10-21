@@ -326,6 +326,10 @@ test('identity: a send qualifies as evidence only with the same source interface
   const not = (what, p) => assert.equal(I.planMatches(id, { ...plan, ...p }, m), false, what);
   not('another source interface (the one that does not reach it)', { via: 'eth1' });
   not('no source interface: the routes choose, which the check did not', { via: undefined });
+  // a device with one interface: a send that names none goes from it (the form leaves it out) — the same identity
+  const one = model(MULTI.replace('interfaces: [{id: eth0, ip: 10.0.1.10/24}, {id: eth1, ip: 10.0.2.10/24}]', 'interfaces: [{id: eth0, ip: 10.0.1.10/24}]').replace('  - {id: l2, a: "multi:eth1", b: "r2:a"}' + String.fromCharCode(10), ''));
+  const oid = I.commIdentity(one, C.checkCommunication(one, { from: 'multi', to: 'srv:eth0', service: 'tcp/443' }));
+  assert.equal(I.planMatches(oid, { ...plan, via: undefined }, one), true);
   not('the destination interface’s other address', { toAddr: '10.9.0.11' });
   not('another port', { port: 22 });
   not('ICMP instead of TCP', { kind: 'icmp', port: undefined });

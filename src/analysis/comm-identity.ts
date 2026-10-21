@@ -104,6 +104,13 @@ function endIface(model: Model, dev: string, named: string | undefined, v: 4 | 6
   return a ? { iface: i.id, address: a } : { iface: i.id };
 }
 
+/** A device's one interface of the IP stack that has or takes an address (none: several or none). */
+function onlyIface(model: Model, dev: string): string | undefined {
+  const d = model.index.devices.get(dev);
+  const usable = d ? deviceInterfaces(d).filter((i) => i.type !== 'loopback' && i.type !== 'tunnel' && (i.addresses.length > 0 || i.dhcp || autoIpv6(i.ipv6))) : [];
+  return usable.length === 1 ? usable[0].id : undefined;
+}
+
 /** The identity a communication check resolved (null when it named nothing it could check). */
 export function commIdentity(model: Model, c: CommCheck): CommIdentity | null {
   if (c.error || !c.from) return null;
@@ -260,7 +267,8 @@ export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boole
   const svc = id.service;
   if ((svc ? svc.proto : 'icmp') !== p.kind) return false;
   if (svc && svc.proto !== 'icmp' && p.port !== svc.port) return false;
-  if ((p.via || undefined) !== (id.source.iface || undefined)) return false;
+  // (a device with one interface of the IP stack: a send that names none goes from it all the same — the form leaves it out)
+  if ((p.via || undefined) !== (id.source.iface || undefined) && !(p.via === undefined && model && onlyIface(model, id.source.device) === id.source.iface)) return false;
   const t = id.destination;
   if (t.binding === 'application') return false;
   if (t.binding === 'name') {
