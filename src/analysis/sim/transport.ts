@@ -304,7 +304,8 @@ export class AppSocket {
 
 interface FwSession {
   key: string;
-  proto: 'tcp' | 'udp' | 'icmp';
+  /** 'other': an IP protocol without ports (GRE, ESP …), tracked by its address pair */
+  proto: 'tcp' | 'udp' | 'icmp' | 'other';
   flow: string;
   state: string;
   created: number;
@@ -336,6 +337,12 @@ export function profileTransport(proto: string): { proto: 'tcp' | 'udp' | 'other
   }
   const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(proto);
   return { proto: 'other', ports: [], num: ip ? Number(ip[1]) : 0 };
+}
+
+/** Is a destination scoped to the link (IPv4 224.0.0.0/24, IPv6 ff02::/16 and fe80::/10)? Routers never forward it. */
+function linkScoped(a: IpAddr): boolean {
+  if (a.version === 4) return a.bytes[0] === 224 && a.bytes[1] === 0 && a.bytes[2] === 0;
+  return (a.bytes[0] === 0xff && (a.bytes[1] & 0x0f) === 2) || (a.bytes[0] === 0xfe && (a.bytes[1] & 0xc0) === 0x80);
 }
 
 export class Transport {
@@ -2304,24 +2311,32 @@ export class Transport {
   private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null): boolean {
     const l4 = pkt.l4;
     const dd = this.P.m.index.devices.get(dev);
-    // the model's relations (and its demands) are the firewall's implicit policy; a written rule base decides their packets
-    // too, as it does in the path tracer and the communication check; protocols without a transport header (and IGMP) pass
-    if ((!(dd && dd.policy) && (pkt.msg.relation || pkt.rides.length)) || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
-    const proto = l4.proto as 'tcp' | 'udp' | 'icmp';
+    const written = !!(dd && dd.policy);
+    // without a written policy the model's relations (and its demands) are the firewall's implicit policy, and protocols
+    // without ports (and IGMP) pass. A written rule base decides every IP packet it forwards — the relations' and the
+    // tunnels' too, as in the path tracer and the communication check; one without ports (GRE, ESP, IGMP …) as 'other':
+    // the rules with `proto: any` by its addresses, interfaces and zones, else the default action. Only what is scoped to
+    // the link (224.0.0.0/24, ff02::/16, IPv6 link-local) is exempt — routers never forward it; a transparent firewall
+    // passes that control traffic
+    if (!written && (pkt.msg.relation || pkt.rides.length || !l4 || l4.proto === 'other' || l4.proto === 'igmp')) return true;
+    if (pkt.msg.protocol === 'demand' || (written && linkScoped(pkt.dst))) return true;
+    const proto: 'tcp' | 'udp' | 'icmp' | 'other' = l4 && (l4.proto === 'tcp' || l4.proto === 'udp' || l4.proto === 'icmp') ? l4.proto : 'other';
     const tab = this.fwTable(dev);
     // (a written policy says whether it is stateful; a firewall's sessions otherwise; a router's policy is stateless)
     const stateful = dd ? policyStateful(dd, capabilities(dd).firewallPolicy && this.e.params.get('fw-stateful', dev).value === 'on') : false;
     // traffic between the endpoints of a service relation on its port (a test of it, and its answers) is the relation's
     const rel = this.relationFor(pkt);
-    const sp = proto === 'icmp' ? l4.echoId || 0 : l4.sport || 0;
-    const dp = proto === 'icmp' ? l4.echoId || 0 : l4.dport || 0;
+    const sp = !l4 || proto === 'other' ? 0 : proto === 'icmp' ? l4.echoId || 0 : l4.sport || 0;
+    const dp = !l4 || proto === 'other' ? 0 : proto === 'icmp' ? l4.echoId || 0 : l4.dport || 0;
+    // (what the log calls a packet without ports: its IP protocol)
+    const ipName = !l4 ? 'IP' : l4.proto === 'igmp' ? 'IGMP' : `IP protocol ${l4.num}`;
     // (a session is its opening packet's ingress VRF's: overlapping addresses in two VRFs are two sessions; a reply leaves by that VRF)
     const fwd = `${from.vrf}|${proto}|${formatAddr(pkt.src)}:${sp}>${formatAddr(pkt.dst)}:${dp}`;
     const rev = `${to.vrf}|${proto}|${formatAddr(pkt.dst)}:${dp}>${formatAddr(pkt.src)}:${sp}`;
-    const flags = l4.flags || [];
+    const flags = (l4 && l4.flags) || [];
     if (stateful) {
       // an ICMP error about a session's packet belongs to it
-      if (proto === 'icmp' && l4.quote) {
+      if (proto === 'icmp' && l4 && l4.quote) {
         const q = l4.quote;
         const qk = `${to.vrf}|${q.proto}|${q.src}:${q.sport || 0}>${q.dst}:${q.dport || 0}`;
         const qr = `${from.vrf}|${q.proto}|${q.dst}:${q.dport || 0}>${q.src}:${q.sport || 0}`;
@@ -2347,7 +2362,7 @@ export class Transport {
       }
     }
     const opening = proto !== 'tcp' || (flags.indexOf('SYN') >= 0 && flags.indexOf('ACK') < 0);
-    const echoReq = proto !== 'icmp' || l4.icmpType === 8 || l4.icmpType === 128;
+    const echoReq = proto !== 'icmp' || (!!l4 && (l4.icmpType === 8 || l4.icmpType === 128));
     // a written network policy: its rules decide each packet (analysis/policy.ts, the engine the path tracer uses)
     if (dd && dd.policy) {
       // (a device or interface named by a rule: its effective addresses now — leases, SLAAC — and the source's owner its
@@ -2359,26 +2374,30 @@ export class Transport {
       const sender = pkt.msg.sender;
       const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src, from.id);
       const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst, to.id, via);
-      const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
+      const ports = !!l4 && (proto === 'tcp' || proto === 'udp');
+      const d = policyDecision(this.P.m, dd as Device, { src: pkt.src, dst: pkt.dst, proto, sport: ports ? l4.sport : undefined, dport: ports ? l4.dport : undefined, srcDev, dstDev, inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
+      const logProto = proto === 'other' ? pkt.msg.protocol : proto;
       // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
       if (undecided(d)) {
-        this.e.note('drop', proto, dev, '', 'dropped', '', `${dev} drops ${pkt.msg.label}: ${d.text}`);
+        this.e.note('drop', logProto, dev, '', 'dropped', '', `${dev} drops ${pkt.msg.label}: ${d.text}`);
         return false;
       }
       // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
       if (d.permit && (!stateful || (opening && echoReq))) {
         if (stateful) {
-          const s: FwSession = { key: fwd, proto, flow: `${formatAddr(pkt.src)}${proto === 'icmp' ? '' : ':' + sp} → ${formatAddr(pkt.dst)}${proto === 'icmp' ? ' (echo ' + sp + ')' : ':' + dp}`, state: proto === 'tcp' ? 'SYN' : 'ACTIVE', created: this.e.now, last: this.e.now, rule: d.ruleText || 'default permit', timeout: proto === 'tcp' ? 'fw-half-open' : proto === 'udp' ? 'fw-udp' : 'fw-icmp' };
+          const flow = proto === 'other' ? `${ipName} ${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}` : `${formatAddr(pkt.src)}${proto === 'icmp' ? '' : ':' + sp} → ${formatAddr(pkt.dst)}${proto === 'icmp' ? ' (echo ' + sp + ')' : ':' + dp}`;
+          // (an IP protocol without ports: tracked by its address pair, as Linux conntrack's generic protocol is — with UDP's timeout)
+          const s: FwSession = { key: fwd, proto, flow, state: proto === 'tcp' ? 'SYN' : 'ACTIVE', created: this.e.now, last: this.e.now, rule: d.ruleText || 'default permit', timeout: proto === 'tcp' ? 'fw-half-open' : proto === 'icmp' ? 'fw-icmp' : 'fw-udp' };
           tab.set(fwd, s);
-          this.e.note('table', proto, dev, '', 'session opened', s.state, `${dev} opens a session ${s.flow} (${s.rule}, in ${from.id})`);
+          this.e.note('table', logProto, dev, '', 'session opened', s.state, `${dev} opens a session ${s.flow} (${s.rule}, in ${from.id})`);
         }
         return true;
       }
-      const what0 = `${proto === 'icmp' ? (pkt.dst.version === 4 ? 'ICMP' : 'ICMPv6') + ' ' + (l4.icmpName || '') : proto.toUpperCase() + ' ' + formatAddr(pkt.src) + ':' + l4.sport + ' → ' + formatAddr(pkt.dst) + ':' + l4.dport}`;
+      const what0 = proto === 'other' || !l4 ? `${ipName} ${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}` : `${proto === 'icmp' ? (pkt.dst.version === 4 ? 'ICMP' : 'ICMPv6') + ' ' + (l4.icmpName || '') : proto.toUpperCase() + ' ' + formatAddr(pkt.src) + ':' + l4.sport + ' → ' + formatAddr(pkt.dst) + ':' + l4.dport}`;
       const why0 = d.permit ? 'it belongs to no session it knows (a stateful policy)' : d.text.replace(/^\S+ denies [^:]*: /, '');
       const fwAct = capabilities(dd).firewallPolicy ? this.e.params.get('fw-action', dev) : null;
       const reject = !!fwAct && fwAct.value === 'reject';
-      this.e.note('drop', proto, dev, '', reject ? 'rejected' : 'dropped', '', `${dev} ${reject ? 'rejects' : 'drops'} ${what0} (${pkt.msg.label}): ${why0}`);
+      this.e.note('drop', logProto, dev, '', reject ? 'rejected' : 'dropped', '', `${dev} ${reject ? 'rejects' : 'drops'} ${what0} (${pkt.msg.label}): ${why0}`);
       if (reject) {
         if (proto === 'tcp') {
           this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst);
@@ -2386,6 +2405,8 @@ export class Transport {
       }
       return false;
     }
+    // (the implicit policy: only TCP, UDP and ICMP reach here)
+    if (!l4 || proto === 'other') return true;
     const allow = parsePorts(String(this.e.params.get('fw-allow', dev).value) || 'none');
     const rules = 'list' in allow ? allow.list : [];
     const port = proto === 'icmp' ? 0 : (l4.dport as number);

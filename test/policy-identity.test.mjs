@@ -457,3 +457,68 @@ test('two equal-cost gateways sharing the firewall’s interface, towards two ho
   for (const x of r.filter((y) => !y.ok)) assert.match(x.result, /dropped at fw: .*no rule matches/, 'srvX’s: no rule permits it — decided, not undecided');
   assert.equal(s.events().filter((e) => e.kind === 'drop' && e.device === 'fw' && /by which device an address is|can't be told/.test(e.detail)).length, 0);
 });
+
+// ------------------------------------------------------------------ a written rule base and IP protocols without ports (GRE …)
+
+// a GRE tunnel between r1 and r2 whose outer packets cross the firewall; h1 and h2 talk through the tunnel
+const GRE = (rules, def = 'deny') => `netatlas: 1
+title: gre through a firewall
+devices:
+  - id: r1
+    type: router
+    interfaces: [{id: wan, ip: 198.51.100.1/30}, {id: lan, ip: 10.1.0.1/24}]
+    logical_interfaces: [{id: tun0, type: tunnel, ip: 172.16.0.1/30, source: wan, destination: 203.0.113.1}]
+    routes: [{prefix: 203.0.113.0/30, via: 198.51.100.2}, {prefix: 10.2.0.0/24, via: 172.16.0.2}]
+  - id: r2
+    type: router
+    interfaces: [{id: wan, ip: 203.0.113.1/30}, {id: lan, ip: 10.2.0.1/24}]
+    logical_interfaces: [{id: tun0, type: tunnel, ip: 172.16.0.2/30, source: wan, destination: 198.51.100.1}]
+    routes: [{prefix: 198.51.100.0/30, via: 203.0.113.2}, {prefix: 10.1.0.0/24, via: 172.16.0.1}]
+  - id: fw
+    type: firewall
+    interfaces: [{id: a, ip: 198.51.100.2/30}, {id: b, ip: 203.0.113.2/30}]
+    policy:
+      default: ${def}
+      rules:${rules ? '\n' + rules : ' []'}
+  - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}
+  - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.2.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.2.0.1}]}
+links:
+  - {id: l1, a: "r1:wan", b: "fw:a"}
+  - {id: l2, a: "fw:b", b: "r2:wan"}
+  - {id: la, a: "r1:lan", b: "h1:eth0"}
+  - {id: lb, a: "r2:lan", b: "h2:eth0"}
+relations:
+  - {id: gre, protocol: gre, endpoints: ["r1:tun0", "r2:tun0"]}
+`;
+
+test('a written rule base decides an IP protocol without ports too: default deny with no rules drops the GRE tunnel’s outer packets (it stays down, h1 cannot reach h2); a proto-any address rule permits them (a stateful session by their address pair, the tunnel up, the traffic through); a tcp rule does not match them — static and simulation alike', () => {
+  const run = (rules) => {
+    const m = model(GRE(rules));
+    const s = new S.Simulation(m);
+    s.runTo(30000);
+    const t = s.sendTest({ from: 'h1', to: '10.2.0.10', kind: 'icmp' });
+    s.runTo(s.now + 5000);
+    return { m, s, t, c: check(m, 'h1', 'h2', 'icmp') };
+  };
+  // default deny, no rules
+  let r = run('');
+  const drop = r.s.events().find((e) => e.kind === 'drop' && e.device === 'fw' && /GRE Keepalive/.test(e.detail));
+  assert.ok(drop, 'the firewall decided the outer packet');
+  assert.match(drop.detail, /drops IP 198\.51\.100\.1 → 203\.0\.113\.1 \(GRE Keepalive\): no rule matches \(its default action, deny\)/);
+  assert.equal(r.s.sessions('r1', 'gre')[0].state, 'Down');
+  assert.equal(r.t.ok, false);
+  assert.equal(r.c.verdict, 'violated', r.c.headline);
+  assert.match(r.c.trace.paths[0].end.detail, /the tunnel's outer packet \(198\.51\.100\.1 → 203\.0\.113\.1\) is denied/);
+  // permitted by address, proto any — one direction written, the answers by the session
+  r = run('        - {action: permit, source: 198.51.100.1, destination: 203.0.113.1, proto: any}');
+  assert.ok(r.s.events().some((e) => e.kind === 'table' && e.device === 'fw' && /opens a session IP 198\.51\.100\.1 → 203\.0\.113\.1 \(permit 198\.51\.100\.1 → 203\.0\.113\.1/.test(e.detail)));
+  assert.equal(r.s.sessions('r1', 'gre')[0].state, 'Up');
+  assert.equal(r.t.ok, true, r.t.result);
+  assert.equal(r.c.verdict, 'satisfied', r.c.headline);
+  assert.ok(r.s.sessionTable('fw').some((x) => x.proto === 'other' && /^IP 198\.51\.100\.1 → 203\.0\.113\.1$/.test(x.flow)), JSON.stringify(r.s.sessionTable('fw')));
+  // a tcp rule says nothing about GRE: still the default
+  r = run('        - {action: permit, source: 198.51.100.1, destination: 203.0.113.1, proto: tcp}');
+  assert.equal(r.s.sessions('r1', 'gre')[0].state, 'Down');
+  assert.equal(r.t.ok, false);
+  assert.equal(r.c.verdict, 'violated', r.c.headline);
+});
