@@ -96,6 +96,15 @@ export interface SimProfile {
   response?: string;
   /** service: the last endpoint sends the requests (SNMP: the manager polls the agents) */
   fromServer?: boolean;
+  /**
+   * UDP ports of a protocol between peers (not a client and a server): 'same' — both sides send from and to the
+   * protocol's port (IKE 500 ↔ 500, LDP 646, RIP 520, GTP-U, L2TP, WireGuard); 'to' — each side from an ephemeral
+   * port of its own to the protocol's port (BFD, RFC 5881 §4; VXLAN, Geneve: the source port a flow hash). Unset:
+   * the initiator is the client (an ephemeral port to the protocol's), its peer answers from it.
+   */
+  ports?: 'same' | 'to';
+  /** the TTL / hop limit of its unicast packets when the protocol fixes one (single-hop BFD: 255, RFC 5881 §5) */
+  ttl?: number;
   /** messages that carry data (data, tunnels): their name */
   dataMsg?: string;
   /** an encapsulation header the protocol adds ("GRE", "ESP", "VXLAN") */
@@ -316,6 +325,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'rip',
+    ports: 'same',
     label: 'RIP',
     group: 'Routing',
     behaviour: 'rip',
@@ -353,6 +363,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'ldp',
+    ports: 'same',
     label: 'LDP',
     group: 'Routing',
     behaviour: 'ldp',
@@ -412,6 +423,8 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'bfd',
+    ttl: 255,
+    ports: 'to',
     label: 'BFD',
     group: 'Routing',
     behaviour: 'bfd',
@@ -505,6 +518,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   // ------------------------------------------------------------ tunnels and overlays
   {
     id: 'ipsec',
+    ports: 'same',
     label: 'IPsec (IKEv2)',
     group: 'Tunnels and overlays',
     behaviour: 'ike',
@@ -560,6 +574,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'wireguard',
+    ports: 'same',
     label: 'WireGuard',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -612,6 +627,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'l2tp',
+    ports: 'same',
     label: 'L2TP',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -664,6 +680,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'gtp',
+    ports: 'same',
     label: 'GTP',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -723,6 +740,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'pseudowire',
+    ports: 'same',
     label: 'Pseudowire',
     group: 'Tunnels and overlays',
     behaviour: 'ldp',
@@ -772,6 +790,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'vxlan',
+    ports: 'to',
     label: 'VXLAN',
     group: 'Tunnels and overlays',
     behaviour: 'data',
@@ -787,6 +806,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'geneve',
+    ports: 'to',
     label: 'Geneve',
     group: 'Tunnels and overlays',
     behaviour: 'data',
@@ -838,6 +858,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'vpls',
+    ports: 'same',
     label: 'VPLS',
     group: 'Tunnels and overlays',
     behaviour: 'ldp',

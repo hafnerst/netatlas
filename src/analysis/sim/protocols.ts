@@ -842,7 +842,7 @@ export class ProtocolSim implements Protocols {
    * (proto-tcp.ts) with their segments' real flags: no TCP header is made up
    * here (a profile with only TCP gets none).
    */
-  l4Of(s: Sess): L4 | undefined {
+  l4Of(s: Sess, group = false): L4 | undefined {
     const p = s.profile.proto;
     const udp = /\bUDP(?:\/TCP)?\s+([0-9]{1,5})/.exec(p);
     const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(p);
@@ -850,8 +850,12 @@ export class ProtocolSim implements Protocols {
     if (!first) return undefined;
     if (first === ip) return { proto: 'other', num: Number(ip[1]) };
     const port = Number(first[1]);
-    const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
     const eph = (dev: string): number => 49152 + hashIndex(s.rel.id + '|' + dev, 16000);
+    // between peers: both from and to the protocol's port, or each from its own ephemeral port to it (SimProfile.ports);
+    // to a group (Hellos): always to the protocol's port
+    if (s.profile.ports === 'same' || (group && s.profile.ports !== 'to')) return { proto: 'udp', num: 17, sport: port, dport: port };
+    if (s.profile.ports === 'to') return { proto: 'udp', num: 17, sport: eph(s.dev), dport: port };
+    const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
     const sport = client ? eph(s.dev) : port;
     const dport = client ? port : eph(s.peer);
     return { proto: 'udp', num: 17, sport, dport };
@@ -863,7 +867,7 @@ export class ProtocolSim implements Protocols {
     const at = to === ipOf(s.remote) ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
     const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id]);
+    const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id], s.profile.ttl || 0);
     pkt.l4 = this.l4Of(s);
     this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
     this.e.send(s.dev, pkt);
@@ -874,7 +878,7 @@ export class ProtocolSim implements Protocols {
     const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
     const pkt = this.e.newPacket(ipOf(s.local), group, s.local.l3.vrf, m, [s.rel.id], 1);
-    pkt.l4 = this.l4Of(s);
+    pkt.l4 = this.l4Of(s, true);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
     for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, ipOf((this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote)) : 2 * this.e.hopTime());
