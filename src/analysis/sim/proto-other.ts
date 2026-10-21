@@ -125,7 +125,10 @@ export function installFhrp(P: ProtocolSim): void {
         if (!vip || !l3 || !Number.isFinite(g)) continue;
         const owner = (sv.id === 'vrrp' || sv.id === 'carp') && l3.addrs.some((a) => compareAddr(a.addr, vip) === 0);
         const prio = owner ? 255 : Number(sv.values.get('priority') || '100');
-        const rel = P.m.relations.find((r) => P.e.base(r) === sv.id && relationDevices(r).indexOf(d.id) >= 0);
+        // its group's relation: the one naming this interface, else one naming the device as a whole (never another
+        // interface's group's — its attributes, preempt, are that group's)
+        const rels = P.m.relations.filter((r) => P.e.base(r) === sv.id && relationDevices(r).indexOf(d.id) >= 0);
+        const rel = rels.find((r) => r.endpoints.some((e) => e.device === d.id && e.iface === i.id)) || rels.find((r) => r.endpoints.some((e) => e.device === d.id && e.iface === undefined));
         const pre = rel ? rel.attrs.find(([k]) => k === 'preempt') : undefined;
         members.push({ key: `${sv.id}|${d.id}|${i.id}|${g}|${vip.version}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: virtualMac(sv.id, g, vip.version), prio, owner, preempt: owner || (pre ? pre[1] !== 'false' : !hsrpLike(sv.id)), state: initState(sv.id), gen: 0, heardAt: -1, rel });
       }

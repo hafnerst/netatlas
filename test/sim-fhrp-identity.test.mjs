@@ -314,3 +314,54 @@ test('HSRP keeps its own rule (RFC 2281 §5.1: an equal priority is decided by t
   assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'message' && e.device === 'r2' && e.what === 'Coup'));
   assert.deepEqual(answers(s), ['r2']);
 });
+
+// ------------------------------------------------------------------ a router in two groups, each with its own relation
+
+const TWO_GROUPS = `netatlas: 1
+title: two FHRP groups, two relations
+devices:
+  - id: r1
+    type: router
+    protocols: {hsrp: {}}
+    interfaces:
+      - {id: lan1, ip: 10.0.1.2/24, protocols: {hsrp: {group: 1, virtual_ip: 10.0.1.1, priority: 110}}}
+      - {id: lan2, ip: 10.0.2.2/24, protocols: {hsrp: {group: 2, virtual_ip: 10.0.2.1, priority: 110}}}
+  - id: r2
+    type: router
+    protocols: {hsrp: {}}
+    interfaces:
+      - {id: lan1, ip: 10.0.1.3/24, protocols: {hsrp: {group: 1, virtual_ip: 10.0.1.1, priority: 100}}}
+      - {id: lan2, ip: 10.0.2.3/24, protocols: {hsrp: {group: 2, virtual_ip: 10.0.2.1, priority: 100}}}
+  - {id: sw1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+  - {id: sw2, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+links:
+  - {id: a1, a: "r1:lan1", b: "sw1:p1"}
+  - {id: a2, a: "r2:lan1", b: "sw1:p2"}
+  - {id: b1, a: "r1:lan2", b: "sw2:p1"}
+  - {id: b2, a: "r2:lan2", b: "sw2:p2"}
+relations:
+  - {id: g1, protocol: hsrp, endpoints: ["r1:lan1", "r2:lan1"], attrs: {preempt: false}}
+  - {id: g2, protocol: hsrp, endpoints: ["r1:lan2", "r2:lan2"], attrs: {preempt: true}}
+`;
+
+test('a router in two HSRP groups with two relations — each group takes its own relation’s attributes: r1 returning takes group 2 back with a Coup (preempt: true) and leaves group 1 to r2 (preempt: false)', () => {
+  const s = sim(TWO_GROUPS);
+  s.runTo(60000);
+  const row = (dev, iface) => s.status().find((r) => r.device === dev && r.name.endsWith(`: ${dev}:${iface}`));
+  assert.deepEqual([row('r1', 'lan1').relation, row('r1', 'lan2').relation], ['g1', 'g2']);
+  assert.ok(!/preempt/.test(row('r1', 'lan1').detail) && /preempt/.test(row('r1', 'lan2').detail));
+  // r1 leaves both groups (its interfaces shut), r2 takes both; r1 comes back
+  s.shut('r1', 'lan1');
+  s.shut('r1', 'lan2');
+  s.runTo(s.now + 40000);
+  assert.deepEqual([state(s, 'r2', 'lan1'), state(s, 'r2', 'lan2')], ['Active', 'Active']);
+  const t0 = s.now;
+  s.noShut('r1', 'lan1');
+  s.noShut('r1', 'lan2');
+  s.runTo(t0 + 120000);
+  assert.deepEqual([state(s, 'r1', 'lan1'), state(s, 'r2', 'lan1')].sort(), ['Active', 'Standby'].sort());
+  assert.equal(state(s, 'r2', 'lan1'), 'Active', 'group 1: no preemption');
+  assert.equal(state(s, 'r1', 'lan2'), 'Active', 'group 2: r1 preempts');
+  assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'message' && e.device === 'r1' && e.what === 'Coup' && /group 2/.test(e.detail)));
+  assert.ok(!s.events().some((e) => e.t >= t0 && e.kind === 'message' && e.device === 'r1' && e.what === 'Coup' && /group 1/.test(e.detail)));
+});
