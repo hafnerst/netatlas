@@ -18,6 +18,7 @@ import { load, model, example, errorsOf } from './helpers.mjs';
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
 const O = load('analysis/sim/opaque.js');
+const C = load('analysis/communication.js');
 
 // a source on bus b1 reaches dst on bus b2 through one of two transit Systems: "asw" (sorted first) only sends on b1,
 // so the hop into it is invalid; "zsw" is valid. Optionally a third bus b3 makes a cycle (b1 ↔ b2 ↔ b3 ↔ b1).
@@ -312,7 +313,15 @@ test('vme-rack.yaml: a reference for a mixed architecture — every interconnect
   assert.ok(opaque.some((x) => /reached cpu1:p0: delivered along the modelled connection \(adc:p0 → fsw:f3 → cpu1:p0\)/.test(x.detail)), 'through the switch card');
   assert.deepEqual(opaque.filter((x) => x.kind === 'drop').map((x) => x.detail), [], 'nothing refused or stopped');
   const apps = s.apps.runs.map((r) => [r.dev + '/' + r.app.id, r.tests.length > 0 && r.tests.every((t) => t.ok)]);
-  assert.deepEqual(apps.sort(), [['cpu1/syslog', true], ['cpu2/syslog', true], ['ews/console', true], ['ews/poll', true]]);
+  assert.deepEqual(apps.sort(), [['cpu1/syslog', true], ['cpu2/syslog', true], ['ews/console', true], ['ews/poll', true], ['mil/syslog', true]]);
+  // the crate's Ethernet switch board: a VME board on the backplane (a target), every board's IP connection, routed to the LAN
+  const vsw = m.index.devices.get('vsw');
+  assert.ok(vsw.layer3 && ics.get('vmebus').endpoints.some((e) => e.device === 'vsw' && e.role === 'target'));
+  for (const b of ['cpu1', 'cpu2', 'adc', 'dio', 'mil']) {
+    const c = C.checkCommunication(m, { from: 'ews', to: b, service: 'icmp' });
+    assert.equal(c.verdict, 'satisfied', `${b}: ${c.headline}`);
+    assert.ok(c.trace.paths[0].hops.some((h) => h.device === 'vsw'), `${b} through the switch board`);
+  }
   assert.ok(s.events().some((x) => x.protocol === 'tcp' && x.kind === 'message'), 'real TCP traffic, not only ARP');
   // the setup's list offers the non-IP data like a protocol (shown or hidden)
   const entry = S.protocolEntriesOf(m).find((x) => x.id === 'opaque');
