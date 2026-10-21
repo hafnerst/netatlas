@@ -298,3 +298,16 @@ test('timing-ptp.yaml: gm-a is the grandmaster through the transparent and the b
   assert.equal(clock(s, 'gm-a').state, 'grandmaster');
   assert.equal(clock(s, 'gm-b').state, 'synchronized');
 });
+
+test('a transparent clock has no timing state of its own — neither in an experiment’s observation nor in the snapshot (timing-ptp.yaml)', () => {
+  const s = sim(example('timing-ptp.yaml'));
+  settle(s, 60000);
+  const tcs = Array.from(s.ptp.clocks.entries()).filter(([, c]) => c.kind === 'transparent').map(([d]) => d);
+  assert.ok(tcs.length >= 1);
+  const snap = s.snapshot().timing.filter((t) => t.protocol === 'ptp');
+  for (const d of tcs) {
+    assert.equal(s.timingState(d, 'ptp'), null, d);
+    assert.equal(snap.find((t) => t.dev === d), undefined, d);
+  }
+  assert.ok(snap.length >= 2, 'the other clocks are there');
+});

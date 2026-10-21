@@ -777,6 +777,8 @@ export class Simulation {
       timing.push(t);
     }
     for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      // (a transparent clock corrects others' messages and has no time of its own to be synchronized: no timing state, as timingState says)
+      if (c.kind === 'transparent') continue;
       const t: SnapTiming = { dev, protocol: 'ptp', synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: c.state + (c.parent ? ` to the grandmaster ${c.parent.gmDev}` : '') };
       if (c.parent) t.source = c.parent.gmDev;
       timing.push(t);
