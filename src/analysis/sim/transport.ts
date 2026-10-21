@@ -114,6 +114,8 @@ export interface Test {
   from: string;
   /** the source interface chosen (Send test…), else the one the route gives */
   via?: string;
+  /** the source address it was sent from (when it was sent): what a comparison checks an exact source binding against */
+  srcAddr?: string;
   /** a Send test's series and this message's number in it (1 …) */
   run?: number;
   msg?: number;
@@ -899,6 +901,7 @@ export class Transport {
       return;
     }
     const s = pick;
+    t.srcAddr = formatAddr(s.src);
     if (s.how) this.e.note('note', t.kind, dev, '', 'source', '', `Test ${t.series}: from ${formatAddr(s.src)} ${s.how}`);
     const o = { dst: t.dst };
     const kind = t.kind;
