@@ -204,7 +204,13 @@ what the advertisements it received told it (below).
   withdrawal with 16, a 180 s timeout and 120 s garbage collection, and
   triggered updates after 1–5 s, from and to UDP 520; a router asks its
   neighbours for their tables (a Request) at every boot and when an
-  interface comes up again. No hold-down, no RIPv1.
+  interface comes up again. RIPng (RFC 2080) on UDP 521: Responses go to
+  ff02::9 from the link-local address with hop count 255, the answer to a
+  Request unicast to the requester; a Response not from port 521, not
+  from a link-local address or (to the group) with another hop count is
+  ignored; a Request waits until the link-local address is valid. The
+  learned next hop is the neighbour's session address. No hold-down, no
+  RIPv1.
 * **IS-IS** pairs routers over the cable between them (its PDUs are
   frames), by the NET's system ID and area and the level; its routes over
   an unnumbered interface go to the neighbour's own address out of it,
@@ -298,7 +304,15 @@ what the advertisements it received told it (below).
   does not reach it: the check is partial, and the destination reported
   is the device the paths reach.
 * **Tunnels.** A tunnel's underlay is traced when the model's routes lead
-  to its destination; otherwise its `over:` chain is followed as written.
+  to its destination — every equal-cost alternative of its outer packet a
+  branch of the path (each for the path MTU and the capacity); which one a
+  flow takes is the simulation's forwarding choice — otherwise its `over:`
+  chain is followed as written. A tunnel's own packets (GRE keepalives,
+  WireGuard handshakes …) and its data go between its outer ends with the
+  protocol's outer header: GRE and mGRE 47, IP-in-IP 4, IPsec ESP 50 (no
+  NAT traversal), UDP to the protocol's port for WireGuard, OpenVPN, L2TP,
+  GTP-U, VXLAN and Geneve; other tunnels' outer header is not stated (GRE
+  assumed). A tunnel interface follows its session's state.
 * **Routing services describe their configuration.** Each protocol has a
   fixed set of parameters (a protocol of the model may declare its own);
   areas, costs and timers are per relation end; one router ID per protocol.
@@ -342,10 +356,13 @@ to the host's address, DNAT for published ports) in both.
   simulation as in the path tracer — and IP protocols without ports (GRE,
   ESP, IGMP …): rules with `proto: any` by their addresses, interfaces and
   zones, else the default action; a stateful policy tracks them by their
-  address pair (Linux conntrack's generic tracking). Exempt only what is
+  address pair and IP protocol number (Linux conntrack's generic
+  tracking), so one protocol's session never permits another's (GRE keys
+  and ESP SPIs are not tracked); an ICMP error about a session's packet
+  (an echo by its identifier) belongs to it. Exempt only what is
   scoped to the link (224.0.0.0/24, ff02::/16, fe80::/10). The path tracer
-  applies the rules to a tunnel's outer packet (its source and protocol);
-  a denial there stops the tunnel.
+  applies the rules to a tunnel's outer packet (its source, protocol and,
+  over UDP, port); a denial there stops the tunnel.
 * **A router's policy filters what it routes**, not what it bridges within
   a VLAN (no VLAN ACLs); it is stateless unless written stateful.
 * **A rule's device or interface is its effective addresses.** In the
@@ -442,9 +459,15 @@ Network events, attributed to their event.
   answer to a query the current state (IS_EX, IS_IN); routers keep a
   timer per source in INCLUDE mode — a new source on a known group gets
   its (S,G), a blocked one leaves when its timer runs out; a BLOCK of
-  sources the router does not have changes nothing. A BLOCK is
+  sources the router does not have changes nothing. A member of every
+  source (EXCLUDE {}, or an IGMPv2 / MLDv1 report) beside members of named
+  sources: every source is forwarded while that group timer runs; when it
+  runs out only the named sources stay (RFC 3376 §6.5) — a member leaving
+  or a named source's timer running out does not end the group while
+  another member still wants it. A BLOCK is
   followed up with group-specific queries (no group-and-source query);
-  snooping keeps one source list per port.
+  snooping keeps one source list per port. An IPv6 stream goes from the
+  interface's global address (MLD from its link-local one).
 * **IGMP and MLD messages** carry the Router Alert option and TTL 1, their
   lengths by version; MLD goes from the link-local address once it is valid
   (a host's Report before it: from ::), and a router elects the MLD querier
@@ -529,7 +552,25 @@ answer). Load balancers and proxies relay TCP only (UDP to them is answered
 by themselves); a reverse proxy and a load balancer relay one connection
 each way; a forward proxy without a parent is reported as a limitation.
 Service traffic of relations (DNS, NTP, syslog …) is sent at a fixed
-demonstration interval. A Cloud is one opaque Layer 3 hop with its latency
+demonstration interval. An application that starts with the simulation
+starts 3 s after the start or, when its device is not operational then
+(booting, off, waiting for its host), 3 s after the device's latest boot
+(said, shown as Waiting); it starts once — a run going on is not doubled,
+also not by a reboot; a configuration problem is refused, said and not
+tried again. An experiment's `start_app` waits for the device to boot,
+not for its links: a message sent before the link-up delay has passed
+finds no route, as on a device. The runs' history keeps the last 200
+finished runs; a run still going on always stays. Each original message
+has one outcome, from its last attempt (sent or not); retries are counted
+apart. Stop is accepted while the last message is on its way: nothing
+more is sent and no retry follows; what is already on its way finishes.
+MQTT: a periodic publisher's schedule belongs to its run — it goes on
+across reconnections; a round that falls while it is not connected is not
+published (nor counted toward a count). Packet identifiers are 1–65535
+per side, wrap and skip those awaiting acknowledgment (all in use:
+nothing is sent, said). Topics, filters and client identifiers are sized
+in UTF-8 bytes (client identifiers are ASCII by validation). A TCP
+connection whose SYN cannot leave is closed at once and not retransmitted. A Cloud is one opaque Layer 3 hop with its latency
 and loss.
 
 **Not supported.** Industrial or building protocol engines (Modbus, OPC UA,

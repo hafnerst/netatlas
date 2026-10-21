@@ -12,6 +12,33 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Correctness after #96:
+
+- **Applications** that start with the simulation wait for a booting
+  device (cold start, power-on, a guest's host) and start once it is up;
+  a run going on no longer drops out of the history after 200 later
+  runs; outcomes are counted per original message across retries that
+  could not be sent; Stop works while the last message is on its way.
+- **MQTT**: a periodic publisher keeps publishing after its connection
+  recovers (broker restart, cable, power cycle); a client whose first
+  attempt fails at once tries again; packet identifiers stay within
+  1–65535, wrap and skip those in flight; strings are sized in UTF-8
+  bytes.
+- **Policy**: a stateful policy keeps IP protocols without ports apart by
+  their number; Fragmentation Needed and Packet Too Big about an echo
+  pass a stateful firewall.
+- **Tunnels**: WireGuard and the other session tunnels on tunnel
+  interfaces come up (their packets go between the outer ends, with the
+  protocol's own outer header); the path tracer decides a UDP tunnel's
+  outer packet by its port and evaluates every underlay alternative.
+- **TCP**: a connection whose SYN could not leave is not retransmitted.
+- **IGMPv3 / MLDv2**: a member of every source beside members of named
+  sources gets every source; a member leaving or a source expiring no
+  longer ends the group. IPv6 multicast streams are routed (they went
+  from a link-local address).
+- **RIPng** uses UDP 521, link-local sources and hop count 255, checked on
+  input.
+
 Correctness after #95:
 
 - **IKEv2**: an IKE SA rekey whose response was lost no longer fails — the
