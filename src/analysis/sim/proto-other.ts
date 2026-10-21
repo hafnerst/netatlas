@@ -391,8 +391,12 @@ interface IkeX {
   sa?: string;
   /** the new IKE SA the peer is negotiating while this one is established (its IKE_SA_INIT's) */
   newSa?: string;
-  /** the IKE SA a rekey just replaced: its Delete is still to be answered */
-  oldSa?: string;
+  /**
+   * the IKE SA a rekey just replaced, until its Delete exchange ends it (RFC 7296 §2.18: the old SA lives until it is
+   * deleted): its identity, its last response (sent again if the request comes again — a rekey's response lost) and
+   * the next request ID expected on it — the requests still on their way on it are answered there. One, at most.
+   */
+  old?: { sa: string; answered?: IkeX['answered']; peerMid?: number };
   /** the new IKE SA this side's own IKE rekey (its CREATE_CHILD_SA) proposes */
   pendingNewSa?: string;
 }
@@ -405,13 +409,26 @@ function ikeRekeyed(P: ProtocolSim, s: Sess, newSa: string, rekeyer: boolean): v
   const x = s.x as IkeX;
   const old = x.sa;
   const oldMid = x.mid === undefined ? 0 : x.mid;
+  // (the old SA's responder state stays until its Delete exchange: a retransmitted rekey request is answered from it)
+  x.old = old !== undefined ? { sa: old, answered: x.answered, peerMid: x.peerMid } : undefined;
   x.sa = newSa;
   x.mid = 0;
   x.peerMid = undefined;
   x.answered = undefined;
   x.pendingNewSa = undefined;
   if (rekeyer) P.unicast(s, 'INFORMATIONAL', `request (message ID ${oldMid}): Delete (the old IKE SA, replaced by the rekey)`, { mid: oldMid, sa: old, del: true });
-  else x.oldSa = old;
+}
+
+/**
+ * The old IKE SA's Delete exchange is over on this side: its state goes. A DPD of this side's own still outstanding on
+ * it ends with it — the rekey just showed the peer alive, and an answer sent on the old SA before the Delete has arrived
+ * by now (one path, in order); the next DPD goes in the new SA (never retried on a deleted SA, never taken for a dead
+ * peer).
+ */
+function ikeOldGone(x: IkeX): void {
+  const old = x.old;
+  x.old = undefined;
+  if (old && x.pending && x.pending.type === 'INFORMATIONAL' && x.pending.sa === old.sa) x.pending = undefined;
 }
 
 /** A fresh IKE SA identity (an initiator's SPI): the side that begins it and when. */
@@ -466,8 +483,12 @@ function ikeRequest(P: ProtocolSim, s: Sess, type: string, detail: string, state
   again(1);
 }
 
-/** A response: taken only for the request outstanding (its type, message ID and IKE SA); anything else is ignored. */
-function ikeResponse(P: ProtocolSim, s: Sess, type: string, mid: number | undefined, sa?: string): boolean {
+/**
+ * A response: taken only for the request outstanding (its type, message ID and IKE SA); anything else is ignored.
+ * `release`: the next request waiting goes now — false where the caller changes the SA first (an IKE SA rekeyed:
+ * what waits goes in the new SA, with its message IDs).
+ */
+function ikeResponse(P: ProtocolSim, s: Sess, type: string, mid: number | undefined, sa?: string, release = true): boolean {
   const x = s.x as IkeX;
   const p = x.pending;
   if (!p || p.type !== type || p.mid !== mid || (sa !== undefined && p.sa !== undefined && sa !== p.sa)) {
@@ -475,7 +496,7 @@ function ikeResponse(P: ProtocolSim, s: Sess, type: string, mid: number | undefi
     return false;
   }
   x.pending = undefined;
-  ikeNext(s);
+  if (release) ikeNext(s);
   return true;
 }
 
@@ -569,6 +590,24 @@ const ike: Behaviour = {
       P.e.note('drop', s.protocol, s.dev, s.peer, msg.type, s.state, `IKEv2 ${s.rel.id}: ${s.dev} drops a ${msg.type} ${d.response ? 'response' : 'request'} (message ID ${d.mid}) of an IKE SA it does not have`);
       return true;
     };
+    // a request on the IKE SA a rekey replaced, before its Delete (RFC 7296 §2.18): its last request again is answered
+    // from the kept response (the rekey's response lost); a DPD still on its way is answered on it; nothing else starts
+    if (!d.response && !d.del && x.old && d.sa !== undefined && d.sa === x.old.sa && d.sa !== x.sa) {
+      const o = x.old;
+      const a = o.answered;
+      if (a && a.type === msg.type && a.mid === d.mid) {
+        P.unicast(s, msg.type, `response (message ID ${d.mid}), sent again on the old IKE SA: the request came again`, { ...a.data, response: true, mid: d.mid, sa: o.sa }, '');
+        return;
+      }
+      if (msg.type === 'INFORMATIONAL' && d.mid !== undefined && (o.peerMid === undefined || d.mid >= o.peerMid)) {
+        o.answered = { mid: d.mid, type: msg.type, detail: 'DPD (empty)', data: {}, sa: o.sa };
+        o.peerMid = d.mid + 1;
+        P.unicast(s, 'INFORMATIONAL', `response (message ID ${d.mid}) on the old IKE SA: DPD (empty)`, { response: true, mid: d.mid, sa: o.sa }, '');
+        return;
+      }
+      P.e.note('drop', s.protocol, s.dev, s.peer, msg.type, s.state, `IKEv2 ${s.rel.id}: ${s.dev} drops a ${msg.type} request (message ID ${d.mid}) on the IKE SA a rekey replaced: only its last request again, or a DPD, is answered there until it is deleted`);
+      return;
+    }
     switch (msg.type) {
       case 'IKE_SA_INIT':
         if (!d.response) {
@@ -616,11 +655,15 @@ const ike: Behaviour = {
         return;
       case 'INFORMATIONAL':
         if (d.del) {
-          // the Delete of an IKE SA a rekey replaced (on the old SA): answered once; its response ends it
-          if (!d.response && d.sa !== undefined && d.sa === x.oldSa) {
-            x.oldSa = undefined;
+          // the Delete of an IKE SA a rekey replaced (on the old SA): answered once; its response ends it — on each side its
+          // old SA's state goes with it
+          if (!d.response && d.sa !== undefined && x.old && d.sa === x.old.sa) {
+            ikeOldGone(x);
             P.unicast(s, 'INFORMATIONAL', `response (message ID ${d.mid}): Delete (the old IKE SA)`, { response: true, mid: d.mid, sa: d.sa, del: true });
-          } else if (d.response) P.e.note('state', s.protocol, s.dev, s.peer, 'old IKE SA deleted', s.state, `IKEv2 ${s.rel.id}: ${s.peer} confirms the Delete: the old IKE SA is gone`);
+          } else if (d.response) {
+            if (x.old && d.sa === x.old.sa) ikeOldGone(x);
+            P.e.note('state', s.protocol, s.dev, s.peer, 'old IKE SA deleted', s.state, `IKEv2 ${s.rel.id}: ${s.peer} confirms the Delete: the old IKE SA is gone`);
+          }
           return;
         }
         if (!d.response) {
@@ -639,9 +682,11 @@ const ike: Behaviour = {
           ikeAnswer(P, s, 'CREATE_CHILD_SA', d.mid, d.what === 'ike' ? 'the new IKE SA' : 'the new Child SA', { what: d.what });
           if (d.what === 'ike') ikeRekeyed(P, s, d.newSa as string, false);
           ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
-        } else if (ikeResponse(P, s, 'CREATE_CHILD_SA', d.mid, d.sa)) {
+        } else if (ikeResponse(P, s, 'CREATE_CHILD_SA', d.mid, d.sa, false)) {
           if (d.what === 'ike') ikeRekeyed(P, s, (x.pendingNewSa as string) || ikeSpi(P, s), true);
           ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
+          // (what waited goes now: in the new IKE SA, its message IDs from 0)
+          ikeNext(s);
         }
         return;
       default:
