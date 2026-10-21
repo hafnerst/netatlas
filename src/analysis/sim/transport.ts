@@ -922,9 +922,16 @@ export class Transport {
       else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
       // the application gave up on a connection still being opened: it closes its socket, and a close in SYN-SENT
       // deletes the connection (RFC 9293 §3.10.4) — no more SYN retransmissions of an attempt nobody waits for
-      // (its next periodic message or its retry opens a connection of its own)
+      // (its next periodic message or its retry opens a connection of its own); on an open connection whose answer
+      // never came it aborts (RFC 9293 §3.10.4 ABORT: a RST, the connection gone) — an answer that comes later finds no
+      // connection and is refused, never taken for a test that already failed
       const c = t.conn;
-      if (c && c.state === 'SYN_SENT' && this.alive(c)) this.closeConn(c, `connection attempt abandoned: ${t.from} gave up after its response timeout (${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))})`);
+      const after = `${t.from} gave up after its response timeout (${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))})`;
+      if (c && c.state === 'SYN_SENT' && this.alive(c)) this.closeConn(c, `connection attempt abandoned: ${after}`);
+      else if (c && this.alive(c) && c.state !== 'TIME_WAIT') {
+        this.rst(c, `aborted: ${after}`);
+        this.closeConn(c, `aborted: ${after}`);
+      }
     });
     if (kind === 'icmp') this.ping(t, s.src, s.vrf);
     else if (kind === 'udp') this.udpRequest(t, s.src, s.vrf);
@@ -1032,6 +1039,8 @@ export class Transport {
     }
     const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(q.pkt) >= 0);
     if (t) {
+      // (a test's connection being opened ends with it: a hard error while connecting, RFC 1122 §4.2.3.9, Linux tcp_v4_err)
+      if (t.conn && (t.conn.state === 'SYN_SENT' || t.conn.state === 'SYN_RCVD') && this.alive(t.conn)) this.closeConn(t.conn, `connection failed: ${what}`);
       this.finish(t, false, what);
       return;
     }
@@ -1050,6 +1059,7 @@ export class Transport {
     const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(pkt.id) >= 0);
     if (kind === 'frag' && mtu) this.learnMtu(dev, pkt.vrf, pkt.dst, mtu, `its own interface: ${text}`);
     if (t) {
+      if (kind !== 'frag' && t.conn && t.conn.state === 'SYN_SENT' && this.alive(t.conn)) this.closeConn(t.conn, `connection failed: ${text}`);
       this.finish(t, false, `not sent: ${text}`);
       return;
     }

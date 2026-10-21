@@ -572,3 +572,49 @@ test('conversations: translated by NAT on the way, the reply is the same convers
   assert.equal(cport(later), cport(tcpFlights), 'the same client port');
   assert.ok(!first.has(Array.from(second)[0]), 'a new conversation');
 });
+
+// ------------------------------------------------------------------ a test's connection ends with its test
+
+test('an ICMP error about a test’s SYN ends its connection with the test (RFC 1122 §4.2.3.9; Linux tcp_v4_err): no SYN is sent again — also when the router rate-limits its later errors', () => {
+  for (const limit of ['', ', simulation: {icmp_rate_limit: 60000}']) {
+    const t = `netatlas: 1
+title: unreachable
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
+  - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.1.1/24}]${limit}}
+links:
+  - {id: l1, a: "pc:eth0", b: "r1:g0"}
+`;
+    const s = sim(t);
+    s.runTo(3000);
+    const t0 = s.now;
+    const r = s.sendTest({ from: 'pc', to: '10.9.9.9', kind: 'tcp', port: 80 });
+    s.runTo(t0 + 120000);
+    assert.equal(r.ok, false);
+    assert.match(r.result, /^Net Unreachable from 10\.0\.1\.1/);
+    const out = segs(s, 'pc', t0);
+    assert.deepEqual(out.map((x) => x.flags), ['[S]'], `${limit || 'no limit'}: ${out.map((x) => `${x.t} ${x.label}`).join(', ')}`);
+    const closed = s.events().filter((e) => e.t >= t0 && e.kind === 'table' && e.device === 'pc' && e.what === 'connection closed');
+    assert.equal(closed.length, 1);
+    assert.ok(closed[0].t <= r.ended + 1e-6, 'closed when the test failed');
+    assert.match(closed[0].detail, /connection failed: Net Unreachable/);
+  }
+});
+
+test('the response timeout of a test on an open connection: the client aborts it ([R,A], RFC 9293 §3.10.4 ABORT) — the server’s late answer is never sent on it, nothing of the connection after', () => {
+  const s = sim(CHAIN({ srv: ', response_time: 7000' }));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'tcp', port: 80 });
+  s.runTo(t0 + 20000);
+  assert.equal(r.ok, false);
+  assert.match(r.result, /no answer within 5 s/);
+  const pc = segs(s, 'pc', t0);
+  assert.equal(pc[pc.length - 1].flags, '[R,A]');
+  assert.ok(Math.abs(pc[pc.length - 1].t - r.ended) < 1e-6, 'at the timeout');
+  assert.ok(pc.every((x) => x.t <= r.ended + 1e-6), 'nothing after the abort');
+  // the server's connection is reset before its answer is due: it sends no data
+  assert.ok(segs(s, 'srv', t0).every((x) => x.len === 0), segs(s, 'srv', t0).map((x) => `${x.t - t0} ${x.label}`).join(', '));
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'srv' && e.kind === 'table' && /reset by 10\.0\.1\.10/.test(e.detail)));
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'pc' && e.kind === 'table' && /aborted: pc gave up after its response timeout/.test(e.detail)));
+});
