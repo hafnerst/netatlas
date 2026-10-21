@@ -6332,9 +6332,9 @@ class App {
             return false;
         const id = r.identity;
         // (the newest send that carries it: testRuns lists the newest first)
-        const run = this.simCtl.sim.testRuns().find((x) => (0, comm_identity_1.planMatches)(id, x.plan, r.model));
+        const run = this.simCtl.sim.testRuns().find((x) => (0, comm_identity_1.runMatches)(id, x, r.model));
         if (!run) {
-            this.toast('Nothing to compare yet: no send carries this check (the same source interface, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
+            this.toast('Nothing to compare yet: no send carries this check (the same source interface — and the source address, for a check from an exact address —, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
             return false;
         }
         r.compare = (0, comm_identity_1.compareRun)(r.model, r.check, run, this.simCtl.snapshot());
@@ -14244,6 +14244,32 @@ class ModelDoc {
                         if (dev === id && (iface === undefined || inf === iface))
                             out.push(['interconnects', i, 'endpoints', k, 'port']);
                     });
+                    // its traffic: the initiator, the data source, each recipient ("device:port"; a recipient may be on another interconnect)
+                    const tr = ent.kind === 'map' ? ent.entries.get('traffic') : undefined;
+                    if (!tr || tr.value.kind !== 'seq')
+                        return;
+                    tr.value.items.forEach((x, k) => {
+                        if (x.kind !== 'map')
+                            return;
+                        const names = (t) => {
+                            if (t === undefined)
+                                return false;
+                            const c = t.indexOf(':');
+                            return (c < 0 ? t : t.slice(0, c)) === id && (iface === undefined || (c >= 0 && t.slice(c + 1) === iface));
+                        };
+                        for (const key of ['initiator', 'from']) {
+                            const e = x.entries.get(key);
+                            if (e && names((0, validate_1.scalarText)(e.value)))
+                                out.push(['interconnects', i, 'traffic', k, key]);
+                        }
+                        const to = x.entries.get('to');
+                        if (!to)
+                            return;
+                        if (to.value.kind === 'seq')
+                            to.value.items.forEach((r, j) => names((0, validate_1.scalarText)(r)) && out.push(['interconnects', i, 'traffic', k, 'to', j]));
+                        else if (names((0, validate_1.scalarText)(to.value)))
+                            out.push(['interconnects', i, 'traffic', k, 'to']);
+                    });
                 });
             // a System's opaque transit groups name its own ports
             if (iface !== undefined) {
@@ -14576,7 +14602,7 @@ class ModelDoc {
                 // a transit group's port: a bare id of the same device
                 nt = newIf !== undefined ? newIf : t;
             }
-            else if (/^(a|b|destination|port)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
+            else if (/^(a|b|destination|port)$/.test(String(last)) || p[p.length - 2] === 'endpoints' || (p[0] === 'interconnects' && p[2] === 'traffic')) {
                 const c = t.indexOf(':');
                 const dev = c < 0 ? t : t.slice(0, c);
                 const inf = c < 0 ? undefined : t.slice(c + 1);
@@ -17143,7 +17169,8 @@ function tracePath(model, req, ctx = {}) {
     if (srcAddr)
         w.src = srcAddr;
     w.srcDev = srcDev;
-    if (destDev !== undefined)
+    // (the destination's device when it is certain: asked for as a device or an interface, or the one holder of its address)
+    if (destDev !== undefined && (dst.kind !== 'address' || holders(model, destAddr, ctx, null).length === 1))
         w.destDev = destDev;
     w.svc = svc;
     if (dnat)
@@ -17308,7 +17335,11 @@ function step(w, at, hop, h, before, seen) {
     if (before.length > 0 && at.ingress !== undefined) {
         const dev = model.index.devices.get(at.device);
         const n0 = hop.notes.length;
+        w.und = [];
         const denied = forwardDenied(w, dev, at.ingress, h.iface, hop.notes);
+        if (w.und.length)
+            why.policyUndecided = (why.policyUndecided || []).concat(w.und);
+        w.und = undefined;
         for (const n of hop.notes.slice(n0))
             why.policy.push(n);
         if (denied) {
@@ -17342,10 +17373,23 @@ function step(w, at, hop, h, before, seen) {
     if (hop.nat)
         why.nat = hop.notes.slice(n1).join('; ');
     // the next device: the one with the next-hop address (or the destination, when it is connected)
-    const owners = holders(model, target, w.ctx, at.device);
+    let owners = holders(model, target, w.ctx, at.device);
+    // an address several devices have (two VRFs, two segments): the one this hop reaches — the destination asked for first,
+    // then the one on the segment the egress interface is on — never merely the first of them all
+    if (owners.length > 1) {
+        const dest = (0, ipmath_1.compareAddr)(target, w.dest) === 0 && w.destDev !== undefined ? owners.filter((o) => o.device === w.destDev) : [];
+        const vlan0 = outNet ? vlanOfNet(model, outNet.net) : undefined;
+        const onSeg = iface && iface.type === 'tunnel' ? [] : owners.filter((o) => l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: o.device, iface: o.iface }, vlan0).kind !== 'none');
+        const picked = dest.filter((o) => onSeg.length === 0 || onSeg.indexOf(o) >= 0).concat(onSeg.filter((o) => dest.indexOf(o) < 0));
+        if (picked.length) {
+            if (picked.length > 1 || owners.length > picked.length)
+                hop.notes.push(`${(0, ipmath_1.formatAddr)(target)} is an address of ${owners.map((o) => o.device + ':' + o.iface).join(' and ')}; the one this hop reaches is ${picked[0].device}`);
+            owners = picked;
+        }
+        else
+            hop.notes.push(`${(0, ipmath_1.formatAddr)(target)} is an address of ${owners.map((o) => o.device + ':' + o.iface).join(' and ')}; none of them is on the segment of ${at.device}:${h.iface}: the trace follows ${owners[0].device}`);
+    }
     let next = owners.length ? owners[0] : null;
-    if (owners.length > 1)
-        hop.notes.push(`${(0, ipmath_1.formatAddr)(target)} is an address of ${owners.map((o) => o.device + ':' + o.iface).join(' and ')}; the trace follows ${owners[0].device}`);
     if (!next) {
         const vip = vipHolder(model, target, w.ctx, at.device);
         if (vip) {
@@ -17394,7 +17438,11 @@ function step(w, at, hop, h, before, seen) {
     }
     else {
         const vlan = outNet ? vlanOfNet(model, outNet.net) : undefined;
+        w.und = [];
         const seg = l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: next.device, iface: next.iface }, vlan, (dev, inPort, outPort, notes) => crossDenied(w, dev, inPort, outPort, notes));
+        if (w.und.length)
+            why.policyUndecided = (why.policyUndecided || []).concat(w.und);
+        w.und = undefined;
         if (seg.kind === 'none') {
             why.l2 = (vlan !== undefined ? `VLAN ${vlan}: ` : '') + seg.detail;
             if (seg.denied)
@@ -17897,21 +17945,25 @@ function crossDenied(w, dev, inPort, outPort, notes) {
 function networkPolicyDenied(w, dev, inIface, outIface, notes) {
     if (!(0, policy_1.policyKind)(w.model, dev))
         return null;
-    // (the owner of an address: the traced end's device when it holds it, else its first holder)
+    // (the owner of an address: the traced end's device when it holds it, else its one holder; several and no traced end: not known)
     const owner = (a, end) => {
         if (!a)
             return null;
         const h = holders(w.model, a, w.ctx, null);
-        return end !== undefined && h.some((x) => x.device === end) ? end : h.length ? h[0].device : null;
+        const devs = h.map((x) => x.device).filter((x, k, all) => all.indexOf(x) === k);
+        return end !== undefined && devs.indexOf(end) >= 0 ? end : devs.length === 1 ? devs[0] : null;
     };
     // (a device spec's addresses: what the routing context has acquired — a snapshot's, the simulation's leases — else the configured model's, its runtime ones unknown)
-    const ids = w.ctx.leases ? (0, policy_1.ctxIds)(w.model, w.ctx) : (0, policy_1.configuredIds)(w.model);
+    const ids = w.ctx.leases ? (0, policy_1.ctxIds)(w.model, w.ctx) : (0, policy_1.configuredIds)(w.model, w.ctx);
     const flow = { src: w.src, dst: w.dest, proto: w.svc ? w.svc.proto : 'other', srcDev: owner(w.src, w.srcDev), dstDev: owner(w.dest, w.dnat ? undefined : w.destDev), inIface, outIface, ids };
     if (w.svc && w.svc.proto !== 'icmp')
         flow.dport = w.svc.port;
     const d = (0, policy_1.policyDecision)(w.model, dev, flow, !!w.svc);
     if (!d)
         return null;
+    // (undecided: said, and recorded as what it lacks — the communication check reads that, never the text)
+    if ((0, policy_1.undecided)(d) && w.und)
+        w.und.push({ device: dev.id, by: d.undecidedBy, text: d.text });
     if ((0, policy_1.undecided)(d) || d.permit) {
         notes.push(d.text);
         return null;
@@ -17955,7 +18007,10 @@ function policyDenied(w, dev, inIface, outIface, notes) {
         const d = (0, separation_1.decide)(dev, { inIface, outIface, src: w.src, dst: w.dest, proto: 'other' });
         return d.text;
     }
-    notes.push(`${dev.id} permits only ${rules.map((r) => `${(0, separation_1.ruleServiceText)(r)} (rule ${r.id})`).join(', ')} between these addresses; give a service to trace it exactly`);
+    const text = `${dev.id} permits only ${rules.map((r) => `${(0, separation_1.ruleServiceText)(r)} (rule ${r.id})`).join(', ')} between these addresses; give a service to trace it exactly`;
+    notes.push(text);
+    if (w.und)
+        w.und.push({ device: dev.id, by: 'service', text });
     return null;
 }
 /** The links and layer-2 devices of a found way, with the other up members of each LAG it crosses. */
@@ -19695,9 +19750,14 @@ function policyStateful(dev, fwStateful) {
     return (0, capabilities_1.capabilities)(dev).firewallPolicy ? fwStateful : false;
 }
 const svcWhat = (f) => (f.proto === 'icmp' ? 'ICMP' : f.proto === 'other' ? 'the traffic' : `${f.proto}/${f.dport || 0}`);
+/** The devices of a model that have an address, by the addresses `ids` gives them. */
+function holdersBy(model, addrs) {
+    return (a) => model.devices.filter((d) => addrs(d.id).some((x) => (0, ipmath_1.compareAddr)(x.addr, a) === 0)).map((d) => d.id);
+}
 /** The configured model's: the written addresses; DHCP and SLAAC / DHCPv6 interfaces are pending. */
-function configuredIds(model) {
-    return {
+function configuredIds(model, ctx) {
+    void ctx;
+    const ids = {
         addrs: (dev) => {
             const d = model.index.devices.get(dev);
             const out = [];
@@ -19721,10 +19781,13 @@ function configuredIds(model) {
             return out;
         },
     };
+    ids.holders = holdersBy(model, ids.addrs);
+    return ids;
 }
 /** A routing context's (a snapshot's, the simulation's): the written addresses and what it has acquired (its leases); nothing pending. */
 function ctxIds(model, ctx) {
-    return { addrs: (dev) => (0, routing_1.connectedIn)(model, dev, ctx).map((c) => ({ iface: c.iface, addr: c.addr })) };
+    const addrs = (dev) => (0, routing_1.connectedIn)(model, dev, ctx).map((c) => ({ iface: c.iface, addr: c.addr }));
+    return { addrs, holders: holdersBy(model, addrs) };
 }
 /**
  * Does an address spec (a prefix, an address, any, a device, a network,
@@ -19734,7 +19797,9 @@ function ctxIds(model, ctx) {
  * A device or interface holds the address among its effective ones
  * (`ids`, the configured model's when none) — never a whole subnet — and,
  * when the flow knows the address's owner (`owner`: two devices of
- * different VRFs may hold the same address), only if it is that owner.
+ * different VRFs may hold the same address), only if it is that owner; an
+ * address several devices have, its owner not known, is 'unknown' — never
+ * every device that has it. A prefix or an address rule is the address.
  */
 function specMatches(model, spec, a, ids, owner) {
     if (spec === 'any')
@@ -19746,8 +19811,12 @@ function specMatches(model, spec, a, ids, owner) {
     const owns = (dev, iface) => {
         if (owner && owner !== dev)
             return false;
-        if (by.addrs(dev).some((x) => (iface === undefined || x.iface === iface) && (0, ipmath_1.compareAddr)(x.addr, a) === 0))
+        if (by.addrs(dev).some((x) => (iface === undefined || x.iface === iface) && (0, ipmath_1.compareAddr)(x.addr, a) === 0)) {
+            // an address several devices have, its owner not known: it is not every one of them
+            if (!owner && by.holders && by.holders(a).length > 1)
+                return 'unknown';
             return true;
+        }
         // an address it takes at runtime, unknown here: not a non-match unless the address is known to be another device's
         if (!owner && by.pending && by.pending(dev).some((x) => (iface === undefined || x.iface === iface) && x.version === a.version))
             return 'unknown';
@@ -19778,6 +19847,11 @@ function anyMatches(model, specs, a, ids, owner) {
     return unknown ? 'unknown' : false;
 }
 /** Does a rule match a flow: true, false, or 'service' when it depends on a protocol or port that is not known. */
+/**
+ * Does a rule match a flow: true, false, or what it can't be decided without. Every condition that is known
+ * not to hold is checked first — a known protocol or port that differs makes the rule not match whatever is
+ * unknown —; only then does an unknown one (the source, the service, a runtime identity) leave it undecided.
+ */
 function ruleMatches(model, pol, r, f, svcKnown) {
     if (r.in.length && (f.inIface === undefined || r.in.indexOf(f.inIface) < 0))
         return false;
@@ -19788,36 +19862,43 @@ function ruleMatches(model, pol, r, f, svcKnown) {
         return false;
     if (r.toZone !== undefined && !inZone(r.toZone, f.outIface))
         return false;
-    // (a device or interface by its effective addresses; one whose runtime address is not known decides nothing)
-    let identity = false;
+    const unknown = [];
+    // (a device or interface by its effective addresses; one whose runtime identity is not known decides nothing)
     if (r.destination.length) {
         const m = anyMatches(model, r.destination, f.dst, f.ids, f.dstDev);
         if (m === false)
             return false;
         if (m === 'unknown')
-            identity = true;
+            unknown.push('identity');
     }
     if (r.source.length) {
         if (!f.src)
-            return 'source';
-        const m = anyMatches(model, r.source, f.src, f.ids, f.srcDev);
-        if (m === false)
-            return false;
-        if (m === 'unknown')
-            identity = true;
+            unknown.push('source');
+        else {
+            const m = anyMatches(model, r.source, f.src, f.ids, f.srcDev);
+            if (m === false)
+                return false;
+            if (m === 'unknown')
+                unknown.push('identity');
+        }
     }
-    if (identity)
-        return 'identity';
-    if (r.proto === 'any' && r.sport === undefined && r.dport === undefined)
-        return true;
-    if (!svcKnown)
-        return 'service';
-    if (r.proto !== 'any' && r.proto !== f.proto)
-        return false;
-    if (r.dport !== undefined && (f.dport === undefined || !(0, net_policy_1.portInSpec)(r.dport, f.dport)))
-        return false;
-    if (r.sport !== undefined && (f.sport === undefined || !(0, net_policy_1.portInSpec)(r.sport, f.sport)))
-        return false;
+    const service = !(r.proto === 'any' && r.sport === undefined && r.dport === undefined);
+    if (service) {
+        if (!svcKnown)
+            unknown.push('service');
+        else {
+            if (r.proto !== 'any' && r.proto !== f.proto)
+                return false;
+            if (r.dport !== undefined && (f.dport === undefined || !(0, net_policy_1.portInSpec)(r.dport, f.dport)))
+                return false;
+            if (r.sport !== undefined && (f.sport === undefined || !(0, net_policy_1.portInSpec)(r.sport, f.sport)))
+                return false;
+        }
+    }
+    // (what is missing first, in the order a user can supply it: a source, a service; then a runtime identity)
+    for (const k of ['source', 'service', 'identity'])
+        if (unknown.indexOf(k) >= 0)
+            return k;
     return true;
 }
 /** The transport and ports of a relation's protocol ("TCP 443", "UDP 1812/1813"), or none. */
@@ -19869,16 +19950,16 @@ function policyDecision(model, dev, f, svcKnown = true) {
             if (m === false)
                 continue;
             if (m === 'service' || m === 'source')
-                return { permit: true, text: `${dev.id}’s policy decides by ${m === 'service' ? 'the service' : 'the source address'} at rule ${k + 1} (${(0, net_policy_1.policyRuleText)(r)}): give ${m === 'service' ? 'a service' : 'a source'} to evaluate it`, kind, byDefault: false, rule: -(k + 1) };
+                return { permit: true, text: `${dev.id}’s policy decides by ${m === 'service' ? 'the service' : 'the source address'} at rule ${k + 1} (${(0, net_policy_1.policyRuleText)(r)}): give ${m === 'service' ? 'a service' : 'a source'} to evaluate it`, kind, byDefault: false, rule: -(k + 1), undecidedBy: m };
             if (m === 'identity')
-                return { permit: true, text: `${dev.id}’s policy decides at rule ${k + 1} (${(0, net_policy_1.policyRuleText)(r)}) by an address a device takes at runtime (DHCP, SLAAC): the configured model does not know it — analyze a simulation snapshot to evaluate it`, kind, byDefault: false, rule: -(k + 1) };
+                return { permit: true, text: `${dev.id}’s policy decides at rule ${k + 1} (${(0, net_policy_1.policyRuleText)(r)}) by which device an address is: one taken at runtime (DHCP, SLAAC) that the configured model does not know, or one several devices have — analyze a simulation snapshot, or name the address`, kind, byDefault: false, rule: -(k + 1), undecidedBy: m };
             return { permit: r.action === 'permit', text: `${dev.id} ${r.action === 'permit' ? 'permits' : 'denies'} ${what}${between}: rule ${k + 1} (${(0, net_policy_1.policyRuleText)(r)})`, rule: k + 1, ruleText: (0, net_policy_1.policyRuleText)(r), kind, byDefault: false };
         }
         return { permit: pol.default === 'permit', text: `${dev.id} ${pol.default === 'permit' ? 'permits' : 'denies'} ${what}${between}: no rule matches (its default action, ${pol.default})`, kind, byDefault: true };
     }
     // the implicit policy of a firewall: its relations, its allow list, default deny
     if (!svcKnown)
-        return { permit: true, text: `${dev.id} filters what it forwards (the relations through it, its allow list): give a service to trace its decision`, kind, byDefault: false, rule: -1 };
+        return { permit: true, text: `${dev.id} filters what it forwards (the relations through it, its allow list): give a service to trace its decision`, kind, byDefault: false, rule: -1, undecidedBy: 'service' };
     if (f.proto !== 'icmp' && f.proto !== 'other') {
         const rel = relationPermitting(model, f.srcDev, f.dstDev, f.proto, f.dport || 0);
         if (rel) {
@@ -19891,9 +19972,9 @@ function policyDecision(model, dev, f, svcKnown = true) {
         return { permit: true, text: `${dev.id} permits ${what}: its allow list (${allow.raw})`, kind, byDefault: false, ruleText: `allow ${what}` };
     return { permit: false, text: `${dev.id} denies ${what}${between}: no relation of the model between them and no allow entry permits it (its default action)`, kind, byDefault: true };
 }
-/** Is a decision one that waits for a service or a source (not a decision)? */
+/** Is a decision one that waits for something (a service, a source, a runtime identity): no decision? */
 function undecided(d) {
-    return !!d && d.rule !== undefined && d.rule < 0;
+    return !!d && d.undecidedBy !== undefined;
 }
 
 };
@@ -25915,6 +25996,9 @@ exports.portKeyOf = portKeyOf;
 exports.opaqueIndex = opaqueIndex;
 exports.keptInterconnects = keptInterconnects;
 exports.hopRule = hopRule;
+exports.attachmentOf = attachmentOf;
+exports.opaqueRoute = opaqueRoute;
+exports.scopedTraffic = scopedTraffic;
 exports.IC_TOPOLOGIES = ['point_to_point', 'shared'];
 exports.IC_ACCESS = ['peer', 'controller_target'];
 exports.IC_ROLES = ['controller', 'target', 'controller_target', 'peer', 'monitor'];
@@ -26010,17 +26094,23 @@ function keptInterconnects(interconnects, keep) {
         const eps = ic.endpoints.filter((e) => keep(e.device));
         if (eps.length < 2 || (ic.topology === 'point_to_point' && eps.length !== ic.endpoints.length))
             continue;
-        if (eps.length === ic.endpoints.length) {
-            out.push(ic);
-            continue;
-        }
-        // its traffic: what starts and comes from the part kept, to the recipients kept
+        // its traffic: what starts and comes from the part kept, to the recipients kept — whether or not its own attachments
+        // changed (a recipient on another interconnect may be left out while every attachment of this one stays)
         const dev = (k) => k.slice(0, k.indexOf(':'));
-        const traffic = ic.traffic
-            .filter((x) => keep(dev(x.initiator)) && keep(dev(x.from)))
-            .map((x) => ({ ...x, to: x.to.filter((k) => keep(dev(k))) }))
-            .filter((x) => x.to.length > 0);
-        out.push({ ...ic, endpoints: eps, traffic });
+        let changed = eps.length !== ic.endpoints.length;
+        const traffic = [];
+        for (const x of ic.traffic) {
+            if (!keep(dev(x.initiator)) || !keep(dev(x.from))) {
+                changed = true;
+                continue;
+            }
+            const to = x.to.filter((k) => keep(dev(k)));
+            if (to.length !== x.to.length)
+                changed = true;
+            if (to.length)
+                traffic.push(to.length === x.to.length ? x : { ...x, to });
+        }
+        out.push(changed ? { ...ic, endpoints: eps, traffic } : ic);
     }
     return out;
 }
@@ -26050,6 +26140,108 @@ function hopRule(ic, from, to, initiator) {
     if (initiator !== from && initiator !== to)
         return `the controller ${name(initiator)} is neither the source nor the recipient: a transfer between two other participants needs one of them to be its initiator`;
     return null;
+}
+const cmpS = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+/** A port's attachment: its interconnect and how it is attached; null when it is on none. */
+function attachmentOf(index, key) {
+    const id = index.portInterconnect.get(key);
+    const ic = id ? index.interconnects.get(id) : undefined;
+    const a = ic ? ic.endpoints.find((x) => `${x.device}:${x.port}` === key) : undefined;
+    return ic && a ? { ic, a } : null;
+}
+/**
+ * The way from a data source to a recipient (fewest hops, deterministic):
+ * along interconnects and through explicit transit groups only. Every hop
+ * is checked by its interconnect's rule before the search takes it, so an
+ * invalid alternative (a lexically earlier receive-only port, a target that
+ * can't initiate) is passed over and a valid one further on is still
+ * found; a string says why there is none (the first refusal on the way to
+ * the recipient, else that no modelled connection leads there).
+ */
+function opaqueRoute(index, from, to, initiator) {
+    const src = attachmentOf(index, from);
+    if (!src)
+        return `${from} is on no interconnect`;
+    const init = attachmentOf(index, initiator);
+    if (!init)
+        return `the initiator ${initiator} is on no interconnect`;
+    if (!attachmentOf(index, to))
+        return `${to} is on no interconnect`;
+    if (init.ic.id !== src.ic.id)
+        return `the initiator ${initiator} is not on ${src.ic.id}, the data source's interconnect`;
+    const seen = new Set([from]);
+    let refusedTo = null;
+    let refused = null;
+    let layer = [{ at: src, hops: [] }];
+    for (let depth = 0; depth < 32 && layer.length; depth++) {
+        const next = [];
+        for (const st of layer) {
+            const others = st.at.ic.endpoints.filter((x) => x !== st.at.a).sort((x, y) => cmpS(`${x.device}:${x.port}`, `${y.device}:${y.port}`));
+            for (const b of others) {
+                const hop = { ic: st.at.ic, from: st.at.a, to: b, initiator: st.hops.length ? st.at.a : init.a, via: st.via };
+                const key = `${b.device}:${b.port}`;
+                // (a hop its interconnect's rule refuses is never taken: it marks nothing and ends nothing)
+                const why = hopRule(hop.ic, hop.from, hop.to, hop.initiator);
+                if (why) {
+                    if (key === to)
+                        refusedTo = refusedTo || why;
+                    else
+                        refused = refused || why;
+                    continue;
+                }
+                if (key === to)
+                    return st.hops.concat([hop]);
+                // through a System's transit group: on from the group's other ports (the same technology, never converted)
+                const dev = index.devices.get(b.device);
+                const group = dev ? dev.opaqueTransit.find((g) => g.ports.indexOf(b.port) >= 0) : undefined;
+                if (!group)
+                    continue;
+                for (const p of group.ports.slice().sort(cmpS)) {
+                    const k = `${b.device}:${p}`;
+                    if (p === b.port || seen.has(k))
+                        continue;
+                    const on = attachmentOf(index, k);
+                    if (!on)
+                        continue;
+                    seen.add(k);
+                    next.push({ at: on, hops: st.hops.concat([hop]), via: b.device });
+                }
+            }
+        }
+        layer = next;
+    }
+    if (refusedTo)
+        return refusedTo;
+    return `no modelled connection from ${from} to ${to} (interconnects and explicit transit groups only)${refused ? `; refused on the way: ${refused}` : ''}`;
+}
+/**
+ * An interconnect's traffic in a part of a model (an execution scope): a transfer runs only where its initiator
+ * and data source are kept, to the recipients kept whose way — in the whole model — crosses kept devices only
+ * (a transit device left out takes its recipients with it; a way the whole model has none of is kept as it is:
+ * it fails there as here). Returns the traffic and what was left out, in words.
+ */
+function scopedTraffic(index, ic, keep) {
+    const dev = (k) => k.slice(0, k.indexOf(':'));
+    const traffic = [];
+    const left = [];
+    for (const x of ic.traffic) {
+        if (!keep(dev(x.initiator)) || !keep(dev(x.from))) {
+            left.push(`${ic.id}: ${x.from} → ${x.to.join(', ')} (its ${!keep(dev(x.initiator)) ? 'initiator' : 'source'} is outside)`);
+            continue;
+        }
+        const to = x.to.filter((k) => {
+            if (!keep(dev(k)))
+                return false;
+            const r = opaqueRoute(index, x.from, k, x.initiator);
+            return typeof r === 'string' || r.every((h) => keep(h.from.device) && keep(h.to.device));
+        });
+        for (const k of x.to)
+            if (to.indexOf(k) < 0)
+                left.push(`${ic.id}: ${x.from} → ${k} (${keep(dev(k)) ? 'its way crosses a device outside' : 'the recipient is outside'})`);
+        if (to.length)
+            traffic.push(to.length === x.to.length ? x : { ...x, to });
+    }
+    return { traffic, left };
 }
 /** What NetAtlas does for the non-IP interconnects (the support catalog, docs/SUPPORT.md). */
 exports.IC_SUPPORT = {
@@ -29057,6 +29249,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.APP_DEFAULTS = exports.APP_PARAMS = exports.APP_PROFILES = void 0;
 exports.appProfile = appProfile;
 exports.peerIsApp = peerIsApp;
+exports.appFamily = appFamily;
 exports.parsePeer = parsePeer;
 exports.mqttClientId = mqttClientId;
 exports.mqttRole = mqttRole;
@@ -29064,6 +29257,7 @@ exports.appSummary = appSummary;
 exports.topicFilterProblem = topicFilterProblem;
 exports.topicNameProblem = topicNameProblem;
 exports.topicMatches = topicMatches;
+const ip_1 = __req("model/ip");
 const TCP_SUPPORT = {
     level: 'modeled',
     does: 'Connections (the three-way handshake, retransmission, FIN) with a request and its answer of the sizes in effect cross the network: addressing, routing, firewall policy and closed ports apply.',
@@ -29147,6 +29341,11 @@ exports.APP_DEFAULTS = {
     mqttKeepalive: 60000,
     mqttRetry: 20000,
 };
+/** The address family an application uses to its peer: its peer address's, else its ip_version, else IPv4 (no fallback to the other). */
+function appFamily(a) {
+    const pa = a.peer ? (0, ip_1.parseAddress)(a.peer) : null;
+    return pa ? pa.version : a.ipVersion || 4;
+}
 function parsePeer(text) {
     const i = text.indexOf('/');
     if (i > 0 && text.indexOf(':') < 0)
@@ -37064,10 +37263,8 @@ function checkCommunication(model, req, snap = null, scope = 'Selected endpoints
     const famOf = () => {
         if (req.family)
             return req.family;
-        if (clientApp) {
-            const pa = clientApp.app.peer ? (0, ip_1.parseAddress)(clientApp.app.peer) : null;
-            return pa ? pa.version : clientApp.app.ipVersion || 4;
-        }
+        if (clientApp)
+            return (0, applications_1.appFamily)(clientApp.app);
         if (to && typeof to !== 'string' && to.kind === 'end' && to.end.kind === 'address') {
             const a = (0, ip_1.parseAddress)(to.end.address);
             return a ? a.version : undefined;
@@ -37291,6 +37488,7 @@ function policyLayer(model, t, o, svc) {
     const said = [];
     const filters = new Set();
     let unknown = false;
+    const lacks = [];
     for (const p of t.paths) {
         p.hops.forEach((h, k) => {
             const d = model.index.devices.get(h.device);
@@ -37304,10 +37502,16 @@ function policyLayer(model, t, o, svc) {
                 const line = `${h.device}: ${x}`;
                 if (said.indexOf(line) < 0)
                     said.push(line);
-                if (/give a service|give a source/.test(x))
-                    unknown = true;
             }
         });
+        // (what a filtering device could not decide, as recorded: a service, a source, or which device an address is)
+        for (const h of p.hops)
+            for (const u of h.why && h.why.policyUndecided ? h.why.policyUndecided : []) {
+                unknown = true;
+                filters.add(u.device);
+                if (lacks.indexOf(u.by) < 0)
+                    lacks.push(u.by);
+            }
         for (const h of p.hops)
             for (const l2 of h.l2) {
                 const d = model.index.devices.get(l2);
@@ -37317,6 +37521,11 @@ function policyLayer(model, t, o, svc) {
     }
     if (!filters.size)
         return { id: 'policy', verdict: 'satisfied', text: 'No modeled policy on the path', detail: [], refs: [] };
+    // undecided is never permitted: indeterminate, saying what it lacks
+    if (unknown && lacks.indexOf('identity') >= 0)
+        return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} decide${filters.size === 1 ? 's' : ''} by which device an address is (one taken at runtime, or one several devices have): not established here — analyze a simulation snapshot, or name the address`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
+    if (unknown && lacks.indexOf('source') >= 0 && lacks.indexOf('service') < 0)
+        return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} decide${filters.size === 1 ? 's' : ''} by the source address: give a source to evaluate the decision`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
     if (unknown || (!svc && filters.size))
         return { id: 'policy', verdict: 'indeterminate', text: `${Array.from(filters).join(', ')} filter${filters.size === 1 ? 's' : ''} by service: give a service (or an application) to evaluate the decision`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
     return { id: 'policy', verdict: 'satisfied', text: `Permitted by ${Array.from(filters).join(', ')}`, detail: said, refs: Array.from(filters).map((x) => 'device:' + x) };
@@ -38714,6 +38923,7 @@ class Transport {
             return;
         }
         const s = pick;
+        t.srcAddr = (0, ipmath_1.formatAddr)(s.src);
         if (s.how)
             this.e.note('note', t.kind, dev, '', 'source', '', `Test ${t.series}: from ${(0, ipmath_1.formatAddr)(s.src)} ${s.how}`);
         const o = { dst: t.dst };
@@ -40140,22 +40350,19 @@ class Transport {
         if (dd && dd.policy) {
             // (a device or interface named by a rule: its effective addresses now — leases, SLAAC — and the source's owner its
             // sender when the address is the sender's own, so an address two VRFs both have is told apart)
-            const ids = { addrs: (x) => this.e.effectiveAddrs(x) };
-            // (an owner only where it is certain: one device holds the address; else the rule decides by the address)
-            const only = (a) => {
-                let found;
-                for (const x of this.e.net.devices.keys()) {
-                    if (!ids.addrs(x).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0))
-                        continue;
-                    if (found !== undefined)
-                        return undefined;
-                    found = x;
-                }
-                return found;
-            };
+            const addrs = (x) => this.e.effectiveAddrs(x);
+            const ids = { addrs, holders: (a) => Array.from(this.e.net.devices.keys()).filter((x) => addrs(x).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0)) };
+            // (the owners: the source its sender when the address is the sender's own, the destination the device this traffic goes
+            // to — followed from here in its VRF, segment by segment; an address two VRFs have is the one it reaches, never both)
             const sender = pkt.msg.sender;
-            const srcDev = sender && ids.addrs(sender).some((x) => (0, ipmath_1.compareAddr)(x.addr, pkt.src) === 0) ? sender : only(pkt.src);
-            const d = (0, policy_1.policyDecision)(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev: only(pkt.dst), inIface: from.id, outIface: to.id, ids });
+            const srcDev = sender && addrs(sender).some((x) => (0, ipmath_1.compareAddr)(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src);
+            const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst);
+            const d = (0, policy_1.policyDecision)(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids });
+            // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
+            if ((0, policy_1.undecided)(d)) {
+                this.e.note('drop', proto, dev, '', 'dropped', '', `${dev} drops ${pkt.msg.label}: ${d.text}`);
+                return false;
+            }
             // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
             if (d.permit && (!stateful || (opening && echoReq))) {
                 if (stateful) {
@@ -44943,6 +45150,54 @@ class Engine {
         for (const l of d.links)
             refs.add('link:' + l);
         return { vlan: d.vlan === null ? 0 : d.vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: d.links.slice().sort(cmp) };
+    }
+    /** The one device that has an address on the segment a device's interface reaches now (its broadcast domain); null: none or several. */
+    holderOnSegment(dev, iface, a) {
+        const d = (0, net_1.l2Domain)(this.net, { dev, iface }, {
+            cableUp: (id) => this.cableUp(id),
+            portUp: (x, port) => this.portUp(x, port),
+            forwards: (x) => !(this.off.has(x) && !this.bypass.has(x)),
+            blocked: (x, bp, v) => this.blocked(x, bp, v),
+            memberReady: (x, port) => this.memberReady(x, port),
+        });
+        const found = new Set();
+        for (const r of d.reached)
+            if (r.dev !== dev && this.effectiveAddrs(r.dev).some((x) => x.iface === r.l3.id && (0, ipmath_1.compareAddr)(x.addr, a) === 0))
+                found.add(r.dev);
+        return found.size === 1 ? Array.from(found)[0] : null;
+    }
+    /**
+     * Which device an address is, seen from a device in a VRF: the one device that has it; else, following the
+     * routes from there, the holder of each next hop on the segment it is reached on, to the one that has the
+     * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Null when
+     * that can't be told (no route, several on one segment, or more than 16 hops).
+     */
+    ownerSeenFrom(dev, vrf, a) {
+        const all = Array.from(this.net.devices.keys()).filter((x) => this.effectiveAddrs(x).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0));
+        if (all.length <= 1)
+            return all.length ? all[0] : null;
+        let at = dev;
+        let v = vrf;
+        for (let k = 0; k < 16; k++) {
+            if (this.effectiveAddrs(at).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0) && at !== dev)
+                return at;
+            const d = (0, routing_1.lookup)(this.model, at, v, a, this.ctx(at));
+            if (d.kind === 'local')
+                return at;
+            if (d.kind !== 'forward' || !d.hops.length)
+                return null;
+            const h = d.hops[0];
+            const target = h.gateway || a;
+            const next = this.holderOnSegment(at, h.iface, target);
+            if (!next)
+                return null;
+            if (!h.gateway)
+                return next;
+            const nl = Array.from(this.net.devices.get(next).l3.values()).find((l) => l.addrs.some((x) => (0, ipmath_1.compareAddr)(x.addr, target) === 0));
+            at = next;
+            v = nl ? nl.vrf : '';
+        }
+        return null;
     }
     /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */
     broadcastIfaces(dev) {
@@ -51241,7 +51496,7 @@ const MANUAL = [
             'To have an interconnect carry data whenever the simulation runs, write its **traffic** (in YAML: `traffic:` under the interconnect, each entry with an initiator, a data source, recipients, an interval and a size). It is the scenario’s: drawn every time, shown or hidden with **Non-IP data** in the setup’s list.',
         ],
         notes: [
-            'The built-in example **vme-rack.yaml** is such a system, and a starting point for your own: a VME64x crate whose CPUs and I/O boards share the VMEbus backplane and a switched serial fabric overlaid on it (through a switch card with a transit group), a MIL-STD-1553 bus with a monitor, a CAN bus of peers, RS-232 console lines both ways and a GPS line one way, and a USB log stick. Each interconnect carries its traffic while the simulation runs, and the Ethernet side its applications (a telemetry poll, console sessions, syslog).',
+            'The built-in example **vme-rack.yaml** is such a system, and a starting point for your own: a VME64x crate whose CPUs and I/O boards share the VMEbus backplane and a switched serial fabric overlaid on it (through a switch card with a transit group), a MIL-STD-1553 bus with a monitor, a CAN bus of peers, RS-232 console lines both ways and a GPS line one way, and a USB log stick — and a VME Layer 2/3 Ethernet switch board (a fictional model) that gives every board its IP connection over the backplane and routes the crate to the operators’ LAN. Each interconnect carries its traffic while the simulation runs, and the Ethernet side its applications (a telemetry poll, console sessions, syslog).',
             'The physical view draws a point-to-point connection as a dashed line labelled with its technology and direction (*USB 2.0 ↔*, *RS-232 →*), a bus as a bar you can move with a tap and role badge per attachment, and opaque ports as diamonds. The **IP** and **Non-IP** switches show one side or both; the logical view never shows them. Find (`/`) finds them by technology, protocol or port.',
             'The data is illustrative: it shows where data can go and why it can’t, one way and without a reply. Nothing of USB, RS-485, CAN, VME or any protocol over them is simulated, and the packet inspector says so.',
         ],
@@ -51377,7 +51632,7 @@ const MANUAL = [
             'The verdict comes first, then the effective ends (**From**, **To**, **VRF**, **Service**; **Another address…** when an end has several) and the layers, each with its **Evidence**: **Addresses**, **Name resolution** (a host name, by the model’s DNS servers), **Network path** (every evaluated equal-cost path: “3 evaluated paths reach …, 1 stops at fw2”), **Policy** (what firewalls and gateways decide), **Destination listener** (something listens on the port, on the address the traffic arrives at) and **Runtime behaviour**, which a static analysis never establishes.',
             'The path is marked in the diagram (thick outline; equal-cost alternatives dashed, the return path dotted) and listed in a table, a row per hop: the **device**, the interfaces **in** and **out**, the **addresses**, the **route or relation** used and the **encapsulation**. **Why?** opens a hop’s evidence: the lookup, the route that won and why, the routes that lost, the layer-2 way, the policy, a translation, the tunnel, where it stops.',
             'The **Return path** section says three things apart: reverse routing, path symmetry, and that a session (a TCP exchange, a stateful firewall’s return decision) is not evaluated.',
-            'While a simulation runs, **Prepare in simulation** fills Network events with the same communication: the same source interface, family, destination and port, nothing chosen again; it sends nothing until you press Send. **What the simulation gets** says how each end is taken: an address written as an address is that exact address, a device or interface follows its effective address when sent (a DHCP lease too), a host name is resolved when sent; what can’t be carried over (a VRF other than the source interface’s) is said. A result outdated by an edit, or an end the running simulation no longer has, must be refreshed first. After the send, **Compare with simulation** sets the static result beside what the simulation did and explains a difference from recorded state (an address acquired at runtime, a route not learned yet when it was sent, an end that was off), or says that nothing recorded explains it.',
+            'While a simulation runs, **Prepare in simulation** fills Network events with the same communication: the same source interface, family, destination and port, nothing chosen again; it sends nothing until you press Send. **What the simulation gets** says how each end is taken: an address written as an address is that exact address, a device or interface follows its effective address when sent (a DHCP lease too), a host name is resolved when sent; what can’t be carried over (a VRF other than the source interface’s; an exact source address on an interface that has several — a send names the interface) is said. A result outdated by an edit, or an end the running simulation no longer has, must be refreshed first. After the send, **Compare with simulation** takes a send that carried the check — for a check from an exact address, one that left from it — sets the static result beside what the simulation did (provisional while messages are still on their way or to be sent) and explains a difference from recorded state (an address acquired at runtime, a route not learned yet when it was sent, an end that was off), or says that nothing recorded explains it.',
             '**Save as expectation…** opens Design checks with the communication’s fields filled in (the outcome taken from the verdict); nothing is saved until you press **Add**.',
             '**Path MTU** (under the layers) says the largest packet that crosses unfragmented and the payload that fits (TCP MSS, UDP or ICMP payload), and what limits it: an interface, a port of a cable on the way, or a tunnel (its underlay less the encapsulation overhead, nested layers added up). Equal-cost paths and the return path are given apart where they differ. An MTU the model does not write is never taken as known: the result is then an upper bound. **Test the limit in simulation** prefills a send one byte over it with Don’t fragment (nothing is sent): the simulation drops it with Fragmentation Needed or Packet Too Big, and the sender learns the path MTU.',
             'Click a name to select it. **Copy as text** and **Save as text** carry the context, the verdict, the layers and the hops; **Evidence** beside a layer shows what it rests on in the right panel. **Clear**, `Esc` in the diagram or leaving Analyze removes the path.',
@@ -61850,7 +62105,7 @@ exports.EXAMPLES = [
     },
     {
         "name": "vme-rack.yaml",
-        "text": "netatlas: 1\ntitle: VME control rack\ndescription: \"An embedded control rack, IP and non-IP side by side: a VME64x crate whose boards share the VMEbus backplane and a switched serial fabric overlaid on it (VXS: SRIO through a switch card), a MIL-STD-1553 bus to the remote terminals in the field, a CAN bus to the drives, RS-232 console lines and a GPS receiver's NMEA line, a USB log stick, and Ethernet for the operators. Every non-IP interconnect carries illustrative data while the simulation runs (its traffic:), and the IP side its applications; Simulate → Send illustrative data sends more. The IP side never uses the non-IP interconnects.\"\n\ngroups:\n  - {id: lab, label: Control room, kind: room}\n  - {id: rack, label: 19-inch rack, kind: rack, parent: lab}\n  - {id: crate, label: VME64x crate, kind: rack, parent: rack}\n  - {id: field, label: Field, kind: room}\n\ndevices:\n  # the operators' side: Ethernet\n  - id: sw\n    type: switch\n    label: Rack switch\n    group: rack\n    igmp_mld_snooping: {20: enabled}\n    interfaces: [{id: p1, vlans: 20}, {id: p2, vlans: 20}, {id: p3, vlans: 20}, {id: p4, vlans: 20}]\n  - id: ews\n    type: endpoint\n    label: Engineering workstation\n    group: lab\n    interfaces: [{id: eth0, ip: 10.20.0.50/24}]\n    services:\n      applications:\n        # polls the controller's telemetry, logs in on the console server, collects the CPUs' syslog\n        - id: poll\n          name: Telemetry poll\n          profile: tcp_client\n          peer: cpu1/telemetry\n          interval: 5s\n          start: simulation_start\n          request_size: 64\n        - {id: console, name: Console session, profile: tcp_client, peer: cons/ssh, interval: 15s, start: simulation_start}\n        - {id: syslog, name: Syslog collector, profile: udp_receiver, port: 514}\n  - id: cons\n    type: system\n    purpose: host\n    label: Console server\n    group: rack\n    interfaces:\n      - {id: eth0, ip: 10.20.0.40/24}\n      - {id: s1, stack: opaque, label: port 1}\n      - {id: s2, stack: opaque, label: port 2}\n    services:\n      applications:\n        - {id: ssh, name: SSH to the console ports, profile: tcp_server, port: 22, response_size: 400}\n\n  # the crate: single-board computers and I/O boards on the backplane (P1/P2) and the fabric (P0)\n  - id: cpu1\n    type: server\n    label: SBC 1 (system controller)\n    group: crate\n    interfaces:\n      - {id: eth0, ip: 10.20.0.11/24}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: p0, stack: opaque, label: P0 (fabric)}\n      - {id: com1, stack: opaque, label: COM1}\n    services:\n      applications:\n        - {id: telemetry, name: Telemetry service, profile: tcp_server, port: 5000, response_size: 2048}\n        - {id: syslog, name: Syslog, profile: udp_sender, peer: ews/syslog, interval: 10s, start: simulation_start, request_size: 180}\n  - id: cpu2\n    type: server\n    label: SBC 2\n    group: crate\n    interfaces:\n      - {id: eth0, ip: 10.20.0.12/24}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: p0, stack: opaque, label: P0 (fabric)}\n      - {id: com1, stack: opaque, label: COM1}\n      - {id: com2, stack: opaque, label: COM2}\n      - {id: usb0, stack: opaque, label: front USB}\n    services:\n      applications:\n        - {id: syslog, name: Syslog, profile: udp_sender, peer: ews/syslog, interval: 10s, start: simulation_start, request_size: 180}\n  - id: fsw\n    type: system\n    purpose: host\n    label: Fabric switch card\n    group: crate\n    description: The VXS switch slot (VITA 41) of the crate. It passes SRIO between its payload ports (opaque_transit); its management port is outside that group.\n    interfaces:\n      - {id: f1, stack: opaque, label: to SBC 1}\n      - {id: f2, stack: opaque, label: to SBC 2}\n      - {id: f3, stack: opaque, label: to ADC}\n      - {id: mgmt, stack: opaque, label: management}\n    opaque_transit:\n      - {ports: [f1, f2, f3]}\n  - id: adc\n    type: endpoint\n    label: ADC board\n    group: crate\n    interfaces:\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: p0, stack: opaque, label: P0 (fabric)}\n  - id: dio\n    type: endpoint\n    label: Digital I/O board\n    group: crate\n    interfaces:\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: can0, stack: opaque, label: CAN}\n  - id: mil\n    type: system\n    purpose: host\n    label: MIL-STD-1553 board\n    group: crate\n    interfaces:\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: bus-a, stack: opaque, label: bus A}\n\n  # in the rack beside the crate: the GPS receiver, the USB log stick\n  - id: gps\n    type: endpoint\n    label: GPS receiver\n    group: rack\n    interfaces: [{id: com1, stack: opaque, label: NMEA out}]\n  - id: stick\n    type: storage\n    label: USB log stick\n    group: rack\n    interfaces: [{id: usb, stack: opaque}]\n\n  # the field: remote terminals and a bus monitor on the 1553 bus; drives on the CAN bus\n  - id: act\n    type: endpoint\n    label: Actuator (RT 3)\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: sens\n    type: endpoint\n    label: Sensor unit (RT 5)\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: mon\n    type: storage\n    label: Bus monitor\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: pump\n    type: endpoint\n    label: Pump drive\n    group: field\n    interfaces: [{id: can0, stack: opaque}]\n  - id: valve\n    type: endpoint\n    label: Valve controller\n    group: field\n    interfaces: [{id: can0, stack: opaque}]\n\nlinks:\n  - {id: l-ews, a: \"sw:p1\", b: \"ews:eth0\"}\n  - {id: l-cons, a: \"sw:p2\", b: \"cons:eth0\"}\n  - {id: l-cpu1, a: \"sw:p3\", b: \"cpu1:eth0\"}\n  - {id: l-cpu2, a: \"sw:p4\", b: \"cpu2:eth0\"}\n\nnetworks:\n  - {id: ctrl, label: Control LAN, cidr: 10.20.0.0/24, vlan: 20}\n\ninterconnects:\n  # a shared backplane, controller / target: two CPUs that are both (one of them the system controller), three target boards\n  - id: vmebus\n    topology: shared\n    technology: {name: VME, version: VME64x}\n    connector: VME64x backplane (P1/P2)\n    access: controller_target\n    endpoints:\n      - {port: \"cpu1:vme\", role: controller_target, system_controller: true}\n      - {port: \"cpu2:vme\", role: controller_target}\n      - {port: \"adc:vme\", role: target}\n      - {port: \"dio:vme\", role: target}\n      - {port: \"mil:vme\", role: target}\n    traffic:\n      # a read (the target's data to the controller that initiates it) and a write\n      - {initiator: \"cpu1:vme\", from: \"adc:vme\", to: \"cpu1:vme\", interval: 1s, size: 256}\n      - {initiator: \"cpu2:vme\", to: \"dio:vme\", interval: 2s, size: 4}\n  # an overlay backplane: the switched serial fabric of the same crate (VXS), point-to-point lanes to the switch card,\n  # which passes data only within its written transit group (nothing goes through it otherwise)\n  - id: fab-cpu1\n    topology: point_to_point\n    technology: {name: SRIO, version: \"3.1\"}\n    connector: VXS P0\n    endpoints:\n      - {port: \"cpu1:p0\"}\n      - {port: \"fsw:f1\"}\n  - id: fab-cpu2\n    topology: point_to_point\n    technology: {name: SRIO, version: \"3.1\"}\n    connector: VXS P0\n    endpoints:\n      - {port: \"cpu2:p0\"}\n      - {port: \"fsw:f2\"}\n    traffic:\n      # SBC 2 to SBC 1 across the switch card\n      - {initiator: \"cpu2:p0\", to: \"cpu1:p0\", interval: 3s, size: 1024}\n  - id: fab-adc\n    topology: point_to_point\n    technology: {name: SRIO, version: \"3.1\"}\n    connector: VXS P0\n    endpoints:\n      - {port: \"adc:p0\", data: send}\n      - {port: \"fsw:f3\"}\n    traffic:\n      # the ADC's sample blocks to SBC 1 through the switch card (two hops, one transit)\n      - {initiator: \"adc:p0\", to: \"cpu1:p0\", interval: 1s, size: 4096}\n  # a command/response bus with a controller, two remote terminals and a monitor that only listens\n  - id: mil-bus\n    topology: shared\n    technology: {name: MIL-STD-1553, version: B}\n    connector: twinax, transformer-coupled stubs\n    access: controller_target\n    endpoints:\n      - {port: \"mil:bus-a\", role: controller}\n      - {port: \"act:bus-a\", role: target}\n      - {port: \"sens:bus-a\", role: target}\n      - {port: \"mon:bus-a\", role: monitor}\n    traffic:\n      # a read from a remote terminal (to the controller that initiates it), and a command to the other, which the monitor hears too\n      - {initiator: \"mil:bus-a\", from: \"sens:bus-a\", to: \"mil:bus-a\", interval: 1s, size: 64}\n      - {initiator: \"mil:bus-a\", to: [\"act:bus-a\", \"mon:bus-a\"], interval: 2s, size: 32}\n  # a bus of peers, one of them only listening (the valve controller sends nothing on it)\n  - id: drive-can\n    topology: shared\n    technology: {name: CAN, version: \"2.0B\"}\n    protocol: {name: CANopen}\n    connector: M12\n    endpoints:\n      - {port: \"dio:can0\"}\n      - {port: \"pump:can0\"}\n      - {port: \"valve:can0\", data: receive}\n    traffic:\n      - {initiator: \"dio:can0\", to: [\"pump:can0\", \"valve:can0\"], interval: 2s, size: 8}\n      - {initiator: \"pump:can0\", to: \"dio:can0\", interval: 3s, size: 8}\n  # point-to-point serial lines: both ways (consoles), and one way (the GPS sends, the CPU only receives)\n  - id: console-1\n    topology: point_to_point\n    technology: {name: RS-232}\n    connector: DB-9\n    endpoints:\n      - {port: \"cpu1:com1\", role: peer}\n      - {port: \"cons:s1\", role: peer}\n    traffic:\n      - {initiator: \"cpu1:com1\", to: \"cons:s1\", interval: 5s, size: 80}\n  - id: console-2\n    topology: point_to_point\n    technology: {name: RS-232}\n    connector: DB-9\n    endpoints:\n      - {port: \"cpu2:com1\", role: peer}\n      - {port: \"cons:s2\", role: peer}\n    traffic:\n      - {initiator: \"cons:s2\", to: \"cpu2:com1\", interval: 7s, size: 16}\n  - id: gps-nmea\n    topology: point_to_point\n    technology: {name: RS-232}\n    protocol: {name: NMEA 0183}\n    connector: DB-9\n    endpoints:\n      - {port: \"gps:com1\", data: send}\n      - {port: \"cpu2:com2\", data: receive}\n    traffic:\n      - {initiator: \"gps:com1\", to: \"cpu2:com2\", interval: 1s, size: 82}\n  # USB: the CPU is the host (controller), the stick a device (target)\n  - id: log-usb\n    topology: point_to_point\n    technology: {name: USB, version: \"2.0\"}\n    protocol: {name: USB Mass Storage}\n    connector: USB-A\n    access: controller_target\n    endpoints:\n      - {port: \"cpu2:usb0\", role: controller}\n      - {port: \"stick:usb\", role: target}\n    traffic:\n      - {initiator: \"cpu2:usb0\", to: \"stick:usb\", interval: 10s, size: 512}\n"
+        "text": "netatlas: 1\ntitle: VME control rack\ndescription: \"An embedded control rack, IP and non-IP side by side: a VME64x crate whose boards share the VMEbus backplane and a switched serial fabric overlaid on it (VXS: SRIO through a switch card), a VME Layer 2/3 Ethernet switch board that gives every board its IP connection over the backplane and routes the crate to the operators' LAN, a MIL-STD-1553 bus to the remote terminals in the field, a CAN bus to the drives, RS-232 console lines and a GPS receiver's NMEA line, a USB log stick, and Ethernet for the operators. Every non-IP interconnect carries illustrative data while the simulation runs (its traffic:), and the IP side its applications; Simulate → Send illustrative data sends more. The IP side never uses the non-IP interconnects.\"\n\ngroups:\n  - {id: lab, label: Control room, kind: room}\n  - {id: rack, label: 19-inch rack, kind: rack, parent: lab}\n  - {id: crate, label: VME64x crate, kind: rack, parent: rack}\n  - {id: field, label: Field, kind: room}\n\ndevices:\n  # the operators' side: Ethernet\n  - id: sw\n    type: switch\n    label: Rack switch\n    group: rack\n    igmp_mld_snooping: {20: enabled}\n    interfaces: [{id: p1, vlans: 20}, {id: p2, vlans: 20}, {id: p3, vlans: 20, label: to the crate}]\n  - id: ews\n    type: endpoint\n    label: Engineering workstation\n    group: lab\n    interfaces: [{id: eth0, ip: 10.20.0.50/24}]\n    routes: [{prefix: 10.30.0.0/24, via: 10.20.0.1, name: the crate via its switch board}]\n    services:\n      applications:\n        # polls the controller's telemetry, logs in on the console server, collects the CPUs' syslog\n        - id: poll\n          name: Telemetry poll\n          profile: tcp_client\n          peer: cpu1/telemetry\n          interval: 5s\n          start: simulation_start\n          request_size: 64\n        - {id: console, name: Console session, profile: tcp_client, peer: cons/ssh, interval: 15s, start: simulation_start}\n        - {id: syslog, name: Syslog collector, profile: udp_receiver, port: 514}\n  - id: cons\n    type: system\n    purpose: host\n    label: Console server\n    group: rack\n    interfaces:\n      - {id: eth0, ip: 10.20.0.40/24}\n      - {id: s1, stack: opaque, label: port 1}\n      - {id: s2, stack: opaque, label: port 2}\n    routes: [{prefix: 10.30.0.0/24, via: 10.20.0.1, name: the crate via its switch board}]\n    services:\n      applications:\n        - {id: ssh, name: SSH to the console ports, profile: tcp_server, port: 22, response_size: 400}\n\n  # the crate's Ethernet switch board: a VME board itself (a target on the VMEbus), switching each board's Ethernet over the\n  # backplane's rear I/O into the crate VLAN and routing it to the operators' LAN — a 6U VME64x Layer 2/3 switch board of the\n  # kind several vendors build; the vendor and model here are made up\n  - id: vsw\n    type: switch\n    layer3: true\n    label: Crate Ethernet switch\n    group: crate\n    description: 6U VME64x Layer 2/3 Ethernet switch board in a VME slot. Its ports reach the boards over the backplane (P2 rear I/O); its uplink goes to the rack switch; it routes between the crate VLAN (30) and the control LAN (20).\n    attrs: {vendor: Kestrel Embedded (fictional), model: VLS-6420 (fictional), form factor: 6U VME64x, slot: 7}\n    interfaces:\n      - {id: up, vlans: 20, label: front-panel uplink}\n      - {id: e1, vlans: 30, label: to SBC 1}\n      - {id: e2, vlans: 30, label: to SBC 2}\n      - {id: e3, vlans: 30, label: to ADC}\n      - {id: e4, vlans: 30, label: to DIO}\n      - {id: e5, vlans: 30, label: to 1553}\n      - {id: vme, stack: opaque, label: P1/P2}\n    logical_interfaces:\n      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.0.1/24}\n      - {id: Vlan30, type: virtual, vlan: 30, ip: 10.30.0.1/24}\n\n  # the crate: single-board computers and I/O boards on the backplane (P1/P2), the fabric (P0) and the switch board (P2 Ethernet)\n  - id: cpu1\n    type: server\n    label: SBC 1 (system controller)\n    group: crate\n    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]\n    interfaces:\n      - {id: eth0, ip: 10.30.0.11/24, label: P2 Ethernet}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: p0, stack: opaque, label: P0 (fabric)}\n      - {id: com1, stack: opaque, label: COM1}\n    services:\n      applications:\n        - {id: telemetry, name: Telemetry service, profile: tcp_server, port: 5000, response_size: 2048}\n        - {id: syslog, name: Syslog, profile: udp_sender, peer: ews/syslog, interval: 10s, start: simulation_start, request_size: 180}\n  - id: cpu2\n    type: server\n    label: SBC 2\n    group: crate\n    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]\n    interfaces:\n      - {id: eth0, ip: 10.30.0.12/24, label: P2 Ethernet}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: p0, stack: opaque, label: P0 (fabric)}\n      - {id: com1, stack: opaque, label: COM1}\n      - {id: com2, stack: opaque, label: COM2}\n      - {id: usb0, stack: opaque, label: front USB}\n    services:\n      applications:\n        - {id: syslog, name: Syslog, profile: udp_sender, peer: ews/syslog, interval: 10s, start: simulation_start, request_size: 180}\n  - id: fsw\n    type: system\n    purpose: host\n    label: Fabric switch card\n    group: crate\n    description: The VXS switch slot (VITA 41) of the crate. It passes SRIO between its payload ports (opaque_transit); its management port is outside that group.\n    interfaces:\n      - {id: f1, stack: opaque, label: to SBC 1}\n      - {id: f2, stack: opaque, label: to SBC 2}\n      - {id: f3, stack: opaque, label: to ADC}\n      - {id: mgmt, stack: opaque, label: management}\n    opaque_transit:\n      - {ports: [f1, f2, f3]}\n  - id: adc\n    type: endpoint\n    label: ADC board\n    group: crate\n    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]\n    interfaces:\n      - {id: eth0, ip: 10.30.0.21/24, label: P2 Ethernet}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: p0, stack: opaque, label: P0 (fabric)}\n  - id: dio\n    type: endpoint\n    label: Digital I/O board\n    group: crate\n    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]\n    interfaces:\n      - {id: eth0, ip: 10.30.0.22/24, label: P2 Ethernet}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: can0, stack: opaque, label: CAN}\n  - id: mil\n    type: system\n    purpose: host\n    label: MIL-STD-1553 board\n    group: crate\n    routes: [{prefix: 0.0.0.0/0, via: 10.30.0.1, name: the switch board}]\n    interfaces:\n      - {id: eth0, ip: 10.30.0.23/24, label: P2 Ethernet}\n      - {id: vme, stack: opaque, label: P1/P2}\n      - {id: bus-a, stack: opaque, label: bus A}\n    services:\n      applications:\n        - id: syslog\n          name: Bus status to syslog\n          profile: udp_sender\n          peer: ews/syslog\n          interval: 20s\n          start: simulation_start\n          request_size: 120\n\n  # in the rack beside the crate: the GPS receiver, the USB log stick\n  - id: gps\n    type: endpoint\n    label: GPS receiver\n    group: rack\n    interfaces: [{id: com1, stack: opaque, label: NMEA out}]\n  - id: stick\n    type: storage\n    label: USB log stick\n    group: rack\n    interfaces: [{id: usb, stack: opaque}]\n\n  # the field: remote terminals and a bus monitor on the 1553 bus; drives on the CAN bus\n  - id: act\n    type: endpoint\n    label: Actuator (RT 3)\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: sens\n    type: endpoint\n    label: Sensor unit (RT 5)\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: mon\n    type: storage\n    label: Bus monitor\n    group: field\n    interfaces: [{id: bus-a, stack: opaque}]\n  - id: pump\n    type: endpoint\n    label: Pump drive\n    group: field\n    interfaces: [{id: can0, stack: opaque}]\n  - id: valve\n    type: endpoint\n    label: Valve controller\n    group: field\n    interfaces: [{id: can0, stack: opaque}]\n\nlinks:\n  - {id: l-ews, a: \"sw:p1\", b: \"ews:eth0\"}\n  - {id: l-cons, a: \"sw:p2\", b: \"cons:eth0\"}\n  - {id: l-up, a: \"sw:p3\", b: \"vsw:up\"}\n  # each board's Ethernet to the switch board over the backplane's rear I/O\n  - {id: l-cpu1, a: \"vsw:e1\", b: \"cpu1:eth0\", label: backplane}\n  - {id: l-cpu2, a: \"vsw:e2\", b: \"cpu2:eth0\", label: backplane}\n  - {id: l-adc, a: \"vsw:e3\", b: \"adc:eth0\", label: backplane}\n  - {id: l-dio, a: \"vsw:e4\", b: \"dio:eth0\", label: backplane}\n  - {id: l-mil, a: \"vsw:e5\", b: \"mil:eth0\", label: backplane}\n\nnetworks:\n  - {id: ctrl, label: Control LAN, cidr: 10.20.0.0/24, vlan: 20}\n  - {id: crate-net, label: Crate LAN, cidr: 10.30.0.0/24, vlan: 30}\n\ninterconnects:\n  # a shared backplane, controller / target: two CPUs that are both (one of them the system controller), three target boards\n  - id: vmebus\n    topology: shared\n    technology: {name: VME, version: VME64x}\n    connector: VME64x backplane (P1/P2)\n    access: controller_target\n    endpoints:\n      - {port: \"cpu1:vme\", role: controller_target, system_controller: true}\n      - {port: \"cpu2:vme\", role: controller_target}\n      - {port: \"adc:vme\", role: target}\n      - {port: \"dio:vme\", role: target}\n      - {port: \"mil:vme\", role: target}\n      - {port: \"vsw:vme\", role: target}\n    traffic:\n      # a read (the target's data to the controller that initiates it) and a write\n      - {initiator: \"cpu1:vme\", from: \"adc:vme\", to: \"cpu1:vme\", interval: 1s, size: 256}\n      - {initiator: \"cpu2:vme\", to: \"dio:vme\", interval: 2s, size: 4}\n  # an overlay backplane: the switched serial fabric of the same crate (VXS), point-to-point lanes to the switch card,\n  # which passes data only within its written transit group (nothing goes through it otherwise)\n  - id: fab-cpu1\n    topology: point_to_point\n    technology: {name: SRIO, version: \"3.1\"}\n    connector: VXS P0\n    endpoints:\n      - {port: \"cpu1:p0\"}\n      - {port: \"fsw:f1\"}\n  - id: fab-cpu2\n    topology: point_to_point\n    technology: {name: SRIO, version: \"3.1\"}\n    connector: VXS P0\n    endpoints:\n      - {port: \"cpu2:p0\"}\n      - {port: \"fsw:f2\"}\n    traffic:\n      # SBC 2 to SBC 1 across the switch card\n      - {initiator: \"cpu2:p0\", to: \"cpu1:p0\", interval: 3s, size: 1024}\n  - id: fab-adc\n    topology: point_to_point\n    technology: {name: SRIO, version: \"3.1\"}\n    connector: VXS P0\n    endpoints:\n      - {port: \"adc:p0\", data: send}\n      - {port: \"fsw:f3\"}\n    traffic:\n      # the ADC's sample blocks to SBC 1 through the switch card (two hops, one transit)\n      - {initiator: \"adc:p0\", to: \"cpu1:p0\", interval: 1s, size: 4096}\n  # a command/response bus with a controller, two remote terminals and a monitor that only listens\n  - id: mil-bus\n    topology: shared\n    technology: {name: MIL-STD-1553, version: B}\n    connector: twinax, transformer-coupled stubs\n    access: controller_target\n    endpoints:\n      - {port: \"mil:bus-a\", role: controller}\n      - {port: \"act:bus-a\", role: target}\n      - {port: \"sens:bus-a\", role: target}\n      - {port: \"mon:bus-a\", role: monitor}\n    traffic:\n      # a read from a remote terminal (to the controller that initiates it), and a command to the other, which the monitor hears too\n      - {initiator: \"mil:bus-a\", from: \"sens:bus-a\", to: \"mil:bus-a\", interval: 1s, size: 64}\n      - {initiator: \"mil:bus-a\", to: [\"act:bus-a\", \"mon:bus-a\"], interval: 2s, size: 32}\n  # a bus of peers, one of them only listening (the valve controller sends nothing on it)\n  - id: drive-can\n    topology: shared\n    technology: {name: CAN, version: \"2.0B\"}\n    protocol: {name: CANopen}\n    connector: M12\n    endpoints:\n      - {port: \"dio:can0\"}\n      - {port: \"pump:can0\"}\n      - {port: \"valve:can0\", data: receive}\n    traffic:\n      - {initiator: \"dio:can0\", to: [\"pump:can0\", \"valve:can0\"], interval: 2s, size: 8}\n      - {initiator: \"pump:can0\", to: \"dio:can0\", interval: 3s, size: 8}\n  # point-to-point serial lines: both ways (consoles), and one way (the GPS sends, the CPU only receives)\n  - id: console-1\n    topology: point_to_point\n    technology: {name: RS-232}\n    connector: DB-9\n    endpoints:\n      - {port: \"cpu1:com1\", role: peer}\n      - {port: \"cons:s1\", role: peer}\n    traffic:\n      - {initiator: \"cpu1:com1\", to: \"cons:s1\", interval: 5s, size: 80}\n  - id: console-2\n    topology: point_to_point\n    technology: {name: RS-232}\n    connector: DB-9\n    endpoints:\n      - {port: \"cpu2:com1\", role: peer}\n      - {port: \"cons:s2\", role: peer}\n    traffic:\n      - {initiator: \"cons:s2\", to: \"cpu2:com1\", interval: 7s, size: 16}\n  - id: gps-nmea\n    topology: point_to_point\n    technology: {name: RS-232}\n    protocol: {name: NMEA 0183}\n    connector: DB-9\n    endpoints:\n      - {port: \"gps:com1\", data: send}\n      - {port: \"cpu2:com2\", data: receive}\n    traffic:\n      - {initiator: \"gps:com1\", to: \"cpu2:com2\", interval: 1s, size: 82}\n  # USB: the CPU is the host (controller), the stick a device (target)\n  - id: log-usb\n    topology: point_to_point\n    technology: {name: USB, version: \"2.0\"}\n    protocol: {name: USB Mass Storage}\n    connector: USB-A\n    access: controller_target\n    endpoints:\n      - {port: \"cpu2:usb0\", role: controller}\n      - {port: \"stick:usb\", role: target}\n    traffic:\n      - {initiator: \"cpu2:usb0\", to: \"stick:usb\", interval: 10s, size: 512}\n"
     }
 ];
 
@@ -68013,6 +68268,7 @@ exports.commIdentity = commIdentity;
 exports.handoffOf = handoffOf;
 exports.staleProblem = staleProblem;
 exports.planMatches = planMatches;
+exports.runMatches = runMatches;
 exports.compareRun = compareRun;
 exports.expectationFields = expectationFields;
 /**
@@ -68170,6 +68426,15 @@ function handoffOf(model, id) {
         pre.via = s.iface;
     else
         not.push(`Source interface: the check resolved none (${s.device} has several): the simulation’s routes choose it`);
+    // an exact source address: a send names the interface, which sends from an address of its own choosing (its first usable
+    // one of the family) — said when the interface has others, and a run counts as this check's only if it was sent from it
+    if (s.binding === 'address' && s.address && s.iface) {
+        const i = model.index.interfaces.get(s.device + ':' + s.iface);
+        const fam = famOf(s.address);
+        const same = i ? i.addresses.map((x) => x.split('/')[0]).filter((x) => famOf(x) === fam) : [];
+        if (same.length > 1)
+            not.push(`Source address: a send names ${s.device}:${s.iface}, which has ${same.length} IPv${fam} addresses (${same.join(', ')}), not the address ${s.address}: it sends from the one it chooses — only a run actually sent from ${s.address} is compared with this check`);
+    }
     if (svc && svc.proto !== 'icmp')
         pre.port = svc.port;
     carried.push(`Source: ${s.device}${s.iface ? ':' + s.iface : ''}${s.address ? ` (${s.binding === 'address' ? s.address : s.note ? 'its lease when sent' : s.address})` : ''}`);
@@ -68255,7 +68520,8 @@ function planMatches(id, p, model) {
             return false;
     }
     else if (t.binding === 'address') {
-        if (p.target !== t.address)
+        // (that exact address: typed, or a device's interface sent to with it — not its lease)
+        if (p.target !== t.address && !(p.target === undefined && p.toAddr === t.address))
             return false;
     }
     else if (p.target !== undefined) {
@@ -68276,6 +68542,20 @@ function planMatches(id, p, model) {
             return false;
     }
     return true;
+}
+/**
+ * Does a send carry this identity, as it was sent: its plan (planMatches) and, for a check bound to an exact
+ * source address, every message of it sent from that address (Test.srcAddr, as the transport chose it) — an
+ * interface carried is not an address carried.
+ */
+function runMatches(id, run, model) {
+    if (!planMatches(id, run.plan, model))
+        return false;
+    const s = id.source;
+    if (s.binding !== 'address' || !s.address)
+        return true;
+    const sent = run.tests.filter((t) => t.srcAddr !== undefined);
+    return sent.length > 0 && sent.every((t) => t.srcAddr === s.address);
 }
 /**
  * Compare a communication's static result with a send of the simulation
@@ -68889,6 +69169,10 @@ function finish(model, kind, label, devices, included, cannot) {
         const ext = model.demands.filter((d) => !devices.has(d.source.split(':')[0]) || !devices.has(d.destination.split(':')[0]));
         if (ext.length)
             caveats.push(`${ext.length} demand${ext.length === 1 ? '' : 's'} with an end outside (${ext.map((d) => d.id).sort(cmp).slice(0, 5).join(', ')}${ext.length > 5 ? ' …' : ''}) are not run: what they load in the scope is missing from it`);
+        // the interconnects' own traffic with an end or a transit outside: not run (never a transfer to a recipient that is not there)
+        const left = model.interconnects.flatMap((ic) => (0, interconnect_1.scopedTraffic)(model.index, ic, (d) => devices.has(d)).left);
+        if (left.length)
+            caveats.push(`${left.length} illustrative transfer${left.length === 1 ? '' : 's'} of the interconnects' traffic leave${left.length === 1 ? 's' : ''} the scope and ${left.length === 1 ? 'is' : 'are'} not run: ${left.slice(0, 3).join('; ')}${left.length > 3 ? ' …' : ''}`);
     }
     return { kind, label, devices, included: included.sort((a, b) => cmp(a.device, b.device)), boundary, cutRelations, partialRelations, cannot, caveats };
 }
@@ -69079,7 +69363,11 @@ function scopedModel(model, scope) {
             routes.set((0, types_1.routeKey)(d.id, rt.index), rt);
     // (the interconnects within the scope: their attachments inside it)
     const inside = new Set(devices.map((d) => d.id));
-    const interconnects = (0, interconnect_1.keptInterconnects)(model.interconnects, (d) => inside.has(d));
+    // (and their traffic: only transfers whose every end and transit is inside — scopedTraffic, on the whole model's ways)
+    const interconnects = (0, interconnect_1.keptInterconnects)(model.interconnects, (d) => inside.has(d)).map((ic) => {
+        const t = (0, interconnect_1.scopedTraffic)(model.index, model.index.interconnects.get(ic.id) || ic, (d) => inside.has(d));
+        return t.traffic.length === ic.traffic.length && t.traffic.every((x, k) => x === ic.traffic[k]) ? ic : { ...ic, traffic: t.traffic };
+    });
     const index = { groups: model.index.groups, devices: new Map(devices.map((d) => [d.id, d])), interfaces, links: new Map(links.map((l) => [l.id, l])), networks: model.index.networks, relations: new Map(relations.map((r) => [r.id, r])), ifaceLink, radioLinks, routes, ...(0, interconnect_1.opaqueIndex)(devices, interconnects) };
     const boundary = new Map();
     for (const b of scope.boundary)
@@ -79387,8 +79675,7 @@ class AppSim {
     }
     /** The address family an application uses: its peer address's, else its ip_version, else IPv4. */
     family(a) {
-        const pa = a.peer ? (0, ip_1.parseAddress)(a.peer) : null;
-        return pa ? pa.version : a.ipVersion || 4;
+        return (0, applications_1.appFamily)(a);
     }
     /**
      * Where a message goes now, or why it can't go: the peer application's
@@ -81670,7 +81957,6 @@ exports.OpaqueSim = exports.OPAQUE_NOTICE = exports.OPAQUE_KEEP = exports.OPAQUE
 const interconnect_1 = __req("model/interconnect");
 /** One hop of illustrative data, in simulated ms: a display parameter of the model (no timing is predicted). */
 exports.OPAQUE_HOP_MS = 1;
-const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** The settled transfers a series keeps (its counts keep them all). */
 exports.OPAQUE_KEEP = 50;
 exports.OPAQUE_NOTICE = 'Illustrative traffic — protocol behaviour not simulated.';
@@ -81691,77 +81977,13 @@ class OpaqueSim {
         this.live = new Set();
         this.seq = 0;
     }
-    /** A port's attachment: its interconnect and how it is attached; null when it is on none. */
+    /** A port's attachment: its interconnect and how it is attached; null when it is on none (model/interconnect.ts attachmentOf). */
     attachment(key) {
-        const id = this.m.index.portInterconnect.get(key);
-        const ic = id ? this.m.index.interconnects.get(id) : undefined;
-        const a = ic ? ic.endpoints.find((x) => `${x.device}:${x.port}` === key) : undefined;
-        return ic && a ? { ic, a } : null;
+        return (0, interconnect_1.attachmentOf)(this.m.index, key);
     }
-    /**
-     * The way from a data source to a recipient (fewest hops, deterministic):
-     * along interconnects and through explicit transit groups only. Every hop
-     * is checked by its interconnect's rule before the search takes it, so an
-     * invalid alternative (a lexically earlier receive-only port, a target that
-     * can't initiate) is passed over and a valid one further on is still
-     * found; a string says why there is none (the first refusal on the way to
-     * the recipient, else that no modelled connection leads there).
-     */
+    /** The way from a data source to a recipient (model/interconnect.ts opaqueRoute: the one search, here on the model the simulation runs). */
     route(from, to, initiator) {
-        const src = this.attachment(from);
-        if (!src)
-            return `${from} is on no interconnect`;
-        const init = this.attachment(initiator);
-        if (!init)
-            return `the initiator ${initiator} is on no interconnect`;
-        if (!this.attachment(to))
-            return `${to} is on no interconnect`;
-        if (init.ic.id !== src.ic.id)
-            return `the initiator ${initiator} is not on ${src.ic.id}, the data source's interconnect`;
-        const seen = new Set([from]);
-        let refusedTo = null;
-        let refused = null;
-        let layer = [{ at: src, hops: [] }];
-        for (let depth = 0; depth < 32 && layer.length; depth++) {
-            const next = [];
-            for (const st of layer) {
-                const others = st.at.ic.endpoints.filter((x) => x !== st.at.a).sort((x, y) => cmp(`${x.device}:${x.port}`, `${y.device}:${y.port}`));
-                for (const b of others) {
-                    const hop = { ic: st.at.ic, from: st.at.a, to: b, initiator: st.hops.length ? st.at.a : init.a, via: st.via };
-                    const key = `${b.device}:${b.port}`;
-                    // (a hop its interconnect's rule refuses is never taken: it marks nothing and ends nothing)
-                    const why = (0, interconnect_1.hopRule)(hop.ic, hop.from, hop.to, hop.initiator);
-                    if (why) {
-                        if (key === to)
-                            refusedTo = refusedTo || why;
-                        else
-                            refused = refused || why;
-                        continue;
-                    }
-                    if (key === to)
-                        return st.hops.concat([hop]);
-                    // through a System's transit group: on from the group's other ports (the same technology, never converted)
-                    const dev = this.m.index.devices.get(b.device);
-                    const group = dev ? dev.opaqueTransit.find((g) => g.ports.indexOf(b.port) >= 0) : undefined;
-                    if (!group)
-                        continue;
-                    for (const p of group.ports.slice().sort(cmp)) {
-                        const k = `${b.device}:${p}`;
-                        if (p === b.port || seen.has(k))
-                            continue;
-                        const on = this.attachment(k);
-                        if (!on)
-                            continue;
-                        seen.add(k);
-                        next.push({ at: on, hops: st.hops.concat([hop]), via: b.device });
-                    }
-                }
-            }
-            layer = next;
-        }
-        if (refusedTo)
-            return refusedTo;
-        return `no modelled connection from ${from} to ${to} (interconnects and explicit transit groups only)${refused ? `; refused on the way: ${refused}` : ''}`;
+        return (0, interconnect_1.opaqueRoute)(this.m.index, from, to, initiator);
     }
     /** Why a hop can't be taken now (null: it can): devices on, ports not shut, attachments in place, the interconnect not failed. */
     blocked(h) {
@@ -84940,6 +85162,8 @@ const applications_1 = __req("model/applications");
 const speed_1 = __req("model/speed");
 Object.defineProperty(exports, "bpsText", { enumerable: true, get: function () { return speed_1.bpsText; } });
 const trace_1 = __req("analysis/trace");
+const communication_1 = __req("analysis/communication");
+const ip_1 = __req("model/ip");
 /** The traffic the model states (see the module comment), sorted by id. */
 function capacityDemands(model) {
     const out = [];
@@ -84954,15 +85178,27 @@ function capacityDemands(model) {
             const ref = `app:${dev.id}/${a.id}`;
             // (a size written is that size, 0 included; empty: the profile's modelling default)
             const size = (v, dflt) => (v !== undefined ? v : dflt);
+            // (the ends as the application has them: its family, its peer's listener and that listener's bind interface)
+            const fam = (0, applications_1.appFamily)(a);
+            const peerOf = () => {
+                const r = responder(model, a, p.transport);
+                if (r.app) {
+                    const owner = model.devices.find((x) => (x.applications || []).indexOf(r.app) >= 0).id;
+                    return { device: owner, bind: r.app.bind };
+                }
+                const pa = a.peer ? (0, ip_1.parseAddress)(a.peer) : null;
+                return pa ? { address: a.peer } : { device: a.peer };
+            };
             if (p.id === 'udp_sender' && a.peer)
-                out.push({ id: ref, label: `${dev.id}/${a.id}`, from: dev.id, to: a.peer.indexOf('/') > 0 ? a.peer.slice(0, a.peer.indexOf('/')) : a.peer, bps: size(a.requestSize, applications_1.APP_DEFAULTS.udpRequest) * per, source: 'application', ref });
+                out.push({ id: ref, label: `${dev.id}/${a.id}`, from: dev.id, to: a.peer.indexOf('/') > 0 ? a.peer.slice(0, a.peer.indexOf('/')) : a.peer, bps: size(a.requestSize, applications_1.APP_DEFAULTS.udpRequest) * per, source: 'application', ref, app: { family: fam, client: dev.id, peer: peerOf() } });
             else if ((p.id === 'tcp_client' || p.id === 'udp_client') && a.peer) {
                 const to = a.peer.indexOf('/') > 0 ? a.peer.slice(0, a.peer.indexOf('/')) : a.peer;
-                out.push({ id: ref + '>', label: `${dev.id}/${a.id} (requests)`, from: dev.id, to, bps: size(a.requestSize, p.id === 'tcp_client' ? applications_1.APP_DEFAULTS.tcpRequest : applications_1.APP_DEFAULTS.udpRequest) * per, source: 'application', ref });
+                const peer = peerOf();
+                out.push({ id: ref + '>', label: `${dev.id}/${a.id} (requests)`, from: dev.id, to, bps: size(a.requestSize, p.id === 'tcp_client' ? applications_1.APP_DEFAULTS.tcpRequest : applications_1.APP_DEFAULTS.udpRequest) * per, source: 'application', ref, app: { family: fam, client: dev.id, peer } });
                 // the answer is the responder's: its listener's response size (a client has none of its own)
                 const dflt = p.id === 'tcp_client' ? applications_1.APP_DEFAULTS.tcpResponse : applications_1.APP_DEFAULTS.udpResponse;
                 const r = responder(model, a, p.transport);
-                const ans = { id: ref + '<', label: `${dev.id}/${a.id} (answers)`, from: to, to: dev.id, bps: size(r.app ? r.app.responseSize : undefined, dflt) * per, source: 'application', ref };
+                const ans = { id: ref + '<', label: `${dev.id}/${a.id} (answers)`, from: to, to: dev.id, bps: size(r.app ? r.app.responseSize : undefined, dflt) * per, source: 'application', ref, app: { family: fam, client: dev.id, peer, answers: true } };
                 if (!r.app)
                     ans.note = `${r.why}: its answers are assumed ${dflt} bytes (the modelling default)`;
                 else if (r.app.responseSize === undefined)
@@ -84973,7 +85209,7 @@ function capacityDemands(model) {
                 // one publication per topic every interval; each subscriber gets each publication it matches once (overlapping filters or not)
                 const payload = size(a.payloadSize, applications_1.APP_DEFAULTS.mqttPayload);
                 const topics = a.publish.filter((t, k) => a.publish.indexOf(t) === k);
-                out.push({ id: ref + '>', label: `${dev.id}/${a.id} (publish${topics.length > 1 ? `, ${topics.length} topics` : ''})`, from: dev.id, to: a.broker, bps: payload * topics.length * per, source: 'application', ref });
+                out.push({ id: ref + '>', label: `${dev.id}/${a.id} (publish${topics.length > 1 ? `, ${topics.length} topics` : ''})`, from: dev.id, to: a.broker, bps: payload * topics.length * per, source: 'application', ref, app: { family: fam, client: dev.id, peer: { device: a.broker } } });
                 for (const sd of model.devices) {
                     for (const sa of sd.applications || []) {
                         if (sa.profile !== 'mqtt_client' || sa.broker !== a.broker || (sd.id === dev.id && sa.id === a.id))
@@ -84981,7 +85217,7 @@ function capacityDemands(model) {
                         const matched = topics.filter((t) => sa.subscribe.some((f) => (0, applications_1.topicMatches)(f, t)));
                         if (!matched.length)
                             continue;
-                        out.push({ id: `${ref}>${sd.id}/${sa.id}`, label: `${dev.id}/${a.id} → ${sd.id}/${sa.id} (via ${a.broker}${matched.length > 1 ? `, ${matched.length} topics` : ''})`, from: a.broker, to: sd.id, bps: payload * matched.length * per, source: 'application', ref });
+                        out.push({ id: `${ref}>${sd.id}/${sa.id}`, label: `${dev.id}/${a.id} → ${sd.id}/${sa.id} (via ${a.broker}${matched.length > 1 ? `, ${matched.length} topics` : ''})`, from: a.broker, to: sd.id, bps: payload * matched.length * per, source: 'application', ref, app: { family: (0, applications_1.appFamily)(sa), client: sd.id, peer: { device: a.broker }, answers: true } });
                     }
                 }
             }
@@ -85012,6 +85248,21 @@ function responder(model, a, transport) {
     if (ls.length === 1)
         return { app: ls[0], text: `${d.id}/${ls[0].id}`, why: '' };
     return { text: peer, why: ls.length ? `${ls.length} applications of ${peer} listen on ${transport}/${a.port}: its responder is ambiguous` : `no application of ${peer} listens on ${transport}/${a.port}` };
+}
+/**
+ * What to trace for a demand: a demand's ends as written; an application's as the application has them (its
+ * family; the peer listener's bind interface's address, else the peer device's address of the family, as the
+ * simulation's applications pick it — communication.ts appAddress), in the state traced.
+ */
+function demandRequest(model, d, ctx) {
+    if (!d.app)
+        return { from: d.from, to: d.to };
+    const x = d.app;
+    // (a listener bound to an interface without an address of the family now — down under a failure: that interface, which the
+    // tracer then says has none; never the device's other address)
+    const fallback = x.peer.device !== undefined ? (x.peer.bind !== undefined ? `${x.peer.device}:${x.peer.bind}` : x.peer.device) : d.to;
+    const peer = x.peer.address !== undefined ? x.peer.address : x.peer.device !== undefined ? ((0, communication_1.appAddress)(model, x.peer.device, x.family, x.peer.bind, ctx) || { address: fallback }).address : d.to;
+    return x.answers ? { from: peer, to: x.client, family: x.family } : { from: x.client, to: peer, family: x.family };
 }
 /** A cable's speed: the link's, else the smaller of its ends' (null: none written). */
 function linkSpeed(model, id) {
@@ -85129,7 +85380,7 @@ function capacityAnalysis(model, ctx = {}) {
     const loads = new Map();
     const perDemand = [];
     for (const d of demands) {
-        const t = (0, trace_1.tracePath)(model, { from: d.from, to: d.to }, ctx);
+        const t = (0, trace_1.tracePath)(model, demandRequest(model, d, ctx), ctx);
         const reached = t.error ? [] : t.paths.filter((p) => p.end.kind === 'reached' || p.end.kind === 'delivered');
         const seenAny = new Map();
         reached.forEach((p) => {
@@ -85168,6 +85419,8 @@ function capacityAnalysis(model, ctx = {}) {
         own.sort((a, b) => rank.indexOf(a.verdict) - rank.indexOf(b.verdict) || (b.worst / (b.resource.capacity || Infinity)) - (a.worst / (a.resource.capacity || Infinity)));
         const top = own[0];
         const out = { demand: d, connectivity: 'retained', verdict: top ? top.verdict : 'fits', text: '', paths: reached.length };
+        if (trace.source && trace.dest)
+            out.ends = `${trace.source.device}${trace.source.iface ? ':' + trace.source.iface : ''} ${trace.source.address || ''} → ${trace.dest.device ? trace.dest.device + (trace.dest.iface ? ':' + trace.dest.iface : '') + ' ' : ''}${trace.dest.address}`;
         const r = top ? top.resource : null;
         const where = (x) => x.what + (x.direction ? `, ${x.direction}` : '');
         out.text = !top ? 'fits (no cable on its way)' : top.verdict === 'unknown' ? `insufficient information: ${r.what} has no speed written` : `${top.verdict === 'fits' ? 'fits' : top.verdict === 'exceeds' ? 'exceeds' : 'depends on the distribution at'} ${where(r)}: ${(0, speed_1.bpsText)(top.equal)} split equally, ${(0, speed_1.bpsText)(top.worst)} on one path, of ${(0, speed_1.bpsText)(r.capacity)}`;
@@ -89252,7 +89505,10 @@ class Pacer {
             this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
         const cap = this.cap();
         const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
-        if (target > e.now + EPS) {
+        // (also with the clock already at the target — the cap, a moment a frame's budget ended partway: what is still queued
+        // at that time is not done yet)
+        const due = e.nextTime();
+        if (target > e.now + EPS || (due !== null && due <= target + EPS)) {
             const until = Date.now() + exports.JUMP_BUDGET;
             const over = () => Date.now() > until;
             const held = e.runUntil(target, () => {
