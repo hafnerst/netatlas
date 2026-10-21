@@ -45,7 +45,7 @@ import { routingProtocol } from './routing';
 import { Path, tracePath } from './trace';
 import { hostOf } from '../model/virtual';
 import { l2Domain, netOf } from './sim/net';
-import { keptInterconnects, opaqueIndex } from '../model/interconnect';
+import { keptInterconnects, opaqueIndex, scopedTraffic } from '../model/interconnect';
 
 export type ExecScopeKind = 'entire' | 'communication' | 'dependencies' | 'group' | 'vlan' | 'domain';
 
@@ -238,6 +238,9 @@ function finish(model: Model, kind: ExecScopeKind, label: string, devices: Set<s
     // cables of the scope that demands from outside it share: their load is not there in the scope
     const ext = model.demands.filter((d) => !devices.has(d.source.split(':')[0]) || !devices.has(d.destination.split(':')[0]));
     if (ext.length) caveats.push(`${ext.length} demand${ext.length === 1 ? '' : 's'} with an end outside (${ext.map((d) => d.id).sort(cmp).slice(0, 5).join(', ')}${ext.length > 5 ? ' …' : ''}) are not run: what they load in the scope is missing from it`);
+    // the interconnects' own traffic with an end or a transit outside: not run (never a transfer to a recipient that is not there)
+    const left = model.interconnects.flatMap((ic) => scopedTraffic(model.index, ic, (d) => devices.has(d)).left);
+    if (left.length) caveats.push(`${left.length} illustrative transfer${left.length === 1 ? '' : 's'} of the interconnects' traffic leave${left.length === 1 ? 's' : ''} the scope and ${left.length === 1 ? 'is' : 'are'} not run: ${left.slice(0, 3).join('; ')}${left.length > 3 ? ' …' : ''}`);
   }
   return { kind, label, devices, included: included.sort((a, b) => cmp(a.device, b.device)), boundary, cutRelations, partialRelations, cannot, caveats };
 }
@@ -401,7 +404,11 @@ export function scopedModel(model: Model, scope: ExecScope): Model {
   for (const d of devices) for (const rt of d.routes) routes.set(routeKey(d.id, rt.index), rt);
   // (the interconnects within the scope: their attachments inside it)
   const inside = new Set(devices.map((d) => d.id));
-  const interconnects = keptInterconnects(model.interconnects, (d) => inside.has(d));
+  // (and their traffic: only transfers whose every end and transit is inside — scopedTraffic, on the whole model's ways)
+  const interconnects = keptInterconnects(model.interconnects, (d) => inside.has(d)).map((ic) => {
+    const t = scopedTraffic(model.index, model.index.interconnects.get(ic.id) || ic, (d) => inside.has(d));
+    return t.traffic.length === ic.traffic.length && t.traffic.every((x, k) => x === ic.traffic[k]) ? ic : { ...ic, traffic: t.traffic };
+  });
   const index: ModelIndex = { groups: model.index.groups, devices: new Map(devices.map((d) => [d.id, d])), interfaces, links: new Map(links.map((l) => [l.id, l])), networks: model.index.networks, relations: new Map(relations.map((r) => [r.id, r])), ifaceLink, radioLinks, routes, ...opaqueIndex(devices, interconnects) };
   const boundary = new Map<string, string>();
   for (const b of scope.boundary) if (b.iface !== undefined) boundary.set(ifaceKey(b.device, b.iface), b.outside);

@@ -73,3 +73,69 @@ test('deleting a device reports its traffic references (they would break)', () =
   const refs2 = d.references('device', 'act').map((p) => p.join('.'));
   assert.ok(refs2.some((p) => /^interconnects\.\d+\.traffic\.1\.to\.0$/.test(p)), refs2.join(' | '));
 });
+
+// ------------------------------------------------------------------ execution scopes
+
+// bus A: src, x and the fabric switch's f1; bus B: the switch's f2, rcv and y; the switch passes A ↔ B
+const FAB = `netatlas: 1
+title: scoped traffic
+devices:
+  - {id: src, type: server, interfaces: [{id: p, stack: opaque}]}
+  - {id: x, type: server, interfaces: [{id: p, stack: opaque}]}
+  - {id: rcv, type: server, interfaces: [{id: p, stack: opaque}]}
+  - {id: y, type: server, interfaces: [{id: p, stack: opaque}]}
+  - id: fsw
+    type: system
+    purpose: host
+    interfaces: [{id: f1, stack: opaque}, {id: f2, stack: opaque}]
+    opaque_transit: [{ports: [f1, f2]}]
+interconnects:
+  - id: A
+    topology: shared
+    technology: {name: CAN}
+    endpoints: [{port: "src:p"}, {port: "x:p"}, {port: "fsw:f1"}]
+    traffic:
+      - {initiator: "src:p", to: ["rcv:p", "x:p"], interval: 1s, size: 8}
+      - {initiator: "x:p", to: "src:p", interval: 1s, size: 8}
+  - id: B
+    topology: shared
+    technology: {name: CAN}
+    endpoints: [{port: "fsw:f2"}, {port: "rcv:p"}, {port: "y:p"}]
+`;
+const scoped = (m, devs) => {
+  const sc = ES.explicitScope(m, 'test', new Set(devs));
+  return { sc, sm: ES.scopedModel(m, sc) };
+};
+const tr = (m) => m.interconnects.flatMap((ic) => ic.traffic.map((x) => `${ic.id}: ${x.initiator} → ${x.to.join(', ')}`)).sort();
+
+test('execution scope: every endpoint of A kept, a recipient beyond the transit left out — the transfer to it is not kept (said), the rest of the list is; never a dangling reference', () => {
+  const m = model(FAB);
+  const { sc, sm } = scoped(m, ['src', 'x', 'fsw']);
+  // A unchanged in its attachments, its traffic not: rcv is outside
+  assert.equal(sm.interconnects.find((ic) => ic.id === 'A').endpoints.length, 3);
+  assert.deepEqual(tr(sm), ['A: src:p → x:p', 'A: x:p → src:p']);
+  assert.ok(sc.caveats.some((c) => /illustrative transfers? of the interconnects' traffic leaves? the scope .*A: src:p → rcv:p \(the recipient is outside\)/.test(c)), sc.caveats.join(' | '));
+  // every reference of the scoped model's traffic resolves in it, and it runs without a refusal
+  for (const ic of sm.interconnects) for (const t of ic.traffic) for (const k of [t.initiator, t.from, ...t.to]) assert.ok(sm.index.opaquePorts.has(k), k);
+  const s = new S.Simulation(sm);
+  s.runTo(10000);
+  assert.deepEqual(s.events().filter((e) => e.protocol === 'opaque' && e.kind === 'drop').map((e) => e.detail), []);
+});
+
+test('execution scope: the transit device outside — both ends inside, the way not: left out; the initiator or the source outside: the transfer left out; the same scope twice, the same model', () => {
+  const m = model(FAB);
+  const t = scoped(m, ['src', 'x', 'rcv', 'y']);
+  assert.deepEqual(tr(t.sm), ['A: src:p → x:p', 'A: x:p → src:p'], 'src → rcv crosses fsw, which is outside: that recipient only is left out');
+  assert.ok(t.sc.caveats.some((c) => /src:p → rcv:p \(its way crosses a device outside\)/.test(c)));
+  const noSrc = scoped(m, ['x', 'fsw', 'rcv', 'y']);
+  assert.deepEqual(tr(noSrc.sm), []);
+  assert.ok(noSrc.sc.caveats.some((c) => /its initiator is outside/.test(c)));
+  // deterministic and self-consistent
+  assert.deepEqual(JSON.stringify(tr(scoped(m, ['src', 'x', 'fsw']).sm)), JSON.stringify(tr(scoped(m, ['fsw', 'x', 'src']).sm)));
+  // a display filter keeps traffic consistent too (and never feeds the simulation)
+  const kept = IC.keptInterconnects(m.interconnects, (d) => d !== 'rcv');
+  assert.deepEqual(kept.find((ic) => ic.id === 'A').traffic.map((x) => x.to.join()), ['x:p', 'src:p']);
+  // the entire scope: everything, unchanged
+  const all = scoped(m, ['src', 'x', 'rcv', 'y', 'fsw']);
+  assert.deepEqual(tr(all.sm), tr(m));
+});
