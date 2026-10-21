@@ -1482,7 +1482,7 @@ export class SimController implements SimulationMode {
     const it = this.pacer.find(id);
     const f = it ? it.f : this.sim.engine.flights.find((x) => x.id === id);
     // illustrative data on a non-IP interconnect: its own rows, no layers
-    const op = f ? this.sim.opaque.info.get(f.id) : undefined;
+    const op = f ? f.illustrative : undefined;
     if (f && op) {
       this.inspectorPause();
       this.tables.show('packet', 'inspector', near || null, () => ({ where: `t = ${fmtSec(f.t0)}`, opaque: { ...op, label: f.label } }));

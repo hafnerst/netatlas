@@ -1,7 +1,7 @@
 import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import { bridgePorts, derive, interfaceAddresses, interfaceVlans, isBridgePort, isVlanInterface, portL2, subinterfaceParent } from '../model/derive';
 import { CHECKS, CheckSetting, SEVERITIES, Target, runChecks } from '../analysis/checks';
-import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS, IcAccess, IcAttachment, IcData, IcRole, IcTopology, Interconnect, OpaquePort, OpaqueTransit } from '../model/types';
+import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS, IcAccess, IcAttachment, IcData, IcRole, IcTopology, IcTraffic, Interconnect, OpaquePort, OpaqueTransit } from '../model/types';
 import { IC_ACCESS, IC_DATA, IC_ROLES, IC_TOPOLOGIES, opaqueIndex, receives, sends } from '../model/interconnect';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
@@ -30,6 +30,7 @@ import { PolicyNodes, checkNetPolicies, readNetPolicy } from './policy';
 import { readExperiments } from './experiments';
 import { readViews } from './views';
 import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS, RouteFilterRule, RoutingPolicy } from '../model/routing-policy';
+import { parseValue } from '../analysis/sim/params';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -2165,6 +2166,46 @@ function readInterconnects(r: Reader, c: Ctx, items: YNode[], claim: (id: string
       if (!senders.length || !receivers.length || (senders.length === 1 && receivers.length === 1 && senders[0] === receivers[0])) c.warn(m, ipath, `no data can move on interconnect "${id}": ${!senders.length ? 'no endpoint sends' : 'no other endpoint receives'}`);
       if (access === 'controller_target' && !endpoints.some((e) => e.role === 'controller' || e.role === 'controller_target')) c.warn(m, ipath, `interconnect "${id}" has controller_target access but no controller: nothing can initiate a transfer`);
     }
+    // illustrative data that runs with the simulation: started on this interconnect, to recipients anywhere on the opaque side
+    const traffic: IcTraffic[] = [];
+    r.list(get(m, 'traffic'), ipath + '.traffic').forEach((tn, k) => {
+      const tpath = `${ipath}.traffic[${k}]`;
+      const tm = r.map(tn, tpath);
+      if (!tm) return;
+      r.keys(tm, SCHEMA.icTraffic, tpath);
+      const own = (key: string, node: YNode, p: string): boolean => {
+        if (endpoints.some((e) => `${e.device}:${e.port}` === key)) return true;
+        c.error(node, p, `"${key}" is not an endpoint of interconnect "${id}": a transfer is started on its own interconnect` + suggest(key, endpoints.map((e) => `${e.device}:${e.port}`)));
+        return false;
+      };
+      const initiator = r.reqStr(tm, 'initiator', tpath, 200);
+      if (initiator === undefined || !own(initiator, get(tm, 'initiator') as YNode, tpath + '.initiator')) return;
+      const from = r.field(tm, 'from', tpath, 200) || initiator;
+      if (!own(from, (get(tm, 'from') || get(tm, 'initiator')) as YNode, tpath + '.from')) return;
+      const toNode = get(tm, 'to');
+      const to: string[] = [];
+      if (isNull(toNode)) c.error(tm, tpath, 'missing required key "to" (its recipients: device:port, one or a list)', { key: 'to' });
+      else
+        r.list(toNode, tpath + '.to', true).forEach((pn, j) => {
+          const key = r.str(pn, `${tpath}.to[${j}]`, 200);
+          if (key === undefined) return;
+          if (!opaquePorts.has(key)) c.error(pn, `${tpath}.to`, `"${key}" is no opaque port of the model: a recipient is "device:port" of an opaque port`);
+          else if (key === from) c.error(pn, `${tpath}.to`, `"${key}" is the data source itself`);
+          else if (to.indexOf(key) < 0) to.push(key);
+        });
+      const iText = r.field(tm, 'interval', tpath, 20);
+      let interval: number | undefined;
+      if (iText === undefined) c.error(tm, tpath, 'missing required key "interval" (between two transfers: 2s, 500ms)', { key: 'interval' });
+      else {
+        const pv = parseValue({ key: 'interval', yaml: 'interval', label: 'Interval', layer: 0, kind: 'duration', base: 's', dflt: 0, min: 100, max: 86400000, source: '', help: '' }, iText);
+        if ('error' in pv) c.error(get(tm, 'interval') as YNode, tpath + '.interval', `Interval ${pv.error}`);
+        else interval = pv.value as number;
+      }
+      const count = r.int(get(tm, 'count'), tpath + '.count', 1, 10000, 'count');
+      const size = r.int(get(tm, 'size'), tpath + '.size', 0, 65536, 'size (bytes)');
+      if (interval === undefined || !to.length) return;
+      traffic.push({ initiator, from, to, interval, ...(count !== undefined ? { count } : {}), size: size !== undefined ? size : 64, line: tm.line });
+    });
     out.push({
       id,
       topology,
@@ -2173,6 +2214,7 @@ function readInterconnects(r: Reader, c: Ctx, items: YNode[], claim: (id: string
       connector: r.field(m, 'connector', ipath, 60),
       access,
       endpoints,
+      traffic,
       label: r.field(m, 'label', ipath, L.maxLabel),
       description: r.field(m, 'description', ipath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), ipath + '.attrs'),

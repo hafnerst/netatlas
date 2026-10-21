@@ -232,6 +232,11 @@ export class Simulation {
     this.mqtt = new MqttSim(this.protocols, this.transport, this.apps);
     // the non-IP interconnects: illustrative data only, apart from everything IP (opaque.ts)
     this.opaque = new OpaqueSim(this.engine, this.model, () => this.transport.reserveId());
+    // (the interconnects' own traffic once the simulation runs; a device powered off stops its hops on their way)
+    this.protocols.bootHooks.push(() => this.opaque.startConfigured());
+    this.protocols.deviceHooks.push((dev, up) => {
+      if (!up) this.opaque.deviceDown();
+    });
     this.ntp = new NtpSim(this.protocols);
     this.ntp.install();
     this.ptp = new PtpSim(this.protocols, this.multicast);

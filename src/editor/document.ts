@@ -699,6 +699,7 @@ export class ModelDoc {
     // an interconnect's technology or protocol, an endpoint
     if (path.length === 3 && path[0] === 'interconnects' && (path[2] === 'technology' || path[2] === 'protocol')) return 'icTechnology';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'interconnects' && path[2] === 'endpoints') return 'icEndpoint';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'interconnects' && path[2] === 'traffic') return 'icTraffic';
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
       const rest = path.slice(3).map((x) => (typeof x === 'number' ? '#' : x)).join('/');

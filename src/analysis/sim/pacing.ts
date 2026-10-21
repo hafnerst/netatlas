@@ -265,6 +265,16 @@ export function history(f: Flight, now: number, end: number): boolean {
   return end < now - EPS;
 }
 
+/**
+ * The scenario's illustrative data on a non-IP interconnect (an
+ * interconnect's `traffic:`, opaque.ts): drawn as a flow — every transfer a
+ * dot, never the steady state, never waited for (it causes nothing on the
+ * IP side; Send illustrative data, a Network event's, is waited for).
+ */
+export function illustrativeFlow(f: Flight): boolean {
+  return f.protocol === 'opaque' && f.test === undefined;
+}
+
 /** A kind of message in a view (its protocol, its type, a TCP segment's flags): another of it is the steady state. */
 export function repeatKey(f: Flight): string {
   return `${f.view}|${f.protocol}|${f.type !== undefined ? f.type : f.label}|${f.flags || ''}`;
@@ -452,7 +462,7 @@ export class Pacer {
    */
   private gates(it: PaceItem): boolean {
     const f = it.f;
-    if (this.mode === 'realtime' || !it.drawn || f.hidden || f.dropped !== undefined || (f.protocol === 'mcast' && !it.example)) return false;
+    if (this.mode === 'realtime' || !it.drawn || f.hidden || f.dropped !== undefined || (f.protocol === 'mcast' && !it.example) || illustrativeFlow(f)) return false;
     if (!this.host.shown(f)) return false;
     return !(this.bgNow && !it.test && !(this.follow && this.follow.key === it.key));
   }
@@ -665,7 +675,8 @@ export class Pacer {
       // merely the same addresses: every host's DHCP has the same ones)
       const rk = repeatKey(f);
       const example = (!!parent && parent.drawn) || (f.conv !== undefined && this.detailed.has(f.conv));
-      const repeat = this.summarizeRepeats && !test && !followed && !example && this.seen.has(rk);
+      // (the model's illustrative data on the non-IP interconnects is what shows them at work: every transfer drawn, a flow)
+      const repeat = this.summarizeRepeats && !test && !followed && !example && !illustrativeFlow(f) && this.seen.has(rk);
       if (repeat && shown) this.repeats++;
       const drawn = !shown || test || followed || (!repeat && conv && !late && (goesOn || room));
       if (shown) {

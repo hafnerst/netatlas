@@ -108,11 +108,13 @@ export const SCHEMA = {
   network: ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs'],
   relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'direction', 'simulation', 'description', 'attrs'],
   /** a non-IP physical interconnect (`interconnects:`, model/interconnect.ts) */
-  interconnect: ['id', 'label', 'topology', 'technology', 'protocol', 'connector', 'access', 'endpoints', 'description', 'attrs'],
+  interconnect: ['id', 'label', 'topology', 'technology', 'protocol', 'connector', 'access', 'endpoints', 'traffic', 'description', 'attrs'],
   /** an interconnect's technology, or the protocol it carries */
   icTechnology: ['name', 'version'],
   /** an attachment of a port to an interconnect: an entry of its `endpoints` */
   icEndpoint: ['port', 'role', 'data', 'system_controller'],
+  /** illustrative data that runs with the simulation: an entry of an interconnect's `traffic` */
+  icTraffic: ['initiator', 'from', 'to', 'interval', 'count', 'size'],
   /** a relation endpoint written as a mapping (the same as "device:interface") */
   endpoint: ['device', 'interface'],
   /** a traffic demand: an entry of `demands` */

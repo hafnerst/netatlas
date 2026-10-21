@@ -31,7 +31,7 @@ test('USB: the controller’s data reaches the target along the line — dots on
   assert.equal(fl.length, 1);
   assert.deepEqual([fl[0].view, fl[0].track.ref, fl[0].track.from, fl[0].track.to], ['physical', 'interconnect:scope-usb', 'ctl:usb0', 'scope:usb0']);
   assert.equal(fl[0].hdr, undefined, 'no headers');
-  assert.equal(s.opaque.info.get(fl[0].id).notice, 'Illustrative traffic — protocol behaviour not simulated.');
+  assert.equal(fl[0].illustrative.notice, 'Illustrative traffic — protocol behaviour not simulated.');
   // nothing of it on a cable, nothing answered (bidirectional makes no reply)
   assert.ok(!s.engine.flights.slice(n).some((f) => f.protocol !== 'opaque' && f.test === a.opaque.traffic));
   assert.ok(!fl.some((f) => f.track.from === 'scope:usb0'), 'no automatic reply');

@@ -169,6 +169,8 @@ export interface Flight {
    */
   due?: number;
   delivered?: boolean;
+  /** illustrative data on a non-IP interconnect (opaque.ts): the inspector's rows of it, and its notice (no headers) */
+  illustrative?: { title: string; rows: Array<[string, string]>; notice: string };
 }
 
 /**
