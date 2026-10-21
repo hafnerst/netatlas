@@ -24,7 +24,13 @@ devices:
     services:
       applications:
         # polls the controller's telemetry, logs in on the console server, collects the CPUs' syslog
-        - {id: poll, name: Telemetry poll, profile: tcp_client, peer: cpu1/telemetry, interval: 5s, start: simulation_start, request_size: 64}
+        - id: poll
+          name: Telemetry poll
+          profile: tcp_client
+          peer: cpu1/telemetry
+          interval: 5s
+          start: simulation_start
+          request_size: 64
         - {id: console, name: Console session, profile: tcp_client, peer: cons/ssh, interval: 15s, start: simulation_start}
         - {id: syslog, name: Syslog collector, profile: udp_receiver, port: 514}
   - id: cons
