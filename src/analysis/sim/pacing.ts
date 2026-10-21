@@ -776,7 +776,10 @@ export class Pacer {
     if (!this.rt || Math.abs(e.now - this.rt.left) > EPS || this.rt.rate !== rate) this.rt = { clock: this.clock, now: e.now, left: e.now, rate };
     const cap = this.cap();
     const target = Math.min(cap, this.rt.now + (this.clock - this.rt.clock) * rate);
-    if (target > e.now + EPS) {
+    // (also with the clock already at the target — the cap, a moment a frame's budget ended partway: what is still queued
+    // at that time is not done yet)
+    const due = e.nextTime();
+    if (target > e.now + EPS || (due !== null && due <= target + EPS)) {
       const until = Date.now() + JUMP_BUDGET;
       const over = (): boolean => Date.now() > until;
       const held = e.runUntil(
