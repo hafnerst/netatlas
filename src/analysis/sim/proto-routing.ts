@@ -623,6 +623,17 @@ function isisMismatch(me: ReturnType<typeof isisIdentity>, d: { sys?: string; ar
   return `no level in common (${d.level} there, ${me.level} here)`;
 }
 
+/** The summary of a session's database a CSNP carries: each LSP by its origin and sequence number. */
+function isisSummary(P: ProtocolSim, s: Sess): Array<{ k: string; seq: number }> {
+  return P.dbOf(s).map((r) => ({ k: r.origin + '|' + r.inst, seq: r.seq }));
+}
+
+/** A CSNP with the database summary (ISO 10589 §7.3.15.3): at once when the adjacency comes up, then every CSNP interval while it is. */
+function isisCsnp(P: ProtocolSim, s: Sess, why: string): void {
+  const sum = isisSummary(P, s);
+  isisFrame(P, s, 'CSNP', `${why}: the database summary, ${sum.map((x) => x.k.slice(0, x.k.indexOf('|')) + '#' + x.seq).join(', ') || 'empty'}`, { summary: sum });
+}
+
 /** An IS-IS PDU on the session's link: a frame to AllL2ISs (IS-IS runs on the link layer, not over IP). */
 function isisFrame(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown }): void {
   if (!P.e.isL3Up(s.dev, s.local.l3.id)) return;
@@ -667,7 +678,7 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     );
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { seen?: string[]; sys?: string; area?: string; level?: string; acks?: number };
+    const d = (msg.data || {}) as { seen?: string[]; sys?: string; area?: string; level?: string; acks?: number; summary?: Array<{ k: string; seq: number }>; req?: string[] };
     if (msg.type === 'IIH') {
       const me = isisIdentity(P, s.dev);
       const bad = isisMismatch(me, d);
@@ -680,18 +691,41 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
       }
       s.x.mismatch = undefined;
       s.x.peerSys = d.sys;
+      const listed = (d.seen || []).indexOf(me.sys) >= 0;
+      // one-way (ISO 10589 §8.4.2, RFC 5303): the neighbour's IIHs no longer list this system — the adjacency is not up
+      if (s.state === 'Up' && !listed) {
+        P.restart(s);
+        P.setState(s, 'Initializing', false, `${s.peer}'s IIH no longer lists this system (${me.sys}): one-way, the adjacency goes back to Initializing`);
+      }
       const dead = P.timer(s, s.profile, 'dead');
       deadCheck(P, s, dead.ms, () => isis.down(P, s, `holding time expired (${dead.text})`));
       if (s.state === 'Down') P.setState(s, 'Initializing', false, `IIH from ${s.peer} (system ID ${d.sys})`);
-      if ((d.seen || []).indexOf(me.sys) >= 0 && s.state === 'Initializing') {
+      if (listed && s.state === 'Initializing') {
         P.setState(s, 'Up', true, `three-way handshake complete (system ID ${d.sys})`);
-        isisFrame(P, s, 'CSNP', 'the database summary', {});
+        isisCsnp(P, s, 'the adjacency is up');
+        const g = s.gen;
+        P.periodic(
+          () => s.gen === g,
+          () => P.timer(s, s.profile, 'csnp').ms,
+          () => {
+            if (s.state === 'Up' && P.e.isL3Up(s.dev, s.local.l3.id)) isisCsnp(P, s, `every ${P.timer(s, s.profile, 'csnp').text}`);
+          },
+          P.timer(s, s.profile, 'csnp').ms,
+        );
       }
       return;
     }
     if (s.state !== 'Up') return;
-    if (msg.type === 'CSNP') isisFrame(P, s, 'PSNP', 'requests the missing LSPs', {});
-    else if (msg.type === 'PSNP' && d.acks === undefined) isisFrame(P, s, 'LSP', 'the requested LSPs', { db: P.dbOf(s) });
+    if (msg.type === 'CSNP') {
+      // the LSPs the summary names that this system lacks, or holds older: requested by a PSNP (nothing missing: no request)
+      const mine = new Map(isisSummary(P, s).map((x) => [x.k, x.seq]));
+      const req = (d.summary || []).filter((x) => !x.k.startsWith(s.dev + '|') && (mine.get(x.k) === undefined || (mine.get(x.k) as number) < x.seq)).map((x) => x.k);
+      if (req.length) isisFrame(P, s, 'PSNP', `requests the missing LSPs: ${req.map((k) => k.slice(0, k.indexOf('|'))).join(', ')}`, { req });
+    } else if (msg.type === 'PSNP' && d.acks === undefined && d.req) {
+      const want = new Set(d.req);
+      const db = P.dbOf(s).filter((r) => want.has(r.origin + '|' + r.inst));
+      if (db.length) isisFrame(P, s, 'LSP', `the requested LSPs: ${db.map((r) => r.origin + '#' + r.seq).join(', ')}`, { db });
+    }
   },
   iface(P, s, up) {
     if (!up) isis.down(P, s, `interface ${s.local.l3.id} went down`);

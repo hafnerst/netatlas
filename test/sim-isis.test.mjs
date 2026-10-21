@@ -132,3 +132,62 @@ relations:
   s.runTo(s.now + 3000);
   assert.equal(t.ok, true, t.result);
 });
+
+// ---- one-way detection and the periodic database summary (ISO 10589 §8.4.2, §7.3.15.3; RFC 5303)
+
+const CHAIN3 = (() => {
+  const R = (n, ifs) => `  - id: r${n}
+    type: router
+    interfaces: [${ifs}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.${n}/32}]
+    protocols: {isis: {net: 49.0001.0000.0000.000${n}.00}}
+`;
+  return `netatlas: 1
+title: isis chain
+devices:
+${R(1, '{id: a, ip: 10.0.12.1/30}')}${R(2, '{id: a, ip: 10.0.12.2/30}, {id: c, ip: 10.0.23.1/30}')}${R(3, '{id: c, ip: 10.0.23.2/30}')}links:
+  - {id: l12, a: "r1:a", b: "r2:a"}
+  - {id: l23, a: "r2:c", b: "r3:c"}
+relations:
+  - {id: i12, protocol: isis, endpoints: ["r1:a", "r2:a"]}
+  - {id: i23, protocol: isis, endpoints: ["r2:c", "r3:c"]}
+`;
+})();
+const isisState = (s, dev, peer) => s.sessions(dev, 'isis').find((x) => x.peer === peer).state;
+
+test('IS-IS one-way: r1’s IIHs lost towards r2 — r2 drops the adjacency, r2’s IIHs stop listing r1, r1 goes back to Initializing (not Up while it still hears r2) and installs nothing through it; restored, Up again', () => {
+  const s = new S.Simulation(model(CHAIN3));
+  s.runTo(60000);
+  assert.equal(isisState(s, 'r1', 'r2'), 'Up');
+  assert.equal(s.routeLookup('r1', '10.255.0.3').kind, 'forward');
+  s.engine.impair = (link, f) => (link === 'l12' && f.msg.protocol === 'isis' && f.msg.type === 'IIH' && f.msg.data.from === 'r1' ? { lose: true } : null);
+  s.runTo(110000);
+  assert.equal(isisState(s, 'r2', 'r1'), 'Down');
+  assert.equal(isisState(s, 'r1', 'r2'), 'Initializing');
+  const back = s.events().find((e) => e.t > 60000 && e.kind === 'state' && e.device === 'r1' && e.what === 'Initializing');
+  assert.match(back.detail, /r2's IIH no longer lists this system .*one-way/);
+  assert.equal(s.routeLookup('r1', '10.255.0.3').kind, 'none', 'nothing through a one-way adjacency');
+  s.engine.impair = null;
+  s.runTo(160000);
+  assert.deepEqual([isisState(s, 'r1', 'r2'), isisState(s, 'r2', 'r1')], ['Up', 'Up']);
+  assert.equal(s.routeLookup('r1', '10.255.0.3').kind, 'forward');
+});
+
+test('IS-IS database sync is repaired by the periodic CSNPs: r3 joins late and the first CSNP (or the requested LSPs) is lost — the next CSNP brings the request; one CSNP per CSNP interval, a PSNP request only for what is missing', () => {
+  for (const lost of ['CSNP', 'LSP']) {
+    const s = new S.Simulation(model(CHAIN3));
+    s.runTo(1000);
+    s.shut('r3', 'c');
+    s.runTo(60000);
+    let n = 0;
+    s.engine.impair = (link, f) => (link === 'l23' && f.msg.protocol === 'isis' && f.msg.type === lost && ++n === 1 ? { lose: true } : null);
+    s.noShut('r3', 'c');
+    s.runTo(200000);
+    assert.ok(n >= 1, lost);
+    assert.equal(s.routeLookup('r3', '10.255.0.1').kind, 'forward', `${lost} lost: r3 learns r1's loopback all the same`);
+    // the CSNP interval: one per side every 10 s on r1-r2, which is stable — and a PSNP request only when something is missing
+    const csnp = s.events().filter((e) => e.kind === 'message' && e.what === 'CSNP' && e.device === 'r1' && e.t > 100000 && e.t <= 200000);
+    assert.equal(csnp.length, 10, csnp.map((e) => Math.round(e.t)).join());
+    assert.equal(s.events().filter((e) => e.kind === 'message' && e.what === 'PSNP' && /requests/.test(e.detail) && e.device === 'r1' && e.t > 150000).length, 0, 'nothing missing, nothing requested');
+  }
+});
