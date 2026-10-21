@@ -217,6 +217,8 @@ export interface TraceRequest {
   service?: string;
   /** the VRF of the source's table ('' the default table); none: the source interface's VRF, else the default table */
   vrf?: string;
+  /** the address family asked for: both ends in it only, never the other one instead; none: the ends' (the source's families, IPv4 first) */
+  family?: 4 | 6;
 }
 
 export interface Trace {
@@ -302,8 +304,11 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   let srcDev: string;
   let srcIface: string | undefined;
   let srcAddr: IpAddr | undefined;
+  const fam = req.family;
+  const famText = fam ? `IPv${fam} ` : '';
   if (src.kind === 'address') {
     const a = parseAddress(src.address) as IpAddr;
+    if (fam && a.version !== fam) return { ...out, error: `Source: ${src.address} is an IPv${a.version} address, not IPv${fam}` };
     const owners = holders(model, a, ctx, null).filter((h) => vrfGiven === undefined || h.vrf === vrfGiven);
     if (!owners.length) return { ...out, error: `Source: ${src.address} is not an address of a device in the model${vrfGiven !== undefined ? ' in ' + vrfName(vrfGiven) : ''}` };
     srcDev = owners[0].device;
@@ -317,9 +322,11 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   let destAddr: IpAddr | null = null;
   let destDev: string | undefined;
   let destIface: string | undefined;
-  const srcFamilies = familiesOf(model, srcDev, srcIface, ctx);
+  const srcFamilies = fam ? familiesOf(model, srcDev, srcIface, ctx).filter((v) => v === fam) : familiesOf(model, srcDev, srcIface, ctx);
+  if (fam && !srcFamilies.length) return { ...out, error: `Source: ${srcIface !== undefined ? `${srcDev}:${srcIface}` : srcDev} has no IPv${fam} address` };
   if (dst.kind === 'address') {
     destAddr = parseAddress(dst.address);
+    if (fam && destAddr && destAddr.version !== fam) return { ...out, error: `Destination: ${dst.address} is an IPv${destAddr.version} address, not IPv${fam}` };
     const owners = destAddr ? holders(model, destAddr, ctx, null) : [];
     if (owners.length) {
       destDev = owners[0].device;
@@ -329,7 +336,8 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
     destDev = dst.device;
     destIface = dst.kind === 'iface' ? dst.iface : undefined;
     const c = pickAddress(model, dst.device, destIface, srcFamilies, undefined, ctx);
-    if (!c) return { ...out, error: `Destination: ${traceEndText(dst)} has no address to trace to` };
+    // (a family asked for is that family's address or none: pickAddress prefers, it does not restrict)
+    if (!c || (fam && c.addr.version !== fam)) return { ...out, error: `Destination: ${traceEndText(dst)} has no ${famText}address to trace to` };
     destAddr = c.addr;
     destIface = c.iface;
   }

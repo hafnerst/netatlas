@@ -355,11 +355,12 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   } else {
     const src = from.kind === 'end' ? from.text : fromDev;
     const dst = to.kind === 'end' ? to.text : (toAddr as string);
-    const treq = { from: src, to: dst, service: svc ? (svc.proto === 'icmp' ? 'icmp' : `${svc.proto}/${svc.port}`) : undefined, vrf: req.vrf };
+    // (the family the check decided goes to the tracer too: it resolves a device or an interface in it, never in the other)
+    const treq = { from: src, to: dst, service: svc ? (svc.proto === 'icmp' ? 'icmp' : `${svc.proto}/${svc.port}`) : undefined, vrf: req.vrf, family: fam };
     const trace = tracePath(model, treq, ctx);
     out.trace = trace;
     if (trace.error) {
-      if (/^Destination: .* has no address/.test(trace.error) && toDev === undefined && to.kind === 'end' && to.end.kind !== 'address') noAddress(to.end.device, 'destination');
+      if (/^Destination: .* has no (IPv[46] )?address/.test(trace.error) && toDev === undefined && to.kind === 'end' && to.end.kind !== 'address') noAddress(to.end.device, 'destination');
       layers.push({ id: 'path', verdict: addr.verdict === 'violated' ? 'violated' : 'indeterminate', text: trace.error, detail: [], refs: [] });
     } else {
       const o = traceOutcome(trace);

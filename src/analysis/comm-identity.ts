@@ -109,7 +109,8 @@ export function commIdentity(model: Model, c: CommCheck): CommIdentity | null {
   if (c.error || !c.from) return null;
   const from = parseCommEnd(model, c.request.from);
   if (typeof from === 'string') return null;
-  const fam = famOf(c.from.address) || famOf(c.to ? c.to.address : undefined) || c.request.family;
+  // (the family asked for decides; else the one the check's addresses have)
+  const fam = c.request.family || famOf(c.from.address) || famOf(c.to ? c.to.address : undefined);
   // (the ends the check resolved; where it stopped first, what the request names)
   const sAt = c.from.iface ? { iface: c.from.iface, address: c.from.address } : endIface(model, c.from.device, from.kind === 'end' && from.end.kind === 'iface' ? from.end.iface : from.kind === 'app' ? from.app.bind : undefined, fam);
   const srcRuntime = runtimeAddressed(model, c.from.device, sAt.iface, fam);
@@ -203,6 +204,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
   if (t.binding === 'name' && t.name) {
     pre.target = t.name;
     carried.push(`Destination: ${t.name}, ${BINDING_TEXT.name}`);
+    if (id.family === 6) not.push(`Family: Send network packets resolves ${t.name} for IPv4 (an A record); the IPv6 check (AAAA) can't be carried over: write its IPv6 address under To instead`);
   } else if (t.binding === 'address' && t.address) {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}, ${BINDING_TEXT.address}`);
@@ -216,7 +218,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}`);
   } else return null;
-  carried.push(`Protocol: ${svcText}${id.family ? `, IPv${id.family}` : ''}`);
+  carried.push(`Protocol: ${svcText}${id.family && !(t.binding === 'name' && id.family === 6) ? `, IPv${id.family}` : ''}`);
   // the routing context: the simulation sends in the source interface's VRF
   const si = s.iface ? model.index.interfaces.get(s.device + ':' + s.iface) : undefined;
   if (id.request.vrf !== undefined && si && (si.vrf || '') !== id.request.vrf) not.push(`VRF: the simulation sends in the VRF of ${s.device}:${s.iface} (${si.vrf || 'the default table'}); the VRF chosen here (${id.request.vrf || 'the default table'}) can't be set for a send`);
