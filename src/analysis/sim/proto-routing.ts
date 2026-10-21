@@ -13,7 +13,7 @@ import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
 import { fmtSec, hashIndex } from './engine';
 import { durationText } from './params';
-import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
+import { ADV_RXMT, Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 import { RipEntry } from './rip';
 
@@ -758,29 +758,38 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     );
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { init?: boolean };
+    const d = (msg.data || {}) as { init?: boolean; seq?: number };
     const hold = P.timer(s, s.profile, 'dead');
     if (msg.type === 'Hello') {
       deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
       if (s.state === 'Down') {
         P.setState(s, 'Pending', false, `Hello from ${s.peer}`);
-        s.x.sentInit = true;
-        P.unicast(s, 'Update', 'init flag set, no routes yet', { init: true }, 'Pending');
+        eigrpInit(P, s);
       }
       return;
     }
     if (msg.type === 'Update' && d.init) {
-      P.unicast(s, 'ACK', 'acknowledges the init Update');
-      if (!s.x.sentInit) {
-        s.x.sentInit = true;
-        if (s.state === 'Down') P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
-        P.unicast(s, 'Update', 'init flag set', { init: true }, 'Pending');
+      // the same init Update again (its sequence number: our ACK was lost): acknowledged again, nothing else
+      if (s.x.peerInit && d.seq === s.x.peerInitSeq) {
+        P.unicast(s, 'ACK', `acknowledges the init Update again (sequence ${d.seq}: a retransmission)`);
+        return;
       }
+      // a new init Update from a neighbour that is Up: it restarted — the adjacency starts over (RFC 7868 §5.3.1)
+      if (s.state === 'Up') {
+        eigrp.down(P, s, `init Update from ${s.peer} while Up: it restarted`);
+        deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
+      }
+      P.unicast(s, 'ACK', 'acknowledges the init Update');
+      s.x.peerInit = true;
+      s.x.peerInitSeq = d.seq;
+      if (s.state === 'Down') P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
+      if (!s.x.sentInit) eigrpInit(P, s);
+      eigrpUp(P, s);
       return;
     }
-    if (msg.type === 'ACK' && s.state === 'Pending') {
-      P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-      P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
+    if (msg.type === 'ACK' && s.state === 'Pending' && s.x.sentInit) {
+      s.x.initAcked = true;
+      eigrpUp(P, s);
       return;
     }
     // (a Query is answered with a Reply by ProtocolSim.learn, once its records are taken: from a neighbour that is Up)
@@ -791,10 +800,42 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
   down(P, s, why) {
     if (s.state === 'Down') return;
     P.restart(s);
-    s.x.sentInit = false;
+    s.x.sentInit = s.x.peerInit = s.x.initAcked = false;
     P.setState(s, 'Down', false, why);
   },
 };
+
+/** EIGRP's retry limit: a reliable packet sent this many times without an ACK resets the neighbour (RFC 7868 §5.3). */
+const EIGRP_RETRIES = 16;
+
+/**
+ * The init Update (RFC 7868 §5.3.1): reliable — sent again every retransmit interval until the neighbour acknowledges it,
+ * the neighbour reset after the retry limit.
+ */
+function eigrpInit(P: ProtocolSim, s: Sess): void {
+  s.x.sentInit = true;
+  s.x.initAcked = false;
+  const g = s.gen;
+  // (its sequence number: a retransmission carries the same one, a restart a new one)
+  const seq = 1 + (hashIndex(`${s.key}|${P.e.now}|${g}`, 1000000) as number);
+  const send = (n: number): void => {
+    if (s.gen !== g || s.state !== 'Pending' || s.x.initAcked) return;
+    if (n >= EIGRP_RETRIES) {
+      eigrp.down(P, s, `retry limit exceeded: the init Update sent ${EIGRP_RETRIES} times without an ACK from ${s.peer}`);
+      return;
+    }
+    P.unicast(s, 'Update', `init flag set, sequence ${seq}, no routes yet${n ? ` (sent again: no ACK after ${fmtSec(ADV_RXMT)})` : ''}`, { init: true, seq }, 'Pending');
+    P.e.after(ADV_RXMT, () => send(n + 1));
+  };
+  send(0);
+}
+
+/** Up once both inits are through: its own acknowledged, the neighbour's received — then its routes (RFC 7868 §5.3.1). */
+function eigrpUp(P: ProtocolSim, s: Sess): void {
+  if (s.state !== 'Pending' || !s.x.initAcked || !s.x.peerInit) return;
+  P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
+  P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
+}
 
 // ------------------------------------------------------------------ RIP
 

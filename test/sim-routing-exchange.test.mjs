@@ -325,3 +325,69 @@ test('OSPF: the master’s summary and the slave’s acknowledgment each delayed
   assert.equal(s.events().filter((e) => e.what === 'SeqNumberMismatch').length, 0);
   assert.equal(s.events().filter((e) => e.kind === 'state' && e.protocol === 'ospf' && e.what === 'Full').length, 2);
 });
+
+// ---- EIGRP's initialization is reliable (RFC 7868 §5.3.1): the init Update sent again until acknowledged, Up only with both
+// inits through, a retransmission acknowledged again (not a restart), the neighbour reset after the retry limit
+
+const EPAIR = `netatlas: 1
+title: eigrp pair
+devices:
+  - {id: r1, type: router, router_id: 10.255.0.1, interfaces: [{id: g0, ip: 10.0.12.1/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 1.1.1.1/32}], protocols: {eigrp: {asn: 10}}}
+  - {id: r2, type: router, router_id: 10.255.0.2, interfaces: [{id: g0, ip: 10.0.12.2/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 2.2.2.2/32}], protocols: {eigrp: {asn: 10}}}
+links:
+  - {id: l1, a: "r1:g0", b: "r2:g0"}
+relations:
+  - {id: e, protocol: eigrp, endpoints: ["r1:g0", "r2:g0"]}
+`;
+const eStates = (s) => ['r1', 'r2'].map((d) => s.sessions(d, 'eigrp')[0].state);
+const eUpAt = (s, dev) => (s.events().find((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.device === dev && e.what === 'Up') || { t: null }).t;
+
+test('EIGRP: r1’s first init Update lost — it is sent again after 5 s; r2 is not Up before it has r1’s init; both Up, routes both ways', () => {
+  const s = new S.Simulation(model(EPAIR));
+  let n = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'Update' && f.msg.data.init && f.msg.data.from === 'r1' && ++n === 1 ? { lose: true } : null);
+  s.runTo(60000);
+  assert.equal(n >= 1, true);
+  const again = s.events().find((e) => e.kind === 'message' && e.device === 'r1' && e.what === 'Update' && /init flag set, sequence \d+, no routes yet \(sent again: no ACK after 5 s\)/.test(e.detail));
+  assert.ok(again, 'the init Update sent again');
+  assert.ok(eUpAt(s, 'r2') >= again.t, `r2 Up only once it had r1's init (${eUpAt(s, 'r2')} / ${again.t})`);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  assert.equal(s.routeLookup('r1', '2.2.2.2').kind, 'forward');
+  assert.equal(s.routeLookup('r2', '1.1.1.1').kind, 'forward');
+});
+
+test('EIGRP: r2’s ACK of r1’s init lost — r1 sends its init again (the same sequence number), r2 acknowledges it again without resetting; both Up, once each', () => {
+  const s = new S.Simulation(model(EPAIR));
+  let n = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'ACK' && f.msg.data.from === 'r2' && ++n === 1 ? { lose: true } : null);
+  s.runTo(60000);
+  const inits = s.events().filter((e) => e.kind === 'message' && e.device === 'r1' && e.what === 'Update' && /init flag set/.test(e.detail));
+  assert.equal(inits.length, 2);
+  assert.equal(/sequence (\d+)/.exec(inits[0].detail)[1], /sequence (\d+)/.exec(inits[1].detail)[1], 'a retransmission: the same sequence number');
+  assert.ok(s.events().some((e) => e.kind === 'message' && e.device === 'r2' && e.what === 'ACK' && /acknowledges the init Update again \(sequence \d+: a retransmission\)/.test(e.detail)));
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  assert.equal(s.events().filter((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up').length, 2, 'Up once each: no reset');
+  assert.equal(s.routeLookup('r1', '2.2.2.2').kind, 'forward');
+});
+
+test('EIGRP: a new init Update from an Up neighbour (it restarted its side) resets the adjacency, which comes up again; every init lost — the neighbour reset after 16 tries, never Up', () => {
+  let s = new S.Simulation(model(EPAIR));
+  s.runTo(30000);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  const P = s.protocols;
+  const r2 = Array.from(P.sessions.values()).find((x) => x.dev === 'r2' && x.protocol === 'eigrp');
+  const t0 = s.now;
+  P.behaviours.get('eigrp').rx(P, r2, { protocol: 'eigrp', type: 'Update', label: 'EIGRP Update', detail: '', data: { init: true, seq: 4242 } }, null, null);
+  assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.device === 'r2' && e.what === 'Down' && /init Update from r1 while Up: it restarted/.test(e.detail)));
+  s.runTo(t0 + 60000);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  // r1's inits never arrive: r1 retries, then resets r2 (Down), and starts over at r2's next Hello
+  s = new S.Simulation(model(EPAIR));
+  s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'Update' && f.msg.data.init && f.msg.data.from === 'r1' ? { lose: true } : null);
+  s.runTo(100000);
+  const reset = s.events().find((e) => e.kind === 'state' && e.device === 'r1' && e.what === 'Down' && /retry limit exceeded: the init Update sent 16 times without an ACK from r2/.test(e.detail));
+  assert.ok(reset, 'reset after the retry limit');
+  assert.ok(reset.t >= 2000 + 15 * 5000 && reset.t <= 2000 + 16 * 5000 + 100, `after 16 tries (${Math.round(reset.t)} ms)`);
+  assert.ok(!s.events().some((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up'), 'never Up');
+  assert.equal(s.routeLookup('r2', '1.1.1.1').kind, 'none');
+});

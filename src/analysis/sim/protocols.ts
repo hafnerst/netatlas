@@ -66,7 +66,8 @@ const UPDATE_OF: { [behaviour: string]: { type: string; ack?: string } } = {
   eigrp: { type: 'Update', ack: 'ACK' },
 };
 /** An unacknowledged advertisement is sent again after this (OSPF's RxmtInterval 5 s; IS-IS and EIGRP alike in the simulation). */
-const ADV_RXMT = 5000;
+/** A reliable advertisement (an LSU, LSP, EIGRP Update) unacknowledged is sent again after this (ms). */
+export const ADV_RXMT = 5000;
 /** EIGRP's active timer (RFC 7868 §5.5: 3 min): a neighbour that has not replied to a Query by then is reset (stuck in active). */
 const EIGRP_ACTIVE = 180000;
 
