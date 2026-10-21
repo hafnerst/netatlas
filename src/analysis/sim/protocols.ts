@@ -372,6 +372,8 @@ export class ProtocolSim implements Protocols {
       }
       for (const [a, b] of pairs) this.buildPair(r, profile, a, b);
     }
+    // (the owners asked above used the configured routing — no session existed yet: never the simulation's first tables)
+    this.e.forgetRoutingContexts();
   }
 
   /** the pairs of a relation that wait for a DHCP client's lease (their sessions are built when it has one) */

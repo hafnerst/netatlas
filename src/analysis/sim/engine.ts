@@ -1179,6 +1179,19 @@ export class Engine {
    * recomputation delay (the routers whose recomputation falls on the same
    * moment share it).
    */
+  /**
+   * Forget the routing contexts made so far (a router's own included): the next question makes them anew from the state
+   * then. Used once the sessions are built — what was asked before (the owner of an NTP upstream, by the configured
+   * routing) saw no session yet, every adjacency counting as up, and must not become the routers' first tables (a cold
+   * start: nothing learned before an adjacency forms).
+   */
+  forgetRoutingContexts(): void {
+    this.ctxObj = null;
+    this.devCtx.clear();
+    this.viewCtxs.clear();
+    this.estimates.clear();
+  }
+
   /** A distance-vector router's table changed (RIP): the routing contexts are made again (the routers recompute by their delay). */
   dynamicChanged(): void {
     this.ctxObj = null;
