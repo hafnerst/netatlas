@@ -623,3 +623,193 @@ test('a receiving device’s state stays as it was until its dot arrives: the se
   assert.equal(h.f.delivered, true);
   assert.equal(knows(), true, 'learned when it is processed');
 });
+
+// ------------------------------------------------------------------ semantic invariance of the network's state
+
+const R = load('analysis/routing.js');
+
+/** The network's state, normalized: neighbor and MAC tables, routes, connections and firewall sessions, leases, membership and snooping, the applications' outcomes. */
+function netState(sim) {
+  const m = sim.model;
+  const rows = (g) => (g && g.rows ? g.rows.map((r) => JSON.stringify(r)) : []);
+  const out = {};
+  for (const d of m.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    const x = {
+      arp: sim.arpTable(d.id).map((r) => JSON.stringify(r)).sort(),
+      nd: sim.ndTable(d.id).map((r) => JSON.stringify(r)).sort(),
+      mac: sim.macTable(d.id).map((r) => JSON.stringify(r)).sort(),
+      rib: R.deviceVrfs(m, d.id).map((v) => R.ribOf(m, d.id, v, sim.engine.ctx(d.id)).map((e) => JSON.stringify(e)).sort()),
+      conns: sim.connTable(d.id).map((r) => JSON.stringify(r)).sort(),
+      sessions: sim.sessionTable(d.id).map((r) => JSON.stringify(r)).sort(),
+      leases: sim.leaseTable(d.id).map((r) => JSON.stringify(r)).sort(),
+      igmp: rows(sim.igmpTable(d.id)),
+      snoop: rows(sim.snoopTable(d.id)),
+    };
+    out[d.id] = x;
+  }
+  out['apps'] = sim.apps.runs.map((r) => `${r.dev}/${r.app.id} sent ${r.sent} retried ${r.retried} ${r.tests.map((t) => `${t.done}|${t.ok}|${t.result}`).join(' ; ')}`);
+  out['tests'] = sim.tests().map((t) => `${t.series}|${t.started.toFixed(6)}|${t.done}|${t.ok}|${t.result}`);
+  return out;
+}
+
+// DHCP with a short lease (renewed, then expired once the server is gone), SLAAC, a TCP client retrying a server that is off
+// behind a switch (no answer: timeouts), then back
+const LONG = `netatlas: 1
+title: longer
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp, ipv6: slaac}]}
+  - id: dsrv
+    type: server
+    services:
+      dhcp:
+        scopes: [{network: lan, range: 10.1.0.100-10.1.0.199, gateway: 10.1.0.1, dns: [10.1.0.5], lease: 60s}]
+    interfaces: [{id: eth0, ip: 10.1.0.5/24}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]
+  - id: r
+    type: router
+    interfaces:
+      - id: lan
+        ip: [10.1.0.1/24, "2001:db8:10::1/64"]
+        ipv6_ra: {prefixes: ["2001:db8:10::/64"]}
+      - {id: wan, ip: 10.9.0.1/24}
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/80"}
+    interfaces: [{id: eth0, ip: 10.9.0.10/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]
+  - {id: sw2, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+  - id: st
+    type: server
+    interfaces: [{id: eth0, ip: 10.1.0.50/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+    services:
+      applications:
+        - {id: get, name: Get, profile: tcp_client, peer: 10.9.0.10, port: 80, interval: 7s, start: simulation_start, retries: 2, timeout: 2s}
+links:
+  - {id: l-pc, a: "pc:eth0", b: "sw:p1"}
+  - {id: l-d, a: "dsrv:eth0", b: "sw:p2"}
+  - {id: l-r, a: "r:lan", b: "sw:p3"}
+  - {id: l-st, a: "st:eth0", b: "sw:p4"}
+  - {id: l-sw2, a: "r:wan", b: "sw2:p1"}
+  - {id: l-srv, a: "sw2:p2", b: "srv:eth0"}
+networks:
+  - {id: lan, cidr: 10.1.0.0/24}
+`;
+
+test('semantic invariance of state over longer scenarios — retries, a lease renewed then expired, SLAAC, failure and recovery: the same tables, routes, connections, leases, membership and outcomes at every checkpoint, headless and paced', () => {
+  const runs = {
+    // the protocol scenario with a failure and its recovery, a power cycle and TCP retries
+    ps: {
+      text: PS,
+      cps: [12000, 24000, 40000],
+      acts: [
+        [9000, (s) => s.sendTest({ from: 'pc1', to: '10.10.20.22', kind: 'tcp', port: 80 })],
+        [14000, (s) => s.fail('link:l-acc-core1')],
+        [20000, (s) => s.restore('link:l-acc-core1')],
+        [26000, (s) => s.powerOff('pc2')],
+        [30000, (s) => s.powerOn('pc2')],
+        [32000, (s) => s.sendTest({ from: 'pc1', to: '10.10.20.22', kind: 'udp', port: 53 })],
+      ],
+    },
+    // renewal at T1, the server off, rebinding and expiry; the client retrying while srv is off, recovered after
+    long: {
+      text: LONG,
+      cps: [30000, 75000, 150000],
+      acts: [
+        [8000, (s) => s.powerOff('srv')],
+        [40000, (s) => s.powerOn('srv')],
+        [70000, (s) => s.powerOff('dsrv')],
+      ],
+    },
+  };
+  for (const [name, r] of Object.entries(runs)) {
+    const drive = (to, sim) => {
+      const out = [];
+      let k = 0;
+      for (const cp of r.cps) {
+        while (k < r.acts.length && r.acts[k][0] <= cp) {
+          to(r.acts[k][0]);
+          r.acts[k][1](sim);
+          k++;
+        }
+        to(cp);
+        out.push(JSON.stringify(netState(sim)));
+      }
+      return out;
+    };
+    const ref = new S.Simulation(model(r.text));
+    const want = drive((t) => ref.runTo(t), ref);
+    const variants = { readable: {}, 'real time': { set: { mode: 'realtime' } }, 'readable 4×, ARP hidden': { set: { speed: 4 }, hide: (f) => f.protocol === 'arp' } };
+    for (const [vn, o] of Object.entries(variants)) {
+      const m = paced(r.text, o);
+      const got = drive((t) => m.to(t), m.sim);
+      got.forEach((g, i) => assert.equal(g, want[i], `${name}, ${vn}: the state at t = ${r.cps[i] / 1000} s`));
+    }
+    // the scenario did what it was meant to
+    if (name === 'long') {
+      const st = JSON.parse(want[1]);
+      assert.ok(st.apps.some((x) => /retried [1-9]/.test(x)), 'retries while srv was off');
+      const end = JSON.parse(want[2]);
+      assert.deepEqual(end.dsrv.leases, [], 'the server off: its lease table gone with it');
+      assert.ok(!ref.engine.effectiveAddrs('pc').some((x) => x.addr.version === 4), 'expired');
+    }
+  }
+});
+
+// ------------------------------------------------------------------ the logical view's barriers
+
+/**
+ * The barrier in the logical view: no gated hop still on its way on screen has had its delivery processed (the engine's
+ * lifecycle: a network line's second half and a relation lane carry the delivery; a line's first half, to the network,
+ * has none of its own — the second half starts after it).
+ */
+function logicalBarrierHolds(sim, p) {
+  for (const it of p.items)
+    if (it.f.view === 'logical' && p.gated(it) && p.clock < p.arrival(it) - 1e-6) assert.ok(!it.f.delivered, `${it.f.label} on ${it.f.track.ref} (${it.f.track.from} → ${it.f.track.to}) is still on its way on screen in the logical view, but its delivery was processed (the simulation at ${sim.now}, its arrival ${it.f.t1})`);
+}
+
+test('logical view: network lines and relation lanes hold their deliveries — the answer after the request reached its receiver, the receiver’s state unchanged until then; a view change neither revives nor reorders', () => {
+  const m = paced(PS, { view: 'logical' });
+  const kinds = new Set();
+  m.hooks.push(() => {
+    logicalBarrierHolds(m.sim, m.p);
+    for (const it of m.p.items) if (it.f.view === 'logical' && it.gate) kinds.add(it.f.track.ref.split(':')[0] + (it.f.track.to === 'net' ? '>net' : it.f.track.from === 'net' ? 'net>' : ''));
+  });
+  m.to(20000);
+  assert.ok(kinds.has('network') || kinds.has('network>net') || kinds.has('networknet>'), `network lines gated: ${Array.from(kinds).join(', ')}`);
+  assert.ok(kinds.has('relation'), `relation lanes gated: ${Array.from(kinds).join(', ')}`);
+  // a ping in the logical view: the reply's first dot starts after the request's last dot reached the server; its ARP state then
+  const t = m.sim.sendTest({ from: 'pc1', to: '10.10.20.22', kind: 'icmp' });
+  const seen = [];
+  m.hooks.push(() => {
+    for (const it of m.p.items) if (it.f.test === t.id && it.f.view === 'logical' && seen.indexOf(it) < 0) seen.push(it);
+  });
+  m.until(() => t.done);
+  assert.equal(t.ok, true, t.result);
+  const req = seen.filter((it) => it.f.sender === 'pc1' && it.f.protocol === 'icmp');
+  const rep = seen.filter((it) => it.f.sender !== 'pc1' && it.f.protocol === 'icmp');
+  assert.ok(req.length && rep.length, `${req.length} request and ${rep.length} reply dots`);
+  const lastReq = Math.max(...req.map((it) => m.p.arrival(it)));
+  assert.ok(Math.min(...rep.map((it) => it.d0)) >= lastReq - 1e-6, 'the reply starts after the request arrived on screen');
+  // a view change between a held delivery and its arrival: nothing revived, nothing reordered; what follows is gated in the new view
+  // (a model with networks: the logical view draws their lines)
+  const m2 = paced(PS, { view: 'logical' });
+  m2.to(20000);
+  const t2 = m2.sim.sendTest({ from: 'pc1', to: '10.10.20.22', kind: 'tcp', port: 80 });
+  m2.until(() => !!m2.p.holding() && m2.p.holding().f.view === 'logical');
+  const before = m2.sim.events().length;
+  m2.st.view = 'physical';
+  m2.p.reshow();
+  m2.frame();
+  assert.ok(m2.sim.events().length >= before);
+  m2.until(() => t2.done);
+  const ref = new S.Simulation(model(PS));
+  ref.runTo(20000);
+  ref.sendTest({ from: 'pc1', to: '10.10.20.22', kind: 'tcp', port: 80 });
+  ref.runTo(m2.sim.now);
+  assert.deepEqual(simulated(m2.sim, m2.sim.now).ev, simulated(ref, m2.sim.now).ev, 'the same events as headless');
+  assert.deepEqual(simulated(m2.sim, m2.sim.now).tests, simulated(ref, m2.sim.now).tests, 'the same outcome as headless');
+});
+
