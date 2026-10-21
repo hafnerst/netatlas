@@ -208,3 +208,120 @@ relations:
   const rec = s.protocols.viewOf('r2').find((x) => x.origin === 'r1');
   assert.ok(rec && rec.adj.some((a) => /^o13\|r3$/.test(a)), JSON.stringify(s.protocols.viewOf('r2')));
 });
+
+// ---- the Exchange state's checks (RFC 2328 §10.6): a duplicate of the last DBD received is discarded by the master and makes
+// the slave send its last DBD again; anything else that is not the next DBD — the MS bit inconsistent with the roles, the I bit,
+// a DD sequence number out of order — is SeqNumberMismatch; in Loading and Full only duplicates are acceptable
+
+// r1 with a LAN behind it (h): r2 learns 10.1.1.0/24 only from a Full adjacency
+const PAIR = OSPF()
+  .replace('    interfaces: [{id: g0, ip: 10.0.12.1/30}]', '    interfaces: [{id: g0, ip: 10.0.12.1/30}, {id: lan, ip: 10.1.1.1/24}]')
+  .replace('links:\n', '  - {id: h, type: endpoint, interfaces: [{id: eth0, ip: 10.1.1.5/24}]}\nlinks:\n  - {id: l2, a: "r1:lan", b: "h:eth0"}\n');
+const sess = (s, dev) => Array.from(s.protocols.sessions.values()).find((x) => x.dev === dev && x.protocol === 'ospf');
+/** a DBD from the peer, handed to a router's session as received (the fields its packets carry) */
+function dbdTo(s, dev, data) {
+  const P = s.protocols;
+  P.behaviours.get('ospf').rx(P, sess(s, dev), { protocol: 'ospf', type: 'DBD', label: 'OSPF DBD', detail: '', data: { mtu: 1500, ...data } }, null, null);
+}
+const mismatches = (s, dev, t0) => s.events().filter((e) => e.t >= t0 && e.what === 'SeqNumberMismatch' && e.device === dev);
+/** r2 (the master) held in Exchange: the slave r1's acknowledgments lost until released */
+function heldInExchange() {
+  const s = new S.Simulation(model(PAIR));
+  let hold = true;
+  s.engine.impair = (link, f) => (hold && isDbd(f) && f.msg.sender === 'r1' && /acknowledges/.test(f.msg.detail || '') ? { lose: true } : null);
+  for (let t = 1000; t < 80000 && sess(s, 'r2').state !== 'Exchange'; t += 50) s.runTo(t);
+  assert.equal(sess(s, 'r2').state, 'Exchange');
+  s.runTo(s.now + 1000);
+  return { s, release: () => (hold = false) };
+}
+
+test('OSPF Exchange, the master: a DBD from the slave that is not the acknowledgment it expects (another DD sequence number) is SeqNumberMismatch — back to ExStart, no routes meanwhile, Full again (and routes then)', () => {
+  const { s, release } = heldInExchange();
+  assert.equal(s.routeLookup('r2', '10.1.1.5').kind, 'none', 'no route before Full');
+  const dd = sess(s, 'r2').x.dd;
+  const t0 = s.now;
+  dbdTo(s, 'r2', { phase: 'summary', dd: dd + 5, ms: false });
+  const m = mismatches(s, 'r2', t0);
+  assert.equal(m.length, 1);
+  assert.match(m[0].detail, new RegExp(`DBD ${dd + 5} out of sequence \\(the master expects the acknowledgment of ${dd}\\)`));
+  assert.equal(sess(s, 'r2').state, 'ExStart');
+  assert.equal(s.routeLookup('r2', '10.1.1.5').kind, 'none');
+  release();
+  s.runTo(s.now + 80000);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  assert.equal(s.routeLookup('r2', '10.1.1.5').kind, 'forward');
+});
+
+test('OSPF Exchange, the master: a duplicate of the slave’s last DBD is discarded (no mismatch); a DBD with the MS bit set from the slave is SeqNumberMismatch', () => {
+  const { s } = heldInExchange();
+  const x = sess(s, 'r2').x;
+  const t0 = s.now;
+  // the slave's answer to the negotiation again (its last DBD, the master's initial DD sequence number): a duplicate
+  dbdTo(s, 'r2', { phase: 'summary', dd: x.lastRx.dd, ms: false });
+  assert.equal(mismatches(s, 'r2', t0).length, 0);
+  assert.equal(sess(s, 'r2').state, 'Exchange');
+  dbdTo(s, 'r2', { phase: 'summary', dd: x.dd, ms: true });
+  assert.match(mismatches(s, 'r2', t0)[0].detail, /the MS bit of DBD \d+ is set, but r1 is the slave/);
+});
+
+test('OSPF Exchange, the slave: the master’s summary with a DD sequence number that is not the next one, or without the MS bit, is SeqNumberMismatch; a duplicate of the master’s initial DBD makes it answer again', () => {
+  for (const bad of ['seq', 'ms']) {
+    const s = new S.Simulation(model(PAIR));
+    // the master's summaries lost: the slave r1 stays in Exchange, waiting for DD sequence (its) + 1
+    s.engine.impair = (link, f) => (isDbd(f) && f.msg.sender === 'r2' && f.msg.data.phase === 'summary' ? { lose: true } : null);
+    for (let t = 1000; t < 80000 && sess(s, 'r1').state !== 'Exchange'; t += 50) s.runTo(t);
+    assert.equal(sess(s, 'r1').state, 'Exchange');
+    const x = { ...sess(s, 'r1').x };
+    const t0 = s.now;
+    const answers = () => s.events().filter((e) => e.t >= t0 && e.kind === 'message' && e.device === 'r1' && e.what === 'DBD' && /\(again\)/.test(e.detail)).length;
+    dbdTo(s, 'r1', { phase: 'init', dd: x.peerInit, rid: '10.255.0.2' });
+    assert.equal(mismatches(s, 'r1', t0).length, 0, 'the initial DBD again: a duplicate');
+    assert.equal(answers(), 1, 'answered again');
+    if (bad === 'seq') dbdTo(s, 'r1', { phase: 'summary', dd: x.dd + 3, ms: true });
+    else dbdTo(s, 'r1', { phase: 'summary', dd: x.dd + 1, ms: false });
+    const m = mismatches(s, 'r1', t0);
+    assert.equal(m.length, 1, bad);
+    assert.match(m[0].detail, bad === 'seq' ? new RegExp(`DBD ${x.dd + 3} out of sequence \\(the slave expects ${x.dd + 1}\\)`) : /the MS bit of DBD \d+ is clear, but r2 is the master/);
+    s.engine.impair = null;
+    s.runTo(s.now + 80000);
+    assert.deepEqual(ospfStates(s), ['Full', 'Full'], bad);
+  }
+});
+
+test('OSPF Full: a duplicate of the last DBD is answered (slave) or discarded (master); a stale DBD of this exchange that is no duplicate is SeqNumberMismatch (RFC 2328 §10.6: only duplicates in Loading and Full)', () => {
+  const s = new S.Simulation(model(PAIR));
+  s.runTo(80000);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  const slave = sess(s, 'r1').x;
+  const master = sess(s, 'r2').x;
+  const t0 = s.now;
+  // the master's summary again (the slave's acknowledgment lost): the slave acknowledges again
+  dbdTo(s, 'r1', { phase: 'summary', dd: slave.lastRx.dd, ms: true });
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'r1' && e.what === 'DBD' && /acknowledges DD sequence \d+ \(again: the master sent its summary again\)/.test(e.detail)));
+  // the slave's acknowledgment again: the master discards it
+  dbdTo(s, 'r2', { phase: 'summary', dd: master.lastRx.dd, ms: false });
+  assert.equal(mismatches(s, 'r1', t0).length + mismatches(s, 'r2', t0).length, 0);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  // the slave's answer to the negotiation, delayed past the exchange (an older DBD, not the last one): SeqNumberMismatch
+  dbdTo(s, 'r2', { phase: 'summary', dd: master.lastRx.dd - 1, ms: false });
+  const m = mismatches(s, 'r2', t0);
+  assert.equal(m.length, 1);
+  assert.match(m[0].detail, /a DBD that is no duplicate \(DD sequence \d+\) in Full: only duplicates are acceptable after the exchange/);
+  s.runTo(s.now + 80000);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+});
+
+test('OSPF: the master’s summary and the slave’s acknowledgment each delayed selectively past a retransmission — duplicates, never a mismatch; Full once each, routes only then', () => {
+  const s = new S.Simulation(model(PAIR));
+  let n = 0;
+  s.engine.impair = (link, f) => (isDbd(f) && f.msg.data.phase === 'summary' && n++ < 3 ? { delay: 6000 } : null);
+  let early = false;
+  for (let t = 1000; t <= 120000; t += 500) {
+    s.runTo(t);
+    if (s.routeLookup('r2', '10.1.1.5').kind !== 'none' && sess(s, 'r2').state !== 'Full') early = true;
+  }
+  assert.equal(early, false, 'no route before Full');
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  assert.equal(s.events().filter((e) => e.what === 'SeqNumberMismatch').length, 0);
+  assert.equal(s.events().filter((e) => e.kind === 'state' && e.protocol === 'ospf' && e.what === 'Full').length, 2);
+});

@@ -79,6 +79,10 @@ interface OspfX {
   master?: boolean;
   peerInit?: number;
   ddNote?: string;
+  /** the last DBD received and accepted from the neighbour (its I and MS bits, DD sequence number): what a duplicate is (RFC 2328 §10.6) */
+  lastRx?: { i: boolean; ms: boolean; dd: number };
+  /** the last DBD this router sent in the exchange: what a slave sends again for a duplicate */
+  lastTx?: () => void;
 }
 
 /**
@@ -273,6 +277,8 @@ function ospfExStart(P: ProtocolSim, s: Sess, why: string): void {
   x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
   x.master = undefined;
   x.peerInit = undefined;
+  x.lastRx = undefined;
+  x.lastTx = undefined;
   const mtu = ospfMtu(P, s);
   ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
 }
@@ -460,19 +466,45 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
           return;
         }
         x.ddNote = undefined;
+        // (the bits of this DBD as sent: an initial one has I, M and MS set; the others the sender's MS)
+        const rx = { i: dd.phase === 'init', ms: dd.phase === 'init' ? true : !!dd.ms, dd: dd.dd as number };
         const slaveAnswer = (again: boolean): void =>
           P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.peerInit}${again ? ' (again)' : ''}`, { phase: 'summary', dd: x.peerInit, mtu, ms: false }, 'Exchange');
         const slaveAck = (again: boolean): void => P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}${again ? ' (again: the master sent its summary again)' : ''}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
-        if (dd.phase === 'init') {
-          if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
-            // the same initial DBD again (sent before this router's answer reached the neighbour, or delayed): the slave answers
-            // it again, the master ignores it; a new one is the neighbour starting over (SeqNumberMismatch)
-            if (dd.dd === x.peerInit) {
-              if (x.master === false) slaveAnswer(true);
-              return;
+        if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
+          // RFC 2328 §10.6: a duplicate of the last DBD received (the same I, M, MS bits and DD sequence number) is discarded by the
+          // master and makes the slave send its last DBD again; in Loading and Full only duplicates are acceptable
+          const l = x.lastRx;
+          if (l && l.i === rx.i && l.ms === rx.ms && l.dd === rx.dd) {
+            if (x.master === false && x.lastTx) {
+              P.e.note('message', 'ospf', s.dev, s.peer, 'DBD duplicate', s.state, `OSPF ${s.rel.id}: ${s.dev} (slave) receives a duplicate of ${s.peer}'s DBD ${rx.dd}: it sends its last DBD again (RFC 2328 §10.6)`);
+              x.lastTx();
             }
-            ospfSeqMismatch(P, s, `an initial DBD (I bit, DD sequence ${dd.dd}) from ${s.peer} in ${s.state}: it started the exchange over`);
+            return;
           }
+          const why = rx.i
+            ? `an initial DBD (I bit, DD sequence ${rx.dd}) from ${s.peer} in ${s.state}: it started the exchange over`
+            : s.state !== 'Exchange'
+              ? `a DBD that is no duplicate (DD sequence ${rx.dd}) in ${s.state}: only duplicates are acceptable after the exchange`
+              : rx.ms !== (x.master === false)
+                ? `the MS bit of DBD ${rx.dd} is ${rx.ms ? 'set' : 'clear'}, but ${s.peer} is the ${x.master ? 'slave' : 'master'}`
+                : rx.dd !== (x.master ? (x.dd as number) : (x.dd as number) + 1)
+                    ? `DBD ${rx.dd} out of sequence (${x.master ? 'the master expects the acknowledgment of' : 'the slave expects'} ${x.master ? x.dd : (x.dd as number) + 1})`
+                    : '';
+          if (why) {
+            ospfSeqMismatch(P, s, why);
+            return;
+          }
+          // the next DBD in sequence: accepted
+          x.lastRx = rx;
+          if (x.master === false) {
+            // the slave: the master's summary is acknowledged with its DD sequence number; with that the exchange is done
+            x.dd = rx.dd;
+            x.lastTx = () => slaveAck(true);
+            slaveAck(false);
+          }
+          // (the master: the slave's acknowledgment of its summary — the exchange is done)
+        } else if (dd.phase === 'init') {
           if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) return;
           x.peerInit = dd.dd;
           // the higher router ID is master; the slave takes the master's DD sequence number and answers with its summary
@@ -480,44 +512,28 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
             x.master = false;
             x.dd = dd.dd;
             x.sent = true;
+            x.lastRx = rx;
+            x.lastTx = () => slaveAnswer(true);
             P.setState(s, 'Exchange', false, `negotiation done: ${s.peer} (router ID ${dd.rid}) is master, this router slave (DD sequence ${dd.dd})`);
             slaveAnswer(false);
           }
           // (a neighbour with the lower router ID: its initial DBD is ignored — it answers this router's as slave)
           return;
-        }
-        if (s.state === 'ExStart') {
+        } else if (s.state === 'ExStart') {
           // the master: the slave's answer carries the master's DD sequence number — the negotiation is done; its summary is
-          // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8)
+          // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8); any other DBD is ignored
           if (dd.ms || dd.dd !== x.dd || (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0)) return;
           x.master = true;
           x.sent = true;
+          x.lastRx = rx;
           P.setState(s, 'Exchange', false, `negotiation done: this router (router ID ${x.rid}) is master, ${s.peer} slave (DD sequence ${x.dd})`);
           x.dd = (x.dd as number) + 1;
           const seq = x.dd;
           let n = 0;
           ospfRetransmit(P, s, 'Exchange', () => P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${seq}${n++ ? ' (again: not acknowledged)' : ''}`, { phase: 'summary', dd: seq, mtu, ms: true }, 'Exchange'));
           return;
-        }
-        if (s.state === 'Exchange') {
-          if (x.master === true) {
-            // the slave's acknowledgment of the summary (its DD sequence number): the exchange is done; an older answer is a duplicate
-            if (dd.ms || dd.dd !== x.dd) return;
-          } else {
-            // the slave: the master's summary with the next DD sequence number is acknowledged; the exchange is done with that
-            if (!dd.ms || dd.dd !== (x.dd as number) + 1) return;
-            x.dd = dd.dd;
-            slaveAck(false);
-          }
-        } else if (s.state === 'Loading' || s.state === 'Full') {
-          // after the exchange: the slave answers a duplicate of the master's summary again (its acknowledgment was lost); an
-          // older DBD of this exchange (delayed, a duplicate) is discarded; one with a later DD sequence number does not belong to
-          // it — the neighbour went on with another exchange (SeqNumberMismatch)
-          const own = x.master === true ? !dd.ms : !!dd.ms;
-          if (x.master === false && own && dd.dd === x.dd) slaveAck(true);
-          else if (!own || (dd.dd as number) > (x.dd as number)) ospfSeqMismatch(P, s, `a DBD with DD sequence ${dd.dd} in ${s.state} (this exchange's is ${x.dd})`);
-          return;
         } else return;
+        if (s.state !== 'Exchange') return;
         // both summaries had everything (M clear): Loading, the LSAs it lacks requested
         P.setState(s, 'Loading', false, 'database summaries exchanged');
         ospfRetransmit(P, s, 'Loading', () => P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading'));
