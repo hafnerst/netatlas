@@ -259,9 +259,10 @@ export function ntpSource(model: Model, dev: string, ctx?: RoutingCtx, snap?: An
   const cfg = ntpOf(model, dev);
   if (!cfg) return null;
   const observed = observedOf(snap, dev, 'ntp');
-  if (!cfg.upstreams.length) {
+  // (a stratum of its own makes it a reference — upstreams written beside it are not asked for its time, as in the simulation)
+  if (!cfg.upstreams.length || cfg.stratum !== undefined) {
     if (cfg.stratum === undefined) return null;
-    return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
+    return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams${cfg.upstreams.length ? ' (its upstreams are not its source)' : ''}; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
   }
   const alts = ntpChains(model, dev, ctx, [dev], new Map());
   const roots = alts.filter((x) => x.state === 'root').sort((a, b) => (a.client as number) - (b.client as number));

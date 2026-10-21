@@ -700,7 +700,10 @@ export class ProtocolSim implements Protocols {
     for (const h of this.deviceHooks) h(dev, false);
   }
 
-  /** A device has booted: its sessions start afresh. */
+  /**
+   * A device has booted: its sessions start afresh — each when its interface is up again (its cable's link-up
+   * delay after the boot), as at the start of the simulation, never sending before.
+   */
   deviceUp(dev: string): void {
     for (const h of this.deviceHooks) h(dev, true);
     for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
@@ -708,11 +711,7 @@ export class ProtocolSim implements Protocols {
       this.restart(s);
       s.x = {};
       s.heard = -1;
-      const jitter = 100 + Math.floor(this.e.random(dev) * 400);
-      const g = s.gen;
-      this.e.after(jitter, () => {
-        if (s.gen === g) this.startSession(s);
-      });
+      this.startWhenUp(s);
     }
   }
 
@@ -836,9 +835,11 @@ export class ProtocolSim implements Protocols {
    * The transport header of a session's message sent here (unicast or
    * multicast, never over a connection), from its profile's datagram
    * transport ("UDP 3784", "IP 89"; LDP's "UDP/TCP 646": its Hellos are
-   * UDP): the client side (the requests' sender, or the relation's earlier
-   * endpoint) sends from an ephemeral port to the protocol's port, the other
-   * side back. A protocol's TCP messages go over the transport's connections
+   * UDP): between peers as the profile says (SimProfile.ports: both from and
+   * to the protocol's port, or each from its own ephemeral port to it), to a
+   * group the protocol's port; otherwise the client side (the requests'
+   * sender, or the relation's earlier endpoint) sends from an ephemeral port
+   * to the protocol's port, the other side back. A protocol's TCP messages go over the transport's connections
    * (proto-tcp.ts) with their segments' real flags: no TCP header is made up
    * here (a profile with only TCP gets none).
    */

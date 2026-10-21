@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { load, model, withClock } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
+const T = load('analysis/timing.js');
 
 const NET = (more = '') => `netatlas: 1
 devices:
@@ -186,4 +187,90 @@ test('a client powered off forgets what its upstreams said: after it boots it is
   assert.equal(s.ntp.synchronized('cl'), false);
   s.runTo(s.now + 200000);
   assert.equal(s.ntp.synchronized('cl'), true);
+});
+
+// ------------------------------------------------------------------ lifecycle: the reach check, observations, a reboot
+
+const CHAIN = `netatlas: 1
+title: ntp chain
+devices:
+  - {id: ref, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24}], services: {ntp: {stratum: 1}}}
+  - {id: mid, type: server, interfaces: [{id: eth0, ip: 10.0.0.2/24}], services: {ntp: {upstreams: [10.0.0.1]}}}
+  - {id: ref2, type: server, interfaces: [{id: eth0, ip: 10.0.0.3/24}], services: {ntp: {stratum: 3}}}
+  - {id: cl, type: server, interfaces: [{id: eth0, ip: 10.0.0.10/24}], services: {ntp: {upstreams: [10.0.0.2, 10.0.0.3]}}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]}
+links:
+  - {id: l1, a: "ref:eth0", b: "sw:p1"}
+  - {id: l2, a: "mid:eth0", b: "sw:p2"}
+  - {id: l3, a: "ref2:eth0", b: "sw:p3"}
+  - {id: l4, a: "cl:eth0", b: "sw:p4"}
+`;
+
+test('a source silent for 8 polls is lost exactly 8 polls after its last answer — the reach check never re-arms itself at the same instant (fractional times: a check at last + 512 s once saw 511.99999 s and looped without time passing)', () => {
+  const s = new S.Simulation(model(CHAIN));
+  s.runTo(200000);
+  s.powerOff('ref');
+  const last = s.ntp.devs.get('mid').upstreams[0].last;
+  // (guard: the run must not schedule unboundedly many events at one instant)
+  let same = 0;
+  const at = s.engine.at.bind(s.engine);
+  s.engine.at = (t, fn, g) => {
+    if (t === s.engine.now && ++same > 10000) throw new Error(`a zero-delay loop at t = ${t}`);
+    return at(t, fn, g);
+  };
+  s.runTo(900000);
+  const lost = s.events().find((e) => e.kind === 'state' && e.device === 'mid' && e.protocol === 'ntp' && e.what === 'unsynchronized');
+  assert.ok(lost, 'mid lost its source');
+  assert.equal(lost.t, last + 8 * 64000, 'exactly 8 polls after the last answer');
+  assert.equal(s.ntp.synchronized('mid'), false);
+});
+
+test('an experiment’s timing observation is the NTP state itself: a client whose only upstream answers stratum 16 is not synchronized there either (its request session reads “Answered”)', () => {
+  const s = new S.Simulation(
+    model(`netatlas: 1
+title: ntp 16
+devices:
+  - {id: mid, type: server, interfaces: [{id: eth0, ip: 10.0.0.2/24}], services: {ntp: {upstreams: [192.0.2.99]}}}
+  - {id: cl, type: server, interfaces: [{id: eth0, ip: 10.0.0.10/24}], services: {ntp: {upstreams: [10.0.0.2]}}}
+links:
+  - {id: l, a: "cl:eth0", b: "mid:eth0"}
+`),
+  );
+  s.runTo(300000);
+  assert.ok(s.status().some((x) => x.protocol === 'ntp' && x.device === 'cl' && x.state === 'Answered'), 'its request session was answered');
+  assert.equal(s.ntp.synchronized('cl'), false);
+  assert.equal(s.timingState('cl', 'ntp').synchronized, false);
+  assert.equal(s.timingState('cl').synchronized, false);
+  assert.equal(s.snapshot().timing.find((x) => x.dev === 'cl').synchronized, false);
+});
+
+test('a client rebooted asks once its interface is up again (not before, where the request was dropped), and is synchronized within seconds of the boot, not a poll later', () => {
+  const s = new S.Simulation(model(CHAIN));
+  s.runTo(200000);
+  s.powerOff('cl');
+  s.runTo(205000);
+  const t0 = s.now;
+  s.powerOn('cl');
+  s.runTo(t0 + 60000);
+  const after = s.events().filter((e) => e.t >= t0 && e.device === 'cl' && e.protocol === 'ntp');
+  assert.ok(!after.some((e) => e.kind === 'drop' && /no route/.test(e.detail)), after.filter((e) => e.kind === 'drop').map((e) => e.detail).join(' | '));
+  const sync = after.find((e) => e.kind === 'state' && e.what === 'synchronized');
+  assert.ok(sync && sync.t - t0 < 35000, `synchronized ${sync ? sync.t - t0 : '—'} ms after power on (boot 30 s, link-up 2 s)`);
+});
+
+test('a device with its own stratum and upstreams written beside it is a reference — statically as in the simulation', () => {
+  const t = `netatlas: 1
+title: both
+devices:
+  - {id: gw, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24}], services: {ntp: {stratum: 2, upstreams: [192.0.2.99]}}}
+  - {id: cl, type: server, interfaces: [{id: eth0, ip: 10.0.0.2/24}], services: {ntp: {upstreams: [10.0.0.1]}}}
+links:
+  - {id: l, a: "gw:eth0", b: "cl:eth0"}
+`;
+  const s = new S.Simulation(model(t));
+  s.runTo(200000);
+  assert.deepEqual([s.ntp.synchronized('gw'), s.ntp.stratum('gw'), s.ntp.stratum('cl')], [true, 2, 3]);
+  const st = T.ntpSource(model(t), 'gw');
+  assert.equal(st.verdict, 'satisfied', st.text);
+  assert.match(st.text, /a configured reference \(stratum 2\)/);
 });

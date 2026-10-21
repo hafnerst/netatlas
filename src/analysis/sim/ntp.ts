@@ -126,6 +126,16 @@ export class NtpSim {
     return this.stratum(dev);
   }
 
+  /**
+   * Is an upstream's last response fresh (within the reach register's 8 polls)? One expression for the check and
+   * for the time a check is scheduled at (`last + limit`): with fractional times, `now - last < limit` at
+   * `now = last + limit` can still be true by a rounding step, and a check re-armed for that same instant ran
+   * again and again without time passing.
+   */
+  private fresh(u: { last?: number }, dev: string): boolean {
+    return u.last !== undefined && this.P.e.now < u.last + NTP_REACH * this.poll(dev);
+  }
+
   /** The poll interval: the NTP sessions' demonstration interval (NTPv4's minimum poll, 64 s). */
   private poll(_dev: string): number {
     return 64000;
@@ -161,7 +171,7 @@ export class NtpSim {
     if (st.source === u.addr) return;
     if (st.source) {
       const cur = st.upstreams.find((x) => x.addr === st!.source);
-      if (cur && cur.last !== undefined && this.P.e.now - cur.last < NTP_REACH * this.poll(client)) return;
+      if (cur && this.fresh(cur, client)) return;
     }
     this.select(st, u, `stratum ${stratum} in its response`);
   }
@@ -187,7 +197,7 @@ export class NtpSim {
     this.P.e.at(Math.max(this.P.e.now, at), () => {
       if (st.source !== src || st.gen !== gen) return;
       const u = st.upstreams.find((x) => x.addr === src);
-      if (u && u.last !== undefined && this.P.e.now - u.last < limit) {
+      if (u && this.fresh(u, st.dev)) {
         this.watch(st);
         return;
       }
@@ -206,10 +216,9 @@ export class NtpSim {
     st.source = undefined;
     st.gen++;
     st.lost = { at: this.P.e.now, why };
-    const limit = NTP_REACH * this.poll(st.dev);
     const next = fallback
       ? st.upstreams
-          .filter((u) => u.addr !== was && u.dev && u.last !== undefined && this.P.e.now - u.last < limit && u.stratum !== undefined && u.stratum <= USABLE_STRATUM)
+          .filter((u) => u.addr !== was && u.dev && this.fresh(u, st.dev) && u.stratum !== undefined && u.stratum <= USABLE_STRATUM)
           .sort((a, b) => (a.stratum as number) - (b.stratum as number))[0]
       : undefined;
     if (next) {

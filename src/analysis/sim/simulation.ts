@@ -910,8 +910,8 @@ export class Simulation {
       if (c && c.kind !== 'transparent') out.push({ synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: `PTP ${c.state}` });
     }
     if (protocol !== 'ptp') {
-      const n = this.status().find((x) => x.protocol === 'ntp' && x.device === dev);
-      if (n) out.push({ synchronized: n.up, text: `NTP ${n.state.toLowerCase()}` });
+      // (the NTP state's own definition — never a request session's row of the same device, which is "Answered" whatever it took)
+      if (this.ntp.has(dev)) out.push({ synchronized: this.ntp.synchronized(dev), text: `NTP ${this.ntp.synchronized(dev) ? 'synchronized' : 'unsynchronized'}: ${this.ntp.text(dev)}` });
     }
     if (!out.length) return null;
     const ok = out.find((x) => x.synchronized);
