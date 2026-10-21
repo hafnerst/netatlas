@@ -236,7 +236,9 @@ what the advertisements it received told it (below).
 * **EIGRP**: the init Update is reliable (sent again every 5 s until
   acknowledged — its ACK carries the init's sequence number, an ACK of an
   earlier exchange is ignored —, the neighbour reset after 16 tries; Up only with both
-  inits through; a new init from an Up neighbour resets the adjacency); a
+  inits through; a new init from an Up neighbour resets it — the init
+  that reset it is not kept, the neighbour learned again from its next
+  Hello); a
   lost neighbour is a Query to the others, each answering with a Reply
   (stuck in active after 3 min without one); DUAL's feasibility condition
   is not modelled (another neighbour's route is used at once). Only the

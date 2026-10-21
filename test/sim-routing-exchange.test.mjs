@@ -381,6 +381,10 @@ test('EIGRP: a new init Update from an Up neighbour (it restarted its side) rese
   assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.device === 'r2' && e.what === 'Down' && /init Update from r1 while Up: it restarted/.test(e.detail)));
   s.runTo(t0 + 60000);
   assert.deepEqual(eStates(s), ['Up', 'Up']);
+  // the restart settles: each side reset once (r2 by the init, r1 by r2's new init), not reset by each other's inits again and again
+  const resets = s.events().filter((e) => e.t >= t0 && e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Down');
+  assert.ok(resets.length <= 2, `${resets.length} resets: ${resets.slice(0, 4).map((e) => `${e.device} ${Math.round(e.t - t0)} ms`).join(', ')}`);
+  assert.ok(!s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up' && e.t < t0 + 1000), 'not Up again on the init that reset it');
   // r1's inits never arrive: r1 retries, then resets r2 (Down), and starts over at r2's next Hello
   s = new S.Simulation(model(EPAIR));
   s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'Update' && f.msg.data.init && f.msg.data.from === 'r1' ? { lose: true } : null);
