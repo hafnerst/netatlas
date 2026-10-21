@@ -244,15 +244,41 @@ export function staleProblem(simModel: Model, id: CommIdentity): string | null {
   return null;
 }
 
-/** Does a send's plan carry this identity (the same source, destination, protocol and port)? */
-export function planMatches(id: CommIdentity, p: TestPlan): boolean {
+/**
+ * Does a send's plan carry this identity — every field a send can carry,
+ * by its binding: the source device and its interface (the one the check
+ * resolved; none: as the routes choose, never another one), the
+ * destination (a host name that name, in IPv4 only: a send resolves an A
+ * record; an exact address that address; a device's interface that
+ * interface and its address, or its lease when it takes one at runtime),
+ * the family, the transport and port, and the routing context (a send's is
+ * its source interface's VRF). A send that differs in any of them is no
+ * evidence for the check.
+ */
+export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boolean {
   if (p.delivery !== 'unicast' || !id.source.device || p.from !== id.source.device) return false;
   const svc = id.service;
   if ((svc ? svc.proto : 'icmp') !== p.kind) return false;
   if (svc && svc.proto !== 'icmp' && p.port !== svc.port) return false;
+  if ((p.via || undefined) !== (id.source.iface || undefined)) return false;
   const t = id.destination;
-  if (p.target !== undefined) return p.target === (t.name || t.address);
-  return p.to === t.device && (t.iface === undefined || p.toIface === t.iface);
+  if (t.binding === 'application') return false;
+  if (t.binding === 'name') {
+    if (p.target !== t.name || id.family === 6) return false;
+  } else if (t.binding === 'address') {
+    if (p.target !== t.address) return false;
+  } else if (p.target !== undefined) {
+    // (a device's address typed as an address: the same only when it is no lease that may change)
+    if (t.note || p.target !== t.address) return false;
+  } else if (p.to !== t.device || p.toIface !== t.iface || p.toAddr !== (t.note ? 'dhcp' : t.address)) return false;
+  const sent = famOf(p.toAddr && p.toAddr !== 'dhcp' ? p.toAddr : p.target);
+  if (id.family && sent && sent !== id.family) return false;
+  if (p.toAddr === 'dhcp' && id.family === 6) return false;
+  if (model && id.vrf !== undefined && id.source.iface) {
+    const si = model.index.interfaces.get(id.source.device + ':' + id.source.iface);
+    if (si && (si.vrf || '') !== id.vrf) return false;
+  }
+  return true;
 }
 
 /** The static result beside what the simulation did, and why they differ. */

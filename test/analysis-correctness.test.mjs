@@ -282,3 +282,88 @@ test('policy: overlapping addresses in two VRFs — a rule naming one host does 
   assert.equal(tcp(s, 'hostR', 'srvR').ok, true);
   assert.equal(tcp(s, 'hostB', 'srvB').ok, false, 'hostB is not hostR, whatever its address');
 });
+
+// ------------------------------------------------------------------ the complete Analyze-to-Simulate identity
+
+// multi reaches srv from eth0 (through r1) but not from eth1 (r2 has no route there); srv:eth0 has two addresses
+const MULTI = `netatlas: 1
+title: two interfaces
+devices:
+  - id: multi
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.1.10/24}, {id: eth1, ip: 10.0.2.10/24}]
+    routes: [{prefix: 10.9.0.0/24, via: 10.0.1.1}]
+  - id: r1
+    type: router
+    interfaces: [{id: a, ip: 10.0.1.1/24}, {id: b, ip: 10.9.0.1/24}]
+  - id: r2
+    type: router
+    interfaces: [{id: a, ip: 10.0.2.1/24}]
+  - id: sw
+    type: switch
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/443"}
+    interfaces: [{id: eth0, ip: [10.9.0.10/24, 10.9.0.11/24]}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]
+links:
+  - {id: l1, a: "multi:eth0", b: "r1:a"}
+  - {id: l2, a: "multi:eth1", b: "r2:a"}
+  - {id: l3, a: "r1:b", b: "sw:p1"}
+  - {id: l4, a: "sw:p2", b: "srv:eth0"}
+`;
+
+test('identity: a send qualifies as evidence only with the same source interface, destination address, family, port and routing context', () => {
+  const m = model(MULTI);
+  const c = C.checkCommunication(m, { from: 'multi:eth0', to: 'srv:eth0', service: 'tcp/443' });
+  assert.equal(c.verdict, 'satisfied', c.headline);
+  const id = I.commIdentity(m, c);
+  assert.deepEqual([id.source.iface, id.destination.iface, id.destination.address], ['eth0', 'eth0', '10.9.0.10']);
+  const h = I.handoffOf(m, id);
+  const plan = { delivery: 'unicast', ...h.prefill };
+  assert.equal(I.planMatches(id, plan, m), true, 'the prefilled send carries it');
+  const not = (what, p) => assert.equal(I.planMatches(id, { ...plan, ...p }, m), false, what);
+  not('another source interface (the one that does not reach it)', { via: 'eth1' });
+  not('no source interface: the routes choose, which the check did not', { via: undefined });
+  not('the destination interface’s other address', { toAddr: '10.9.0.11' });
+  not('another port', { port: 22 });
+  not('ICMP instead of TCP', { kind: 'icmp', port: undefined });
+  not('another destination interface', { toIface: 'eth1' });
+  // the same address typed: the same identity (no lease that could change)
+  assert.equal(I.planMatches(id, { delivery: 'unicast', from: 'multi', via: 'eth0', kind: 'tcp', port: 443, target: '10.9.0.10' }, m), true);
+  assert.equal(I.planMatches(id, { delivery: 'unicast', from: 'multi', via: 'eth0', kind: 'tcp', port: 443, target: '10.9.0.11' }, m), false);
+  // another family, another routing context
+  assert.equal(I.planMatches({ ...id, family: 6 }, plan, m), false, 'an IPv6 check is not an IPv4 send');
+  assert.equal(I.planMatches({ ...id, vrf: 'blue' }, plan, m), false, 'a send can’t be in a VRF its source interface is not in');
+  // an exact-address check: that address only
+  const ca = C.checkCommunication(m, { from: 'multi:eth0', to: '10.9.0.11', service: 'tcp/443' });
+  const ida = I.commIdentity(m, ca);
+  assert.equal(ida.destination.binding, 'address');
+  assert.equal(I.planMatches(ida, { ...plan, toAddr: undefined, to: undefined, toIface: undefined, target: '10.9.0.11' }, m), true);
+  assert.equal(I.planMatches(ida, plan, m), false, 'the interface’s other address is another check');
+});
+
+test('identity: in the simulation, the newest send that does not carry the check (another source interface, the other address) is passed over; the one that does is compared', () => {
+  const m = model(MULTI);
+  const c = C.checkCommunication(m, { from: 'multi:eth0', to: 'srv:eth0', service: 'tcp/443' });
+  const id = I.commIdentity(m, c);
+  const plan = { delivery: 'unicast', ...I.handoffOf(m, id).prefill };
+  const s = new S.Simulation(m);
+  s.runTo(5000);
+  s.actSend(plan);
+  s.runTo(s.now + 10000);
+  s.actSend({ ...plan, via: 'eth1' });
+  s.actSend({ ...plan, toAddr: '10.9.0.11' });
+  s.runTo(s.now + 20000);
+  const runs = s.testRuns();
+  assert.equal(runs[0].plan.toAddr, '10.9.0.11', 'newest first');
+  const chosen = runs.find((r) => I.planMatches(id, r.plan, m));
+  assert.equal(chosen.plan.via, 'eth0');
+  assert.equal(chosen.plan.toAddr, '10.9.0.10');
+  assert.equal(chosen.tests.every((t) => t.ok), true);
+  // the wrong source interface fails in the simulation: it is not the check's evidence
+  const wrong = runs.find((r) => r.plan.via === 'eth1');
+  assert.equal(wrong.tests.some((t) => t.ok), false);
+  assert.equal(I.compareRun(m, c, chosen, s.snapshot()).agree, true);
+});
