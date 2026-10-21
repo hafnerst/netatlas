@@ -303,3 +303,16 @@ test('DHCPv6: the server has lost the binding — it answers the Renew with NoBi
   assert.equal(host(s, 'pc').dhcp.state, 'BOUND');
   assert.ok(addrsOf(s, 'pc').some((a) => a === '2001:db8:10::100/128'), 'the same address');
 });
+
+test('DHCPv6: the Replies to its Requests lost — Requests 1, 2, 4, 8, 16 s apart, then at most REQ_MAX_RT (30 s) apart, 10 of them (REQ_MAX_RC), then a new Solicit (RFC 8415 §7.6, §18.2.2)', () => {
+  const s = sim(DHCP6());
+  s.engine.impair = (l, f) => (f.msg && f.msg.protocol === 'dhcpv6' && f.msg.type === 'Reply' ? { lose: true } : null);
+  settle(s, 400000);
+  const req = dhcpEv(s, 'pc', 'Request').map((e) => e.t);
+  assert.ok(req.length >= 10, `${req.length} Requests`);
+  const gaps = req.slice(1, 10).map((t, i) => Math.round((t - req[i]) / 1000));
+  assert.deepEqual(gaps, [1, 2, 4, 8, 16, 30, 30, 30, 30]);
+  // after the tenth: a Solicit again, before the next Request
+  const sol = dhcpEv(s, 'pc', 'Solicit').filter((e) => e.t > req[9]);
+  assert.ok(sol.length >= 1 && (req.length === 10 || sol[0].t < req[10]), 'Solicit after the tenth Request');
+});

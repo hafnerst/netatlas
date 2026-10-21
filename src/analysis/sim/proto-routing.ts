@@ -13,7 +13,7 @@ import { areaKey } from '../checks-more';
 import { lookup, relParam } from '../routing';
 import { fmtSec, hashIndex } from './engine';
 import { durationText } from './params';
-import { Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
+import { ADV_RXMT, Behaviour, ProtocolSim, Sess, ipOf } from './protocols';
 import { TcpBehaviour, tcpClose, tcpConnect, tcpListen, tcpSend } from './proto-tcp';
 import { RipEntry } from './rip';
 
@@ -48,11 +48,22 @@ function every(P: ProtocolSim, s: Sess, ms: () => number, fn: () => void): void 
   P.periodic(() => s.gen === g, ms, fn);
 }
 
-/** Tell the protocols that use BFD between two devices that it went down. */
-export function bfdDown(P: ProtocolSim, dev: string, peer: string): void {
+/**
+ * The BFD sessions that serve a client session: those on its interface or between its addresses; a client between
+ * loopbacks (BGP …), not on a link of its own, every BFD session of the device to that peer.
+ */
+function bfdFor(P: ProtocolSim, c: Sess): Sess[] {
+  const all = Array.from(P.sessions.values()).filter((b) => b.profile.behaviour === 'bfd' && b.dev === c.dev && b.peer === c.peer);
+  const same = all.filter((b) => b.local.l3.id === c.local.l3.id || (formatAddr(ipOf(b.local)) === formatAddr(ipOf(c.local)) && formatAddr(ipOf(b.remote)) === formatAddr(ipOf(c.remote))));
+  return same.length || c.local.l3.kind !== 'loopback' ? same : all;
+}
+
+/** Tell the protocols that BFD session serves (RFC 5882 §4: its own clients — on its interface, between its addresses) that it went down. */
+export function bfdDown(P: ProtocolSim, bs: Sess): void {
   for (const s of Array.from(P.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
-    if (s.dev !== dev || s.peer !== peer || !s.up) continue;
+    if (s.dev !== bs.dev || s.peer !== bs.peer || !s.up) continue;
     if (['ospf', 'isis', 'eigrp', 'bgp', 'evpn', 'l3vpn'].indexOf(s.protocol) < 0) continue;
+    if (bfdFor(P, s).indexOf(bs) < 0) continue;
     const b = P.behaviours.get(s.profile.behaviour) as Behaviour & { down?: (P: ProtocolSim, s: Sess, why: string) => void };
     if (b.down) b.down(P, s, 'BFD session down');
   }
@@ -79,6 +90,10 @@ interface OspfX {
   master?: boolean;
   peerInit?: number;
   ddNote?: string;
+  /** the last DBD received and accepted from the neighbour (its I and MS bits, DD sequence number): what a duplicate is (RFC 2328 §10.6) */
+  lastRx?: { i: boolean; ms: boolean; dd: number };
+  /** the last DBD this router sent in the exchange: what a slave sends again for a duplicate */
+  lastTx?: () => void;
 }
 
 /**
@@ -273,6 +288,8 @@ function ospfExStart(P: ProtocolSim, s: Sess, why: string): void {
   x.dd = 1 + (hashIndex(`${s.key}|${P.e.now}`, 100000) as number);
   x.master = undefined;
   x.peerInit = undefined;
+  x.lastRx = undefined;
+  x.lastTx = undefined;
   const mtu = ospfMtu(P, s);
   ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
 }
@@ -460,19 +477,45 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
           return;
         }
         x.ddNote = undefined;
+        // (the bits of this DBD as sent: an initial one has I, M and MS set; the others the sender's MS)
+        const rx = { i: dd.phase === 'init', ms: dd.phase === 'init' ? true : !!dd.ms, dd: dd.dd as number };
         const slaveAnswer = (again: boolean): void =>
           P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.peerInit}${again ? ' (again)' : ''}`, { phase: 'summary', dd: x.peerInit, mtu, ms: false }, 'Exchange');
         const slaveAck = (again: boolean): void => P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}${again ? ' (again: the master sent its summary again)' : ''}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
-        if (dd.phase === 'init') {
-          if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
-            // the same initial DBD again (sent before this router's answer reached the neighbour, or delayed): the slave answers
-            // it again, the master ignores it; a new one is the neighbour starting over (SeqNumberMismatch)
-            if (dd.dd === x.peerInit) {
-              if (x.master === false) slaveAnswer(true);
-              return;
+        if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
+          // RFC 2328 §10.6: a duplicate of the last DBD received (the same I, M, MS bits and DD sequence number) is discarded by the
+          // master and makes the slave send its last DBD again; in Loading and Full only duplicates are acceptable
+          const l = x.lastRx;
+          if (l && l.i === rx.i && l.ms === rx.ms && l.dd === rx.dd) {
+            if (x.master === false && x.lastTx) {
+              P.e.note('message', 'ospf', s.dev, s.peer, 'DBD duplicate', s.state, `OSPF ${s.rel.id}: ${s.dev} (slave) receives a duplicate of ${s.peer}'s DBD ${rx.dd}: it sends its last DBD again (RFC 2328 §10.6)`);
+              x.lastTx();
             }
-            ospfSeqMismatch(P, s, `an initial DBD (I bit, DD sequence ${dd.dd}) from ${s.peer} in ${s.state}: it started the exchange over`);
+            return;
           }
+          const why = rx.i
+            ? `an initial DBD (I bit, DD sequence ${rx.dd}) from ${s.peer} in ${s.state}: it started the exchange over`
+            : s.state !== 'Exchange'
+              ? `a DBD that is no duplicate (DD sequence ${rx.dd}) in ${s.state}: only duplicates are acceptable after the exchange`
+              : rx.ms !== (x.master === false)
+                ? `the MS bit of DBD ${rx.dd} is ${rx.ms ? 'set' : 'clear'}, but ${s.peer} is the ${x.master ? 'slave' : 'master'}`
+                : rx.dd !== (x.master ? (x.dd as number) : (x.dd as number) + 1)
+                    ? `DBD ${rx.dd} out of sequence (${x.master ? 'the master expects the acknowledgment of' : 'the slave expects'} ${x.master ? x.dd : (x.dd as number) + 1})`
+                    : '';
+          if (why) {
+            ospfSeqMismatch(P, s, why);
+            return;
+          }
+          // the next DBD in sequence: accepted
+          x.lastRx = rx;
+          if (x.master === false) {
+            // the slave: the master's summary is acknowledged with its DD sequence number; with that the exchange is done
+            x.dd = rx.dd;
+            x.lastTx = () => slaveAck(true);
+            slaveAck(false);
+          }
+          // (the master: the slave's acknowledgment of its summary — the exchange is done)
+        } else if (dd.phase === 'init') {
           if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s)) return;
           x.peerInit = dd.dd;
           // the higher router ID is master; the slave takes the master's DD sequence number and answers with its summary
@@ -480,44 +523,28 @@ const ospf: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
             x.master = false;
             x.dd = dd.dd;
             x.sent = true;
+            x.lastRx = rx;
+            x.lastTx = () => slaveAnswer(true);
             P.setState(s, 'Exchange', false, `negotiation done: ${s.peer} (router ID ${dd.rid}) is master, this router slave (DD sequence ${dd.dd})`);
             slaveAnswer(false);
           }
           // (a neighbour with the lower router ID: its initial DBD is ignored — it answers this router's as slave)
           return;
-        }
-        if (s.state === 'ExStart') {
+        } else if (s.state === 'ExStart') {
           // the master: the slave's answer carries the master's DD sequence number — the negotiation is done; its summary is
-          // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8)
+          // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8); any other DBD is ignored
           if (dd.ms || dd.dd !== x.dd || (dd.rid !== undefined && ridCmp(dd.rid, x.rid as string) > 0)) return;
           x.master = true;
           x.sent = true;
+          x.lastRx = rx;
           P.setState(s, 'Exchange', false, `negotiation done: this router (router ID ${x.rid}) is master, ${s.peer} slave (DD sequence ${x.dd})`);
           x.dd = (x.dd as number) + 1;
           const seq = x.dd;
           let n = 0;
           ospfRetransmit(P, s, 'Exchange', () => P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${seq}${n++ ? ' (again: not acknowledged)' : ''}`, { phase: 'summary', dd: seq, mtu, ms: true }, 'Exchange'));
           return;
-        }
-        if (s.state === 'Exchange') {
-          if (x.master === true) {
-            // the slave's acknowledgment of the summary (its DD sequence number): the exchange is done; an older answer is a duplicate
-            if (dd.ms || dd.dd !== x.dd) return;
-          } else {
-            // the slave: the master's summary with the next DD sequence number is acknowledged; the exchange is done with that
-            if (!dd.ms || dd.dd !== (x.dd as number) + 1) return;
-            x.dd = dd.dd;
-            slaveAck(false);
-          }
-        } else if (s.state === 'Loading' || s.state === 'Full') {
-          // after the exchange: the slave answers a duplicate of the master's summary again (its acknowledgment was lost); an
-          // older DBD of this exchange (delayed, a duplicate) is discarded; one with a later DD sequence number does not belong to
-          // it — the neighbour went on with another exchange (SeqNumberMismatch)
-          const own = x.master === true ? !dd.ms : !!dd.ms;
-          if (x.master === false && own && dd.dd === x.dd) slaveAck(true);
-          else if (!own || (dd.dd as number) > (x.dd as number)) ospfSeqMismatch(P, s, `a DBD with DD sequence ${dd.dd} in ${s.state} (this exchange's is ${x.dd})`);
-          return;
         } else return;
+        if (s.state !== 'Exchange') return;
         // both summaries had everything (M clear): Loading, the LSAs it lacks requested
         P.setState(s, 'Loading', false, 'database summaries exchanged');
         ospfRetransmit(P, s, 'Loading', () => P.unicast(s, 'LSR', 'requests the LSAs it lacks', {}, 'Loading'));
@@ -596,6 +623,17 @@ function isisMismatch(me: ReturnType<typeof isisIdentity>, d: { sys?: string; ar
   return `no level in common (${d.level} there, ${me.level} here)`;
 }
 
+/** The summary of a session's database a CSNP carries: each LSP by its origin and sequence number. */
+function isisSummary(P: ProtocolSim, s: Sess): Array<{ k: string; seq: number }> {
+  return P.dbOf(s).map((r) => ({ k: r.origin + '|' + r.inst, seq: r.seq }));
+}
+
+/** A CSNP with the database summary (ISO 10589 §7.3.15.3): at once when the adjacency comes up, then every CSNP interval while it is. */
+function isisCsnp(P: ProtocolSim, s: Sess, why: string): void {
+  const sum = isisSummary(P, s);
+  isisFrame(P, s, 'CSNP', `${why}: the database summary, ${sum.map((x) => x.k.slice(0, x.k.indexOf('|')) + '#' + x.seq).join(', ') || 'empty'}`, { summary: sum });
+}
+
 /** An IS-IS PDU on the session's link: a frame to AllL2ISs (IS-IS runs on the link layer, not over IP). */
 function isisFrame(P: ProtocolSim, s: Sess, type: string, detail: string, data: { [k: string]: unknown }): void {
   if (!P.e.isL3Up(s.dev, s.local.l3.id)) return;
@@ -640,7 +678,7 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     );
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { seen?: string[]; sys?: string; area?: string; level?: string; acks?: number };
+    const d = (msg.data || {}) as { seen?: string[]; sys?: string; area?: string; level?: string; acks?: number; summary?: Array<{ k: string; seq: number }>; req?: string[] };
     if (msg.type === 'IIH') {
       const me = isisIdentity(P, s.dev);
       const bad = isisMismatch(me, d);
@@ -653,18 +691,41 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
       }
       s.x.mismatch = undefined;
       s.x.peerSys = d.sys;
+      const listed = (d.seen || []).indexOf(me.sys) >= 0;
+      // one-way (ISO 10589 §8.4.2, RFC 5303): the neighbour's IIHs no longer list this system — the adjacency is not up
+      if (s.state === 'Up' && !listed) {
+        P.restart(s);
+        P.setState(s, 'Initializing', false, `${s.peer}'s IIH no longer lists this system (${me.sys}): one-way, the adjacency goes back to Initializing`);
+      }
       const dead = P.timer(s, s.profile, 'dead');
       deadCheck(P, s, dead.ms, () => isis.down(P, s, `holding time expired (${dead.text})`));
       if (s.state === 'Down') P.setState(s, 'Initializing', false, `IIH from ${s.peer} (system ID ${d.sys})`);
-      if ((d.seen || []).indexOf(me.sys) >= 0 && s.state === 'Initializing') {
+      if (listed && s.state === 'Initializing') {
         P.setState(s, 'Up', true, `three-way handshake complete (system ID ${d.sys})`);
-        isisFrame(P, s, 'CSNP', 'the database summary', {});
+        isisCsnp(P, s, 'the adjacency is up');
+        const g = s.gen;
+        P.periodic(
+          () => s.gen === g,
+          () => P.timer(s, s.profile, 'csnp').ms,
+          () => {
+            if (s.state === 'Up' && P.e.isL3Up(s.dev, s.local.l3.id)) isisCsnp(P, s, `every ${P.timer(s, s.profile, 'csnp').text}`);
+          },
+          P.timer(s, s.profile, 'csnp').ms,
+        );
       }
       return;
     }
     if (s.state !== 'Up') return;
-    if (msg.type === 'CSNP') isisFrame(P, s, 'PSNP', 'requests the missing LSPs', {});
-    else if (msg.type === 'PSNP' && d.acks === undefined) isisFrame(P, s, 'LSP', 'the requested LSPs', { db: P.dbOf(s) });
+    if (msg.type === 'CSNP') {
+      // the LSPs the summary names that this system lacks, or holds older: requested by a PSNP (nothing missing: no request)
+      const mine = new Map(isisSummary(P, s).map((x) => [x.k, x.seq]));
+      const req = (d.summary || []).filter((x) => !x.k.startsWith(s.dev + '|') && (mine.get(x.k) === undefined || (mine.get(x.k) as number) < x.seq)).map((x) => x.k);
+      if (req.length) isisFrame(P, s, 'PSNP', `requests the missing LSPs: ${req.map((k) => k.slice(0, k.indexOf('|'))).join(', ')}`, { req });
+    } else if (msg.type === 'PSNP' && d.acks === undefined && d.req) {
+      const want = new Set(d.req);
+      const db = P.dbOf(s).filter((r) => want.has(r.origin + '|' + r.inst));
+      if (db.length) isisFrame(P, s, 'LSP', `the requested LSPs: ${db.map((r) => r.origin + '#' + r.seq).join(', ')}`, { db });
+    }
   },
   iface(P, s, up) {
     if (!up) isis.down(P, s, `interface ${s.local.l3.id} went down`);
@@ -697,29 +758,38 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     );
   },
   rx(P, s, msg) {
-    const d = (msg.data || {}) as { init?: boolean };
+    const d = (msg.data || {}) as { init?: boolean; seq?: number };
     const hold = P.timer(s, s.profile, 'dead');
     if (msg.type === 'Hello') {
       deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
       if (s.state === 'Down') {
         P.setState(s, 'Pending', false, `Hello from ${s.peer}`);
-        s.x.sentInit = true;
-        P.unicast(s, 'Update', 'init flag set, no routes yet', { init: true }, 'Pending');
+        eigrpInit(P, s);
       }
       return;
     }
     if (msg.type === 'Update' && d.init) {
-      P.unicast(s, 'ACK', 'acknowledges the init Update');
-      if (!s.x.sentInit) {
-        s.x.sentInit = true;
-        if (s.state === 'Down') P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
-        P.unicast(s, 'Update', 'init flag set', { init: true }, 'Pending');
+      // the same init Update again (its sequence number: our ACK was lost): acknowledged again, nothing else
+      if (s.x.peerInit && d.seq === s.x.peerInitSeq) {
+        P.unicast(s, 'ACK', `acknowledges the init Update again (sequence ${d.seq}: a retransmission)`);
+        return;
       }
+      // a new init Update from a neighbour that is Up: it restarted — the adjacency starts over (RFC 7868 §5.3.1)
+      if (s.state === 'Up') {
+        eigrp.down(P, s, `init Update from ${s.peer} while Up: it restarted`);
+        deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
+      }
+      P.unicast(s, 'ACK', 'acknowledges the init Update');
+      s.x.peerInit = true;
+      s.x.peerInitSeq = d.seq;
+      if (s.state === 'Down') P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
+      if (!s.x.sentInit) eigrpInit(P, s);
+      eigrpUp(P, s);
       return;
     }
-    if (msg.type === 'ACK' && s.state === 'Pending') {
-      P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-      P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
+    if (msg.type === 'ACK' && s.state === 'Pending' && s.x.sentInit) {
+      s.x.initAcked = true;
+      eigrpUp(P, s);
       return;
     }
     // (a Query is answered with a Reply by ProtocolSim.learn, once its records are taken: from a neighbour that is Up)
@@ -730,10 +800,42 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
   down(P, s, why) {
     if (s.state === 'Down') return;
     P.restart(s);
-    s.x.sentInit = false;
+    s.x.sentInit = s.x.peerInit = s.x.initAcked = false;
     P.setState(s, 'Down', false, why);
   },
 };
+
+/** EIGRP's retry limit: a reliable packet sent this many times without an ACK resets the neighbour (RFC 7868 §5.3). */
+const EIGRP_RETRIES = 16;
+
+/**
+ * The init Update (RFC 7868 §5.3.1): reliable — sent again every retransmit interval until the neighbour acknowledges it,
+ * the neighbour reset after the retry limit.
+ */
+function eigrpInit(P: ProtocolSim, s: Sess): void {
+  s.x.sentInit = true;
+  s.x.initAcked = false;
+  const g = s.gen;
+  // (its sequence number: a retransmission carries the same one, a restart a new one)
+  const seq = 1 + (hashIndex(`${s.key}|${P.e.now}|${g}`, 1000000) as number);
+  const send = (n: number): void => {
+    if (s.gen !== g || s.state !== 'Pending' || s.x.initAcked) return;
+    if (n >= EIGRP_RETRIES) {
+      eigrp.down(P, s, `retry limit exceeded: the init Update sent ${EIGRP_RETRIES} times without an ACK from ${s.peer}`);
+      return;
+    }
+    P.unicast(s, 'Update', `init flag set, sequence ${seq}, no routes yet${n ? ` (sent again: no ACK after ${fmtSec(ADV_RXMT)})` : ''}`, { init: true, seq }, 'Pending');
+    P.e.after(ADV_RXMT, () => send(n + 1));
+  };
+  send(0);
+}
+
+/** Up once both inits are through: its own acknowledged, the neighbour's received — then its routes (RFC 7868 §5.3.1). */
+function eigrpUp(P: ProtocolSim, s: Sess): void {
+  if (s.state !== 'Pending' || !s.x.initAcked || !s.x.peerInit) return;
+  P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
+  P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
+}
 
 // ------------------------------------------------------------------ RIP
 
@@ -745,14 +847,34 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
  * session shows the neighbour heard (Heard), Down after the timeout without
  * any Response from it — its routes time out on their own.
  */
+/**
+ * RIP's Request for the whole table (RFC 2453 §3.9.1): when the router comes up — its first boot, after a power cycle —
+ * and when the interface comes up again; once per interface (its sessions there share it).
+ */
+function ripRequest(P: ProtocolSim, s: Sess): void {
+  if (!P.shared.has('rip-hooks')) {
+    P.shared.set('rip-hooks', true);
+    // powered off: it asks again when it boots
+    P.deviceHooks.push((dev, up) => {
+      if (up) return;
+      for (const k of Array.from(P.shared.keys())) if (k.indexOf(`rip-req|${dev}|`) === 0) P.shared.delete(k);
+    });
+  }
+  const key = `rip-req|${s.dev}|${s.local.l3.id}`;
+  // (an interface still down sends nothing: it asks when it comes up)
+  if (P.shared.has(key) || !P.e.isL3Up(s.dev, s.local.l3.id)) return;
+  P.shared.set(key, true);
+  const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
+  P.multicast(s, group, 'Request', 'asks for the whole table');
+}
+
 const rip: Behaviour = {
   start(P, s) {
     const R = P.ripSim();
+    ripRequest(P, s);
     const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const group = addr(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
-    P.multicast(s, group, 'Request', 'asks for the whole table');
     const upd = (): number => P.timer(s, s.profile, 'hello').ms;
     P.periodic(
       () => true,
@@ -781,7 +903,10 @@ const rip: Behaviour = {
     R.response(s, ((msg.data || {}) as { rip?: RipEntry[] }).rip || []);
   },
   iface(P, s, up) {
-    if (!up) P.ripSim().ifaceDown(s);
+    if (!up) {
+      P.ripSim().ifaceDown(s);
+      P.shared.delete(`rip-req|${s.dev}|${s.local.l3.id}`);
+    } else if (P.e.deviceOn(s.dev)) ripRequest(P, s);
   },
 };
 
@@ -955,9 +1080,11 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
   },
   tcp(P, s, ev, why) {
     if (ev === 'open') {
-      if (!s.initiator) return;
-      P.setState(s, 'OpenSent', false, 'TCP connection established');
-      s.x.waitedNext = [`TCP connection to ${formatAddr(ipOf(s.remote))}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
+      // RFC 4271 §8.2.2: the TCP connection established — both ends send their OPEN and go to OpenSent (the passive one too,
+      // without waiting for the peer's)
+      if (!s.initiator && s.state !== 'Active') return;
+      P.setState(s, 'OpenSent', false, s.initiator ? 'TCP connection established' : `TCP connection from ${s.peer} accepted`);
+      if (s.initiator) s.x.waitedNext = [`TCP connection to ${formatAddr(ipOf(s.remote))}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
       bgpSendOpen(P, s);
       return;
     }
@@ -979,7 +1106,8 @@ const bgp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?
           bgpRefuse(P, s, err);
           return;
         }
-        if (!s.initiator) bgpSendOpen(P, s);
+        // (a passive side whose connection was bound only by this OPEN — it came from a translated address — sends its own now)
+        if (!s.initiator && s.state !== 'OpenSent') bgpSendOpen(P, s);
         bgpNegotiate(P, s, d.open as BgpOpen);
         P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer} (AS ${(d.open as BgpOpen).as}, hold ${(d.open as BgpOpen).hold} s, identifier ${(d.open as BgpOpen).id})`);
         tcpSend(P, s, 'KEEPALIVE', 'confirms the OPEN', 19);
@@ -1119,6 +1247,12 @@ const ldp: TcpBehaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void
 
 // ------------------------------------------------------------------ BFD
 
+/** A BFD session's Desired Min TX: its interval, at least 1 s while it is not Up (RFC 5880 §6.8.3). */
+function bfdTx(P: ProtocolSim, s: Sess): number {
+  const iv = P.timer(s, s.profile, 'interval').ms;
+  return s.state === 'Up' ? iv : Math.max(1000, iv);
+}
+
 const bfd: Behaviour = {
   refresh(P, s) {
     const iv = P.timer(s, s.profile, 'interval');
@@ -1128,6 +1262,9 @@ const bfd: Behaviour = {
   },
   start(P, s) {
     bfd.refresh!(P, s);
+    // one transmit stream per generation: a Control received while it waits for its client (dispatch starts the session),
+    // and the waiter firing later, never start a second one
+    if (s.x.stream === s.gen) return;
     // BFD runs for a client: it starts when a routing session to the same peer asks for it (is up); with no client, at once
     const clients = P.sessionsOf(s.dev).filter((o) => o.peer === s.peer && o.profile.behaviour !== 'bfd' && ['ospf', 'bgp', 'isis', 'eigrp', 'ldp', 'rip'].indexOf(o.profile.behaviour) >= 0);
     if (clients.length && !clients.some((o) => o.up)) {
@@ -1136,14 +1273,24 @@ const bfd: Behaviour = {
         P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `BFD to ${s.peer} waiting for its client (${Array.from(new Set(clients.map((o) => o.profile.label))).join(', ')}) to ask for the session`);
       }
       s.x.started = false;
-      P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => P.startNow(s));
+      // (one waiter per generation; a restart or a power cycle makes the old one do nothing)
+      if (s.x.waiting !== s.gen) {
+        s.x.waiting = s.gen;
+        const g = s.gen;
+        P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => {
+          if (s.gen === g && s.x.stream !== g) P.startNow(s);
+        });
+      }
       return;
     }
-    // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2)
-    every(P, s, () => Math.max(P.timer(s, s.profile, 'interval').ms, typeof s.x.peerMinRx === 'number' ? (s.x.peerMinRx as number) : 0), () => {
+    s.x.stream = s.gen;
+    // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2),
+    // and at least 1 s while the session is not Up (RFC 5880 §6.8.3)
+    every(P, s, () => Math.max(bfdTx(P, s), typeof s.x.peerMinRx === 'number' ? (s.x.peerMinRx as number) : 0), () => {
       const iv = P.timer(s, s.profile, 'interval');
+      const tx = bfdTx(P, s);
       const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired min TX ${fmtSec(iv.ms)}, required min RX ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: iv.ms, minRx: iv.ms, mult: n });
+      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired min TX ${fmtSec(tx)}${tx !== iv.ms ? ' (at least 1 s while not Up)' : ''}, required min RX ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: tx, minRx: iv.ms, mult: n });
     });
   },
   rx(P, s, msg) {
@@ -1161,7 +1308,7 @@ const bfd: Behaviour = {
       if (s.gen !== g || s.state === 'Down') return;
       if (P.e.now - s.heard >= detect - 1) {
         P.setState(s, 'Down', false, `detection time expired (${fmtSec(detect)}: the peer's multiplier ${n} × ${fmtSec(rate)})`);
-        bfdDown(P, s.dev, s.peer);
+        bfdDown(P, s);
       }
     });
     // RFC 5880 6.8.6
@@ -1172,7 +1319,7 @@ const bfd: Behaviour = {
       if (peerState === 'Init' || peerState === 'Up') P.setState(s, 'Up', true, `Control with state ${peerState}`);
     } else if (s.state === 'Up' && peerState === 'Down') {
       P.setState(s, 'Down', false, 'the peer reports Down');
-      bfdDown(P, s.dev, s.peer);
+      bfdDown(P, s);
     }
   },
 };

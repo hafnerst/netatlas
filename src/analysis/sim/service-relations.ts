@@ -7,36 +7,36 @@
  * control channel to its controller. An exchange a relation of the model
  * already describes (the same protocol between the same two devices) is not
  * added again.
+ *
+ * An NTP upstream is an address, not a device: its relation carries the
+ * address configured (the attribute `upstream`), the session asks exactly
+ * that address, and two upstreams that are two addresses of one server are
+ * two associations. Which device has the address is the one the client's
+ * traffic reaches (`owner`: the simulation's forwarding context), so an
+ * address two VRFs both have is not the first device listed.
  */
-import { compareAddr } from '../ipmath';
-import { parseAddress } from '../../model/ip';
+import { addressHolders } from '../names';
 import { protocolBase } from '../../model/protocols';
-import { Model, Relation, deviceInterfaces, relationDevices } from '../../model/types';
+import { Model, Relation, relationDevices } from '../../model/types';
 
-/** The device that has an address (as written on its interfaces), else null. */
-function ownerOf(model: Model, text: string): string | null {
-  const a = parseAddress(text);
-  if (!a) return null;
-  for (const d of model.devices) {
-    for (const i of deviceInterfaces(d)) {
-      for (const x of i.addresses) {
-        const b = parseAddress(x.replace(/\/\d+$/, ''));
-        if (b && compareAddr(a, b) === 0) return d.id;
-      }
-    }
-  }
-  return null;
+/** The address an NTP upstream relation asks (its configured upstream), or undefined for any other relation. */
+export function upstreamOf(r: Relation): string | undefined {
+  const a = r.attrs.find(([k]) => k === 'upstream');
+  return a ? a[1] : undefined;
 }
 
-/** The relations a model's services imply (see the module comment), in a stable order. */
-export function serviceRelations(model: Model): Relation[] {
+/**
+ * The relations a model's services imply (see the module comment), in a stable order. `owner`: which device an
+ * address several devices have is, seen from a client (null: it can't be told — no relation is made up).
+ */
+export function serviceRelations(model: Model, owner: (client: string, address: string) => string | null = () => null): Relation[] {
   const out: Relation[] = [];
-  const has = (protocol: string, a: string, b: string): boolean =>
+  const has = (protocol: string, a: string, b: string, upstream?: string): boolean =>
     model.relations.some((r) => protocolBase(model.protocols, r.protocol) === protocol && relationDevices(r).indexOf(a) >= 0 && relationDevices(r).indexOf(b) >= 0) ||
-    out.some((r) => r.protocol === protocol && r.endpoints[0].device === a && r.endpoints[1].device === b);
-  const add = (id: string, protocol: string, client: string, server: string, label: string): void => {
-    if (client === server || !model.index.devices.has(client) || !model.index.devices.has(server) || has(protocol, client, server)) return;
-    out.push({ id, protocol, category: 'service', label, endpoints: [{ device: client }, { device: server }], over: [], direction: 'unidirectional', attrs: [], line: 0 });
+    out.some((r) => r.protocol === protocol && r.endpoints[0].device === a && r.endpoints[1].device === b && upstreamOf(r) === upstream);
+  const add = (id: string, protocol: string, client: string, server: string, label: string, upstream?: string): void => {
+    if (client === server || !model.index.devices.has(client) || !model.index.devices.has(server) || has(protocol, client, server, upstream)) return;
+    out.push({ id, protocol, category: 'service', label, endpoints: [{ device: client }, { device: server }], over: [], direction: 'unidirectional', attrs: upstream ? [['upstream', upstream]] : [], line: 0 });
   };
   const list = (v: unknown): string[] => (Array.isArray(v) ? (v as unknown[]).map((x) => String(x)) : []);
   for (const d of model.devices.slice().sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))) {
@@ -44,8 +44,9 @@ export function serviceRelations(model: Model): Relation[] {
     if (svc) {
       const ntp = svc.get('ntp');
       if (ntp) list(ntp.values.upstreams).forEach((u, k) => {
-        const o = ownerOf(model, u);
-        if (o) add(`ntp-of-${d.id}-${k + 1}`, 'ntp', d.id, o, `NTP: ${d.id} asks ${o}`);
+        const hs = addressHolders(model, u);
+        const o = hs.length === 1 ? hs[0] : hs.length > 1 ? owner(d.id, u) : null;
+        if (o) add(`ntp-of-${d.id}-${k + 1}`, 'ntp', d.id, o, `NTP: ${d.id} asks ${o} at ${u}`, u);
       });
       const aaa = svc.get('aaa');
       if (aaa) for (const c of list(aaa.values.clients)) add(`aaa-${c}-${d.id}`, 'radius', c, d.id, `AAA: ${c} authenticates at ${d.id}`);

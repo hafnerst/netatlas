@@ -2612,9 +2612,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         // a Send test's messages are marked Test (the SYN, the RST), in the log too; paused, Send sends now and waits for Play; Send and play plays
         const t = sim.tests()[0];
         const marked = sim.events().filter((e) => e.test === t.id && e.kind === 'message').map((e) => e.what);
+        // (the log lists its newest events: filtered to the test's two ends, so the test's rows are among them whatever else ran)
+        const lf = q('#sim-log-filter') as HTMLInputElement;
+        lf.value = 'pc1 srv';
+        lf.dispatchEvent(new Event('input'));
         ctl.refresh(true);
         await tick();
         const tags = doc.querySelectorAll('#sd-log .sim-test-tag').length;
+        lf.value = '';
+        lf.dispatchEvent(new Event('input'));
         const was = ctl.playing;
         ctl.setPlaying(false);
         const at = ctl.t;

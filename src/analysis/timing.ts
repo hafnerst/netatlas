@@ -36,7 +36,7 @@
 import { PTP_DEFAULTS } from '../model/ptp';
 import { Model, TIMING_METHODS, TimingMethod } from '../model/types';
 import { checkCommunication } from './communication';
-import { addressOwner } from './names';
+import { addressHolders, addressOwner } from './names';
 import { Verdict } from './result';
 import { RoutingCtx } from './routing';
 import { segmentOf } from './scope';
@@ -192,7 +192,15 @@ function ntpChains(model: Model, dev: string, ctx: RoutingCtx | undefined, path:
   const cfg = ntpOf(model, dev);
   const out: NtpAlternative[] = [];
   for (const up of cfg ? cfg.upstreams : []) {
-    const owner = addressOwner(model, up);
+    // (an address several devices have: the one the client's traffic reaches, as the trace finds it — never the first listed)
+    const several = addressHolders(model, up).length > 1;
+    const reached = several ? checkCommunication(model, { from: dev, to: up, service: 'udp/123' }, null, 'Selected endpoints', 1, ctx) : null;
+    const ends = reached && reached.trace ? Array.from(new Set(reached.trace.paths.filter((p) => p.end && p.end.kind === 'reached').map((p) => p.end.device as string))) : [];
+    const owner = several ? (ends.length === 1 ? ends[0] : undefined) : addressOwner(model, up);
+    if (several && !owner) {
+      out.push({ upstream: up, state: 'unknown', chain: path.concat([up]), text: `${up}: several devices have it and which one ${dev} reaches can't be told` });
+      continue;
+    }
     if (!owner) {
       out.push({ upstream: up, state: 'external', chain: path.concat([up]), text: `${up}: outside the model (an external or unknown upstream: what it is synchronized to is not modeled)` });
       continue;
@@ -251,9 +259,10 @@ export function ntpSource(model: Model, dev: string, ctx?: RoutingCtx, snap?: An
   const cfg = ntpOf(model, dev);
   if (!cfg) return null;
   const observed = observedOf(snap, dev, 'ntp');
-  if (!cfg.upstreams.length) {
+  // (a stratum of its own makes it a reference — upstreams written beside it are not asked for its time, as in the simulation)
+  if (!cfg.upstreams.length || cfg.stratum !== undefined) {
     if (cfg.stratum === undefined) return null;
-    return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
+    return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams${cfg.upstreams.length ? ' (its upstreams are not its source)' : ''}; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
   }
   const alts = ntpChains(model, dev, ctx, [dev], new Map());
   const roots = alts.filter((x) => x.state === 'root').sort((a, b) => (a.client as number) - (b.client as number));

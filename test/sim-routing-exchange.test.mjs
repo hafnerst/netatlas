@@ -208,3 +208,186 @@ relations:
   const rec = s.protocols.viewOf('r2').find((x) => x.origin === 'r1');
   assert.ok(rec && rec.adj.some((a) => /^o13\|r3$/.test(a)), JSON.stringify(s.protocols.viewOf('r2')));
 });
+
+// ---- the Exchange state's checks (RFC 2328 §10.6): a duplicate of the last DBD received is discarded by the master and makes
+// the slave send its last DBD again; anything else that is not the next DBD — the MS bit inconsistent with the roles, the I bit,
+// a DD sequence number out of order — is SeqNumberMismatch; in Loading and Full only duplicates are acceptable
+
+// r1 with a LAN behind it (h): r2 learns 10.1.1.0/24 only from a Full adjacency
+const PAIR = OSPF()
+  .replace('    interfaces: [{id: g0, ip: 10.0.12.1/30}]', '    interfaces: [{id: g0, ip: 10.0.12.1/30}, {id: lan, ip: 10.1.1.1/24}]')
+  .replace('links:\n', '  - {id: h, type: endpoint, interfaces: [{id: eth0, ip: 10.1.1.5/24}]}\nlinks:\n  - {id: l2, a: "r1:lan", b: "h:eth0"}\n');
+const sess = (s, dev) => Array.from(s.protocols.sessions.values()).find((x) => x.dev === dev && x.protocol === 'ospf');
+/** a DBD from the peer, handed to a router's session as received (the fields its packets carry) */
+function dbdTo(s, dev, data) {
+  const P = s.protocols;
+  P.behaviours.get('ospf').rx(P, sess(s, dev), { protocol: 'ospf', type: 'DBD', label: 'OSPF DBD', detail: '', data: { mtu: 1500, ...data } }, null, null);
+}
+const mismatches = (s, dev, t0) => s.events().filter((e) => e.t >= t0 && e.what === 'SeqNumberMismatch' && e.device === dev);
+/** r2 (the master) held in Exchange: the slave r1's acknowledgments lost until released */
+function heldInExchange() {
+  const s = new S.Simulation(model(PAIR));
+  let hold = true;
+  s.engine.impair = (link, f) => (hold && isDbd(f) && f.msg.sender === 'r1' && /acknowledges/.test(f.msg.detail || '') ? { lose: true } : null);
+  for (let t = 1000; t < 80000 && sess(s, 'r2').state !== 'Exchange'; t += 50) s.runTo(t);
+  assert.equal(sess(s, 'r2').state, 'Exchange');
+  s.runTo(s.now + 1000);
+  return { s, release: () => (hold = false) };
+}
+
+test('OSPF Exchange, the master: a DBD from the slave that is not the acknowledgment it expects (another DD sequence number) is SeqNumberMismatch — back to ExStart, no routes meanwhile, Full again (and routes then)', () => {
+  const { s, release } = heldInExchange();
+  assert.equal(s.routeLookup('r2', '10.1.1.5').kind, 'none', 'no route before Full');
+  const dd = sess(s, 'r2').x.dd;
+  const t0 = s.now;
+  dbdTo(s, 'r2', { phase: 'summary', dd: dd + 5, ms: false });
+  const m = mismatches(s, 'r2', t0);
+  assert.equal(m.length, 1);
+  assert.match(m[0].detail, new RegExp(`DBD ${dd + 5} out of sequence \\(the master expects the acknowledgment of ${dd}\\)`));
+  assert.equal(sess(s, 'r2').state, 'ExStart');
+  assert.equal(s.routeLookup('r2', '10.1.1.5').kind, 'none');
+  release();
+  s.runTo(s.now + 80000);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  assert.equal(s.routeLookup('r2', '10.1.1.5').kind, 'forward');
+});
+
+test('OSPF Exchange, the master: a duplicate of the slave’s last DBD is discarded (no mismatch); a DBD with the MS bit set from the slave is SeqNumberMismatch', () => {
+  const { s } = heldInExchange();
+  const x = sess(s, 'r2').x;
+  const t0 = s.now;
+  // the slave's answer to the negotiation again (its last DBD, the master's initial DD sequence number): a duplicate
+  dbdTo(s, 'r2', { phase: 'summary', dd: x.lastRx.dd, ms: false });
+  assert.equal(mismatches(s, 'r2', t0).length, 0);
+  assert.equal(sess(s, 'r2').state, 'Exchange');
+  dbdTo(s, 'r2', { phase: 'summary', dd: x.dd, ms: true });
+  assert.match(mismatches(s, 'r2', t0)[0].detail, /the MS bit of DBD \d+ is set, but r1 is the slave/);
+});
+
+test('OSPF Exchange, the slave: the master’s summary with a DD sequence number that is not the next one, or without the MS bit, is SeqNumberMismatch; a duplicate of the master’s initial DBD makes it answer again', () => {
+  for (const bad of ['seq', 'ms']) {
+    const s = new S.Simulation(model(PAIR));
+    // the master's summaries lost: the slave r1 stays in Exchange, waiting for DD sequence (its) + 1
+    s.engine.impair = (link, f) => (isDbd(f) && f.msg.sender === 'r2' && f.msg.data.phase === 'summary' ? { lose: true } : null);
+    for (let t = 1000; t < 80000 && sess(s, 'r1').state !== 'Exchange'; t += 50) s.runTo(t);
+    assert.equal(sess(s, 'r1').state, 'Exchange');
+    const x = { ...sess(s, 'r1').x };
+    const t0 = s.now;
+    const answers = () => s.events().filter((e) => e.t >= t0 && e.kind === 'message' && e.device === 'r1' && e.what === 'DBD' && /\(again\)/.test(e.detail)).length;
+    dbdTo(s, 'r1', { phase: 'init', dd: x.peerInit, rid: '10.255.0.2' });
+    assert.equal(mismatches(s, 'r1', t0).length, 0, 'the initial DBD again: a duplicate');
+    assert.equal(answers(), 1, 'answered again');
+    if (bad === 'seq') dbdTo(s, 'r1', { phase: 'summary', dd: x.dd + 3, ms: true });
+    else dbdTo(s, 'r1', { phase: 'summary', dd: x.dd + 1, ms: false });
+    const m = mismatches(s, 'r1', t0);
+    assert.equal(m.length, 1, bad);
+    assert.match(m[0].detail, bad === 'seq' ? new RegExp(`DBD ${x.dd + 3} out of sequence \\(the slave expects ${x.dd + 1}\\)`) : /the MS bit of DBD \d+ is clear, but r2 is the master/);
+    s.engine.impair = null;
+    s.runTo(s.now + 80000);
+    assert.deepEqual(ospfStates(s), ['Full', 'Full'], bad);
+  }
+});
+
+test('OSPF Full: a duplicate of the last DBD is answered (slave) or discarded (master); a stale DBD of this exchange that is no duplicate is SeqNumberMismatch (RFC 2328 §10.6: only duplicates in Loading and Full)', () => {
+  const s = new S.Simulation(model(PAIR));
+  s.runTo(80000);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  const slave = sess(s, 'r1').x;
+  const master = sess(s, 'r2').x;
+  const t0 = s.now;
+  // the master's summary again (the slave's acknowledgment lost): the slave acknowledges again
+  dbdTo(s, 'r1', { phase: 'summary', dd: slave.lastRx.dd, ms: true });
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'r1' && e.what === 'DBD' && /acknowledges DD sequence \d+ \(again: the master sent its summary again\)/.test(e.detail)));
+  // the slave's acknowledgment again: the master discards it
+  dbdTo(s, 'r2', { phase: 'summary', dd: master.lastRx.dd, ms: false });
+  assert.equal(mismatches(s, 'r1', t0).length + mismatches(s, 'r2', t0).length, 0);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  // the slave's answer to the negotiation, delayed past the exchange (an older DBD, not the last one): SeqNumberMismatch
+  dbdTo(s, 'r2', { phase: 'summary', dd: master.lastRx.dd - 1, ms: false });
+  const m = mismatches(s, 'r2', t0);
+  assert.equal(m.length, 1);
+  assert.match(m[0].detail, /a DBD that is no duplicate \(DD sequence \d+\) in Full: only duplicates are acceptable after the exchange/);
+  s.runTo(s.now + 80000);
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+});
+
+test('OSPF: the master’s summary and the slave’s acknowledgment each delayed selectively past a retransmission — duplicates, never a mismatch; Full once each, routes only then', () => {
+  const s = new S.Simulation(model(PAIR));
+  let n = 0;
+  s.engine.impair = (link, f) => (isDbd(f) && f.msg.data.phase === 'summary' && n++ < 3 ? { delay: 6000 } : null);
+  let early = false;
+  for (let t = 1000; t <= 120000; t += 500) {
+    s.runTo(t);
+    if (s.routeLookup('r2', '10.1.1.5').kind !== 'none' && sess(s, 'r2').state !== 'Full') early = true;
+  }
+  assert.equal(early, false, 'no route before Full');
+  assert.deepEqual(ospfStates(s), ['Full', 'Full']);
+  assert.equal(s.events().filter((e) => e.what === 'SeqNumberMismatch').length, 0);
+  assert.equal(s.events().filter((e) => e.kind === 'state' && e.protocol === 'ospf' && e.what === 'Full').length, 2);
+});
+
+// ---- EIGRP's initialization is reliable (RFC 7868 §5.3.1): the init Update sent again until acknowledged, Up only with both
+// inits through, a retransmission acknowledged again (not a restart), the neighbour reset after the retry limit
+
+const EPAIR = `netatlas: 1
+title: eigrp pair
+devices:
+  - {id: r1, type: router, router_id: 10.255.0.1, interfaces: [{id: g0, ip: 10.0.12.1/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 1.1.1.1/32}], protocols: {eigrp: {asn: 10}}}
+  - {id: r2, type: router, router_id: 10.255.0.2, interfaces: [{id: g0, ip: 10.0.12.2/30}], logical_interfaces: [{id: lo0, type: loopback, ip: 2.2.2.2/32}], protocols: {eigrp: {asn: 10}}}
+links:
+  - {id: l1, a: "r1:g0", b: "r2:g0"}
+relations:
+  - {id: e, protocol: eigrp, endpoints: ["r1:g0", "r2:g0"]}
+`;
+const eStates = (s) => ['r1', 'r2'].map((d) => s.sessions(d, 'eigrp')[0].state);
+const eUpAt = (s, dev) => (s.events().find((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.device === dev && e.what === 'Up') || { t: null }).t;
+
+test('EIGRP: r1’s first init Update lost — it is sent again after 5 s; r2 is not Up before it has r1’s init; both Up, routes both ways', () => {
+  const s = new S.Simulation(model(EPAIR));
+  let n = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'Update' && f.msg.data.init && f.msg.data.from === 'r1' && ++n === 1 ? { lose: true } : null);
+  s.runTo(60000);
+  assert.equal(n >= 1, true);
+  const again = s.events().find((e) => e.kind === 'message' && e.device === 'r1' && e.what === 'Update' && /init flag set, sequence \d+, no routes yet \(sent again: no ACK after 5 s\)/.test(e.detail));
+  assert.ok(again, 'the init Update sent again');
+  assert.ok(eUpAt(s, 'r2') >= again.t, `r2 Up only once it had r1's init (${eUpAt(s, 'r2')} / ${again.t})`);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  assert.equal(s.routeLookup('r1', '2.2.2.2').kind, 'forward');
+  assert.equal(s.routeLookup('r2', '1.1.1.1').kind, 'forward');
+});
+
+test('EIGRP: r2’s ACK of r1’s init lost — r1 sends its init again (the same sequence number), r2 acknowledges it again without resetting; both Up, once each', () => {
+  const s = new S.Simulation(model(EPAIR));
+  let n = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'ACK' && f.msg.data.from === 'r2' && ++n === 1 ? { lose: true } : null);
+  s.runTo(60000);
+  const inits = s.events().filter((e) => e.kind === 'message' && e.device === 'r1' && e.what === 'Update' && /init flag set/.test(e.detail));
+  assert.equal(inits.length, 2);
+  assert.equal(/sequence (\d+)/.exec(inits[0].detail)[1], /sequence (\d+)/.exec(inits[1].detail)[1], 'a retransmission: the same sequence number');
+  assert.ok(s.events().some((e) => e.kind === 'message' && e.device === 'r2' && e.what === 'ACK' && /acknowledges the init Update again \(sequence \d+: a retransmission\)/.test(e.detail)));
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  assert.equal(s.events().filter((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up').length, 2, 'Up once each: no reset');
+  assert.equal(s.routeLookup('r1', '2.2.2.2').kind, 'forward');
+});
+
+test('EIGRP: a new init Update from an Up neighbour (it restarted its side) resets the adjacency, which comes up again; every init lost — the neighbour reset after 16 tries, never Up', () => {
+  let s = new S.Simulation(model(EPAIR));
+  s.runTo(30000);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  const P = s.protocols;
+  const r2 = Array.from(P.sessions.values()).find((x) => x.dev === 'r2' && x.protocol === 'eigrp');
+  const t0 = s.now;
+  P.behaviours.get('eigrp').rx(P, r2, { protocol: 'eigrp', type: 'Update', label: 'EIGRP Update', detail: '', data: { init: true, seq: 4242 } }, null, null);
+  assert.ok(s.events().some((e) => e.t >= t0 && e.kind === 'state' && e.device === 'r2' && e.what === 'Down' && /init Update from r1 while Up: it restarted/.test(e.detail)));
+  s.runTo(t0 + 60000);
+  assert.deepEqual(eStates(s), ['Up', 'Up']);
+  // r1's inits never arrive: r1 retries, then resets r2 (Down), and starts over at r2's next Hello
+  s = new S.Simulation(model(EPAIR));
+  s.engine.impair = (link, f) => (f.msg.protocol === 'eigrp' && f.msg.type === 'Update' && f.msg.data.init && f.msg.data.from === 'r1' ? { lose: true } : null);
+  s.runTo(100000);
+  const reset = s.events().find((e) => e.kind === 'state' && e.device === 'r1' && e.what === 'Down' && /retry limit exceeded: the init Update sent 16 times without an ACK from r2/.test(e.detail));
+  assert.ok(reset, 'reset after the retry limit');
+  assert.ok(reset.t >= 2000 + 15 * 5000 && reset.t <= 2000 + 16 * 5000 + 100, `after 16 tries (${Math.round(reset.t)} ms)`);
+  assert.ok(!s.events().some((e) => e.kind === 'state' && e.protocol === 'eigrp' && e.what === 'Up'), 'never Up');
+  assert.equal(s.routeLookup('r2', '1.1.1.1').kind, 'none');
+});

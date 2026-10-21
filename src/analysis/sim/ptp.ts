@@ -330,7 +330,11 @@ export class PtpSim {
     this.decide(c, why);
   }
 
-  /** The announce receipt timeout of a port: Announces of its masters forgotten when none came for the timeout. */
+  /**
+   * The announce receipt timeout of a port: a LISTENING port decides when no better clock announced itself for
+   * the timeout; Announces of its masters forgotten when none came for the timeout (each foreign master's own
+   * expiry, `receiptOf`, is exact; this periodic pass is the backstop).
+   */
   private armReceipt(p: PtpPort): void {
     const c = p.clock;
     const g = ++p.seq.announce;
@@ -339,13 +343,32 @@ export class PtpSim {
     this.later(p, limit, () => {
       const now = this.e.now;
       let changed = false;
-      for (const [k, f] of Array.from(p.foreign)) if (now - f.last >= c.receipt * f.interval) {
-        p.foreign.delete(k);
-        changed = true;
-        this.e.note('table', 'ptp', c.dev, f.dev, 'foreign master lost', '', `${c.dev} PTP port ${p.n}: no Announce from ${f.dev} (${f.sender}) for ${c.receipt} announce intervals: it is forgotten`);
-      }
+      for (const f of Array.from(p.foreign.values())) if (now - f.last >= c.receipt * f.interval - 1e-6) changed = this.forget(p, f) || changed;
       if (changed || p.state === 'LISTENING') this.decide(c, changed ? 'an announce receipt timeout' : 'no better clock announced itself');
       this.armReceipt(p);
+    });
+  }
+
+  /** A foreign master with no Announce for the receipt timeout (announceReceiptTimeout × its announce interval) is forgotten. */
+  private forget(p: PtpPort, f: Foreign): boolean {
+    const c = p.clock;
+    if (p.foreign.get(f.sender) !== f) return false;
+    p.foreign.delete(f.sender);
+    this.e.note('table', 'ptp', c.dev, f.dev, 'foreign master lost', '', `${c.dev} PTP port ${p.n}: no Announce from ${f.dev} (${f.sender}) for ${c.receipt} announce intervals: it is forgotten`);
+    return true;
+  }
+
+  /**
+   * The receipt timeout of one foreign master, counted from its last Announce (IEEE 1588-2019 §9.2.6.12): checked
+   * at that moment exactly; a later Announce moved it (its own check then), nothing is rescheduled from here.
+   */
+  private receiptOf(p: PtpPort, f: Foreign): void {
+    const c = p.clock;
+    const limit = c.receipt * f.interval;
+    const last = f.last;
+    this.later(p, last + limit - this.e.now, () => {
+      if (f.last !== last || p.foreign.get(f.sender) !== f) return;
+      if (this.forget(p, f)) this.decide(c, 'an announce receipt timeout');
     });
   }
 
@@ -588,6 +611,7 @@ export class PtpSim {
       // the first Announce of a foreign master is not counted (1588-2008 §9.5.3 b, as linuxptp)
       f = { sender: d.src, dev: d.from, times: [], first: now, last: now, ds, interval: d.interval || c.announceIv };
       p.foreign.set(d.src, f);
+      this.receiptOf(p, f);
       this.e.note('table', 'ptp', c.dev, d.from, 'foreign master', '', `${c.dev} PTP port ${p.n} hears ${d.from} (${d.src}) announce the grandmaster ${d.gmDev || ''} (${ds.gm.identity}, priority1 ${ds.gm.priority1}, class ${ds.gm.clockClass}, ${ds.stepsRemoved} steps removed): not qualified yet (${PTP_DEFAULTS.foreignThreshold} more Announces within ${PTP_DEFAULTS.foreignWindow} intervals)`);
       return;
     }
@@ -595,6 +619,7 @@ export class PtpSim {
     f.last = now;
     f.ds = ds;
     f.dev = d.from;
+    this.receiptOf(p, f);
     const is = this.qualified(f, now);
     if (is !== was || before !== JSON.stringify(ds.gm) + ds.stepsRemoved) this.decide(c, is && !was ? `${d.from} qualified as a foreign master` : `${d.from} announces another grandmaster`);
     else if (c.parent && c.parent.sender === d.src) {

@@ -102,7 +102,7 @@ test('VRRP: the master alone advertises (IP 112, TTL 255); the address owner is 
   const P = s.protocols;
   const ip = load('model/ip.js');
   const n = s.events().length;
-  const pkt = s.engine.newPacket(ip.parseAddress('10.0.0.9'), ip.parseAddress('224.0.0.18'), '', { protocol: 'vrrp', type: 'Advertisement', label: 'VRRP Advertisement', detail: '', data: { from: 'rx', key: 'vrrp||1|10.0.0.2', prio: 254, ip: '10.0.0.9' } }, [], 254);
+  const pkt = s.engine.newPacket(ip.parseAddress('10.0.0.9'), ip.parseAddress('224.0.0.18'), '', { protocol: 'vrrp', type: 'Advertisement', label: 'VRRP Advertisement', detail: '', data: { from: 'rx', group: 1, vip: '10.0.0.2', prio: 254, ip: '10.0.0.9' } }, [], 254);
   P.handlers.get('vrrp')('r2', s.engine.net.devices.get('r2').l3.get('lan'), pkt.msg, pkt);
   assert.ok(s.events().slice(n).some((e) => e.kind === 'drop' && /with TTL 254 \(RFC 5798 §7\.1: only TTL 255\)/.test(e.detail)));
 });

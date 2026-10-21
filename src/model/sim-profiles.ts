@@ -96,6 +96,15 @@ export interface SimProfile {
   response?: string;
   /** service: the last endpoint sends the requests (SNMP: the manager polls the agents) */
   fromServer?: boolean;
+  /**
+   * UDP ports of a protocol between peers (not a client and a server): 'same' — both sides send from and to the
+   * protocol's port (IKE 500 ↔ 500, LDP 646, RIP 520, GTP-U, L2TP, WireGuard); 'to' — each side from an ephemeral
+   * port of its own to the protocol's port (BFD, RFC 5881 §4; VXLAN, Geneve: the source port a flow hash). Unset:
+   * the initiator is the client (an ephemeral port to the protocol's), its peer answers from it.
+   */
+  ports?: 'same' | 'to';
+  /** the TTL / hop limit of its unicast packets when the protocol fixes one (single-hop BFD: 255, RFC 5881 §5) */
+  ttl?: number;
   /** messages that carry data (data, tunnels): their name */
   dataMsg?: string;
   /** an encapsulation header the protocol adds ("GRE", "ESP", "VXLAN") */
@@ -265,7 +274,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
       { name: 'LSU', does: 'Link-State Update carrying LSAs; flooded again when the topology changes' },
       { name: 'LSAck', does: 'acknowledges an LSU' },
     ],
-    transport: 'IP protocol 89; Hello and LSU to 224.0.0.5 / ff02::5 (AllSPFRouters), DBD and LSR unicast',
+    transport: 'IP protocol 89; Hello to 224.0.0.5 / ff02::5 (AllSPFRouters); DBD, LSR, LSU and LSAck unicast to the neighbour (the simulation floods adjacency by adjacency: a router multicasts its first flood to AllSPFRouters / AllDRouters, RFC 2328 §13.3)',
     proto: 'IP 89',
     group4: '224.0.0.5',
     group6: 'ff02::5',
@@ -316,6 +325,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'rip',
+    ports: 'same',
     label: 'RIP',
     group: 'Routing',
     behaviour: 'rip',
@@ -353,6 +363,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'ldp',
+    ports: 'same',
     label: 'LDP',
     group: 'Routing',
     behaviour: 'ldp',
@@ -412,6 +423,8 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'bfd',
+    ttl: 255,
+    ports: 'to',
     label: 'BFD',
     group: 'Routing',
     behaviour: 'bfd',
@@ -445,7 +458,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     group: 'Redundancy',
     behaviour: 'fhrp',
     messages: [{ name: 'Hello', does: 'state and priority, from the active and the standby router' }],
-    transport: 'UDP 1985 to 224.0.0.2 (v1); virtual MAC 00:00:0c:07:ac:GG',
+    transport: 'UDP 1985 to 224.0.0.2 (v1; 224.0.0.102 v2, for groups above 255); IPv6 (v2) UDP 2029 to ff02::66; virtual MAC 00:00:0c:07:ac:GG (v1), 00:00:0c:9f:fG:GG (v2), 00:05:73:a0:0G:GG (IPv6)',
     proto: 'UDP 1985',
     group4: '224.0.0.2',
     timers: [T('hello', 'Hello time', 3, 'RFC 2281'), T('dead', 'Hold time', 10, 'RFC 2281')],
@@ -459,11 +472,11 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     group: 'Redundancy',
     behaviour: 'fhrp',
     messages: [{ name: 'Hello', does: 'the AVG and the forwarders announce themselves' }],
-    transport: 'UDP 3222 to 224.0.0.102; virtual MACs 00:07:b4:…',
+    transport: 'UDP 3222 to 224.0.0.102 / ff02::66; virtual MACs 00:07:b4:…',
     proto: 'UDP 3222',
     group4: '224.0.0.102',
     timers: [T('hello', 'Hello time', 3, 'Cisco default'), T('dead', 'Hold time', 10, 'Cisco default')],
-    states: ['Listen', 'Speak', 'Standby', 'Active'],
+    states: ['Initial', 'Listen', 'Speak', 'Standby', 'Active'],
     failure: 'The standby AVG takes over the virtual address after the hold time.',
     restore: 'A preempting higher-priority gateway becomes AVG again.',
   },
@@ -505,6 +518,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   // ------------------------------------------------------------ tunnels and overlays
   {
     id: 'ipsec',
+    ports: 'same',
     label: 'IPsec (IKEv2)',
     group: 'Tunnels and overlays',
     behaviour: 'ike',
@@ -560,6 +574,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'wireguard',
+    ports: 'same',
     label: 'WireGuard',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -612,6 +627,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'l2tp',
+    ports: 'same',
     label: 'L2TP',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -664,6 +680,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'gtp',
+    ports: 'same',
     label: 'GTP',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -723,6 +740,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'pseudowire',
+    ports: 'same',
     label: 'Pseudowire',
     group: 'Tunnels and overlays',
     behaviour: 'ldp',
@@ -772,6 +790,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'vxlan',
+    ports: 'to',
     label: 'VXLAN',
     group: 'Tunnels and overlays',
     behaviour: 'data',
@@ -787,6 +806,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'geneve',
+    ports: 'to',
     label: 'Geneve',
     group: 'Tunnels and overlays',
     behaviour: 'data',
@@ -838,6 +858,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'vpls',
+    ports: 'same',
     label: 'VPLS',
     group: 'Tunnels and overlays',
     behaviour: 'ldp',

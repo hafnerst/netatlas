@@ -202,12 +202,18 @@ test('IGMPv3 and MLD: reports with records (and sources), to 224.0.0.22 / ff02::
   const s = sim(LAN({ h1j: ', multicast: {join: [{group: 232.9.9.9, sources: [10.9.0.1]}, "ff05::9"]}', q1: ', simulation: {igmp_query_interval: 10}' }));
   s.runTo(5000);
   const v3 = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /232\.9\.9\.9/.test(e.detail))[0];
-  assert.match(v3.detail, /IGMPv3 Report from h1 \(10\.5\.0\.11\) to 224\.0\.0\.22: ALLOW \/ IS_IN \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/);
+  assert.match(v3.detail, /IGMPv3 Report from h1 \(10\.5\.0\.11\) to 224\.0\.0\.22: ALLOW \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/);
   assert.deepEqual([v3.hdr.l4.igmp.version, v3.hdr.l4.igmp.sources], ['IGMPv3', ['10.9.0.1']]);
   const mld = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /ff05::9/.test(e.detail))[0];
   // (its first Report, at once when its link is up, goes from :: — its link-local address is still tentative: RFC 3590)
-  assert.match(mld.detail, /MLDv2 Report from h1 \((::|fe80::[0-9a-f:]+)\) to ff02::16: IS_EX \(ff05::9, \{\}\)/);
+  assert.match(mld.detail, /MLDv2 Report from h1 \((::|fe80::[0-9a-f:]+)\) to ff02::16: TO_EX \(ff05::9, \{\}\)/);
   assert.equal(mld.hdr.l4.icmpType, 143);
+  // a join is a state change (TO_EX / ALLOW, RFC 3376 §5.1); an answer to a query is the current state (IS_EX / IS_IN)
+  s.runTo(40000);
+  const answered = ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /answers the general query/.test(e.detail));
+  assert.ok(answered.some((e) => /: IS_IN \(232\.9\.9\.9, \{10\.9\.0\.1\}\)/.test(e.detail)), answered.map((e) => e.detail).join(' | '));
+  assert.ok(answered.some((e) => /: IS_EX \(ff05::9, \{\}\)/.test(e.detail)));
+  assert.ok(!ev(s, (e) => e.device === 'h1' && e.what === 'Report' && /joins \(unsolicited/.test(e.detail)).some((e) => /IS_IN|IS_EX/.test(e.detail)), 'never a current-state record in a join');
   const t = s.igmpTable('q1');
   assert.ok(t.rows.some((r) => r[1] === '232.9.9.9' && r[4] === '10.9.0.1'));
   assert.ok(t.rows.some((r) => r[1] === 'ff05::9'));
@@ -337,6 +343,28 @@ test('PIM-SM with the RP elsewhere: Register, Register-Stop once the RP gets the
   assert.equal(ev(never, (e) => e.device === 'r2' && e.what === 'SPT switchover').length, 0);
   assert.ok(!never.mrouteTable('r2').rows.some((r) => r[0] === '(10.1.0.10, 239.1.1.1)'));
   assert.equal(status(never, 'rxa member of 239.1.1.1').state, 'Receiving');
+});
+
+test('PIM-SM: after the SPT switchover the RP, its (S, G) left with no outgoing interface and nothing to inherit (the shared tree pruned for S), prunes (S, G) towards the source at once (RFC 7761 §4.5.7) — the first hop stops sending to it; the receiver keeps getting the stream', () => {
+  const s = sim(NET({ r1pim: 'rp: 10.255.0.3', r2pim: 'rp: 10.255.0.3' }));
+  s.runTo(30000);
+  const sw = ev(s, (e) => e.device === 'r2' && e.what === 'SPT switchover')[0];
+  assert.ok(sw, 'r2 switched to the source’s tree');
+  const rpt = ev(s, (e) => e.device === 'r3' && e.what === 'RPT prune')[0];
+  const prune = ev(s, (e) => e.device === 'r3' && e.kind === 'message' && e.what === 'Join/Prune' && /prune \(10\.1\.0\.10, 239\.1\.1\.1\)/.test(e.detail));
+  assert.equal(prune.length, 1, 'one Prune(S, G) from the RP towards r1');
+  assert.ok(prune[0].t >= rpt.t && prune[0].t - rpt.t < 1, 'when the shared tree was pruned for S, not after a holdtime');
+  assert.match(prune[0].detail, /on g0/);
+  // r1 sends (S, G) only towards r2 (g1), no more towards the RP (g2); the RP keeps no (S, G)
+  const oil = (dev, sg) => (s.mrouteTable(dev).rows.find((r) => r[0] === sg) || [])[2];
+  assert.match(oil('r1', '(10.1.0.10, 239.1.1.1)'), /^g1 \(/);
+  assert.equal(oil('r3', '(10.1.0.10, 239.1.1.1)'), undefined);
+  assert.ok(ev(s, (e) => e.device === 'r1' && e.kind === 'route' && /forwards \(10\.1\.0\.10, 239\.1\.1\.1\) from g0 out of g1 \(/.test(e.detail) && e.t > prune[0].t).length >= 1);
+  s.runTo(240000);
+  assert.ok(!ev(s, (e) => e.device === 'r1' && e.t > prune[0].t + 1 && /out of g2/.test(e.detail) && /239\.1\.1\.1/.test(e.detail)).length, 'nothing out of g2 afterwards (it no longer waits for the 210 s holdtime)');
+  assert.equal(ev(s, (e) => e.device === 'r1' && e.what === 'Register' && e.t > prune[0].t).length, 0, 'no Register again');
+  const rx = s.multicastReceived('rxa', '239.1.1.1');
+  assert.ok(rx.last > 239000 && rx.count > 220, JSON.stringify(rx));
 });
 
 test('the RPF check, and the tree moving when a link fails: new joins on the new RPF interface, prunes to the old neighbour; the receivers get the stream again', () => {
@@ -568,4 +596,88 @@ test('MLD: from the link-local address once it is valid (:: before), with the Ro
   P.handlers.get('igmp')('q1', s.engine.net.devices.get('q1').l3.get('g0'), pkt.msg, pkt);
   assert.ok(s.events().slice(n).some((e) => e.kind === 'drop' && /source 2001:db8:5::11 is not link-local/.test(e.detail)));
   assert.ok(!s.igmpTable('q1').rows.some((r) => r[1] === 'ff05::7'));
+});
+
+// ------------------------------------------------------------------ IGMPv3 source state (RFC 3376 §6.4)
+
+/** s1 (10.1.0.10) and s2 (10.1.0.11) both stream 232.1.1.1; r1 — r2 (PIM, SSM); rxa joins (G, s1); rxb nothing yet */
+const SSM2 = `netatlas: 1
+title: ssm two sources
+devices:
+  - id: s1
+    type: server
+    interfaces: [{id: eth0, ip: 10.1.0.10/24, multicast: {streams: [{group: 232.1.1.1, port: 5006, interval: 1s}]}}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - id: s2
+    type: server
+    interfaces: [{id: eth0, ip: 10.1.0.11/24, multicast: {streams: [{group: 232.1.1.1, port: 5006, interval: 1s}]}}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]
+  - {id: swa, type: switch, igmp_mld_snooping: {1: disabled}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+  - id: r1
+    type: router
+    router_id: 10.255.0.1
+    protocols: {ospf: {}, pim: {}}
+    interfaces: [{id: g0, ip: 10.1.0.1/24}, {id: g1, ip: 10.0.12.1/30}]
+  - id: r2
+    type: router
+    router_id: 10.255.0.2
+    protocols: {ospf: {}, pim: {}}
+    interfaces: [{id: g0, ip: 10.0.12.2/30}, {id: g1, ip: 10.2.0.1/24}]
+  - {id: sw, type: switch, igmp_mld_snooping: {1: disabled}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+  - id: rxa
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.2.0.21/24, multicast: {join: [{group: 232.1.1.1, sources: [10.1.0.10]}]}}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.2.0.1}]
+  - id: rxb
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.2.0.22/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.2.0.1}]
+links:
+  - {id: a1, a: "s1:eth0", b: "swa:p1"}
+  - {id: a2, a: "s2:eth0", b: "swa:p2"}
+  - {id: a3, a: "swa:p3", b: "r1:g0"}
+  - {id: b, a: "r1:g1", b: "r2:g0"}
+  - {id: c, a: "r2:g1", b: "sw:p1"}
+  - {id: d, a: "sw:p2", b: "rxa:eth0"}
+  - {id: e, a: "sw:p3", b: "rxb:eth0"}
+relations:
+  - {id: o12, protocol: ospf, endpoints: ["r1:g1", "r2:g0"], attrs: {network-type: point-to-point, area: 0}}
+  - {id: p12, protocol: pim, endpoints: ["r1:g1", "r2:g0"]}
+`;
+
+test('IGMPv3 sources: a second source on a group already known is joined (its own (S, G) out of the interface, delivered to its member); BLOCK of one source removes that source only — its (S, G) leaves the interface and is pruned upstream, the other source keeps flowing', () => {
+  const s = sim(SSM2);
+  const mroutes = (dev) => s.mrouteTable(dev).rows.map((r) => `${r[0]} out ${r[2]}`);
+  const oil = (dev, sg) => (s.mrouteTable(dev).rows.find((r) => r[0] === sg) || [])[2];
+  s.runTo(90000);
+  assert.deepEqual(mroutes('r2'), ['(10.1.0.10, 232.1.1.1) out g1 (members)']);
+  // rxb joins (G, s2): an ALLOW record for a group r2 already has
+  assert.equal(s.joinGroup('rxb', 'eth0', '232.1.1.1', ['10.1.0.11']), null);
+  s.runTo(100000);
+  const allow = ev(s, (e) => e.device === 'rxb' && e.what === 'Report' && e.t >= 90000)[0];
+  assert.match(allow.detail, /: ALLOW \(232\.1\.1\.1, \{10\.1\.0\.11\}\), joins \(unsolicited\)/);
+  assert.ok(ev(s, (e) => e.device === 'r2' && e.what === 'source added' && /232\.1\.1\.1 has a member for 10\.1\.0\.11 too/.test(e.detail)).length === 1);
+  assert.deepEqual(mroutes('r2'), ['(10.1.0.10, 232.1.1.1) out g1 (members)', '(10.1.0.11, 232.1.1.1) out g1 (members)']);
+  s.runTo(150000);
+  const rb = s.multicastReceived('rxb', '232.1.1.1');
+  assert.ok(rb && rb.count > 40, `rxb receives s2: ${JSON.stringify(rb)}`);
+  assert.match(oil('r1', '(10.1.0.11, 232.1.1.1)'), /^g1 /, 's2 goes down to r2 (r1 joined by r2)');
+  // rxa leaves (BLOCK {s1}): after the last member queries s1 goes from r2:g1 and r2 prunes it upstream; s2 stays
+  assert.equal(s.leaveGroup('rxa', 'eth0', '232.1.1.1'), true);
+  const t0 = s.now;
+  s.runTo(t0 + 10000);
+  const block = ev(s, (e) => e.device === 'rxa' && e.what === 'Report' && e.t >= t0)[0];
+  assert.match(block.detail, /: BLOCK \(232\.1\.1\.1, \{10\.1\.0\.10\}\)/);
+  const gone = ev(s, (e) => e.device === 'r2' && e.t >= t0 && e.what === 'source expired')[0];
+  assert.ok(gone && gone.t - t0 <= 2100, 'after robustness × the last member query interval');
+  assert.match(gone.detail, /no member for 10\.1\.0\.10 any more .*still for 10\.1\.0\.11/);
+  assert.deepEqual(s.igmpTable('r2').rows.map((r) => r[4]), ['10.1.0.11']);
+  assert.deepEqual(mroutes('r2'), ['(10.1.0.11, 232.1.1.1) out g1 (members)']);
+  assert.ok(ev(s, (e) => e.device === 'r2' && e.t >= t0 && e.what === 'pruned' && /\(10\.1\.0\.10, 232\.1\.1\.1\)/.test(e.detail)).length === 1, 'pruned towards r1');
+  s.runTo(t0 + 60000);
+  assert.equal(oil('r1', '(10.1.0.10, 232.1.1.1)'), 'none', 'r1 sends s1 to r2 no more');
+  assert.match(oil('r1', '(10.1.0.11, 232.1.1.1)'), /^g1 /, 's2 still flows');
+  assert.equal(s.multicastReceived('rxa', '232.1.1.1').last < t0 + 3000, true, 'rxa gets nothing after it left');
+  const rb2 = s.multicastReceived('rxb', '232.1.1.1');
+  assert.ok(rb2.last > t0 + 55000);
 });

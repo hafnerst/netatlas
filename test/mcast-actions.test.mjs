@@ -55,7 +55,7 @@ test('the private house: IGMP / MLD to tick (the core is the snooping querier of
   assert.ok(jr.some((f) => f.track.ref === 'link:w-tv' && f.sender === 'tv'), 'from the TV over its Wi-Fi link');
   const reports = s.events().filter((e) => e.test === j.traffic && e.kind === 'message');
   assert.equal(reports.length, 2, 'the unsolicited report and its repetition');
-  assert.match(reports[0].detail, /^IGMPv3 Report from tv \(192\.168\.20\.\d+\) to 224\.0\.0\.22: IS_EX \(239\.1\.1\.1, \{\}\)/);
+  assert.match(reports[0].detail, /^IGMPv3 Report from tv \(192\.168\.20\.\d+\) to 224\.0\.0\.22: TO_EX \(239\.1\.1\.1, \{\}\)/);
   assert.ok(!flightsOf(s, j.traffic).some((f) => f.protocol === 'mcast'));
   // the stream: from the NAS into VLAN 10, where nobody joined it: the core snoops (enabled), so it goes to no port; it routes no multicast either
   const sf = flightsOf(s, st.traffic, 9000);

@@ -784,7 +784,7 @@ export class Ipv6Sim {
     const type = rebind === 'request' ? 'Request' : rebind === 'renew' ? 'Renew' : 'Rebind';
     this.send6(h, type, `DHCPv6 ${type} from ${h.dev}:${h.iface} for ${formatAddr(o.addr)}${rebind === 'rebind' ? ' (to any server, at T2)' : ` (to ${c.server}${rebind === 'renew' ? ', at T1' : ''})`}`, { xid: c.xid, duid: this.duid(h.l3.mac), addr: formatAddr(o.addr), server: rebind === 'rebind' ? undefined : c.server, kind: rebind }, [['Transaction id', String(c.xid)], ['IA_NA address', formatAddr(o.addr)], ['Server identifier', rebind === 'rebind' ? '(none: any server)' : String(c.server)]]);
     const g = c.gen;
-    const rt = rebind === 'request' ? DHCP6.REQ_TIMEOUT * Math.pow(2, c.tries - 1) : Math.min(rebind === 'renew' ? DHCP6.REN_MAX_RT : DHCP6.REB_MAX_RT, (rebind === 'renew' ? DHCP6.REN_TIMEOUT : DHCP6.REB_TIMEOUT) * Math.pow(2, c.tries - 1));
+    const rt = rebind === 'request' ? Math.min(DHCP6.REQ_MAX_RT, DHCP6.REQ_TIMEOUT * Math.pow(2, c.tries - 1)) : Math.min(rebind === 'renew' ? DHCP6.REN_MAX_RT : DHCP6.REB_MAX_RT, (rebind === 'renew' ? DHCP6.REN_TIMEOUT : DHCP6.REB_TIMEOUT) * Math.pow(2, c.tries - 1));
     this.later(h, rt, () => {
       if (c.gen !== g || h.dhcp !== c) return;
       if (rebind === 'request' && c.state === 'REQUEST') {

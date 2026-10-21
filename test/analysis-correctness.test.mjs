@@ -757,3 +757,38 @@ test('capacity: an IPv6 application is traced in IPv6 — its way (the slow cabl
   // the answers keep the responder's size
   assert.equal(CA.capacityAnalysis(v4).demands.find((x) => x.demand.id === 'app:cli/get<').demand.bps, 100 * 8 * 10);
 });
+
+test('capacity: an application client with a loopback — its transfer is traced from the address it sends from (the egress interface’s, as the simulation sends), and its answers back to that address; not “not carried” because the loopback is unrouted', () => {
+  const t = `netatlas: 1
+title: cap source
+devices:
+  - id: c
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.0.10/24}]
+    logical_interfaces: [{id: lo, type: loopback, ip: 10.99.0.1/32}]
+    services:
+      applications:
+        - {id: get, name: Get, profile: tcp_client, peer: s/web, interval: 1s, start: simulation_start, request_size: 100}
+  - id: s
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.0.1/24}]
+    services:
+      applications:
+        - {id: web, name: Web, profile: tcp_server, port: 80, response_size: 1000}
+links:
+  - {id: l, a: "c:eth0", b: "s:eth0", speed: 1G}
+`;
+  const m = model(t);
+  const r = CA.capacityAnalysis(m);
+  const req = r.demands.find((x) => x.demand.id === 'app:c/get>');
+  const ans = r.demands.find((x) => x.demand.id === 'app:c/get<');
+  assert.equal(req.ends, 'c:eth0 10.0.0.10 → s:eth0 10.0.0.1');
+  assert.equal(ans.ends, 's:eth0 10.0.0.1 → c:eth0 10.0.0.10');
+  assert.match(ans.text, /^fits l/, ans.text);
+  // the simulation: the same source, every request answered
+  const s = new S.Simulation(m);
+  s.runTo(10000);
+  const run = s.apps.runs.find((x) => x.dev === 'c');
+  assert.ok(run.tests.length >= 5 && run.tests.every((x) => x.ok));
+  assert.ok(run.tests.every((x) => x.srcAddr === '10.0.0.10'));
+});

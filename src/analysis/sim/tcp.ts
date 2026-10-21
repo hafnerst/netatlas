@@ -51,6 +51,8 @@ export interface Seg<M> {
   what: string;
   /** how often it was sent again */
   sent: number;
+  /** when it was first sent (its round-trip time is measured from there, RFC 6298 §3 — only while it was never sent again) */
+  at?: number;
 }
 
 /** The sequence space a segment takes: its bytes, and one each for SYN and FIN. */

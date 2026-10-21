@@ -58,7 +58,7 @@ import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { isLinkLocal6 } from './engine';
 import { L3Iface } from './net';
-import { Seg, StreamMark, TcpStream, initialSeq, segmentLabel, tcpFlagsText, tcpHeaderLen } from './tcp';
+import { Seg, StreamMark, TcpStream, initialSeq, segSpace, segmentLabel, tcpFlagsText, tcpHeaderLen } from './tcp';
 import { ParamValue, PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
 import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
@@ -165,6 +165,8 @@ type ConnMsg = { kind: 'app'; app: AppMessage } | { kind: 'request' | 'response'
 interface Conn {
   /** its conversation (the client's connection made it; the server's end takes it from the SYN) */
   conv: string;
+  /** a listener's connection: the protocol and relation the SYN that opened it said it belongs to (a session's, a test's 'tcp') */
+  synApp?: { protocol: string; relation?: string };
   key: string;
   dev: string;
   proto: 'tcp';
@@ -182,6 +184,12 @@ interface Conn {
   timer: number | null;
   /** retransmissions of the earliest unacknowledged segment so far (the timeout doubles with each) */
   tries: number;
+  /** RFC 6298: the smoothed round-trip time and its variation (once measured), the retransmission timeout before backoff (unset: the initial one) */
+  srtt?: number;
+  rttvar?: number;
+  rtoBase?: number;
+  /** its SYN or SYN-ACK was sent again: data starts with a timeout of 3 s unless a round trip was measured (RFC 6298 §5.7) */
+  synRetx?: boolean;
   /** the running retransmission timer's token (0: none, -1: closed) */
   rtx: number;
   /** bumped by the state timers (TIME_WAIT, FIN_WAIT_2, keepalive): an older one does nothing */
@@ -629,6 +637,21 @@ export class Transport {
     return false;
   }
 
+  /**
+   * A message for a service the device does not run (a DNS query to a host without a DNS server): refused as at any
+   * closed port (RFC 1122 §4.1.3.1: ICMP port unreachable) — unless its written listening ports include the port
+   * (something listens there that is not that service: no answer, said).
+   */
+  refuseService(dev: string, l3: L3Iface, pkt: Pkt, why: string): void {
+    const l4 = pkt.l4 as L4;
+    const ls = this.listening(dev);
+    if (ls.written && portsMatch(ls.rules, l4.proto, l4.dport as number)) {
+      this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${dev} listens on ${l4.proto.toUpperCase()} ${l4.dport} but ${why}: ${pkt.msg.label} is not answered`);
+      return;
+    }
+    this.refuse(dev, l3, pkt, why);
+  }
+
   /** A closed port: TCP RST (not to a RST), UDP ICMP port unreachable (not about a broadcast or multicast); nothing when the device does not reply to closed ports. */
   private refuse(dev: string, l3: L3Iface, pkt: Pkt, why: string): void {
     const l4 = pkt.l4 as L4;
@@ -920,9 +943,16 @@ export class Transport {
       else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
       // the application gave up on a connection still being opened: it closes its socket, and a close in SYN-SENT
       // deletes the connection (RFC 9293 §3.10.4) — no more SYN retransmissions of an attempt nobody waits for
-      // (its next periodic message or its retry opens a connection of its own)
+      // (its next periodic message or its retry opens a connection of its own); on an open connection whose answer
+      // never came it aborts (RFC 9293 §3.10.4 ABORT: a RST, the connection gone) — an answer that comes later finds no
+      // connection and is refused, never taken for a test that already failed
       const c = t.conn;
-      if (c && c.state === 'SYN_SENT' && this.alive(c)) this.closeConn(c, `connection attempt abandoned: ${t.from} gave up after its response timeout (${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))})`);
+      const after = `${t.from} gave up after its response timeout (${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))})`;
+      if (c && c.state === 'SYN_SENT' && this.alive(c)) this.closeConn(c, `connection attempt abandoned: ${after}`);
+      else if (c && this.alive(c) && c.state !== 'TIME_WAIT') {
+        this.rst(c, `aborted: ${after}`);
+        this.closeConn(c, `aborted: ${after}`);
+      }
     });
     if (kind === 'icmp') this.ping(t, s.src, s.vrf);
     else if (kind === 'udp') this.udpRequest(t, s.src, s.vrf);
@@ -1030,6 +1060,8 @@ export class Transport {
     }
     const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(q.pkt) >= 0);
     if (t) {
+      // (a test's connection being opened ends with it: a hard error while connecting, RFC 1122 §4.2.3.9, Linux tcp_v4_err)
+      if (t.conn && (t.conn.state === 'SYN_SENT' || t.conn.state === 'SYN_RCVD') && this.alive(t.conn)) this.closeConn(t.conn, `connection failed: ${what}`);
       this.finish(t, false, what);
       return;
     }
@@ -1040,6 +1072,8 @@ export class Transport {
       if (c.test) this.finish(c.test, false, what);
       return;
     }
+    // a DNS query of this device's resolver refused (its server runs no DNS): it asks the next server at once
+    if (this.netsvc && this.netsvc.queryRefused(dev, q, what)) return;
     this.e.note('message', 'icmp', dev, '', pkt.msg.type, '', `${dev} received ${pkt.msg.label} about ${q.src} → ${q.dst}`);
   }
 
@@ -1048,6 +1082,7 @@ export class Transport {
     const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(pkt.id) >= 0);
     if (kind === 'frag' && mtu) this.learnMtu(dev, pkt.vrf, pkt.dst, mtu, `its own interface: ${text}`);
     if (t) {
+      if (kind !== 'frag' && t.conn && t.conn.state === 'SYN_SENT' && this.alive(t.conn)) this.closeConn(t.conn, `connection failed: ${text}`);
       this.finish(t, false, `not sent: ${text}`);
       return;
     }
@@ -1117,7 +1152,10 @@ export class Transport {
     const src = own ? own.addr : pkt.dst;
     const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${durationText(app.responseDelay)} (${dev}/${app.id}'s response delay)` } : this.serviceTime(dev, 'udp', l4.dport as number);
     const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
+    // (an answer due after the response time: not by a device powered off meanwhile — after a reboot it knows no request)
+    const epoch = this.e.powerEpoch(dev);
     const answer = (): void => {
+      if (this.e.powerEpoch(dev) !== epoch || !this.e.deviceOn(dev)) return;
       const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
       this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('udp'));
     };
@@ -1248,8 +1286,36 @@ export class Transport {
     this.sendSyn(c);
   }
 
+  /** The retransmission timeout now (RFC 6298 §2, §5.5): its current value (the initial one until measured), doubled per retransmission, at most 120 s. */
   private rto(c: Conn): number {
-    return Math.min(RTO_MAX, this.e.params.num('tcp-rto', c.dev) * Math.pow(2, c.tries));
+    return Math.min(RTO_MAX, (c.rtoBase !== undefined ? c.rtoBase : this.e.params.num('tcp-rto', c.dev)) * Math.pow(2, c.tries));
+  }
+
+  /**
+   * An acknowledgment up to `ack` arrived: a round-trip sample from the last segment it acknowledges whole that was
+   * sent once only (Karn's rule: never one sent again), and the timeout from it (RFC 6298 §2: the first sample sets
+   * SRTT = R, RTTVAR = R/2; then RTTVAR = 3/4 RTTVAR + 1/4 |SRTT − R|, SRTT = 7/8 SRTT + 1/8 R; RTO = SRTT + 4 RTTVAR,
+   * at least 1 s — or the configured initial timeout when that is lower —, at most 120 s).
+   */
+  private rttSample(c: Conn, ack: number): void {
+    const whole = c.tcp.out.filter((s) => s.seq + segSpace(s) <= ack);
+    const last = whole[whole.length - 1];
+    if (!last || last.sent > 0 || last.at === undefined) return;
+    const r = this.e.now - last.at;
+    if (c.srtt === undefined || c.rttvar === undefined) {
+      c.srtt = r;
+      c.rttvar = r / 2;
+    } else {
+      c.rttvar = 0.75 * c.rttvar + 0.25 * Math.abs(c.srtt - r);
+      c.srtt = 0.875 * c.srtt + 0.125 * r;
+    }
+    const floor = Math.min(1000, this.e.params.num('tcp-rto', c.dev));
+    c.rtoBase = Math.min(RTO_MAX, Math.max(floor, c.srtt + 4 * c.rttvar));
+  }
+
+  /** The handshake is done: a SYN (or SYN-ACK) sent again and no round trip measured — data starts with a 3 s timeout (RFC 6298 §5.7). */
+  private handshakeDone(c: Conn): void {
+    if (c.synRetx && c.srtt === undefined) c.rtoBase = Math.max(3000, c.rtoBase !== undefined ? c.rtoBase : 0);
   }
 
   private sendSyn(c: Conn): void {
@@ -1345,6 +1411,7 @@ export class Transport {
       }
       c.tries++;
       s.sent++;
+      if (s.syn) c.synRetx = true;
       this.emit(c, s, `, retransmission ${c.tries} (timeout ${durationText(this.rto({ ...c, tries: c.tries - 1 }))})`);
       if (s.syn && c.test && c.state === 'SYN_SENT') c.test.pktIds.push(this.lastPkt);
       this.armRtx(c);
@@ -1429,6 +1496,7 @@ export class Transport {
     if (app) data.appType = app.type;
     const msg: Msg = { protocol: (app ? app.protocol : sh ? sh.protocol : 'tcp') as Msg['protocol'], type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : sh ? sh.relation : undefined };
     if (app && app.waited && s.sent === 0) msg.waited = app.waited;
+    if (s.at === undefined) s.at = this.e.now;
     const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, tcpHeaderLen(l4) + s.len, true, this.e.ownerOf(c.remote) || '', c.conv);
     this.lastPkt = p.id;
     return p;
@@ -1517,6 +1585,7 @@ export class Transport {
           return;
         }
         const sc = this.newConn({ dev, vrf, local: pkt.dst, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number, state: 'SYN_RCVD', role: 'server', what: `serves ${formatAddr(pkt.src)}`, conv: pkt.msg.conv });
+        sc.synApp = { protocol: pkt.msg.protocol, relation: pkt.msg.relation };
         const lh = this.appListening.get(dev + '|' + (l4.dport as number));
         if (lh) {
           sc.sock = new AppSocket(this, sc, lh.h);
@@ -1557,8 +1626,10 @@ export class Transport {
       if (!has('SYN') || !has('ACK')) return;
       c.heard = this.e.now;
       this.peerSyn(c, l4);
+      this.rttSample(c, l4.ack as number);
       c.tcp.ack(l4.ack as number);
       c.tries = 0;
+      this.handshakeDone(c);
       this.armRtx(c);
       this.setState(c, 'ESTABLISHED');
       this.e.note('table', 'tcp', dev, this.e.ownerOf(c.remote) || '', 'connection established', 'ESTABLISHED', `${dev} ${formatAddr(c.local)}:${c.lport} → ${formatAddr(c.remote)}:${c.rport} established (${c.what}; ISS ${c.tcp.iss}, IRS ${c.tcp.irs}; sends segments of at most ${this.mss(c)} bytes: the peer's MSS ${c.peerMss})`);
@@ -1590,6 +1661,7 @@ export class Transport {
         const s = c.tcp.earliest();
         if (s && s.syn) {
           s.sent++;
+          c.synRetx = true;
           this.emit(c, s, ' (the client sent its SYN again)');
         }
         return;
@@ -1607,8 +1679,10 @@ export class Transport {
         return;
       }
       c.heard = this.e.now;
+      this.rttSample(c, l4.ack as number);
       c.tcp.ack(l4.ack as number);
       c.tries = 0;
+      this.handshakeDone(c);
       this.armRtx(c);
       this.setState(c, 'ESTABLISHED');
       this.idle(c);
@@ -1638,6 +1712,7 @@ export class Transport {
       }
     }
     // an acknowledgment: what it covers leaves the retransmission queue (the timer starts again for the rest)
+    if (l4.ack !== undefined && l4.ack > c.tcp.sndUna && l4.ack <= c.tcp.sndNxt) this.rttSample(c, l4.ack);
     if (l4.ack !== undefined && c.tcp.ack(l4.ack)) {
       c.tries = 0;
       this.armRtx(c);
@@ -2229,8 +2304,9 @@ export class Transport {
   private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
     const l4 = pkt.l4;
     const dd = this.P.m.index.devices.get(dev);
-    // the model's relations (and its demands) are the firewall's policy; protocols without a transport header (and IGMP) pass
-    if (pkt.msg.relation || pkt.rides.length || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
+    // the model's relations (and its demands) are the firewall's implicit policy; a written rule base decides their packets
+    // too, as it does in the path tracer and the communication check; protocols without a transport header (and IGMP) pass
+    if ((!(dd && dd.policy) && (pkt.msg.relation || pkt.rides.length)) || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
     const proto = l4.proto as 'tcp' | 'udp' | 'icmp';
     const tab = this.fwTable(dev);
     // (a written policy says whether it is stateful; a firewall's sessions otherwise; a router's policy is stateless)
@@ -2281,8 +2357,8 @@ export class Transport {
       // (the owners: the source its sender when the address is the sender's own, the destination the device this traffic goes
       // to — followed from here in its VRF, segment by segment; an address two VRFs have is the one it reaches, never both)
       const sender = pkt.msg.sender;
-      const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src);
-      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst);
+      const srcDev = sender && addrs(sender).some((x) => compareAddr(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src, from.id);
+      const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst, to.id);
       const d = policyDecision(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids }) as PolicyDecision;
       // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
       if (undecided(d)) {

@@ -93,3 +93,49 @@ test('an interface binding is its effective address when sent: any of its addres
   // the one-interface case of #93: no interface named in the plan, still the check's (here the device has one interface)
   assert.equal(I.planMatches(id, { ...run.plan, via: undefined }, m), true);
 });
+
+// ------------------------------------------------------------------ the boundaries of an exact-source comparison
+
+const ONE = ALIAS.replace('ip: [10.0.1.10/24, 10.0.1.11/24, "fd00:1::10/64", "fd00:1::11/64"]', 'ip: 10.0.1.11/24');
+
+test('exact source, its boundaries: a message that could not be sent (no source chosen) is no evidence by itself; with sends from the exact address it counts as their failure (said why); a run still going is provisional; one message from another address makes the run no evidence', () => {
+  const m = model(ONE);
+  const c = C.checkCommunication(m, { from: '10.0.1.11', to: '10.9.0.10', service: 'tcp/80' });
+  const id = I.commIdentity(m, c);
+  assert.equal(id.source.binding, 'address');
+  // every message sent while the interface is shut: none left, nothing to compare
+  let s = new S.Simulation(m);
+  s.runTo(5000);
+  s.shut('client', 'eth0');
+  s.runTo(s.now + 1000);
+  let { run } = sendFromHandoff(s, m, id);
+  assert.equal(run.tests[0].srcAddr, undefined);
+  assert.match(run.tests[0].result, /^not sent: client:eth0 is down/);
+  assert.equal(I.runMatches(id, run, m), false, 'no message left: no evidence of this source');
+  // the first of three messages while shut, the others after: evidence, with the failure counted and explained
+  s = new S.Simulation(m);
+  s.runTo(5000);
+  s.shut('client', 'eth0');
+  s.runTo(s.now + 1000);
+  const h = I.handoffOf(m, id);
+  s.actSend({ delivery: 'unicast', ...h.prefill, count: 3, interval: 4 });
+  s.runTo(s.now + 1000);
+  s.noShut('client', 'eth0');
+  // (a run not done yet: provisional, never final agreement)
+  run = s.testRuns()[0];
+  let cmp = I.compareRun(m, c, run, s.snapshot());
+  assert.equal(cmp.final, false);
+  assert.equal(cmp.agree, false);
+  s.runTo(s.now + 20000);
+  run = s.testRuns()[0];
+  assert.deepEqual(run.tests.map((t) => t.srcAddr), [undefined, '10.0.1.11', '10.0.1.11']);
+  assert.equal(I.runMatches(id, run, m), true);
+  cmp = I.compareRun(m, c, run, s.snapshot());
+  assert.equal(cmp.final, true);
+  assert.deepEqual([cmp.counts.delivered, cmp.counts.failed], [2, 1]);
+  assert.equal(cmp.runtime, 'mixed');
+  assert.ok(cmp.lines.some((l) => /^Interface down when sent/.test(l)), cmp.lines.join(' | '));
+  // one message of the run from another address (as after an address change between messages): the run is not evidence
+  const changed = { ...run, tests: run.tests.map((t, k) => (k === 2 ? { ...t, srcAddr: '10.0.1.12' } : t)) };
+  assert.equal(I.runMatches(id, changed, m), false);
+});

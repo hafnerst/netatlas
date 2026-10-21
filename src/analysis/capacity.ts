@@ -39,7 +39,7 @@ import { bpsText, parseSpeed } from '../model/speed';
 import { Model } from '../model/types';
 import { RoutingCtx } from './routing';
 import { Path, Trace, TraceRequest, tracePath } from './trace';
-import { appAddress } from './communication';
+import { appAddress, egressSource } from './communication';
 import { parseAddress } from '../model/ip';
 
 export interface CapDemand {
@@ -191,7 +191,9 @@ function responder(model: Model, a: AppInstance, transport: string): { app?: App
 /**
  * What to trace for a demand: a demand's ends as written; an application's as the application has them (its
  * family; the peer listener's bind interface's address, else the peer device's address of the family, as the
- * simulation's applications pick it — communication.ts appAddress), in the state traced.
+ * simulation's applications pick it — communication.ts appAddress; the client's address the one it sends from
+ * towards that address — communication.ts egressSource, the simulation's choice, so its answers come back to the
+ * address the requests left from), in the state traced.
  */
 function demandRequest(model: Model, d: CapDemand, ctx: RoutingCtx): TraceRequest {
   if (!d.app) return { from: d.from, to: d.to };
@@ -200,7 +202,9 @@ function demandRequest(model: Model, d: CapDemand, ctx: RoutingCtx): TraceReques
   // tracer then says has none; never the device's other address)
   const fallback = x.peer.device !== undefined ? (x.peer.bind !== undefined ? `${x.peer.device}:${x.peer.bind}` : x.peer.device) : d.to;
   const peer = x.peer.address !== undefined ? x.peer.address : x.peer.device !== undefined ? (appAddress(model, x.peer.device, x.family, x.peer.bind, ctx) || { address: fallback }).address : d.to;
-  return x.answers ? { from: peer, to: x.client, family: x.family } : { from: x.client, to: peer, family: x.family };
+  const src = parseAddress(peer) ? egressSource(model, x.client, peer, ctx) : null;
+  const client = src ? `${x.client}:${src.iface}` : x.client;
+  return x.answers ? { from: peer, to: client, family: x.family } : { from: client, to: peer, family: x.family };
 }
 
 /** A cable's speed: the link's, else the smaller of its ends' (null: none written). */

@@ -12,6 +12,55 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+Protocol realism after #94: what a protocol recognizes, when it acts and
+what it sends now follow its specification within the modelled subset —
+first-hop redundancy, NTP, policy ownership, OSPF, and a bounded audit of
+the other supported protocols.
+
+### Fixed (protocol realism)
+
+- **First-hop redundancy.** Routers whose LAN interfaces are in VRFs of
+  different names did not recognize each other (two Masters, two holders);
+  a group is now what the protocol carries. A VRRP Backup with an equal
+  priority and a higher address took over an established Master, and a
+  higher-priority one at its first advertisement: VRRP preempts by its
+  master down timer now (RFC 5798 §6.4.2). GLBP's text said TTL 1 for
+  packets sent with 255; IPv6 VRRP is sent from the link-local address;
+  HSRP in IPv6 and above group 255 is version 2.
+- **NTP.** A client synchronized "to 192.0.2.1" after exchanging NTP with
+  10.0.0.1: an upstream is an address now, asked exactly and answered by
+  that association only. A source silent for 8 polls could hang the
+  simulation (a check re-armed at one instant); experiment observations
+  read the NTP state itself; a reboot synchronizes within seconds.
+- **Policy owners** several hops away followed the first interface of a
+  router with the address (the outcome depended on the order of its
+  interfaces); equal-cost next hops to different owners give none; a
+  written rule base decides the packets of relations through a firewall;
+  a path ending at another holder of the address does not reach the
+  destination asked for.
+- **OSPF** ignored DBDs RFC 2328 §10.6 treats as a sequence mismatch.
+- **Routing and sessions** (the audit): EIGRP's init Update is reliable;
+  IS-IS detects one-way adjacencies and repairs its database by periodic
+  CSNPs; RIP asks for its neighbours' tables after a reboot; BFD sends one
+  stream, slowly while not Up, and its Down reaches its own clients only;
+  BGP's passive side sends its OPEN at once; the UDP ports between peers
+  (IKE, LDP, RIP, BFD …) and BFD's TTL 255.
+- **LACP** follows its partner's timeout and stops distributing when the
+  partner is out of sync. **IKEv2** drops delayed requests of an
+  established SA, restarts message IDs after a rekey, runs DPD every
+  interval, and the responder rekeys too.
+- **Multicast and PTP.** IGMPv3 / MLDv2 joins are state-change records and
+  routers keep sources apart; the RP prunes (S,G) after the switchover; a
+  PTP foreign master is forgotten on time.
+- **Transport and host services.** TCP's retransmission timeout follows
+  the round trip (RFC 6298); a test's connection ends with it; DNS follows
+  a CNAME into another zone and a host without DNS refuses a query;
+  DHCPv6 caps its Request retransmission; NDP's unsolicited NA no longer
+  confirms an entry; nothing a server scheduled before a power cycle is
+  sent after it.
+- **Capacity** traced an application client from its loopback; it follows
+  the address the client sends from.
+
 Remaining correctness after #93: a policy rule's device is the device the
 traffic reaches (overlapping addresses in two VRFs), an undecided policy
 is never "permitted", an exact source address is compared only with a

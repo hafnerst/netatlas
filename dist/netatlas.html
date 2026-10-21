@@ -11807,6 +11807,7 @@ exports.DHCP6 = {
     SOL_TIMEOUT: 1 * S,
     SOL_MAX_RT: 3600 * S,
     REQ_TIMEOUT: 1 * S,
+    REQ_MAX_RT: 30 * S,
     REQ_MAX_RC: 10,
     REN_TIMEOUT: 10 * S,
     REN_MAX_RT: 600 * S,
@@ -17177,6 +17178,22 @@ function tracePath(model, req, ctx = {}) {
         w.dnat = dnat;
     out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
     out.truncated = w.truncated;
+    // an address several devices have: the destination is the device the paths reach (all of them the same one), else none
+    if (dst.kind === 'address' && !w.destDev && destDev !== undefined && !dnat) {
+        const ends = Array.from(new Set(out.paths.map((p) => (p.end.kind === 'reached' ? `${p.end.device}|${p.end.iface || ''}` : ''))));
+        const reached = ends.length === 1 && out.paths.every((p) => p.end.kind === 'reached') ? ends[0].split('|') : null;
+        if (reached) {
+            out.dest.device = reached[0];
+            if (reached[1])
+                out.dest.iface = reached[1];
+            else
+                delete out.dest.iface;
+        }
+        else {
+            delete out.dest.device;
+            delete out.dest.iface;
+        }
+    }
     // a protocol break: a transfer to one of its listening ports ends there, and the gateway starts the second leg itself
     const main = out.paths[0];
     if (main && main.end.kind === 'reached' && main.end.iface !== undefined && svc && svc.proto !== 'icmp' && srcAddr) {
@@ -17238,6 +17255,10 @@ function walk(w, at, before, seen) {
     if (decision.kind === 'local' && w.dnat && w.dnat.host === at.device)
         return dnatHops(w, hop, before);
     if (decision.kind === 'local') {
+        // (the destination asked for is a device, and this path ends at another one that has its address: two VRFs or segments
+        // behind equal-cost next hops — this path does not reach it)
+        if (w.destDev !== undefined && at.device !== w.destDev && !w.dnat)
+            return stop('other-device', `${at.device} has ${w.destText} too: this path reaches ${at.device}, not ${w.destDev}`);
         const own = (0, routing_1.connectedIn)(model, at.device, w.ctx).find((c) => (0, ipmath_1.compareAddr)(c.addr, w.dest) === 0);
         hop.via = { kind: 'local', text: `${w.destText} is an address of ${at.device}${own ? ' (' + own.iface + ')' : ''}` };
         return [{ hops: before.concat(hop), end: own ? { kind: 'reached', device: at.device, iface: own.iface } : { kind: 'reached', device: at.device } }];
@@ -18233,6 +18254,7 @@ exports.STOP_LABEL = {
     down: 'down',
     'too-long': 'too many hops',
     denied: 'denied by policy',
+    'other-device': 'reaches another device with the address',
 };
 /**
  * The outcome of a trace: all evaluated paths reach the destination
@@ -20235,7 +20257,7 @@ exports.SIM_PROFILES = [
             { name: 'LSU', does: 'Link-State Update carrying LSAs; flooded again when the topology changes' },
             { name: 'LSAck', does: 'acknowledges an LSU' },
         ],
-        transport: 'IP protocol 89; Hello and LSU to 224.0.0.5 / ff02::5 (AllSPFRouters), DBD and LSR unicast',
+        transport: 'IP protocol 89; Hello to 224.0.0.5 / ff02::5 (AllSPFRouters); DBD, LSR, LSU and LSAck unicast to the neighbour (the simulation floods adjacency by adjacency: a router multicasts its first flood to AllSPFRouters / AllDRouters, RFC 2328 §13.3)',
         proto: 'IP 89',
         group4: '224.0.0.5',
         group6: 'ff02::5',
@@ -20286,6 +20308,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'rip',
+        ports: 'same',
         label: 'RIP',
         group: 'Routing',
         behaviour: 'rip',
@@ -20323,6 +20346,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'ldp',
+        ports: 'same',
         label: 'LDP',
         group: 'Routing',
         behaviour: 'ldp',
@@ -20382,6 +20406,8 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'bfd',
+        ttl: 255,
+        ports: 'to',
         label: 'BFD',
         group: 'Routing',
         behaviour: 'bfd',
@@ -20415,7 +20441,7 @@ exports.SIM_PROFILES = [
         group: 'Redundancy',
         behaviour: 'fhrp',
         messages: [{ name: 'Hello', does: 'state and priority, from the active and the standby router' }],
-        transport: 'UDP 1985 to 224.0.0.2 (v1); virtual MAC 00:00:0c:07:ac:GG',
+        transport: 'UDP 1985 to 224.0.0.2 (v1; 224.0.0.102 v2, for groups above 255); IPv6 (v2) UDP 2029 to ff02::66; virtual MAC 00:00:0c:07:ac:GG (v1), 00:00:0c:9f:fG:GG (v2), 00:05:73:a0:0G:GG (IPv6)',
         proto: 'UDP 1985',
         group4: '224.0.0.2',
         timers: [T('hello', 'Hello time', 3, 'RFC 2281'), T('dead', 'Hold time', 10, 'RFC 2281')],
@@ -20429,11 +20455,11 @@ exports.SIM_PROFILES = [
         group: 'Redundancy',
         behaviour: 'fhrp',
         messages: [{ name: 'Hello', does: 'the AVG and the forwarders announce themselves' }],
-        transport: 'UDP 3222 to 224.0.0.102; virtual MACs 00:07:b4:…',
+        transport: 'UDP 3222 to 224.0.0.102 / ff02::66; virtual MACs 00:07:b4:…',
         proto: 'UDP 3222',
         group4: '224.0.0.102',
         timers: [T('hello', 'Hello time', 3, 'Cisco default'), T('dead', 'Hold time', 10, 'Cisco default')],
-        states: ['Listen', 'Speak', 'Standby', 'Active'],
+        states: ['Initial', 'Listen', 'Speak', 'Standby', 'Active'],
         failure: 'The standby AVG takes over the virtual address after the hold time.',
         restore: 'A preempting higher-priority gateway becomes AVG again.',
     },
@@ -20475,6 +20501,7 @@ exports.SIM_PROFILES = [
     // ------------------------------------------------------------ tunnels and overlays
     {
         id: 'ipsec',
+        ports: 'same',
         label: 'IPsec (IKEv2)',
         group: 'Tunnels and overlays',
         behaviour: 'ike',
@@ -20530,6 +20557,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'wireguard',
+        ports: 'same',
         label: 'WireGuard',
         group: 'Tunnels and overlays',
         behaviour: 'session',
@@ -20582,6 +20610,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'l2tp',
+        ports: 'same',
         label: 'L2TP',
         group: 'Tunnels and overlays',
         behaviour: 'session',
@@ -20634,6 +20663,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'gtp',
+        ports: 'same',
         label: 'GTP',
         group: 'Tunnels and overlays',
         behaviour: 'session',
@@ -20693,6 +20723,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'pseudowire',
+        ports: 'same',
         label: 'Pseudowire',
         group: 'Tunnels and overlays',
         behaviour: 'ldp',
@@ -20742,6 +20773,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'vxlan',
+        ports: 'to',
         label: 'VXLAN',
         group: 'Tunnels and overlays',
         behaviour: 'data',
@@ -20757,6 +20789,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'geneve',
+        ports: 'to',
         label: 'Geneve',
         group: 'Tunnels and overlays',
         behaviour: 'data',
@@ -20808,6 +20841,7 @@ exports.SIM_PROFILES = [
     },
     {
         id: 'vpls',
+        ports: 'same',
         label: 'VPLS',
         group: 'Tunnels and overlays',
         behaviour: 'ldp',
@@ -23225,6 +23259,13 @@ function solicitedNode(a) {
 }
 /** The virtual MAC of a first-hop redundancy group (RFC 5798; HSRP v1; GLBP's first forwarder; CARP as VRRP). */
 function virtualMac(protocol, group, version = 4) {
+    // HSRP: version 1 (IPv4, groups 0–255) 0000.0c07.acGG; version 2 — needed for IPv6 and for groups above 255 — 0005.73a0.0GGG
+    // in IPv6, 0000.0c9f.fGGG in IPv4 (Cisco, HSRP version 2 and HSRP for IPv6)
+    const hi = ((group >> 8) & 0xf).toString(16);
+    if (protocol === 'hsrp' && version === 6)
+        return `00:05:73:a0:0${hi}:${hex2(group & 0xff)}`;
+    if (protocol === 'hsrp' && group > 255)
+        return `00:00:0c:9f:f${hi}:${hex2(group & 0xff)}`;
     if (protocol === 'hsrp')
         return `00:00:0c:07:ac:${hex2(group & 0xff)}`;
     if (protocol === 'glbp')
@@ -37042,6 +37083,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LAYER_LABEL = void 0;
 exports.parseCommEnd = parseCommEnd;
 exports.appAddress = appAddress;
+exports.egressSource = egressSource;
 exports.checkCommunication = checkCommunication;
 exports.commText = commText;
 /**
@@ -37171,6 +37213,38 @@ function appAddress(model, dev, v, bind, ctx) {
     });
     cands.sort((a, b) => kindOf(a.iface) - kindOf(b.iface) || (a.iface < b.iface ? -1 : a.iface > b.iface ? 1 : 0) || (0, ipmath_1.compareAddr)(a.addr, b.addr));
     return cands.length ? { iface: cands[0].iface, address: (0, ipmath_1.formatAddr)(cands[0].addr) } : null;
+}
+/**
+ * The interface and address a client sends from towards a destination, as the simulation's sender picks it
+ * (sim/transport.ts pickSource, its routed case): the default table when it has a route there, else the one VRF
+ * that has one; the egress interface of that route (the first of equal-cost next hops) gives its address of the
+ * family — not a link-local one —, an unnumbered egress an address in the same VRF, loopbacks first. Null when no
+ * route leaves the device (the caller keeps its own choice).
+ */
+function egressSource(model, dev, dest, ctx) {
+    const a = (0, ip_1.parseAddress)(dest);
+    if (!a)
+        return null;
+    const conn = (0, routing_1.connectedIn)(model, dev, ctx).filter((c) => c.addr.version === a.version && !(a.version === 6 && c.addr.bytes[0] === 0xfe && (c.addr.bytes[1] & 0xc0) === 0x80) && (!ctx.up || ctx.up(dev, c.iface)));
+    const vrfs = Array.from(new Set((0, routing_1.connectedIn)(model, dev, ctx).map((c) => c.vrf))).sort();
+    const routed = (v) => {
+        const d = (0, routing_1.lookup)(model, dev, v, a, ctx);
+        return d.kind === 'forward' && d.hops.length ? d.hops[0].iface : null;
+    };
+    const withRoute = vrfs.filter((v) => routed(v) !== null);
+    const vrf = withRoute.indexOf('') >= 0 ? '' : withRoute.length === 1 ? withRoute[0] : null;
+    if (vrf === null)
+        return null;
+    const out = routed(vrf);
+    const own = conn.find((c) => c.iface === out);
+    if (own)
+        return { iface: own.iface, address: (0, ipmath_1.formatAddr)(own.addr) };
+    const isLo = (i) => {
+        const x = model.index.interfaces.get((0, types_1.ifaceKey)(dev, i));
+        return x && x.type === 'loopback' ? 0 : 1;
+    };
+    const same = conn.filter((c) => c.vrf === vrf).sort((x, y) => isLo(x.iface) - isLo(y.iface) || (x.iface < y.iface ? -1 : x.iface > y.iface ? 1 : 0));
+    return same.length ? { iface: same[0].iface, address: (0, ipmath_1.formatAddr)(same[0].addr) } : null;
 }
 /** The interfaces of a device that take an address of a family at runtime (DHCP, SLAAC, DHCPv6). */
 function autoAddressed(d, v) {
@@ -37780,6 +37854,7 @@ __defs["analysis/names"] = function (module, exports) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.zoneRecords = zoneRecords;
 exports.zoneFor = zoneFor;
+exports.addressHolders = addressHolders;
 exports.addressOwner = addressOwner;
 exports.answerAt = answerAt;
 exports.resolversOf = resolversOf;
@@ -37825,6 +37900,16 @@ function zoneFor(model, dev, name) {
     return dns ? dns.zones.filter((z) => (0, netservices_1.inZone)(k, z.name)).sort((a, b) => b.name.length - a.name.length)[0] : undefined;
 }
 /** The device that has an address (configured), if exactly one does; else the first by id. */
+/** Every device that has an address on one of its interfaces (an address two VRFs both have: both), sorted by id. */
+function addressHolders(model, address) {
+    const a = (0, ip_1.parseAddress)(address);
+    if (!a)
+        return [];
+    return model.devices
+        .map((d) => d.id)
+        .sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+        .filter((d) => (0, routing_1.connectedOf)(model, d).some((c) => (0, ipmath_1.compareAddr)(c.addr, a) === 0));
+}
 function addressOwner(model, address) {
     const a = (0, ip_1.parseAddress)(address);
     if (!a)
@@ -38643,6 +38728,20 @@ class Transport {
         this.refuse(dev, l3, pkt, ls.text);
         return false;
     }
+    /**
+     * A message for a service the device does not run (a DNS query to a host without a DNS server): refused as at any
+     * closed port (RFC 1122 §4.1.3.1: ICMP port unreachable) — unless its written listening ports include the port
+     * (something listens there that is not that service: no answer, said).
+     */
+    refuseService(dev, l3, pkt, why) {
+        const l4 = pkt.l4;
+        const ls = this.listening(dev);
+        if (ls.written && (0, params_1.portsMatch)(ls.rules, l4.proto, l4.dport)) {
+            this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${dev} listens on ${l4.proto.toUpperCase()} ${l4.dport} but ${why}: ${pkt.msg.label} is not answered`);
+            return;
+        }
+        this.refuse(dev, l3, pkt, why);
+    }
     /** A closed port: TCP RST (not to a RST), UDP ICMP port unreachable (not about a broadcast or multicast); nothing when the device does not reply to closed ports. */
     refuse(dev, l3, pkt, why) {
         const l4 = pkt.l4;
@@ -38949,10 +39048,17 @@ class Transport {
                 this.finish(t, false, `no answer within ${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
             // the application gave up on a connection still being opened: it closes its socket, and a close in SYN-SENT
             // deletes the connection (RFC 9293 §3.10.4) — no more SYN retransmissions of an attempt nobody waits for
-            // (its next periodic message or its retry opens a connection of its own)
+            // (its next periodic message or its retry opens a connection of its own); on an open connection whose answer
+            // never came it aborts (RFC 9293 §3.10.4 ABORT: a RST, the connection gone) — an answer that comes later finds no
+            // connection and is refused, never taken for a test that already failed
             const c = t.conn;
+            const after = `${t.from} gave up after its response timeout (${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))})`;
             if (c && c.state === 'SYN_SENT' && this.alive(c))
-                this.closeConn(c, `connection attempt abandoned: ${t.from} gave up after its response timeout (${'def' in t.timeout ? (0, params_1.resolvedText)(t.timeout) : (0, params_1.durationText)(Number(t.timeout.value))})`);
+                this.closeConn(c, `connection attempt abandoned: ${after}`);
+            else if (c && this.alive(c) && c.state !== 'TIME_WAIT') {
+                this.rst(c, `aborted: ${after}`);
+                this.closeConn(c, `aborted: ${after}`);
+            }
         });
         if (kind === 'icmp')
             this.ping(t, s.src, s.vrf);
@@ -39070,6 +39176,9 @@ class Transport {
         }
         const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(q.pkt) >= 0);
         if (t) {
+            // (a test's connection being opened ends with it: a hard error while connecting, RFC 1122 §4.2.3.9, Linux tcp_v4_err)
+            if (t.conn && (t.conn.state === 'SYN_SENT' || t.conn.state === 'SYN_RCVD') && this.alive(t.conn))
+                this.closeConn(t.conn, `connection failed: ${what}`);
             this.finish(t, false, what);
             return;
         }
@@ -39081,6 +39190,9 @@ class Transport {
                 this.finish(c.test, false, what);
             return;
         }
+        // a DNS query of this device's resolver refused (its server runs no DNS): it asks the next server at once
+        if (this.netsvc && this.netsvc.queryRefused(dev, q, what))
+            return;
         this.e.note('message', 'icmp', dev, '', pkt.msg.type, '', `${dev} received ${pkt.msg.label} about ${q.src} → ${q.dst}`);
     }
     /** A packet a device sent itself could not go: its test or connection fails at once (no ICMP on the wire). */
@@ -39089,6 +39201,8 @@ class Transport {
         if (kind === 'frag' && mtu)
             this.learnMtu(dev, pkt.vrf, pkt.dst, mtu, `its own interface: ${text}`);
         if (t) {
+            if (kind !== 'frag' && t.conn && t.conn.state === 'SYN_SENT' && this.alive(t.conn))
+                this.closeConn(t.conn, `connection failed: ${text}`);
             this.finish(t, false, `not sent: ${text}`);
             return;
         }
@@ -39166,7 +39280,11 @@ class Transport {
         const src = own ? own.addr : pkt.dst;
         const rt = app && app.responseDelay !== undefined ? { value: app.responseDelay, text: `${(0, params_1.durationText)(app.responseDelay)} (${dev}/${app.id}'s response delay)` } : this.serviceTime(dev, 'udp', l4.dport);
         const bytes = app && app.responseSize !== undefined ? app.responseSize : UDP_RESPONSE;
+        // (an answer due after the response time: not by a device powered off meanwhile — after a reboot it knows no request)
+        const epoch = this.e.powerEpoch(dev);
         const answer = () => {
+            if (this.e.powerEpoch(dev) !== epoch || !this.e.deviceOn(dev))
+                return;
             const m = this.msg('udp', 'UDP answer', `UDP ← ${(0, ipmath_1.formatAddr)(src)}:${l4.dport}`, `UDP ${(0, ipmath_1.formatAddr)(src)}:${l4.dport} → ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}, ${bytes} bytes: the answer${app ? ` of ${dev}/${app.id} (${app.name})` : ''}${Number(rt.value) > 0 ? ' after ' + rt.text : ''}`, { test: d.test, reply: true });
             this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + bytes, false, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('udp'));
         };
@@ -39286,8 +39404,37 @@ class Transport {
         this.addConn(c);
         this.sendSyn(c);
     }
+    /** The retransmission timeout now (RFC 6298 §2, §5.5): its current value (the initial one until measured), doubled per retransmission, at most 120 s. */
     rto(c) {
-        return Math.min(RTO_MAX, this.e.params.num('tcp-rto', c.dev) * Math.pow(2, c.tries));
+        return Math.min(RTO_MAX, (c.rtoBase !== undefined ? c.rtoBase : this.e.params.num('tcp-rto', c.dev)) * Math.pow(2, c.tries));
+    }
+    /**
+     * An acknowledgment up to `ack` arrived: a round-trip sample from the last segment it acknowledges whole that was
+     * sent once only (Karn's rule: never one sent again), and the timeout from it (RFC 6298 §2: the first sample sets
+     * SRTT = R, RTTVAR = R/2; then RTTVAR = 3/4 RTTVAR + 1/4 |SRTT − R|, SRTT = 7/8 SRTT + 1/8 R; RTO = SRTT + 4 RTTVAR,
+     * at least 1 s — or the configured initial timeout when that is lower —, at most 120 s).
+     */
+    rttSample(c, ack) {
+        const whole = c.tcp.out.filter((s) => s.seq + (0, tcp_1.segSpace)(s) <= ack);
+        const last = whole[whole.length - 1];
+        if (!last || last.sent > 0 || last.at === undefined)
+            return;
+        const r = this.e.now - last.at;
+        if (c.srtt === undefined || c.rttvar === undefined) {
+            c.srtt = r;
+            c.rttvar = r / 2;
+        }
+        else {
+            c.rttvar = 0.75 * c.rttvar + 0.25 * Math.abs(c.srtt - r);
+            c.srtt = 0.875 * c.srtt + 0.125 * r;
+        }
+        const floor = Math.min(1000, this.e.params.num('tcp-rto', c.dev));
+        c.rtoBase = Math.min(RTO_MAX, Math.max(floor, c.srtt + 4 * c.rttvar));
+    }
+    /** The handshake is done: a SYN (or SYN-ACK) sent again and no round trip measured — data starts with a 3 s timeout (RFC 6298 §5.7). */
+    handshakeDone(c) {
+        if (c.synRetx && c.srtt === undefined)
+            c.rtoBase = Math.max(3000, c.rtoBase !== undefined ? c.rtoBase : 0);
     }
     sendSyn(c) {
         const s = c.tcp.syn(`opens a connection (${c.what})`);
@@ -39379,6 +39526,8 @@ class Transport {
             }
             c.tries++;
             s.sent++;
+            if (s.syn)
+                c.synRetx = true;
             this.emit(c, s, `, retransmission ${c.tries} (timeout ${(0, params_1.durationText)(this.rto({ ...c, tries: c.tries - 1 }))})`);
             if (s.syn && c.test && c.state === 'SYN_SENT')
                 c.test.pktIds.push(this.lastPkt);
@@ -39468,6 +39617,8 @@ class Transport {
         const msg = { protocol: (app ? app.protocol : sh ? sh.protocol : 'tcp'), type: app ? app.type : type, label, detail, data, relation: app && app.relation ? app.relation : sh ? sh.relation : undefined };
         if (app && app.waited && s.sent === 0)
             msg.waited = app.waited;
+        if (s.at === undefined)
+            s.at = this.e.now;
         const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, (0, tcp_1.tcpHeaderLen)(l4) + s.len, true, this.e.ownerOf(c.remote) || '', c.conv);
         this.lastPkt = p.id;
         return p;
@@ -39553,6 +39704,7 @@ class Transport {
                     return;
                 }
                 const sc = this.newConn({ dev, vrf, local: pkt.dst, lport: l4.dport, remote: pkt.src, rport: l4.sport, state: 'SYN_RCVD', role: 'server', what: `serves ${(0, ipmath_1.formatAddr)(pkt.src)}`, conv: pkt.msg.conv });
+                sc.synApp = { protocol: pkt.msg.protocol, relation: pkt.msg.relation };
                 const lh = this.appListening.get(dev + '|' + l4.dport);
                 if (lh) {
                     sc.sock = new AppSocket(this, sc, lh.h);
@@ -39598,8 +39750,10 @@ class Transport {
                 return;
             c.heard = this.e.now;
             this.peerSyn(c, l4);
+            this.rttSample(c, l4.ack);
             c.tcp.ack(l4.ack);
             c.tries = 0;
+            this.handshakeDone(c);
             this.armRtx(c);
             this.setState(c, 'ESTABLISHED');
             this.e.note('table', 'tcp', dev, this.e.ownerOf(c.remote) || '', 'connection established', 'ESTABLISHED', `${dev} ${(0, ipmath_1.formatAddr)(c.local)}:${c.lport} → ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} established (${c.what}; ISS ${c.tcp.iss}, IRS ${c.tcp.irs}; sends segments of at most ${this.mss(c)} bytes: the peer's MSS ${c.peerMss})`);
@@ -39632,6 +39786,7 @@ class Transport {
                 const s = c.tcp.earliest();
                 if (s && s.syn) {
                     s.sent++;
+                    c.synRetx = true;
                     this.emit(c, s, ' (the client sent its SYN again)');
                 }
                 return;
@@ -39650,8 +39805,10 @@ class Transport {
                 return;
             }
             c.heard = this.e.now;
+            this.rttSample(c, l4.ack);
             c.tcp.ack(l4.ack);
             c.tries = 0;
+            this.handshakeDone(c);
             this.armRtx(c);
             this.setState(c, 'ESTABLISHED');
             this.idle(c);
@@ -39684,6 +39841,8 @@ class Transport {
             }
         }
         // an acknowledgment: what it covers leaves the retransmission queue (the timer starts again for the rest)
+        if (l4.ack !== undefined && l4.ack > c.tcp.sndUna && l4.ack <= c.tcp.sndNxt)
+            this.rttSample(c, l4.ack);
         if (l4.ack !== undefined && c.tcp.ack(l4.ack)) {
             c.tries = 0;
             this.armRtx(c);
@@ -40298,8 +40457,9 @@ class Transport {
     filter(dev, pkt, from, to) {
         const l4 = pkt.l4;
         const dd = this.P.m.index.devices.get(dev);
-        // the model's relations (and its demands) are the firewall's policy; protocols without a transport header (and IGMP) pass
-        if (pkt.msg.relation || pkt.rides.length || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp')
+        // the model's relations (and its demands) are the firewall's implicit policy; a written rule base decides their packets
+        // too, as it does in the path tracer and the communication check; protocols without a transport header (and IGMP) pass
+        if ((!(dd && dd.policy) && (pkt.msg.relation || pkt.rides.length)) || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp')
             return true;
         const proto = l4.proto;
         const tab = this.fwTable(dev);
@@ -40355,8 +40515,8 @@ class Transport {
             // (the owners: the source its sender when the address is the sender's own, the destination the device this traffic goes
             // to — followed from here in its VRF, segment by segment; an address two VRFs have is the one it reaches, never both)
             const sender = pkt.msg.sender;
-            const srcDev = sender && addrs(sender).some((x) => (0, ipmath_1.compareAddr)(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src);
-            const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst);
+            const srcDev = sender && addrs(sender).some((x) => (0, ipmath_1.compareAddr)(x.addr, pkt.src) === 0) ? sender : this.e.ownerSeenFrom(dev, from.vrf, pkt.src, from.id);
+            const dstDev = this.e.ownerSeenFrom(dev, to.vrf, pkt.dst, to.id);
             const d = (0, policy_1.policyDecision)(this.P.m, dd, { src: pkt.src, dst: pkt.dst, proto, sport: proto === 'icmp' ? undefined : l4.sport, dport: proto === 'icmp' ? undefined : l4.dport, srcDev, dstDev, inIface: from.id, outIface: to.id, ids });
             // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
             if ((0, policy_1.undecided)(d)) {
@@ -40948,6 +41108,8 @@ class Engine {
         /** what waits for a condition to hold, by condition ("rel:<id>", "route:<dev>|<vrf>|<addr>") */
         this.waits = new Map();
         this.waitCheck = false;
+        /** how many times each device was powered off: what a device scheduled before it went off checks it is still the same run */
+        this.powerEpochs = new Map();
         /** the members of an aggregate that LACP does not let distribute yet (or any more), by port key */
         this.lagHeld = new Set();
         // ------------------------------------------------------------ DHCP leases (the client's side)
@@ -41366,6 +41528,10 @@ class Engine {
     /** Is a device on (powered and booted)? An inline appliance that failed open is off, but passes frames. */
     deviceOn(dev) {
         return !this.off.has(dev);
+    }
+    /** A device's power epoch: it changes when the device is powered off (what it meant to do before is void after a reboot). */
+    powerEpoch(dev) {
+        return this.powerEpochs.get(dev) || 0;
     }
     /**
      * A device's lifecycle now, from the same state packet processing reads (`off`, `booting`): on
@@ -44067,18 +44233,21 @@ class Engine {
             this.emit(dev, l3, { src: mac, dst: nd.lladdr, msg, nd: { op: 'NA', src: nd.target, target: nd.target, lladdr: mac, solicited: true }, ip: pkt });
             return;
         }
-        // an advertisement: solicited → REACHABLE; unsolicited → STALE (an entry it updates; none is created, RFC 4861 7.2.5)
+        // an advertisement (RFC 4861 §7.2.5; its Override flag set, as every NA of the simulation): it updates an entry, never
+        // creates one — Solicited: REACHABLE; not solicited (an unsolicited one, or one defending an address against a DAD
+        // probe): STALE when it brings another link-layer address (or completes an incomplete entry), else the entry stays as it is
         if (this.v6Hook)
             this.v6Hook.advert(dev, l3, nd.target, nd.lladdr);
         const k = this.entryKey(l3.id, nd.target);
         const e = tab.get(k);
-        if (nd.unsolicited) {
-            if (e && e.mac !== nd.lladdr)
-                this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'gratuitous', 'unsolicited Neighbor Advertisement', 'STALE');
+        if (!e)
+            return;
+        if (nd.solicited) {
+            this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'dynamic', 'Neighbor Advertisement', 'REACHABLE');
             return;
         }
-        if (e)
-            this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'dynamic', 'Neighbor Advertisement', 'REACHABLE');
+        if (e.mac !== nd.lladdr)
+            this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : nd.unsolicited ? 'gratuitous' : 'dynamic', nd.unsolicited ? 'unsolicited Neighbor Advertisement' : 'Neighbor Advertisement', 'STALE');
     }
     /** An entry is learned or refreshed; waiting packets go. */
     learnEntry(dev, l3, ip, mac, type, why, ndState = 'REACHABLE') {
@@ -44646,6 +44815,7 @@ class Engine {
             return true;
         }
         this.off.set(dev, this.now);
+        this.powerEpochs.set(dev, this.powerEpoch(dev) + 1);
         const open = sd.caps.inspection && this.params.str('ips-fail', dev) === 'open';
         if (open)
             this.bypass.add(dev);
@@ -45151,7 +45321,10 @@ class Engine {
             refs.add('link:' + l);
         return { vlan: d.vlan === null ? 0 : d.vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: d.links.slice().sort(cmp) };
     }
-    /** The one device that has an address on the segment a device's interface reaches now (its broadcast domain); null: none or several. */
+    /**
+     * The one device that has an address on the segment a device's interface reaches now (its broadcast domain), with the
+     * interface it has it on (its VRF is that interface's); null: none or several.
+     */
     holderOnSegment(dev, iface, a) {
         const d = (0, net_1.l2Domain)(this.net, { dev, iface }, {
             cableUp: (id) => this.cableUp(id),
@@ -45160,44 +45333,73 @@ class Engine {
             blocked: (x, bp, v) => this.blocked(x, bp, v),
             memberReady: (x, port) => this.memberReady(x, port),
         });
-        const found = new Set();
+        const found = new Map();
         for (const r of d.reached)
             if (r.dev !== dev && this.effectiveAddrs(r.dev).some((x) => x.iface === r.l3.id && (0, ipmath_1.compareAddr)(x.addr, a) === 0))
-                found.add(r.dev);
-        return found.size === 1 ? Array.from(found)[0] : null;
+                found.set(`${r.dev}:${r.l3.id}`, { dev: r.dev, iface: r.l3.id });
+        const devs = new Set(Array.from(found.values()).map((x) => x.dev));
+        return found.size === 1 && devs.size === 1 ? Array.from(found.values())[0] : null;
     }
     /**
      * Which device an address is, seen from a device in a VRF: the one device that has it; else, following the
      * routes from there, the holder of each next hop on the segment it is reached on, to the one that has the
-     * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Null when
-     * that can't be told (no route, several on one segment, or more than 16 hops).
+     * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Each next
+     * hop is continued in the VRF of the interface it was reached on (never another interface of that device that
+     * happens to have the same address). Equal-cost next hops are all followed: the owner is the one they all lead
+     * to. `out`: the interface the packet actually leaves by (the forwarding choice already made) — only its next
+     * hops are followed from here. Null when that can't be told (no route, several on one segment, next hops leading
+     * to different owners, or more than 16 hops).
      */
-    ownerSeenFrom(dev, vrf, a) {
+    ownerSeenFrom(dev, vrf, a, out) {
         const all = Array.from(this.net.devices.keys()).filter((x) => this.effectiveAddrs(x).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0));
         if (all.length <= 1)
             return all.length ? all[0] : null;
-        let at = dev;
-        let v = vrf;
-        for (let k = 0; k < 16; k++) {
-            if (this.effectiveAddrs(at).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0) && at !== dev)
-                return at;
+        const has = (x) => this.effectiveAddrs(x).some((y) => (0, ipmath_1.compareAddr)(y.addr, a) === 0);
+        const owners = new Set();
+        let unknown = false;
+        const seen = new Set();
+        const walk = (at, v, depth) => {
+            if (unknown)
+                return;
+            if (depth > 16) {
+                unknown = true;
+                return;
+            }
+            if (at !== dev && has(at)) {
+                owners.add(at);
+                return;
+            }
+            const key = `${at}|${v}`;
+            if (seen.has(key))
+                return;
+            seen.add(key);
             const d = (0, routing_1.lookup)(this.model, at, v, a, this.ctx(at));
-            if (d.kind === 'local')
-                return at;
-            if (d.kind !== 'forward' || !d.hops.length)
-                return null;
-            const h = d.hops[0];
-            const target = h.gateway || a;
-            const next = this.holderOnSegment(at, h.iface, target);
-            if (!next)
-                return null;
-            if (!h.gateway)
-                return next;
-            const nl = Array.from(this.net.devices.get(next).l3.values()).find((l) => l.addrs.some((x) => (0, ipmath_1.compareAddr)(x.addr, target) === 0));
-            at = next;
-            v = nl ? nl.vrf : '';
-        }
-        return null;
+            if (d.kind === 'local') {
+                owners.add(at);
+                return;
+            }
+            if (d.kind !== 'forward' || !d.hops.length) {
+                unknown = true;
+                return;
+            }
+            const chosen = depth === 0 && out !== undefined ? d.hops.filter((h) => h.iface === out) : [];
+            for (const h of chosen.length ? chosen : d.hops) {
+                const target = h.gateway || a;
+                const next = this.holderOnSegment(at, h.iface, target);
+                if (!next) {
+                    unknown = true;
+                    return;
+                }
+                if (!h.gateway)
+                    owners.add(next.dev);
+                else {
+                    const nl = this.net.devices.get(next.dev).l3.get(next.iface);
+                    walk(next.dev, nl ? nl.vrf : '', depth + 1);
+                }
+            }
+        };
+        walk(dev, vrf, 0);
+        return !unknown && owners.size === 1 ? Array.from(owners)[0] : null;
     }
     /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */
     broadcastIfaces(dev) {
@@ -45435,7 +45637,7 @@ function inNetAddr(a, ip) {
 }
 /** Is it the virtual MAC of a VRRP / CARP, HSRP or GLBP group? */
 function isVirtual(mac) {
-    return /^00:00:5e:00:0[12]:/.test(mac) || /^00:00:0c:07:ac:/.test(mac) || /^00:07:b4:/.test(mac);
+    return /^00:00:5e:00:0[12]:/.test(mac) || /^00:00:0c:07:ac:/.test(mac) || /^00:00:0c:9f:f/.test(mac) || /^00:05:73:a0:0/.test(mac) || /^00:07:b4:/.test(mac);
 }
 /** The protocols of the encapsulation a frame's packet is in (outermost last). */
 function encapProtocols(frame) {
@@ -45941,10 +46143,27 @@ function tcpHeaderLen(l4) {
 __defs["analysis/sim/protocols"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ProtocolSim = void 0;
+exports.ProtocolSim = exports.ADV_RXMT = void 0;
 exports.ipOf = ipOf;
 exports.relationProfile = relationProfile;
 exports.parseDuration = parseDuration;
+/**
+ * The protocols of the simulation: a session per relation and pair of its
+ * devices (each side its own view of it), started at boot, exchanging the
+ * messages of the protocol's profile (model/sim-profiles.ts) through the
+ * engine, with the timers the model sets or the profile's defaults (marked
+ * "default" in the event log), and reacting to failures as the profile
+ * says. Besides the relations: the first-hop redundancy groups of the
+ * interfaces (VRRP …), LACP on the members of every aggregate, gratuitous
+ * ARP when an interface comes up, and the model's traffic demands. Pure
+ * and deterministic (the jitter comes from the engine's seeded random).
+ *
+ * The behaviours themselves are in proto-*.ts; this module builds the
+ * sessions, sends and dispatches their messages, draws them in the
+ * logical view along their relation, and answers the engine (what is up,
+ * which virtual addresses a device holds).
+ */
+const ip_1 = __req("model/ip");
 const protocols_1 = __req("model/protocols");
 const sim_profiles_1 = __req("model/sim-profiles");
 const types_1 = __req("model/types");
@@ -45971,7 +46190,8 @@ const UPDATE_OF = {
     eigrp: { type: 'Update', ack: 'ACK' },
 };
 /** An unacknowledged advertisement is sent again after this (OSPF's RxmtInterval 5 s; IS-IS and EIGRP alike in the simulation). */
-const ADV_RXMT = 5000;
+/** A reliable advertisement (an LSU, LSP, EIGRP Update) unacknowledged is sent again after this (ms). */
+exports.ADV_RXMT = 5000;
 /** EIGRP's active timer (RFC 7868 §5.5: 3 min): a neighbour that has not replied to a Query by then is reset (stuck in active). */
 const EIGRP_ACTIVE = 180000;
 /**
@@ -46154,6 +46374,39 @@ class ProtocolSim {
         return null;
     }
     /**
+     * The sides of a relation that asks one exact address (an NTP upstream, service-relations.ts): the server is
+     * that address on the interface that has it; the client sends from its address of the same family on a network
+     * it shares with that address, else from the one it would use towards the server (pairSides, the same family).
+     * Never another address of the server. Null: not such a relation (or the address is gone from the server).
+     */
+    exactSides(r, a, b) {
+        const up = (0, service_relations_1.upstreamOf)(r);
+        const target = up ? (0, ip_1.parseAddress)(up) : null;
+        if (!target)
+            return null;
+        const sb = this.sd(b);
+        const sa = this.sd(a);
+        if (!sa || !sb)
+            return null;
+        const l3 = Array.from(sb.l3.values()).find((l) => l.addrs.some((x) => (0, ipmath_1.compareAddr)(x.addr, target) === 0));
+        if (!l3)
+            return null;
+        const server = { dev: b, l3, addr: target };
+        const own = Array.from(sa.l3.values()).sort((x, y) => cmp(x.id, y.id));
+        for (const l of own)
+            for (const x of l.addrs)
+                if (l.kind !== 'loopback' && x.addr.version === target.version && (0, ipmath_1.inPrefix)(x.net, target))
+                    return { a: { dev: a, l3: l, addr: x.addr }, b: server, shared: true };
+        const p = this.pairSides(r, a, b);
+        if (p && ipOf(p.a).version === target.version)
+            return { a: p.a, b: server, shared: false };
+        for (const l of own)
+            for (const x of l.addrs)
+                if (l.kind !== 'loopback' && x.addr.version === target.version)
+                    return { a: { dev: a, l3: l, addr: x.addr }, b: server, shared: false };
+        return null;
+    }
+    /**
      * IS-IS's circuit between two routers (routing.ts isisCircuit: their
      * interfaces that one's frames reach, over a cable or through bridges,
      * the relation's endpoint interfaces when written) — its adjacency forms
@@ -46193,7 +46446,11 @@ class ProtocolSim {
     /** Build the sessions of every relation (each pair, each side). */
     build() {
         // the model's relations, then the exchanges its services imply (service-relations.ts: not drawn, not in the model)
-        for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat((0, service_relations_1.serviceRelations)(this.m))) {
+        const owner = (client, address) => {
+            const a = (0, ip_1.parseAddress)(address);
+            return a ? this.e.ownerSeenFrom(client, '', a) : null;
+        };
+        for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat((0, service_relations_1.serviceRelations)(this.m, owner))) {
             const profile = this.profileOf(r);
             if (!this.behaviours.has(profile.behaviour))
                 continue;
@@ -46221,7 +46478,7 @@ class ProtocolSim {
         // IS-IS forms its adjacency on the link itself (its PDUs are frames, not IP): the interfaces of a cable between the two,
         // whatever their IP addresses (other subnets, none at all)
         const l2 = profile.behaviour === 'isis' ? this.linkSides(r, a, b) : null;
-        const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.pairSides(r, a, b);
+        const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.exactSides(r, a, b) || this.pairSides(r, a, b);
         if (!sides) {
             // a DHCP client without its lease yet: its sessions wait for it
             const lease = [a, b].find((x) => !!this.e.waitsForLease(x));
@@ -46533,7 +46790,10 @@ class ProtocolSim {
         for (const h of this.deviceHooks)
             h(dev, false);
     }
-    /** A device has booted: its sessions start afresh. */
+    /**
+     * A device has booted: its sessions start afresh — each when its interface is up again (its cable's link-up
+     * delay after the boot), as at the start of the simulation, never sending before.
+     */
     deviceUp(dev) {
         for (const h of this.deviceHooks)
             h(dev, true);
@@ -46543,12 +46803,7 @@ class ProtocolSim {
             this.restart(s);
             s.x = {};
             s.heard = -1;
-            const jitter = 100 + Math.floor(this.e.random(dev) * 400);
-            const g = s.gen;
-            this.e.after(jitter, () => {
-                if (s.gen === g)
-                    this.startSession(s);
-            });
+            this.startWhenUp(s);
         }
     }
     /** The event log's note of the timers a session uses (where each comes from). */
@@ -46663,13 +46918,15 @@ class ProtocolSim {
      * The transport header of a session's message sent here (unicast or
      * multicast, never over a connection), from its profile's datagram
      * transport ("UDP 3784", "IP 89"; LDP's "UDP/TCP 646": its Hellos are
-     * UDP): the client side (the requests' sender, or the relation's earlier
-     * endpoint) sends from an ephemeral port to the protocol's port, the other
-     * side back. A protocol's TCP messages go over the transport's connections
+     * UDP): between peers as the profile says (SimProfile.ports: both from and
+     * to the protocol's port, or each from its own ephemeral port to it), to a
+     * group the protocol's port; otherwise the client side (the requests'
+     * sender, or the relation's earlier endpoint) sends from an ephemeral port
+     * to the protocol's port, the other side back. A protocol's TCP messages go over the transport's connections
      * (proto-tcp.ts) with their segments' real flags: no TCP header is made up
      * here (a profile with only TCP gets none).
      */
-    l4Of(s) {
+    l4Of(s, group = false) {
         const p = s.profile.proto;
         const udp = /\bUDP(?:\/TCP)?\s+([0-9]{1,5})/.exec(p);
         const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(p);
@@ -46679,8 +46936,14 @@ class ProtocolSim {
         if (first === ip)
             return { proto: 'other', num: Number(ip[1]) };
         const port = Number(first[1]);
-        const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
         const eph = (dev) => 49152 + (0, engine_1.hashIndex)(s.rel.id + '|' + dev, 16000);
+        // between peers: both from and to the protocol's port, or each from its own ephemeral port to it (SimProfile.ports);
+        // to a group (Hellos): always to the protocol's port
+        if (s.profile.ports === 'same' || (group && s.profile.ports !== 'to'))
+            return { proto: 'udp', num: 17, sport: port, dport: port };
+        if (s.profile.ports === 'to')
+            return { proto: 'udp', num: 17, sport: eph(s.dev), dport: port };
+        const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
         const sport = client ? eph(s.dev) : port;
         const dport = client ? port : eph(s.peer);
         return { proto: 'udp', num: 17, sport, dport };
@@ -46691,7 +46954,7 @@ class ProtocolSim {
         const at = to === ipOf(s.remote) ? (0, ipmath_1.formatAddr)(to) : `${(0, ipmath_1.formatAddr)(to)}, its address as translated on the way`;
         const m = this.msg(s, type, `${s.dev} (${(0, ipmath_1.formatAddr)(ipOf(s.local))}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
         this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-        const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id]);
+        const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id], s.profile.ttl || 0);
         pkt.l4 = this.l4Of(s);
         this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
         this.e.send(s.dev, pkt);
@@ -46701,7 +46964,7 @@ class ProtocolSim {
         const m = this.msg(s, type, `${s.dev} (${(0, ipmath_1.formatAddr)(ipOf(s.local))}) → ${(0, ipmath_1.formatAddr)(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
         this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
         const pkt = this.e.newPacket(ipOf(s.local), group, s.local.l3.vrf, m, [s.rel.id], 1);
-        pkt.l4 = this.l4Of(s);
+        pkt.l4 = this.l4Of(s, true);
         // the logical view: towards every peer of the relation on that segment
         const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
         for (const p of peers)
@@ -47031,7 +47294,7 @@ class ProtocolSim {
         const since = this.e.now;
         const send = (n) => {
             const data = { db: recs, dbId: id, dbAck: ack };
-            const detail = `${why}: ${what}${n ? ` (sent again: no ${ack} after ${(0, engine_1.fmtSec)(ADV_RXMT)})` : ''}`;
+            const detail = `${why}: ${what}${n ? ` (sent again: no ${ack} after ${(0, engine_1.fmtSec)(exports.ADV_RXMT)})` : ''}`;
             if (b.send)
                 b.send(this, s, type, detail, data);
             else
@@ -47043,7 +47306,7 @@ class ProtocolSim {
         const key = s.key + '|' + id;
         this.pendingAdv.set(key, s.gen);
         const again = (n) => {
-            this.e.after(ADV_RXMT, () => {
+            this.e.after(exports.ADV_RXMT, () => {
                 if (this.pendingAdv.get(key) !== s.gen || !this.floodsTo(s)) {
                     this.pendingAdv.delete(key);
                     return;
@@ -47490,6 +47753,7 @@ exports.RipSim = RipSim;
 __defs["analysis/sim/service-relations"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.upstreamOf = upstreamOf;
 exports.serviceRelations = serviceRelations;
 /**
  * The exchanges a device's services imply, as relations the simulation
@@ -47500,36 +47764,34 @@ exports.serviceRelations = serviceRelations;
  * control channel to its controller. An exchange a relation of the model
  * already describes (the same protocol between the same two devices) is not
  * added again.
+ *
+ * An NTP upstream is an address, not a device: its relation carries the
+ * address configured (the attribute `upstream`), the session asks exactly
+ * that address, and two upstreams that are two addresses of one server are
+ * two associations. Which device has the address is the one the client's
+ * traffic reaches (`owner`: the simulation's forwarding context), so an
+ * address two VRFs both have is not the first device listed.
  */
-const ipmath_1 = __req("analysis/ipmath");
-const ip_1 = __req("model/ip");
+const names_1 = __req("analysis/names");
 const protocols_1 = __req("model/protocols");
 const types_1 = __req("model/types");
-/** The device that has an address (as written on its interfaces), else null. */
-function ownerOf(model, text) {
-    const a = (0, ip_1.parseAddress)(text);
-    if (!a)
-        return null;
-    for (const d of model.devices) {
-        for (const i of (0, types_1.deviceInterfaces)(d)) {
-            for (const x of i.addresses) {
-                const b = (0, ip_1.parseAddress)(x.replace(/\/\d+$/, ''));
-                if (b && (0, ipmath_1.compareAddr)(a, b) === 0)
-                    return d.id;
-            }
-        }
-    }
-    return null;
+/** The address an NTP upstream relation asks (its configured upstream), or undefined for any other relation. */
+function upstreamOf(r) {
+    const a = r.attrs.find(([k]) => k === 'upstream');
+    return a ? a[1] : undefined;
 }
-/** The relations a model's services imply (see the module comment), in a stable order. */
-function serviceRelations(model) {
+/**
+ * The relations a model's services imply (see the module comment), in a stable order. `owner`: which device an
+ * address several devices have is, seen from a client (null: it can't be told — no relation is made up).
+ */
+function serviceRelations(model, owner = () => null) {
     const out = [];
-    const has = (protocol, a, b) => model.relations.some((r) => (0, protocols_1.protocolBase)(model.protocols, r.protocol) === protocol && (0, types_1.relationDevices)(r).indexOf(a) >= 0 && (0, types_1.relationDevices)(r).indexOf(b) >= 0) ||
-        out.some((r) => r.protocol === protocol && r.endpoints[0].device === a && r.endpoints[1].device === b);
-    const add = (id, protocol, client, server, label) => {
-        if (client === server || !model.index.devices.has(client) || !model.index.devices.has(server) || has(protocol, client, server))
+    const has = (protocol, a, b, upstream) => model.relations.some((r) => (0, protocols_1.protocolBase)(model.protocols, r.protocol) === protocol && (0, types_1.relationDevices)(r).indexOf(a) >= 0 && (0, types_1.relationDevices)(r).indexOf(b) >= 0) ||
+        out.some((r) => r.protocol === protocol && r.endpoints[0].device === a && r.endpoints[1].device === b && upstreamOf(r) === upstream);
+    const add = (id, protocol, client, server, label, upstream) => {
+        if (client === server || !model.index.devices.has(client) || !model.index.devices.has(server) || has(protocol, client, server, upstream))
             return;
-        out.push({ id, protocol, category: 'service', label, endpoints: [{ device: client }, { device: server }], over: [], direction: 'unidirectional', attrs: [], line: 0 });
+        out.push({ id, protocol, category: 'service', label, endpoints: [{ device: client }, { device: server }], over: [], direction: 'unidirectional', attrs: upstream ? [['upstream', upstream]] : [], line: 0 });
     };
     const list = (v) => (Array.isArray(v) ? v.map((x) => String(x)) : []);
     for (const d of model.devices.slice().sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))) {
@@ -47538,9 +47800,10 @@ function serviceRelations(model) {
             const ntp = svc.get('ntp');
             if (ntp)
                 list(ntp.values.upstreams).forEach((u, k) => {
-                    const o = ownerOf(model, u);
+                    const hs = (0, names_1.addressHolders)(model, u);
+                    const o = hs.length === 1 ? hs[0] : hs.length > 1 ? owner(d.id, u) : null;
                     if (o)
-                        add(`ntp-of-${d.id}-${k + 1}`, 'ntp', d.id, o, `NTP: ${d.id} asks ${o}`);
+                        add(`ntp-of-${d.id}-${k + 1}`, 'ntp', d.id, o, `NTP: ${d.id} asks ${o} at ${u}`, u);
                 });
             const aaa = svc.get('aaa');
             if (aaa)
@@ -52177,7 +52440,7 @@ exports.ANALYSIS_SUPPORT = [
     {
         id: 'policy',
         name: 'Network policy',
-        does: 'One engine for Trace path, the communication checks and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named; a firewall without one: its relations and allow list.',
+        does: 'One engine for Trace path, the communication checks and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named (also for the packets of relations and tunnels through it); a firewall without one: its relations and allow list. A rule naming a device: that device’s addresses, checked against the device the traffic reaches (an address several devices have and no owner known: undecided, never permitted).',
         not: 'a return decision statically (the simulation keeps a stateful policy’s sessions); application identification, TLS inspection, user identities, NAT rules, VLAN ACLs.',
     },
     {
@@ -52213,7 +52476,7 @@ exports.ANALYSIS_SUPPORT = [
     {
         id: 'timing',
         name: 'Timing source paths',
-        does: 'By the method asked for (PTP, NTP, or either: both reported). PTP: a source-capable clock of the domain and profile on the clock’s VLAN-scoped segments or behind boundary clocks. NTP: the configured source chain, upstream by upstream (each reachable on UDP 123: path, policy, listener) to a configured reference, with cycles, chains without a reference, upstreams outside the model and alternative roots said apart from a merely reachable upstream; a snapshot adds the synchronization the simulation observed.',
+        does: 'By the method asked for (PTP, NTP, or either: both reported). PTP: a source-capable clock of the domain and profile on the clock’s VLAN-scoped segments or behind boundary clocks. NTP: the configured source chain, upstream by upstream — each an address, reachable on UDP 123 (path, policy, listener), the device it is the one its traffic reaches — to a configured reference, with cycles, chains without a reference, upstreams outside the model and alternative roots said apart from a merely reachable upstream; a snapshot adds the synchronization the simulation observed.',
         not: 'accuracy (the simulation models the protocol states, not oscillators or clock discipline); precedence or bridging between NTP and PTP.',
     },
     {
@@ -64535,7 +64798,15 @@ function ntpChains(model, dev, ctx, path, memo) {
     const cfg = ntpOf(model, dev);
     const out = [];
     for (const up of cfg ? cfg.upstreams : []) {
-        const owner = (0, names_1.addressOwner)(model, up);
+        // (an address several devices have: the one the client's traffic reaches, as the trace finds it — never the first listed)
+        const several = (0, names_1.addressHolders)(model, up).length > 1;
+        const reached = several ? (0, communication_1.checkCommunication)(model, { from: dev, to: up, service: 'udp/123' }, null, 'Selected endpoints', 1, ctx) : null;
+        const ends = reached && reached.trace ? Array.from(new Set(reached.trace.paths.filter((p) => p.end && p.end.kind === 'reached').map((p) => p.end.device))) : [];
+        const owner = several ? (ends.length === 1 ? ends[0] : undefined) : (0, names_1.addressOwner)(model, up);
+        if (several && !owner) {
+            out.push({ upstream: up, state: 'unknown', chain: path.concat([up]), text: `${up}: several devices have it and which one ${dev} reaches can't be told` });
+            continue;
+        }
         if (!owner) {
             out.push({ upstream: up, state: 'external', chain: path.concat([up]), text: `${up}: outside the model (an external or unknown upstream: what it is synchronized to is not modeled)` });
             continue;
@@ -64596,10 +64867,11 @@ function ntpSource(model, dev, ctx, snap) {
     if (!cfg)
         return null;
     const observed = observedOf(snap, dev, 'ntp');
-    if (!cfg.upstreams.length) {
+    // (a stratum of its own makes it a reference — upstreams written beside it are not asked for its time, as in the simulation)
+    if (!cfg.upstreams.length || cfg.stratum !== undefined) {
         if (cfg.stratum === undefined)
             return null;
-        return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
+        return { verdict: 'satisfied', protocol: 'NTP', text: `${dev} is a configured reference (stratum ${cfg.stratum}): it takes no time from upstreams${cfg.upstreams.length ? ' (its upstreams are not its source)' : ''}; its reference clock is taken as given`, chain: [dev], detail: ['A reference of its own is configuration: the reference clock itself is not modeled.'], refs: ['device:' + dev], ntp: [], levels: { upstream: 'satisfied', chain: 'satisfied' }, observed };
     }
     const alts = ntpChains(model, dev, ctx, [dev], new Map());
     const roots = alts.filter((x) => x.state === 'root').sort((a, b) => a.client - b.client);
@@ -72781,9 +73053,14 @@ class Simulation {
             const t = { dev, protocol: 'ntp', synchronized: this.ntp.synchronized(dev), text: this.ntp.text(dev) };
             if (src && src.dev && t.synchronized)
                 t.source = src.dev;
+            if (src && t.synchronized && !src.byDevice)
+                t.address = src.addr;
             timing.push(t);
         }
         for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+            // (a transparent clock corrects others' messages and has no time of its own to be synchronized: no timing state, as timingState says)
+            if (c.kind === 'transparent')
+                continue;
             const t = { dev, protocol: 'ptp', synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: c.state + (c.parent ? ` to the grandmaster ${c.parent.gmDev}` : '') };
             if (c.parent)
                 t.source = c.parent.gmDev;
@@ -72912,9 +73189,9 @@ class Simulation {
                 out.push({ synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: `PTP ${c.state}` });
         }
         if (protocol !== 'ptp') {
-            const n = this.status().find((x) => x.protocol === 'ntp' && x.device === dev);
-            if (n)
-                out.push({ synchronized: n.up, text: `NTP ${n.state.toLowerCase()}` });
+            // (the NTP state's own definition — never a request session's row of the same device, which is "Answered" whatever it took)
+            if (this.ntp.has(dev))
+                out.push({ synchronized: this.ntp.synchronized(dev), text: `NTP ${this.ntp.synchronized(dev) ? 'synchronized' : 'unsynchronized'}: ${this.ntp.text(dev)}` });
         }
         if (!out.length)
             return null;
@@ -73521,18 +73798,31 @@ const FHRP = ['vrrp', 'hsrp', 'glbp', 'carp'];
 function hsrpLike(protocol) {
     return protocol === 'hsrp' || protocol === 'glbp';
 }
+/** the state a member is in while its interface is down, by its protocol's name for it (RFC 5798 Initialize, RFC 2281 Initial, carp(4) INIT) */
+function initState(protocol) {
+    return protocol === 'vrrp' ? 'Initialize' : protocol === 'carp' ? 'Init' : 'Initial';
+}
 /**
  * The redundancy groups on the interfaces, each protocol's own way:
  *
  *   VRRP (RFC 5798) and CARP: the master alone advertises (IP protocol
  *   112 to 224.0.0.18 / ff02::12, TTL 255 — a receiver takes only TTL 255,
- *   §7.1); a backup becomes master after the master down interval (3 ×
- *   the interval + the skew of its priority); the owner of the virtual
+ *   §7.1; IPv6 from the interface's link-local address, §5.1.2.1); a
+ *   backup becomes master after the master down interval (3 × the
+ *   interval + the skew of its priority); the owner of the virtual
  *   address (an address of its interface) has priority 255 and is master
- *   at once; a backup with a higher priority preempts (the default).
+ *   at once. VRRP preemption (the default): a backup discards the
+ *   advertisements of a lower priority — an equal one it accepts — and
+ *   becomes master when its master down timer expires (§6.4.2); a master
+ *   steps down for a higher priority, or an equal one from a higher
+ *   primary address (§6.4.3). CARP: a preempting backup that outranks the
+ *   master takes over at once (carp(4)).
  *   HSRP (RFC 2281) and GLBP's gateway election: the Active and the
- *   Standby router both send Hellos (UDP 1985 to 224.0.0.2 with TTL 1;
- *   GLBP UDP 3222 to 224.0.0.102); the others Listen silently. A router
+ *   Standby router both send Hellos (HSRP version 1: UDP 1985 to 224.0.0.2
+ *   with TTL 1; version 2 — Cisco's, for groups above 255 and for IPv6 —
+ *   224.0.0.102, in IPv6 UDP 2029 to ff02::66 from the link-local address;
+ *   GLBP UDP 3222 to 224.0.0.102 / ff02::66, TTL 255); the others Listen
+ *   silently. A router
  *   that hears no Active (or no Standby) for the hold time Speaks — says
  *   hello and takes part — and after a hold time Speaking without a better
  *   one it becomes Standby, or Active when there is none; the Standby
@@ -73542,6 +73832,12 @@ function hsrpLike(protocol) {
  *
  * The holder of the virtual address answers for it with the virtual MAC
  * and announces it with a gratuitous ARP when it takes it over.
+ *
+ * What a router matches a received advertisement or Hello by is what the
+ * protocol carries: the group (VRID, VHID) of its address family, on the
+ * interface it arrived on — never the receiver's VRF or another local
+ * name. A different virtual address is logged (VRRP, HSRP, GLBP) or, for
+ * CARP (its HMAC covers the addresses), discarded.
  */
 function installFhrp(P) {
     const members = [];
@@ -73560,7 +73856,7 @@ function installFhrp(P) {
                 const prio = owner ? 255 : Number(sv.values.get('priority') || '100');
                 const rel = P.m.relations.find((r) => P.e.base(r) === sv.id && (0, types_1.relationDevices)(r).indexOf(d.id) >= 0);
                 const pre = rel ? rel.attrs.find(([k]) => k === 'preempt') : undefined;
-                members.push({ key: `${sv.id}|${l3.vrf}|${g}|${(0, ipmath_1.formatAddr)(vip)}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: (0, mac_1.virtualMac)(sv.id, g, vip.version), prio, owner, preempt: owner || (pre ? pre[1] !== 'false' : !hsrpLike(sv.id)), state: 'Initialize', gen: 0, heardAt: -1, rel });
+                members.push({ key: `${sv.id}|${d.id}|${i.id}|${g}|${vip.version}`, protocol: sv.id, dev: d.id, l3, group: g, vip, vmac: (0, mac_1.virtualMac)(sv.id, g, vip.version), prio, owner, preempt: owner || (pre ? pre[1] !== 'false' : !hsrpLike(sv.id)), state: initState(sv.id), gen: 0, heardAt: -1, rel });
             }
         }
     }
@@ -73575,10 +73871,19 @@ function installFhrp(P) {
         const down = hsrpLike(m.protocol) ? (hold ? hold.seconds : 10) * 1000 : 3 * a + Math.round(((256 - m.prio) / 256) * a);
         return { adv: a, down };
     };
-    const ownIp = (m) => {
-        const a = m.l3.addrs.find((x) => x.addr.version === m.vip.version);
-        return a ? (0, ipmath_1.formatAddr)(a.addr) : '0.0.0.0';
+    /** its source and primary address: IPv4 the interface's first, IPv6 its link-local one (RFC 5798 §1.6, §5.1.2.1) */
+    const srcOf = (m) => {
+        if (m.vip.version === 6)
+            return m.l3.ll ? m.l3.ll.addr : null;
+        const a = m.l3.addrs.find((x) => x.addr.version === 4);
+        return a ? a.addr : null;
     };
+    const ownIp = (m) => {
+        const a = srcOf(m);
+        return a ? (0, ipmath_1.formatAddr)(a) : m.vip.version === 6 ? '::' : '0.0.0.0';
+    };
+    /** the members a member's messages are for (the lane drawn): the same relation, protocol, group and family */
+    const peersOf = (m) => members.filter((o) => o !== m && o.rel === m.rel && o.protocol === m.protocol && o.group === m.group && o.vip.version === m.vip.version);
     /** does (priority, address) a outrank b (higher priority, then the higher address)? */
     const outranks = (pa, ia, pb, ib) => pa > pb || (pa === pb && (0, ipmath_1.compareAddr)(addr(ia), addr(ib)) > 0);
     const holds = (st) => st === 'Master' || st === 'Active';
@@ -73602,22 +73907,26 @@ function installFhrp(P) {
         const p = (0, sim_profiles_1.simProfile)(m.protocol);
         const hs = hsrpLike(m.protocol);
         const type = hs ? op || 'Hello' : 'Advertisement';
-        const group = addr(m.vip.version === 4 ? (p && p.group4) || '224.0.0.18' : (p && p.group6) || 'ff02::12');
-        const src = m.l3.addrs.find((a) => a.addr.version === m.vip.version);
+        const v2 = m.protocol === 'hsrp' && (m.vip.version === 6 || m.group > 255);
+        const group = addr(m.vip.version === 6 ? (hs ? 'ff02::66' : (p && p.group6) || 'ff02::12') : v2 ? '224.0.0.102' : (p && p.group4) || '224.0.0.18');
+        const src = srcOf(m);
         if (!src || !P.e.isL3Up(m.dev, m.l3.id))
             return;
         // the Active (and the VRRP master) sends from the virtual MAC; a Standby or Speaking router from its own
         const smac = holds(m.state) ? m.vmac : m.l3.mac;
-        const port = m.protocol === 'hsrp' ? 1985 : 3222;
-        const msg = { protocol: m.protocol, type, label: `${label(m)} ${type}${hs ? ' (' + m.state + ')' : ''}`, detail: `${label(m)} ${type}: group ${m.group}, ${hs ? 'state ' + m.state + ', ' : ''}priority ${m.prio}${m.owner ? ' (the address owner)' : ''}, virtual ${(0, ipmath_1.formatAddr)(m.vip)}, from ${m.dev}:${m.l3.id} (source MAC ${smac}${smac === m.vmac ? ', the virtual MAC' : ''}) to ${(0, ipmath_1.formatAddr)(group)} (${(0, mac_1.multicastMac)(group)})${hs ? `, UDP ${port}, TTL 1` : ', IP protocol 112, TTL 255'}`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, key: m.key, prio: m.prio, ip: (0, ipmath_1.formatAddr)(src.addr), state: m.state, op: type } };
+        const port = m.protocol === 'hsrp' ? (m.vip.version === 6 ? 2029 : 1985) : 3222;
+        // HSRP in IPv4 (v1, v2): TTL 1 (RFC 2281 §5); in IPv6 255 (a link-local message, as ND's); GLBP: 255 (Cisco's GLBP, Wireshark's
+        // check of 224.0.0.102); VRRP and CARP: 255 (RFC 5798 §5.1.1.3)
+        const ttl = m.protocol === 'hsrp' && m.vip.version === 4 ? 1 : 255;
+        const msg = { protocol: m.protocol, type, label: `${label(m)} ${type}${hs ? ' (' + m.state + ')' : ''}`, detail: `${label(m)}${v2 ? ' version 2' : ''} ${type}: group ${m.group}, ${hs ? 'state ' + m.state + ', ' : ''}priority ${m.prio}${m.owner ? ' (the address owner)' : ''}, virtual ${(0, ipmath_1.formatAddr)(m.vip)}, from ${m.dev}:${m.l3.id} ${(0, ipmath_1.formatAddr)(src)} (source MAC ${smac}${smac === m.vmac ? ', the virtual MAC' : ''}) to ${(0, ipmath_1.formatAddr)(group)} (${(0, mac_1.multicastMac)(group)})${hs ? `, UDP ${port}` : ', IP protocol 112'}, ${m.vip.version === 6 ? 'hop limit' : 'TTL'} ${ttl}`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, group: m.group, vip: (0, ipmath_1.formatAddr)(m.vip), prio: m.prio, ip: (0, ipmath_1.formatAddr)(src), state: m.state, op: type } };
         P.e.note('message', m.protocol, m.dev, '', type, m.state, msg.detail, P.e.now, msg);
         if (m.rel)
-            for (const o of members)
-                if (o.key === m.key && o !== m)
-                    P.lane(m.rel, m.dev, o.dev, msg, 2 * P.e.hopTime());
-        const pkt = P.e.newPacket(src.addr, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], m.protocol === 'hsrp' ? 1 : 255);
+            for (const o of peersOf(m))
+                P.lane(m.rel, m.dev, o.dev, msg, 2 * P.e.hopTime());
+        const pkt = P.e.newPacket(src, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], ttl);
         pkt.l4 = hs ? { proto: 'udp', num: 17, sport: port, dport: port } : { proto: 'other', num: 112 };
-        pkt.len = hs ? 8 + 20 : 8 + 4 * (1 + 0);
+        // HSRP: UDP + its 20 bytes; VRRP / CARP: the 8-byte header + the one virtual address (4 or 16 bytes, RFC 5798 §5.1)
+        pkt.len = hs ? 8 + (v2 ? (m.vip.version === 6 ? 52 : 40) : 20) : 8 + (m.vip.version === 6 ? 16 : 4);
         P.e.emit(m.dev, m.l3, { src: smac, dst: (0, mac_1.multicastMac)(group), msg, ip: pkt });
     };
     // -------------------------------------------------- VRRP, CARP
@@ -73630,13 +73939,15 @@ function installFhrp(P) {
     };
     const backup = (m, why) => {
         m.gen++;
+        m.lower = undefined;
         set(m, 'Backup', why);
         const g = m.gen;
         const wait = () => {
             if (m.gen !== g || m.state !== 'Backup')
                 return;
+            const lower = m.lower;
             if (P.e.now - m.heardAt >= timers(m).down - 1)
-                master(m, m.heardAt < 0 ? 'no master heard' : `master down interval expired (${(0, engine_1.fmtSec)(timers(m).down)}): no advertisement from the master`);
+                master(m, lower && P.e.now - m.heardAt >= timers(m).down - 1 ? `preempts ${lower.dev} (priority ${m.prio} > ${lower.prio}): master down interval expired (${(0, engine_1.fmtSec)(timers(m).down)}) with only its advertisements heard` : m.heardAt < 0 ? 'no master heard' : `master down interval expired (${(0, engine_1.fmtSec)(timers(m).down)}): no advertisement from the master`);
             else
                 P.e.after(timers(m).down - (P.e.now - m.heardAt), wait);
         };
@@ -73655,12 +73966,22 @@ function installFhrp(P) {
             return;
         }
         const theirs = d.prio || 0;
-        const higher = outranks(theirs, d.ip || '0.0.0.0', m.prio, ownIp(m));
+        const higher = outranks(theirs, d.ip || ownIp(m), m.prio, ownIp(m));
         if (m.state === 'Backup') {
-            if (higher || !m.preempt)
+            if (m.protocol === 'carp') {
+                // carp(4): a preempting backup that would advertise more often than the master takes over at once; else it listens
+                if (m.preempt && m.prio > theirs)
+                    master(m, `preempts ${d.from} (priority ${m.prio} > ${theirs})`);
+                else
+                    m.heardAt = P.e.now;
+            }
+            else if (!m.preempt || theirs >= m.prio)
                 m.heardAt = P.e.now;
-            else
-                master(m, `preempts ${d.from} (priority ${m.prio} > ${theirs})`);
+            else {
+                // RFC 5798 §6.4.2: a lower priority's advertisement is discarded (the master down timer runs on): it takes over when that expires
+                m.lower = { dev: d.from || '', prio: theirs };
+                P.e.note('drop', m.protocol, m.dev, d.from || '', 'Advertisement', m.state, `${m.dev} (priority ${m.prio}, preempt) discards ${d.from}'s advertisement with priority ${theirs}: it becomes Master when its master down timer expires (RFC 5798 §6.4.2)`);
+            }
         }
         else if (m.state === 'Master' && higher) {
             m.heardAt = P.e.now;
@@ -73671,7 +73992,7 @@ function installFhrp(P) {
     const hsTick = (m) => {
         // every hello time: the Active, the Standby and a Speaking router say hello; the timers decide the next state
         const g = m.gen;
-        P.periodic(() => m.gen === g && m.state !== 'Initialize', () => timers(m).adv, () => {
+        P.periodic(() => m.gen === g && m.state !== initState(m.protocol), () => timers(m).adv, () => {
             if (m.state === 'Active' || m.state === 'Standby' || m.state === 'Speak')
                 say(m);
             const hold = timers(m).down;
@@ -73754,8 +74075,19 @@ function installFhrp(P) {
     for (const proto of FHRP) {
         P.handlers.set(proto, (dev, l3, msg, pkt) => {
             const d = (msg.data || {});
+            const fam = pkt ? pkt.dst.version : d.vip && (0, ip_1.parseAddress)(d.vip) ? (0, ip_1.parseAddress)(d.vip).version : 4;
             for (const m of members) {
-                if (m.dev !== dev || !l3 || m.l3.id !== l3.id || m.key !== d.key || d.from === dev || m.state === 'Initialize')
+                // what the protocol carries: its group of this family, on the interface it arrived on
+                if (m.protocol !== proto || m.dev !== dev || !l3 || m.l3.id !== l3.id || m.group !== d.group || m.vip.version !== fam || d.from === dev || m.state === initState(m.protocol))
+                    continue;
+                if (d.vip !== (0, ipmath_1.formatAddr)(m.vip)) {
+                    const drop = m.protocol === 'carp';
+                    P.e.note(drop ? 'drop' : 'message', m.protocol, m.dev, d.from || '', msg.type, m.state, `${m.dev}:${m.l3.id}: ${label(m)} group ${m.group} from ${d.from} names virtual address ${d.vip}, here ${(0, ipmath_1.formatAddr)(m.vip)} — a misconfiguration${drop ? '; discarded (its HMAC covers the addresses)' : ', logged (RFC 5798 §7.1)'}`);
+                    if (drop)
+                        continue;
+                }
+                // RFC 5798 §7.1: the owner of the address discards the advertisements of its group
+                if (m.protocol === 'vrrp' && m.owner)
                     continue;
                 if (hsrpLike(m.protocol))
                     hsIn(m, d);
@@ -73770,7 +74102,7 @@ function installFhrp(P) {
                 continue;
             if (!up) {
                 m.gen++;
-                set(m, 'Initialize', `interface ${l3.id} went down`);
+                set(m, initState(m.protocol), `interface ${l3.id} went down`);
             }
             else if (hsrpLike(m.protocol))
                 hsStart(m, `interface ${l3.id} came up`);
@@ -73778,13 +74110,35 @@ function installFhrp(P) {
                 vrStart(m, `interface ${l3.id} came up`);
         }
     });
-    P.extraStatus.push(() => members.map((m) => ({ protocol: m.protocol, name: `group ${m.group} (${(0, ipmath_1.formatAddr)(m.vip)}): ${m.dev}:${m.l3.id}`, device: m.dev, peer: '', state: m.state, detail: `priority ${m.prio}${m.owner ? ' (address owner)' : ''}${m.preempt ? ', preempt' : ''}; virtual MAC ${m.vmac}`, up: m.state !== 'Initialize', relation: m.rel ? m.rel.id : undefined })));
+    P.extraStatus.push(() => members.map((m) => ({ protocol: m.protocol, name: `group ${m.group} (${(0, ipmath_1.formatAddr)(m.vip)}): ${m.dev}:${m.l3.id}`, device: m.dev, peer: '', state: m.state, detail: `priority ${m.prio}${m.owner ? ' (address owner)' : ''}${m.preempt ? ', preempt' : ''}; virtual MAC ${m.vmac}`, up: m.state !== initState(m.protocol), relation: m.rel ? m.rel.id : undefined })));
 }
 // ------------------------------------------------------------------ IPsec (IKEv2)
 /** IKEv2 retransmits a request this often before giving up (RFC 7296 §2.1 leaves it to the implementation; strongSwan: 5 retransmissions). */
 const IKE_TRIES = 5;
 /** The first retransmission after this, doubled each time (strongSwan's 4 s × 1.8ⁿ, simplified). */
 const IKE_RTO = 2000;
+/**
+ * An IKE SA rekeyed (RFC 7296 §2.18): both sides go on in the new one, their message IDs from 0, the peer's last
+ * request forgotten; the side that rekeyed deletes the old one with an INFORMATIONAL Delete on it (answered once).
+ */
+function ikeRekeyed(P, s, newSa, rekeyer) {
+    const x = s.x;
+    const old = x.sa;
+    const oldMid = x.mid === undefined ? 0 : x.mid;
+    x.sa = newSa;
+    x.mid = 0;
+    x.peerMid = undefined;
+    x.answered = undefined;
+    x.pendingNewSa = undefined;
+    if (rekeyer)
+        P.unicast(s, 'INFORMATIONAL', `request (message ID ${oldMid}): Delete (the old IKE SA, replaced by the rekey)`, { mid: oldMid, sa: old, del: true });
+    else
+        x.oldSa = old;
+}
+/** A fresh IKE SA identity (an initiator's SPI): the side that begins it and when. */
+function ikeSpi(P, s) {
+    return `${s.dev}@${P.e.now}`;
+}
 /**
  * Send one of this side's IKE requests (a message ID of its own, RFC 7296
  * §2.2): sent again with a doubling timeout while unanswered; `failed`
@@ -73810,8 +74164,9 @@ function ikeRequest(P, s, type, detail, state, failed, data = {}) {
     const mid = x.mid === undefined ? 0 : x.mid;
     x.mid = mid + 1;
     const tok = (x.tok = (x.tok || 0) + 1);
-    x.pending = { mid, type, tries: 0, tok, what };
-    const send = (n) => P.unicast(s, type, `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: ${detail}`, { ...data, mid }, state);
+    const sa = x.sa;
+    x.pending = { mid, type, tries: 0, tok, what, sa };
+    const send = (n) => P.unicast(s, type, `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: ${detail}`, { ...data, mid, sa }, state);
     send(0);
     const again = (n) => {
         P.later(s, IKE_RTO * Math.pow(2, n - 1), () => {
@@ -73833,11 +74188,11 @@ function ikeRequest(P, s, type, detail, state, failed, data = {}) {
     };
     again(1);
 }
-/** A response: taken only for the request outstanding (its type and message ID); anything else is ignored. */
-function ikeResponse(P, s, type, mid) {
+/** A response: taken only for the request outstanding (its type, message ID and IKE SA); anything else is ignored. */
+function ikeResponse(P, s, type, mid, sa) {
     const x = s.x;
     const p = x.pending;
-    if (!p || p.type !== type || p.mid !== mid) {
+    if (!p || p.type !== type || p.mid !== mid || (sa !== undefined && p.sa !== undefined && sa !== p.sa)) {
         P.e.note('drop', s.protocol, s.dev, s.peer, type, s.state, `IKEv2 ${s.rel.id}: ${s.dev} ignores a ${type} response (message ID ${mid === undefined ? '?' : mid}): ${p ? `it waits for the response to ${p.type} ${p.mid}` : 'no request of its own is outstanding'}`);
         return false;
     }
@@ -73856,20 +74211,32 @@ function ikeClear(x) {
     x.pending = undefined;
     x.queue = [];
 }
-/** Answer the peer's request (the same message ID); the answer is kept, and sent again if the request comes again. */
-function ikeAnswer(P, s, type, mid, detail, data = {}, state = '') {
+/** Answer the peer's request (the same message ID, in its IKE SA); the answer is kept, and sent again if the request comes again. */
+function ikeAnswer(P, s, type, mid, detail, data = {}, state = '', sa = s.x.sa) {
     const x = s.x;
-    x.answered = { mid: mid === undefined ? 0 : mid, type, detail, data };
+    x.answered = { mid: mid === undefined ? 0 : mid, type, detail, data, sa };
     x.peerMid = (mid === undefined ? 0 : mid) + 1;
-    P.unicast(s, type, `response (message ID ${mid}): ${detail}`, { ...data, response: true, mid }, state);
+    P.unicast(s, type, `response (message ID ${mid}): ${detail}`, { ...data, response: true, mid, sa }, state);
 }
-/** The peer's request: a retransmission of the last one answered is answered again (no second exchange). */
-function ikeRepeat(P, s, type, mid) {
+/** The peer's request: a retransmission of the last one answered (the same SA) is answered again (no second exchange). */
+function ikeRepeat(P, s, type, mid, sa) {
     const x = s.x;
     const a = x.answered;
-    if (!a || a.type !== type || a.mid !== mid)
+    if (!a || a.type !== type || a.mid !== mid || (sa !== undefined && a.sa !== undefined && a.sa !== sa))
         return false;
-    P.unicast(s, type, `response (message ID ${mid}), sent again: the request came again`, { ...a.data, response: true, mid }, '');
+    P.unicast(s, type, `response (message ID ${mid}), sent again: the request came again`, { ...a.data, response: true, mid, sa: a.sa }, '');
+    return true;
+}
+/**
+ * A request of this side's current IKE SA that is neither the last one answered (ikeRepeat) nor the next one: an
+ * old one, delayed — outside the window, dropped (RFC 7296 §2.2: a responder takes a request only with the next
+ * message ID; it never starts that exchange again).
+ */
+function ikeStale(P, s, type, mid) {
+    const x = s.x;
+    if (mid === undefined || x.peerMid === undefined || mid >= x.peerMid)
+        return false;
+    P.e.note('drop', s.protocol, s.dev, s.peer, type, s.state, `IKEv2 ${s.rel.id}: ${s.dev} drops a ${type} request (message ID ${mid}) of its IKE SA with ${s.peer}: an old one (the next is ${x.peerMid}), outside the window (RFC 7296 §2.2)`);
     return true;
 }
 /**
@@ -73883,9 +74250,11 @@ function ikeRepeat(P, s, type, mid) {
  *   DPD interval, sent again every interval for its retries; unanswered,
  *   that side deletes its SAs (the initiator starts again after the DPD
  *   interval; the responder waits for it).
- *   Rekeying (the initiator, its rekey margin before a lifetime ends): a
- *   CREATE_CHILD_SA for the Child SA or the IKE SA; its response replaces
- *   the SA on both ends (a new lifetime). An SA not rekeyed by the end of
+ *   Rekeying (either side, its rekey margin before its own lifetime ends —
+ *   the responder half a margin later): a CREATE_CHILD_SA for the Child SA
+ *   or the IKE SA; its response replaces the SA on both ends (a new
+ *   lifetime); a new IKE SA's message IDs start at 0 and the old one is
+ *   deleted (an INFORMATIONAL Delete on it). An SA not rekeyed by the end of
  *   its lifetime expires on that side: a Child SA — no traffic until a
  *   new one is negotiated; the IKE SA — everything is deleted and
  *   negotiated anew.
@@ -73894,7 +74263,10 @@ function ikeRepeat(P, s, type, mid) {
  *   A new IKE_SA_INIT from the peer while this side is established (the
  *   peer lost its SA and starts over): answered, and the old SAs keep
  *   serving until the new IKE_AUTH completes and replaces them — the new
- *   negotiation alone deletes nothing.
+ *   negotiation alone deletes nothing. Every message carries the IKE SA it
+ *   belongs to (the initiator's SPI): a delayed IKE_SA_INIT or IKE_AUTH of
+ *   the SA already established, or an old request of it (neither the last
+ *   one answered nor the next), is dropped — outside the window (§2.2).
  * Cryptography stays abstract (proposals, keys and authentication are not
  * checked).
  */
@@ -73911,66 +74283,107 @@ const ike = {
     rx(P, s, msg) {
         const d = (msg.data || {});
         const x = s.x;
+        const up = s.state === 'Established' || s.state === 'No Child SA';
+        // a request of an IKE SA this side does not have (an old one, replaced or deleted): not taken
+        const foreign = () => {
+            if (d.sa === undefined || d.sa === x.sa)
+                return false;
+            P.e.note('drop', s.protocol, s.dev, s.peer, msg.type, s.state, `IKEv2 ${s.rel.id}: ${s.dev} drops a ${msg.type} ${d.response ? 'response' : 'request'} (message ID ${d.mid}) of an IKE SA it does not have`);
+            return true;
+        };
         switch (msg.type) {
             case 'IKE_SA_INIT':
                 if (!d.response) {
-                    if (ikeRepeat(P, s, 'IKE_SA_INIT', d.mid))
+                    if (ikeRepeat(P, s, 'IKE_SA_INIT', d.mid, d.sa))
                         return;
-                    if (s.state === 'Established' || s.state === 'No Child SA') {
+                    if (up && d.sa !== undefined && d.sa === x.sa) {
+                        // the IKE_SA_INIT that began this very SA, delayed: long processed, outside the window — never a new IKE SA
+                        P.e.note('drop', s.protocol, s.dev, s.peer, 'IKE_SA_INIT', s.state, `IKEv2 ${s.rel.id}: ${s.dev} drops an IKE_SA_INIT request (message ID ${d.mid}) of the IKE SA it already has with ${s.peer}: a retransmission, outside the window (RFC 7296 §2.2)`);
+                        return;
+                    }
+                    if (up) {
                         // a new IKE SA from the peer while this side's is up: answered; the old SAs serve until the new one is authenticated
                         x.replacing = true;
-                        ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr (a new IKE SA: the established one serves until it is up)');
+                        x.newSa = d.sa;
+                        ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr (a new IKE SA: the established one serves until it is up)', {}, '', d.sa);
                         P.e.note('state', s.protocol, s.dev, s.peer, 'new IKE SA', s.state, `IKEv2 ${s.rel.id}: ${s.peer} starts a new IKE SA; ${s.dev}'s established SAs serve until the new one is authenticated`);
                         return;
                     }
                     x.mid = 0;
+                    x.sa = d.sa;
                     ikeClear(x);
                     ikeAnswer(P, s, 'IKE_SA_INIT', d.mid, 'chosen proposal, KE, Nr', {}, 'IKE_SA_INIT');
                     P.setState(s, 'IKE_SA_INIT', false, 'request from the peer');
                 }
-                else if (s.state === 'IKE_SA_INIT' && ikeResponse(P, s, 'IKE_SA_INIT', d.mid)) {
+                else if (s.state === 'IKE_SA_INIT' && ikeResponse(P, s, 'IKE_SA_INIT', d.mid, d.sa)) {
                     P.setState(s, 'IKE_AUTH', false, 'IKE SA keys derived');
                     ikeRequest(P, s, 'IKE_AUTH', 'IDi, AUTH, SAi2, TSi, TSr (encrypted)', 'IKE_AUTH', (why) => ikeFailed(P, s, why));
                 }
                 return;
             case 'IKE_AUTH':
                 if (!d.response) {
-                    if (ikeRepeat(P, s, 'IKE_AUTH', d.mid))
+                    if (ikeRepeat(P, s, 'IKE_AUTH', d.mid, d.sa))
                         return;
-                    if (s.state !== 'IKE_SA_INIT' && !x.replacing)
+                    // the new IKE SA's authentication (the peer started over), or this negotiation's
+                    const replacing = !!x.replacing && (d.sa === undefined || d.sa === x.newSa);
+                    if (!replacing && (s.state !== 'IKE_SA_INIT' || (d.sa !== undefined && d.sa !== x.sa))) {
+                        if (up && d.sa === x.sa)
+                            ikeStale(P, s, 'IKE_AUTH', d.mid);
                         return;
-                    const replaced = !!x.replacing;
+                    }
+                    if (replacing) {
+                        x.sa = x.newSa;
+                        x.newSa = undefined;
+                    }
                     ikeAnswer(P, s, 'IKE_AUTH', d.mid, 'IDr, AUTH, SAr2 (the first Child SA)', {}, 'Established');
-                    if (replaced)
+                    if (replacing)
                         P.e.note('state', s.protocol, s.dev, s.peer, 'IKE SA replaced', 'Established', `IKEv2 ${s.rel.id}: the new IKE SA with ${s.peer} is authenticated: it and its Child SA replace ${s.dev}'s old ones (deleted now)`);
                     ikeUp(P, s);
                 }
-                else if (s.state === 'IKE_AUTH' && ikeResponse(P, s, 'IKE_AUTH', d.mid))
+                else if (s.state === 'IKE_AUTH' && ikeResponse(P, s, 'IKE_AUTH', d.mid, d.sa))
                     ikeUp(P, s);
                 return;
             case 'INFORMATIONAL':
+                if (d.del) {
+                    // the Delete of an IKE SA a rekey replaced (on the old SA): answered once; its response ends it
+                    if (!d.response && d.sa !== undefined && d.sa === x.oldSa) {
+                        x.oldSa = undefined;
+                        P.unicast(s, 'INFORMATIONAL', `response (message ID ${d.mid}): Delete (the old IKE SA)`, { response: true, mid: d.mid, sa: d.sa, del: true });
+                    }
+                    else if (d.response)
+                        P.e.note('state', s.protocol, s.dev, s.peer, 'old IKE SA deleted', s.state, `IKEv2 ${s.rel.id}: ${s.peer} confirms the Delete: the old IKE SA is gone`);
+                    return;
+                }
                 if (!d.response) {
-                    if (ikeRepeat(P, s, 'INFORMATIONAL', d.mid))
+                    if (ikeRepeat(P, s, 'INFORMATIONAL', d.mid, d.sa))
+                        return;
+                    if (foreign() || ikeStale(P, s, 'INFORMATIONAL', d.mid))
                         return;
                     // (a DPD request of an IKE SA this side does not have: no answer — the peer's DPD finds that out)
-                    if (s.state === 'Established' || s.state === 'No Child SA')
+                    if (up)
                         ikeAnswer(P, s, 'INFORMATIONAL', d.mid, 'DPD (empty)');
                 }
                 else
-                    ikeResponse(P, s, 'INFORMATIONAL', d.mid);
+                    ikeResponse(P, s, 'INFORMATIONAL', d.mid, d.sa);
                 return;
             case 'CREATE_CHILD_SA':
                 if (!d.response) {
-                    if (ikeRepeat(P, s, 'CREATE_CHILD_SA', d.mid))
+                    if (ikeRepeat(P, s, 'CREATE_CHILD_SA', d.mid, d.sa))
                         return;
-                    if (s.state !== 'Established' && s.state !== 'No Child SA')
+                    if (!up || foreign() || ikeStale(P, s, 'CREATE_CHILD_SA', d.mid))
                         return;
-                    // the rekeyed SA replaces this side's: a new lifetime from now
-                    ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
+                    // the rekeyed SA replaces this side's: a new lifetime from now; a new IKE SA — the answer is the old one's, then
+                    // this side is in the new one, its message IDs from 0 (RFC 7296 §2.18)
                     ikeAnswer(P, s, 'CREATE_CHILD_SA', d.mid, d.what === 'ike' ? 'the new IKE SA' : 'the new Child SA', { what: d.what });
-                }
-                else if (ikeResponse(P, s, 'CREATE_CHILD_SA', d.mid))
+                    if (d.what === 'ike')
+                        ikeRekeyed(P, s, d.newSa, false);
                     ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
+                }
+                else if (ikeResponse(P, s, 'CREATE_CHILD_SA', d.mid, d.sa)) {
+                    if (d.what === 'ike')
+                        ikeRekeyed(P, s, x.pendingNewSa || ikeSpi(P, s), true);
+                    ikeRenew(P, s, d.what === 'ike' ? 'ike' : 'child');
+                }
                 return;
             default:
                 return;
@@ -73984,6 +74397,8 @@ function ikeInit(P, s) {
     ikeClear(x);
     x.replacing = false;
     x.answered = undefined;
+    x.peerMid = undefined;
+    x.sa = ikeSpi(P, s);
     P.setState(s, 'IKE_SA_INIT', false, 'initiating');
     ikeRequest(P, s, 'IKE_SA_INIT', `SA proposals, KE, Ni to ${(0, ipmath_1.formatAddr)((0, protocols_1.ipOf)(s.remote))} UDP 500`, 'IKE_SA_INIT', (why) => ikeFailed(P, s, why));
 }
@@ -74026,11 +74441,17 @@ function ikeDetail(P, s) {
     const left = (t) => (t === undefined ? '' : ` (${(0, engine_1.fmtSec)(Math.max(0, t - P.e.now))} left)`);
     s.x.detail = `DPD ${dpd.text} × ${retries.text}; Child SA lifetime ${life.text}${left(x.childUntil)}; IKE SA lifetime ${ike.text}${left(x.ikeUntil)}; rekey margin ${P.paramText(P.param('rekey-margin', s.dev, (0, params_1.relRef)(s.rel.id)))}`;
 }
-/** Rekey an SA before its lifetime ends (its lifetime less the rekey margin, at least half of it). */
+/**
+ * Rekey an SA before its lifetime ends (its lifetime less the rekey margin, at least half of it). Either side rekeys
+ * by its own lifetime (RFC 7296 §2.8: lifetimes are not negotiated); the responder halfway between the moment the
+ * initiator would and the lifetime's end, so with equal lifetimes the initiator's rekey comes first and the
+ * responder's is not needed (no simultaneous rekeying).
+ */
 function rekeyAfter(P, s, key) {
     const life = P.timer(s, s.profile, key).ms;
     const margin = Number(P.param('rekey-margin', s.dev, (0, params_1.relRef)(s.rel.id)).value);
-    return Math.max(life / 2, life - margin);
+    const first = Math.max(life / 2, life - margin);
+    return s.initiator ? first : (first + life) / 2;
 }
 /** A new SA (the first, or a rekeyed one): its lifetime from now; its expiry; the initiator's rekey before it. */
 function ikeRenew(P, s, what) {
@@ -74058,17 +74479,18 @@ function ikeRenew(P, s, what) {
         x.childUntil = undefined;
         P.setState(s, 'No Child SA', false, `the Child SA's lifetime (${life.text}) ended without a rekey: no traffic until a new one`);
         P.e.syncInterfaces();
-        if (s.initiator)
-            ikeRequest(P, s, 'CREATE_CHILD_SA', 'a new Child SA (the old one expired)', '', (why) => ikeDown(P, s, `${why}: its SAs are deleted`), { what: 'child' });
+        ikeRequest(P, s, 'CREATE_CHILD_SA', 'a new Child SA (the old one expired)', '', (why) => ikeDown(P, s, `${why}: its SAs are deleted`), { what: 'child' });
     });
-    // the initiator rekeys before the end
-    if (s.initiator)
-        P.later(s, rekeyAfter(P, s, key), () => {
-            if ((what === 'child' ? x.childUntil : x.ikeUntil) !== until)
-                return;
-            const margin = (0, engine_1.fmtSec)(Number(P.param('rekey-margin', s.dev, (0, params_1.relRef)(s.rel.id)).value));
-            ikeRequest(P, s, 'CREATE_CHILD_SA', what === 'child' ? `rekeys the Child SA ${margin} before its lifetime (${life.text}) ends` : `rekeys the IKE SA before its lifetime (${life.text}) ends`, '', (why) => P.e.note('state', s.protocol, s.dev, s.peer, 'rekey failed', s.state, `IKEv2 ${s.rel.id}: ${s.dev}'s rekey failed (${why}): the ${what === 'child' ? 'Child' : 'IKE'} SA lives until its lifetime ends`), { what });
-        });
+    // each side rekeys before the end of its own lifetime (unless the peer's rekey renewed the SA first)
+    P.later(s, rekeyAfter(P, s, key), () => {
+        if ((what === 'child' ? x.childUntil : x.ikeUntil) !== until)
+            return;
+        const margin = (0, engine_1.fmtSec)(life.ms - rekeyAfter(P, s, key));
+        const data = { what };
+        if (what === 'ike')
+            data.newSa = x.pendingNewSa = ikeSpi(P, s);
+        ikeRequest(P, s, 'CREATE_CHILD_SA', what === 'child' ? `rekeys the Child SA ${margin} before its lifetime (${life.text}) ends` : `rekeys the IKE SA before its lifetime (${life.text}) ends`, '', (why) => P.e.note('state', s.protocol, s.dev, s.peer, 'rekey failed', s.state, `IKEv2 ${s.rel.id}: ${s.dev}'s rekey failed (${why}): the ${what === 'child' ? 'Child' : 'IKE'} SA lives until its lifetime ends`), data);
+    });
 }
 function ikeUp(P, s) {
     P.restart(s);
@@ -74084,8 +74506,8 @@ function ikeUp(P, s) {
     ikeRenew(P, s, 'ike');
     // dead peer detection, on each side by its own timers: a request every interval, sent again every interval for its retries
     const g = s.gen;
-    const dpd = () => {
-        P.later(s, P.timer(s, s.profile, 'dpd').ms, () => {
+    const dpd = (wait = P.timer(s, s.profile, 'dpd').ms) => {
+        P.later(s, wait, () => {
             // (a request of its own outstanding or waiting: its response shows the peer alive; DPD waits)
             if (s.gen !== g || s.x.pending || (s.x.queue || []).length) {
                 if (s.gen === g)
@@ -74100,13 +74522,16 @@ function ikeUp(P, s) {
             const tok = (x.tok = (x.tok || 0) + 1);
             x.pending = { mid, type: 'INFORMATIONAL', tries: 0, tok };
             let n = 0;
-            const send = () => P.unicast(s, 'INFORMATIONAL', `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: DPD (empty)`, { mid });
+            const sa = x.sa;
+            x.pending.sa = sa;
+            const send = () => P.unicast(s, 'INFORMATIONAL', `request (message ID ${mid})${n ? `, sent again (${n})` : ''}: DPD (empty)`, { mid, sa });
             send();
             const check = () => {
                 P.later(s, interval.ms, () => {
                     const p = x.pending;
                     if (!p || p.tok !== tok) {
-                        dpd();
+                        // (answered: the next request an interval after this one was sent — now)
+                        dpd(0);
                         return;
                     }
                     if (n >= retries) {
@@ -74596,7 +75021,12 @@ const pim = {
     },
 };
 // ------------------------------------------------------------------ LACP
-/** LACP on every aggregate's member links: LACPDUs both ways, members attached, collecting and distributing; a member whose link goes down is detached at once. */
+/**
+ * LACP on every aggregate's member links: LACPDUs both ways, members attached, collecting and distributing; a member
+ * whose link goes down is detached at once. IEEE 802.1AX: each LACPDU carries its actor's LACP_Timeout; a member
+ * transmits at the rate its partner's timeout asks for (fast while it is short) and times out by its own; a member
+ * collecting and distributing goes back to Attached when its partner says it is not in sync (the mux machine).
+ */
 function installLacp(P) {
     const mems = [];
     const LACP_MAC = '01:80:c2:00:00:02';
@@ -74610,7 +75040,7 @@ function installLacp(P) {
                     continue;
                 const o = (0, net_1.otherEnd)(P.e.net, e);
                 const rel = P.m.relations.find((r) => P.e.base(r) === 'lacp' && (0, types_1.relationDevices)(r).indexOf(d.id) >= 0 && (0, types_1.relationDevices)(r).indexOf(o.device) >= 0);
-                mems.push({ dev: d.id, agg: i.id, port, peer: o.device, peerPort: o.port, state: 'Detached', heard: -1, gen: 0, rel });
+                mems.push({ dev: d.id, agg: i.id, port, peer: o.device, peerPort: o.port, state: 'Detached', heard: -1, gen: 0, rel, txGen: 0 });
             }
         }
     }
@@ -74622,6 +75052,9 @@ function installLacp(P) {
         const fast = r.value === 'fast';
         return { every: fast ? 1000 : 30000, timeout: fast ? 3000 : 90000, text: P.paramText(r) };
     };
+    /** how often a member sends: fast while its partner's LACP_Timeout (in its last LACPDU) is short, else slow (802.1AX periodic machine) */
+    const txEvery = (m) => (m.partnerShort ? 1000 : 30000);
+    const txText = (m) => (m.partnerShort ? 'its partner’s timeout is short' : m.partnerShort === false ? 'its partner’s timeout is long' : 'no partner heard yet');
     const set = (m, st, why) => {
         if (m.state === st)
             return;
@@ -74631,8 +75064,17 @@ function installLacp(P) {
         P.e.holdMember(m.dev, m.port, st !== 'Collecting / Distributing');
     };
     const send = (m, why) => {
-        const detail = `LACPDU from ${m.dev}:${m.port} (${m.agg}) to ${LACP_MAC}: actor state ${m.state === 'Collecting / Distributing' ? 'in sync, collecting, distributing' : m.state === 'Attached' ? 'in sync' : 'not in sync'}${why ? '; ' + why : ''}`;
-        P.onPort('lacp', m.dev, m.port, LACP_MAC, 'LACPDU', 'LACP LACPDU', detail, { agg: m.agg, state: m.state }, m.peer, m.rel);
+        const short = rate(m).timeout === 3000;
+        const detail = `LACPDU from ${m.dev}:${m.port} (${m.agg}) to ${LACP_MAC}: actor state ${m.state === 'Collecting / Distributing' ? 'in sync, collecting, distributing' : m.state === 'Attached' ? 'in sync' : 'not in sync'}, LACP_Timeout ${short ? 'short' : 'long'}${why ? '; ' + why : ''}`;
+        P.onPort('lacp', m.dev, m.port, LACP_MAC, 'LACPDU', 'LACP LACPDU', detail, { agg: m.agg, state: m.state, timeout: short ? 'short' : 'long' }, m.peer, m.rel);
+    };
+    /** the member's periodic LACPDUs, from `first` ms on, every txEvery; a new start ends the old one */
+    const startTx = (m, first, why, onlyUp) => {
+        const g = ++m.txGen;
+        P.periodic(() => m.txGen === g, () => txEvery(m), () => {
+            if (!onlyUp || P.e.portUp(m.dev, m.port))
+                send(m, why);
+        }, first);
     };
     // until LACP bundles a member, the aggregate's traffic waits for it
     for (const m of mems)
@@ -74643,11 +75085,7 @@ function installLacp(P) {
         for (const m of mems) {
             P.whenPortUp(m.dev, m.port, () => {
                 started.add(m);
-                const g = m.gen;
-                P.periodic(() => m.gen === g, () => rate(m).every, () => {
-                    if (P.e.portUp(m.dev, m.port))
-                        send(m, 'periodic');
-                });
+                startTx(m, undefined, 'periodic', true);
             });
         }
     });
@@ -74658,11 +75096,24 @@ function installLacp(P) {
         if (!m)
             return;
         m.heard = P.e.now;
+        // the partner's LACP_Timeout: short — this member transmits fast from now on (the periodic machine's FAST_PERIODIC: the next
+        // LACPDU within a fast period), long — slow again
+        const short = (msg.data || {}).timeout === 'short';
+        if (m.partnerShort !== short) {
+            const was = m.partnerShort;
+            m.partnerShort = short;
+            if (started.has(m) && (short || was !== undefined))
+                startTx(m, short ? 1000 : 30000, 'periodic', true);
+        }
         const g = m.gen;
         const timeout = rate(m).timeout;
         P.e.after(timeout, () => {
-            if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached')
+            if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') {
                 set(m, 'Detached', `no LACPDU for ${(0, engine_1.fmtSec)(timeout)} (LACP rate ${rate(m).text})`);
+                // (its state changed: it tells its partner at once — need to transmit, 802.1AX — not at its next periodic LACPDU)
+                if (P.e.portUp(m.dev, m.port))
+                    send(m, 'its partner timed out');
+            }
         });
         const theirs = (msg.data || {}).state || 'Detached';
         // the partner as its LACPDU names it (its system and its aggregate's key): every member of an aggregate must have the same
@@ -74687,6 +75138,11 @@ function installLacp(P) {
             set(m, 'Collecting / Distributing', 'partner in sync');
             send(m, 'in sync');
         }
+        else if (m.state === 'Collecting / Distributing' && theirs === 'Detached') {
+            // the mux machine: the partner is not in sync — this member stops collecting and distributing (Attached), and says so
+            set(m, 'Attached', `its partner ${m.peer}:${m.peerPort} is not in sync`);
+            send(m, 'partner not in sync');
+        }
     });
     P.linkHooks.push((ref, up) => {
         for (const m of mems) {
@@ -74699,12 +75155,12 @@ function installLacp(P) {
             }
             else if (started.has(m)) {
                 m.gen++;
-                const g = m.gen;
-                P.periodic(() => m.gen === g, () => rate(m).every, () => send(m, 'link up again'), 200);
+                m.partnerShort = undefined;
+                startTx(m, 200, 'link up again', false);
             }
         }
     });
-    P.extraStatus.push(() => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${(0, engine_1.fmtSec)(rate(m).every)}, timeout ${(0, engine_1.fmtSec)(rate(m).timeout)} (LACP rate ${rate(m).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
+    P.extraStatus.push(() => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${(0, engine_1.fmtSec)(txEvery(m))} (${txText(m)}), timeout ${(0, engine_1.fmtSec)(rate(m).timeout)} (LACP rate ${rate(m).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
 }
 // ------------------------------------------------------------------ STP, LLDP, CDP (where the model has their relations)
 /**
@@ -75009,22 +75465,6 @@ exports.tcpConnect = tcpConnect;
 exports.tcpOpen = tcpOpen;
 exports.tcpSend = tcpSend;
 exports.tcpClose = tcpClose;
-/**
- * The sessions of the protocols that run over TCP (BGP and its EVPN and
- * L3VPN, LDP and its targeted sessions, HTTPS, SSL VPN): their messages go
- * over a connection of the common transport (transport.ts, tcp.ts) — its
- * handshake, listener, firewall sessions, retransmission, segmentation by
- * the path MTU, reset and close, and the connection table — never over an
- * imitation of TCP of their own.
- *
- * One side connects (the behaviour says which: BGP's initiator, LDP's
- * active side, a service's client); every device with such a session
- * listens on the protocol's port while the session runs. An accepted
- * connection belongs to no session until its first message names the
- * relation it is for; a connection that names none (no such session
- * there) is reset. Each message arrives at the behaviour's rx as if sent
- * by unicast; the connection opening and closing arrive at its `tcp`.
- */
 const ipmath_1 = __req("analysis/ipmath");
 const transport_1 = __req("analysis/sim/transport");
 const protocols_1 = __req("analysis/sim/protocols");
@@ -75075,7 +75515,41 @@ function tcpListen(P, s) {
         return;
     P.shared.set(key, true);
     const dev = s.dev;
+    /** the session whose addresses a connection has (its configured peer), started */
+    const byAddresses = (local, remote) => Array.from(P.sessions.values())
+        .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && (0, ipmath_1.compareAddr)((0, protocols_1.ipOf)(x.local), local) === 0 && (0, ipmath_1.compareAddr)((0, protocols_1.ipOf)(x.remote), remote) === 0)
+        .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))[0];
+    /** a connection becomes a session's: the protocol hears that it is open (false: it was closed, a collision) */
+    const bind = (sock, o, what) => {
+        const cur = o.x.sock;
+        if (cur && cur !== sock && cur.open) {
+            // a second connection for a session that has one: the session keeps the one it has when it is up (RFC 4271 §6.8), else takes the new one
+            if (o.up) {
+                P.e.note('drop', o.protocol, dev, o.peer, what, o.state, `${o.profile.label} ${o.rel.id}: ${dev} already has its session with ${o.peer} up: the new connection is closed (connection collision)`);
+                sock.reset('connection collision: the session is up on another connection');
+                return false;
+            }
+            socks(P).delete(cur);
+            cur.reset('replaced by a new connection of the peer');
+        }
+        o.x.sock = sock;
+        socks(P).set(sock, o);
+        sock.show(o.protocol, o.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), o.rel.id);
+        const b = beh(P, o);
+        if (b.tcp)
+            b.tcp(P, o, 'open', `${o.peer} connected from ${(0, ipmath_1.formatAddr)(sock.remote)}`);
+        return true;
+    };
     P.transport.appListen(dev, port, `${s.profile.label.replace(/ \(.*\)$/, '')} (port ${port})`, {
+        // established: the session of the connection's addresses has it now (a BGP speaker sends its OPEN at once, RFC 4271 §8.2.2);
+        // a connection from an address no session has (translated on the way) is bound by its first message, as before
+        accept(sock) {
+            // (only the connection the peer's session opened — its SYN said so —, never a test's or an application's to the same port)
+            const syn = sock.c.synApp;
+            const o = byAddresses(sock.local, sock.remote);
+            if (o && syn && syn.protocol === o.protocol && (syn.relation === undefined || syn.relation === o.rel.id))
+                bind(sock, o, 'connection');
+        },
         message(sock, m) {
             let o = socks(P).get(sock);
             if (!o) {
@@ -75086,23 +75560,8 @@ function tcpListen(P, s) {
                     sock.reset('no such session');
                     return;
                 }
-                const cur = o.x.sock;
-                if (cur && cur !== sock && cur.open) {
-                    // a second connection for a session that has one: the session keeps the one it has when it is up (RFC 4271 §6.8), else takes the new one
-                    if (o.up) {
-                        P.e.note('drop', o.protocol, dev, o.peer, m.type, o.state, `${o.profile.label} ${o.rel.id}: ${dev} already has its session with ${o.peer} up: the new connection is closed (connection collision)`);
-                        sock.reset('connection collision: the session is up on another connection');
-                        return;
-                    }
-                    socks(P).delete(cur);
-                    cur.reset('replaced by a new connection of the peer');
-                }
-                o.x.sock = sock;
-                socks(P).set(sock, o);
-                sock.show(o.protocol, o.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), o.rel.id);
-                const b = beh(P, o);
-                if (b.tcp)
-                    b.tcp(P, o, 'open', `${o.peer} connected from ${(0, ipmath_1.formatAddr)(sock.remote)}`);
+                if (!bind(sock, o, m.type))
+                    return;
             }
             deliver(P, o, m);
         },
@@ -75111,9 +75570,7 @@ function tcpListen(P, s) {
         },
     }, (local, remote) => {
         // the session whose addresses the connection has (its configured peer): its relation's handshake; else the protocol's
-        const o = Array.from(P.sessions.values())
-            .filter((x) => x.dev === dev && x.x.started && tcpPort(x) === port && (0, ipmath_1.compareAddr)((0, protocols_1.ipOf)(x.local), local) === 0 && (0, ipmath_1.compareAddr)((0, protocols_1.ipOf)(x.remote), remote) === 0)
-            .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))[0];
+        const o = byAddresses(local, remote);
         const by = o || s;
         return { protocol: by.protocol, label: by.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, ''), relation: o ? o.rel.id : undefined };
     });
@@ -75253,12 +75710,23 @@ function every(P, s, ms, fn) {
     const g = s.gen;
     P.periodic(() => s.gen === g, ms, fn);
 }
-/** Tell the protocols that use BFD between two devices that it went down. */
-function bfdDown(P, dev, peer) {
+/**
+ * The BFD sessions that serve a client session: those on its interface or between its addresses; a client between
+ * loopbacks (BGP …), not on a link of its own, every BFD session of the device to that peer.
+ */
+function bfdFor(P, c) {
+    const all = Array.from(P.sessions.values()).filter((b) => b.profile.behaviour === 'bfd' && b.dev === c.dev && b.peer === c.peer);
+    const same = all.filter((b) => b.local.l3.id === c.local.l3.id || ((0, ipmath_1.formatAddr)((0, protocols_2.ipOf)(b.local)) === (0, ipmath_1.formatAddr)((0, protocols_2.ipOf)(c.local)) && (0, ipmath_1.formatAddr)((0, protocols_2.ipOf)(b.remote)) === (0, ipmath_1.formatAddr)((0, protocols_2.ipOf)(c.remote))));
+    return same.length || c.local.l3.kind !== 'loopback' ? same : all;
+}
+/** Tell the protocols that BFD session serves (RFC 5882 §4: its own clients — on its interface, between its addresses) that it went down. */
+function bfdDown(P, bs) {
     for (const s of Array.from(P.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
-        if (s.dev !== dev || s.peer !== peer || !s.up)
+        if (s.dev !== bs.dev || s.peer !== bs.peer || !s.up)
             continue;
         if (['ospf', 'isis', 'eigrp', 'bgp', 'evpn', 'l3vpn'].indexOf(s.protocol) < 0)
+            continue;
+        if (bfdFor(P, s).indexOf(bs) < 0)
             continue;
         const b = P.behaviours.get(s.profile.behaviour);
         if (b.down)
@@ -75441,6 +75909,8 @@ function ospfExStart(P, s, why) {
     x.dd = 1 + (0, engine_1.hashIndex)(`${s.key}|${P.e.now}`, 100000);
     x.master = undefined;
     x.peerInit = undefined;
+    x.lastRx = undefined;
+    x.lastTx = undefined;
     const mtu = ospfMtu(P, s);
     ospfRetransmit(P, s, 'ExStart', () => P.unicast(s, 'DBD', `ExStart: I, M, MS bits set, DD sequence ${x.dd}, interface MTU ${mtu}, router ID ${x.rid}`, { phase: 'init', dd: x.dd, mtu, rid: x.rid }, 'ExStart'));
 }
@@ -75634,19 +76104,45 @@ const ospf = {
                     return;
                 }
                 x.ddNote = undefined;
+                // (the bits of this DBD as sent: an initial one has I, M and MS set; the others the sender's MS)
+                const rx = { i: dd.phase === 'init', ms: dd.phase === 'init' ? true : !!dd.ms, dd: dd.dd };
                 const slaveAnswer = (again) => P.unicast(s, 'DBD', `Exchange (slave): the LSA headers of the database, DD sequence ${x.peerInit}${again ? ' (again)' : ''}`, { phase: 'summary', dd: x.peerInit, mtu, ms: false }, 'Exchange');
                 const slaveAck = (again) => P.unicast(s, 'DBD', `Exchange (slave): acknowledges DD sequence ${x.dd}${again ? ' (again: the master sent its summary again)' : ''}`, { phase: 'summary', dd: x.dd, mtu, ms: false }, 'Exchange');
-                if (dd.phase === 'init') {
-                    if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
-                        // the same initial DBD again (sent before this router's answer reached the neighbour, or delayed): the slave answers
-                        // it again, the master ignores it; a new one is the neighbour starting over (SeqNumberMismatch)
-                        if (dd.dd === x.peerInit) {
-                            if (x.master === false)
-                                slaveAnswer(true);
-                            return;
+                if (['Exchange', 'Loading', 'Full'].indexOf(s.state) >= 0) {
+                    // RFC 2328 §10.6: a duplicate of the last DBD received (the same I, M, MS bits and DD sequence number) is discarded by the
+                    // master and makes the slave send its last DBD again; in Loading and Full only duplicates are acceptable
+                    const l = x.lastRx;
+                    if (l && l.i === rx.i && l.ms === rx.ms && l.dd === rx.dd) {
+                        if (x.master === false && x.lastTx) {
+                            P.e.note('message', 'ospf', s.dev, s.peer, 'DBD duplicate', s.state, `OSPF ${s.rel.id}: ${s.dev} (slave) receives a duplicate of ${s.peer}'s DBD ${rx.dd}: it sends its last DBD again (RFC 2328 §10.6)`);
+                            x.lastTx();
                         }
-                        ospfSeqMismatch(P, s, `an initial DBD (I bit, DD sequence ${dd.dd}) from ${s.peer} in ${s.state}: it started the exchange over`);
+                        return;
                     }
+                    const why = rx.i
+                        ? `an initial DBD (I bit, DD sequence ${rx.dd}) from ${s.peer} in ${s.state}: it started the exchange over`
+                        : s.state !== 'Exchange'
+                            ? `a DBD that is no duplicate (DD sequence ${rx.dd}) in ${s.state}: only duplicates are acceptable after the exchange`
+                            : rx.ms !== (x.master === false)
+                                ? `the MS bit of DBD ${rx.dd} is ${rx.ms ? 'set' : 'clear'}, but ${s.peer} is the ${x.master ? 'slave' : 'master'}`
+                                : rx.dd !== (x.master ? x.dd : x.dd + 1)
+                                    ? `DBD ${rx.dd} out of sequence (${x.master ? 'the master expects the acknowledgment of' : 'the slave expects'} ${x.master ? x.dd : x.dd + 1})`
+                                    : '';
+                    if (why) {
+                        ospfSeqMismatch(P, s, why);
+                        return;
+                    }
+                    // the next DBD in sequence: accepted
+                    x.lastRx = rx;
+                    if (x.master === false) {
+                        // the slave: the master's summary is acknowledged with its DD sequence number; with that the exchange is done
+                        x.dd = rx.dd;
+                        x.lastTx = () => slaveAck(true);
+                        slaveAck(false);
+                    }
+                    // (the master: the slave's acknowledgment of its summary — the exchange is done)
+                }
+                else if (dd.phase === 'init') {
                     if (['2-Way', 'ExStart'].indexOf(s.state) < 0 || !ospfShouldAdj(P, s))
                         return;
                     x.peerInit = dd.dd;
@@ -75655,19 +76151,22 @@ const ospf = {
                         x.master = false;
                         x.dd = dd.dd;
                         x.sent = true;
+                        x.lastRx = rx;
+                        x.lastTx = () => slaveAnswer(true);
                         P.setState(s, 'Exchange', false, `negotiation done: ${s.peer} (router ID ${dd.rid}) is master, this router slave (DD sequence ${dd.dd})`);
                         slaveAnswer(false);
                     }
                     // (a neighbour with the lower router ID: its initial DBD is ignored — it answers this router's as slave)
                     return;
                 }
-                if (s.state === 'ExStart') {
+                else if (s.state === 'ExStart') {
                     // the master: the slave's answer carries the master's DD sequence number — the negotiation is done; its summary is
-                    // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8)
+                    // sent, and again every retransmit interval until the slave acknowledges it (RFC 2328 §10.8); any other DBD is ignored
                     if (dd.ms || dd.dd !== x.dd || (dd.rid !== undefined && ridCmp(dd.rid, x.rid) > 0))
                         return;
                     x.master = true;
                     x.sent = true;
+                    x.lastRx = rx;
                     P.setState(s, 'Exchange', false, `negotiation done: this router (router ID ${x.rid}) is master, ${s.peer} slave (DD sequence ${x.dd})`);
                     x.dd = x.dd + 1;
                     const seq = x.dd;
@@ -75675,32 +76174,9 @@ const ospf = {
                     ospfRetransmit(P, s, 'Exchange', () => P.unicast(s, 'DBD', `Exchange (master): the LSA headers of the database, DD sequence ${seq}${n++ ? ' (again: not acknowledged)' : ''}`, { phase: 'summary', dd: seq, mtu, ms: true }, 'Exchange'));
                     return;
                 }
-                if (s.state === 'Exchange') {
-                    if (x.master === true) {
-                        // the slave's acknowledgment of the summary (its DD sequence number): the exchange is done; an older answer is a duplicate
-                        if (dd.ms || dd.dd !== x.dd)
-                            return;
-                    }
-                    else {
-                        // the slave: the master's summary with the next DD sequence number is acknowledged; the exchange is done with that
-                        if (!dd.ms || dd.dd !== x.dd + 1)
-                            return;
-                        x.dd = dd.dd;
-                        slaveAck(false);
-                    }
-                }
-                else if (s.state === 'Loading' || s.state === 'Full') {
-                    // after the exchange: the slave answers a duplicate of the master's summary again (its acknowledgment was lost); an
-                    // older DBD of this exchange (delayed, a duplicate) is discarded; one with a later DD sequence number does not belong to
-                    // it — the neighbour went on with another exchange (SeqNumberMismatch)
-                    const own = x.master === true ? !dd.ms : !!dd.ms;
-                    if (x.master === false && own && dd.dd === x.dd)
-                        slaveAck(true);
-                    else if (!own || dd.dd > x.dd)
-                        ospfSeqMismatch(P, s, `a DBD with DD sequence ${dd.dd} in ${s.state} (this exchange's is ${x.dd})`);
-                    return;
-                }
                 else
+                    return;
+                if (s.state !== 'Exchange')
                     return;
                 // both summaries had everything (M clear): Loading, the LSAs it lacks requested
                 P.setState(s, 'Loading', false, 'database summaries exchanged');
@@ -75787,6 +76263,15 @@ function isisMismatch(me, d) {
         return d.area === me.area ? '' : `level 1 only, and area ${d.area} there, ${me.area} here`;
     return `no level in common (${d.level} there, ${me.level} here)`;
 }
+/** The summary of a session's database a CSNP carries: each LSP by its origin and sequence number. */
+function isisSummary(P, s) {
+    return P.dbOf(s).map((r) => ({ k: r.origin + '|' + r.inst, seq: r.seq }));
+}
+/** A CSNP with the database summary (ISO 10589 §7.3.15.3): at once when the adjacency comes up, then every CSNP interval while it is. */
+function isisCsnp(P, s, why) {
+    const sum = isisSummary(P, s);
+    isisFrame(P, s, 'CSNP', `${why}: the database summary, ${sum.map((x) => x.k.slice(0, x.k.indexOf('|')) + '#' + x.seq).join(', ') || 'empty'}`, { summary: sum });
+}
 /** An IS-IS PDU on the session's link: a frame to AllL2ISs (IS-IS runs on the link layer, not over IP). */
 function isisFrame(P, s, type, detail, data) {
     if (!P.e.isL3Up(s.dev, s.local.l3.id))
@@ -75843,22 +76328,42 @@ const isis = {
             }
             s.x.mismatch = undefined;
             s.x.peerSys = d.sys;
+            const listed = (d.seen || []).indexOf(me.sys) >= 0;
+            // one-way (ISO 10589 §8.4.2, RFC 5303): the neighbour's IIHs no longer list this system — the adjacency is not up
+            if (s.state === 'Up' && !listed) {
+                P.restart(s);
+                P.setState(s, 'Initializing', false, `${s.peer}'s IIH no longer lists this system (${me.sys}): one-way, the adjacency goes back to Initializing`);
+            }
             const dead = P.timer(s, s.profile, 'dead');
             deadCheck(P, s, dead.ms, () => isis.down(P, s, `holding time expired (${dead.text})`));
             if (s.state === 'Down')
                 P.setState(s, 'Initializing', false, `IIH from ${s.peer} (system ID ${d.sys})`);
-            if ((d.seen || []).indexOf(me.sys) >= 0 && s.state === 'Initializing') {
+            if (listed && s.state === 'Initializing') {
                 P.setState(s, 'Up', true, `three-way handshake complete (system ID ${d.sys})`);
-                isisFrame(P, s, 'CSNP', 'the database summary', {});
+                isisCsnp(P, s, 'the adjacency is up');
+                const g = s.gen;
+                P.periodic(() => s.gen === g, () => P.timer(s, s.profile, 'csnp').ms, () => {
+                    if (s.state === 'Up' && P.e.isL3Up(s.dev, s.local.l3.id))
+                        isisCsnp(P, s, `every ${P.timer(s, s.profile, 'csnp').text}`);
+                }, P.timer(s, s.profile, 'csnp').ms);
             }
             return;
         }
         if (s.state !== 'Up')
             return;
-        if (msg.type === 'CSNP')
-            isisFrame(P, s, 'PSNP', 'requests the missing LSPs', {});
-        else if (msg.type === 'PSNP' && d.acks === undefined)
-            isisFrame(P, s, 'LSP', 'the requested LSPs', { db: P.dbOf(s) });
+        if (msg.type === 'CSNP') {
+            // the LSPs the summary names that this system lacks, or holds older: requested by a PSNP (nothing missing: no request)
+            const mine = new Map(isisSummary(P, s).map((x) => [x.k, x.seq]));
+            const req = (d.summary || []).filter((x) => !x.k.startsWith(s.dev + '|') && (mine.get(x.k) === undefined || mine.get(x.k) < x.seq)).map((x) => x.k);
+            if (req.length)
+                isisFrame(P, s, 'PSNP', `requests the missing LSPs: ${req.map((k) => k.slice(0, k.indexOf('|'))).join(', ')}`, { req });
+        }
+        else if (msg.type === 'PSNP' && d.acks === undefined && d.req) {
+            const want = new Set(d.req);
+            const db = P.dbOf(s).filter((r) => want.has(r.origin + '|' + r.inst));
+            if (db.length)
+                isisFrame(P, s, 'LSP', `the requested LSPs: ${db.map((r) => r.origin + '#' + r.seq).join(', ')}`, { db });
+        }
     },
     iface(P, s, up) {
         if (!up)
@@ -75895,24 +76400,34 @@ const eigrp = {
             deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
             if (s.state === 'Down') {
                 P.setState(s, 'Pending', false, `Hello from ${s.peer}`);
-                s.x.sentInit = true;
-                P.unicast(s, 'Update', 'init flag set, no routes yet', { init: true }, 'Pending');
+                eigrpInit(P, s);
             }
             return;
         }
         if (msg.type === 'Update' && d.init) {
-            P.unicast(s, 'ACK', 'acknowledges the init Update');
-            if (!s.x.sentInit) {
-                s.x.sentInit = true;
-                if (s.state === 'Down')
-                    P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
-                P.unicast(s, 'Update', 'init flag set', { init: true }, 'Pending');
+            // the same init Update again (its sequence number: our ACK was lost): acknowledged again, nothing else
+            if (s.x.peerInit && d.seq === s.x.peerInitSeq) {
+                P.unicast(s, 'ACK', `acknowledges the init Update again (sequence ${d.seq}: a retransmission)`);
+                return;
             }
+            // a new init Update from a neighbour that is Up: it restarted — the adjacency starts over (RFC 7868 §5.3.1)
+            if (s.state === 'Up') {
+                eigrp.down(P, s, `init Update from ${s.peer} while Up: it restarted`);
+                deadCheck(P, s, hold.ms, () => eigrp.down(P, s, `hold time expired (${hold.text})`));
+            }
+            P.unicast(s, 'ACK', 'acknowledges the init Update');
+            s.x.peerInit = true;
+            s.x.peerInitSeq = d.seq;
+            if (s.state === 'Down')
+                P.setState(s, 'Pending', false, `init Update from ${s.peer}`);
+            if (!s.x.sentInit)
+                eigrpInit(P, s);
+            eigrpUp(P, s);
             return;
         }
-        if (msg.type === 'ACK' && s.state === 'Pending') {
-            P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
-            P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
+        if (msg.type === 'ACK' && s.state === 'Pending' && s.x.sentInit) {
+            s.x.initAcked = true;
+            eigrpUp(P, s);
             return;
         }
         // (a Query is answered with a Reply by ProtocolSim.learn, once its records are taken: from a neighbour that is Up)
@@ -75925,10 +76440,41 @@ const eigrp = {
         if (s.state === 'Down')
             return;
         P.restart(s);
-        s.x.sentInit = false;
+        s.x.sentInit = s.x.peerInit = s.x.initAcked = false;
         P.setState(s, 'Down', false, why);
     },
 };
+/** EIGRP's retry limit: a reliable packet sent this many times without an ACK resets the neighbour (RFC 7868 §5.3). */
+const EIGRP_RETRIES = 16;
+/**
+ * The init Update (RFC 7868 §5.3.1): reliable — sent again every retransmit interval until the neighbour acknowledges it,
+ * the neighbour reset after the retry limit.
+ */
+function eigrpInit(P, s) {
+    s.x.sentInit = true;
+    s.x.initAcked = false;
+    const g = s.gen;
+    // (its sequence number: a retransmission carries the same one, a restart a new one)
+    const seq = 1 + (0, engine_1.hashIndex)(`${s.key}|${P.e.now}|${g}`, 1000000);
+    const send = (n) => {
+        if (s.gen !== g || s.state !== 'Pending' || s.x.initAcked)
+            return;
+        if (n >= EIGRP_RETRIES) {
+            eigrp.down(P, s, `retry limit exceeded: the init Update sent ${EIGRP_RETRIES} times without an ACK from ${s.peer}`);
+            return;
+        }
+        P.unicast(s, 'Update', `init flag set, sequence ${seq}, no routes yet${n ? ` (sent again: no ACK after ${(0, engine_1.fmtSec)(protocols_2.ADV_RXMT)})` : ''}`, { init: true, seq }, 'Pending');
+        P.e.after(protocols_2.ADV_RXMT, () => send(n + 1));
+    };
+    send(0);
+}
+/** Up once both inits are through: its own acknowledged, the neighbour's received — then its routes (RFC 7868 §5.3.1). */
+function eigrpUp(P, s) {
+    if (s.state !== 'Pending' || !s.x.initAcked || !s.x.peerInit)
+        return;
+    P.setState(s, 'Up', true, 'init Updates acknowledged both ways');
+    P.unicast(s, 'Update', 'its routes', { db: P.dbOf(s), dbId: 0, dbAck: 'ACK' }, 'Up');
+}
 // ------------------------------------------------------------------ RIP
 /**
  * RIP: a distance vector (rip.ts holds the routers' tables). A Request at
@@ -75938,15 +76484,38 @@ const eigrp = {
  * session shows the neighbour heard (Heard), Down after the timeout without
  * any Response from it — its routes time out on their own.
  */
+/**
+ * RIP's Request for the whole table (RFC 2453 §3.9.1): when the router comes up — its first boot, after a power cycle —
+ * and when the interface comes up again; once per interface (its sessions there share it).
+ */
+function ripRequest(P, s) {
+    if (!P.shared.has('rip-hooks')) {
+        P.shared.set('rip-hooks', true);
+        // powered off: it asks again when it boots
+        P.deviceHooks.push((dev, up) => {
+            if (up)
+                return;
+            for (const k of Array.from(P.shared.keys()))
+                if (k.indexOf(`rip-req|${dev}|`) === 0)
+                    P.shared.delete(k);
+        });
+    }
+    const key = `rip-req|${s.dev}|${s.local.l3.id}`;
+    // (an interface still down sends nothing: it asks when it comes up)
+    if (P.shared.has(key) || !P.e.isL3Up(s.dev, s.local.l3.id))
+        return;
+    P.shared.set(key, true);
+    const group = addr((0, protocols_2.ipOf)(s.local).version === 4 ? s.profile.group4 : s.profile.group6);
+    P.multicast(s, group, 'Request', 'asks for the whole table');
+}
 const rip = {
     start(P, s) {
         const R = P.ripSim();
+        ripRequest(P, s);
         const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
         if (P.shared.has(key))
             return;
         P.shared.set(key, true);
-        const group = addr((0, protocols_2.ipOf)(s.local).version === 4 ? s.profile.group4 : s.profile.group6);
-        P.multicast(s, group, 'Request', 'asks for the whole table');
         const upd = () => P.timer(s, s.profile, 'hello').ms;
         P.periodic(() => true, upd, () => {
             // the whole table every update interval: what a lost update did not bring comes with the next one
@@ -75973,8 +76542,12 @@ const rip = {
         R.response(s, (msg.data || {}).rip || []);
     },
     iface(P, s, up) {
-        if (!up)
+        if (!up) {
             P.ripSim().ifaceDown(s);
+            P.shared.delete(`rip-req|${s.dev}|${s.local.l3.id}`);
+        }
+        else if (P.e.deviceOn(s.dev))
+            ripRequest(P, s);
     },
 };
 function bgpRouteToPeer(P, s) {
@@ -76140,10 +76713,13 @@ const bgp = {
     },
     tcp(P, s, ev, why) {
         if (ev === 'open') {
-            if (!s.initiator)
+            // RFC 4271 §8.2.2: the TCP connection established — both ends send their OPEN and go to OpenSent (the passive one too,
+            // without waiting for the peer's)
+            if (!s.initiator && s.state !== 'Active')
                 return;
-            P.setState(s, 'OpenSent', false, 'TCP connection established');
-            s.x.waitedNext = [`TCP connection to ${(0, ipmath_1.formatAddr)((0, protocols_2.ipOf)(s.remote))}:179: ${(0, params_1.durationText)(P.e.now - (s.x.tcpSince || P.e.now))}`];
+            P.setState(s, 'OpenSent', false, s.initiator ? 'TCP connection established' : `TCP connection from ${s.peer} accepted`);
+            if (s.initiator)
+                s.x.waitedNext = [`TCP connection to ${(0, ipmath_1.formatAddr)((0, protocols_2.ipOf)(s.remote))}:179: ${(0, params_1.durationText)(P.e.now - (s.x.tcpSince || P.e.now))}`];
             bgpSendOpen(P, s);
             return;
         }
@@ -76168,7 +76744,8 @@ const bgp = {
                     bgpRefuse(P, s, err);
                     return;
                 }
-                if (!s.initiator)
+                // (a passive side whose connection was bound only by this OPEN — it came from a translated address — sends its own now)
+                if (!s.initiator && s.state !== 'OpenSent')
                     bgpSendOpen(P, s);
                 bgpNegotiate(P, s, d.open);
                 P.setState(s, 'OpenConfirm', false, `OPEN from ${s.peer} (AS ${d.open.as}, hold ${d.open.hold} s, identifier ${d.open.id})`);
@@ -76316,6 +76893,11 @@ const ldp = {
     },
 };
 // ------------------------------------------------------------------ BFD
+/** A BFD session's Desired Min TX: its interval, at least 1 s while it is not Up (RFC 5880 §6.8.3). */
+function bfdTx(P, s) {
+    const iv = P.timer(s, s.profile, 'interval').ms;
+    return s.state === 'Up' ? iv : Math.max(1000, iv);
+}
 const bfd = {
     refresh(P, s) {
         const iv = P.timer(s, s.profile, 'interval');
@@ -76325,6 +76907,10 @@ const bfd = {
     },
     start(P, s) {
         bfd.refresh(P, s);
+        // one transmit stream per generation: a Control received while it waits for its client (dispatch starts the session),
+        // and the waiter firing later, never start a second one
+        if (s.x.stream === s.gen)
+            return;
         // BFD runs for a client: it starts when a routing session to the same peer asks for it (is up); with no client, at once
         const clients = P.sessionsOf(s.dev).filter((o) => o.peer === s.peer && o.profile.behaviour !== 'bfd' && ['ospf', 'bgp', 'isis', 'eigrp', 'ldp', 'rip'].indexOf(o.profile.behaviour) >= 0);
         if (clients.length && !clients.some((o) => o.up)) {
@@ -76333,15 +76919,26 @@ const bfd = {
                 P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `BFD to ${s.peer} waiting for its client (${Array.from(new Set(clients.map((o) => o.profile.label))).join(', ')}) to ask for the session`);
             }
             s.x.started = false;
-            P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => P.startNow(s));
+            // (one waiter per generation; a restart or a power cycle makes the old one do nothing)
+            if (s.x.waiting !== s.gen) {
+                s.x.waiting = s.gen;
+                const g = s.gen;
+                P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => {
+                    if (s.gen === g && s.x.stream !== g)
+                        P.startNow(s);
+                });
+            }
             return;
         }
-        // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2)
-        every(P, s, () => Math.max(P.timer(s, s.profile, 'interval').ms, typeof s.x.peerMinRx === 'number' ? s.x.peerMinRx : 0), () => {
+        s.x.stream = s.gen;
+        // its Control packets every interval — never faster than the peer said it takes (its Required Min RX, RFC 5880 §6.8.2),
+        // and at least 1 s while the session is not Up (RFC 5880 §6.8.3)
+        every(P, s, () => Math.max(bfdTx(P, s), typeof s.x.peerMinRx === 'number' ? s.x.peerMinRx : 0), () => {
             const iv = P.timer(s, s.profile, 'interval');
+            const tx = bfdTx(P, s);
             const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
             if (P.e.isL3Up(s.dev, s.local.l3.id))
-                P.unicast(s, 'Control', `state ${s.state}, desired min TX ${(0, engine_1.fmtSec)(iv.ms)}, required min RX ${(0, engine_1.fmtSec)(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: iv.ms, minRx: iv.ms, mult: n });
+                P.unicast(s, 'Control', `state ${s.state}, desired min TX ${(0, engine_1.fmtSec)(tx)}${tx !== iv.ms ? ' (at least 1 s while not Up)' : ''}, required min RX ${(0, engine_1.fmtSec)(iv.ms)}, detect multiplier ${n}`, { state: s.state, minTx: tx, minRx: iv.ms, mult: n });
         });
     },
     rx(P, s, msg) {
@@ -76361,7 +76958,7 @@ const bfd = {
                 return;
             if (P.e.now - s.heard >= detect - 1) {
                 P.setState(s, 'Down', false, `detection time expired (${(0, engine_1.fmtSec)(detect)}: the peer's multiplier ${n} × ${(0, engine_1.fmtSec)(rate)})`);
-                bfdDown(P, s.dev, s.peer);
+                bfdDown(P, s);
             }
         });
         // RFC 5880 6.8.6
@@ -76377,7 +76974,7 @@ const bfd = {
         }
         else if (s.state === 'Up' && peerState === 'Down') {
             P.setState(s, 'Down', false, 'the peer reports Down');
-            bfdDown(P, s.dev, s.peer);
+            bfdDown(P, s);
         }
     },
 };
@@ -76790,8 +77387,12 @@ class Multicast {
             return ri.addr;
         return ri.l3.ll ? ri.l3.ll.addr : null;
     }
-    /** A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). */
-    report(dev, iface, hg, why, leave = false) {
+    /**
+     * A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). `answer`: a
+     * current-state record answering a query (IS_EX {} / IS_IN {S}); otherwise a state change, its join (TO_EX {} /
+     * ALLOW {S}, RFC 3376 §5.1, RFC 3810 §6.1).
+     */
+    report(dev, iface, hg, why, leave = false, answer = false) {
         const g = A(hg.group);
         const h = this.hostAddr(dev, iface, g.version);
         if (!h || !this.e.deviceOn(dev))
@@ -76816,7 +77417,7 @@ class Multicast {
         }
         else {
             const all = A(g.version === 4 ? '224.0.0.22' : 'ff02::16');
-            const rec = hg.sources.length ? `ALLOW / IS_IN (${hg.group}, {${hg.sources.join(', ')}})` : `IS_EX (${hg.group}, {})`;
+            const rec = hg.sources.length ? `${answer ? 'IS_IN' : 'ALLOW'} (${hg.group}, {${hg.sources.join(', ')}})` : `${answer ? 'IS_EX' : 'TO_EX'} (${hg.group}, {})`;
             this.igmpSend(dev, h.l3, h.addr, all, 'Report', `${n} Report ${hg.group}`, `${vn} Report from ${dev} (${(0, ipmath_1.formatAddr)(h.addr)}) to ${(0, ipmath_1.formatAddr)(all)}: ${rec}, ${why}`, { type: 'Membership Report', version: vn, group: hg.group, sources: hg.sources, records: [rec] }, { group: hg.group, sources: hg.sources });
         }
     }
@@ -77283,6 +77884,9 @@ class Multicast {
                 if (d.group && ri.groups.has(d.group)) {
                     const g = ri.groups.get(d.group);
                     g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev, null, this.at(ri)) * this.e.params.num('igmp-lmqi', dev, null, this.at(ri)));
+                    if (g.srcUntil)
+                        for (const s of g.sources)
+                            g.srcUntil.set(s, Math.min(g.srcUntil.get(s) || g.expires, g.expires));
                     g.leaving = true;
                     this.expireAt(g.expires);
                 }
@@ -77314,7 +77918,7 @@ class Multicast {
                 this.e.after(delay, () => {
                     if (hg.answer !== tok || m.get(hg.group) !== hg)
                         return;
-                    this.report(dev, l3.id, hg, `answers the ${d.group ? 'group-specific' : 'general'} query of ${(0, ipmath_1.formatAddr)(pkt.src)} after ${(0, params_1.durationText)(delay)} (random, up to ${(0, params_1.durationText)(mrt)})`);
+                    this.report(dev, l3.id, hg, `answers the ${d.group ? 'group-specific' : 'general'} query of ${(0, ipmath_1.formatAddr)(pkt.src)} after ${(0, params_1.durationText)(delay)} (random, up to ${(0, params_1.durationText)(mrt)})`, false, true);
                 });
             }
             return;
@@ -77336,9 +77940,16 @@ class Multicast {
         g.version = (msg.data && msg.data.version) || this.verName(A(group).version, sources.length ? 'v3' : this.ver(this.e.ownerOf(A(reporter)) || ri.dev));
         g.expires = this.e.now + this.gmi(ri.dev, ri.l3.id);
         g.gsq = 0;
-        for (const s of sources)
-            if (g.sources.indexOf(s) < 0)
-                g.sources.push(s);
+        // (each source its own timer: a source a report names is wanted for the membership interval, RFC 3376 §6.4.1)
+        const added = sources.filter((s) => g.sources.indexOf(s) < 0);
+        for (const s of added)
+            g.sources.push(s);
+        if (sources.length) {
+            if (!g.srcUntil)
+                g.srcUntil = new Map();
+            for (const s of sources)
+                g.srcUntil.set(s, g.expires);
+        }
         ri.groups.set(group, g);
         if (this.onMember)
             this.onMember(ri.dev, ri.l3.id, group, reporter);
@@ -77346,22 +77957,50 @@ class Multicast {
             this.e.note('table', 'igmp', ri.dev, '', 'member', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member (${reporter}${sources.length ? ', sources ' + sources.join(', ') : ''}); kept for ${(0, params_1.durationText)(this.gmi(ri.dev))} without a report (robustness × query interval + response interval)`);
             this.membersChanged(ri.dev, ri.l3, group);
         }
+        else if (added.length) {
+            // a known group with a new source (ALLOW): its (S, G) too
+            this.e.note('table', 'igmp', ri.dev, '', 'source added', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member for ${added.join(', ')} too (${reporter}); each source kept for ${(0, params_1.durationText)(this.gmi(ri.dev))} without a report`);
+            this.membersChanged(ri.dev, ri.l3, group);
+        }
+    }
+    /** The latest source timer of a group with sources (it lasts as long as one of its sources does). */
+    lastSource(g) {
+        let t = -Infinity;
+        for (const s of g.sources)
+            t = Math.max(t, (g.srcUntil && g.srcUntil.get(s)) || -Infinity);
+        return t;
     }
     memberLeft(ri, group, who, sources) {
         const g = ri.groups.get(group);
         if (!g)
             return;
-        void sources;
         const lmqi = this.e.params.num('igmp-lmqi', ri.dev, null, this.at(ri));
         const rob = this.e.params.num('igmp-robustness', ri.dev, null, this.at(ri));
-        g.expires = Math.min(g.expires, this.e.now + rob * lmqi);
-        g.leaving = true;
-        this.expireAt(g.expires);
+        const lmqt = this.e.now + rob * lmqi;
+        // BLOCK of some of the group's sources (RFC 3376 §6.4.2): only those sources' timers are lowered to the last member
+        // query time — the group's other sources stay; a TO_IN {} (or a v2 Leave) lowers the group's
+        const blocked = sources.filter((s) => g.srcUntil && g.srcUntil.has(s));
+        if (blocked.length) {
+            for (const s of blocked)
+                g.srcUntil.set(s, Math.min(g.srcUntil.get(s), lmqt));
+            g.expires = this.lastSource(g);
+            g.leaving = g.expires <= lmqt;
+            this.expireAt(lmqt);
+        }
+        else {
+            g.expires = Math.min(g.expires, lmqt);
+            if (g.srcUntil)
+                for (const s of g.sources)
+                    g.srcUntil.set(s, Math.min(g.srcUntil.get(s) || lmqt, lmqt));
+            g.leaving = true;
+            this.expireAt(g.expires);
+        }
         if (!ri.querier)
             return;
-        // the querier asks: group-specific queries, robustness times, one last member query interval apart
+        // the querier asks: group-specific queries, robustness times, one last member query interval apart (the members of the
+        // group answer with their sources; a group-and-source query is not sent separately)
         g.gsq = rob;
-        this.e.note('table', 'igmp', ri.dev, '', 'leave', '', `${ri.dev}:${ri.l3.id}: ${who} leaves ${group}; ${rob} group-specific queries ${(0, params_1.durationText)(lmqi)} apart, then the group goes unless a member answers`);
+        this.e.note('table', 'igmp', ri.dev, '', 'leave', '', `${ri.dev}:${ri.l3.id}: ${who} leaves ${group}${blocked.length ? ` for ${blocked.join(', ')}` : ''}; ${rob} group-specific queries ${(0, params_1.durationText)(lmqi)} apart, then ${blocked.length && !g.leaving ? (blocked.length === 1 ? 'that source goes' : 'those sources go') : 'the group goes'} unless a member answers`);
         const ask = () => {
             if (g.gsq <= 0 || ri.groups.get(group) !== g || !ri.querier)
                 return;
@@ -77781,6 +78420,16 @@ class Multicast {
                     this.e.note('table', 'pim', dev, '', 'oif added', '', `${dev}: ${this.entryName(e)} goes out of ${l3.id} too (members there)`);
                 }
             }
+            // members for some sources only: a source no member wants any more leaves this interface (pruned when nothing wants it)
+            if (rg.sources.length) {
+                for (const e of Array.from(this.table(dev).values())) {
+                    if (e.g !== group || e.s === '*' || rg.sources.indexOf(e.s) >= 0 || e.oil.get(l3.id) !== Infinity)
+                        continue;
+                    e.oil.delete(l3.id);
+                    this.e.note('table', 'pim', dev, '', 'oif removed', '', `${dev}: ${this.entryName(e)} no longer goes out of ${l3.id} (no member there wants ${e.s})`);
+                    this.maybePrune(dev, e);
+                }
+            }
             return;
         }
         // no member left: the interface goes; an entry nobody wants is pruned upstream
@@ -77838,6 +78487,12 @@ class Multicast {
                 if (e && !e.rptPruned.has(d.s + '|' + l3.id)) {
                     e.rptPruned.add(d.s + '|' + l3.id);
                     this.e.note('table', 'pim', dev, s.peer, 'RPT prune', '', `${dev}: ${d.s}'s traffic for ${d.g} no longer goes down the shared tree out of ${l3.id} (${s.peer} is on the source's tree)`);
+                    // RFC 7761 §4.5.7: JoinDesired(S, G) — an (S, G) of its own (the RP's, joined towards the source) with no outgoing
+                    // interface of its own and nothing left to inherit from (*, G) for this source is pruned towards the source
+                    const sg = t.get(d.s + '|' + d.g);
+                    const inherits = Array.from(e.oil).some(([i, until]) => until > this.e.now && !e.rptPruned.has(d.s + '|' + i));
+                    if (sg && !inherits)
+                        this.maybePrune(dev, sg);
                 }
                 return true;
             }
@@ -78364,6 +79019,20 @@ class Multicast {
         const now = this.e.now;
         for (const ri of Array.from(this.rifs.values()).sort((a, b) => cmp(a.dev + a.l3.id, b.dev + b.l3.id))) {
             for (const [k, g] of Array.from(ri.groups)) {
+                // a source whose timer ran out goes (its (S, G) out of this interface with it); the group stays while one source does
+                if (g.srcUntil && g.expires > now) {
+                    const gone = g.sources.filter((s) => (g.srcUntil.get(s) || 0) <= now);
+                    if (gone.length) {
+                        g.sources = g.sources.filter((s) => gone.indexOf(s) < 0);
+                        for (const s of gone)
+                            g.srcUntil.delete(s);
+                        this.e.note('table', 'igmp', ri.dev, '', 'source expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member for ${gone.join(', ')} any more (${g.leaving || g.gsq > 0 ? 'nobody answered the group-specific queries' : 'no report within the membership interval'}); ${g.sources.length ? 'still for ' + g.sources.join(', ') : ''}`);
+                        if (g.sources.length)
+                            this.membersChanged(ri.dev, ri.l3, k);
+                        else
+                            g.expires = now;
+                    }
+                }
                 if (g.expires > now)
                     continue;
                 ri.groups.delete(k);
@@ -79238,7 +79907,11 @@ class NetServicesSim {
                 return;
             }
             s.leases.set((0, ipmath_1.formatAddr)(ip), { ip: (0, ipmath_1.formatAddr)(ip), mac: d.chaddr, client: `${d.from}:${d.iface || ''}`, state: 'offered', expires: now + OFFER_HOLD, scope: s.index });
+            // (the offer after its delay: not by a server powered off meanwhile)
+            const epoch = this.P.e.powerEpoch(dev);
             this.P.e.after(delay, () => {
+                if (this.P.e.powerEpoch(dev) !== epoch || !this.P.e.deviceOn(dev))
+                    return;
                 const a = { xid: d.xid, chaddr: d.chaddr, from: d.from, iface: d.iface, yiaddr: (0, ipmath_1.formatAddr)(ip), server: (0, ipmath_1.formatAddr)(me), giaddr: d.giaddr, prefix: s.net.prefix, gateway: s.gateway ? (0, ipmath_1.formatAddr)(s.gateway) : undefined, dns: s.dns.map(ipmath_1.formatAddr), lease: s.lease, domain: s.domain };
                 const m = this.msg('DHCPOFFER', `DHCPOFFER ${(0, ipmath_1.formatAddr)(ip)} · lease ${leaseText(s.lease)}`, `DHCPOFFER from ${dev} (${(0, ipmath_1.formatAddr)(me)}) to ${d.from} (${d.chaddr}): ${(0, ipmath_1.formatAddr)(ip)}/${s.net.prefix}, lease ${(0, params_1.durationText)(s.lease)}${s.gateway ? ', gateway ' + (0, ipmath_1.formatAddr)(s.gateway) : ''}${s.dns.length ? ', DNS ' + s.dns.map(ipmath_1.formatAddr).join(', ') : ''}${delay > 0 ? ` (after ${ping.value === 'on' ? 'the ping check and ' : ''}${(0, params_1.durationText)(delay)})` : ''}`, a);
                 this.answer(dev, l3, me, m, d);
@@ -79397,6 +80070,22 @@ class NetServicesSim {
             this.P.e.withTest(test, () => this.ask(q));
         });
     }
+    /**
+     * An ICMP error reached a host about one of its DNS queries (its server runs no DNS: port unreachable): the
+     * query goes to its next server at once — no point waiting out the timeout. True when it was one of its queries.
+     */
+    queryRefused(dev, q, what) {
+        if (q.dport !== 53 || q.sport === undefined)
+            return false;
+        const query = Array.from(this.queries.values()).find((x) => !x.done && x.dev === dev && !x.forFor && 49152 + (x.id % 16000) === q.sport && x.si < x.servers.length && (0, ipmath_1.formatAddr)(x.servers[x.si]) === q.dst);
+        if (!query)
+            return false;
+        this.P.e.note('note', 'dns', dev, this.P.e.ownerOf(query.servers[query.si]) || '', 'Query refused', '', `${dev}: ${what} about its DNS query to ${q.dst}: ${q.dst} runs no DNS — ${query.si + 1 < query.servers.length ? 'it asks its next DNS server, ' + (0, ipmath_1.formatAddr)(query.servers[query.si + 1]) : 'it has no other DNS server'}`);
+        query.si++;
+        query.attempt = 0;
+        this.ask(query);
+        return true;
+    }
     srcTo(dev, dst) {
         const sd = this.P.sd(dev);
         if (!sd)
@@ -79440,8 +80129,12 @@ class NetServicesSim {
             return;
         const sd = this.P.m.index.devices.get(dev);
         const dns = sd && sd.netServices ? sd.netServices.dns : undefined;
-        if (!dns)
+        if (!dns) {
+            // a host that runs no DNS server: its port 53 is closed (ICMP port unreachable, RFC 1122 §4.1.3.1), never silence
+            if (this.P.transport && pkt.l4)
+                this.P.transport.refuseService(dev, l3, pkt, 'it runs no DNS server');
             return;
+        }
         // a server that listens on one address only answers there
         if (dns.listen && (0, ipmath_1.formatAddr)(pkt.dst) !== dns.listen) {
             this.P.e.note('drop', 'dns', dev, d.from, 'Query', '', `${dev} listens for DNS on ${dns.listen} only: ${msg.label} to ${(0, ipmath_1.formatAddr)(pkt.dst)} is not answered`);
@@ -79467,16 +80160,21 @@ class NetServicesSim {
             return;
         }
         const ttl = this.P.e.params.num('dns-ttl', dev, null, (0, params_1.zoneRef)(dev, zone.name));
-        const look = (name, depth) => {
-            const recs = this.zoneRecords(dev, zone.name);
+        // a CNAME is followed within the server's zones (RFC 1034 §4.3.2 step 3a): its target in whichever of them holds it
+        // (the most specific); a target in none of them ends the answer with the CNAME alone
+        const zoneOf = (name) => dns.zones.filter((z) => (0, netservices_1.inZone)(name, z.name)).sort((a, b) => b.name.length - a.name.length)[0];
+        const look = (name, zname, depth) => {
+            const recs = this.zoneRecords(dev, zname);
             const cn = recs.find((r) => r.name === name && r.type === 'CNAME');
             if (cn && depth < 8) {
-                const r = look((0, dns_1.dnsNameKey)(cn.value), depth + 1);
+                const target = (0, dns_1.dnsNameKey)(cn.value);
+                const tz = zoneOf(target);
+                const r = tz ? look(target, tz.name, depth + 1) : { answer: [] };
                 return { answer: r.answer, cname: cn.value };
             }
             return { answer: recs.filter((r) => r.name === name && r.type === d.qtype).map((r) => r.value) };
         };
-        const r = look(d.name, 0);
+        const r = look(d.name, zone.name, 0);
         if (!r.answer.length) {
             const exists = this.zoneRecords(dev, zone.name).some((x) => x.name === d.name);
             this.reply(dev, l3, pkt, exists ? 'NOERROR' : 'NXDOMAIN', [], ttl, r.cname);
@@ -81358,7 +82056,7 @@ class Ipv6Sim {
         const type = rebind === 'request' ? 'Request' : rebind === 'renew' ? 'Renew' : 'Rebind';
         this.send6(h, type, `DHCPv6 ${type} from ${h.dev}:${h.iface} for ${(0, ipmath_1.formatAddr)(o.addr)}${rebind === 'rebind' ? ' (to any server, at T2)' : ` (to ${c.server}${rebind === 'renew' ? ', at T1' : ''})`}`, { xid: c.xid, duid: this.duid(h.l3.mac), addr: (0, ipmath_1.formatAddr)(o.addr), server: rebind === 'rebind' ? undefined : c.server, kind: rebind }, [['Transaction id', String(c.xid)], ['IA_NA address', (0, ipmath_1.formatAddr)(o.addr)], ['Server identifier', rebind === 'rebind' ? '(none: any server)' : String(c.server)]]);
         const g = c.gen;
-        const rt = rebind === 'request' ? ipv6_1.DHCP6.REQ_TIMEOUT * Math.pow(2, c.tries - 1) : Math.min(rebind === 'renew' ? ipv6_1.DHCP6.REN_MAX_RT : ipv6_1.DHCP6.REB_MAX_RT, (rebind === 'renew' ? ipv6_1.DHCP6.REN_TIMEOUT : ipv6_1.DHCP6.REB_TIMEOUT) * Math.pow(2, c.tries - 1));
+        const rt = rebind === 'request' ? Math.min(ipv6_1.DHCP6.REQ_MAX_RT, ipv6_1.DHCP6.REQ_TIMEOUT * Math.pow(2, c.tries - 1)) : Math.min(rebind === 'renew' ? ipv6_1.DHCP6.REN_MAX_RT : ipv6_1.DHCP6.REB_MAX_RT, (rebind === 'renew' ? ipv6_1.DHCP6.REN_TIMEOUT : ipv6_1.DHCP6.REB_TIMEOUT) * Math.pow(2, c.tries - 1));
         this.later(h, rt, () => {
             if (c.gen !== g || h.dhcp !== c)
                 return;
@@ -81722,7 +82420,10 @@ exports.NtpSim = exports.NTP_REACH = void 0;
  * knew when it answered) is below 15; then it is synchronized to that
  * upstream, its stratum one more than the one the response said (an
  * upstream at 15 would make it 16: no time to give, RFC 5905's MAXSTRAT,
- * so that one is not usable). A client
+ * so that one is not usable). An upstream is an address (an association,
+ * RFC 5905 §9): the client asks that address, and a response counts for the
+ * upstream whose address it comes from — never for another address of the
+ * same server, which is another association (or none). A client
  * knows its upstreams only by their responses — the stratum each last
  * reported and when — never by reading a server's state. A response of its
  * source that is no longer usable (it reports 15 or 16: it lost its own
@@ -81745,6 +82446,7 @@ exports.NtpSim = exports.NTP_REACH = void 0;
  */
 const ipmath_1 = __req("analysis/ipmath");
 const ip_1 = __req("model/ip");
+const names_1 = __req("analysis/names");
 const params_1 = __req("analysis/sim/params");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** polls without an answer after which a source is unreachable (an 8-bit reach register) */
@@ -81761,12 +82463,12 @@ class NtpSim {
             if (!s)
                 continue;
             const ups = Array.isArray(s.values.upstreams) ? s.values.upstreams : [];
-            this.devs.set(d.id, { dev: d.id, own: typeof s.values.stratum === 'number' ? s.values.stratum : undefined, upstreams: ups.map((a) => ({ addr: a, dev: this.owner(a) })), gen: 0 });
+            this.devs.set(d.id, { dev: d.id, own: typeof s.values.stratum === 'number' ? s.values.stratum : undefined, upstreams: ups.map((a) => ({ addr: a, dev: this.owner(d.id, a) })), gen: 0 });
         }
-        P.handlers.set('ntp', (dev, _l3, msg) => {
+        P.handlers.set('ntp', (dev, _l3, msg, pkt) => {
             const d = (msg.data || {});
             if (msg.type === 'Server response')
-                this.answered(dev, String(d.from || ''), typeof d.stratum === 'number' ? d.stratum : 16);
+                this.answered(dev, String(d.from || ''), pkt ? pkt.src : null, typeof d.stratum === 'number' ? d.stratum : 16);
             // (the session behaviour goes on with it)
             return false;
         });
@@ -81783,18 +82485,13 @@ class NtpSim {
                 this.lose(st, `${dev} was powered off`, false);
         });
     }
-    owner(addr) {
+    /** The device an upstream address is: its only holder, else the one the client's traffic reaches (null: none, or it can't be told). */
+    owner(client, addr) {
         const a = (0, ip_1.parseAddress)(addr);
-        if (!a)
+        const hs = (0, names_1.addressHolders)(this.P.m, addr);
+        if (!a || !hs.length)
             return null;
-        for (const d of this.P.m.devices)
-            for (const i of d.interfaces.concat(d.logical))
-                for (const x of i.addresses) {
-                    const b = (0, ip_1.parseAddress)(x.replace(/\/\d+$/, ''));
-                    if (b && (0, ipmath_1.compareAddr)(a, b) === 0)
-                        return d.id;
-                }
-        return null;
+        return hs.length === 1 ? hs[0] : this.P.e.ownerSeenFrom(client, '', a);
     }
     /** A device's stratum as it knows it now: its own, one more than its source's last response said, else 16 (unsynchronized); 16 while it is off. */
     stratum(dev) {
@@ -81816,21 +82513,36 @@ class NtpSim {
     responseStratum(dev) {
         return this.stratum(dev);
     }
+    /**
+     * Is an upstream's last response fresh (within the reach register's 8 polls)? One expression for the check and
+     * for the time a check is scheduled at (`last + limit`): with fractional times, `now - last < limit` at
+     * `now = last + limit` can still be true by a rounding step, and a check re-armed for that same instant ran
+     * again and again without time passing.
+     */
+    fresh(u, dev) {
+        return u.last !== undefined && this.P.e.now < u.last + exports.NTP_REACH * this.poll(dev);
+    }
     /** The poll interval: the NTP sessions' demonstration interval (NTPv4's minimum poll, 64 s). */
     poll(_dev) {
         return 64000;
     }
-    /** A server's response reached its client: what it says (its stratum) is all the client knows of it. */
-    answered(client, server, stratum) {
+    /**
+     * A server's response reached its client: what it says (its stratum) is all the client knows of it — for the
+     * association of the address it comes from (`src`), never for another address of that server.
+     */
+    answered(client, server, src, stratum) {
         let st = this.devs.get(client);
         if (!st) {
-            // a relation's client without the service: it has the same state
-            st = { dev: client, upstreams: [{ addr: server, dev: server }], gen: 0 };
+            // a relation's client without the service: it has the same state, its upstream the relation's other device
+            st = { dev: client, upstreams: [{ addr: server, dev: server, byDevice: true }], gen: 0 };
             this.devs.set(client, st);
         }
-        const u = st.upstreams.find((x) => x.dev === server);
-        if (!u)
+        const u = st.upstreams.find((x) => (x.byDevice ? x.dev === server : !!src && !!(0, ip_1.parseAddress)(x.addr) && (0, ipmath_1.compareAddr)((0, ip_1.parseAddress)(x.addr), src) === 0));
+        if (!u) {
+            // (RFC 5905 §9: a response that belongs to no association is not taken)
+            this.P.e.note('drop', 'ntp', client, server, 'Server response', '', `${client} takes no time from ${server}'s response from ${src ? (0, ipmath_1.formatAddr)(src) : 'an unknown address'}: none of its upstreams (${st.upstreams.map((x) => x.addr).join(', ')}) is that address`);
             return;
+        }
         u.last = this.P.e.now;
         u.stratum = stratum;
         if (st.own !== undefined)
@@ -81848,7 +82560,7 @@ class NtpSim {
             return;
         if (st.source) {
             const cur = st.upstreams.find((x) => x.addr === st.source);
-            if (cur && cur.last !== undefined && this.P.e.now - cur.last < exports.NTP_REACH * this.poll(client))
+            if (cur && this.fresh(cur, client))
                 return;
         }
         this.select(st, u, `stratum ${stratum} in its response`);
@@ -81874,7 +82586,7 @@ class NtpSim {
             if (st.source !== src || st.gen !== gen)
                 return;
             const u = st.upstreams.find((x) => x.addr === src);
-            if (u && u.last !== undefined && this.P.e.now - u.last < limit) {
+            if (u && this.fresh(u, st.dev)) {
                 this.watch(st);
                 return;
             }
@@ -81892,10 +82604,9 @@ class NtpSim {
         st.source = undefined;
         st.gen++;
         st.lost = { at: this.P.e.now, why };
-        const limit = exports.NTP_REACH * this.poll(st.dev);
         const next = fallback
             ? st.upstreams
-                .filter((u) => u.addr !== was && u.dev && u.last !== undefined && this.P.e.now - u.last < limit && u.stratum !== undefined && u.stratum <= USABLE_STRATUM)
+                .filter((u) => u.addr !== was && u.dev && this.fresh(u, st.dev) && u.stratum !== undefined && u.stratum <= USABLE_STRATUM)
                 .sort((a, b) => a.stratum - b.stratum)[0]
             : undefined;
         if (next) {
@@ -81916,8 +82627,9 @@ class NtpSim {
             return `serving time at stratum ${st.own} (its own reference clock, taken as given)`;
         if (this.synchronized(dev))
             return `synchronized to ${st.source} since t = ${Math.round(st.since / 100) / 10} s; serving stratum ${this.stratum(dev)}`;
-        const outside = st.upstreams.filter((u) => !u.dev).map((u) => u.addr);
-        return `unsynchronized (stratum 16)${st.lost ? `: ${st.lost.why}` : ': no usable upstream answered yet'}${outside.length ? `; ${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} outside the model (not simulated)` : ''}`;
+        const several = st.upstreams.filter((u) => !u.dev && (0, names_1.addressHolders)(this.P.m, u.addr).length > 1).map((u) => u.addr);
+        const outside = st.upstreams.filter((u) => !u.dev && several.indexOf(u.addr) < 0).map((u) => u.addr);
+        return `unsynchronized (stratum 16)${st.lost ? `: ${st.lost.why}` : ': no usable upstream answered yet'}${outside.length ? `; ${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} outside the model (not simulated)` : ''}${several.length ? `; ${several.join(', ')}: several devices have ${several.length === 1 ? 'it' : 'them'} and which one ${dev} reaches can't be told (not asked)` : ''}`;
     }
     status() {
         return Array.from(this.devs.values()).map((st) => {
@@ -81934,7 +82646,7 @@ class NtpSim {
         const st = this.devs.get(dev);
         const now = this.P.e.now;
         // (what its responses said: a client knows nothing else of an upstream)
-        const rows = st ? st.upstreams.map((u) => [u.addr, u.dev || '(outside the model)', u.last !== undefined ? `${(0, params_1.durationText)(now - u.last)} ago` : 'never', u.stratum !== undefined ? String(u.stratum) : '—', st.source === u.addr ? 'its source' : '']) : [];
+        const rows = st ? st.upstreams.map((u) => [u.addr, u.dev || ((0, names_1.addressHolders)(this.P.m, u.addr).length > 1 ? '(several devices: not told apart)' : '(outside the model)'), u.last !== undefined ? `${(0, params_1.durationText)(now - u.last)} ago` : 'never', u.stratum !== undefined ? String(u.stratum) : '—', st.source === u.addr ? 'its source' : '']) : [];
         return { caption: `NTP of ${dev}`, cols: ['Upstream', 'Device', 'Last answer', 'Stratum it reported', ''], rows, empty: st && st.own !== undefined ? 'A reference: it asks no upstream.' : 'No upstream.', timers: [], notes: st ? [`${dev}: ${this.text(dev)}.`, `Unreachable after ${exports.NTP_REACH} polls without an answer (the demonstration poll interval is 64 s, NTP's minimum).`] : [] };
     }
     /** Is there an NTP state to show for the device? */
@@ -82523,7 +83235,11 @@ class PtpSim {
         this.e.note('state', 'ptp', c.dev, '', 'PTP port faulty', 'FAULTY', `${c.dev} PTP port ${p.n} (${p.iface}): FAULTY (${why})`);
         this.decide(c, why);
     }
-    /** The announce receipt timeout of a port: Announces of its masters forgotten when none came for the timeout. */
+    /**
+     * The announce receipt timeout of a port: a LISTENING port decides when no better clock announced itself for
+     * the timeout; Announces of its masters forgotten when none came for the timeout (each foreign master's own
+     * expiry, `receiptOf`, is exact; this periodic pass is the backstop).
+     */
     armReceipt(p) {
         const c = p.clock;
         const g = ++p.seq.announce;
@@ -82532,15 +83248,36 @@ class PtpSim {
         this.later(p, limit, () => {
             const now = this.e.now;
             let changed = false;
-            for (const [k, f] of Array.from(p.foreign))
-                if (now - f.last >= c.receipt * f.interval) {
-                    p.foreign.delete(k);
-                    changed = true;
-                    this.e.note('table', 'ptp', c.dev, f.dev, 'foreign master lost', '', `${c.dev} PTP port ${p.n}: no Announce from ${f.dev} (${f.sender}) for ${c.receipt} announce intervals: it is forgotten`);
-                }
+            for (const f of Array.from(p.foreign.values()))
+                if (now - f.last >= c.receipt * f.interval - 1e-6)
+                    changed = this.forget(p, f) || changed;
             if (changed || p.state === 'LISTENING')
                 this.decide(c, changed ? 'an announce receipt timeout' : 'no better clock announced itself');
             this.armReceipt(p);
+        });
+    }
+    /** A foreign master with no Announce for the receipt timeout (announceReceiptTimeout × its announce interval) is forgotten. */
+    forget(p, f) {
+        const c = p.clock;
+        if (p.foreign.get(f.sender) !== f)
+            return false;
+        p.foreign.delete(f.sender);
+        this.e.note('table', 'ptp', c.dev, f.dev, 'foreign master lost', '', `${c.dev} PTP port ${p.n}: no Announce from ${f.dev} (${f.sender}) for ${c.receipt} announce intervals: it is forgotten`);
+        return true;
+    }
+    /**
+     * The receipt timeout of one foreign master, counted from its last Announce (IEEE 1588-2019 §9.2.6.12): checked
+     * at that moment exactly; a later Announce moved it (its own check then), nothing is rescheduled from here.
+     */
+    receiptOf(p, f) {
+        const c = p.clock;
+        const limit = c.receipt * f.interval;
+        const last = f.last;
+        this.later(p, last + limit - this.e.now, () => {
+            if (f.last !== last || p.foreign.get(f.sender) !== f)
+                return;
+            if (this.forget(p, f))
+                this.decide(c, 'an announce receipt timeout');
         });
     }
     qualified(f, now) {
@@ -82803,6 +83540,7 @@ class PtpSim {
             // the first Announce of a foreign master is not counted (1588-2008 §9.5.3 b, as linuxptp)
             f = { sender: d.src, dev: d.from, times: [], first: now, last: now, ds, interval: d.interval || c.announceIv };
             p.foreign.set(d.src, f);
+            this.receiptOf(p, f);
             this.e.note('table', 'ptp', c.dev, d.from, 'foreign master', '', `${c.dev} PTP port ${p.n} hears ${d.from} (${d.src}) announce the grandmaster ${d.gmDev || ''} (${ds.gm.identity}, priority1 ${ds.gm.priority1}, class ${ds.gm.clockClass}, ${ds.stepsRemoved} steps removed): not qualified yet (${ptp_1.PTP_DEFAULTS.foreignThreshold} more Announces within ${ptp_1.PTP_DEFAULTS.foreignWindow} intervals)`);
             return;
         }
@@ -82810,6 +83548,7 @@ class PtpSim {
         f.last = now;
         f.ds = ds;
         f.dev = d.from;
+        this.receiptOf(p, f);
         const is = this.qualified(f, now);
         if (is !== was || before !== JSON.stringify(ds.gm) + ds.stepsRemoved)
             this.decide(c, is && !was ? `${d.from} qualified as a foreign master` : `${d.from} announces another grandmaster`);
@@ -85252,7 +85991,9 @@ function responder(model, a, transport) {
 /**
  * What to trace for a demand: a demand's ends as written; an application's as the application has them (its
  * family; the peer listener's bind interface's address, else the peer device's address of the family, as the
- * simulation's applications pick it — communication.ts appAddress), in the state traced.
+ * simulation's applications pick it — communication.ts appAddress; the client's address the one it sends from
+ * towards that address — communication.ts egressSource, the simulation's choice, so its answers come back to the
+ * address the requests left from), in the state traced.
  */
 function demandRequest(model, d, ctx) {
     if (!d.app)
@@ -85262,7 +86003,9 @@ function demandRequest(model, d, ctx) {
     // tracer then says has none; never the device's other address)
     const fallback = x.peer.device !== undefined ? (x.peer.bind !== undefined ? `${x.peer.device}:${x.peer.bind}` : x.peer.device) : d.to;
     const peer = x.peer.address !== undefined ? x.peer.address : x.peer.device !== undefined ? ((0, communication_1.appAddress)(model, x.peer.device, x.family, x.peer.bind, ctx) || { address: fallback }).address : d.to;
-    return x.answers ? { from: peer, to: x.client, family: x.family } : { from: x.client, to: peer, family: x.family };
+    const src = (0, ip_1.parseAddress)(peer) ? (0, communication_1.egressSource)(model, x.client, peer, ctx) : null;
+    const client = src ? `${x.client}:${src.iface}` : x.client;
+    return x.answers ? { from: peer, to: client, family: x.family } : { from: client, to: peer, family: x.family };
 }
 /** A cable's speed: the link's, else the smaller of its ends' (null: none written). */
 function linkSpeed(model, id) {

@@ -161,3 +161,69 @@ test('IKEv2: a new IKE_SA_INIT while the responder is established — its old SA
   assert.equal(notes(s, 'b', 'IKE SA replaced', t0).length, 1);
   assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
 });
+
+// ------------------------------------------------------------------ the IKE SA's identity, its window, rekeying by either side
+
+test('IKEv2: the IKE_SA_INIT that began the SA, delayed past its retransmission — dropped by the established responder (outside the window), never a new IKE SA; a delayed old IKE_AUTH too', () => {
+  for (const type of ['IKE_SA_INIT', 'IKE_AUTH']) {
+    const s = sim('{dpd_interval: 5}');
+    let n = 0;
+    s.engine.impair = (link, f) => (f.msg.protocol === 'ipsec' && f.msg.type === type && !(f.msg.data || {}).response && n++ === 0 ? { delay: type === 'IKE_SA_INIT' ? 5000 : 15000 } : null);
+    s.runTo(60000);
+    assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established'], type);
+    const drop = s.events().filter((e) => e.kind === 'drop' && e.device === 'b' && e.what === type);
+    assert.equal(drop.length, 1, `${type}: the late one dropped`);
+    assert.match(drop[0].detail, type === 'IKE_SA_INIT' ? /a retransmission, outside the window \(RFC 7296 §2\.2\)/ : /an old one \(the next is \d+\), outside the window/);
+    assert.equal(notes(s, 'b', 'new IKE SA').length + notes(s, 'b', 'IKE SA replaced').length, 0, `${type}: no new IKE SA on b`);
+    // b answered each request once (no response to the late one); its own DPD message IDs go on (never back to 0)
+    assert.equal(msgs(s, 'b', type).filter((e) => /response/.test(e.detail)).length, 1);
+    const ids = msgs(s, 'b', 'INFORMATIONAL').filter((e) => /^IPsec \(IKEv2\) INFORMATIONAL: b .*; request \(message ID (\d+)\)/.test(e.detail)).map((e) => Number(/message ID (\d+)/.exec(e.detail)[1]));
+    assert.ok(ids.length >= 4 && ids.every((v, k) => v === k), `${type}: b's DPD IDs ${ids.join(',')}`);
+  }
+});
+
+test('IKEv2: an IKE SA rekeyed — the old one deleted by an INFORMATIONAL Delete on it, answered; in the new SA both sides’ message IDs start at 0 (RFC 7296 §2.18)', () => {
+  const s = sim('{dpd_interval: 20, ike_lifetime: 120}');
+  s.runTo(150000);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  const rekey = msgs(s, 'a', 'CREATE_CHILD_SA').find((e) => /rekeys the IKE SA/.test(e.detail));
+  assert.ok(rekey);
+  const del = msgs(s, 'a', 'INFORMATIONAL').find((e) => /Delete \(the old IKE SA/.test(e.detail));
+  const delAck = msgs(s, 'b', 'INFORMATIONAL').find((e) => /response .*Delete \(the old IKE SA\)/.test(e.detail));
+  assert.ok(del && delAck && del.t >= rekey.t && delAck.t >= del.t, 'Delete and its answer');
+  // the old SA's message IDs went on to the rekey; after it (until the next rekey), each side's requests start at 0 and count up
+  const next = msgs(s, 'a', 'CREATE_CHILD_SA', rekey.t + 1).find((e) => /rekeys the IKE SA/.test(e.detail));
+  const end = next ? next.t : Infinity;
+  for (const d of ['a', 'b']) {
+    const after = msgs(s, d, 'INFORMATIONAL', rekey.t + 1).filter((e) => e.t < end && /; request \(message ID \d+\): DPD/.test(e.detail)).map((e) => Number(/message ID (\d+)/.exec(e.detail)[1]));
+    assert.ok(after.length >= 2 && after.every((v, k) => v === k), `${d}: ${after.join(',')}`);
+  }
+  // every DPD answered: nothing dropped as outside the window or of another SA
+  assert.equal(s.events().filter((e) => e.kind === 'drop' && e.protocol === 'ipsec').length, 0);
+});
+
+test('IKEv2 DPD: one request every DPD interval (counted from the previous request), not every two', () => {
+  const s = sim('{dpd_interval: 20}');
+  s.runTo(150000);
+  for (const d of ['a', 'b']) {
+    const t = msgs(s, d, 'INFORMATIONAL').filter((e) => /; request \(message ID \d+\): DPD/.test(e.detail)).map((e) => e.t);
+    const gaps = t.slice(1).map((v, k) => v - t[k]);
+    assert.ok(gaps.length >= 5 && gaps.every((g) => g >= 19990 && g <= 20010), `${d}: ${gaps.map(Math.round).join(', ')}`);
+  }
+});
+
+test('IKEv2: the responder’s own lifetime shorter — it rekeys its Child SA itself (RFC 7296 §2.8: lifetimes are not negotiated), never left without one; equal lifetimes — only the initiator rekeys', () => {
+  const t = PAIR().replace('{id: b, type: router, interfaces: [{id: wan, ip: 192.0.2.2/30}]}', '{id: b, type: router, interfaces: [{id: wan, ip: 192.0.2.2/30}], simulation: {child_lifetime: 120}}');
+  const s = new S.Simulation(model(t));
+  s.runTo(400000);
+  assert.deepEqual([st(s, 'a'), st(s, 'b')], ['Established', 'Established']);
+  assert.equal(s.events().filter((e) => e.kind === 'state' && e.what === 'No Child SA').length, 0, 'never without a Child SA');
+  const own = msgs(s, 'b', 'CREATE_CHILD_SA').filter((e) => /; request \(message ID \d+\): rekeys the Child SA/.test(e.detail));
+  assert.ok(own.length >= 3, `b rekeys (${own.length})`);
+  assert.ok(own.every((e) => msgs(s, 'a', 'CREATE_CHILD_SA').some((r) => /response/.test(r.detail) && Math.abs(r.t - e.t) < 5)), 'each answered');
+  // equal lifetimes: the initiator's rekey renews first; the responder's own one is never needed
+  const e = sim('{child_lifetime: 120}');
+  e.runTo(400000);
+  assert.equal(msgs(e, 'b', 'CREATE_CHILD_SA').filter((x) => /; request/.test(x.detail)).length, 0);
+  assert.ok(msgs(e, 'a', 'CREATE_CHILD_SA').filter((x) => /; request/.test(x.detail)).length >= 3);
+});

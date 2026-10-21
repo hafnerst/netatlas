@@ -408,3 +408,24 @@ test('in-progress ownership: an MQTT client stopped while its connection is bein
   assert.ok(after.length >= 1 && after.length <= 4, `${after.length} new connections of the session`);
   assert.ok(peak <= 1, `attempts in SYN-SENT at once: ${peak}`);
 });
+
+test('BGP, the passive side: its OPEN goes out when the TCP connection is established (RFC 4271 §8.2.2: OpenSent at once), not when the peer’s OPEN arrives — even with the peer’s first OPEN lost; a test to port 179 from the peer is never taken for the session', () => {
+  const s = new S.Simulation(model(PAIR));
+  let seen = 0;
+  s.engine.impair = (link, f) => (f.msg.protocol === 'bgp' && f.msg.type === 'OPEN' && f.msg.sender === 'a' && seen++ === 0 ? { lose: true } : null);
+  s.runTo(30000);
+  assert.ok(seen >= 2, 'a’s first OPEN lost, sent again by TCP');
+  const ev = s.events().filter((e) => e.device === 'b' && e.protocol === 'bgp');
+  const sent = ev.find((e) => e.kind === 'message' && e.what === 'OPEN');
+  const opened = ev.find((e) => e.kind === 'state' && e.what === 'OpenSent');
+  assert.ok(opened && /TCP connection from a accepted/.test(opened.detail), opened && opened.detail);
+  assert.ok(sent && sent.t === opened.t, 'b’s OPEN at once');
+  // a never heard of its lost OPEN's fate: TCP retransmits it, b gets it, both go on to Established
+  assert.deepEqual(['a', 'b'].map((d) => sessionState(s, 'bgp', d)), ['Established', 'Established']);
+  assert.equal(ev.filter((e) => e.kind === 'message' && e.what === 'OPEN').length, 1, 'one OPEN from b');
+  // a TCP test from a to b:179 while the session is up: its own connection, not the session's
+  const t = s.sendTest({ from: 'a', to: '10.0.0.2', kind: 'tcp', port: 179 });
+  s.runTo(s.now + 5000);
+  assert.equal(t.ok, true, t.result);
+  assert.deepEqual(['a', 'b'].map((d) => sessionState(s, 'bgp', d)), ['Established', 'Established']);
+});

@@ -12,7 +12,10 @@
  * knew when it answered) is below 15; then it is synchronized to that
  * upstream, its stratum one more than the one the response said (an
  * upstream at 15 would make it 16: no time to give, RFC 5905's MAXSTRAT,
- * so that one is not usable). A client
+ * so that one is not usable). An upstream is an address (an association,
+ * RFC 5905 §9): the client asks that address, and a response counts for the
+ * upstream whose address it comes from — never for another address of the
+ * same server, which is another association (or none). A client
  * knows its upstreams only by their responses — the stratum each last
  * reported and when — never by reading a server's state. A response of its
  * source that is no longer usable (it reports 15 or 16: it lost its own
@@ -33,8 +36,9 @@
  * is computed), leap seconds, authentication, NTP's own symmetric modes.
  * NTP and PTP never discipline each other.
  */
-import { compareAddr } from '../ipmath';
-import { parseAddress } from '../../model/ip';
+import { compareAddr, formatAddr } from '../ipmath';
+import { IpAddr, parseAddress } from '../../model/ip';
+import { addressHolders } from '../names';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
 import { GridTable, SessionStatus } from './types';
@@ -47,9 +51,12 @@ export interface NtpState {
   dev: string;
   /** a stratum of its own (a reference clock), when configured */
   own?: number;
-  /** its configured upstreams (addresses), and the device each is, when the model has it */
-  /** its upstreams: the address, the device it is (when the model has it), its last response and the stratum that response reported */
-  upstreams: Array<{ addr: string; dev: string | null; last?: number; stratum?: number }>;
+  /**
+   * its upstreams: the address, the device it is (when the model has it: the one its traffic reaches), its last
+   * response and the stratum that response reported; `byDevice`: a relation's client without the service — its
+   * upstream is the relation's other device, whatever address it answers from
+   */
+  upstreams: Array<{ addr: string; dev: string | null; last?: number; stratum?: number; byDevice?: boolean }>;
   /** the upstream it is synchronized to now, and since when */
   source?: string;
   since?: number;
@@ -71,11 +78,11 @@ export class NtpSim {
       const s = d.appServices ? d.appServices.get('ntp') : undefined;
       if (!s) continue;
       const ups = Array.isArray(s.values.upstreams) ? (s.values.upstreams as string[]) : [];
-      this.devs.set(d.id, { dev: d.id, own: typeof s.values.stratum === 'number' ? (s.values.stratum as number) : undefined, upstreams: ups.map((a) => ({ addr: a, dev: this.owner(a) })), gen: 0 });
+      this.devs.set(d.id, { dev: d.id, own: typeof s.values.stratum === 'number' ? (s.values.stratum as number) : undefined, upstreams: ups.map((a) => ({ addr: a, dev: this.owner(d.id, a) })), gen: 0 });
     }
-    P.handlers.set('ntp', (dev, _l3, msg) => {
+    P.handlers.set('ntp', (dev, _l3, msg, pkt) => {
       const d = (msg.data || {}) as { from?: string; stratum?: number };
-      if (msg.type === 'Server response') this.answered(dev, String(d.from || ''), typeof d.stratum === 'number' ? d.stratum : 16);
+      if (msg.type === 'Server response') this.answered(dev, String(d.from || ''), pkt ? pkt.src : null, typeof d.stratum === 'number' ? d.stratum : 16);
       // (the session behaviour goes on with it)
       return false;
     });
@@ -91,14 +98,12 @@ export class NtpSim {
     });
   }
 
-  private owner(addr: string): string | null {
+  /** The device an upstream address is: its only holder, else the one the client's traffic reaches (null: none, or it can't be told). */
+  private owner(client: string, addr: string): string | null {
     const a = parseAddress(addr);
-    if (!a) return null;
-    for (const d of this.P.m.devices) for (const i of d.interfaces.concat(d.logical)) for (const x of i.addresses) {
-      const b = parseAddress(x.replace(/\/\d+$/, ''));
-      if (b && compareAddr(a, b) === 0) return d.id;
-    }
-    return null;
+    const hs = addressHolders(this.P.m, addr);
+    if (!a || !hs.length) return null;
+    return hs.length === 1 ? hs[0] : this.P.e.ownerSeenFrom(client, '', a as IpAddr);
   }
 
   /** A device's stratum as it knows it now: its own, one more than its source's last response said, else 16 (unsynchronized); 16 while it is off. */
@@ -121,21 +126,38 @@ export class NtpSim {
     return this.stratum(dev);
   }
 
+  /**
+   * Is an upstream's last response fresh (within the reach register's 8 polls)? One expression for the check and
+   * for the time a check is scheduled at (`last + limit`): with fractional times, `now - last < limit` at
+   * `now = last + limit` can still be true by a rounding step, and a check re-armed for that same instant ran
+   * again and again without time passing.
+   */
+  private fresh(u: { last?: number }, dev: string): boolean {
+    return u.last !== undefined && this.P.e.now < u.last + NTP_REACH * this.poll(dev);
+  }
+
   /** The poll interval: the NTP sessions' demonstration interval (NTPv4's minimum poll, 64 s). */
   private poll(_dev: string): number {
     return 64000;
   }
 
-  /** A server's response reached its client: what it says (its stratum) is all the client knows of it. */
-  private answered(client: string, server: string, stratum: number): void {
+  /**
+   * A server's response reached its client: what it says (its stratum) is all the client knows of it — for the
+   * association of the address it comes from (`src`), never for another address of that server.
+   */
+  private answered(client: string, server: string, src: IpAddr | null, stratum: number): void {
     let st = this.devs.get(client);
     if (!st) {
-      // a relation's client without the service: it has the same state
-      st = { dev: client, upstreams: [{ addr: server, dev: server }], gen: 0 };
+      // a relation's client without the service: it has the same state, its upstream the relation's other device
+      st = { dev: client, upstreams: [{ addr: server, dev: server, byDevice: true }], gen: 0 };
       this.devs.set(client, st);
     }
-    const u = st.upstreams.find((x) => x.dev === server);
-    if (!u) return;
+    const u = st.upstreams.find((x) => (x.byDevice ? x.dev === server : !!src && !!parseAddress(x.addr) && compareAddr(parseAddress(x.addr) as IpAddr, src) === 0));
+    if (!u) {
+      // (RFC 5905 §9: a response that belongs to no association is not taken)
+      this.P.e.note('drop', 'ntp', client, server, 'Server response', '', `${client} takes no time from ${server}'s response from ${src ? formatAddr(src) : 'an unknown address'}: none of its upstreams (${st.upstreams.map((x) => x.addr).join(', ')}) is that address`);
+      return;
+    }
     u.last = this.P.e.now;
     u.stratum = stratum;
     if (st.own !== undefined) return;
@@ -149,7 +171,7 @@ export class NtpSim {
     if (st.source === u.addr) return;
     if (st.source) {
       const cur = st.upstreams.find((x) => x.addr === st!.source);
-      if (cur && cur.last !== undefined && this.P.e.now - cur.last < NTP_REACH * this.poll(client)) return;
+      if (cur && this.fresh(cur, client)) return;
     }
     this.select(st, u, `stratum ${stratum} in its response`);
   }
@@ -175,7 +197,7 @@ export class NtpSim {
     this.P.e.at(Math.max(this.P.e.now, at), () => {
       if (st.source !== src || st.gen !== gen) return;
       const u = st.upstreams.find((x) => x.addr === src);
-      if (u && u.last !== undefined && this.P.e.now - u.last < limit) {
+      if (u && this.fresh(u, st.dev)) {
         this.watch(st);
         return;
       }
@@ -194,10 +216,9 @@ export class NtpSim {
     st.source = undefined;
     st.gen++;
     st.lost = { at: this.P.e.now, why };
-    const limit = NTP_REACH * this.poll(st.dev);
     const next = fallback
       ? st.upstreams
-          .filter((u) => u.addr !== was && u.dev && u.last !== undefined && this.P.e.now - u.last < limit && u.stratum !== undefined && u.stratum <= USABLE_STRATUM)
+          .filter((u) => u.addr !== was && u.dev && this.fresh(u, st.dev) && u.stratum !== undefined && u.stratum <= USABLE_STRATUM)
           .sort((a, b) => (a.stratum as number) - (b.stratum as number))[0]
       : undefined;
     if (next) {
@@ -215,8 +236,9 @@ export class NtpSim {
     if (!this.P.e.deviceOn(dev)) return 'powered off: it serves no time';
     if (st.own !== undefined) return `serving time at stratum ${st.own} (its own reference clock, taken as given)`;
     if (this.synchronized(dev)) return `synchronized to ${st.source} since t = ${Math.round((st.since as number) / 100) / 10} s; serving stratum ${this.stratum(dev)}`;
-    const outside = st.upstreams.filter((u) => !u.dev).map((u) => u.addr);
-    return `unsynchronized (stratum 16)${st.lost ? `: ${st.lost.why}` : ': no usable upstream answered yet'}${outside.length ? `; ${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} outside the model (not simulated)` : ''}`;
+    const several = st.upstreams.filter((u) => !u.dev && addressHolders(this.P.m, u.addr).length > 1).map((u) => u.addr);
+    const outside = st.upstreams.filter((u) => !u.dev && several.indexOf(u.addr) < 0).map((u) => u.addr);
+    return `unsynchronized (stratum 16)${st.lost ? `: ${st.lost.why}` : ': no usable upstream answered yet'}${outside.length ? `; ${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} outside the model (not simulated)` : ''}${several.length ? `; ${several.join(', ')}: several devices have ${several.length === 1 ? 'it' : 'them'} and which one ${dev} reaches can't be told (not asked)` : ''}`;
   }
 
   private status(): SessionStatus[] {
@@ -235,7 +257,7 @@ export class NtpSim {
     const st = this.devs.get(dev);
     const now = this.P.e.now;
     // (what its responses said: a client knows nothing else of an upstream)
-    const rows = st ? st.upstreams.map((u) => [u.addr, u.dev || '(outside the model)', u.last !== undefined ? `${durationText(now - u.last)} ago` : 'never', u.stratum !== undefined ? String(u.stratum) : '—', st.source === u.addr ? 'its source' : '']) : [];
+    const rows = st ? st.upstreams.map((u) => [u.addr, u.dev || (addressHolders(this.P.m, u.addr).length > 1 ? '(several devices: not told apart)' : '(outside the model)'), u.last !== undefined ? `${durationText(now - u.last)} ago` : 'never', u.stratum !== undefined ? String(u.stratum) : '—', st.source === u.addr ? 'its source' : '']) : [];
     return { caption: `NTP of ${dev}`, cols: ['Upstream', 'Device', 'Last answer', 'Stratum it reported', ''], rows, empty: st && st.own !== undefined ? 'A reference: it asks no upstream.' : 'No upstream.', timers: [], notes: st ? [`${dev}: ${this.text(dev)}.`, `Unreachable after ${NTP_REACH} polls without an answer (the demonstration poll interval is 64 s, NTP's minimum).`] : [] };
   }
 

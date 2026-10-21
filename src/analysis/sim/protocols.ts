@@ -14,18 +14,18 @@
  * logical view along their relation, and answers the engine (what is up,
  * which virtual addresses a device holds).
  */
-import { IpAddr } from '../../model/ip';
+import { IpAddr, parseAddress } from '../../model/ip';
 import { lookupProtocol, protocolBase } from '../../model/protocols';
 import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles';
 import { Model, Relation, relationDevices } from '../../model/types';
-import { compareAddr, formatAddr } from '../ipmath';
+import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { DvTables, isisCircuit, relParam, routingProtocol } from '../routing';
 import { RipSim } from './rip';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus, SnoopResult } from './types';
-import { serviceRelations } from './service-relations';
+import { serviceRelations, upstreamOf } from './service-relations';
 import type { Transport } from './transport';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -66,7 +66,8 @@ const UPDATE_OF: { [behaviour: string]: { type: string; ack?: string } } = {
   eigrp: { type: 'Update', ack: 'ACK' },
 };
 /** An unacknowledged advertisement is sent again after this (OSPF's RxmtInterval 5 s; IS-IS and EIGRP alike in the simulation). */
-const ADV_RXMT = 5000;
+/** A reliable advertisement (an LSU, LSP, EIGRP Update) unacknowledged is sent again after this (ms). */
+export const ADV_RXMT = 5000;
 /** EIGRP's active timer (RFC 7868 §5.5: 3 min): a neighbour that has not replied to a Query by then is reset (stuck in active). */
 const EIGRP_ACTIVE = 180000;
 
@@ -294,6 +295,30 @@ export class ProtocolSim implements Protocols {
   }
 
   /**
+   * The sides of a relation that asks one exact address (an NTP upstream, service-relations.ts): the server is
+   * that address on the interface that has it; the client sends from its address of the same family on a network
+   * it shares with that address, else from the one it would use towards the server (pairSides, the same family).
+   * Never another address of the server. Null: not such a relation (or the address is gone from the server).
+   */
+  private exactSides(r: Relation, a: string, b: string): { a: Side; b: Side; shared: boolean } | null {
+    const up = upstreamOf(r);
+    const target = up ? parseAddress(up) : null;
+    if (!target) return null;
+    const sb = this.sd(b);
+    const sa = this.sd(a);
+    if (!sa || !sb) return null;
+    const l3 = Array.from(sb.l3.values()).find((l) => l.addrs.some((x) => compareAddr(x.addr, target) === 0));
+    if (!l3) return null;
+    const server: Side = { dev: b, l3, addr: target as IpAddr };
+    const own = Array.from(sa.l3.values()).sort((x, y) => cmp(x.id, y.id));
+    for (const l of own) for (const x of l.addrs) if (l.kind !== 'loopback' && x.addr.version === target.version && inPrefix(x.net, target as IpAddr)) return { a: { dev: a, l3: l, addr: x.addr }, b: server, shared: true };
+    const p = this.pairSides(r, a, b);
+    if (p && ipOf(p.a).version === target.version) return { a: p.a, b: server, shared: false };
+    for (const l of own) for (const x of l.addrs) if (l.kind !== 'loopback' && x.addr.version === target.version) return { a: { dev: a, l3: l, addr: x.addr }, b: server, shared: false };
+    return null;
+  }
+
+  /**
    * IS-IS's circuit between two routers (routing.ts isisCircuit: their
    * interfaces that one's frames reach, over a cable or through bridges,
    * the relation's endpoint interfaces when written) — its adjacency forms
@@ -327,7 +352,11 @@ export class ProtocolSim implements Protocols {
   /** Build the sessions of every relation (each pair, each side). */
   build(): void {
     // the model's relations, then the exchanges its services imply (service-relations.ts: not drawn, not in the model)
-    for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat(serviceRelations(this.m))) {
+    const owner = (client: string, address: string): string | null => {
+      const a = parseAddress(address);
+      return a ? this.e.ownerSeenFrom(client, '', a as IpAddr) : null;
+    };
+    for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat(serviceRelations(this.m, owner))) {
       const profile = this.profileOf(r);
       if (!this.behaviours.has(profile.behaviour)) continue;
       const devs = relationDevices(r);
@@ -352,7 +381,7 @@ export class ProtocolSim implements Protocols {
     // IS-IS forms its adjacency on the link itself (its PDUs are frames, not IP): the interfaces of a cable between the two,
     // whatever their IP addresses (other subnets, none at all)
     const l2 = profile.behaviour === 'isis' ? this.linkSides(r, a, b) : null;
-    const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.pairSides(r, a, b);
+    const sides = l2 ? { a: l2.a, b: l2.b, shared: true } : this.exactSides(r, a, b) || this.pairSides(r, a, b);
     if (!sides) {
       // a DHCP client without its lease yet: its sessions wait for it
       const lease = [a, b].find((x) => !!this.e.waitsForLease(x));
@@ -672,7 +701,10 @@ export class ProtocolSim implements Protocols {
     for (const h of this.deviceHooks) h(dev, false);
   }
 
-  /** A device has booted: its sessions start afresh. */
+  /**
+   * A device has booted: its sessions start afresh — each when its interface is up again (its cable's link-up
+   * delay after the boot), as at the start of the simulation, never sending before.
+   */
   deviceUp(dev: string): void {
     for (const h of this.deviceHooks) h(dev, true);
     for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
@@ -680,11 +712,7 @@ export class ProtocolSim implements Protocols {
       this.restart(s);
       s.x = {};
       s.heard = -1;
-      const jitter = 100 + Math.floor(this.e.random(dev) * 400);
-      const g = s.gen;
-      this.e.after(jitter, () => {
-        if (s.gen === g) this.startSession(s);
-      });
+      this.startWhenUp(s);
     }
   }
 
@@ -808,13 +836,15 @@ export class ProtocolSim implements Protocols {
    * The transport header of a session's message sent here (unicast or
    * multicast, never over a connection), from its profile's datagram
    * transport ("UDP 3784", "IP 89"; LDP's "UDP/TCP 646": its Hellos are
-   * UDP): the client side (the requests' sender, or the relation's earlier
-   * endpoint) sends from an ephemeral port to the protocol's port, the other
-   * side back. A protocol's TCP messages go over the transport's connections
+   * UDP): between peers as the profile says (SimProfile.ports: both from and
+   * to the protocol's port, or each from its own ephemeral port to it), to a
+   * group the protocol's port; otherwise the client side (the requests'
+   * sender, or the relation's earlier endpoint) sends from an ephemeral port
+   * to the protocol's port, the other side back. A protocol's TCP messages go over the transport's connections
    * (proto-tcp.ts) with their segments' real flags: no TCP header is made up
    * here (a profile with only TCP gets none).
    */
-  l4Of(s: Sess): L4 | undefined {
+  l4Of(s: Sess, group = false): L4 | undefined {
     const p = s.profile.proto;
     const udp = /\bUDP(?:\/TCP)?\s+([0-9]{1,5})/.exec(p);
     const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(p);
@@ -822,8 +852,12 @@ export class ProtocolSim implements Protocols {
     if (!first) return undefined;
     if (first === ip) return { proto: 'other', num: Number(ip[1]) };
     const port = Number(first[1]);
-    const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
     const eph = (dev: string): number => 49152 + hashIndex(s.rel.id + '|' + dev, 16000);
+    // between peers: both from and to the protocol's port, or each from its own ephemeral port to it (SimProfile.ports);
+    // to a group (Hellos): always to the protocol's port
+    if (s.profile.ports === 'same' || (group && s.profile.ports !== 'to')) return { proto: 'udp', num: 17, sport: port, dport: port };
+    if (s.profile.ports === 'to') return { proto: 'udp', num: 17, sport: eph(s.dev), dport: port };
+    const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
     const sport = client ? eph(s.dev) : port;
     const dport = client ? port : eph(s.peer);
     return { proto: 'udp', num: 17, sport, dport };
@@ -835,7 +869,7 @@ export class ProtocolSim implements Protocols {
     const at = to === ipOf(s.remote) ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
     const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id]);
+    const pkt = this.e.newPacket(ipOf(s.local), to, s.local.l3.vrf, m, [s.rel.id], s.profile.ttl || 0);
     pkt.l4 = this.l4Of(s);
     this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
     this.e.send(s.dev, pkt);
@@ -846,7 +880,7 @@ export class ProtocolSim implements Protocols {
     const m = this.msg(s, type, `${s.dev} (${formatAddr(ipOf(s.local))}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
     const pkt = this.e.newPacket(ipOf(s.local), group, s.local.l3.vrf, m, [s.rel.id], 1);
-    pkt.l4 = this.l4Of(s);
+    pkt.l4 = this.l4Of(s, true);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
     for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, ipOf((this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote)) : 2 * this.e.hopTime());

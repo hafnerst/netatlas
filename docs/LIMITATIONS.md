@@ -140,6 +140,12 @@ rather than every VLAN.
   the shortest cable way through layer-2 devices (as a tree might leave it).
 * **Layer 2 switches** have one management interface with addresses; a
   switch that routes says `layer3: true`.
+* **LACP** (IEEE 802.1AX): each LACPDU carries its actor's LACP_Timeout;
+  a member transmits at the rate its partner's timeout asks for (fast
+  while it is short) and times out by its own; a member goes back to
+  Attached (no traffic) when its partner says it is not in sync, and tells
+  its partner at once when it times out. Not modelled: churn detection,
+  marker PDUs, partner key details beyond the aggregate's identity.
 * **Wi-Fi without radio.** A client is associated with the network its
   connection names; WPA security is a label (no 4-way handshake or 802.1X).
   A network tunneled to its controller is not simulated (the simulation and
@@ -196,31 +202,89 @@ what the advertisements it received told it (below).
   metric, the neighbour it came from, a timeout) comes from its
   neighbours' Responses only, with split horizon and poisoned reverse,
   withdrawal with 16, a 180 s timeout and 120 s garbage collection, and
-  triggered updates after 1–5 s. No hold-down, no RIPv1.
+  triggered updates after 1–5 s, from and to UDP 520; a router asks its
+  neighbours for their tables (a Request) at every boot and when an
+  interface comes up again. No hold-down, no RIPv1.
 * **IS-IS** pairs routers over the cable between them (its PDUs are
   frames), by the NET's system ID and area and the level; its routes over
   an unnumbered interface go to the neighbour's own address out of it,
   numbered interfaces in different subnets get no IPv4 next hop. One
-  database for both levels, no designated IS.
-* **EIGRP**: a lost neighbour is a Query to the others, each answering
-  with a Reply (stuck in active after 3 min without one); DUAL's
-  feasibility condition is not modelled (another neighbour's route is used
-  at once).
+  database for both levels, no designated IS: both ends send a CSNP (the
+  database summary) every CSNP interval, a PSNP asks for what is missing or
+  older, the next CSNP repairs a loss; an adjacency whose neighbour's IIHs
+  stop listing it goes back to Initializing (one-way detection).
+* **First-hop redundancy.** A router recognizes its group by what the
+  protocol carries — the group number (VRID, VHID) of the address family,
+  on the interface the advertisement arrived on — never by its VRF's
+  name; a different virtual address under the same group is logged (VRRP,
+  HSRP, GLBP) or, for CARP, discarded. VRRP (RFC 5798) preempts by its
+  master down timer: a Backup accepts an equal or higher priority (an
+  equal one does not preempt, whatever the addresses), discards a lower
+  one and takes over when the timer (3 × the interval + its skew)
+  expires; a Master steps down for a higher priority, or an equal one
+  from a higher primary address; IPv6 from the link-local address. HSRP
+  (RFC 2281) decides an equal priority by the address, also for its Coup;
+  version 2 (Cisco's) where version 1 can't carry the group — above 255,
+  or IPv6 (UDP 2029 to ff02::66). CARP preempts at once for a strictly
+  higher priority. Not modelled: a priority-0 advertisement on shutdown
+  (an interface or device that goes down simply stops advertising),
+  learned advertisement intervals, authentication; GLBP is one virtual
+  forwarder (no load sharing); HSRP version 2's hop limit in IPv6 (255)
+  is assumed.
+* **EIGRP**: the init Update is reliable (sent again every 5 s until
+  acknowledged, the neighbour reset after 16 tries; Up only with both
+  inits through; a new init from an Up neighbour resets the adjacency); a
+  lost neighbour is a Query to the others, each answering with a Reply
+  (stuck in active after 3 min without one); DUAL's feasibility condition
+  is not modelled (another neighbour's route is used at once). Only the
+  init Update has its own sequence numbers and retry limit; other reliable
+  packets use the shared 5 s retransmission.
 * **OSPF.** The DR election follows RFC 2328 (Waiting, BackupSeen,
   priority, non-preemptive) per interface; Hellos whose intervals, area or
   network type differ are discarded (a network-type mismatch never forms
   an adjacency in the simulation, whatever a vendor would do). The database
   exchange negotiates master and slave by router ID and rejects a DBD
   whose MTU is larger than the interface's (stuck in ExStart / Exchange);
-  one DBD holds the database (no M-bit paging). Two DROthers reach each
+  one DBD holds the database (no M-bit paging). A DBD in Exchange,
+  Loading or Full is checked as RFC 2328 §10.6 says: a duplicate of the
+  last one received is discarded by the master and answered again by the
+  slave (in Full for as long as it comes, not only a dead interval);
+  anything else that is not the next DBD — the MS bit, the I bit, a DD
+  sequence number out of order, any non-duplicate after the exchange — is
+  SeqNumberMismatch, back to ExStart. LSUs and LSAcks go unicast to each
+  neighbour (RFC 2328 floods to AllSPFRouters / AllDRouters); the unicast
+  TTL is not checked against the RFC. Two DROthers reach each
   other through the DR's record. NBMA neighbours are not configured: a
   non-broadcast network behaves as a broadcast one.
 * **BGP.** Only the relation's first endpoint connects (no connection
   collision of two simultaneous opens); a second connection of a session
-  that is up is closed. The OPEN's capabilities are its address family.
+  that is up is closed. Both ends send their OPEN when the TCP connection
+  is established (RFC 4271 §8.2.2), the passive one too; a connection is
+  the session's when its SYN came from the peer's session, so a test to
+  port 179 stays its own. The OPEN's capabilities are its address family.
+* **BFD** (RFC 5880, 5881): one transmit stream per session, at least 1 s
+  apart while not Up, from an ephemeral port to 3784 with TTL 255; Down
+  takes down the clients on its own interface or address pair only (a
+  client between loopbacks is served by every single-hop BFD session to
+  its peer).
+* **Ports between peers.** IKE from and to UDP 500, LDP's Hellos 646, RIP
+  520, GTP-U, L2TP and WireGuard their port both ways; BFD, VXLAN and
+  Geneve from an ephemeral port of each side to theirs; client and server
+  services keep the client's ephemeral port.
+* **IKEv2.** Messages belong to an IKE SA (its identity stands in for the
+  SPIs): a delayed IKE_SA_INIT or IKE_AUTH of the established SA, or an old
+  request of it, is dropped (outside the window); a rekeyed IKE SA starts
+  its message IDs at 0 and the old one is deleted (the Delete is sent once,
+  not retransmitted); dead peer detection every interval; either side
+  rekeys by its own lifetime — the responder halfway between the
+  initiator's rekey time and its lifetime's end (no simultaneous rekeying,
+  no nonce comparison). NAT-T is not modelled.
 * **Equal-cost paths** are all listed (up to 16), without hashing; beyond
   16 the others' outcome is not known (said so). The return path starts at
-  the destination's own address.
+  the destination's own address. Asked for a device, a path that ends at
+  another device with its address (behind another equal-cost next hop)
+  does not reach it: the check is partial, and the destination reported
+  is the device the paths reach.
 * **Tunnels.** A tunnel's underlay is traced when the model's routes lead
   to its destination; otherwise its `over:` chain is followed as written.
 * **Routing services describe their configuration.** Each protocol has a
@@ -261,7 +325,9 @@ to the host's address, DNAT for published ports) in both.
   never claimed statically. A firewall without a written policy keeps its
   implicit one: the model's relations through it (each permits its
   protocol's port between its devices, both ways) and its `allow` list (a
-  service from anywhere to anywhere), default deny.
+  service from anywhere to anywhere), default deny. A written rule base
+  decides the packets of relations and tunnels through it too, in the
+  simulation as in the path tracer.
 * **A router's policy filters what it routes**, not what it bridges within
   a VLAN (no VLAN ACLs); it is stateless unless written stateful.
 * **A rule's device or interface is its effective addresses.** In the
@@ -273,7 +339,9 @@ to the host's address, DNAT for published ports) in both.
   of a next hop or a destination the one on the segment the hop reaches;
   in the simulation the packet's sender for its own source, and for a
   destination the device the firewall's routes lead to, segment by
-  segment. An address several devices have and no owner known (only the
+  segment — each next hop continued in the VRF of the interface it was
+  reached on, every equal-cost next hop followed (the packet's own egress
+  first): next hops leading to different owners give none. An address several devices have and no owner known (only the
   address given): the rule decides nothing — never every holder. In the
   configured model a device that takes its address at runtime is not
   known: a rule naming it, for an address nobody is known to have,
@@ -346,8 +414,16 @@ Network events, attributed to their event.
   no C-RP advertisements, no priorities, no group ranges); routers that
   disagree keep their own (said, and their trees do not meet); the DR is
   elected by the priorities the neighbours' Hellos announce; an RPT prune
-  acts at the next router up only; register suppression lasts while the
-  source sends; IGMPv3 / MLDv2 source lists are kept per group.
+  acts at the next router up only, and the RP prunes the source's (S,G)
+  towards it once nothing else wants it (RFC 7761 §4.5.7); the shared
+  tree's (S,G,rpt) prune is not refreshed in the periodic Join/Prune and
+  does not expire; register suppression lasts while the source sends.
+* **IGMPv3 / MLDv2.** A join is a state-change record (TO_EX, ALLOW), an
+  answer to a query the current state (IS_EX, IS_IN); routers keep a
+  timer per source in INCLUDE mode — a new source on a known group gets
+  its (S,G), a blocked one leaves when its timer runs out. A BLOCK is
+  followed up with group-specific queries (no group-and-source query);
+  snooping keeps one source list per port.
 * **IGMP and MLD messages** carry the Router Alert option and TTL 1, their
   lengths by version; MLD goes from the link-local address once it is valid
   (a host's Report before it: from ::), and a router elects the MLD querier
@@ -371,10 +447,22 @@ the poll interval, synchronization state and stratum) in the simulation. The
 static timing check finds a compatible source path.
 
 **Simplifications.** PTP clock states follow the modelled timestamps (a
-model of the servo, not of real oscillators). NTP computes no time: its
+model of the servo, not of real oscillators); a foreign master is
+forgotten one announce receipt timeout after its last Announce; a
+transparent clock has no timing state of its own. NTP computes no time: its
 state is modelled, its offsets, jitter and clock filter are not; a client
 knows its upstreams only by their responses (the stratum each reported,
-fresh by the reach register), never by their state. A static
+fresh by the reach register), never by their state. An upstream is an
+address (an association): the client asks exactly that address — a
+loopback's too, when it has a route —, a response counts for the
+upstream it comes from, and two addresses of one server are two
+upstreams; an address several devices have is the one the client's
+traffic reaches (in the simulation and the static chain alike). An ntp
+relation of the model between the two runs instead of the configured
+upstream, between the addresses it picks; its responses count only when
+they come from a configured upstream's address. A source is lost exactly 8
+polls after its last answer; a device with a stratum of its own is a
+reference, whatever upstreams are written beside it. A static
 timing check works by the method asked for (PTP, NTP, or either, both then
 reported): a PTP source path, or an NTP source chain from upstream to
 upstream to a configured reference (a reference's own clock is taken as
@@ -400,8 +488,12 @@ labels it; payloads are sizes, never contents. TCP has no congestion
 control, windows or delayed acknowledgements (a request and an answer, each
 acknowledged; a connection's byte stream has real sequence and
 acknowledgement numbers, the MSS each SYN announces, every segment of a
-write goes at once, and a lost one waits for the retransmission timer — no
-fast retransmit, no SACK; unacceptable segments are refused as RFC 9293
+write goes at once, and a lost one waits for the retransmission timer —
+RFC 6298's, from the measured round trip (SRTT, RTTVAR, Karn's rule; at
+least 1 s or the configured initial RTO if lower; 3 s after a SYN timed
+out) — no fast retransmit, no SACK, no timestamps; a test's connection
+ends with its test (an ICMP error about its SYN; an abort, [R,A], at its
+response timeout); unacceptable segments are refused as RFC 9293
 says; a FIN closes one direction, CLOSE_WAIT until the application
 closes — the test's request/answer and BGP and MQTT close at once; no
 urgent data, no ECN, no simultaneous open, no window scaling);
@@ -584,7 +676,8 @@ statically; contextual focus.
 * **Capacity is stated traffic against stated speeds.** An application's
   transfer is traced between its own ends — its family, the peer
   listener's bind interface's address (else its device's address of the
-  family), as the simulation's applications pick them; a bound listener
+  family), the client's address it sends from (its egress interface
+  towards the peer), as the simulation's applications pick them; a bound listener
   whose interface is down is not carried, never rerouted to another
   address. Demands and
   applications with an interval (payload rates: one MQTT publication per

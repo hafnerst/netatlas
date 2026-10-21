@@ -101,7 +101,7 @@ export function traceEndText(e: TraceEnd): string {
 
 // ------------------------------------------------------------ results
 
-export type StopReason = 'no-route' | 'unresolved' | 'no-adjacency' | 'blackhole' | 'loop' | 'not-forwarding' | 'down' | 'too-long' | 'denied';
+export type StopReason = 'no-route' | 'unresolved' | 'no-adjacency' | 'blackhole' | 'loop' | 'not-forwarding' | 'down' | 'too-long' | 'denied' | 'other-device';
 
 /** How a path ends. */
 export type PathEnd =
@@ -385,6 +385,19 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   if (dnat) w.dnat = dnat;
   out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
   out.truncated = w.truncated;
+  // an address several devices have: the destination is the device the paths reach (all of them the same one), else none
+  if (dst.kind === 'address' && !w.destDev && destDev !== undefined && !dnat) {
+    const ends = Array.from(new Set(out.paths.map((p) => (p.end.kind === 'reached' ? `${p.end.device}|${p.end.iface || ''}` : ''))));
+    const reached = ends.length === 1 && out.paths.every((p) => p.end.kind === 'reached') ? ends[0].split('|') : null;
+    if (reached) {
+      out.dest.device = reached[0];
+      if (reached[1]) out.dest.iface = reached[1];
+      else delete out.dest.iface;
+    } else {
+      delete out.dest.device;
+      delete out.dest.iface;
+    }
+  }
   // a protocol break: a transfer to one of its listening ports ends there, and the gateway starts the second leg itself
   const main = out.paths[0];
   if (main && main.end.kind === 'reached' && main.end.iface !== undefined && svc && svc.proto !== 'icmp' && srcAddr) {
@@ -447,6 +460,9 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   hop.why = explainDecision(model, at, w.dest, w.destText, decision, w.ctx);
   if (decision.kind === 'local' && w.dnat && w.dnat.host === at.device) return dnatHops(w, hop, before);
   if (decision.kind === 'local') {
+    // (the destination asked for is a device, and this path ends at another one that has its address: two VRFs or segments
+    // behind equal-cost next hops — this path does not reach it)
+    if (w.destDev !== undefined && at.device !== w.destDev && !w.dnat) return stop('other-device', `${at.device} has ${w.destText} too: this path reaches ${at.device}, not ${w.destDev}`);
     const own = connectedIn(model, at.device, w.ctx).find((c) => compareAddr(c.addr, w.dest) === 0);
     hop.via = { kind: 'local', text: `${w.destText} is an address of ${at.device}${own ? ' (' + own.iface + ')' : ''}` };
     return [{ hops: before.concat(hop), end: own ? { kind: 'reached', device: at.device, iface: own.iface } : { kind: 'reached', device: at.device } }];
@@ -1386,6 +1402,7 @@ export const STOP_LABEL: { [r in StopReason]: string } = {
   down: 'down',
   'too-long': 'too many hops',
   denied: 'denied by policy',
+  'other-device': 'reaches another device with the address',
 };
 
 /** One kind of end of the evaluated paths, with how many paths end so. */

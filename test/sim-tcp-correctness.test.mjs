@@ -572,3 +572,121 @@ test('conversations: translated by NAT on the way, the reply is the same convers
   assert.equal(cport(later), cport(tcpFlights), 'the same client port');
   assert.ok(!first.has(Array.from(second)[0]), 'a new conversation');
 });
+
+// ------------------------------------------------------------------ a test's connection ends with its test
+
+test('an ICMP error about a test’s SYN ends its connection with the test (RFC 1122 §4.2.3.9; Linux tcp_v4_err): no SYN is sent again — also when the router rate-limits its later errors', () => {
+  for (const limit of ['', ', simulation: {icmp_rate_limit: 60000}']) {
+    const t = `netatlas: 1
+title: unreachable
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
+  - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.1.1/24}]${limit}}
+links:
+  - {id: l1, a: "pc:eth0", b: "r1:g0"}
+`;
+    const s = sim(t);
+    s.runTo(3000);
+    const t0 = s.now;
+    const r = s.sendTest({ from: 'pc', to: '10.9.9.9', kind: 'tcp', port: 80 });
+    s.runTo(t0 + 120000);
+    assert.equal(r.ok, false);
+    assert.match(r.result, /^Net Unreachable from 10\.0\.1\.1/);
+    const out = segs(s, 'pc', t0);
+    assert.deepEqual(out.map((x) => x.flags), ['[S]'], `${limit || 'no limit'}: ${out.map((x) => `${x.t} ${x.label}`).join(', ')}`);
+    const closed = s.events().filter((e) => e.t >= t0 && e.kind === 'table' && e.device === 'pc' && e.what === 'connection closed');
+    assert.equal(closed.length, 1);
+    assert.ok(closed[0].t <= r.ended + 1e-6, 'closed when the test failed');
+    assert.match(closed[0].detail, /connection failed: Net Unreachable/);
+  }
+});
+
+test('the response timeout of a test on an open connection: the client aborts it ([R,A], RFC 9293 §3.10.4 ABORT) — the server’s late answer is never sent on it, nothing of the connection after', () => {
+  const s = sim(CHAIN({ srv: ', response_time: 7000' }));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'tcp', port: 80 });
+  s.runTo(t0 + 20000);
+  assert.equal(r.ok, false);
+  assert.match(r.result, /no answer within 5 s/);
+  const pc = segs(s, 'pc', t0);
+  assert.equal(pc[pc.length - 1].flags, '[R,A]');
+  assert.ok(Math.abs(pc[pc.length - 1].t - r.ended) < 1e-6, 'at the timeout');
+  assert.ok(pc.every((x) => x.t <= r.ended + 1e-6), 'nothing after the abort');
+  // the server's connection is reset before its answer is due: it sends no data
+  assert.ok(segs(s, 'srv', t0).every((x) => x.len === 0), segs(s, 'srv', t0).map((x) => `${x.t - t0} ${x.label}`).join(', '));
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'srv' && e.kind === 'table' && /reset by 10\.0\.1\.10/.test(e.detail)));
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'pc' && e.kind === 'table' && /aborted: pc gave up after its response timeout/.test(e.detail)));
+});
+
+test('an answer due after the service response time is not sent by a server powered off and on meanwhile (a rebooted server knows no request): the UDP test times out, no UDP answer leaves the server', () => {
+  const s = sim(CHAIN({ srv: ', response_time: 4000, boot_time: 0.1' }).replace('listening: "tcp/80"', 'listening: "tcp/80, udp/53"'));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'udp', port: 53 });
+  s.runTo(t0 + 300);
+  assert.ok(s.events().some((e) => e.t >= t0 && e.device === 'r2' && e.kind === 'route' && e.protocol === 'udp' && /10\.0\.1\.10 → 10\.0\.2\.10/.test(e.detail)), 'the request was routed to srv before the power-off');
+  s.powerOff('srv');
+  s.runTo(t0 + 600);
+  s.powerOn('srv');
+  s.runTo(t0 + 10000);
+  assert.equal(r.ok, false);
+  assert.match(r.result, /no answer within 5 s/);
+  assert.equal(s.events().filter((e) => e.t >= t0 && e.device === 'srv' && e.what === 'UDP answer').length, 0);
+  // without the power cycle the same request is answered after 4 s
+  const u = sim(CHAIN({ srv: ', response_time: 4000, boot_time: 0.1' }).replace('listening: "tcp/80"', 'listening: "tcp/80, udp/53"'));
+  u.runTo(3000);
+  const ok = u.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'udp', port: 53 });
+  u.runTo(u.now + 10000);
+  assert.equal(ok.ok, true, ok.result);
+});
+
+// ------------------------------------------------------------------ the retransmission timeout from the round trip (RFC 6298)
+
+test('RTO from the round trip (RFC 6298 §2–3): a 1.6 s round trip — the SYN goes again at the initial 1 s and 2 s (no sample from a retransmitted SYN: Karn’s rule), but after the handshake no data, answer or FIN is sent again, the connection closes without a reset', () => {
+  const s = sim(CHAIN().replace('{id: l2, a: "r1:g1", b: "r2:g0"}', '{id: l2, a: "r1:g1", b: "r2:g0", simulation: {latency: 800ms}}'));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'tcp', port: 80 });
+  s.runTo(t0 + 20000);
+  assert.equal(r.ok, true, r.result);
+  const pc = segs(s, 'pc', t0);
+  const srv = segs(s, 'srv', t0);
+  assert.deepEqual(pc.filter((x) => x.flags === '[S]').map((x) => Math.round(x.t - t0)), [0, 1000, 3000], 'the SYN at the initial RTO, doubled');
+  for (const [who, list] of [['pc', pc], ['srv', srv]]) {
+    const again = list.filter((x) => x.flags !== '[S]' && x.flags !== '[S,A]' && /retransmission/.test(x.label));
+    assert.deepEqual(again.map((x) => `${Math.round(x.t - t0)} ${x.label}`), [], `${who}: nothing after the handshake sent again`);
+  }
+  assert.ok(!srv.some((x) => x.flags === '[R]') && !pc.some((x) => x.flags === '[R]' || x.flags === '[R,A]'), 'closed without a reset');
+});
+
+test('RTO after a SYN timed out (RFC 6298 §5.7): the request lost once is sent again after 3 s, not the initial 1 s; with a clean handshake the round trip measured gives the floor of 1 s', () => {
+  const run = (loseSyn) => {
+    const s = sim(CHAIN());
+    s.runTo(3000);
+    let synLost = !loseSyn;
+    let dataLost = false;
+    s.engine.impair = (l, f) => {
+      if (l !== 'l1' || !f.ip || !f.ip.l4 || f.ip.l4.proto !== 'tcp' || f.ip.l4.dport !== 80) return null;
+      const fl = f.ip.l4.flags || [];
+      if (fl.includes('SYN') && !synLost) {
+        synLost = true;
+        return { lose: true };
+      }
+      if (fl.includes('PSH') && !dataLost) {
+        dataLost = true;
+        return { lose: true };
+      }
+      return null;
+    };
+    const t0 = s.now;
+    const r = s.sendTest({ from: 'pc', to: '10.0.2.10', kind: 'tcp', port: 80 });
+    s.runTo(t0 + 15000);
+    assert.equal(r.ok, true, r.result);
+    const data = segs(s, 'pc', t0).filter((x) => x.flags === '[P,A]');
+    assert.equal(data.length, 2);
+    return data[1].t - data[0].t;
+  };
+  assert.equal(Math.round(run(true)), 3000);
+  assert.equal(Math.round(run(false)), 1000);
+});

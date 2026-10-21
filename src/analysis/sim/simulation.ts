@@ -773,9 +773,12 @@ export class Simulation {
       const src = st.source ? st.upstreams.find((u) => u.addr === st.source) : undefined;
       const t: SnapTiming = { dev, protocol: 'ntp', synchronized: this.ntp.synchronized(dev), text: this.ntp.text(dev) };
       if (src && src.dev && t.synchronized) t.source = src.dev;
+      if (src && t.synchronized && !src.byDevice) t.address = src.addr;
       timing.push(t);
     }
     for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      // (a transparent clock corrects others' messages and has no time of its own to be synchronized: no timing state, as timingState says)
+      if (c.kind === 'transparent') continue;
       const t: SnapTiming = { dev, protocol: 'ptp', synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: c.state + (c.parent ? ` to the grandmaster ${c.parent.gmDev}` : '') };
       if (c.parent) t.source = c.parent.gmDev;
       timing.push(t);
@@ -909,8 +912,8 @@ export class Simulation {
       if (c && c.kind !== 'transparent') out.push({ synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: `PTP ${c.state}` });
     }
     if (protocol !== 'ptp') {
-      const n = this.status().find((x) => x.protocol === 'ntp' && x.device === dev);
-      if (n) out.push({ synchronized: n.up, text: `NTP ${n.state.toLowerCase()}` });
+      // (the NTP state's own definition — never a request session's row of the same device, which is "Answered" whatever it took)
+      if (this.ntp.has(dev)) out.push({ synchronized: this.ntp.synchronized(dev), text: `NTP ${this.ntp.synchronized(dev) ? 'synchronized' : 'unsynchronized'}: ${this.ntp.text(dev)}` });
     }
     if (!out.length) return null;
     const ok = out.find((x) => x.synchronized);

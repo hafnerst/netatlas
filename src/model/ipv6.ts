@@ -105,6 +105,7 @@ export const DHCP6 = {
   SOL_TIMEOUT: 1 * S,
   SOL_MAX_RT: 3600 * S,
   REQ_TIMEOUT: 1 * S,
+  REQ_MAX_RT: 30 * S,
   REQ_MAX_RC: 10,
   REN_TIMEOUT: 10 * S,
   REN_MAX_RT: 600 * S,

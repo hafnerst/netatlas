@@ -52,6 +52,8 @@ export interface SnapTiming {
   synchronized: boolean;
   /** the device it takes its time from (NTP: its upstream; PTP: its grandmaster) */
   source?: string;
+  /** NTP: the address of the upstream it is synchronized to (its association) */
+  address?: string;
   /** in words: "synchronized to 10.0.0.1 since t = 70 s; serving stratum 3", "slave: acquiring" */
   text: string;
 }
