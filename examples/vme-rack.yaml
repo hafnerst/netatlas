@@ -56,6 +56,7 @@ devices:
     layer3: true
     label: Crate Ethernet switch
     group: crate
+    igmp_mld_snooping: {20: enabled, 30: enabled}
     description: 6U VME64x Layer 2/3 Ethernet switch board in a VME slot. Its ports reach the boards over the backplane (P2 rear I/O); its uplink goes to the rack switch; it routes between the crate VLAN (30) and the control LAN (20).
     attrs: {vendor: Kestrel Embedded (fictional), model: VLS-6420 (fictional), form factor: 6U VME64x, slot: 7}
     interfaces:
