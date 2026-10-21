@@ -3433,15 +3433,18 @@ export class Engine {
       this.emit(dev, l3, { src: mac, dst: nd.lladdr, msg, nd: { op: 'NA', src: nd.target, target: nd.target, lladdr: mac, solicited: true }, ip: pkt });
       return;
     }
-    // an advertisement: solicited → REACHABLE; unsolicited → STALE (an entry it updates; none is created, RFC 4861 7.2.5)
+    // an advertisement (RFC 4861 §7.2.5; its Override flag set, as every NA of the simulation): it updates an entry, never
+    // creates one — Solicited: REACHABLE; not solicited (an unsolicited one, or one defending an address against a DAD
+    // probe): STALE when it brings another link-layer address (or completes an incomplete entry), else the entry stays as it is
     if (this.v6Hook) this.v6Hook.advert(dev, l3, nd.target, nd.lladdr);
     const k = this.entryKey(l3.id, nd.target);
     const e = tab.get(k);
-    if (nd.unsolicited) {
-      if (e && e.mac !== nd.lladdr) this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'gratuitous', 'unsolicited Neighbor Advertisement', 'STALE');
+    if (!e) return;
+    if (nd.solicited) {
+      this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'dynamic', 'Neighbor Advertisement', 'REACHABLE');
       return;
     }
-    if (e) this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'dynamic', 'Neighbor Advertisement', 'REACHABLE');
+    if (e.mac !== nd.lladdr) this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : nd.unsolicited ? 'gratuitous' : 'dynamic', nd.unsolicited ? 'unsolicited Neighbor Advertisement' : 'Neighbor Advertisement', 'STALE');
   }
 
   /** An entry is learned or refreshed; waiting packets go. */

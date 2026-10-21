@@ -548,3 +548,41 @@ test('simulation: the protocols of a model for the setup’s checkboxes, grouped
   r.runTo(30000);
   assert.equal(JSON.stringify(m.devices.map((d) => [d.id, d.interfaces.map((i) => i.mac)])), before);
 });
+
+test('NDP: an advertisement that is not solicited (b defends its address against c’s DAD probe, to ff02::1) leaves a’s STALE entry for b as it is — the same link-layer address (RFC 4861 §7.2.5); a solicited one makes it REACHABLE', () => {
+  const t = `netatlas: 1
+title: nd
+devices:
+  - {id: a, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8::1/64"}]}
+  - {id: b, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8::2/64"}]}
+  - {id: c, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8::3/64"}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+links:
+  - {id: la, a: "a:eth0", b: "sw:p1"}
+  - {id: lb, a: "b:eth0", b: "sw:p2"}
+  - {id: lc, a: "c:eth0", b: "sw:p3"}
+`;
+  const s = sim(t);
+  s.runTo(5000);
+  const r = s.sendTest({ from: 'a', to: '2001:db8::2', kind: 'icmp' });
+  s.runTo(60000);
+  assert.equal(r.ok, true, r.result);
+  const entry = () => s.engine.arpRows('a', 6).find((x) => x.ip === '2001:db8::2');
+  assert.equal(entry().state, 'STALE', 'reachable time over');
+  const mac = entry().mac;
+  const t0 = s.now;
+  const target = ip.parseAddress('2001:db8::2');
+  s.engine.dadSolicit('c', s.engine.net.devices.get('c').l3.get('eth0'), target);
+  s.runTo(t0 + 500);
+  const na = events(s, (e) => e.t >= t0 && e.device === 'b' && e.kind === 'message' && e.what === 'Neighbor Advertisement');
+  assert.equal(na.length, 1);
+  assert.match(na[0].detail, /not solicited/);
+  assert.deepEqual([entry().state, entry().mac], ['STALE', mac], 'not solicited, the same address: unchanged');
+  // a solicited one (a's own resolution when it probes b again) makes it REACHABLE
+  const r2 = s.sendTest({ from: 'a', to: '2001:db8::2', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(r2.ok, true, r2.result);
+  assert.equal(entry().state, 'DELAY', 'used while STALE: DELAY (RFC 4861 §7.3.3)');
+  s.runTo(s.now + 5000);
+  assert.equal(entry().state, 'REACHABLE', 'its probe answered by a solicited advertisement');
+});
