@@ -253,6 +253,17 @@ to the host's address, DNAT for published ports) in both.
   service from anywhere to anywhere), default deny.
 * **A router's policy filters what it routes**, not what it bridges within
   a VLAN (no VLAN ACLs); it is stateless unless written stateful.
+* **A rule's device or interface is its effective addresses.** In the
+  simulation and a snapshot: its written addresses that are usable and
+  what DHCP, SLAAC or DHCPv6 gave it (an expired lease none); where the
+  owner of an address is known (the traced ends; the sender of a packet
+  for its own address), only that device — so an address two VRFs both
+  have names one host. In the configured model a device that takes its
+  address at runtime is not known: a rule naming it, for an address nobody
+  is known to have, decides nothing (analyze a snapshot). The path tracer
+  still resolves a next hop or a destination to an address's first holder,
+  not per segment: overlapping addresses in two VRFs on one path are
+  traced by the first.
 * **NAT is one translation per flow** — TCP and UDP by their ports, an ICMP
   echo by its identifier; an ICMP error about a translated packet goes back
   to the inside host with its quoted header translated back (PMTUD through
@@ -346,9 +357,11 @@ fresh by the reach register), never by their state. A static
 timing check works by the method asked for (PTP, NTP, or either, both then
 reported): a PTP source path, or an NTP source chain from upstream to
 upstream to a configured reference (a reference's own clock is taken as
-given; a chain is followed for at most 15 hops). It establishes a source
-path or chain, never synchronization or accuracy; a snapshot adds the
-synchronization the simulation observed.
+given; a chain is followed for at most 15 hops) that is feasible — the
+reference's stratum plus the hops down to the client at most 15 (RFC 5905;
+the simulation uses the same ceiling), the best feasible alternative taken.
+It establishes a source path or chain, never synchronization or accuracy;
+a snapshot adds the synchronization the simulation observed.
 
 **Not supported.** One-step clocks, peer delay, gPTP / IEEE 802.1AS,
 telecom or power profiles, IPv6 or Layer 2 PTP transport, management
@@ -420,9 +433,20 @@ and device actions) from the user.
   four minutes of Readable display before the simulation runs at its rate.
 * **The steady state is summarized.** A kind of the scenario's message (its
   protocol, its message type and a TCP segment's flags) drawn once is cable
-  activity the next times, and nothing waits for it, until the next Network
-  event makes the scenario news again: a second host's DHCP Discover, the
-  next Hello, the next periodic test are lit cables, not dots. Your own
+  activity the next times, and nothing waits for it, until the next change
+  from outside makes the scenario news again — a Network event, a failure
+  or restore, a power change, a shut or no shut, flapping you started and
+  its transitions, a join or a stream (not the model's own flapping, not a
+  packet): a second host's DHCP Discover, the next Hello, the next periodic
+  test are lit cables, not dots. The model's illustrative non-IP data
+  (an interconnect's `traffic:`) is drawn every time and never waited for.
+* **Only a dot the diagram draws holds.** A delivery waits for its dot only
+  while the dot's track is in the scene: filtered out (devices, types),
+  inside a collapsed group, switched off by IP / Non-IP, or without
+  geometry, it holds nothing; a track outside the pan and zoom still holds.
+  When it comes back, what was delivered meanwhile is not drawn as on its
+  way. A very large moment (thousands of events at one simulated time)
+  may take several frames, in its order. Your own
   Network events, their prerequisites (the ARP a send needs) and the
   conversation followed are always dots. A multicast stream is a flow on
   every cable of its tree; one datagram after each Network event is shown
@@ -533,9 +557,13 @@ statically; contextual focus.
   combinations are what-if conditions you choose, never enumerated. The
   structural impact is an object count, not a business criticality.
 * **Capacity is stated traffic against stated speeds.** Demands and
-  applications with an interval (payload rates) against cables, aggregates
-  (their surviving members; a single flow at most one member) and shared
-  radios, before and after a failure. The spread over equal-cost paths or
+  applications with an interval (payload rates: one MQTT publication per
+  topic, each subscriber a matching publication once; a client's answers
+  at its responder's response size, assumed and said when the responder is
+  not known; a written 0 is 0) against cables and aggregates per direction
+  when full duplex (their surviving members; a single flow at most one
+  member that is up), half-duplex cables and shared radios as one medium,
+  before and after a failure. The spread over equal-cost paths or
   bundle members is not assumed (an equal split and all on one path are
   both evaluated). Not modeled: queues, delay, microbursts, QoS, hardware
   forwarding performance, the throughput a protocol achieves.
@@ -566,7 +594,9 @@ with a technology, an application protocol and a connector as text, peer
 and controller / target access with per-attachment roles and data
 directions, explicit transit through Systems, their drawing in the
 physical view (IP / Non-IP switches), the editor, Find, and illustrative
-data with failures of an interconnect, an attachment or a port.
+data with failures of an interconnect, an attachment or a port, sent as a
+Network event or written as an interconnect's `traffic:` (the scenario's,
+with the simulation).
 
 **Simplifications.**
 
@@ -575,7 +605,12 @@ data with failures of an interconnect, an attachment or a port.
   enumeration, addressing, arbitration, collisions, framing, timing,
   bandwidth, acknowledgment, error handling and termination are not. Two
   controllers of a bus send at the same moment without contention. A hop
-  takes 1 ms of simulated time; the size is a label.
+  takes 1 ms of simulated time; the size is a label. A failure while data
+  is on its way stops it there (a restore does not bring it back); a
+  series keeps its last 50 transfers in detail and counts all of them.
+* **Editing.** Interconnects, their endpoints and a System's transit
+  groups have their controls in the Edit tab; an interconnect's `traffic:`
+  is written in YAML.
 * **Text, not semantics.** Technology, version, protocol and connector are
   free text: nothing checks that a USB version matches on both ends, that
   a connector fits, or that an RS-232 line is short enough.
