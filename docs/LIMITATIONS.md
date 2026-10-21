@@ -216,7 +216,9 @@ what the advertisements it received told it (below).
 * **First-hop redundancy.** A router recognizes its group by what the
   protocol carries — the group number (VRID, VHID) of the address family,
   on the interface the advertisement arrived on — never by its VRF's
-  name; a different virtual address under the same group is logged (VRRP,
+  name; a member takes its group's relation (the one naming its
+  interface, else one naming the device) for its attributes, preempt;
+  a different virtual address under the same group is logged (VRRP,
   HSRP, GLBP) or, for CARP, discarded. VRRP (RFC 5798) preempts by its
   master down timer: a Backup accepts an equal or higher priority (an
   equal one does not preempt, whatever the addresses), discards a lower
@@ -232,7 +234,8 @@ what the advertisements it received told it (below).
   forwarder (no load sharing); HSRP version 2's hop limit in IPv6 (255)
   is assumed.
 * **EIGRP**: the init Update is reliable (sent again every 5 s until
-  acknowledged, the neighbour reset after 16 tries; Up only with both
+  acknowledged — its ACK carries the init's sequence number, an ACK of an
+  earlier exchange is ignored —, the neighbour reset after 16 tries; Up only with both
   inits through; a new init from an Up neighbour resets the adjacency); a
   lost neighbour is a Query to the others, each answering with a Reply
   (stuck in active after 3 min without one); DUAL's feasibility condition
@@ -275,10 +278,17 @@ what the advertisements it received told it (below).
   SPIs): a delayed IKE_SA_INIT or IKE_AUTH of the established SA, or an old
   request of it, is dropped (outside the window); a rekeyed IKE SA starts
   its message IDs at 0 and the old one is deleted (the Delete is sent once,
-  not retransmitted); dead peer detection every interval; either side
+  not retransmitted). Until its Delete exchange the old IKE SA keeps its
+  responder state: a rekey request sent again (its response lost) is
+  answered from the kept response there, a DPD on its way is answered
+  there; a DPD of a side's own still outstanding on it ends with it, the
+  next one goes in the new SA; a request waiting behind the IKE rekey goes
+  in the new SA with message ID 0. Dead peer detection every interval; either side
   rekeys by its own lifetime — the responder halfway between the
   initiator's rekey time and its lifetime's end (no simultaneous rekeying,
   no nonce comparison). NAT-T is not modelled.
+* **A cold start** learns nothing before an adjacency forms: a router's
+  first tables hold its connected and static routes only.
 * **Equal-cost paths** are all listed (up to 16), without hashing; beyond
   16 the others' outcome is not known (said so). The return path starts at
   the destination's own address. Asked for a device, a path that ends at
@@ -327,7 +337,13 @@ to the host's address, DNAT for published ports) in both.
   protocol's port between its devices, both ways) and its `allow` list (a
   service from anywhere to anywhere), default deny. A written rule base
   decides the packets of relations and tunnels through it too, in the
-  simulation as in the path tracer.
+  simulation as in the path tracer — and IP protocols without ports (GRE,
+  ESP, IGMP …): rules with `proto: any` by their addresses, interfaces and
+  zones, else the default action; a stateful policy tracks them by their
+  address pair (Linux conntrack's generic tracking). Exempt only what is
+  scoped to the link (224.0.0.0/24, ff02::/16, fe80::/10). The path tracer
+  applies the rules to a tunnel's outer packet (its source and protocol);
+  a denial there stops the tunnel.
 * **A router's policy filters what it routes**, not what it bridges within
   a VLAN (no VLAN ACLs); it is stateless unless written stateful.
 * **A rule's device or interface is its effective addresses.** In the
@@ -340,8 +356,10 @@ to the host's address, DNAT for published ports) in both.
   in the simulation the packet's sender for its own source, and for a
   destination the device the firewall's routes lead to, segment by
   segment — each next hop continued in the VRF of the interface it was
-  reached on, every equal-cost next hop followed (the packet's own egress
-  first): next hops leading to different owners give none. An address several devices have and no owner known (only the
+  reached on, a device on the way the owner only when it has the address
+  in the VRF walked (as forwarding decides), every equal-cost next hop
+  followed (the packet's own next hop first — its gateway, not only its
+  interface): next hops leading to different owners give none. An address several devices have and no owner known (only the
   address given): the rule decides nothing — never every holder. In the
   configured model a device that takes its address at runtime is not
   known: a rule naming it, for an address nobody is known to have,
@@ -421,7 +439,8 @@ Network events, attributed to their event.
 * **IGMPv3 / MLDv2.** A join is a state-change record (TO_EX, ALLOW), an
   answer to a query the current state (IS_EX, IS_IN); routers keep a
   timer per source in INCLUDE mode — a new source on a known group gets
-  its (S,G), a blocked one leaves when its timer runs out. A BLOCK is
+  its (S,G), a blocked one leaves when its timer runs out; a BLOCK of
+  sources the router does not have changes nothing. A BLOCK is
   followed up with group-specific queries (no group-and-source query);
   snooping keeps one source list per port.
 * **IGMP and MLD messages** carry the Router Alert option and TTL 1, their
@@ -460,7 +479,11 @@ upstreams; an address several devices have is the one the client's
 traffic reaches (in the simulation and the static chain alike). An ntp
 relation of the model between the two runs instead of the configured
 upstream, between the addresses it picks; its responses count only when
-they come from a configured upstream's address. A source is lost exactly 8
+they come from a configured upstream's address. Which of several devices
+with an upstream's address the client reaches is resolved once, by the
+configured routing, when the sessions are built (the simulation's own
+tables start empty of learned routes all the same); one it can't tell is
+not asked, said, and not reconsidered later. A source is lost exactly 8
 polls after its last answer; a device with a stratum of its own is a
 reference, whatever upstreams are written beside it. A static
 timing check works by the method asked for (PTP, NTP, or either, both then
