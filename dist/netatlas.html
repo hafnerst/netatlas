@@ -1999,21 +1999,25 @@ function boot(hooks) {
         }
         // Optional deep link to a built-in example, by its place in the catalog or its file name,
         // e.g. "#example=0&view=logical&devices=hq-rtr1,hq-fw" or "#example=private-house.yaml&view=physical".
-        const params = {};
+        const params = new Map();
         for (const part of hash.split('&')) {
             const i = part.indexOf('=');
             if (i > 0)
-                params[part.slice(0, i)] = part.slice(i + 1);
+                params.set(part.slice(0, i), part.slice(i + 1));
         }
-        const ex = params.example !== undefined ? decodeURIComponent(params.example) : '';
+        const example = params.get('example');
+        const ex = example !== undefined ? decodeURIComponent(example) : '';
         if (/^[0-9]+$/.test(ex) ? app.loadExample(Number(ex)) : /\.ya?ml$/.test(ex) ? app.loadExampleNamed(ex) : null) {
-            if (params.view === 'logical' || params.view === 'physical')
-                app.setView(params.view);
+            const view = params.get('view');
+            if (view === 'logical' || view === 'physical')
+                app.setView(view);
             // "devices=a,b": show only these devices (a temporary filtered view)
-            if (params.devices !== undefined)
-                app.setDevices(decodeURIComponent(params.devices).split(',').filter((x) => !!x));
-            if (params.select)
-                app.select(decodeURIComponent(params.select), true);
+            const devices = params.get('devices');
+            if (devices !== undefined)
+                app.setDevices(decodeURIComponent(devices).split(',').filter((x) => !!x));
+            const select = params.get('select');
+            if (select)
+                app.select(decodeURIComponent(select), true);
         }
     };
     // The script runs in the document's <head>: the stored theme is in effect before the body is drawn
@@ -22340,6 +22344,7 @@ __defs["analysis/sim/net"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.STP_DEFAULTS = void 0;
+exports.portRefOf = portRefOf;
 exports.portKey = portKey;
 exports.otherEnd = otherEnd;
 exports.endPortVlans = endPortVlans;
@@ -22399,6 +22404,11 @@ const ipmath_1 = __req("analysis/ipmath");
 const ipv6_1 = __req("model/ipv6");
 const mac_1 = __req("analysis/sim/mac");
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+/** The model's "device:port" of a port key: its first "|" (the end of the device part) becomes ":". */
+function portRefOf(key) {
+    const i = key.indexOf('|');
+    return i < 0 ? key : key.slice(0, i) + ':' + key.slice(i + 1);
+}
 function portKey(device, port) {
     return device + '|' + port;
 }
@@ -42464,7 +42474,7 @@ class Engine {
                     this.note('link', 'stp', dev, '', 'Port forwarding', 'forwarding', `${dev}:${bp} is forwarding in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} (the spanning tree converged)`);
                 });
             }
-            this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map((k) => k.replace('|', ':')).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
+            this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map(net_1.portRefOf).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
             for (const tab of this.macs.values()) {
                 for (const [k, e] of Array.from(tab))
                     if (e.type === 'dynamic' && e.vlan === vlan)
@@ -44775,8 +44785,8 @@ class Engine {
     modelPortRef(key) {
         for (const [k, v] of this.net.moved)
             if ((0, net_1.portKey)(v.device, v.port) === key)
-                return 'iface:' + k.replace('|', ':');
-        return 'iface:' + key.replace('|', ':');
+                return 'iface:' + (0, net_1.portRefOf)(k);
+        return 'iface:' + (0, net_1.portRefOf)(key);
     }
     /**
      * Start flapping an interface (a cabled port, "iface:dev:port"): it goes down for the flapping down time, up
@@ -52826,6 +52836,9 @@ const ipmath_1 = __req("analysis/ipmath");
 /** The attributes that find a control of the Edit tab or the outline again after a render. */
 const BACK_ATTRS = ['data-act', 'data-t', 'data-kind', 'data-index', 'data-p', 'data-svc'];
 const J = (p) => JSON.stringify(p);
+/** A suffix for element ids that tie a label or a list to its control: unique within the page. */
+let uidSeq = 0;
+const nextUid = () => (++uidSeq).toString(36);
 /** Can the user type into or change this control now (enabled, writable, shown)? */
 function editable(f) {
     if (f.disabled || f.readOnly || f.type === 'hidden' || f.closest('fieldset[disabled]'))
@@ -54044,7 +54057,7 @@ class Editor {
         const model = this.doc.result.model;
         const choices = model ? (0, helpers_1.vrfChoices)(model) : [];
         const val = this.doc.text(path) || '';
-        const uid = 'vrf-' + Math.random().toString(36).slice(2, 9);
+        const uid = 'vrf-' + nextUid();
         const input = this.input(path, 'text', val, {
             role: 'combobox',
             'aria-autocomplete': 'list',
@@ -55349,7 +55362,7 @@ class Editor {
         return i;
     }
     datalist(values) {
-        const id = 'dl-' + Math.random().toString(36).slice(2, 9);
+        const id = 'dl-' + nextUid();
         const dl = this.e('datalist', { id });
         for (const v of values)
             dl.appendChild(this.e('option', { value: v }));
@@ -56000,7 +56013,7 @@ class Editor {
         const gt = doc.text(pp.concat('guest_tagging')) === 'true';
         const vl = doc.portVlans(pp);
         const label = name || `port group ${j + 1}`;
-        const uid = `pg-${dev}-${j}-${Math.random().toString(36).slice(2, 7)}`;
+        const uid = `pg-${dev}-${j}-${nextUid()}`;
         const box = this.e('input', { type: 'checkbox', id: uid, 'data-act': 'pg-guest', 'data-p': J(pp) });
         box.checked = gt;
         const nat = vl.length > 1 || doc.get(pp.concat('native'));
@@ -57216,7 +57229,7 @@ class Editor {
             box.appendChild(this.derivedField('VLANs', 'port-vlans', [this.modeBadge(l2), this.e('span', { class: 'muted' }, [' from its aggregate ']), this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${devId}:${lag}` }, [lag])], `A member of ${lag}: it carries the aggregate's VLANs (set them there).`));
             return box;
         }
-        const uid = 'vl-' + Math.random().toString(36).slice(2, 9);
+        const uid = 'vl-' + nextUid();
         const chips = this.e('span', { class: 'vlan-chips', role: 'list', 'aria-label': `VLANs of ${id}` });
         for (const v of own) {
             chips.appendChild(this.e('span', { class: 'ref-chip vlan-chip', role: 'listitem', 'data-vlan': v }, [
