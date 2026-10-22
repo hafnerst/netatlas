@@ -192,12 +192,38 @@ networks:
   - {id: net-east, label: East servers, cidr: 10.2.0.0/24}
 
 relations:
-  - {id: ospf-w1-c1, protocol: ospf, endpoints: ["w1:ge1", "c1:ge0"], over: l-w1-c1, attrs: {area: 0, cost: 10}}
-  - {id: ospf-w2-c2, protocol: ospf, endpoints: ["w2:ge1", "c2:ge0"], over: l-w2-c2, attrs: {area: 0, cost: 10}}
-  - {id: ospf-c1-c3, protocol: ospf, label: primary, endpoints: ["c1:ge1", "c3:ge0"], over: l-c1-c3, attrs: {area: 0, cost: 10}}
-  - {id: ospf-c2-c3, protocol: ospf, label: backup, endpoints: ["c2:ge1", "c3:ge1"], over: l-c2-c3, attrs: {area: 0, cost: 30}}
-  - {id: ospf-c1-c2, protocol: ospf, endpoints: ["c1:ge2", "c2:ge2"], over: l-c1-c2, attrs: {area: 0, cost: 10}}
-  - {id: ospf-c3-e1, protocol: ospf, endpoints: ["c3:ge2", "e1:ge0"], over: l-c3-e1, attrs: {area: 0, cost: 10}}
+  - id: ospf-w1-c1
+    protocol: ospf
+    endpoints: ["w1:ge1", "c1:ge0"]
+    over: l-w1-c1
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
+  - id: ospf-w2-c2
+    protocol: ospf
+    endpoints: ["w2:ge1", "c2:ge0"]
+    over: l-w2-c2
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
+  - id: ospf-c1-c3
+    protocol: ospf
+    label: primary
+    endpoints: ["c1:ge1", "c3:ge0"]
+    over: l-c1-c3
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
+  - id: ospf-c2-c3
+    protocol: ospf
+    label: backup
+    endpoints: ["c2:ge1", "c3:ge1"]
+    over: l-c2-c3
+    attrs: {network-type: point-to-point, area: 0, cost: 30}
+  - id: ospf-c1-c2
+    protocol: ospf
+    endpoints: ["c1:ge2", "c2:ge2"]
+    over: l-c1-c2
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
+  - id: ospf-c3-e1
+    protocol: ospf
+    endpoints: ["c3:ge2", "e1:ge0"]
+    over: l-c3-e1
+    attrs: {network-type: point-to-point, area: 0, cost: 10}
   - {id: ospf-west, protocol: ospf, label: West LAN, endpoints: ["w1:Vlan10", "w2:Vlan10"], over: net-users, attrs: {area: 0, cost: 20}}
   - {id: vrrp-users, protocol: vrrp, label: VIP 10.1.10.1, endpoints: ["w1:Vlan10", "w2:Vlan10"], over: net-users}
   - {id: span-ids, protocol: span, direction: unidirectional, endpoints: ["e-sw:p3", "e-ids:mon0"], over: l-tap}

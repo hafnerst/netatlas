@@ -5,12 +5,1057 @@ All notable changes to NetAtlas are listed here. The format follows
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
 releases may still change behaviour.
 
-Two version numbers are involved. The **application version** (0.1.3) names
+Two version numbers are involved. The **application version** (0.1.4) names
 a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
+
+## [0.1.4] - 2026-10-22
+
+NetAtlas 0.1.4 is still one self-contained, offline HTML file
+(`dist/netatlas.html`) with no third-party code. It reads and writes YAML
+model format 1 (`netatlas: 1`, changed within version 1: see *Upgrading
+from 0.1.3*). Its largest additions:
+
+- **Analyze** as an architecture-validation workflow: verdicts with their
+  context and coverage, communication checks by application and service,
+  allocation-aware addressing, failure domains with service impact and
+  what-if checks, saved expectations, and Focus.
+- **Experiments**: scripted actions and observations on the simulated
+  clock, played in the diagram with only their own traffic shown, a cold
+  start, durations with units; **workspaces** for Experiments and Analyze.
+- **Applications** on host-capable devices (TCP and UDP request/answer,
+  one-way datagrams, MQTT 3.1.1 QoS 0 and 1), **IPv6** hosts, **NTP**
+  state and **PTP**; support levels saying what each protocol models.
+- **Non-IP interconnects** (USB, serial lines, buses, backplanes,
+  fabrics) between opaque ports, with illustrative traffic — connectivity
+  drawn and checked, not a simulation of the named technologies; a
+  **VME rack** example.
+- **Auto-arrange** presets (Default, Compact, Structured with right-angle
+  lines) and a one-line **Examples** menu.
+- **Readable playback**: a delivery happens once the dot that brings it
+  has arrived on screen; TCP flags on every segment's label.
+- Release **verification**: required CI checks, a strict browser run, an
+  offline check from outside the page, and release assets with checksums
+  and provenance.
+- Many **correctness fixes** across the Layer 1–4 simulation, the routing
+  protocols, TCP, policy, tunnels, multicast, applications and Analyze
+  (see *Fixed*).
+
+The simulation remains a teaching and planning model within its declared
+subset, not an emulator or a compliance test (see *Known limitations*).
+
+### Upgrading from 0.1.3
+
+NetAtlas is not released for production use yet, so model format 1 still
+changes within version 1 (files keep `netatlas: 1`); there is no migration
+and no compatibility layer. A file written for 0.1.3 with the earlier keys
+gets errors that say what to write instead, and a file with errors still
+opens as a draft so it can be fixed in the editor. The built-in examples are
+already changed. What to change by hand is in
+[Changes since 0.1.3](docs/FORMAT.md#changes-since-013).
+
+- **Changed, not backward compatible:** `ipv4: dhcp` replaces
+  `dhcp: true` (`ipv4: static` or nothing for written addresses;
+  `dhcp: false` is deleted), and an interface's IPv4 method no longer
+  touches its IPv6 addresses; applications are a list,
+  `services.applications`, each with its id, name and profile — the single
+  `services.application` (a name and ports) is gone. Applications may also
+  run on a host-capable Endpoint and a Storage device.
+- **New, optional** (a file without them means what it meant): an
+  interface's IPv6 method and a router's advertisements, DHCPv6 scopes,
+  the `mqtt_broker` and `ptp` services; a routing protocol's `advertise`,
+  `default_route`, `redistribute`, `import` and `export` and a device's
+  `policy:`; the top-level sections `failure_domains:`, `expectations:`
+  (an expectation's `family`, `enforce`, `boundary` and `method`),
+  `experiments:`, `views:` and `interconnects:`, with opaque ports
+  (`stack: opaque`) and a System's `opaque_transit`; `layout.routing`,
+  written by Auto-arrange's Structured option.
+- A file that loaded in 0.1.3 can get new consistency findings from checks
+  added since; findings never block loading.
+
+### Added
+
+#### Applications, IPv6, MQTT and time synchronization
+
+- **Applications on host-capable devices.** An Endpoint that is a host (a
+  PLC, an HMI, a camera, a printer, an IoT device …), a Server, a VM, a
+  container, a storage device and a host System run any number of
+  applications without changing type; passive devices and a Security
+  gateway run none. Profiles: TCP listener and TCP request/response, UDP
+  listener, UDP request/response, UDP receiver, periodic one-way UDP
+  messages, MQTT client. In the editor each is a collapsed entry (*Name ·
+  profile · port or peer*), opened with its basic fields and a closed
+  Advanced section; Add application focuses the profile; Duplicate; Remove
+  lists the applications that name it first; one undo step each; renames
+  follow. Validation: listener conflicts (also with a service's port),
+  peers that are missing or can't answer the profile, bind interfaces,
+  client identifiers per broker.
+- **Traffic profiles in the simulation.** Network events → **Start
+  application** starts a client, a periodic sender or an MQTT client; one
+  entry per start in Active events with what each message came to. No
+  application sends anything unless started (or `start:
+  simulation_start`). Request and answer sizes, response delay, timeout and
+  retries are modelling defaults unless set; a host name is resolved for the
+  application's IP version only, with no fallback to the other family.
+- **MQTT 3.1.1.** An `mqtt_broker` service; clients connect, subscribe
+  (`+` and `#` filters), publish at QoS 0 or 1 (PUBACK, DUP retry), keep
+  alive, reconnect, unsubscribe and disconnect; the broker fans each
+  publication out to the matching subscribers; a client identifier in use
+  takes the session over. Show MQTT sessions and Show MQTT clients; the
+  inspection shows topic, QoS and size, never a payload.
+- **IPv6 host configuration.** An interface's `ipv6` method (static, SLAAC,
+  DHCPv6, both) and a router interface's explicit `ipv6_ra` (prefixes
+  required; flags, DNS servers, lifetimes and interval collapsed under
+  Advanced). Simulated: link-local addresses, duplicate address detection,
+  Router Solicitations and Advertisements, SLAAC with lifetimes and the
+  two-hour rule, default router discovery and expiry, DNS from RDNSS or
+  DHCPv6, stateful and stateless DHCPv6 with renewal, rebinding and expiry.
+  A DHCP scope of an IPv6 network is a DHCPv6 server and has no gateway.
+  Short statuses (*SLAAC address acquired*, *DHCPv6 pending*, *No default
+  router*, *Duplicate address*, *Address deprecated*) and Show IPv6
+  configuration.
+- **What NetAtlas models.** Every protocol, service and application profile
+  states its level — *Diagram only*, *Configuration and validation* or
+  *Modeled behavior* — and what is and isn't simulated, as a compact,
+  keyboard-operable ⓘ disclosure where it is chosen or configured and in
+  the simulation's protocol list; user-defined protocols are *Diagram
+  only*.
+- **NTP state.** A client is unsynchronized (stratum 16) until a usable
+  upstream answered, then synchronized at one stratum more, and loses it
+  after 8 unanswered polls; Show NTP status separates configured upstreams
+  from the source in use and serving time from being synchronized.
+- **PTP.** A `ptp` service: IEEE 1588-2008, its Default delay
+  request-response profile over UDP/IPv4 multicast, two-step; ordinary,
+  boundary and end-to-end transparent clocks; the best master clock
+  algorithm from Announces, port states, Sync / Follow_Up / Delay_Req /
+  Delay_Resp, residence-time correction, modelled local clocks with offset
+  and drift, acquiring / synchronized / holdover / unsynchronized,
+  grandmaster failure and recovery, domain and connectivity isolation. A
+  compact mark per clock in the diagram and Show PTP clock.
+- **Examples.** `private-house.yaml` has a dual-stack Internal network and a
+  thermostat with two applications; `ot-network.yaml` the PLC's
+  applications, an MQTT broker and a matching and a non-matching
+  subscriber; the new `timing-ptp.yaml` two grandmaster candidates, a
+  transparent and a boundary clock and receiving clocks.
+
+#### Analyze
+
+- **One meaning for every result.** Every Analyze result says its verdict
+  in a mark and words: *Satisfied* / *Reachable within scope*, *Violated* /
+  *Blocked*, *Partially*, *Beyond modeled scope*, *Indeterminate* and
+  *Unsupported*. A context line says what it was computed on (the
+  configured model, or a **simulation snapshot** at a simulated time) and
+  its scope; a coverage line says how much was checked where a limit or
+  Stop applies; assumptions and limits are under an expansion. After an
+  edit a result is marked **Outdated** with **Refresh**; nothing is computed
+  again behind the user's back. Exports carry the context, the coverage, the
+  version and the assumptions.
+- **Simulation snapshots for analysis.** While a simulation runs, Trace
+  path, the Addressing overview and Design checks evaluate a frozen
+  snapshot of it (by default; the configured model can be chosen): its DHCP
+  leases, SLAAC and DHCPv6 addresses with their state, what is up and what
+  was learned. The snapshot never changes after it was taken. Single points
+  of failure evaluates the configured model only, and says so.
+- **Communication checks in Trace path.** An end may be an application
+  (`plc/registers`), a client application (`hmi/poll`: its configured peer
+  or broker is checked), or a device's service (`core/dns`, `ntp1/ntp`). The
+  result separates addresses, name resolution (by the model's DNS servers;
+  the query is a leg of its own), the network path over every evaluated
+  equal-cost path ("3 evaluated paths reach …, 1 stops at fw2"), the policy
+  decision, the destination listener (on the address the traffic arrives
+  at: a listener bound to another interface does not take it) and runtime
+  behaviour (never established statically). An MQTT client's leg ends at the
+  broker; each subscriber is a leg of its own. The effective ends are shown,
+  with another address to choose where an end has several. **Why?** opens a
+  hop's decision evidence: the lookup, the route that won and why, the
+  routes that lost, the layer-2 way, the policy, a translation, the tunnel,
+  the stop. The return direction is reverse routing and path symmetry, said
+  apart from a session, which is not evaluated. **Prepare in simulation**
+  fills Network events with the same exchange, unsent.
+- **Allocation-aware addressing.** Each address of a network is counted
+  once, as configured, reserved (DHCP reservations, a scope's gateway, a
+  gateway routes name), acquired (in a snapshot), in a DHCP pool, in nested
+  networks, or unallocated. Host use and prefix allocation are shown apart.
+  Suggestions (the next unallocated address, the Edit tab's Next free) are
+  never in a pool, reserved or used in the same address space, and are
+  called *unallocated in model*. Members say how they are obtained; DHCP and
+  IPv6 autoconfiguration clients are listed as configured intent. Duplicates
+  are judged in the scope the model establishes: link-local addresses on
+  their segment, others in a VRF and a connected part of the architecture;
+  reuse in separate parts is listed apart, an unknown scope is a possible
+  conflict. The CSV has the allocation by state and the context.
+- **Service impact and what if.** Single points of failure checks every
+  candidate's **service impact** progressively (cancellable, with its
+  coverage): the configured dependencies that become unavailable (application
+  peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA). The former
+  impact is now called **Structural impact** (an object count). **What if…**
+  fails a failure domain or a few components together and compares with the
+  same baseline: unavailable, through an alternative, degraded, cannot be
+  determined, the saved expectations before and after, and optionally the
+  device pairs of a bounded scope with their coverage. Losing a DHCP server
+  stops new assignments, not existing leases.
+- **Failure domains** (`failure_domains:`): racks, rooms, sites, shared
+  power, conduits and providers by explicit membership (devices, cables,
+  relations, groups), added and edited in the Single points of failure
+  window.
+- **Saved expectations** (`expectations:`) and **Analyze → Design checks…**:
+  requirements kept with the model (must be available, must be blocked,
+  also after a failure condition; a dependency must be viable; a
+  timing-source path must exist), evaluated statically with the actual
+  reason (a block by policy is told apart from a missing route), grouped by
+  a shared stop point, with the findings where they stop. The consistency
+  findings are shown there by kind (contradiction, missing information,
+  potential risk) with consequence, evidence and next step, grouped by the
+  field they share. Renames update the expectations; deleting an object
+  they name lists them first.
+- **Contextual Focus**: the members of a VLAN, the dependencies of a
+  device's applications and services, a multicast group's configured
+  distribution, a timing domain — configured structure, not proof of
+  reachability.
+- The examples `private-house`, `enterprise-wan`, `ot-network` and
+  `timing-ptp` have saved expectations and failure domains.
+
+#### Analysis integration
+
+- **Communication identity across Analyze and Simulate.** Trace path's
+  result names what it chose (source interface, family, destination,
+  port); **Send in simulation** carries exactly that, says what is not
+  carried, and stops when a reference went stale. **Compare with
+  simulation** sets the static result beside a run and explains a
+  difference from recorded state only (a route not there when sent, too
+  big, membership, an end unavailable). **Save as expectation** keeps the
+  fields; expectations have an address `family`.
+- **Isolation that is enforced.** A blocked expectation may require how:
+  `enforce: unreachable`, `policy` (an evaluated policy's denial on every
+  path) or `boundary` (a named device's). A missing route or listener is
+  no isolation, partial ECMP is none.
+- **NTP and PTP chosen explicitly.** A timing expectation names its
+  `method` (`ptp`, `ntp`, `either`); NTP source chains to a modeled
+  reference, with cycles, external upstreams and an upstream that a
+  failure takes down said apart; snapshots add the synchronization the
+  simulation observed. Accuracy is never claimed.
+- **Path MTU** over every evaluated path and branch and the way back, with
+  nested encapsulation and the limiting component; **Test path MTU**
+  prefills a send of that size with DF.
+- **Routing policy** (a bounded subset): `advertise`, `default_route`,
+  `redistribute`, ordered `import`/`export` rules with prefixes, ge/le
+  and peers, BGP local preference and AS-path prepending — one routing
+  computation for Analyze and Simulate, with each route's origin and the
+  rules it passed.
+- **Network policy:** one ordered rule engine (`policy:` on routers,
+  Layer 3 switches and firewalls: zones, objects, ports, stateful or
+  stateless) for Trace path, the communication checks and the simulation;
+  a transparent firewall's policy now applies to what it bridges.
+- **Capacity under failure:** What if compares the stated traffic (demands,
+  applications with an interval) with the stated capacity before and after
+  the failure, without assuming how multipath spreads.
+- **Saved experiments** (`experiments:`, Simulate → Experiments…): a short
+  declarative sequence of actions and observations, run on demand from a
+  clean start on scenario time — repeatable, stoppable, compared with the
+  previous run, copied as text. Trace path's **Use in experiment…** adds
+  one.
+- **Execution scopes** in Start simulation: the entire model (the
+  default), the traced communication, a device's dependency slice, a group,
+  a VLAN or a failure domain. A scope runs only its devices (and says what
+  it added to run faithfully); the others are marked **Not run**, traffic
+  towards them is logged where it leaves the scope. The panel counts what
+  runs and what does not, and suggests a smaller scope when the
+  simulation stays behind its rate.
+- **Larger models:** **Saved views** (`views:`, Find → Saved views…: the
+  diagram, focus, filters, collapsed groups and zoom); **collapsed groups**
+  drawn as one box with their connections out of it; **Applications,
+  VLANs and VRFs…** with a contextual Focus (VRF is new); **Bulk edit
+  ports…** with a preview and one undo step.
+- **What NetAtlas models**, one catalog for the manual and
+  [docs/SUPPORT.md](docs/SUPPORT.md) (generated, checked by
+  `npm run check:dist`); LIMITATIONS is ordered by area.
+- The public examples show each representative architecture's workflow:
+  private house (views), campus (policy, alternative DHCP), WAN
+  (default-only and prefix filters, path MTU), data center (surviving
+  capacity), OT (a repeatable outage experiment), timing (NTP and PTP
+  apart).
+
+#### Workspaces
+
+- **Experiments workspace.** Simulate → Experiments… opens a workspace
+  in place of the Objects list and the Inspector. On the left are the
+  experiments and the selected one's name, duration, start (freshly booted
+  or **settled**) and **scope** (the entire model, a group, a VLAN, a
+  failure domain or a device's dependency slice), with its coverage. Below
+  them is the sequence, as readable entries marked ✓ (configured) or ⚠
+  (what is missing), with shortcuts for the diagram's selection. On the
+  right is the selected step: what it does or observes, **when** (after
+  the start, or after an earlier action is *submitted*), its target and
+  fields, and for an observation its expectation, window and the meaning
+  of each verdict. At the bottom are Run, Stop, Reset results, Compare and
+  Copy, the plan before a run, the progress, each action submitted or
+  refused, the verdicts, the events and the comparison. The diagram marks
+  the targets and, after a run, the verdicts.
+- **New experiment steps:** `start_stream` / `stop_stream` (multicast on
+  scenario time), `after` and `within` on steps, observations of a
+  receiver's multicast (`receive`), and of the model's own saved
+  expectations (`expectations`) on the run's state. Only implemented
+  observations are offered.
+- **Analyze workspace.** Every Analyze entry opens one workspace: the
+  tools, scope and request on the left, the evidence of what you select on
+  the right, verdicts, tables, coverage and exports at the bottom, and
+  highlighting in the diagram. A banner names the tool and what it reads,
+  with **Exit Analyze**. Analyze is marked in the menu bar, and the regions
+  have accessible names.
+- **One workspace lifecycle** shared by Edit, Simulate, Experiments and
+  Analyze: one at a time. Ending running work asks first. Analyze over a
+  running simulation pauses it, reads a snapshot, and resumes it on exit.
+  Exit restores the editing panels, the tab and the selection, and clears
+  the overlays. `Esc` in a panel never leaves a workspace.
+- An example experiment in `ot-network.yaml` uses `after` and an
+  observation window.
+
+#### Experiments played in the diagram
+
+- **Experiments play in the diagram.** Run plays a run with the
+  simulation's own pacing, dots, labels, hit areas and packet inspector,
+  and shows only the experiment's traffic: its actions' messages and what
+  they cause, plus its devices' prerequisites (a host's DHCP, DNS, address
+  resolution, router discovery; a receiver's LAN's IGMP / MLD queries; the
+  sessions or clocks an observation reads). The rest of the network runs,
+  hidden. It never holds the run back and never makes its display wait.
+  - **Playback controls:** Pause, the speed and **Skip to result** (the
+    same result, at once).
+  - **Diagram:** device states show Powered off → Booting → Operational,
+    and the action in progress is outlined.
+  - **Status lines** say what the run waits for (booting, DHCP, a
+    neighbor, a session, a receiver's delivery).
+  - **Results while it plays:** the bottom panel shows them as they come
+    in.
+  - **Before a run,** a short summary (start, duration, actions,
+    observations, scope) and what is missing.
+- **Cold start — boot all devices:** every device with a power lifecycle
+  starts off and boots as it normally does.
+  - A VM boots after its host; a container starts by its restart policy.
+  - Cables, patch panels, TAPs and external networks have no lifecycle
+    and are not powered.
+  - Boot time counts as experiment time.
+  - An action whose device is still coming up **waits** for it (the run
+    says so and for how long), or is **timed out**.
+- **Numeric durations with sec / min / hours.** Every experiment duration
+  is a number and a unit: length, settling time, delay, window, interval
+  and the new **For**.
+  - Changing the unit converts the number and keeps the duration.
+  - Only a valid number you enter is written, in a canonical form.
+  - A unit choice changes nothing in the model.
+- **For:** an action that lasts (fail, shut, power off, flap, stream,
+  application) is undone after that long.
+- **New observations, read from state the simulation keeps:**
+  - an address acquired (DHCPv4 with its binding time, SLAAC, DHCPv6);
+  - a neighbor resolved (ARP / neighbor table);
+  - a route available;
+  - a protocol session established (with a peer);
+  - a timing state (PTP or NTP synchronized: a state, never an accuracy);
+  - an MQTT publication delivered to a subscriber (on a topic, at least N);
+  - a reception with a minimum count;
+  - a device that is operational or booting.
+
+  A state reports whether it was *already so* when its window opened or
+  *reached* at a named moment.
+- **Targets and their dependencies:** an execution scope that runs what the
+  steps name with what it needs.
+- **Examples:**
+  - `private-house.yaml`: a cold start (the TV gets an address and reaches
+    the thermostat) and a multicast join / stream / leave;
+  - `ot-network.yaml`: an MQTT dashboard receiving the PLC's temperatures.
+
+#### Non-IP interconnects
+
+- **Opaque ports** (`stack: opaque`): ports without a network stack — no
+  address, VLAN, MAC or protocol of the IP side, and never a cable or
+  relation end.
+- **Interconnects** (`interconnects:`): `point_to_point` or `shared` (a bus
+  or backplane), a technology and version as text (with suggestions), an
+  optional application protocol and connector, `peer` or
+  `controller_target` access, and per endpoint a role (Controller, Target,
+  Controller and target, Peer, Monitor), a data direction (`both`, `send`,
+  `receive`; never taken from the order) and a system-controller mark.
+  Separate interconnects never join; a **System** passes data only between
+  the ports of an explicit `opaque_transit` group, of one technology —
+  nothing converts. Validation explains every refused role, direction,
+  port and group.
+- **The physical view** draws them: dashed lines labelled with technology
+  and direction (*USB 2.0 ↔*, *RS-232 →*), movable bus bars with a tap
+  and role badge per attachment, diamond opaque ports, and a Non-IP legend;
+  **IP** / **Non-IP** switches in the toolbar show either side or both. The
+  logical view never shows them. The editor edits them (endpoints,
+  roles, transit groups; renames follow); Find reaches them by technology,
+  protocol or port.
+- **Send illustrative data** (Network events): abstract data from an
+  initiator, a source to recipients, with count, interval and size, along
+  the modelled connections only, one way, without a reply or a header; its
+  dots on the lines and taps, and the inspector's notice *Illustrative
+  traffic — protocol behaviour not simulated*. **Non-IP failures**: an
+  interconnect, an attachment or an opaque port, each restored from Active
+  events. Results say *delivered along the modelled connection* or where
+  and why the data stopped.
+
+#### Interconnect traffic; transit editing
+
+- **`traffic:` on an interconnect**: illustrative data that runs with the
+  simulation (an initiator, a data source, recipients, an interval, a
+  count, a size), drawn every time as the scenario's, shown or hidden as
+  **Non-IP data** in the setup's list — which the model's illustrative
+  dots needed: before, they were never drawn. Format stays `netatlas: 1`.
+- **A System's transit groups in the Edit tab**: added, edited (its opaque
+  ports only), removed, with undo and renames.
+
+#### VME rack example; the Examples menu
+
+- **`vme-rack.yaml`**, a public example of non-IP interconnects as a system
+  uses them: a VME64x crate whose CPUs (one the system controller), ADC,
+  digital I/O and MIL-STD-1553 boards share the VMEbus backplane, the 1553
+  bus to two remote terminals and a bus monitor, RS-232 console lines to a
+  console server, and Ethernet only for the operators.
+- **File → Examples lists each example on one line.** The menu's
+  *open · modified* state shared a class with the Experiments panel, whose
+  rule widened the empty state and wrapped every name onto a second line;
+  it has its own class now, and a long name ends with an ellipsis.
+
+#### CI and release verification
+
+- **CI on every pull request into `dev` or `main`** and every push to them
+  (`.github/workflows/ci.yml`), one stable check per job: *Source and
+  generated files*, *Model and analysis tests*, *Compatibility* (Node 22 on
+  Linux, Node 24 on Windows), *Browser regression tests*, *Public artifact*,
+  *Viewport checks*, *Workflow lint* and *Release PR source* (a pull request
+  into `main` must come from `dev`). A newer push cancels a pull request's
+  older run; runs on `dev` and `main` are never cancelled.
+- **Committed artifacts are checked before anything regenerates them.**
+  `npm run check:dist` writes nothing and now also covers the test
+  fixtures; `npm run check:repro` then builds twice and fails if the builds
+  differ or a committed file changed. Each failure names the command that
+  regenerates the file; CI never commits a repair.
+- **Test suites** (`scripts/run-tests.mjs`): `unit`, `browser`, `public` and
+  `viewport`, every test file in exactly one, run as `npm run test:<suite>`;
+  `npm test` runs all four and `npm run verify` everything CI checks.
+  Browser suites run two files at a time. Each file's log, the results and
+  the environment (Node, OS, commit, browser version) are written to
+  `test-results/`.
+- **Strict browser runs:** with `--strict` (CI), a missing browser or a
+  skipped browser test fails; locally they are still skipped with a
+  warning. CI installs Chrome for Testing at an exact version.
+  `NETATLAS_BROWSER=none` tries the behaviour without a browser.
+- **Failure evidence:** browser pages record console errors and exceptions
+  and a last screenshot, the self-tests their full results; kept for failed
+  files only and uploaded by CI for 7 days.
+- **The offline contract, observed from outside** (`test/offline.test.mjs`):
+  every request of the shipped page through its workflows in both themes,
+  with a control that proves the observation sees an external request.
+- **Release package check** (`npm run release:check`): no test-only module
+  or internal example, one inline script, the strict CSP, the version, the
+  size budget (6.5 MiB). `npm run release:prepare` writes `netatlas.html`,
+  `SHA256SUMS`, `provenance.json` and the release notes to `release/`.
+- **Release workflow** (`.github/workflows/release.yml`), started by hand
+  for an existing tag: checks the tag, the version and the CHANGELOG
+  section, verifies and tests, attests the build provenance and attaches
+  the assets to a draft release after the `release` environment's
+  approval. It never creates a tag, never publishes, never replaces a
+  differing asset.
+- **Security and maintenance:** CodeQL and a dependency review
+  (`.github/workflows/security.yml`, advisory), actionlint and zizmor on
+  the workflows, rules for the workflows in `test/workflows.test.mjs`
+  (read-only default token, SHA-pinned actions, no expressions in shell
+  scripts), monthly grouped Dependabot updates into `dev` without
+  auto-merge.
+- **An optional pre-push hook** (`.githooks/pre-push`), enabled by hand.
+- **Proposed repository settings**: a ruleset with the required checks, the
+  `release` environment, an optional ruleset for release tags
+  (`docs/rulesets/`), and the applied state as read on 2026-10-19
+  (docs/REPOSITORY-SETTINGS.md).
+
+### Changed
+
+#### Documentation
+
+- **The README is a short landing page** (what NetAtlas is, four
+  screenshots, getting started); the detail moved to the User Manual and
+  to [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
+  [docs/TESTING.md](docs/TESTING.md). [docs/SUPPORT.md](docs/SUPPORT.md)
+  is generated from the support catalog and says what NetAtlas models for
+  each protocol, analysis and simulated behaviour.
+
+#### Auto-arrange
+
+- **Structured replaces Spacious.** It puts each group's devices in the
+  rows of the physical Default layout (in both views; networks and hubs of
+  the logical view in a row under the highest row they connect), aligns
+  every device with what it is connected to on a 10 px grid, leaves a lane
+  between rows for every line that bends there, and draws every cable and
+  relation (and membership and next-hop line) with **horizontal and
+  vertical segments and right-angle bends only**, around boxes, ports and
+  end labels; lines that share a corridor run side by side, ends stay at
+  their interfaces, tunnels keep what they carry inside them.
+- **Its routing is part of the model:** `layout.routing: {physical:
+  orthogonal}` (or `logical`), written with the positions in one undo step
+  and removed by Default, Compact and Remove stored positions. A device
+  moved afterwards has its lines routed again at right angles and nothing
+  else moves; the status says the lines keep Structured's right angles. The
+  screen, the SVG and PNG export and a reloaded file show the same lines. A
+  filtered view follows the document's routing until it is arranged itself.
+  The format version stays 1: the key is optional and new
+  ([docs/FORMAT.md](docs/FORMAT.md#layout-diagram-positions), which now
+  describes the whole `layout` section).
+- **Compact packs instead of only shrinking.** Group by group it tries the
+  Default rows with the slack taken out, leaf rows (the clients under a
+  switch) folded, and unconnected groups and parts side by side, and keeps
+  the smallest that adds no more than a crossing or two and (logical view)
+  doesn't send more lines through boxes; a device never comes to stand
+  beside what it is cabled to above it. Sizes and port-label room are taken
+  from the result itself. It is never larger than Default: where Default is
+  already tight, Compact gives the same positions. Typical drawn pictures
+  are 14–25 % smaller in the physical view and 30–55 % in the logical view.
+- **Default is unchanged** — its positions and drawn scenes are compared
+  with a snapshot of every example on every test run — and it stays the
+  preset unless another one is chosen.
+- The buttons' hover texts and the command palette say what each option
+  does (and find them by words like *grid*, *orthogonal*, *tight*); in a
+  very narrow toolbar the three buttons are only as wide as their names.
+
+#### Readable playback waits for the dots
+
+- **A delivery waits for its dot.** In Readable and Proportional pacing the
+  simulation stops before a delivery whose dot is still on its way on
+  screen and processes it, at its own simulated time, once the dot has
+  arrived: ARP is resolved, a TCP connection established, a switch's
+  member port learned when the message that does it visibly arrives, and
+  what it causes (the answer, the next hop, the packet that waited) starts
+  from there. Before, the simulated clock ran at its rate and the dots
+  followed, so state changes and dependent traffic appeared while their
+  causes were still on their way. Per hop, never per conversation:
+  everything already on its way keeps moving, so independent exchanges are
+  on screen together. Nothing is reordered: the waiting delivery and
+  everything after it wait (the engine's `hold`, asked event by event).
+  Network delays, protocol timers, application intervals and retries still
+  use simulated time; the same actions at the same scenario times give the
+  same events, connections and outcomes in every pacing, at every speed,
+  with every filter (tested). Real time pacing is the overview and waits
+  for nothing; headless runs, runTo and an experiment's result never wait.
+- **The steady state is cable activity.** A kind of the scenario's message
+  drawn once (an ARP request, a DHCP Discover, a TCP handshake, a Hello) is
+  a lit cable the next times, not waited for, until the next Network event
+  makes the scenario news again; the startup is shown one of each kind,
+  then the simulation runs at its rate. A multicast stream stays a flow,
+  with one datagram after each join or leave shown hop by hop. Your own
+  Network events, their prerequisites and the message you follow are
+  always shown in detail. Cable activity now counts as something on screen
+  for idle skipping.
+- **Control changes** (the view, the protocols or senders shown, the
+  pacing) remove the dots of what was delivered meanwhile instead of
+  letting them travel behind the tables; nothing is resubmitted or
+  reordered. **Step** processes the next delivery on screen and what it
+  causes at once, nothing later.
+- The pacing text says what the simulation waits for: *waiting for packet
+  arrival*, with *neighbor resolution*, *establishing TCP*, *retransmitting
+  SYN* or *membership report in transit* where the held packet says so.
+
+#### TCP flags on packet labels
+
+- **Every TCP segment's label names its flags**, from its own header, in
+  one notation: the letters S, F, R, P, A, U, E, C in that order, in
+  brackets — *TCP [S] → 10.0.2.10:80*, *TCP [S,A]*, *TCP [A]*,
+  *TCP [P,A] · 120 B*, *TCP [F,A]*, *TCP [R]*; *[]* for none. A protocol
+  over TCP keeps its name: *BGP OPEN [P,A]*, *MQTT PUBLISH [P,A]*,
+  *BGP TCP [S,A]* for its connection's own segments. The log, the packet
+  inspector (the flags with their names) and the grey background labels
+  use the same notation; the help explains it.
+- **The handshake shows in both views.** A relation's TCP segments (its
+  handshake, its acknowledgments, its messages) are drawn along the
+  relation in the logical view, one dot per segment sent; a logical dot
+  opens its inspector too. A drawn handshake is drawn whole in a busy
+  model (its SYN-ACK and ACK are never turned into cable activity behind
+  its SYN); Follow message tells two connections between the same hosts
+  apart by their ports.
+
+#### Experiments played
+
+- An application started by an experiment tags its messages as the
+  experiment's traffic. It still runs on scenario time.
+- Experiments keep `netatlas: 1`. New keys: `start`, `for`, `family`,
+  `protocol`, `topic`, `min`, and `scope: targets`.
+
+#### VME rack example
+
+- **vme-rack.yaml** shows every interconnect configuration — a VMEbus
+  backplane, an overlay SRIO fabric through a switch card, MIL-STD-1553
+  with a monitor, a CAN bus of peers, RS-232 both ways and one way, USB —
+  each carrying data while the simulation runs, and the Ethernet side
+  runs applications (a telemetry poll, console sessions, syslog): before,
+  only gratuitous ARP was shown.
+
+- **vme-rack.yaml** has a VME Layer 2/3 Ethernet switch board (a
+  fictional model of a kind several vendors build): a target on the
+  VMEbus that gives every board its IP connection over the backplane and
+  routes the crate to the operators' LAN.
+
+#### CI and release verification
+
+- **Node.js 22 or later** is required to build and test (`engines`); CI and
+  releases use Node 24 (`.nvmrc`). Node 18 and 20 are no longer supported.
+- `npm run typecheck` no longer regenerates the embedded examples first: it
+  checks the committed source as it is.
+- The released application's own self-test moved from
+  `test/browser.test.mjs` to `test/public-artifact.test.mjs`.
+- `npm test` no longer runs `node --test test/`, which on newer Node
+  versions also runs the helper modules as tests.
+- The record of Ruleset A now says what is applied: *Require approval of
+  the most recent reviewable push* is off.
+
+### Fixed
+
+#### Applications, MQTT, policy, tunnels, multicast and RIPng
+
+- **Applications** that start with the simulation wait for a booting
+  device (cold start, power-on, a guest's host) and start once it is up;
+  a run going on no longer drops out of the history after 200 later
+  runs; outcomes are counted per original message across retries that
+  could not be sent; Stop works while the last message is on its way.
+- **MQTT**: a periodic publisher keeps publishing after its connection
+  recovers (broker restart, cable, power cycle); a client whose first
+  attempt fails at once tries again; packet identifiers stay within
+  1–65535, wrap and skip those in flight; strings are sized in UTF-8
+  bytes.
+- **Policy**: a stateful policy keeps IP protocols without ports apart by
+  their number; Fragmentation Needed and Packet Too Big about an echo
+  pass a stateful firewall.
+- **Tunnels**: WireGuard and the other session tunnels on tunnel
+  interfaces come up (their packets go between the outer ends, with the
+  protocol's own outer header); the path tracer decides a UDP tunnel's
+  outer packet by its port and evaluates every underlay alternative.
+- **TCP**: a connection whose SYN could not leave is not retransmitted.
+- **IGMPv3 / MLDv2**: a member of every source beside members of named
+  sources gets every source; a member leaving or a source expiring no
+  longer ends the group. IPv6 multicast streams are routed (they went
+  from a link-local address).
+- **RIPng** uses UDP 521, link-local sources and hop count 255, checked on
+  input.
+
+#### IKEv2, policy owners, IP protocols without ports, EIGRP, cold start, first-hop redundancy
+
+- **IKEv2**: an IKE SA rekey whose response was lost no longer fails — the
+  old SA keeps its responder state until its Delete (a retransmitted
+  request answered from the kept response, a DPD on its way answered);
+  what waited behind the rekey goes in the new SA.
+- **Policy owners**: a router on the way that has the destination's
+  address only in another VRF is not its owner; the packet's own next hop
+  decides among gateways that share an interface.
+- **Written policies** decide GRE, ESP and the other IP protocols without
+  ports too (a default deny no longer lets them through); the path tracer
+  applies the rules to a tunnel's outer packet.
+- **EIGRP**: an ACK of an earlier adjacency no longer acknowledges a new
+  init Update; a neighbour's restart settles (the init that reset the
+  adjacency is not kept for the new one: the two routers no longer reset
+  each other without end, at one instant).
+- **A cold start** has no learned route before its adjacency (resolving an
+  NTP upstream's owner had seeded the routers' first tables).
+- **First-hop redundancy**: each group takes its own relation's
+  attributes. **IGMPv3 / MLDv2**: a BLOCK of unknown sources changes
+  nothing.
+
+#### First-hop redundancy, NTP, policy ownership, OSPF and the audited protocols
+
+- **First-hop redundancy.** Routers whose LAN interfaces are in VRFs of
+  different names did not recognize each other (two Masters, two holders);
+  a group is now what the protocol carries. A VRRP Backup with an equal
+  priority and a higher address took over an established Master, and a
+  higher-priority one at its first advertisement: VRRP preempts by its
+  master down timer now (RFC 5798 §6.4.2). GLBP's text said TTL 1 for
+  packets sent with 255; IPv6 VRRP is sent from the link-local address;
+  HSRP in IPv6 and above group 255 is version 2.
+- **NTP.** A client synchronized "to 192.0.2.1" after exchanging NTP with
+  10.0.0.1: an upstream is an address now, asked exactly and answered by
+  that association only. A source silent for 8 polls could hang the
+  simulation (a check re-armed at one instant); experiment observations
+  read the NTP state itself; a reboot synchronizes within seconds.
+- **Policy owners** several hops away followed the first interface of a
+  router with the address (the outcome depended on the order of its
+  interfaces); equal-cost next hops to different owners give none; a
+  written rule base decides the packets of relations through a firewall;
+  a path ending at another holder of the address does not reach the
+  destination asked for.
+- **OSPF** ignored DBDs RFC 2328 §10.6 treats as a sequence mismatch.
+- **Routing and sessions** (the audit): EIGRP's init Update is reliable;
+  IS-IS detects one-way adjacencies and repairs its database by periodic
+  CSNPs; RIP asks for its neighbours' tables after a reboot; BFD sends one
+  stream, slowly while not Up, and its Down reaches its own clients only;
+  BGP's passive side sends its OPEN at once; the UDP ports between peers
+  (IKE, LDP, RIP, BFD …) and BFD's TTL 255.
+- **LACP** follows its partner's timeout and stops distributing when the
+  partner is out of sync. **IKEv2** drops delayed requests of an
+  established SA, restarts message IDs after a rekey, runs DPD every
+  interval, and the responder rekeys too.
+- **Multicast and PTP.** IGMPv3 / MLDv2 joins are state-change records and
+  routers keep sources apart; the RP prunes (S,G) after the switchover; a
+  PTP foreign master is forgotten on time.
+- **Transport and host services.** TCP's retransmission timeout follows
+  the round trip (RFC 6298); a test's connection ends with it; DNS follows
+  a CNAME into another zone and a host without DNS refuses a query;
+  DHCPv6 caps its Request retransmission; NDP's unsolicited NA no longer
+  confirms an entry; nothing a server scheduled before a power cycle is
+  sent after it.
+- **Capacity** traced an application client from its loopback; it follows
+  the address the client sends from.
+
+#### Policy identity across VRFs, non-IP traffic, capacity and playback
+
+- **Overlapping addresses in two VRFs.** A rule permitting srvR permitted
+  traffic to srvB with the same address in another VRF (the simulation),
+  and the path tracer followed an address's first holder in the model
+  (it could not reach the other VRF's device). The owner of an address is
+  now the device the traffic reaches — the holder on the segment a hop
+  reaches, the firewall's routes in the simulation; with several holders
+  and none known, a rule naming one decides nothing.
+- **Undecided policy decisions** are carried as what they lack (the
+  source, the service, a runtime identity) into the communication check:
+  a rule depending on a DHCP host's address showed "Permitted"; it is
+  indeterminate now. A TCP/80 rule no longer makes a UDP/53 flow
+  undecided.
+- **Compare with simulation** took a send from another address of the
+  source interface as the evidence of a check from an exact address. It
+  needs a send that left from that address (recorded when sent); the
+  handoff says an interface is not an address.
+- **Renaming a device or an opaque port** left an interconnect's
+  `traffic:` naming the old one (the model invalid). Its initiator,
+  source and recipients follow now, in one undo step, and deleting
+  reports them.
+- **Execution scopes** kept a transfer to a recipient outside the scope
+  (it failed at runtime). A transfer is kept only where its ends and
+  every transit device are inside, said in the scope's caveats.
+- **Capacity** traced an application's transfer to its peer device's
+  default address: a listener bound to a slow management interface
+  "fit" on the fast data cable, an IPv6 application went over IPv4. It
+  follows the application's resolved ends now.
+- **Playback at its end.** A moment exactly at an experiment's end that
+  a frame's budget ended partway was never finished: the run never
+  ended (a regression within this release).
+
+#### Playback and simulation
+
+- **Only a dot the diagram draws holds the simulation.** A delivery waited
+  for its dot even when the dot's track was filtered out, inside a
+  collapsed group or switched off by IP / Non-IP — the simulation waited
+  for something not drawn. It waits only while the scene has the track;
+  when the track comes back, what was delivered meanwhile is not drawn as
+  on its way.
+- **Failures and recovery make the scenario news again.** The steady state
+  started afresh only with an entry of Active events: a failure or
+  restore, a power change, a shut or no shut from the diagram's menus left
+  the recovery traffic summarized. Every successful change from outside
+  counts now (flapping you started and its transitions too; not the
+  model's own flapping, not packets).
+- **Equal simulated times.** A delivery processed at the engine's own time
+  could stay drawn as travelling towards it after a change of view, filter
+  or pacing. Each flight now knows whether its delivery is pending or
+  processed.
+- **A moment of very many events** no longer runs in one frame: the frame
+  budget holds within it, in order.
+- **A broadcast's source interface** follows the VRF asked for, a usable
+  address and an interface that is up (it could leave by another VRF's
+  interface that sorted first).
+
+#### Analyze
+
+- **The family asked for is the one evaluated.** An IPv6 check between
+  dual-stack devices traced IPv4, and one to an IPv4-only host came out
+  reachable over IPv4. Both ends are now in the family asked for, or the
+  check says the family is missing; identity, saved expectation and
+  prefill keep it (a host name can't carry IPv6 into Send network packets,
+  and the handoff says so).
+- **Policy rules and effective addresses.** A rule naming a device or
+  interface matched its written addresses only: a DHCP or SLAAC host was
+  never the device its rule named (dropped in the simulation, "denied" in
+  a snapshot), and an address two VRFs both have matched either host. A
+  device is its effective addresses now (acquired ones in the simulation
+  and a snapshot), checked against the address's owner when known; in the
+  configured model a rule that depends on a runtime address is undecided.
+- **Compare with simulation** took any send from the source device to the
+  destination as the check's evidence — another source interface, the
+  destination's other address, another family. It takes only a send with
+  the check's whole identity, and while messages are on their way or still
+  to be sent the comparison is provisional, never "They agree".
+- **Capacity**: one MQTT publication per topic (a subscriber each matching
+  publication once); a client's answers at its responder's size (not
+  always the default); a written zero is zero; a single flow limited by
+  the aggregate's members that are up; each direction of a full-duplex
+  cable its own budget.
+- **NTP chains** must be feasible: a reference's stratum plus the hops to
+  the client at most 15 (a stratum-15 upstream, or three hops below a
+  stratum-13 reference, is not a valid source chain); the best feasible
+  alternative is taken.
+
+- The path tracer ignored a firewall's `allow:` list (it read the wrong key);
+  it now permits what the simulation permits.
+- A trace's headline was the first equal-cost path's; a path that left the
+  model or ended in a network without the destination was marked as
+  reached. Both are now judged over every evaluated path.
+- During a simulation, Trace path used only what was failed; it now uses a
+  snapshot with the leased and autoconfigured addresses.
+- The next free address could be in a DHCP pool, a reservation, a scope's
+  gateway, or an address another VRF's member uses on the same segment.
+- Duplicate addresses were reported across disconnected parts of a model
+  and for link-local addresses on different links.
+- Pairwise reachability after a failure checked the first 40 devices by id;
+  it now checks a scope, relevant endpoints first, and reports its coverage.
+- The empty single-points list claimed that nothing could fail; it now
+  says what was checked.
+
+#### Analysis integration
+
+- VLAN-scoped segments: DHCP, PTP and link-local conflicts no longer leak
+  across isolated VLANs on one switch; the analyses and the simulation use
+  one broadcast-domain definition.
+- A route alone no longer makes a DHCP relay target a provider; a failing
+  first relay no longer hides a working second one; DHCPv6 is a
+  dependency of its own.
+- What if now compares blocked expectations too (a failure that exposes a
+  forbidden path), and an end that the failure takes down leaves an
+  isolation "not exercised" instead of proven.
+- A reachable NTP cycle was accepted as a source chain; an NTP upstream on
+  a failed device read as "beyond the model".
+- The path tracer ignored a transparent firewall's policy.
+- The documentation contradicted itself on DHCPv6 support.
+- An experiment's application started on real time and never ran on
+  scenario time; an MQTT client's delivery is read from its own counts.
+
+#### Workspaces
+
+- **The simulation's cable-activity line and label jumped** between the
+  two sides of a cable, about every half second. The activity took the
+  direction of the oldest hop in its window, and the lanes are
+  directional. The line now uses the cable's canonical geometry, and the
+  label keeps its side until the geometry changes. It stays stable through
+  pause and resume, pan and zoom, theme changes and redraws.
+- **An experiment step's new action or observation was not kept.** An
+  incomplete step was an error and was dropped from the model, so the
+  editor redrew without it. Drafts are now kept with what they miss (a
+  warning). They stay editable and can't run until complete. Every change
+  is one undo step and survives navigation, saving and reloading.
+- **Design checks after loading another model** showed the old model's
+  verdicts. Loading or replacing a model now clears results, pending work
+  (a single-points-of-failure check, an experiment run), snapshots and
+  selections, and late callbacks of the old model are ignored. An edit
+  still marks a result **Outdated** instead.
+- An experiment run reported its sequence finishing as if it were a
+  result. Only observations give verdicts now, and Stop and Reset cancel
+  the work.
+
+#### Non-IP interconnects
+
+- **Route discovery** checked a way's rules only on arriving at the
+  recipient, so an invalid hop sorted first ended the search though a
+  valid way existed. Hops are checked before they are taken.
+- **A failure while data is on its way** (an interconnect, an attachment,
+  a port, a device) let the hop arrive "delivered", even when restored
+  before its end. It stops there now, its dot lost where it is.
+- **Retention**: every series, transfer and inspector row was kept for
+  good. A series keeps its last transfers and counts; finished ones are
+  released; the rows go with the dots.
+
+#### TCP connection attempts
+
+- **A connection attempt its application gave up on is abandoned.** When a
+  test's or an application's response timeout ran out while its
+  connection was still in SYN_SENT, the connection stayed and retransmitted
+  its SYN for the whole SYN-retry budget (about two minutes) beside every
+  newer attempt: up to 20 half-open connections on one host of the
+  examples, many apparent connections on screen. The application closing
+  its socket now deletes the attempt (RFC 9293 §3.10.4). An audit of the
+  examples (connections counted where the transport creates them): every
+  other connection is configured — endpoint test traffic every 10 s per
+  target, a load balancer's health checks every 2 s, a proxy's upstream
+  connection per request, one per BGP session; the rest of what looked
+  like many connections was slow dots of earlier exchanges, which the
+  waiting playback no longer leaves behind. No example's traffic changed.
+
+#### IP correctness
+
+- **Routing knowledge stays in its protocol and VRF.** A router's view of
+  learned routes was keyed by VRF name alone, so OSPF could use what RIP
+  learned and a VRF's routes leaked into another of the same name on a
+  neighbour; adjacency checks now ask about the protocol in question.
+- **OSPF.** A lost DBD in ExStart or Exchange stalled the adjacency: the
+  master retransmits until acknowledged, the slave answers duplicates,
+  stale DBDs are discarded and an out-of-order one restarts with
+  SeqNumberMismatch. LSAs are flooded to neighbours in Exchange and
+  Loading too (RFC 2328 13.3).
+- **RIP.** Received metrics plus the link's own cost (1), 16 unreachable,
+  malformed entries ignored and noted; timers of a table that was replaced
+  (a power cycle) no longer fire.
+- **NTP.** A server of stratum 15 or an unsynchronized one is not usable;
+  a power cycle forgets what was learned; losing the upstream picks a
+  fresh usable alternative.
+- **IKE.** One request in flight per IKE SA (a window of one): a rekey
+  while a CREATE_CHILD_SA waited queued instead of crossing it; a new
+  IKE_SA_INIT while established keeps the SAs until IKE_AUTH completes.
+- **IS-IS** forms adjacencies over bridged circuits and without IPv4
+  addresses: it no longer borrowed an IP to reach a neighbour.
+- **TCP.** A conversation is its connection: two connections that share
+  addresses (after NAT, in two VRFs, a reused port) no longer mix their
+  segments; the MSS option counts in the SYN's header length (24 bytes).
+- **Audit.** LLDP / CDP neighbours end with their link or device and keep
+  the advertised TTL; DHCPv6 answers a Renew without a binding with
+  NoBinding (the client then requests again), checks the server
+  identifier, and a stale T2 timer no longer rebinds.
+
+#### Protocol correctness
+
+- **TCP.** A health check reset its connection before the third ACK and
+  called the handshake completed; it is a connect check now (ACK, then
+  RST). A power-off left its connections' timers alive: after a quick
+  reboot the old connection sent again. Unacceptable segments are refused
+  as RFC 9293 says (an ACK of something never sent drops the segment; a
+  RST answers with [R] when the segment had an ACK, [R,A] otherwise; the
+  handshake's ACK is checked). A FIN closes one direction (CLOSE_WAIT), a
+  FIN sent again restarts TIME_WAIT, and each SYN carries its MSS.
+- **Routing information stays in its protocol.** One database per router
+  was filled by every protocol: with BGP UPDATEs lost, OSPF's floods made
+  the BGP routes appear. Each routing instance (a protocol in a VRF) has
+  its own database now, filled only by its own advertisements and only
+  when its state machine allows; RIP is a distance vector (metrics, split
+  horizon with poisoned reverse, timeouts, withdrawal, triggered updates);
+  IS-IS forms its adjacency on the link whatever the addressing, by its
+  NET and level; OSPF's database exchange negotiates master and slave and
+  rejects a larger MTU; EIGRP sends the Queries its support text claimed.
+- **DHCP.** The relay and the server talked to each other from port 67 to
+  68 (a firewall permitting UDP 67 dropped them), every DHCP packet was in
+  the default table, renewals were never sent again, a unicast renewal
+  from another network found no scope, and a relayed rebind was answered
+  past the relay.
+- **Multicast and IPv6.** MLD went out from a global address; it uses the
+  link-local one (:: before it is valid), with the Router Alert option and
+  the lengths of its version, and the MLD querier is elected by it. The
+  dynamic RP was read from the other routers' configuration and power
+  state; it is the candidate whose Bootstraps reached the router, until
+  their holdtime. Written global IPv6 addresses run duplicate address
+  detection.
+- **Redundancy and tunnels.** One Master/Backup algorithm stood for VRRP,
+  HSRP, GLBP and CARP; each has its own election and transport now (VRRP
+  owner at 255, HSRP's Active and Standby with Listen routers). IKEv2's DPD
+  set the peer's session Idle and its recovery timer was voided; each end
+  has its own exchanges, retransmissions and SA lifetimes. HTTPS sent data
+  before the client's Finished; WireGuard never rekeyed and took
+  keepalives for liveness.
+- **Identities and NAT.** A MAC written twice was replaced on the second
+  interface; written MACs are kept, and generated ones and the random
+  streams no longer change when an unrelated device is added. Two hosts
+  pinging one destination through PAT shared one translation; echoes are
+  translated by identifier, and ICMP errors (PMTUD) are translated back.
+- **NTP** clients read their server's state; they know it only by its
+  responses now. **BFD** detected by its own timers instead of the peer's,
+  **PIM** elected its DR by the neighbours' configuration, **LACP**
+  bundled members of different partners, and a **DNS** forwarding server
+  decided by the forwarders' configuration — each now by what it received.
+
+#### Layer 1–4 simulation
+
+- **Routing is learned.** A session coming up taught a router every prefix
+  behind its neighbour at once, from the model as a whole; the LSUs and
+  UPDATEs drawn were decoration. Each router now computes its routes from
+  the records its neighbours' advertisements brought it; a lost
+  advertisement or withdrawal delays the routers behind it (OSPF, IS-IS
+  and EIGRP send it again after 5 s, BGP's TCP retransmits, RIP waits for
+  its next Response). Analysis snapshots use each router's installed
+  routes.
+- **OSPF.** Priority 0 was read as 1; the DR was re-ranked at every Hello
+  with no Waiting state or incumbency, and whether a segment elects was
+  guessed from its number of routers. Now the RFC 2328 election per
+  interface (`network-type`, broadcast unless written; `priority` 0–255),
+  and Hellos with other intervals, area or network type make no adjacency.
+- **TCP.** Sequence and acknowledgement numbers were invented. A connection
+  is now a byte stream: SYN and FIN take a number each, cumulative
+  acknowledgements, retransmissions keep their range, duplicates and
+  out-of-order segments, every message delivered once after its last byte,
+  connection tables per VRF.
+- **BGP, LDP, HTTPS and SSL VPN over the common TCP.** They imitated TCP
+  themselves. BGP's OPEN checks the peer AS and the hold time (the smaller
+  one; 0 for none; 1 and 2 refused) and answers with a NOTIFICATION; a
+  device without an AS runs no speaker, and port 179 / 646 is open only
+  where one runs.
+- **Multicast: each router's own RP**, of the group's address family; the
+  first static RP of the whole model no longer serves every router, and
+  routers that disagree are said (new check *multicast-rp-conflict*).
+- **VRF-local state.** The path MTU (per VRF and destination, aged after
+  10 min, forgotten on a path change), firewall sessions and NAT
+  translations are per VRF; the source address follows the route in its
+  VRF (an ambiguous unbound send is refused). PAT gave two inside hosts the
+  same translation; an IPv6 sender fragments its own packets to the path
+  MTU it learned.
+- **IPv6.** Static IPv6 addresses enable IPv6 on an interface with its
+  link-local address and duplicate address detection; a tentative address
+  is never announced or answered for.
+- **Execution scopes** close over dependencies to a fixed point, keep a
+  relation with more than two endpoints with those inside, and say where
+  their results may differ from the entire model's.
+- **Layer 2 per hop.** A frame is decided at each device when it arrives
+  there, with its state then.
+- **Streams and repeating applications of Network events** run on the
+  simulated clock (they ran on the page's clock and skipped datagrams when
+  it stalled).
+- **Demands** say that their simulated packets are representative, apart
+  from the stated bandwidth that only capacity analysis uses.
+- **Simulation UI.** The Senders choose what is shown, never what is
+  generated; the protocol list is *Protocol traffic shown*; the count of a
+  Send test is named for its protocol; the inspector's pause lasts until it
+  is closed; the packet inspector says what is computed, left out and
+  described; a senders list no longer leaves a listener on the document
+  each time it is built. A redundancy group's virtual address no longer
+  'leaves the model' before a member holds it.
+
+#### CI and release verification
+
+- **Start simulation fits a 1366 × 768 window again.** Since execution
+  scopes, the scope's box took 110 px and the dialog scrolled with the
+  parameters collapsed; squeezed, the senders also spilled over the
+  parameters' heading. The scope is one row (its name, the choice and what
+  it runs; the explanation is the choice's description and tooltip), and
+  the senders never shrink below their own controls and two rows of the
+  list.
+- **The simulation panel shows three rows of each table at 200 % again.**
+  The line "Execution scope: Entire model" cost the tables a row; the line
+  is now shown only for a narrowed scope, where it says what does not run.
+- Two browser tests expected the Start dialog's protocols first; the
+  execution scope comes first since execution scopes.
+
+#### Applications and multicast
+
+- A router delivered multicast for a group its own interface had joined
+  only to multicast routing, never to itself.
+- The simulation's owner lookup took any device with a virtual address for
+  the owner of any address.
+
+### Known limitations
+
+* The protocol simulation is a teaching and planning model within its
+  declared subset, not an emulator or a test of standards compliance: the
+  timers and states stated in the documentation follow their RFCs, other
+  details are simplified, and no convergence, accuracy or throughput
+  figure is guaranteed. What each protocol models is in
+  [docs/SUPPORT.md](docs/SUPPORT.md), the simplifications in
+  [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+* Non-IP interconnects show connectivity and illustrative data; they do
+  not simulate USB, serial, bus or fabric protocols.
+* Which of several devices with an NTP upstream's address a client reaches
+  is resolved once, when the simulation is built, not again at run time.
+* Stateful policies track IP protocols without ports by address pair and
+  protocol number (no GRE keys or ESP SPIs); IPsec NAT traversal is not
+  modelled; IGMPv3 / MLDv2 routers send group-specific queries, not
+  group-and-source queries.
+* An experiment's `start_app` waits for its device to boot, not for its
+  links: a message sent before the link-up delay finds no route.
+* The automated browser tests run in Chromium-based browsers (Chrome on
+  Linux in CI; on Windows for this release's preparation); Firefox and
+  Safari are covered by the manual checks in
+  [docs/TESTING.md](docs/TESTING.md) only.
+* Model format 1 changed within version 1 without migration (see
+  *Upgrading from 0.1.3*).
 
 ## [0.1.3] - 2026-10-17
 
@@ -2090,6 +3135,7 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
+[0.1.4]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.4
 [0.1.3]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.3
 [0.1.2]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.1

@@ -124,11 +124,23 @@ export function legendOf(model: Model, view: View): Legend {
     }
     const virt = virtualItems(model);
     if (virt.length) sections.push({ title: VIRTUAL_TITLE, items: virt });
+    // the non-IP side (diagram/interconnects.ts): dashed, its own colour, diamonds — never colour alone
+    if (model.interconnects.length) {
+      const OP = '#7048b6';
+      const items: LegendItem[] = [];
+      if (model.interconnects.some((x) => x.topology === 'point_to_point'))
+        items.push({ swatch: [h('path', { class: 'ic-line', d: LINE, stroke: OP, 'stroke-width': 2.2, 'stroke-dasharray': '7 3', fill: 'none' }), h('path', { class: 'ic-arrow', d: 'M41 9L32 4.5L32 13.5Z', fill: OP })], label: 'Point to point: its technology and direction (USB 2.0 ↔, RS-232 →)' });
+      if (model.interconnects.some((x) => x.topology === 'shared'))
+        items.push({ swatch: [h('rect', { class: 'ic-bar', x: 3, y: 10, width: 38, height: 7, rx: 2, fill: 'none', stroke: OP, 'stroke-width': 1.6, 'stroke-dasharray': '5 2' }), h('path', { class: 'ic-line', d: 'M14 1V10M30 1V10', stroke: OP, 'stroke-width': 1.6, 'stroke-dasharray': '4 2', fill: 'none' })], label: 'Shared medium (a bus): its bar, a tap per participant' });
+      items.push({ swatch: [h('path', { class: 'port opaque-port', d: 'M22 3.5L27.5 9L22 14.5L16.5 9Z', fill: OP })], label: 'Opaque port: no network stack' });
+      items.push({ swatch: [h('text', { x: 22, y: 13, 'text-anchor': 'middle', 'font-size': 9.5, 'font-weight': 700 }, 'C T M')], label: 'Role on it: Controller, Target, C/T both, Peer, Monitor (* system controller)' });
+      sections.push({ title: 'Non-IP interconnects', items, note: 'Physical modelling only: no protocol of these is simulated; illustrative data can be sent along them.' });
+    }
     const groups = groupSection(model);
     if (groups) sections.push(groups);
     return {
       sections,
-      footer: 'Tunnels and protocol sessions are drawn in the Logical view.',
+      footer: model.interconnects.length ? 'Tunnels and protocol sessions are drawn in the Logical view; non-IP interconnects only here.' : 'Tunnels and protocol sessions are drawn in the Logical view.',
     };
   }
   const used = new Map<string, { def: ProtocolDef; count: number }>();

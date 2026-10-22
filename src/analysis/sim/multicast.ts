@@ -71,8 +71,9 @@ import { isLinkLocalGroup, isMulticastIp, isSsmGroup, multicastMac } from './mac
 import { L3Iface, SimDevice } from './net';
 import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, vlanRef } from './params';
 import { routerId } from './proto-routing';
-import { ProtocolSim, Sess } from './protocols';
-import { RealTimeScheduler } from './realtime';
+import { pimDomain, pimValue, RpChoice, RpEnv, rpFor, staticRp } from '../pim-rp';
+import { ProtocolSim, Sess, ipOf } from './protocols';
+import { representativeText } from '../../model/speed';
 import { SnoopingChoice, snoopingChoice, switchedVlans } from '../../model/snooping';
 import { vlanRangesShown } from '../../model/derive';
 import { GridTable, L4, McPort, Msg, NetEvent, Pkt, SessionStatus, SnoopResult, TableTimer } from './types';
@@ -109,6 +110,14 @@ interface RGroup {
   version: string;
   expires: number;
   sources: string[];
+  /** IGMPv3 / MLDv2 source timers (RFC 3376 §6.2.3, RFC 3810 §7.2.3): until when each source of `sources` is wanted */
+  srcUntil?: Map<string, number>;
+  /**
+   * until when a member wants every source (EXCLUDE {}: an IGMPv3 / MLDv2 report without sources, an IGMPv2 / MLDv1
+   * report) — the group timer of EXCLUDE mode (RFC 3376 §6.2.1, RFC 3810 §7.2.1); while it runs every source is
+   * forwarded, also beside members of named sources; when it runs out the group falls back to those (§6.5, §7.5)
+   */
+  anyUntil?: number;
   /** group-specific queries still to send after a leave */
   gsq: number;
   /** a member left: the group goes unless the group-specific queries are answered */
@@ -271,7 +280,8 @@ export interface Stream {
   port: number;
   interval: number;
   size: number;
-  origin: 'model' | 'event' | 'demand';
+  /** model: configured; event: Network events (real time); demand: a demand; experiment: an experiment's action (scenario time, checked as an event is) */
+  origin: 'model' | 'event' | 'demand' | 'experiment';
   label: string;
   running: boolean;
   since: number;
@@ -284,12 +294,9 @@ export interface Stream {
   tag?: number;
   /** when it was stopped (Stop stream) */
   stoppedAt?: number;
-  /** started by Network events: on the real-time schedule (its entry), its interval real time, not simulated */
-  rt?: number;
-  /** real time: sends left out because the page was late by more than an interval (a stall), and those due while its source was off */
-  skipped?: number;
+  /** started by Network events: datagrams due while its source was off (not sent, counted) */
   offMissed?: number;
-  /** the simulated time of its last datagram, and between the last two (real time: what a receiver may expect) */
+  /** the simulated time of its last datagram, and between the last two (what a receiver may expect) */
   lastAt?: number;
   gap?: number;
 }
@@ -318,6 +325,8 @@ interface Rx {
 }
 
 export class Multicast {
+  /** a multicast demand's stated bandwidth, by "source device|group" (its stream is representative, never that load) */
+  private demandBps = new Map<string, number>();
   readonly P: ProtocolSim;
   /** joined groups by "dev|iface" */
   private hosts = new Map<string, Map<string, HostGroup>>();
@@ -337,8 +346,6 @@ export class Multicast {
   private events: NetEvent[] = [];
   private seq = 0;
   private noted = new Map<string, number>();
-  /** the real-time schedule of Network events (a stream of Network events sends on it; null: on the simulated clock) */
-  realtime: RealTimeScheduler | null = null;
   /** a test's datagram reached a member: the transport layer's callback */
   onTestReceived: ((test: number, dev: string, from: IpAddr) => void) | null = null;
 
@@ -365,6 +372,7 @@ export class Multicast {
     P.fallback.set('pim', (dev, l3, msg, pkt) => this.pimUnrelated(dev, l3, msg, pkt));
     P.snoopHook = (sd, from, vlan, frame, t) => this.snoop(sd, from, vlan, frame, t);
     P.mrouteHook = (dev, l3, pkt) => this.mroute(dev, l3, pkt);
+    P.joinedHook = (dev, iface, group) => this.isMember(dev, iface, formatAddr(group));
     P.routesHooks.push((dev) => this.routesChanged(dev));
     P.sweepHooks.push(() => this.sweep());
     P.ifaceHooks.push((dev, l3, up) => {
@@ -436,7 +444,7 @@ export class Multicast {
     for (const d of this.P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
       for (const i of d.interfaces.concat(d.logical)) {
         if (!i.multicast) continue;
-        for (const s of i.multicast.streams) this.addStream(d.id, i.id, s.group, s.port, s.interval, s.size, 'model', 4000 + this.e.jitter());
+        for (const s of i.multicast.streams) this.addStream(d.id, i.id, s.group, s.port, s.interval, s.size, 'model', 4000 + this.e.jitter(d.id));
       }
     }
     // the model's multicast demands are streams too
@@ -448,7 +456,8 @@ export class Multicast {
       const l3 = Array.from(sd.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.addrs.some((a) => a.addr.version === g.version));
       if (!l3) continue;
       const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
-      this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(), dm.label || dm.id);
+      this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(sd.id), dm.label || dm.id);
+      this.demandBps.set(sd.id + '|' + dm.destination, dm.bps);
     }
   }
 
@@ -474,31 +483,76 @@ export class Multicast {
     return m === 'dense' ? 'dense' : m === 'ssm' ? 'ssm' : 'sparse';
   }
 
+  /** What the RP choice (analysis/pim-rp.ts) reads of the simulation: the addresses and router IDs as they are now, who is on. */
+  private rpEnv(): RpEnv {
+    return {
+      ownerOf: (a) => this.e.ownerOf(a),
+      routerId: (d) => (this.P.sd(d) ? A(routerId(this.P, d, 'pim')) : null),
+      v6Addr: (d) => {
+        const sd = this.P.sd(d);
+        if (!sd) return null;
+        const ls = Array.from(sd.l3.values()).sort((x, y) => Number(y.kind === 'loopback') - Number(x.kind === 'loopback') || cmp(x.id, y.id));
+        for (const l of ls) for (const x of l.addrs) if (x.addr.version === 6 && x.addr.bytes[0] !== 0xfe) return x.addr;
+        return null;
+      },
+      on: (d) => this.e.deviceOn(d),
+      learned: (d, v) => this.rpSet(d, v),
+    };
+  }
+
   /**
-   * The RP of the any-source groups: a router's static `rp`, else a PIM
-   * relation's `rp` (an address or a device), else the candidate RP with the
-   * highest router ID (the bootstrap router announces it); null: none.
+   * The candidate RPs a router knows (PIM BSR, RFC 5059 in the simulation's
+   * terms): itself when it is a candidate, and every candidate whose
+   * Bootstrap reached it, until that one's holdtime runs out.
    */
-  rp(): { dev: string; addr: IpAddr; how: string } | null {
-    const owner = (a: IpAddr): string | null => this.e.ownerOf(a);
-    for (const d of this.P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
-      const s = d.services.find((x) => x.id === 'pim');
-      const v = s ? s.values.get('rp') : undefined;
-      const a = v ? parseAddress(v) : null;
-      if (a && owner(a)) return { dev: owner(a) as string, addr: a, how: `the static RP of ${d.id}` };
+  private rpSet(dev: string, v: 4 | 6): Array<{ dev: string; rid: IpAddr; addr: IpAddr }> {
+    const out: Array<{ dev: string; rid: IpAddr; addr: IpAddr }> = [];
+    const env = { routerId: (d: string) => (this.P.sd(d) ? A(routerId(this.P, d, 'pim')) : null) };
+    if (pimValue(this.P.m, dev, 'candidate_rp') === 'yes' && this.e.deviceOn(dev)) {
+      const own = v === 4 ? env.routerId(dev) : this.ownV6(dev);
+      const rid = env.routerId(dev);
+      if (own && rid) out.push({ dev, rid, addr: own });
     }
-    for (const r of this.P.m.relations.slice().sort((a, b) => cmp(a.id, b.id))) {
-      if (this.e.base(r) !== 'pim') continue;
-      const v = r.attrs.find(([k]) => k === 'rp');
-      if (!v) continue;
-      const a = parseAddress(v[1]);
-      if (a && owner(a)) return { dev: owner(a) as string, addr: a, how: `the rp of relation ${r.id}` };
-      if (this.P.sd(v[1])) return { dev: v[1], addr: A(routerId(this.P, v[1], 'pim')), how: `the rp of relation ${r.id}` };
-    }
-    const cands = this.P.m.devices.filter((d) => (d.services.find((x) => x.id === 'pim') || { values: new Map<string, string>() }).values.get('candidate_rp') === 'yes' && this.e.deviceOn(d.id));
-    cands.sort((a, b) => compareAddr(A(routerId(this.P, b.id, 'pim')), A(routerId(this.P, a.id, 'pim'))));
-    if (cands.length) return { dev: cands[0].id, addr: A(routerId(this.P, cands[0].id, 'pim')), how: 'the candidate RP with the highest router ID (bootstrap)' };
+    const heard = this.P.shared.get('pim-rpset|' + dev) as Map<string, { rid: string; rp4?: string; rp6?: string; until: number }> | undefined;
+    if (heard)
+      for (const [origin, x] of heard) {
+        if (x.until <= this.e.now || origin === dev) continue;
+        const a = v === 4 ? x.rp4 : x.rp6;
+        if (a) out.push({ dev: origin, rid: A(x.rid), addr: A(a) });
+      }
+    return out;
+  }
+
+  /** A router's own IPv6 RP address (its first loopback's, else interface's, global IPv6 address). */
+  ownV6(d: string): IpAddr | null {
+    const sd = this.P.sd(d);
+    if (!sd) return null;
+    const ls = Array.from(sd.l3.values()).sort((x, y) => Number(y.kind === 'loopback') - Number(x.kind === 'loopback') || cmp(x.id, y.id));
+    for (const l of ls) for (const x of l.addrs) if (x.addr.version === 6 && x.addr.bytes[0] !== 0xfe) return x.addr;
     return null;
+  }
+
+  /**
+   * The RP a router uses for an any-source group, in its own context
+   * (analysis/pim-rp.ts: its static RP, its PIM relations' rp, its PIM
+   * domain's candidate RP; the group's address family). Null: none — the
+   * group can't be joined there. Routers that disagree keep their own
+   * (their trees do not meet), and the log says so once.
+   */
+  rp(dev: string, group: string): RpChoice | null {
+    const env = this.rpEnv();
+    const g = parseAddress(group);
+    const v: 4 | 6 = g ? g.version : 4;
+    const own = staticRp(this.P.m, env, dev, v);
+    if (own === 'family') this.note(`rpfamily|${dev}|${v}`, 'note', dev, `PIM: ${dev}'s static RP ${(this.P.m.index.devices.get(dev) as { services: Array<{ id: string; values: Map<string, string> }> }).services.find((x) => x.id === 'pim')!.values.get('rp')} is IPv${v === 4 ? 6 : 4}: no RP for its IPv${v} groups from it`);
+    const res = rpFor(this.P.m, env, dev, group);
+    if (res && own && own !== 'family') {
+      for (const d of Array.from(pimDomain(this.P.m, dev)).sort(cmp)) {
+        const o = d === dev ? null : staticRp(this.P.m, env, d, v);
+        if (o && o !== 'family' && compareAddr(o.addr, res.addr) !== 0) this.note(`rpconflict|${[dev, d].sort().join('|')}|${v}`, 'note', dev, `PIM: ${dev}'s RP is ${formatAddr(res.addr)} (its static RP), ${d}'s is ${formatAddr(o.addr)} (its static RP): they disagree in one PIM domain — each joins and registers towards its own, and their trees do not meet`);
+      }
+    }
+    return res;
   }
 
   // ------------------------------------------------------------ IGMP / MLD messages
@@ -516,7 +570,13 @@ export class Multicast {
     return v === 4 ? `IGMP${ver}` : ver === 'v3' ? 'MLDv2' : 'MLDv1';
   }
 
-  /** Send an IGMP / MLD message out of an interface (TTL 1, link-local or the group). */
+  /**
+   * Send an IGMP / MLD message out of an interface: TTL (hop limit) 1, the
+   * Router Alert option (RFC 3376 §4, RFC 3810 §5), its length by its
+   * version (IGMPv2 8 bytes; IGMPv3 Query 12 + 4 per source, Report 8 +
+   * 8 per record + 4 per source; MLDv1 24; MLDv2 Query 28 + 16 per source,
+   * Report 8 + 20 per record + 16 per source).
+   */
   private igmpSend(dev: string, l3: L3Iface, src: IpAddr, dst: IpAddr, type: string, label: string, detail: string, f: NonNullable<L4['igmp']>, data: { [k: string]: unknown }): void {
     const v = dst.version;
     const msg: Msg = { protocol: 'igmp', type, label, detail, data: { from: dev, ...data } };
@@ -524,21 +584,57 @@ export class Multicast {
     const icmp6: { [k: string]: number } = { Query: 130, 'Report v1': 131, Leave: 132, 'Report v2': 143 };
     const kind = type.indexOf('Query') >= 0 ? 'Query' : type === 'Leave' ? 'Leave' : f.version === 'MLDv2' ? 'Report v2' : 'Report v1';
     pkt.l4 = v === 4 ? { proto: 'igmp', num: 2, igmp: f } : { proto: 'icmp', num: 58, icmpType: icmp6[kind], icmpCode: 0, icmpName: `MLD ${type}`, igmp: f };
-    pkt.len = 8 + 4 * ((f.sources || []).length + (f.records || []).length);
+    pkt.routerAlert = true;
+    pkt.len = igmpLength(v, f, kind);
     this.e.note('message', 'igmp', dev, '', type, '', detail, this.e.now, msg);
     this.e.send(dev, pkt, l3);
   }
 
-  /** The IP address of a host's interface for a group's family. */
+  /**
+   * The source of a host's IGMP / MLD message on an interface: its IPv4
+   * address; for MLD its link-local address once that is valid (RFC 3810
+   * §5), else — an interface with IPv6 still detecting its link-local
+   * address — the unspecified address :: (RFC 3590, RFC 3810 §5.2.13), never
+   * a global one.
+   */
   private hostAddr(dev: string, iface: string, v: 4 | 6): { l3: L3Iface; addr: IpAddr } | null {
     const sd = this.P.sd(dev);
     const l3 = sd ? sd.l3.get(iface) : undefined;
-    const a = l3 ? l3.addrs.find((x) => x.addr.version === v) : undefined;
+    if (!l3) return null;
+    if (v === 6) {
+      if (l3.ll) return { l3, addr: l3.ll.addr };
+      return l3.addrs.some((x) => x.addr.version === 6) ? { l3, addr: A('::') } : null;
+    }
+    const a = l3.addrs.find((x) => x.addr.version === v);
+    return a ? { l3, addr: a.addr } : null;
+  }
+
+  /**
+   * The source of a host's multicast data on an interface (its streams): IPv4 its address; IPv6 an address of the
+   * interface that is not link-local — the group is never link-scoped (a stream's groups are routable), and a source of
+   * smaller scope than its destination is not chosen (RFC 6724 §5, rule 2), nor routed (RFC 4291 §2.5.6). Unlike its
+   * MLD messages, which go from its link-local address.
+   */
+  private dataAddr(dev: string, iface: string, v: 4 | 6): { l3: L3Iface; addr: IpAddr } | null {
+    if (v === 4) return this.hostAddr(dev, iface, 4);
+    const sd = this.P.sd(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    const a = l3 ? l3.addrs.find((x) => x.addr.version === 6 && !(x.addr.bytes[0] === 0xfe && (x.addr.bytes[1] & 0xc0) === 0x80)) : undefined;
     return l3 && a ? { l3, addr: a.addr } : null;
   }
 
-  /** A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). */
-  private report(dev: string, iface: string, hg: HostGroup, why: string, leave = false): void {
+  /** A router's own address on an interface for its queries and the querier election: IPv4 its address, MLD its valid link-local address (none yet: it does not query). */
+  private queryAddr(ri: RIface): IpAddr | null {
+    if (ri.addr.version === 4) return ri.addr;
+    return ri.l3.ll ? ri.l3.ll.addr : null;
+  }
+
+  /**
+   * A host reports its membership of a group (v3 / MLDv2: a record with its sources; v2: to the group). `answer`: a
+   * current-state record answering a query (IS_EX {} / IS_IN {S}); otherwise a state change, its join (TO_EX {} /
+   * ALLOW {S}, RFC 3376 §5.1, RFC 3810 §6.1).
+   */
+  private report(dev: string, iface: string, hg: HostGroup, why: string, leave = false, answer = false): void {
     const g = A(hg.group);
     const h = this.hostAddr(dev, iface, g.version);
     if (!h || !this.e.deviceOn(dev)) return;
@@ -560,7 +656,7 @@ export class Multicast {
       this.igmpSend(dev, h.l3, h.addr, g, 'Report', `${n} Report ${hg.group}`, `${vn} Membership Report from ${dev} (${formatAddr(h.addr)}) to ${hg.group}: ${why}`, { type: 'Membership Report', version: vn, group: hg.group }, { group: hg.group });
     } else {
       const all = A(g.version === 4 ? '224.0.0.22' : 'ff02::16');
-      const rec = hg.sources.length ? `ALLOW / IS_IN (${hg.group}, {${hg.sources.join(', ')}})` : `IS_EX (${hg.group}, {})`;
+      const rec = hg.sources.length ? `${answer ? 'IS_IN' : 'ALLOW'} (${hg.group}, {${hg.sources.join(', ')}})` : `${answer ? 'IS_EX' : 'TO_EX'} (${hg.group}, {})`;
       this.igmpSend(dev, h.l3, h.addr, all, 'Report', `${n} Report ${hg.group}`, `${vn} Report from ${dev} (${formatAddr(h.addr)}) to ${formatAddr(all)}: ${rec}, ${why}`, { type: 'Membership Report', version: vn, group: hg.group, sources: hg.sources, records: [rec] }, { group: hg.group, sources: hg.sources });
     }
   }
@@ -814,7 +910,9 @@ export class Multicast {
    * ignores (that one stops on hearing this one).
    */
   private heardQuery(c: Cand, src: IpAddr, from: string, t: number): void {
-    if (!c.running || compareAddr(src, c.addr) >= 0) return;
+    // (MLD: a router's own address in the election is its link-local one, as its queries carry; without one yet, any querier wins)
+    const own = 'l3' in c && c.addr.version === 6 ? this.queryAddr(c as RIface) : c.addr;
+    if (!c.running || (own && compareAddr(src, own) >= 0)) return;
     const was = c.querier;
     c.querier = false;
     c.startup = 0;
@@ -963,19 +1061,23 @@ export class Multicast {
   }
 
   private generalQuery(ri: RIface): void {
+    const src = this.queryAddr(ri);
+    if (!src) return;
     ri.queries++;
     const v = ri.addr.version;
     const all = A(v === 4 ? '224.0.0.1' : 'ff02::1');
     const mrt = this.e.params.num('igmp-max-resp', ri.dev, null, this.at(ri));
     const vn = this.verName(v, this.ver(ri.dev, ri.l3.id));
-    this.igmpSend(ri.dev, ri.l3, ri.addr, all, 'Query', `${this.name(v)} Query (general)`, `${vn} General Query from ${ri.dev} (${formatAddr(ri.addr)}, the querier) to ${formatAddr(all)}: which groups have members? Answer within ${durationText(mrt)}`, { type: 'Membership Query (general)', version: vn, maxResp: mrt / 1000 }, { maxResp: mrt, querier: formatAddr(ri.addr) });
+    this.igmpSend(ri.dev, ri.l3, src, all, 'Query', `${this.name(v)} Query (general)`, `${vn} General Query from ${ri.dev} (${formatAddr(src)}, the querier) to ${formatAddr(all)}: which groups have members? Answer within ${durationText(mrt)}`, { type: 'Membership Query (general)', version: vn, maxResp: mrt / 1000 }, { maxResp: mrt, querier: formatAddr(src) });
   }
 
   private groupQuery(ri: RIface, group: string): void {
+    const src = this.queryAddr(ri);
+    if (!src) return;
     const v = ri.addr.version;
     const lmqi = this.e.params.num('igmp-lmqi', ri.dev, null, this.at(ri));
     const vn = this.verName(v, this.ver(ri.dev, ri.l3.id));
-    this.igmpSend(ri.dev, ri.l3, ri.addr, A(group), 'Query', `${this.name(v)} Query ${group}`, `${vn} Group-Specific Query from ${ri.dev} (${formatAddr(ri.addr)}) to ${group}: any members left? Answer within ${durationText(lmqi)}`, { type: 'Membership Query (group-specific)', version: vn, group, maxResp: lmqi / 1000 }, { maxResp: lmqi, group, querier: formatAddr(ri.addr) });
+    this.igmpSend(ri.dev, ri.l3, src, A(group), 'Query', `${this.name(v)} Query ${group}`, `${vn} Group-Specific Query from ${ri.dev} (${formatAddr(src)}) to ${group}: any members left? Answer within ${durationText(lmqi)}`, { type: 'Membership Query (group-specific)', version: vn, group, maxResp: lmqi / 1000 }, { maxResp: lmqi, group, querier: formatAddr(src) });
   }
 
   private rifsAt(dev: string, l3: L3Iface, v: 4 | 6): RIface | undefined {
@@ -987,6 +1089,14 @@ export class Multicast {
     const d = (msg.data || {}) as { group?: string; leave?: boolean; sources?: string[]; maxResp?: number; querier?: string; from?: string };
     if (d.from === dev) return;
     const v = pkt.src.version;
+    // what IGMPv3 / MLD take (RFC 3376 §9.1, RFC 3810 §5): the Router Alert option, a hop limit of 1 (MLD), an MLD source that
+    // is link-local — or :: in a Report of a node still without one; else the message is ignored
+    const unspec = v === 6 && pkt.src.bytes.every((b) => b === 0);
+    const bad = !pkt.routerAlert ? 'no Router Alert option' : v === 6 && pkt.ttl !== 1 ? `hop limit ${pkt.ttl}, not 1` : v === 6 && !(pkt.src.bytes[0] === 0xfe && (pkt.src.bytes[1] & 0xc0) === 0x80) && !(unspec && msg.type !== 'Query') ? `source ${formatAddr(pkt.src)} is not link-local` : '';
+    if (bad) {
+      this.e.note('drop', 'igmp', dev, d.from || '', msg.type, '', `${dev} ignores ${msg.label} on ${l3.id}: ${bad}`);
+      return;
+    }
     const ri = this.rifsAt(dev, l3, v);
     if (ri) {
       if (msg.type === 'Query') {
@@ -996,6 +1106,8 @@ export class Multicast {
         if (d.group && ri.groups.has(d.group)) {
           const g = ri.groups.get(d.group) as RGroup;
           g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev, null, this.at(ri)) * this.e.params.num('igmp-lmqi', dev, null, this.at(ri)));
+          if (g.srcUntil) for (const s of g.sources) g.srcUntil.set(s, Math.min(g.srcUntil.get(s) || g.expires, g.expires));
+          if (g.anyUntil !== undefined) g.anyUntil = Math.min(g.anyUntil, g.expires);
           g.leaving = true;
           this.expireAt(g.expires);
         }
@@ -1016,11 +1128,11 @@ export class Multicast {
       const list = d.group ? [m.get(d.group)].filter((x): x is HostGroup => !!x) : Array.from(m.values());
       for (const hg of list.sort((a, b) => cmp(a.group, b.group))) {
         if (A(hg.group).version !== v) continue;
-        const delay = Math.floor(this.e.random() * mrt);
+        const delay = Math.floor(this.e.random(dev) * mrt);
         const tok = ++hg.answer;
         this.e.after(delay, () => {
           if (hg.answer !== tok || m.get(hg.group) !== hg) return;
-          this.report(dev, l3.id, hg, `answers the ${d.group ? 'group-specific' : 'general'} query of ${formatAddr(pkt.src)} after ${durationText(delay)} (random, up to ${durationText(mrt)})`);
+          this.report(dev, l3.id, hg, `answers the ${d.group ? 'group-specific' : 'general'} query of ${formatAddr(pkt.src)} after ${durationText(delay)} (random, up to ${durationText(mrt)})`, false, true);
         });
       }
       return;
@@ -1038,33 +1150,85 @@ export class Multicast {
   private memberReported(ri: RIface, group: string, reporter: string, msg: Msg, sources: string[]): void {
     const isNew = !ri.groups.has(group);
     const g: RGroup = ri.groups.get(group) || { group, reporter, version: '', expires: 0, sources: [], gsq: 0, leaving: false };
+    const wasAny = this.anySource(g);
     g.leaving = false;
     g.reporter = reporter;
     g.version = (msg.data && (msg.data as { version?: string }).version) || this.verName(A(group).version, sources.length ? 'v3' : this.ver(this.e.ownerOf(A(reporter)) || ri.dev));
     g.expires = this.e.now + this.gmi(ri.dev, ri.l3.id);
     g.gsq = 0;
-    for (const s of sources) if (g.sources.indexOf(s) < 0) g.sources.push(s);
+    // (each source its own timer: a source a report names is wanted for the membership interval, RFC 3376 §6.4.1)
+    const added = sources.filter((s) => g.sources.indexOf(s) < 0);
+    for (const s of added) g.sources.push(s);
+    if (sources.length) {
+      if (!g.srcUntil) g.srcUntil = new Map();
+      for (const s of sources) g.srcUntil.set(s, g.expires);
+    } else g.anyUntil = g.expires;
     ri.groups.set(group, g);
     if (this.onMember) this.onMember(ri.dev, ri.l3.id, group, reporter);
     if (isNew) {
       this.e.note('table', 'igmp', ri.dev, '', 'member', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member (${reporter}${sources.length ? ', sources ' + sources.join(', ') : ''}); kept for ${durationText(this.gmi(ri.dev))} without a report (robustness × query interval + response interval)`);
       this.membersChanged(ri.dev, ri.l3, group);
+    } else if (!sources.length && !wasAny) {
+      // a known group of named sources with a member for every source now (EXCLUDE {}): every source is forwarded
+      this.e.note('table', 'igmp', ri.dev, '', 'any source', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member for every source too (${reporter}); every source goes out, not only ${g.sources.join(', ')}`);
+      this.membersChanged(ri.dev, ri.l3, group);
+    } else if (added.length) {
+      // a known group with a new source (ALLOW): its (S, G) too
+      this.e.note('table', 'igmp', ri.dev, '', 'source added', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member for ${added.join(', ')} too (${reporter}); each source kept for ${durationText(this.gmi(ri.dev))} without a report`);
+      this.membersChanged(ri.dev, ri.l3, group);
     }
+  }
+
+  /** Does a member want every source of the group (its EXCLUDE {} group timer running)? */
+  private anySource(g: RGroup): boolean {
+    return g.anyUntil !== undefined && g.anyUntil > this.e.now;
+  }
+
+  /** Until when a group lasts: its any-source interest or its latest source, whichever lasts longer. */
+  private groupUntil(g: RGroup): number {
+    return Math.max(g.anyUntil !== undefined ? g.anyUntil : -Infinity, this.lastSource(g));
+  }
+
+  /** The latest source timer of a group with sources (it lasts as long as one of its sources does). */
+  private lastSource(g: RGroup): number {
+    let t = -Infinity;
+    for (const s of g.sources) t = Math.max(t, (g.srcUntil && g.srcUntil.get(s)) || -Infinity);
+    return t;
   }
 
   private memberLeft(ri: RIface, group: string, who: string, sources: string[]): void {
     const g = ri.groups.get(group);
     if (!g) return;
-    void sources;
     const lmqi = this.e.params.num('igmp-lmqi', ri.dev, null, this.at(ri));
     const rob = this.e.params.num('igmp-robustness', ri.dev, null, this.at(ri));
-    g.expires = Math.min(g.expires, this.e.now + rob * lmqi);
-    g.leaving = true;
-    this.expireAt(g.expires);
+    const lmqt = this.e.now + rob * lmqi;
+    // BLOCK of some of the group's sources (RFC 3376 §6.4.2): only those sources' timers are lowered to the last member
+    // query time — the group's other sources stay; a TO_IN {} (or a v2 Leave) lowers the group's
+    const blocked = sources.filter((s) => g.srcUntil && g.srcUntil.has(s));
+    // a BLOCK of sources it does not have (RFC 3376 §6.4.2: INCLUDE(A) + BLOCK(B) queries A*B — none): nothing changes; only a
+    // leave without sources (TO_IN {}, an IGMPv2 / MLDv1 Leave) is the whole group's
+    if (sources.length && !blocked.length) {
+      this.e.note('table', 'igmp', ri.dev, '', 'block ignored', '', `${ri.dev}:${ri.l3.id}: ${who} blocks ${sources.join(', ')} of ${group}, which it has no member for: nothing changes (${this.anySource(g) ? 'a member wants every source' : 'its sources ' + (g.sources.join(', ') || 'none') + ' stay'})`);
+      return;
+    }
+    if (blocked.length) {
+      for (const s of blocked) g.srcUntil!.set(s, Math.min(g.srcUntil!.get(s) as number, lmqt));
+      // (a member for every source keeps the group: the blocked sources only stop being named)
+      g.expires = this.groupUntil(g);
+      g.leaving = g.expires <= lmqt;
+      this.expireAt(lmqt);
+    } else {
+      g.expires = Math.min(g.expires, lmqt);
+      if (g.srcUntil) for (const s of g.sources) g.srcUntil.set(s, Math.min(g.srcUntil.get(s) || lmqt, lmqt));
+      if (g.anyUntil !== undefined) g.anyUntil = Math.min(g.anyUntil, lmqt);
+      g.leaving = true;
+      this.expireAt(g.expires);
+    }
     if (!ri.querier) return;
-    // the querier asks: group-specific queries, robustness times, one last member query interval apart
+    // the querier asks: group-specific queries, robustness times, one last member query interval apart (the members of the
+    // group answer with their sources; a group-and-source query is not sent separately)
     g.gsq = rob;
-    this.e.note('table', 'igmp', ri.dev, '', 'leave', '', `${ri.dev}:${ri.l3.id}: ${who} leaves ${group}; ${rob} group-specific queries ${durationText(lmqi)} apart, then the group goes unless a member answers`);
+    this.e.note('table', 'igmp', ri.dev, '', 'leave', '', `${ri.dev}:${ri.l3.id}: ${who} leaves ${group}${blocked.length ? ` for ${blocked.join(', ')}` : ''}; ${rob} group-specific queries ${durationText(lmqi)} apart, then ${blocked.length && !g.leaving ? (blocked.length === 1 ? 'that source goes' : 'those sources go') : 'the group goes'} unless a member answers`);
     const ask = (): void => {
       if (g.gsq <= 0 || ri.groups.get(group) !== g || !ri.querier) return;
       g.gsq--;
@@ -1293,7 +1457,8 @@ export class Multicast {
     const msg: Msg = { protocol: 'igmp', type: 'Query', label: group ? `IGMP Query ${group}` : 'IGMP Query (general)', detail, data: { from: sd.id, maxResp: mrt, querier: formatAddr(c.addr), snooping: true, vlan: c.vlan, ...(group ? { group } : {}) } };
     const pkt = this.e.newPacket(c.addr, dst, '', msg, [], 1);
     pkt.l4 = { proto: 'igmp', num: 2, igmp: { type: group ? 'Membership Query (group-specific)' : 'Membership Query (general)', version: vn, maxResp: mrt / 1000, ...(group ? { group } : {}) } };
-    pkt.len = 12;
+    pkt.routerAlert = true;
+    pkt.len = igmpLength(4, pkt.l4.igmp as NonNullable<L4['igmp']>, 'Query');
     this.e.note('message', 'igmp', sd.id, '', 'Query', '', detail, this.e.now, msg);
     this.e.floodFrom(sd.id, c.vlan, { src: sd.bridgeId.split('.')[1] || '00:00:00:00:00:00', dst: multicastMac(dst), msg, ip: pkt });
   }
@@ -1331,8 +1496,9 @@ export class Multicast {
     if (!own) return { dr: false, who: '' };
     let best = { dev, prio: this.e.params.num('pim-dr-priority', dev, null, ifaceRef(dev, l3.id)), addr: own.addr };
     for (const s of this.neighbours(dev, l3.id)) {
-      if (s.remote.addr.version !== v) continue;
-      const c = { dev: s.peer, prio: this.e.params.num('pim-dr-priority', s.peer, null, ifaceRef(s.peer, s.remote.l3.id)), addr: s.remote.addr };
+      if (ipOf(s.remote).version !== v) continue;
+      // (its priority as its last Hello said: a router knows its neighbour's configuration only that way)
+      const c = { dev: s.peer, prio: typeof s.x.peerDrPrio === 'number' ? (s.x.peerDrPrio as number) : 1, addr: ipOf(s.remote) };
       if (c.prio > best.prio || (c.prio === best.prio && compareAddr(c.addr, best.addr) > 0)) best = c;
     }
     return { dr: best.dev === dev, who: best.dev };
@@ -1352,20 +1518,20 @@ export class Multicast {
     if (d.kind !== 'forward' || !d.hops.length) return { iif: null, nbr: null, gateway: null, why: `no route to ${formatAddr(target)}` };
     const hop = d.hops[0];
     if (!hop.gateway) return { iif: hop.iface, nbr: null, gateway: null, why: 'directly connected' };
-    const nbr = this.neighbours(dev, hop.iface).find((s) => compareAddr(s.remote.addr, hop.gateway as IpAddr) === 0) || null;
+    const nbr = this.neighbours(dev, hop.iface).find((s) => compareAddr(ipOf(s.remote), hop.gateway as IpAddr) === 0) || null;
     return { iif: hop.iface, nbr, gateway: hop.gateway, why: nbr ? `RPF neighbour ${nbr.peer}` : `the RPF neighbour ${formatAddr(hop.gateway)} on ${hop.iface} is no PIM neighbour` };
   }
 
   /** Send a Join or a Prune for an entry to an upstream neighbour (on its PIM session). */
   private joinPrune(dev: string, nbr: Sess, s: string, g: string, prune: boolean, rpt = false): void {
     const what = s === '*' ? `(*, ${g})` : `(${s}, ${g})${rpt ? ', RPT' : ''}`;
-    const group = A(nbr.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
+    const group = A(ipOf(nbr.local).version === 4 ? '224.0.0.13' : 'ff02::d');
     this.P.multicast(nbr, group, 'Join/Prune', `${prune ? 'prune' : 'join'} ${what}; upstream neighbour ${nbr.peer}`, { target: nbr.peer, s, g, prune, rpt });
   }
 
   /** The upstream join of an entry: towards the RP ((*, G)) or the source ((S, G)); refreshed every period while it is wanted. */
   private joinUp(dev: string, e: MRoute, why: string): void {
-    const target = e.s === '*' ? (this.rp() || { addr: null }).addr : A(e.s);
+    const target = e.s === '*' ? (this.rp(dev, e.g) || { addr: null }).addr : A(e.s);
     if (!target) {
       this.note(`norp|${dev}|${e.g}`, 'wait', dev, `PIM Join (*, ${e.g}) at ${dev} waiting for an RP (no static RP, no rp on a PIM relation, no candidate RP)`);
       return;
@@ -1433,7 +1599,9 @@ export class Multicast {
       return;
     }
     const mode = this.mode(dev, g);
-    const keys = mode === 'ssm' || (rg && rg.sources.length) ? (rg ? rg.sources : []).map((s) => s + '|' + group) : ['*|' + group];
+    // a member for every source: the shared tree's (*, G) (never in the SSM range, RFC 4607 §2); else each named source's (S, G)
+    const any = !!rg && mode !== 'ssm' && (this.anySource(rg) || !rg.sources.length);
+    const keys = any ? ['*|' + group] : (rg ? rg.sources : []).map((s) => s + '|' + group);
     if (mode === 'dense') {
       // dense mode: un-prune (graft) the entries of the group
       for (const e of this.table(dev).values()) {
@@ -1455,6 +1623,16 @@ export class Multicast {
           this.e.note('table', 'pim', dev, '', 'oif added', '', `${dev}: ${this.entryName(e)} goes out of ${l3.id} too (members there)`);
         }
       }
+      // members for some sources only (none for every source): a source no member wants any more leaves this interface, the
+      // shared tree's (*, G) too (pruned when nothing wants them)
+      if (!any) {
+        for (const e of Array.from(this.table(dev).values())) {
+          if (e.g !== group || rg.sources.indexOf(e.s) >= 0 || e.oil.get(l3.id) !== Infinity) continue;
+          e.oil.delete(l3.id);
+          this.e.note('table', 'pim', dev, '', 'oif removed', '', `${dev}: ${this.entryName(e)} no longer goes out of ${l3.id} (${e.s === '*' ? 'no member there wants every source, only ' + rg.sources.join(', ') : 'no member there wants ' + e.s})`);
+          this.maybePrune(dev, e);
+        }
+      }
       return;
     }
     // no member left: the interface goes; an entry nobody wants is pruned upstream
@@ -1469,7 +1647,7 @@ export class Multicast {
   private graft(dev: string, e: MRoute): void {
     const nbr = e.nbr ? this.neighbours(dev).find((s) => s.peer === e.nbr) : undefined;
     if (!nbr) return;
-    const group = A(nbr.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
+    const group = A(ipOf(nbr.local).version === 4 ? '224.0.0.13' : 'ff02::d');
     this.P.multicast(nbr, group, 'Graft', `graft (${e.s}, ${e.g}): a member joined downstream; upstream neighbour ${nbr.peer}`, { target: nbr.peer, s: e.s, g: e.g, graft: true });
   }
 
@@ -1505,6 +1683,11 @@ export class Multicast {
         if (e && !e.rptPruned.has(d.s + '|' + l3.id)) {
           e.rptPruned.add(d.s + '|' + l3.id);
           this.e.note('table', 'pim', dev, s.peer, 'RPT prune', '', `${dev}: ${d.s}'s traffic for ${d.g} no longer goes down the shared tree out of ${l3.id} (${s.peer} is on the source's tree)`);
+          // RFC 7761 §4.5.7: JoinDesired(S, G) — an (S, G) of its own (the RP's, joined towards the source) with no outgoing
+          // interface of its own and nothing left to inherit from (*, G) for this source is pruned towards the source
+          const sg = t.get(d.s + '|' + d.g);
+          const inherits = Array.from(e.oil).some(([i, until]) => until > this.e.now && !e.rptPruned.has(d.s + '|' + i));
+          if (sg && !inherits) this.maybePrune(dev, sg);
         }
         return true;
       }
@@ -1565,6 +1748,8 @@ export class Multicast {
     const g = formatAddr(pkt.dst);
     const s = formatAddr(pkt.src);
     if (!this.mcRouter(dev)) {
+      // a group its own interface joined as a host (a PTP port): it takes it, and routes it nowhere (no note: nothing is lost)
+      if (this.isMember(dev, l3.id, g)) return true;
       if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.dropL3(`fwmc|${dev}|${g}`, dev, l3, pkt, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       else this.dropL3(`nopim|${dev}|${g}`, dev, l3, pkt, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
       return true;
@@ -1588,10 +1773,10 @@ export class Multicast {
         sg.iif = l3.id;
         sg.local = true;
         sg.registering = mode === 'sparse';
-        this.e.note('table', 'pim', dev, '', 'source', '', `${dev}: ${s} sends to ${g} on ${l3.id}; ${mode === 'sparse' ? (this.rp() && this.rp()!.dev === dev ? 'this router is the RP' : 'it registers the source with the RP') : mode === 'dense' ? 'dense mode: flooded to every PIM neighbour, then pruned' : 'SSM: only to (S, G) joins'}`);
+        this.e.note('table', 'pim', dev, '', 'source', '', `${dev}: ${s} sends to ${g} on ${l3.id}; ${mode === 'sparse' ? (this.isRp(dev, g) ? 'this router is the RP' : 'it registers the source with the RP') : mode === 'dense' ? 'dense mode: flooded to every PIM neighbour, then pruned' : 'SSM: only to (S, G) joins'}`);
         if (mode === 'dense') this.denseOil(dev, sg);
       }
-      const rp = this.rp();
+      const rp = this.rp(dev, g);
       if (mode === 'sparse' && sg.registering) {
         if (rp && rp.dev === dev) sg.registering = false;
         else if (rp) this.register(dev, l3, pkt, rp);
@@ -1608,7 +1793,7 @@ export class Multicast {
       this.denseOil(dev, sg);
     }
     // the RPF check: on the source's tree it arrives on the (S, G) entry's incoming interface, on the shared tree on the one towards the RP
-    const rp = this.rp();
+    const rp = this.rp(dev, g);
     const isRp = !!rp && rp.dev === dev;
     const starIif = star ? (isRp ? null : rp ? this.rpf(dev, rp.addr).iif : null) : null;
     let via: 'sg' | 'star' | null = null;
@@ -1618,7 +1803,7 @@ export class Multicast {
       const expect = sg && sg.iif ? sg.iif : starIif;
       // dense mode: a copy on another interface than the one towards the source: that neighbour is told to prune it
       if (mode === 'dense' && sg && sg.iif) {
-        const nb = this.neighbours(dev, l3.id).find((x) => compareAddr(x.remote.addr, pkt.src) !== 0);
+        const nb = this.neighbours(dev, l3.id).find((x) => compareAddr(ipOf(x.remote), pkt.src) !== 0);
         const k = `dnrpf|${dev}|${s}|${g}|${l3.id}`;
         if (nb && (!this.noted.has(k) || this.e.now - (this.noted.get(k) as number) >= JOIN_HOLD)) {
           this.noted.set(k, this.e.now);
@@ -1691,8 +1876,9 @@ export class Multicast {
     return true;
   }
 
-  private isRp(dev: string): boolean {
-    const rp = this.rp();
+  /** Is a router the RP of a group in its own view? */
+  private isRp(dev: string, group: string): boolean {
+    const rp = this.rp(dev, group);
     return !!rp && rp.dev === dev;
   }
 
@@ -1747,26 +1933,27 @@ export class Multicast {
     this.e.send(dev, out);
   }
 
+  /** the first-hop routers that registered a source with an RP: by "rp|s|g", their device and the address they sent from */
+  private registrants = new Map<string, Map<string, IpAddr>>();
+
+  /** The RP tells the first-hop routers that registered (S, G) to stop: they sent their Registers from these addresses. */
   private registerStop(rpDev: string, s: string, g: string): void {
-    const k = `rstop|${rpDev}|${s}|${g}`;
-    if (this.noted.has(k)) return;
-    this.noted.set(k, this.e.now);
-    const fhr = Array.from(this.mroutes).find(([, t]) => {
-      const e = t.get(s + '|' + g);
-      return !!e && e.local && e.registering;
-    });
-    if (!fhr) return;
-    const [dev] = fhr;
-    const rp = this.rp() as { addr: IpAddr };
-    const to = this.P.sd(dev);
-    const dst = Array.from(to.l3.values()).find((l) => l.kind !== 'tunnel' && l.addrs.some((a) => a.addr.version === rp.addr.version));
-    if (!dst) return;
-    const msg: Msg = { protocol: 'pim', type: 'Register-Stop', label: `PIM Register-Stop (${s}, ${g})`, detail: `PIM Register-Stop from the RP ${rpDev} to ${dev}: (${s}, ${g}) arrives natively now`, data: { from: rpDev, s, g } };
-    const out = this.e.newPacket(rp.addr, (dst.addrs.find((a) => a.addr.version === rp.addr.version) as { addr: IpAddr }).addr, '', msg);
-    out.l4 = { proto: 'other', num: 103 };
-    out.len = 18;
-    this.e.note('message', 'pim', rpDev, dev, 'Register-Stop', '', msg.detail, this.e.now, msg);
-    this.e.send(rpDev, out);
+    const regs = this.registrants.get(`${rpDev}|${s}|${g}`);
+    if (!regs) return;
+    for (const [dev, to] of Array.from(regs).sort((a, b) => cmp(a[0], b[0]))) {
+      const k = `rstop|${rpDev}|${dev}|${s}|${g}`;
+      if (this.noted.has(k)) continue;
+      this.noted.set(k, this.e.now);
+      const rp = this.rp(rpDev, g);
+      const from = rp && rp.dev === rpDev ? rp.addr : null;
+      if (!from) continue;
+      const msg: Msg = { protocol: 'pim', type: 'Register-Stop', label: `PIM Register-Stop (${s}, ${g})`, detail: `PIM Register-Stop from the RP ${rpDev} to ${dev}: (${s}, ${g}) arrives natively now`, data: { from: rpDev, s, g } };
+      const out = this.e.newPacket(from, to, '', msg);
+      out.l4 = { proto: 'other', num: 103 };
+      out.len = 18;
+      this.e.note('message', 'pim', rpDev, dev, 'Register-Stop', '', msg.detail, this.e.now, msg);
+      this.e.send(rpDev, out);
+    }
   }
 
   /** PIM messages that belong to no session: a Register at the RP, a Register-Stop at the first-hop router. */
@@ -1781,7 +1968,18 @@ export class Multicast {
       }
       return;
     }
-    if (msg.type !== 'Register' || !this.isRp(dev) || !d.inner) return;
+    if (msg.type !== 'Register' || !d.inner) return;
+    // a Register to a router that is no RP of the group in its own view: dropped (the first-hop router's RP is another one)
+    if (!this.isRp(dev, d.g)) {
+      this.note(`notrp|${dev}|${d.g}`, 'drop', dev, `${dev} gets a PIM Register for (${d.s}, ${d.g}) from ${(msg.data as { from?: string }).from || '?'}, but is not the RP of ${d.g} itself: dropped`);
+      return;
+    }
+    const from = (msg.data as { from?: string }).from;
+    if (from && pkt) {
+      const k = `${dev}|${d.s}|${d.g}`;
+      if (!this.registrants.has(k)) this.registrants.set(k, new Map());
+      (this.registrants.get(k) as Map<string, IpAddr>).set(from, pkt.src);
+    }
     const star = this.table(dev).get('*|' + d.g);
     const sg = this.entry(dev, d.s, d.g, 'Register from the first-hop router');
     if (!star || !this.wanted(dev, star)) {
@@ -1790,7 +1988,6 @@ export class Multicast {
       return;
     }
     void l3;
-    void pkt;
     // decapsulated, down the shared tree
     const sd = this.P.sd(dev);
     for (const [oif, until] of Array.from(star.oil).sort((a, b) => cmp(a[0], b[0]))) {
@@ -1808,7 +2005,7 @@ export class Multicast {
     if (!t || !this.mcRouter(dev)) return;
     for (const e of Array.from(t.values()).sort((a, b) => cmp(a.s + a.g, b.s + b.g))) {
       if (e.local) continue;
-      const target = e.s === '*' ? (this.rp() || { addr: null }).addr : A(e.s);
+      const target = e.s === '*' ? (this.rp(dev, e.g) || { addr: null }).addr : A(e.s);
       if (!target) continue;
       const r = this.rpf(dev, target);
       const nbr = r.nbr ? r.nbr.peer : null;
@@ -1831,13 +2028,13 @@ export class Multicast {
   streamProblem(dev: string, iface: string, group: string): string | null {
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
-    if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
+    if (!this.dataAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address${g.version === 6 ? ' beyond its link-local one' : ''}`;
     if (this.streams.some((x) => x.dev === dev && x.iface === iface && x.group === formatAddr(g) && x.running)) return `${dev}:${iface} already streams to ${formatAddr(g)}`;
     return null;
   }
 
   addStream(dev: string, iface: string, group: string, port: number, interval: number, size: number, origin: Stream['origin'], first = 0, label = '', tag?: number): Stream | string {
-    const bad = origin === 'event' ? this.streamProblem(dev, iface, group) : null;
+    const bad = origin === 'event' || origin === 'experiment' ? this.streamProblem(dev, iface, group) : null;
     if (bad) return bad;
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
@@ -1849,20 +2046,14 @@ export class Multicast {
     return st;
   }
 
+  /**
+   * Every stream on the simulated clock (the scenario's time): one datagram
+   * every interval of simulated time, the first at `first` (a stream of
+   * Network events: at once). What exists never depends on the frame rate,
+   * the pacing or a stalled page — only how fast it is shown does.
+   */
   private runStream(st: Stream, first: number): void {
     const gen = ++st.gen;
-    // a stream of Network events: every interval of real time, on its own grid (the first datagram at once)
-    if (st.origin === 'event' && this.realtime) {
-      const rt = this.realtime;
-      const e = rt.add(st.interval, () => {
-        if (st.gen !== gen || !st.running) return;
-        const r = rt.get(st.rt as number);
-        st.skipped = r ? r.skipped : st.skipped;
-        this.sendStream(st);
-      });
-      st.rt = e.id;
-      return;
-    }
     this.P.periodic(
       () => st.gen === gen && st.running,
       () => st.interval,
@@ -1873,17 +2064,17 @@ export class Multicast {
 
   private sendStream(st: Stream): void {
     if (!this.e.deviceOn(st.dev)) {
-      if (st.rt !== undefined) st.offMissed = (st.offMissed || 0) + 1;
+      if (st.origin === 'event') st.offMissed = (st.offMissed || 0) + 1;
       return;
     }
     const g = A(st.group);
-    const h = this.hostAddr(st.dev, st.iface, g.version);
+    const h = this.dataAddr(st.dev, st.iface, g.version);
     if (!h) return;
     st.sent++;
     if (st.lastAt !== undefined) st.gap = this.e.now - st.lastAt;
     st.lastAt = this.e.now;
     const demand = st.origin === 'demand';
-    const msg: Msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', ' : ''}datagram ${st.sent} from ${st.dev} (${formatAddr(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: formatAddr(h.addr) } };
+    const msg: Msg = { protocol: demand ? 'demand' : 'mcast', type: 'Stream', label: `UDP → ${st.group}:${st.port}`, detail: `multicast ${demand ? 'demand ' + st.label + ', representative ' : ''}datagram ${st.sent} from ${st.dev} (${formatAddr(h.addr)}) to ${st.group}:${st.port}, ${st.size} bytes`, data: { from: st.dev, stream: st.id, n: st.sent, source: formatAddr(h.addr) } };
     const pkt = this.e.newPacket(h.addr, g, h.l3.vrf, msg, [], 0);
     pkt.l4 = { proto: 'udp', num: 17, sport: st.sport, dport: st.port };
     pkt.len = 8 + st.size;
@@ -1895,6 +2086,13 @@ export class Multicast {
   }
 
   /** Stop a stream (the end of a stream event, or Stop stream on one of the model). */
+  /** What a host received of a group (its datagrams counted at its interfaces): the count, the first and the last (scenario time), or null. */
+  received(dev: string, group: string): { count: number; first: number; last: number } | null {
+    const g = parseAddress(group.trim());
+    const r = g ? this.rx.get(dev + '|' + formatAddr(g)) : undefined;
+    return r ? { count: r.count, first: r.first, last: r.last } : null;
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
     const st = this.streams.find((x) => x.dev === dev && x.iface === iface && x.group === group && x.running);
     if (!st) return false;
@@ -1902,7 +2100,6 @@ export class Multicast {
     st.stoppedAt = this.e.now;
     st.gen++;
     // its future sends are cancelled
-    if (st.rt !== undefined && this.realtime) this.realtime.remove(st.rt);
     const i = this.events.findIndex((x) => x.kind === 'stream' && x.ref === `iface:${dev}:${iface}` && x.group === st.group);
     if (i >= 0) this.events.splice(i, 1);
     else this.events.push({ kind: 'stopped', ref: `iface:${dev}:${iface}`, group: st.group, since: this.e.now, state: `stream to ${st.group} stopped` });
@@ -1976,6 +2173,28 @@ export class Multicast {
     const now = this.e.now;
     for (const ri of Array.from(this.rifs.values()).sort((a, b) => cmp(a.dev + a.l3.id, b.dev + b.l3.id))) {
       for (const [k, g] of Array.from(ri.groups)) {
+        // a source whose timer ran out goes (its (S, G) out of this interface with it); the group stays while one source does,
+        // or a member for every source
+        let changed = false;
+        if (g.srcUntil && g.expires > now) {
+          const gone = g.sources.filter((s) => (g.srcUntil!.get(s) || 0) <= now);
+          if (gone.length) {
+            g.sources = g.sources.filter((s) => gone.indexOf(s) < 0);
+            for (const s of gone) g.srcUntil.delete(s);
+            changed = true;
+            this.e.note('table', 'igmp', ri.dev, '', 'source expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member for ${gone.join(', ')} any more (${g.leaving || g.gsq > 0 ? 'nobody answered the group-specific queries' : 'no report within the membership interval'}); ${this.anySource(g) ? 'a member still wants every source' : g.sources.length ? 'still for ' + g.sources.join(', ') : ''}`);
+          }
+        }
+        // the group timer of EXCLUDE mode ran out (RFC 3376 §6.5): no member wants every source any more — the named ones stay
+        if (g.anyUntil !== undefined && g.anyUntil <= now) {
+          g.anyUntil = undefined;
+          changed = true;
+          if (g.sources.length && this.lastSource(g) > now) this.e.note('table', 'igmp', ri.dev, '', 'any source expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member for every source any more (${g.leaving || g.gsq > 0 ? 'nobody answered the group-specific queries' : 'no report within the membership interval'}); still for ${g.sources.join(', ')}`);
+        }
+        if (changed) {
+          g.expires = Math.min(g.expires, this.groupUntil(g));
+          if (g.expires > now) this.membersChanged(ri.dev, ri.l3, k);
+        }
         if (g.expires > now) continue;
         ri.groups.delete(k);
         this.e.note('table', 'igmp', ri.dev, '', 'membership expired', '', `${ri.dev}:${ri.l3.id}: ${k} has no member any more (${g.leaving ? 'nobody answered the group-specific queries' : 'no report within the membership interval'})`);
@@ -2115,7 +2334,11 @@ export class Multicast {
 
   private status(): SessionStatus[] {
     const out: SessionStatus[] = [];
-    for (const st of this.streams) out.push({ protocol: st.origin === 'demand' ? 'demand' : 'mcast', name: `${st.dev} → ${st.group}:${st.port}`, device: st.dev, peer: '', state: !st.running ? 'Stopped' : st.sent ? 'Sending' : 'Waiting', detail: `${st.sent} datagrams of ${st.size} bytes, one every ${durationText(st.interval)}${st.origin === 'event' ? ' (Start stream)' : st.origin === 'demand' ? ' (demand ' + st.label + ')' : ''}`, up: st.running && st.sent > 0 });
+    for (const st of this.streams) {
+      const bps = st.origin === 'demand' ? this.demandBps.get(st.dev + '|' + st.group) : undefined;
+      const what = bps !== undefined ? `demand ${st.label}: ${st.sent} sent; ${representativeText(bps, st.interval, st.size + 28)}` : `${st.sent} datagrams of ${st.size} bytes, one every ${durationText(st.interval)}${st.origin === 'event' ? ' (Start stream)' : ''}`;
+      out.push({ protocol: st.origin === 'demand' ? 'demand' : 'mcast', name: `${st.dev} → ${st.group}:${st.port}`, device: st.dev, peer: '', state: !st.running ? 'Stopped' : st.sent ? 'Sending' : 'Waiting', detail: what, up: st.running && st.sent > 0 });
+    }
     for (const [k, m] of Array.from(this.hosts).sort((a, b) => cmp(a[0], b[0]))) {
       const dev = k.slice(0, k.indexOf('|'));
       for (const hg of Array.from(m.values()).sort((a, b) => cmp(a.group, b.group))) {
@@ -2143,7 +2366,7 @@ export class Multicast {
     for (const ri of Array.from(this.rifs.values()).filter((x) => x.dev === dev).sort((a, b) => cmp(a.l3.id, b.l3.id))) {
       const role = this.roleOf(ri);
       notes.push(`${ri.l3.id} (${formatAddr(ri.addr)}, ${ri.lan}): ${role === 'querier' ? 'the querier' : role === 'starting' ? 'the querier for now (starting: its startup queries)' : role === 'non-querier' ? 'not the querier (' + (ri.otherAddr || '?') + ' queries)' : role === 'off' ? 'no querier candidate (its querier is off)' : 'down'}`);
-      for (const g of Array.from(ri.groups.values()).sort((a, b) => cmp(a.group, b.group))) rows.push([ri.l3.id, g.group, g.reporter, g.version, g.sources.join(', ') || 'any', dur(g.expires - this.e.now)]);
+      for (const g of Array.from(ri.groups.values()).sort((a, b) => cmp(a.group, b.group))) rows.push([ri.l3.id, g.group, g.reporter, g.version, this.anySource(g) || !g.sources.length ? (g.sources.length ? `any (also named: ${g.sources.join(', ')})` : 'any') : g.sources.join(', '), dur(g.expires - this.e.now)]);
     }
     return { caption: `IGMP / MLD groups of ${dev}`, cols: ['Interface', 'Group', 'Last reporter', 'Version', 'Sources', 'Expires in'], rows, empty: 'No group has members on its interfaces.', timers: ['igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'igmp-version'].map((k) => this.timer(k, dev)), notes };
   }
@@ -2316,12 +2539,17 @@ export class Multicast {
     if (t) {
       for (const e of Array.from(t.values()).sort((a, b) => cmp(a.g, b.g) || (a.s === '*' ? -1 : b.s === '*' ? 1 : cmp(a.s, b.s)))) {
         const oil = Array.from(e.oil).filter(([, u]) => u > now).sort((a, b) => cmp(a[0], b[0])).map(([o, u]) => `${o} (${u === Infinity ? 'members' : u === FLOOD ? 'flooded' : dur(u - now)})`);
-        const flags = [e.mode === 'dense' ? 'dense' : e.mode === 'ssm' ? 'SSM' : 'sparse', e.s === '*' && this.isRp(dev) ? 'RP' : '', e.spt ? 'SPT' : '', e.registering ? 'registering' : '', e.local ? 'source connected' : '', e.rptPruned.size ? 'RPT pruned: ' + Array.from(e.rptPruned).join(', ') : '', e.pruned.size ? 'pruned: ' + Array.from(e.pruned.keys()).join(', ') : ''].filter((x) => x);
+        const flags = [e.mode === 'dense' ? 'dense' : e.mode === 'ssm' ? 'SSM' : 'sparse', e.s === '*' && this.isRp(dev, e.g) ? 'RP' : '', e.spt ? 'SPT' : '', e.registering ? 'registering' : '', e.local ? 'source connected' : '', e.rptPruned.size ? 'RPT pruned: ' + Array.from(e.rptPruned).join(', ') : '', e.pruned.size ? 'pruned: ' + Array.from(e.pruned.keys()).join(', ') : ''].filter((x) => x);
         rows.push([this.entryName(e), e.iif ? `${e.iif}${e.nbr ? ' (' + e.nbr + ')' : ''}` : e.local ? 'source' : 'none', oil.join(', ') || 'none', flags.join(', '), dur(now - e.created)]);
       }
     }
-    const rp = this.rp();
-    return { caption: `Multicast routes of ${dev}`, cols: ['Entry', 'Incoming (RPF)', 'Outgoing interfaces', 'Flags', 'Age'], rows, empty: 'No multicast route: nobody joined a group through it.', timers: ['pim-dr-priority', 'spt-switchover'].map((k) => this.timer(k, dev)), notes: [rp ? `RP ${formatAddr(rp.addr)} (${rp.dev}): ${rp.how}` : 'No RP is known: sparse-mode groups cannot be joined.', `Join/Prune period 60 s, holdtime ${durationText(JOIN_HOLD)} (RFC 7761)`] };
+    const groups = Array.from(new Set(Array.from(t ? t.values() : []).filter((e) => e.s === '*').map((e) => e.g))).sort(cmp);
+    const rpNotes = (groups.length ? groups : ['239.0.0.0']).map((g) => {
+      const rp = this.rp(dev, g);
+      const what = groups.length ? `RP for ${g}` : 'RP (IPv4 any-source groups)';
+      return rp ? `${what}: ${formatAddr(rp.addr)} (${rp.dev}), ${rp.how}` : `${what}: none known here — sparse-mode groups cannot be joined.`;
+    });
+    return { caption: `Multicast routes of ${dev}`, cols: ['Entry', 'Incoming (RPF)', 'Outgoing interfaces', 'Flags', 'Age'], rows, empty: 'No multicast route: nobody joined a group through it.', timers: ['pim-dr-priority', 'spt-switchover'].map((k) => this.timer(k, dev)), notes: [...rpNotes, `Join/Prune period 60 s, holdtime ${durationText(JOIN_HOLD)} (RFC 7761)`] };
   }
 
   /** Does a router run IGMP / MLD on an interface (Show IGMP groups)? */
@@ -2360,3 +2588,15 @@ const ROLE_WORD: { [k in QuerierRole]: string } = { starting: 'Querier (startup)
 
 /** A remaining time as the tables write it. */
 
+/** An IGMP / MLD message's length after the IP header (RFC 2236, RFC 3376 §4, RFC 2710, RFC 3810 §5). */
+export function igmpLength(v: 4 | 6, f: NonNullable<L4['igmp']>, kind: string): number {
+  const sources = (f.sources || []).length;
+  const records = Math.max(1, (f.records || []).length);
+  const v3 = f.version === 'IGMPv3' || f.version === 'MLDv2';
+  if (v === 4) {
+    if (!v3) return 8;
+    return kind === 'Query' ? 12 + 4 * sources : 8 + 8 * records + 4 * sources;
+  }
+  if (!v3) return 24;
+  return kind === 'Query' ? 28 + 16 * sources : 8 + 20 * records + 16 * sources;
+}

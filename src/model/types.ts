@@ -1,5 +1,11 @@
 /** Validated, typed network model produced from the YAML input. */
 import type { ServiceRegistry } from './services';
+import type { RoutingPolicy } from './routing-policy';
+import type { NetPolicy } from './net-policy';
+import type { Experiment } from './experiments';
+import type { SavedView } from './views';
+import type { AppInstance } from './applications';
+import type { Ipv6Method, RaConfig } from './ipv6';
 
 /**
  * How a logical relation is drawn. Protocols are open-ended; categories are the
@@ -127,13 +133,17 @@ export interface Interface {
   label?: string;
   type: InterfaceKind;
   /**
-   * The interface obtains its address by DHCP (`dhcp: true`; omitted = false).
+   * The interface obtains its IPv4 address by DHCP (`ipv4: dhcp`; omitted: static).
    * It is a configuration flag, not an address: nothing about the address it
    * may obtain is known, so it is in no network until an address is written.
    */
   dhcp: boolean;
-  /** manually configured addresses; always empty when `dhcp` is true in a valid model */
+  /** manually configured addresses (IPv4 and IPv6); no IPv4 one when `dhcp` is true in a valid model */
   addresses: string[];
+  /** how it gets its IPv6 addresses (`ipv6:`, model/ipv6.ts): static when it has IPv6 addresses and nothing is written; none without */
+  ipv6?: Ipv6Method;
+  /** a router interface's IPv6 router advertisements (`ipv6_ra:`), when written */
+  ra?: RaConfig;
   /** name of the VRF this interface is assigned to (display only) */
   vrf?: string;
   mac?: string;
@@ -191,6 +201,88 @@ export interface Interface {
   line: number;
 }
 
+/** A port without a network stack (`stack: opaque`): USB, serial, a bus or backplane port. Nothing but its id and descriptions. */
+export interface OpaquePort {
+  id: string;
+  device: string;
+  label?: string;
+  description?: string;
+  attrs: Attrs;
+  line: number;
+}
+
+/** Opaque ports of a System that pass illustrative data between each other (written explicitly; same technology only). */
+export interface OpaqueTransit {
+  ports: string[];
+  line: number;
+}
+
+/** An interconnect's topology: exactly two ports, or one shared medium (a bus) with several attachments. */
+export type IcTopology = 'point_to_point' | 'shared';
+/** How its participants communicate: as peers, or controllers initiating transfers with targets (Master / Slave). */
+export type IcAccess = 'peer' | 'controller_target';
+/** A participant's role on its interconnect (never the device's role elsewhere). */
+export type IcRole = 'controller' | 'target' | 'controller_target' | 'peer' | 'monitor';
+/** What a participant may do with data on its interconnect: send it, receive it, or both (both is not full duplex). */
+export type IcData = 'send' | 'receive' | 'both';
+
+/** A port's attachment to an interconnect. */
+export interface IcAttachment {
+  device: string;
+  port: string;
+  role: IcRole;
+  data: IcData;
+  /** an arbiter or system controller (descriptive: no arbitration is simulated) */
+  systemController: boolean;
+  line: number;
+}
+
+/**
+ * Illustrative data an interconnect carries while the simulation runs
+ * (`traffic:` of an interconnect): a transfer every interval, started by an
+ * attachment of that interconnect, from a data source on it to recipients
+ * reached along the modelled connections — what Send illustrative data does
+ * once, written into the model as the scenario's. No protocol is simulated.
+ */
+export interface IcTraffic {
+  /** "device:port": the attachment that starts each transfer (on this interconnect) */
+  initiator: string;
+  /** "device:port": where the data comes from (on this interconnect; the initiator when not written) */
+  from: string;
+  /** "device:port" of each recipient */
+  to: string[];
+  /** ms between two transfers */
+  interval: number;
+  /** transfers in all (none: until the simulation ends) */
+  count?: number;
+  /** illustrative size in bytes (shown only) */
+  size: number;
+  line: number;
+}
+
+/**
+ * A non-IP physical interconnect (`interconnects:`, model/interconnect.ts):
+ * a point-to-point connection or a shared medium between opaque ports, its
+ * technology (a name and a version, as text), the protocol it carries if
+ * any, its connector, its access model and each attachment's role and
+ * data direction. Physical modelling only: no protocol of it is simulated.
+ */
+export interface Interconnect {
+  id: string;
+  topology: IcTopology;
+  technology: { name: string; version?: string };
+  protocol?: { name: string; version?: string };
+  connector?: string;
+  access: IcAccess;
+  endpoints: IcAttachment[];
+  /** illustrative transfers that run with the simulation (`traffic:`), started by one of its attachments */
+  traffic: IcTraffic[];
+  label?: string;
+  description?: string;
+  attrs: Attrs;
+  line: number;
+}
+
 /** A group an interface joins: any source (ASM), or only the sources listed (SSM; IGMPv3 / MLDv2). */
 export interface McJoin {
   group: string;
@@ -242,8 +334,12 @@ export interface Device {
   wireless?: WirelessService;
   /** the other services of the registry it runs (model/service-registry.ts), by id: NTP, AAA, syslog, monitoring, proxy, NAT … */
   appServices?: Map<string, ServiceInstance>;
+  /** its application instances (`services.applications`, model/applications.ts), in file order */
+  applications?: AppInstance[];
   /** a Security gateway's built-in Domain separation (`services.separation`) */
   separation?: SeparationService;
+  /** its network policy (`policy:`, model/net-policy.ts): an ordered Layer 3/4 rule base of a router, Layer 3 switch or firewall */
+  policy?: NetPolicy;
   /**
    * A switch that routes (`layer3: true`): a Layer 3 switch with the full
    * Layer 3+ feature set. Without it a switch is a Layer 2 switch: it
@@ -274,8 +370,22 @@ export interface Device {
   services: ServiceConfig[];
   description?: string;
   attrs: Attrs;
-  /** physical interfaces (ports), in file order */
+  /** physical interfaces (ports) with a network stack, in file order */
   interfaces: Interface[];
+  /**
+   * its opaque ports (`stack: opaque` in `interfaces:`), in file order: no
+   * network stack at all — never an Interface, so nothing of the IP side
+   * (addressing, Layer 2, routing, the simulation's network) can take one;
+   * they connect only through interconnects (model/interconnect.ts)
+   */
+  opaquePorts: OpaquePort[];
+  /**
+   * a System's opaque transit (`opaque_transit:`): groups of its opaque
+   * ports that pass illustrative data between each other (a fabric switch
+   * module, an active hub); none written, none — ports are never joined by
+   * being on one device, and nothing converts between technologies
+   */
+  opaqueTransit: OpaqueTransit[];
   /** loopback, virtual and tunnel interfaces, in file order */
   logical: Interface[];
   /** DNS names configured for the device, in file order */
@@ -604,6 +714,8 @@ export interface ServiceConfig {
   id: string;
   values: Map<string, string>;
   routerId?: RouterIdValue;
+  /** a routing protocol's policy (model/routing-policy.ts), when one is written */
+  policy?: RoutingPolicy;
   line: number;
 }
 
@@ -848,12 +960,103 @@ export interface Demand {
   line: number;
 }
 
+/** What a failure domain stands for (`failure_domains:`): infrastructure that fails together. */
+export type FailureDomainKind = 'rack' | 'room' | 'site' | 'power' | 'conduit' | 'provider' | 'other';
+
+export const FAILURE_DOMAIN_KINDS: ReadonlyArray<{ id: FailureDomainKind; label: string }> = [
+  { id: 'rack', label: 'Rack' },
+  { id: 'room', label: 'Room' },
+  { id: 'site', label: 'Site' },
+  { id: 'power', label: 'Shared power' },
+  { id: 'conduit', label: 'Shared conduit' },
+  { id: 'provider', label: 'Shared provider' },
+  { id: 'other', label: 'Other' },
+];
+
+/**
+ * A shared-failure domain (the `failure_domains:` section): components that
+ * fail together, by explicit membership. A member is a device, a cable, a
+ * relation or a group (all its devices, nested groups included). A group is
+ * never a failure domain by itself: only one written here is. Analysis data:
+ * a what-if condition, never a probability.
+ */
+export interface FailureDomain {
+  id: string;
+  label: string;
+  kind: FailureDomainKind;
+  /** as written: ids of devices, cables (links), relations and groups */
+  members: string[];
+  description?: string;
+  line: number;
+}
+
+/** What a saved expectation requires. */
+export type ExpectKind = 'available' | 'blocked' | 'dependency' | 'timing';
+
+export const EXPECT_KINDS: ReadonlyArray<{ id: ExpectKind; label: string; help: string }> = [
+  { id: 'available', label: 'Must be available', help: 'The communication must be available (and stay so under the failure condition, when one is given).' },
+  { id: 'blocked', label: 'Must be blocked', help: 'The communication must not be possible.' },
+  { id: 'dependency', label: 'Dependency must be viable', help: 'A client application’s configured peer or broker must be usable.' },
+  { id: 'timing', label: 'Timing source path must exist', help: 'A compatible NTP or PTP source must be reachable within the supported analysis (not proven synchronization).' },
+];
+
+/** Which timing method a timing expectation accepts (`method:`): PTP, NTP, or either when either is accepted. */
+export type TimingMethod = 'ptp' | 'ntp' | 'either';
+
+export const TIMING_METHODS: ReadonlyArray<{ id: TimingMethod; label: string }> = [
+  { id: 'ptp', label: 'PTP' },
+  { id: 'ntp', label: 'NTP' },
+  { id: 'either', label: 'PTP or NTP (either is accepted)' },
+];
+
+/** How a blocked expectation must be enforced (`enforce:`): any established prevention, an evaluated policy's denial, or the denial of one selected boundary. */
+export type EnforceKind = 'unreachable' | 'policy' | 'boundary';
+
+export const ENFORCE_KINDS: ReadonlyArray<{ id: EnforceKind; label: string; help: string }> = [
+  { id: 'unreachable', label: 'Unreachable', help: 'Any prevention the model establishes is enough; the actual cause is reported.' },
+  { id: 'policy', label: 'Denied by policy', help: 'An evaluated modeled policy must deny it on every path; a missing route or listener does not count.' },
+  { id: 'boundary', label: 'Denied at the selected boundary', help: 'The selected enforcement boundary must deny it on every path.' },
+];
+
+/**
+ * A saved architecture expectation (the `expectations:` section): a design
+ * requirement the model is checked against, statically (Analyze → Design
+ * checks). Analysis data: it never changes the network objects, and
+ * evaluating it never runs the simulation.
+ */
+export interface Expectation {
+  id: string;
+  name: string;
+  expect: ExpectKind;
+  /** a device, interface, address or application ("device/application") */
+  from: string;
+  /** a device, interface, address, application or service ("device/service"); none: the source application's configured peer, or any timing source */
+  to?: string;
+  /** "tcp/443", "udp/53", "icmp"; none: from the applications */
+  service?: string;
+  vrf?: string;
+  /** the address family (none: the ends' own, or the client application's) */
+  family?: 4 | 6;
+  /** blocked: how it must be enforced (none: unreachable, any established prevention) */
+  enforce?: EnforceKind;
+  /** enforce boundary: the device that must deny it */
+  boundary?: string;
+  /** timing: the method accepted (required for a timing expectation) */
+  method?: TimingMethod;
+  /** what fails first: devices, cables, relations, interfaces (device:interface), failure domains */
+  failure: string[];
+  description?: string;
+  line: number;
+}
+
 /** Node centers per view, keyed by entity id (see layout-auto.ts). */
 export interface ModelLayout {
   physical: Map<string, { x: number; y: number }>;
   logical: Map<string, { x: number; y: number }>;
   /** ids of nodes the user positioned by hand, per view (for the layout status only) */
   manual: { physical: Set<string>; logical: Set<string> };
+  /** how each view's cables and relations are routed: orthogonal (the Structured arrangement), else the standard routing */
+  routing: { physical?: 'orthogonal'; logical?: 'orthogonal' };
 }
 
 export interface Model {
@@ -865,6 +1068,8 @@ export interface Model {
   links: Link[];
   networks: Network[];
   relations: Relation[];
+  /** non-IP physical interconnects (`interconnects:`): never part of the IP side */
+  interconnects: Interconnect[];
   /** Protocol registry (built-ins merged with input definitions). */
   protocols: Map<string, ProtocolDef>;
   /** The routing services devices can enable (built-ins and the protocols that declare params). */
@@ -875,10 +1080,20 @@ export interface Model {
   checks: Map<string, 'off' | 'error' | 'warning' | 'info'>;
   /** traffic demands (analysis data: traced, never change the network objects) */
   demands: Demand[];
+  /** shared-failure domains (analysis data: what-if conditions) */
+  failureDomains: FailureDomain[];
+  /** saved architecture expectations (analysis data: checked, never change the network objects) */
+  expectations: Expectation[];
+  /** saved experiments (`experiments:`, model/experiments.ts) */
+  experiments: Experiment[];
+  /** saved views (`views:`, model/views.ts): display state only */
+  views: SavedView[];
+  /** a simulation's execution scope (analysis/exec-scope.ts): never read from a file; set on the sub-model a scoped simulation runs */
+  execScope?: { label: string; boundary: Map<string, string> };
   index: ModelIndex;
 }
 
-export type EntityKind = 'group' | 'device' | 'interface' | 'route' | 'link' | 'network' | 'relation';
+export type EntityKind = 'group' | 'device' | 'interface' | 'route' | 'link' | 'network' | 'relation' | 'interconnect';
 
 export interface ModelIndex {
   groups: Map<string, Group>;
@@ -888,6 +1103,11 @@ export interface ModelIndex {
   links: Map<string, Link>;
   networks: Map<string, Network>;
   relations: Map<string, Relation>;
+  interconnects: Map<string, Interconnect>;
+  /** "device:port" -> an opaque port */
+  opaquePorts: Map<string, OpaquePort>;
+  /** "device:port" -> the interconnect it is attached to */
+  portInterconnect: Map<string, string>;
   /** "device:iface" -> link id (a radio: its first wireless connection) */
   ifaceLink: Map<string, string>;
   /** a radio of a Wireless access -> every wireless connection associated on it ("device:iface" -> link ids, in file order) */

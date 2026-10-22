@@ -42,7 +42,7 @@ const STATE = `(() => {
 for (const theme of ['light', 'dark']) {
   test(`${theme}: Send test asks for the delivery type first, then only what it uses; concise interface options; ports only where they apply; a series with Stop`, { skip, timeout: 240000 }, async () => {
     const page = await openPage(url, { width: 1440, height: 900 });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const st = () => page.eval(STATE);
     try {
       await page.settle(150);
@@ -84,7 +84,7 @@ for (const theme of ['light', 'dark']) {
       // core: its interfaces as options "name - address"; for unicast also "Chosen by routing"
       await set('sim-t-from', 'core');
       s = await st();
-      assert.deepEqual(s.via, ['Select…', 'Chosen by routing', 'Vlan10 - 192.168.10.1', 'Vlan110 - 10.0.10.2', 'Vlan120 - 10.0.20.2', 'Vlan130 - 10.0.30.2', 'Vlan20 - 192.168.20.1', 'Vlan30 - 192.168.30.1', 'Vlan99 - 192.168.99.1']);
+      assert.deepEqual(s.via, ['Select…', 'Chosen by routing', 'Vlan10 - 192.168.10.1, fd00:10::1', 'Vlan110 - 10.0.10.2', 'Vlan120 - 10.0.20.2', 'Vlan130 - 10.0.30.2', 'Vlan20 - 192.168.20.1', 'Vlan30 - 192.168.30.1', 'Vlan99 - 192.168.99.1']);
       assert.equal(s.need, 'Choose the interface to send from.');
       await set('sim-t-via', 'Vlan30');
       // the destination: the guest phone's one interface shown; the DSL router's four a choice, cleared with another device

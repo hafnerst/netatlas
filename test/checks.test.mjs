@@ -188,7 +188,7 @@ test('lag-member-speed, lag-peer-devices (unless an MLAG pairs the peers) and la
 
 test('link-subnet-mismatch and address-reserved (network and broadcast addresses; not in a /31 or /32)', () => {
   assert.deepEqual(found(base, 'link-subnet-mismatch').concat(found(base, 'address-reserved')), []);
-  assert.match(found(base.replace('{id: e0, ip: 10.0.13.2/30, mtu: 1500}', '{id: e0, ip: 10.0.31.2/30, mtu: 1500}').replace('destination: 10.0.13.2}', 'destination: 10.0.31.2}').replace('destination: 10.0.13.1}', 'destination: 10.0.13.1}'), 'link-subnet-mismatch')[0].message, /link l13: the IPv4 addresses at its ends are in different subnets \(r1:e1 10\.0\.13\.1\/30; r3:e0 10\.0\.31\.2\/30\)/);
+  assert.match(found(base.replace('{id: e0, ip: 10.0.13.2/30, mtu: 1500}', '{id: e0, ip: 10.0.31.2/30, mtu: 1500}').replace('destination: 10.0.13.2}', 'destination: 10.0.31.2}'), 'link-subnet-mismatch')[0].message, /link l13: the IPv4 addresses at its ends are in different subnets \(r1:e1 10\.0\.13\.1\/30; r3:e0 10\.0\.31\.2\/30\)/);
   const net = found(base.replace('{id: e7, ip: 10.0.17.1/30, vrf: red}', '{id: e7, ip: 10.0.17.0/30, vrf: red}'), 'address-reserved');
   assert.match(net[0].message, /r1:e7: 10\.0\.17\.0\/30 is the network address of 10\.0\.17\.0\/30, not a host address/);
   assert.match(found(base.replace('{id: e7, ip: 10.0.17.1/30, vrf: red}', '{id: e7, ip: 10.0.17.3/30, vrf: red}'), 'address-reserved')[0].message, /broadcast address/);

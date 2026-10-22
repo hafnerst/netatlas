@@ -5,8 +5,17 @@
 #   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)
 # plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
-# The Hamburg LTE uplink obtains its address by DHCP ("dhcp: true"), and a
+# The Hamburg LTE uplink obtains its address by DHCP ("ipv4: dhcp"), and a
 # few devices have DNS names ("dns_names"), each associated with interfaces.
+#
+# Routing policy: hq-rtr1 originates a default route into OSPF; Hamburg
+# installs only that default (its OSPF `import:` rules), Munich the default and
+# HQ's /24s (a prefix filter with ge/le), so neither branch carries every
+# internal prefix. The Inspector's Routing policy box shows the rules, and
+# Trace path names the rule a route passed. Path MTU: Trace path from
+# muc-rtr:lan0 to hq-rtr1 gives 1400 bytes (the GRE tunnel's MTU over
+# IPsec), the underlay interfaces whose MTU is not written said apart; Test
+# path MTU prefills a Send network packets with that size and DF.
 netatlas: 1
 title: Enterprise WAN — HQ and two branches over VPN
 description: |
@@ -78,7 +87,8 @@ devices:
     protocols:
       bfd: {}
       bgp: {asn: 65010}
-      ospf: {}
+      ospf:
+        default_route: always            # the branches' way out: one default route instead of every prefix
     interfaces:
       - {id: ge-0/0/0, ip: 198.51.100.2/30, mtu: 1500, description: ISP-1 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.2/28}
@@ -204,7 +214,11 @@ devices:
     group: branch-muc
     router_id: 10.255.1.1
     protocols:
-      ospf: {}
+      ospf:
+        import:                          # installs the default route and HQ's /24s, nothing else
+          - {prefix: 0.0.0.0/0, action: permit}
+          - {prefix: 10.10.0.0/16, ge: 24, le: 24, action: permit}
+          - {action: deny}
     interfaces:
       - {id: wan0, ip: 192.0.2.10/29, description: VDSL}
       - {id: lan0, ip: 10.20.0.1/24}
@@ -234,10 +248,13 @@ devices:
     group: branch-ham
     router_id: 10.255.2.1
     protocols:
-      ospf: {}
+      ospf:
+        import:                          # default-only: everything beyond its LAN goes to HQ
+          - {prefix: 0.0.0.0/0, action: permit}
+          - {action: deny}
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
-      - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier
+      - {id: wan1, ipv4: dhcp, description: LTE backup modem}   # address assigned by the carrier
       - {id: lan0, ip: 10.30.0.1/24}
     logical_interfaces:
       - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}
@@ -443,3 +460,30 @@ relations:
     label: SLA probe
     direction: unidirectional
     endpoints: [muc-rtr, hq-rtr1]
+
+# Design checks (Analyze ▾ → Design checks…): the firewall must log to the
+# log server (syslog, UDP 514 as the profile has it), also without HQ rack A
+# (one of the two core switches: the equal-cost path over the other
+# remains), and Munich must not open SSH to the log server (the firewall
+# permits what the relations through it name). Single points of failure →
+# What if… the HQ core room: both core switches fail together, and the
+# firewall's logging becomes unavailable.
+failure_domains:
+  - {id: hq-rack-a, label: HQ rack A, kind: rack, members: [hq-core1]}
+  - {id: hq-core-room, label: HQ core room, kind: room, members: [hq-core1, hq-core2]}
+
+expectations:
+  - {id: fw-logs, name: The firewall logs to the log server, expect: available, from: hq-fw, to: hq-log, service: udp/514}
+  - id: fw-logs-rack-a
+    name: The firewall logs without rack A
+    expect: available
+    from: hq-fw
+    to: hq-log
+    service: udp/514
+    failure: [hq-rack-a]
+  - id: muc-no-ssh
+    name: Munich can't open SSH to the log server
+    expect: blocked
+    from: "muc-rtr:lan0"
+    to: hq-log
+    service: tcp/22

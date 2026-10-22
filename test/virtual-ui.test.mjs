@@ -24,7 +24,7 @@ async function edit(page, ref) {
 
 /** A real click on an element of the Inspector, scrolled into view first. */
 async function press(page, sel) {
-  await page.eval(`(() => { document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: 'center', behavior: 'instant' }); return true; })()`);
+  await page.call((sel) => { document.querySelector(sel).scrollIntoView({ block: 'center', behavior: 'instant' }); return true; }, sel);
   await page.settle(60);
   await page.click(sel);
   await page.settle(150);
@@ -32,7 +32,7 @@ async function press(page, sel) {
 
 /** Choose an option of a select (as the keyboard or the mouse would: its value, then change). */
 async function choose(page, sel, value) {
-  await page.eval(`(() => { const s = document.querySelector(${JSON.stringify(sel)}); s.focus(); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await page.call((sel, value) => { const s = document.querySelector(sel); s.focus(); s.value = value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; }, sel, value);
   await page.settle(150);
 }
 

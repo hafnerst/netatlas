@@ -7,22 +7,28 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
+import { actionDef, observeDef } from '../model/experiments';
+import { targetProblem } from '../validation/experiments';
+import type { PortPlanRow } from '../model/bulk-ports';
+import type { SavedView } from '../model/views';
+import { POLICY_PROTOCOLS, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS } from '../model/routing-policy';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
-import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, allStrategyPositions } from '../layout/strategies';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, STRATEGY_ROUTING, strategyPositions } from '../layout/strategies';
 import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
 import { Model, VLAN_MAX, VLAN_MIN } from '../model/types';
 import { vlanRangesText } from '../model/derive';
 import { PARAMS } from '../analysis/sim/params';
+import { APP_PARAMS } from '../model/applications';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { flowText } from '../yaml/write';
 import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
-import { rawLayoutKeys, rawManualIds, writeLayout, writeManual } from './layout-section';
+import { rawLayoutKeys, rawManualIds, writeLayout, writeManual, writeRouting } from './layout-section';
 import { keepTrivia, sameSet, setKey } from './tree';
 import { isGuest } from '../model/virtual';
 import { DeviceLike, capabilities, layer3Option, deviceRoutingRole } from '../model/capabilities';
@@ -45,8 +51,8 @@ export const MAX_INPUT_BYTES = DEFAULT_YAML_LIMITS.maxBytes;
 export type PathSeg = string | number;
 export type Path = PathSeg[];
 
-export type EntityKind = 'protocol' | 'group' | 'device' | 'link' | 'network' | 'relation';
-export const ENTITY_KINDS: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+export type EntityKind = 'protocol' | 'group' | 'device' | 'link' | 'network' | 'relation' | 'interconnect';
+export const ENTITY_KINDS: EntityKind[] = ['device', 'link', 'network', 'relation', 'interconnect', 'group', 'protocol'];
 export const SECTION: { [k in EntityKind]: string } = {
   protocol: 'protocols',
   group: 'groups',
@@ -54,6 +60,7 @@ export const SECTION: { [k in EntityKind]: string } = {
   link: 'links',
   network: 'networks',
   relation: 'relations',
+  interconnect: 'interconnects',
 };
 export function kindOfSection(section: string): EntityKind | null {
   for (const k of ENTITY_KINDS) if (SECTION[k] === section) return k;
@@ -73,6 +80,25 @@ title: New network
 const MAX_UNDO = 100;
 
 /** An edit was refused: the model is locked (a simulation is on). */
+/** The fields of a saved expectation as the editor writes them (an empty value removes the key; KEY_ORDER puts them in order). */
+export interface ExpectationFields {
+  name?: string;
+  expect?: string;
+  from?: string;
+  to?: string;
+  service?: string;
+  vrf?: string;
+  /** "4" or "6" */
+  family?: string;
+  /** blocked: unreachable, policy or boundary */
+  enforce?: string;
+  boundary?: string;
+  /** timing: ptp, ntp or either */
+  method?: string;
+  failure?: string[];
+  description?: string;
+}
+
 export class EditLocked extends Error {
   constructor(reason: string) {
     super(reason);
@@ -325,26 +351,27 @@ export class ModelDoc {
 
   private autoMemo = new Map<string, Map<ArrangeStrategy, Map<string, Pt>>>();
 
-  /** Auto-arrange result of a strategy for the current model (cached per layout signature). */
+  /**
+   * Auto-arrange result of a strategy for the current model (cached per layout signature; each strategy is
+   * computed when it is first asked for, so arranging with Default never waits for the others).
+   */
   autoLayout(view: LayoutView, strategy: ArrangeStrategy = 'default'): Map<string, Pt> {
-    return this.strategyLayouts(view).get(strategy) as Map<string, Pt>;
-  }
-
-  private strategyLayouts(view: LayoutView): Map<ArrangeStrategy, Map<string, Pt>> {
     const m = this.result.model;
-    if (!m) return new Map(STRATEGIES.map((s) => [s, new Map()] as [ArrangeStrategy, Map<string, Pt>]));
+    if (!m) return new Map();
     const input = layoutInput(m);
     const key = view + '\n' + layoutSignature(input);
     let r = this.autoMemo.get(key);
     if (!r) {
-      r = allStrategyPositions(view, input);
-      // keep only the latest result per view
+      r = new Map();
+      // keep only the latest results per view
       Array.from(this.autoMemo.keys()).forEach((k) => {
         if (k.indexOf(view + '\n') === 0) this.autoMemo.delete(k);
       });
       this.autoMemo.set(key, r);
     }
-    return r;
+    let pos = r.get(strategy);
+    if (!pos) r.set(strategy, (pos = strategyPositions(view, input, strategy)));
+    return pos;
   }
 
   /**
@@ -356,7 +383,15 @@ export class ModelDoc {
    */
   arrangedWith(view: LayoutView): ArrangeStrategy[] {
     const shown = this.displayedPositions(view);
-    return STRATEGIES.filter((s) => samePositions(shown, this.autoLayout(view, s)));
+    const routing = this.routing(view);
+    // a strategy's result is its positions and its routing (Structured: orthogonal; the others: the standard routing)
+    return STRATEGIES.filter((s) => STRATEGY_ROUTING[s] === routing && samePositions(shown, this.autoLayout(view, s)));
+  }
+
+  /** How the lines of a view are routed: 'orthogonal' (stored by Structured), else undefined (the standard routing). */
+  routing(view: LayoutView): 'orthogonal' | undefined {
+    const m = this.result.model;
+    return m ? m.layout.routing[view] : undefined;
   }
 
   /**
@@ -370,7 +405,7 @@ export class ModelDoc {
    */
   layoutStatus(view: LayoutView): 'auto' | 'manual' | 'edited' {
     const m = this.result.model;
-    if (!m || m.layout[view].size === 0) return 'auto';
+    if (!m || (m.layout[view].size === 0 && !m.layout.routing[view])) return 'auto';
     if (this.arrangedWith(view).length) return 'auto';
     const shown = this.displayedPositions(view);
     return Array.from(m.layout.manual[view]).some((id) => shown.has(id)) ? 'manual' : 'edited';
@@ -407,10 +442,12 @@ export class ModelDoc {
     if (!m) return { changed: false, moved: 0 };
     const targets = new Map<LayoutView, Map<string, Pt>>();
     let moved = 0;
+    const routing = STRATEGY_ROUTING[strategy];
     for (const v of views) {
       const auto = this.autoLayout(v, strategy);
       moved += this.arrangeImpact(v, strategy).moved.length;
-      if (!samePositions(auto, m.layout[v])) targets.set(v, auto);
+      // (the same positions with another routing are still a change: Structured after Default on a single device)
+      if (!samePositions(auto, m.layout[v]) || m.layout.routing[v] !== routing) targets.set(v, auto);
     }
     if (!targets.size) return { changed: false, moved: 0 };
     const how = strategy === 'default' ? '' : `, ${STRATEGY_LABEL[strategy]}`;
@@ -421,6 +458,8 @@ export class ModelDoc {
         targets.forEach((pos, v) => {
           writeLayout(this.root, v, pos);
           writeManual(this.root, v, new Set());
+          // positions and routing in one undo step: Structured routes orthogonally, the others as standard
+          writeRouting(this.root, v, routing || null);
         }),
       { layout: false },
     );
@@ -636,13 +675,31 @@ export class ModelDoc {
   /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
   schemaKindOf(path: Path): string | undefined {
     if (path.length === 0) return 'top';
+    // (the analysis sections' entries)
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'experiments') return 'experiment';
+    if (path.length === 3 && path[0] === 'experiments' && path[2] === 'scope') return 'expScope';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'views') return 'savedView';
+    if (path.length === 3 && path[0] === 'views' && path[2] === 'focus') return 'viewFocus';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'expectations') return 'expectation';
+    if (path.length === 2 && typeof path[1] === 'number' && path[0] === 'failure_domains') return 'failureDomain';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
     const ik = ifaceSchemaKind(path);
     if (ik) return ik;
+    if (path.length === 5 && path[4] === 'ipv6_ra' && ifaceSchemaKind(path.slice(0, 4))) return 'ipv6Ra';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
+    if (path.length === 3 && path[0] === 'devices' && path[2] === 'policy') return 'netPolicy';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'experiments' && path[2] === 'actions') return 'expAction';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'experiments' && path[2] === 'observe') return 'expObserve';
+    if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'rules') return 'policyRule';
+    if (path.length === 5 && typeof path[4] === 'number' && path[0] === 'devices' && path[2] === 'policy' && path[3] === 'zones') return 'policyZone';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'port_pairs') return 'portPair';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'opaque_transit') return 'opaqueTransit';
+    // an interconnect's technology or protocol, an endpoint
+    if (path.length === 3 && path[0] === 'interconnects' && (path[2] === 'technology' || path[2] === 'protocol')) return 'icTechnology';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'interconnects' && path[2] === 'endpoints') return 'icEndpoint';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'interconnects' && path[2] === 'traffic') return 'icTraffic';
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
       const rest = path.slice(3).map((x) => (typeof x === 'number' ? '#' : x)).join('/');
@@ -673,7 +730,9 @@ export class ModelDoc {
         'nat/rules/#': 'natRule',
         wireless_controller: 'wireless_controller',
         storage: 'storage',
-        application: 'application',
+        'applications/#': 'application',
+        mqtt_broker: 'mqtt_broker',
+        ptp: 'ptp',
         inspection: 'inspection',
         'separation/domains/#': 'sepDomain',
         'separation/directions/#': 'sepDirection',
@@ -710,12 +769,14 @@ export class ModelDoc {
     if (devBlock || ifBlock) return Array.from(reg.keys()).sort();
     const devSvc = at(4) && p[2] === 'protocols';
     const ifSvc = p.length === 6 && p[0] === 'devices' && (p[2] === 'interfaces' || p[2] === 'logical_interfaces') && p[4] === 'protocols';
+    // a filter rule of a routing protocol's policy
+    if (p.length === 6 && p[0] === 'devices' && p[2] === 'protocols' && (p[4] === 'import' || p[4] === 'export') && typeof p[5] === 'number') return ROUTE_RULE_KEYS.slice();
     if (!devSvc && !ifSvc) return undefined;
     const def = reg.get(String(p[p.length - 1]));
     if (!def) return undefined;
     return paramsAt(def, devSvc ? 'device' : 'interface')
       .map((x) => x.key)
-      .concat(devSvc ? [ROUTER_ID_KEY] : []);
+      .concat(devSvc ? [ROUTER_ID_KEY] : [], devSvc && POLICY_PROTOCOLS.indexOf(def.id) >= 0 ? ROUTE_POLICY_KEYS : []);
   }
 
   // ------------------------------------------------------ routing services
@@ -840,7 +901,7 @@ export class ModelDoc {
       return !!v && !(v.kind === 'seq' && !v.items.length);
     };
     // its management interface: a VLAN interface with an address (a Layer 2 switch's ports are switch ports, without addresses)
-    const mgmt = entries.find((e) => e.kind === 'logical' && e.type === 'virtual' && !has(e.path, 'members') && (has(e.path, 'ip') || this.text(e.path.concat('dhcp')) === 'true'));
+    const mgmt = entries.find((e) => e.kind === 'logical' && e.type === 'virtual' && !has(e.path, 'members') && (has(e.path, 'ip') || this.text(e.path.concat('ipv4')) === 'dhcp'));
     let mvrf: string | undefined;
     for (const e of entries) {
       const name = e.id || '?';
@@ -856,7 +917,7 @@ export class ModelDoc {
       if (has(e.path, 'ip')) add(e.path.concat('ip'), `${name}: addresses ${this.listTexts(e.path.concat('ip')).join(', ')}`);
       // a routed port becomes a switch port: it needs its VLANs then (they are not chosen for it)
       if (this.text(e.path.concat('routed')) === 'true') add(e.path.concat('routed'), `${name}: routed port (give it its VLANs)`);
-      if (this.text(e.path.concat('dhcp')) === 'true') add(e.path.concat('dhcp'), `${name}: dhcp`);
+      if (this.text(e.path.concat('ipv4')) === 'dhcp') add(e.path.concat('ipv4'), `${name}: ipv4: dhcp`);
       if (this.get(e.path.concat('vrf'))) add(e.path.concat('vrf'), `${name}: vrf ${this.text(e.path.concat('vrf'))}`);
     }
     const routes = this.get(dp.concat('routes'));
@@ -1469,6 +1530,276 @@ export class ModelDoc {
     });
   }
 
+  // ------------------------------------------------------------ applications
+
+  /** The path of a device's applications (`services.applications`). */
+  appsPath(devIndex: number): Path {
+    return ['devices', devIndex, 'services', 'applications'];
+  }
+
+  /** The ids of a device's applications as written, in file order. */
+  appIds(devIndex: number): string[] {
+    const n = this.get(this.appsPath(devIndex));
+    if (!n || n.kind !== 'seq') return [];
+    return n.items.map((_x, k) => this.text(this.appsPath(devIndex).concat(k, 'id')) || '');
+  }
+
+  private freeAppId(devIndex: number, base: string): string {
+    const taken = new Set(this.appIds(devIndex));
+    if (!taken.has(base)) return base;
+    const m = /^(.*?)(\d+)$/.exec(base);
+    const stem = m ? m[1] : base + '-';
+    for (let n = m ? Number(m[2]) + 1 : 2; ; n++) if (!taken.has(stem + n)) return stem + n;
+  }
+
+  /**
+   * Add an application to a device: an entry with a free id and a name
+   * (the profile is the user's choice: the editor focuses it). Creates
+   * the services block and the list when they are missing. One undo step;
+   * returns the entry's index.
+   */
+  addApplication(devIndex: number): number {
+    const lp = this.appsPath(devIndex);
+    return this.change('Add application', () => {
+      const id = this.freeAppId(devIndex, 'app1');
+      this.ensureMap(lp.slice(0, -1), this.orderFor(lp.slice(0, -2)));
+      const seq = this.ensureSeq(lp, false, this.orderFor(lp.slice(0, -1)));
+      seq.items.push(mapNode([['id', strNode(id)], ['name', strNode('Application ' + id.replace(/^app/, ''))]]));
+      return seq.items.length - 1;
+    });
+  }
+
+  /** Duplicate an application (a free id, "(copy)" in its name), right after it. One undo step; returns the copy's index. */
+  duplicateApplication(devIndex: number, k: number): number {
+    const lp = this.appsPath(devIndex);
+    const n = this.get(lp.concat(k));
+    if (!n || n.kind !== 'map') return -1;
+    return this.change('Duplicate application', () => {
+      const copy = cloneNode(n) as YMap;
+      const id = this.freeAppId(devIndex, (this.text(lp.concat(k, 'id')) || 'app') + '-2');
+      setKey(copy, 'id', strNode(id), KEY_ORDER.application);
+      const name = this.text(lp.concat(k, 'name'));
+      if (name) setKey(copy, 'name', strNode(name + ' (copy)'), KEY_ORDER.application);
+      const seq = this.get(lp) as YSeq;
+      seq.items.splice(k + 1, 0, copy);
+      return k + 1;
+    });
+  }
+
+  /**
+   * Where other applications name one ("device/app" as their peer), by
+   * path. A rename rewrites them; a removal lists them first.
+   */
+  applicationRefs(device: string, app: string): Path[] {
+    const out: Path[] = [];
+    this.entities('device').forEach((d) => {
+      const lp = this.appsPath(d.index);
+      const n = this.get(lp);
+      if (!n || n.kind !== 'seq') return;
+      n.items.forEach((_x, j) => {
+        if (this.text(lp.concat(j, 'peer')) === `${device}/${app}`) out.push(lp.concat(j, 'peer'));
+      });
+    });
+    // a saved expectation's end that names it
+    for (const e of this.analysisEntries('expectations')) for (const k of ['from', 'to']) if (this.text(['expectations', e.index, k]) === `${device}/${app}`) out.push(['expectations', e.index, k]);
+    return out;
+  }
+
+  /** The references to an application as lines for a confirmation ("hmi/poll (peer)"). */
+  applicationRefTexts(device: string, app: string): string[] {
+    return this.applicationRefs(device, app).map((p) => (p[0] === 'expectations' ? `expectation ${this.text(['expectations', p[1], 'id']) || '?'} (its ${p[2] === 'from' ? 'source' : 'destination'}; it can’t be evaluated until you change it)` : `${this.text(['devices', p[1], 'id']) || '?'}/${this.text(p.slice(0, 5).concat('id')) || '?'} (its peer)`));
+  }
+
+  /**
+   * Choose an application's profile: the fields that belong to no profile
+   * of its kind any more are removed with it (one undo step); returns their
+   * keys. Clearing the profile keeps everything (an error until it is chosen).
+   */
+  setAppProfile(appPath: Path, profile: string): string[] {
+    const gone: string[] = [];
+    this.change('Set application profile', () => {
+      if (!profile) {
+        this.removeAt(appPath.concat('profile'));
+        return;
+      }
+      const m = this.ensureMap(appPath, KEY_ORDER.application);
+      setKey(m, 'profile', strNode(profile), KEY_ORDER.application);
+      const v: { [k: string]: unknown } = {};
+      m.entries.forEach((e, k) => (v[k] = scalarText(e.value) !== undefined ? scalarText(e.value) : true));
+      for (const prm of APP_PARAMS) {
+        if (prm.when && m.entries.has(prm.key) && !prm.when(v)) {
+          gone.push(prm.key);
+          this.removeAt(appPath.concat(prm.key));
+        }
+      }
+    });
+    return gone;
+  }
+
+  /** Rename an application and every peer that names it. One undo step; returns the number of references updated. */
+  renameApplication(devIndex: number, k: number, newId: string): number {
+    const lp = this.appsPath(devIndex);
+    const dev = this.text(['devices', devIndex, 'id']) || '';
+    const old = this.text(lp.concat(k, 'id'));
+    return this.change('Rename application', () => {
+      const refs = old ? this.applicationRefs(dev, old) : [];
+      setKey(this.ensureMap(lp.concat(k), KEY_ORDER.application), 'id', strNode(newId), KEY_ORDER.application);
+      for (const p of refs) this.setAt(p, strNode(`${dev}/${newId}`));
+      return refs.length;
+    });
+  }
+
+  /**
+   * Remove an application. The peers that name it lose their value (they
+   * are reported as missing their peer until another is chosen); the list
+   * and an empty services block go with the last one. One undo step.
+   */
+  removeApplication(devIndex: number, k: number): void {
+    const lp = this.appsPath(devIndex);
+    const dev = this.text(['devices', devIndex, 'id']) || '';
+    const id = this.text(lp.concat(k, 'id'));
+    this.change('Remove application', () => {
+      // (the peers lose their value; a saved expectation keeps its text, and can't be evaluated until it is changed)
+      const refs = id ? this.applicationRefs(dev, id).filter((p) => p[0] === 'devices') : [];
+      // (from the end: removing a key never shifts another reference's path)
+      for (const p of refs.reverse()) this.removeAt(p);
+      this.removeAt(lp.concat(k));
+      const left = this.get(lp);
+      if (left && left.kind === 'seq' && !left.items.length) this.removeAt(lp);
+      const b = this.get(['devices', devIndex, 'services']);
+      if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(['devices', devIndex, 'services']);
+    });
+  }
+
+  // ------------------------------------------------- failure domains and expectations
+
+  /** The entries of an analysis section (`failure_domains`, `expectations`): index and id, in file order. */
+  analysisEntries(section: 'failure_domains' | 'expectations' | 'experiments' | 'views'): Array<{ index: number; id: string }> {
+    const s = this.get([section]);
+    if (!s || s.kind !== 'seq') return [];
+    return s.items.map((_n, i) => ({ index: i, id: this.text([section, i, 'id']) || '' }));
+  }
+
+  /** An id for a new entry of an analysis section, unique there (failure domains: also among the model's other ids). */
+  private analysisId(section: 'failure_domains' | 'expectations' | 'experiments' | 'views', base: string): string {
+    const taken = new Set(this.analysisEntries(section).map((e) => e.id));
+    if (section === 'failure_domains') this.allIds().forEach((x) => taken.add(x));
+    return this.uniqueId(base, taken);
+  }
+
+  /** Write the fields of an analysis entry (empty values remove the key; lists as flow lists). */
+  private writeAnalysisFields(path: Path, kind: 'failureDomain' | 'expectation', fields: { [k: string]: string | string[] | undefined }): void {
+    const m = this.ensureMap(path, KEY_ORDER[kind]);
+    for (const k of Object.keys(fields)) {
+      const v = fields[k];
+      if (v === undefined || (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length)) {
+        if (m.entries.has(k)) this.removeAt(path.concat(k));
+        continue;
+      }
+      setKey(m, k, Array.isArray(v) ? seqNode(v.map((x) => strNode(x)), true) : strNode(v.trim()), KEY_ORDER[kind]);
+    }
+  }
+
+  /** Add a failure domain (name, kind, members); returns its index. One undo step. */
+  addFailureDomain(fields: { label: string; kind: string; members: string[]; description?: string }): number {
+    return this.change('Add failure domain', () => {
+      const list = this.ensureSeq(['failure_domains']);
+      const id = this.analysisId('failure_domains', (fields.label || 'domain').toLowerCase());
+      list.items.push(mapNode([['id', strNode(id)]]));
+      const i = list.items.length - 1;
+      this.writeAnalysisFields(['failure_domains', i], 'failureDomain', { label: fields.label, kind: fields.kind, members: fields.members, description: fields.description });
+      return i;
+    }, { layout: false });
+  }
+
+  /** Change a failure domain's fields. One undo step. */
+  updateFailureDomain(index: number, fields: { label?: string; kind?: string; members?: string[]; description?: string }): void {
+    this.change('Edit failure domain', () => this.writeAnalysisFields(['failure_domains', index], 'failureDomain', fields), { layout: false });
+  }
+
+  /** The expectations whose failure condition names a failure domain (their ids). */
+  failureDomainUsers(id: string): string[] {
+    const out: string[] = [];
+    for (const e of this.analysisEntries('expectations')) {
+      const f = this.get(['expectations', e.index, 'failure']);
+      const items = f && f.kind === 'seq' ? f.items.map((x) => scalarText(x)) : f ? [scalarText(f)] : [];
+      if (items.indexOf(id) >= 0) out.push(e.id);
+    }
+    return out;
+  }
+
+  /** Rename a failure domain and every failure condition that names it. One undo step; returns the references updated. */
+  renameFailureDomain(index: number, newId: string): number {
+    const old = this.text(['failure_domains', index, 'id']);
+    return this.change('Rename failure domain', () => {
+      setKey(this.ensureMap(['failure_domains', index], KEY_ORDER.failureDomain), 'id', strNode(newId), KEY_ORDER.failureDomain);
+      let n = 0;
+      if (!old) return n;
+      for (const e of this.analysisEntries('expectations')) {
+        const f = this.get(['expectations', e.index, 'failure']);
+        if (f && f.kind === 'seq')
+          f.items.forEach((x, k) => {
+            if (scalarText(x) === old) {
+              this.setAt(['expectations', e.index, 'failure', k], strNode(newId));
+              n++;
+            }
+          });
+        else if (f && scalarText(f) === old) {
+          this.setAt(['expectations', e.index, 'failure'], strNode(newId));
+          n++;
+        }
+      }
+      return n;
+    }, { layout: false });
+  }
+
+  /** Remove a failure domain; the conditions that name it keep the name (they can't be evaluated until it is changed: the confirmation says so). One undo step. */
+  removeFailureDomain(index: number): void {
+    this.change('Delete failure domain', () => {
+      this.removeAt(['failure_domains', index]);
+      const s = this.get(['failure_domains']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['failure_domains']);
+    }, { layout: false });
+  }
+
+  /** Add an expectation; returns its index. One undo step. */
+  addExpectation(fields: ExpectationFields & { name: string; expect: string; from: string }): number {
+    return this.change('Add expectation', () => {
+      const list = this.ensureSeq(['expectations']);
+      const id = this.analysisId('expectations', (fields.name || 'expectation').toLowerCase());
+      list.items.push(mapNode([['id', strNode(id)]]));
+      const i = list.items.length - 1;
+      this.writeAnalysisFields(['expectations', i], 'expectation', { ...fields });
+      return i;
+    }, { layout: false });
+  }
+
+  /** Change an expectation's fields (an empty value removes the key). One undo step. */
+  updateExpectation(index: number, fields: ExpectationFields): void {
+    this.change('Edit expectation', () => this.writeAnalysisFields(['expectations', index], 'expectation', { ...fields }), { layout: false });
+  }
+
+  /** Remove an expectation. One undo step. */
+  removeExpectation(index: number): void {
+    this.change('Delete expectation', () => {
+      this.removeAt(['expectations', index]);
+      const s = this.get(['expectations']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['expectations']);
+    }, { layout: false });
+  }
+
+  /** The analysis entries that name an object (for a delete confirmation): "expectation guest-no-mgmt", "failure domain rack-a". */
+  analysisUsers(paths: Path[]): string[] {
+    const out: string[] = [];
+    for (const p of paths) {
+      if (p[0] !== 'expectations' && p[0] !== 'failure_domains') continue;
+      const id = this.text([p[0], p[1] as number, 'id']) || '?';
+      const t = `${p[0] === 'expectations' ? 'expectation' : 'failure domain'} ${id}`;
+      if (out.indexOf(t) < 0) out.push(t);
+    }
+    return out;
+  }
+
   /** The wireless connections that name a Wi-Fi network of a device ("link id"), in file order. */
   networkClients(device: string, network: string): string[] {
     const model = this.result.model;
@@ -1500,6 +1831,256 @@ export class ModelDoc {
       this.ensureMap(listPath.slice(0, -1), this.orderFor(listPath.slice(0, -2)));
       this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode());
     });
+  }
+
+  /** Append a filter rule with the action chosen (`{action: permit}`, written in flow style) to an ordered rule list; one undo step. */
+  addRule(listPath: Path, action: string, what = 'rule'): void {
+    this.change('Add ' + what, () => {
+      this.ensureMap(listPath.slice(0, -1), this.orderFor(listPath.slice(0, -2)));
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode([['action', strNode(action)]], true));
+    });
+  }
+
+  /**
+   * A short list written as comma-separated text (a policy rule's sources,
+   * its interfaces): one item stays a scalar, several a flow list, none
+   * removes the key. One undo step.
+   */
+  setTextList(path: Path, text: string): void {
+    const items = text.split(',').map((x) => x.trim()).filter((x) => x);
+    this.change('Edit ' + this.label(path), () => {
+      if (!items.length) this.removeAt(path);
+      else this.setAt(path, items.length === 1 ? strNode(items[0]) : seqNode(items.map((x) => strNode(x)), true), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** A device's network policy, started with the default action chosen (`policy: {default: …}`); one undo step. */
+  addNetPolicy(devIndex: number, def: 'permit' | 'deny'): void {
+    this.change('Add network policy', () => {
+      this.setAt(['devices', devIndex, 'policy'], mapNode([['default', strNode(def)]]), this.orderFor(['devices', devIndex]));
+    });
+  }
+
+  /** Add an experiment (its name and duration; actions and observations are added to it after); returns its index. One undo step. */
+  addExperiment(name: string, duration: string, steps: { actions?: Array<Array<[string, string]>>; observe?: Array<Array<[string, string]>> } = {}): number {
+    return this.change('Add experiment', () => {
+      const list = this.ensureSeq(['experiments']);
+      const id = this.analysisId('experiments', (name || 'experiment').toLowerCase());
+      const entries: Array<[string, YNode]> = [['id', strNode(id)], ['name', strNode(name)], ['duration', strNode(duration)]];
+      for (const key of ['actions', 'observe'] as const) {
+        const st = steps[key];
+        if (st && st.length) entries.push([key, seqNode(st.map((e) => mapNode(e.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true)))]);
+      }
+      list.items.push(mapNode(entries));
+      return list.items.length - 1;
+    }, { layout: false });
+  }
+
+  /** Append an entry ({key: value, …}, flow style) to an experiment's actions or observations; one undo step. */
+  addListEntry(listPath: Path, entries: Array<[string, string]>, what: string): void {
+    this.change('Add ' + what, () => {
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode(entries.map(([k, v]) => [k, strNode(v)] as [string, YNode]), true));
+    }, { layout: false });
+  }
+
+  /** Save a view (its entries as written: view, focus, filters, options, viewport); one undo step; returns its index. */
+  addView(name: string, v: Omit<SavedView, 'id' | 'name' | 'line'>): number {
+    const list = (xs: string[]): YNode => seqNode(xs.map((x) => strNode(x)), true);
+    const entries: Array<[string, YNode]> = [['view', strNode(v.view)]];
+    if (v.focus) {
+      const f: Array<[string, YNode]> = [['target', strNode(v.focus.target)]];
+      if (v.focus.hops !== undefined) f.push(['hops', numNode(v.focus.hops)]);
+      if (v.focus.context) f.push(['context', strNode(v.focus.context)]);
+      if (v.focus.vlan !== undefined) f.push(['vlan', numNode(v.focus.vlan)]);
+      if (v.focus.vrf) f.push(['vrf', strNode(v.focus.vrf)]);
+      if (v.focus.group) f.push(['group', strNode(v.focus.group)]);
+      entries.push(['focus', mapNode(f, true)]);
+    }
+    if (v.devices) entries.push(['devices', list(v.devices)]);
+    if (v.collapse && v.collapse.length) entries.push(['collapse', list(v.collapse)]);
+    if (v.hideTypes.length) entries.push(['hide_types', list(v.hideTypes)]);
+    if (v.hideProtocols.length) entries.push(['hide_protocols', list(v.hideProtocols)]);
+    const opts = Object.keys(v.options) as Array<keyof SavedView['options']>;
+    if (opts.length) entries.push(['options', mapNode(opts.map((k) => [k, boolNode(v.options[k] as boolean)] as [string, YNode]), true)]);
+    if (v.viewport) entries.push(['viewport', mapNode([['x', numNode(v.viewport.x)], ['y', numNode(v.viewport.y)], ['zoom', numNode(v.viewport.zoom)]], true)]);
+    return this.change('Save view', () => {
+      const seq = this.ensureSeq(['views']);
+      const id = this.analysisId('views', (name || 'view').toLowerCase());
+      seq.items.push(mapNode(([['id', strNode(id)], ['name', strNode(name)]] as Array<[string, YNode]>).concat(entries)));
+      return seq.items.length - 1;
+    }, { layout: false });
+  }
+
+  /**
+   * Apply a bulk port plan (model/bulk-ports.ts) to a device's ports: every
+   * row that changes, as one undo step. A port is found by its id; its
+   * VLANs are written as one ID (access) or a flow list with ranges, and its
+   * native set or removed.
+   */
+  applyPortPlan(devIndex: number, rows: PortPlanRow[], what: string): number {
+    const todo = rows.filter((r) => r.write);
+    if (!todo.length) return 0;
+    return this.change(what, () => {
+      const list = this.get(['devices', devIndex, 'interfaces']);
+      if (!list || list.kind !== 'seq') return 0;
+      let n = 0;
+      for (const r of todo) {
+        const k = list.items.findIndex((x) => x.kind === 'map' && scalarText(x.entries.get('id') ? (x.entries.get('id') as { value: YNode }).value : nullNode()) === r.port);
+        if (k < 0) continue;
+        const base: Path = ['devices', devIndex, 'interfaces', k];
+        const w = r.write as { vlans: number[]; native?: number };
+        const order = this.orderFor(base);
+        if (!w.vlans.length) this.removeAt(base.concat('vlans'));
+        else if (w.vlans.length === 1 && w.native === undefined) this.setAt(base.concat('vlans'), numNode(w.vlans[0]), order);
+        else {
+          const items: YNode[] = [];
+          for (let i = 0; i < w.vlans.length; i++) {
+            let j = i;
+            while (j + 1 < w.vlans.length && w.vlans[j + 1] === w.vlans[j] + 1) j++;
+            if (j > i + 1) items.push(strNode(`${w.vlans[i]}-${w.vlans[j]}`));
+            else for (let x = i; x <= j; x++) items.push(numNode(w.vlans[x]));
+            i = j;
+          }
+          this.setAt(base.concat('vlans'), seqNode(items, true), order);
+        }
+        if (w.native !== undefined) this.setAt(base.concat('native'), numNode(w.native), order);
+        else this.removeAt(base.concat('native'));
+        n++;
+      }
+      return n;
+    });
+  }
+
+  /** Remove a saved view. One undo step. */
+  removeView(index: number): void {
+    this.change('Delete view', () => {
+      this.removeAt(['views', index]);
+      const s = this.get(['views']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['views']);
+    }, { layout: false });
+  }
+
+  /**
+   * Add a step to an experiment: an action of a kind (at the start), or an
+   * observation of a kind (at the end, expecting its usual outcome) — its
+   * target and other fields still to be configured (the step stays in the
+   * model, marked incomplete). One undo step; returns its index.
+   */
+  addStep(expIndex: number, list: 'actions' | 'observe', kind: string, target?: string): number {
+    const entries: Array<[string, YNode]> = list === 'actions' ? [['at', strNode('0s')], ['do', strNode(kind)]] : [['of', strNode(kind)]];
+    if (target) entries.push(['target', strNode(target)]);
+    const od = list === 'observe' ? observeDef(kind) : undefined;
+    if (od) entries.push(['expect', strNode(od.expect[0])]);
+    return this.change(list === 'actions' ? 'Add action' : 'Add observation', () => {
+      const seq = this.ensureSeq(['experiments', expIndex, list], false, this.orderFor(['experiments', expIndex]));
+      seq.items.push(mapNode(entries, true));
+      return seq.items.length - 1;
+    }, { layout: false });
+  }
+
+  /**
+   * Change a step's kind (an action's `do`, an observation's `of`) in one undo
+   * step: what the new kind takes too is kept (its target when it names what
+   * the new kind needs, its fields, its time); what it does not take is
+   * removed, and returned so that it can be said. An observation's expected
+   * outcome becomes the new kind's usual one unless it has the same.
+   */
+  setStepKind(expIndex: number, list: 'actions' | 'observe', k: number, kind: string): string[] {
+    const path: Path = ['experiments', expIndex, list, k];
+    const m = this.get(path);
+    if (!m || m.kind !== 'map') return [];
+    const def = list === 'actions' ? actionDef(kind) : observeDef(kind);
+    if (!def) return [];
+    const model = this.result.model;
+    const keep = new Set<string>(['id', 'at', 'after', list === 'actions' ? 'do' : 'of', ...def.required, ...def.optional]);
+    if (list === 'observe') keep.add('within').add('expect');
+    const target = m.entries.get('target');
+    const t = target ? scalarText(target.value) : undefined;
+    if (t && model && !targetProblem(model, model.failureDomains, def.target, t, model.experiments[expIndex])) keep.add('target');
+    const cleared = Array.from(m.entries.keys()).filter((key) => !keep.has(key));
+    const od = list === 'observe' ? observeDef(kind) : undefined;
+    const ex = m.entries.get('expect');
+    const expect = ex ? scalarText(ex.value) : undefined;
+    this.change('Change step', () => {
+      for (const key of cleared) this.removeAt(path.concat(key));
+      this.setAt(path.concat(list === 'actions' ? 'do' : 'of'), strNode(kind), this.orderFor(path));
+      if (od && (!expect || od.expect.indexOf(expect) < 0)) this.setAt(path.concat('expect'), strNode(od.expect[0]), this.orderFor(path));
+    }, { layout: false });
+    return cleared;
+  }
+
+  /**
+   * Make a step come after an earlier action was submitted (null: after the
+   * start again), in one undo step: an action without an id gets one
+   * ("step-3") so that it can be named.
+   */
+  setStepAfter(expIndex: number, list: 'actions' | 'observe', k: number, action: number | null): void {
+    const path: Path = ['experiments', expIndex, list, k];
+    const model = this.result.model;
+    const e = model ? model.experiments[expIndex] : undefined;
+    this.change('Set when', () => {
+      if (action === null) {
+        this.removeAt(path.concat('after'));
+        return;
+      }
+      const ap: Path = ['experiments', expIndex, 'actions', action];
+      let id = e && e.actions[action] ? e.actions[action].id : undefined;
+      if (!id) {
+        const used = new Set<string>(e ? e.actions.map((x) => x.id || '').concat(e.observations.map((x) => x.id || '')) : []);
+        let n = action + 1;
+        while (used.has('step-' + n)) n++;
+        id = 'step-' + n;
+        this.setAt(ap.concat('id'), strNode(id), this.orderFor(ap));
+      }
+      this.setAt(path.concat('after'), strNode(id), this.orderFor(path));
+      if (!this.get(path.concat('at'))) this.setAt(path.concat('at'), strNode('0s'), this.orderFor(path));
+    }, { layout: false });
+  }
+
+  /** Move a step one place up (-1) or down (+1); one undo step. */
+  moveStep(expIndex: number, list: 'actions' | 'observe', k: number, delta: -1 | 1): boolean {
+    const seq = this.get(['experiments', expIndex, list]);
+    if (!seq || seq.kind !== 'seq' || k + delta < 0 || k + delta >= seq.items.length) return false;
+    this.change('Reorder', () => this.moveItem(['experiments', expIndex, list], k, k + delta), { layout: false });
+    return true;
+  }
+
+  /** An experiment's execution scope ('entire' removes it); one undo step. */
+  setExperimentScope(expIndex: number, kind: 'entire' | 'targets' | 'group' | 'vlan' | 'domain' | 'device', value: string): void {
+    const p: Path = ['experiments', expIndex, 'scope'];
+    this.change('Set scope', () => {
+      if (kind === 'entire') this.removeAt(p);
+      else if (kind === 'targets') this.setAt(p, strNode('targets'), this.orderFor(p.slice(0, -1)));
+      else this.setAt(p, mapNode([[kind, kind === 'vlan' && /^[0-9]+$/.test(value) ? numNode(Number(value)) : strNode(value)]], true), this.orderFor(p.slice(0, -1)));
+    }, { layout: false });
+  }
+
+  /**
+   * An experiment's starting state, one undo step: booted (start and settle
+   * left out), settled (settle written: that long first), or a cold start
+   * (start: cold; it never settles).
+   */
+  setExperimentStart(expIndex: number, start: 'booted' | 'settled' | 'cold', settle = '30s'): void {
+    const base: Path = ['experiments', expIndex];
+    this.change('Set start', () => {
+      if (start === 'cold') {
+        this.removeAt(base.concat(['settle']));
+        this.setAt(base.concat(['start']), strNode('cold'), this.orderFor(base));
+      } else {
+        this.removeAt(base.concat(['start']));
+        if (start === 'settled') this.setAt(base.concat(['settle']), strNode(settle), this.orderFor(base));
+        else this.removeAt(base.concat(['settle']));
+      }
+    }, { layout: false });
+  }
+
+  /** Remove an experiment. One undo step. */
+  removeExperiment(index: number): void {
+    this.change('Delete experiment', () => {
+      this.removeAt(['experiments', index]);
+      const s = this.get(['experiments']);
+      if (s && s.kind === 'seq' && !s.items.length) this.removeAt(['experiments']);
+    }, { layout: false });
   }
 
   /** Append an empty value, group or list to a list. */
@@ -1588,6 +2169,7 @@ export class ModelDoc {
         relation: 'rel1',
         group: 'site1',
         protocol: 'custom1',
+        interconnect: 'ic1',
       };
       const idNode = fields.find(([k]) => k === 'id');
       const id = idNode ? scalarText(idNode[1]) || base[kind] : this.uniqueId(base[kind]);
@@ -1598,6 +2180,7 @@ export class ModelDoc {
         relation: [['endpoints', seqNode([], true)]],
         group: [],
         protocol: [],
+        interconnect: [],
       };
       const entries: Array<[string, YNode]> = [['id', strNode(id)]];
       for (const [k, v] of defaults[kind]) if (!fields.some(([f]) => f === k)) entries.push([k, v]);
@@ -1729,6 +2312,51 @@ export class ModelDoc {
       }
       epRefs('links', 'a/b');
       epRefs('relations', 'endpoints');
+      // an interconnect's endpoints ({port: "device:port"})
+      const ics = this.root.entries.get('interconnects');
+      if (ics && ics.value.kind === 'seq')
+        ics.value.items.forEach((ent, i) => {
+          const eps = ent.kind === 'map' ? ent.entries.get('endpoints') : undefined;
+          if (!eps || eps.value.kind !== 'seq') return;
+          eps.value.items.forEach((ep, k) => {
+            const pn = ep.kind === 'map' ? ep.entries.get('port') : undefined;
+            const t = pn ? scalarText(pn.value) : undefined;
+            if (t === undefined) return;
+            const c = t.indexOf(':');
+            const dev = c < 0 ? t : t.slice(0, c);
+            const inf = c < 0 ? undefined : t.slice(c + 1);
+            if (dev === id && (iface === undefined || inf === iface)) out.push(['interconnects', i, 'endpoints', k, 'port']);
+          });
+          // its traffic: the initiator, the data source, each recipient ("device:port"; a recipient may be on another interconnect)
+          const tr = ent.kind === 'map' ? ent.entries.get('traffic') : undefined;
+          if (!tr || tr.value.kind !== 'seq') return;
+          tr.value.items.forEach((x, k) => {
+            if (x.kind !== 'map') return;
+            const names = (t: string | undefined): boolean => {
+              if (t === undefined) return false;
+              const c = t.indexOf(':');
+              return (c < 0 ? t : t.slice(0, c)) === id && (iface === undefined || (c >= 0 && t.slice(c + 1) === iface));
+            };
+            for (const key of ['initiator', 'from']) {
+              const e = x.entries.get(key);
+              if (e && names(scalarText(e.value))) out.push(['interconnects', i, 'traffic', k, key]);
+            }
+            const to = x.entries.get('to');
+            if (!to) return;
+            if (to.value.kind === 'seq') to.value.items.forEach((r, j) => names(scalarText(r)) && out.push(['interconnects', i, 'traffic', k, 'to', j]));
+            else if (names(scalarText(to.value))) out.push(['interconnects', i, 'traffic', k, 'to']);
+          });
+        });
+      // a System's opaque transit groups name its own ports
+      if (iface !== undefined) {
+        const dev = this.findEntity('device', id);
+        const tg = dev ? this.get(['devices', dev.index, 'opaque_transit']) : undefined;
+        if (dev && tg && tg.kind === 'seq')
+          tg.items.forEach((g, k) => {
+            const ps = g.kind === 'map' ? g.entries.get('ports') : undefined;
+            if (ps && ps.value.kind === 'seq') ps.value.items.forEach((pn, j) => scalarText(pn) === iface && out.push(['devices', dev.index, 'opaque_transit', k, 'ports', j]));
+          });
+      }
       // static routes of the same device that leave through the interface
       if (iface !== undefined) {
         const dev = this.findEntity('device', id);
@@ -1761,6 +2389,19 @@ export class ModelDoc {
           const d = c < 0 ? t : t.slice(0, c);
           const inf = c < 0 ? undefined : t.slice(c + 1);
           if (d === id && (iface === undefined || inf === iface)) out.push(lp.concat(k, 'destination'));
+        });
+      });
+      // applications: a peer that names the device (or one of its applications), an MQTT client's broker; a listener's bind interface
+      this.entities('device').forEach((dev) => {
+        const lp = this.appsPath(dev.index);
+        const n = this.get(lp);
+        if (!n || n.kind !== 'seq') return;
+        n.items.forEach((_x, j) => {
+          if (iface === undefined) {
+            const peer = this.text(lp.concat(j, 'peer'));
+            if (peer !== undefined && (peer === id || peer.indexOf(id + '/') === 0)) out.push(lp.concat(j, 'peer'));
+            if (this.text(lp.concat(j, 'broker')) === id) out.push(lp.concat(j, 'broker'));
+          } else if (dev.id === id && this.text(lp.concat(j, 'bind')) === iface) out.push(lp.concat(j, 'bind'));
         });
       });
       if (iface === undefined) {
@@ -1814,6 +2455,110 @@ export class ModelDoc {
     } else if (kind === 'protocol') {
       scalarRefs('relations', 'protocol', (t) => t.toLowerCase() === id.toLowerCase());
     }
+    // the analysis sections: a failure domain's members (devices, cables, relations, groups); an expectation's ends and failure condition
+    const ends = (t: string): boolean => {
+      const head = t.split(/[:/]/)[0];
+      if (kind !== 'device') return false;
+      if (iface === undefined) return head === id;
+      return t === `${id}:${iface}`;
+    };
+    if ((kind === 'device' || kind === 'link' || kind === 'relation' || kind === 'group') && iface === undefined) scalarRefs('failure_domains', 'members', (t) => t === id);
+    // a network policy: a rule's source and destination (a device, device:interface, a network), its in and out, a zone's interfaces (its own device's)
+    if (kind === 'device' || kind === 'network') {
+      const devs = this.root.entries.get('devices');
+      if (devs && devs.value.kind === 'seq') {
+        devs.value.items.forEach((dn, di) => {
+          const pol = dn.kind === 'map' ? dn.entries.get('policy') : undefined;
+          if (!pol || pol.value.kind !== 'map') return;
+          const own = dn.kind === 'map' && scalarText((dn.entries.get('id') || { value: nullNode() }).value) === id;
+          const scan = (n: YNode | undefined, p: Path, match: (t: string) => boolean): void => {
+            if (!n) return;
+            if (n.kind === 'scalar') {
+              const t = scalarText(n);
+              if (t !== undefined && match(t)) out.push(p);
+            } else if (n.kind === 'seq') n.items.forEach((x, k) => scan(x, p.concat(k), match));
+          };
+          const obj = (t: string): boolean => (kind === 'network' ? t === id : iface === undefined ? t === id || t.split(':')[0] === id : t === `${id}:${iface}`);
+          const rules = pol.value.entries.get('rules');
+          if (rules && rules.value.kind === 'seq') {
+            rules.value.items.forEach((rn, k) => {
+              if (rn.kind !== 'map') return;
+              for (const key of ['source', 'destination']) scan((rn.entries.get(key) || { value: undefined }).value, ['devices', di, 'policy', 'rules', k, key], obj);
+              if (kind === 'device' && own && iface !== undefined) for (const key of ['in', 'out']) scan((rn.entries.get(key) || { value: undefined }).value, ['devices', di, 'policy', 'rules', k, key], (t) => t === iface);
+            });
+          }
+          const zones = pol.value.entries.get('zones');
+          if (kind === 'device' && own && iface !== undefined && zones && zones.value.kind === 'seq') {
+            zones.value.items.forEach((zn, k) => {
+              if (zn.kind === 'map') scan((zn.entries.get('interfaces') || { value: undefined }).value, ['devices', di, 'policy', 'zones', k, 'interfaces'], (t) => t === iface);
+            });
+          }
+        });
+      }
+    }
+    if (kind === 'device' && iface === undefined) {
+      // a routing policy's filter rule that names the device as its peer
+      const devs = this.root.entries.get('devices');
+      if (devs && devs.value.kind === 'seq') {
+        devs.value.items.forEach((dn, di) => {
+          const pr = dn.kind === 'map' ? dn.entries.get('protocols') : undefined;
+          if (!pr || pr.value.kind !== 'map') return;
+          pr.value.entries.forEach((sv, sid) => {
+            if (sv.value.kind !== 'map') return;
+            for (const dir of ['import', 'export']) {
+              const l = sv.value.entries.get(dir);
+              if (!l || l.value.kind !== 'seq') continue;
+              l.value.items.forEach((rn, k) => {
+                const pe = rn.kind === 'map' ? rn.entries.get('peer') : undefined;
+                if (pe && scalarText(pe.value) === id) out.push(['devices', di, 'protocols', sid, dir, k, 'peer']);
+              });
+            }
+          });
+        });
+      }
+    }
+    if (kind === 'device') {
+      scalarRefs('expectations', 'from', ends);
+      scalarRefs('expectations', 'to', ends);
+      if (iface === undefined) scalarRefs('expectations', 'boundary', (t) => t === id);
+    }
+    if (kind === 'device' || kind === 'link' || kind === 'relation') scalarRefs('expectations', 'failure', (t) => (kind === 'device' ? ends(t) : t === id));
+    // an experiment's actions and observations: their target and destination (an end, a cable, a relation, a failure domain)
+    if (kind === 'device' || kind === 'link' || kind === 'relation') {
+      const ex = this.root.entries.get('experiments');
+      if (ex && ex.value.kind === 'seq') {
+        ex.value.items.forEach((en, i) => {
+          if (en.kind !== 'map') return;
+          for (const list of ['actions', 'observe']) {
+            const l = en.entries.get(list);
+            if (!l || l.value.kind !== 'seq') continue;
+            l.value.items.forEach((st, k) => {
+              if (st.kind !== 'map') return;
+              for (const key of ['target', 'to']) {
+                const v = st.entries.get(key);
+                const t = v ? scalarText(v.value) : undefined;
+                if (t !== undefined && (kind === 'device' ? ends(t) : t === id)) out.push(['experiments', i, list, k, key]);
+              }
+            });
+          }
+        });
+      }
+    }
+    // a saved view: its devices and its focus target
+    const vs = this.root.entries.get('views');
+    if (vs && vs.value.kind === 'seq') {
+      vs.value.items.forEach((en, i) => {
+        if (en.kind !== 'map') return;
+        const dv = en.entries.get('devices');
+        if (kind === 'device' && iface === undefined && dv && dv.value.kind === 'seq') dv.value.items.forEach((x, k) => {
+          if (scalarText(x) === id) out.push(['views', i, 'devices', k]);
+        });
+        const fo = en.entries.get('focus');
+        const tg = fo && fo.value.kind === 'map' ? fo.value.entries.get('target') : undefined;
+        const t = tg ? scalarText(tg.value) : undefined;
+        if (t !== undefined && (kind === 'device' ? ends(t) || t === 'device:' + id : t === id || t === kind + ':' + id)) out.push(['views', i, 'focus', 'target']);
+      });
+    }
     return out;
   }
 
@@ -1829,10 +2574,43 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks') {
+      const inExpectation = (p[0] === 'expectations' && (last === 'from' || last === 'to' || last === 'boundary' || p[p.length - 2] === 'failure' || last === 'failure')) || (p[0] === 'experiments' && (last === 'target' || last === 'to'));
+      // a network policy: an object (device, device:interface, network) in source or destination; an interface of its own device in in, out or a zone
+      const inPolicy = p[0] === 'devices' && p[2] === 'policy';
+      const polKey = inPolicy ? String(typeof last === 'number' ? p[p.length - 2] : last) : '';
+      if (inPolicy && (polKey === 'source' || polKey === 'destination')) {
+        const c = t.indexOf(':');
+        if (c < 0) nt = t === oldId ? newId : t;
+        else nt = (t.slice(0, c) === oldId ? newId : t.slice(0, c)) + ':' + (oldIf !== undefined && t.slice(c + 1) === oldIf ? (newIf as string) : t.slice(c + 1));
+      } else if (inPolicy) {
+        nt = newIf !== undefined ? newIf : t;
+      } else if (p[0] === 'views') {
+        // a view's device, or its focus target (device, device:interface, kind:id)
+        const k = t.indexOf(':');
+        const kinds = ['device', 'network', 'group', 'link', 'relation'];
+        if (k > 0 && kinds.indexOf(t.slice(0, k)) >= 0) nt = t.slice(0, k) + ':' + newId;
+        else if (k > 0) nt = (t.slice(0, k) === oldId ? newId : t.slice(0, k)) + ':' + (oldIf !== undefined && t.slice(k + 1) === oldIf ? (newIf as string) : t.slice(k + 1));
+        else nt = t === oldId ? newId : t;
+      } else if (p[0] === 'failure_domains') {
+        // a member: an id of a device, cable, relation or group
+        nt = newId;
+      } else if (inExpectation) {
+        // an end or a failure entry: "device", "device:interface", "device/application", or a cable's, relation's or domain's id
+        const m = /^([^:/]+)([:/])(.*)$/.exec(t);
+        if (!m) nt = t === oldId ? newId : t;
+        else if (m[2] === ':') nt = (m[1] === oldId ? newId : m[1]) + ':' + (oldIf !== undefined && m[3] === oldIf ? (newIf as string) : m[3]);
+        else nt = (m[1] === oldId ? newId : m[1]) + '/' + m[3];
+      } else if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks' || last === 'bind') {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
-      } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
+      } else if (last === 'peer') {
+        // an application's peer: the device, or "device/application"
+        const s = t.indexOf('/');
+        nt = s > 0 ? newId + t.slice(s) : newId;
+      } else if (p[0] === 'devices' && p[2] === 'opaque_transit') {
+        // a transit group's port: a bare id of the same device
+        nt = newIf !== undefined ? newIf : t;
+      } else if (/^(a|b|destination|port)$/.test(String(last)) || p[p.length - 2] === 'endpoints' || (p[0] === 'interconnects' && p[2] === 'traffic')) {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);
@@ -2120,10 +2898,9 @@ export class ModelDoc {
 
   // --------------------------------------------------------------------- DHCP
 
-  /** Does the interface at `ipath` have `dhcp: true`? */
+  /** Does the interface at `ipath` obtain its IPv4 address by DHCP (`ipv4: dhcp`)? */
   dhcpOn(ipath: Path): boolean {
-    const n = this.get(ipath.concat('dhcp'));
-    return !!n && n.kind === 'scalar' && n.value === true;
+    return this.text(ipath.concat('ipv4')) === 'dhcp';
   }
 
   /** Can the interface at `ipath` use DHCP? Every physical and logical interface except a loopback. */
@@ -2131,25 +2908,32 @@ export class ModelDoc {
     return ifaceSchemaKind(ipath) === 'interface' || (ifaceSchemaKind(ipath) === 'logical' && this.text(ipath.concat('type')) !== 'loopback');
   }
 
+  /** The addresses written at an interface, as text. */
+  private ipTexts(ipath: Path): string[] {
+    const n = this.get(ipath.concat('ip'));
+    return !n ? [] : n.kind === 'seq' ? n.items.map((i) => scalarText(i) || '').filter((x) => x) : scalarText(n) !== undefined ? [scalarText(n) as string] : [];
+  }
+
   /**
    * What turning DHCP on for an interface would remove: its manually
-   * configured addresses and its DNS-name associations (`removed`: the name
-   * is associated with this interface only, so it would be removed too).
+   * configured IPv4 addresses (its IPv6 ones stay) and its DNS-name
+   * associations (`removed`: the name is associated with this interface
+   * only, so it would be removed too).
    */
   dhcpImpact(ipath: Path): DhcpImpact {
-    const n = this.get(ipath.concat('ip'));
-    const addresses = !n ? [] : n.kind === 'seq' ? n.items.map((i) => scalarText(i) || '').filter((x) => x) : scalarText(n) !== undefined ? [scalarText(n) as string] : [];
+    const addresses = this.ipTexts(ipath).filter((a) => a.indexOf(':') < 0);
     const iface = this.ifaceIdAt(ipath);
     return { addresses, dns: iface ? this.dnsAffected(ipath[1] as number, iface) : [] };
   }
 
   /**
-   * Turn DHCP on or off for an interface, as one undoable step. On: the
-   * manual addresses and the DNS-name associations of the interface are
-   * removed (see dhcpImpact; the UI asks first) and `dhcp: true` is written.
-   * Off: the key is removed (false is the format's default); nothing that
-   * was removed when it was turned on comes back. A loopback can't use
-   * DHCP: turning it on is refused (turning it off repairs a file that has it).
+   * Turn DHCP on or off for an interface's IPv4, as one undoable step. On:
+   * its manual IPv4 addresses and the DNS-name associations of the
+   * interface are removed (see dhcpImpact; the UI asks first) and
+   * `ipv4: dhcp` is written. Off: the key is removed (static is the
+   * format's default); nothing that was removed when it was turned on comes
+   * back. A loopback can't use DHCP: turning it on is refused (turning it
+   * off repairs a file that has it).
    */
   setDhcp(ipath: Path, on: boolean): void {
     const kind = ifaceSchemaKind(ipath);
@@ -2157,12 +2941,14 @@ export class ModelDoc {
     const iface = this.ifaceIdAt(ipath);
     this.change(on ? 'Turn DHCP on' : 'Turn DHCP off', () => {
       if (!on) {
-        this.removeAt(ipath.concat('dhcp'));
+        this.removeAt(ipath.concat('ipv4'));
         return;
       }
       if (iface) this.dropDnsRefs(ipath[1] as number, iface);
+      const keep = this.ipTexts(ipath).filter((a) => a.indexOf(':') >= 0);
       this.removeAt(ipath.concat('ip'));
-      this.setAt(ipath.concat('dhcp'), boolNode(true), KEY_ORDER[kind]);
+      if (keep.length) this.setAt(ipath.concat('ip'), keep.length === 1 ? strNode(keep[0]) : seqNode(keep.map((x) => strNode(x)), true), KEY_ORDER[kind]);
+      this.setAt(ipath.concat('ipv4'), strNode('dhcp'), KEY_ORDER[kind]);
     });
   }
 

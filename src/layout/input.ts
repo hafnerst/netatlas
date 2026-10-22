@@ -26,6 +26,7 @@ import { cmp } from './order';
 import { END_LABEL_GAP, EntryText, PORT_STUB, endLabelBox, entriesSize, memberLabelBox, networkSubtitle, portRowH } from './sizes';
 import { deviceTier } from '../model/capabilities';
 import { serviceBadgesText } from '../model/service-registry';
+import { busGroup, interconnectLabel } from '../model/interconnect';
 
 export interface LEnd {
   device: string;
@@ -66,6 +67,8 @@ export interface LDev {
   inside?: string;
   /** a host's interior in its physical box (virtual switches, container networks, guests): [w, h], [0, 0] without one */
   interior: [number, number];
+  /** a shared interconnect's bar in the physical view (a bus: its spine), with its number of attachments; never a device */
+  bus?: number;
 }
 export interface LGroup {
   id: string;
@@ -123,6 +126,13 @@ export interface LayoutInput {
   relations: LRel[];
   pairs: LPair[];
   linkLabels: LLinkLabel[];
+  /**
+   * the non-IP side of the physical view (model/interconnect.ts): a shared
+   * interconnect's bar, and the connections to opaque ports — a
+   * point-to-point interconnect, a bus's taps (to its bar). Only the
+   * physical view takes them (physicalInput); the logical view never does.
+   */
+  opaque: { devices: LDev[]; links: LLink[] };
 }
 
 /**
@@ -159,12 +169,57 @@ export function deviceSub(m: Model, d: Device): string {
   return [t, r, b].filter((x) => !!x).join('\n');
 }
 
-/** The layout input of the physical view: without the guests (they are drawn inside their hosts' boxes). */
+/** The layout input of the physical view: without the guests (they are drawn inside their hosts' boxes), with the interconnects' bars and connections. */
 export function physicalInput(input: LayoutInput): LayoutInput {
-  if (!input.devices.some((d) => d.inside !== undefined)) return input;
+  if (!input.devices.some((d) => d.inside !== undefined) && !input.opaque.devices.length && !input.opaque.links.length) return input;
   let c = physCache.get(input);
-  if (!c) physCache.set(input, (c = { ...input, devices: input.devices.filter((d) => d.inside === undefined) }));
+  if (!c)
+    physCache.set(
+      input,
+      (c = { ...input, devices: byId(input.devices.filter((d) => d.inside === undefined).concat(input.opaque.devices)), links: byId(input.links.concat(input.opaque.links)) }),
+    );
   return c;
+}
+
+/**
+ * The interconnects as the physical layout takes them: a point-to-point
+ * one as a connection between its two opaque ports (canonical order, like a
+ * cable); a shared one as a bar of its own (below its participants, in their
+ * group when they share one) and a tap from each attachment's port to it.
+ */
+function opaqueInput(m: Model): LayoutInput['opaque'] {
+  const devices: LDev[] = [];
+  const links: LLink[] = [];
+  const tierOf = (id: string): number => {
+    const d = m.index.devices.get(id);
+    return d ? (d.tier !== undefined ? d.tier : defaultTier(d.type, d)) : 6;
+  };
+  for (const ic of byId(m.interconnects)) {
+    const eps = ic.endpoints.slice().sort((p, q) => cmp(p.device + ':' + p.port, q.device + ':' + q.port));
+    if (ic.topology === 'point_to_point') {
+      if (eps.length === 2) links.push({ id: ic.id, a: { device: eps[0].device, iface: eps[0].port }, b: { device: eps[1].device, iface: eps[1].port } });
+      continue;
+    }
+    devices.push({
+      id: ic.id,
+      label: interconnectLabel(ic),
+      sub: '',
+      tier: Math.min(9, Math.max(...eps.map((e) => tierOf(e.device))) + 1),
+      group: busGroup(m.index, ic),
+      loopbacks: 0,
+      physList: [0, 0],
+      logList: [0, 0],
+      dns: [],
+      bodyMin: 0,
+      reach: 0,
+      spare: [],
+      logical: [],
+      interior: [0, 0],
+      bus: eps.length,
+    });
+    for (const e of eps) links.push({ id: `${ic.id}~${e.device}:${e.port}`, a: { device: e.device, iface: e.port }, b: { device: ic.id } });
+  }
+  return { devices, links };
 }
 
 const physCache = new WeakMap<LayoutInput, LayoutInput>();
@@ -184,7 +239,14 @@ export function layoutInput(m: Model): LayoutInput {
         dns: uniqSorted(d.dnsNames.map((n) => n.name).filter((n) => !!n)),
         bodyMin: portRowH(modelPortSpans(m).get(bindingKey(d.id, undefined)) || 0),
         reach: portReach(m, d.id),
-        spare: sortedByName(d.interfaces.filter((i) => !m.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x),
+        // (its ports without a cable, and its opaque ports on no interconnect)
+        spare: sortedByName(
+          d.interfaces
+            .filter((i) => !m.index.ifaceLink.has(ifaceKey(d.id, i.id)))
+            .map((i) => i.id)
+            .concat(d.opaquePorts.filter((p) => !m.index.portInterconnect.has(ifaceKey(d.id, p.id))).map((p) => p.id)),
+          (x) => x,
+        ),
         logical: sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x),
         // a guest is drawn in its host's box in the physical view; a host's box holds its interior
         inside: isGuest(d) && d.host !== undefined && m.index.devices.has(d.host) ? d.host : undefined,
@@ -233,6 +295,7 @@ export function layoutInput(m: Model): LayoutInput {
       return { a: bundle.a, b: bundle.b, labels: roots.map(laneLabel), extras: roots.map((p) => p.extra), width: bundle.width, ends };
     }),
     linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
+    opaque: opaqueInput(m),
   };
 }
 
@@ -257,6 +320,11 @@ export function portEnd(m: Model, e: LinkEnd): LEnd {
   const tag = endTagText(m, e);
   if (tag) out.tag = tag;
   return out;
+}
+
+/** The interconnects' connections as the physical view's ports take them (a point-to-point line, a bus's taps). */
+export function opaquePortLinks(m: Model): LLink[] {
+  return opaqueInput(m).links;
 }
 
 /** The links of a model as the port layout takes them, ends as in the model (a, b). */

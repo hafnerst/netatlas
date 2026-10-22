@@ -16,12 +16,12 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { TEST_ONLY } from './release-check.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const jsDir = join(root, 'build', 'js');
 
-/** The modules only the test build may contain: the internal examples and fixtures, the full self-test, the viewport check. */
-const TEST_ONLY = ['generated/test-examples', 'app/selftest', 'app/viewport-check', 'app/main-test'];
+// TEST_ONLY (scripts/release-check.mjs): the modules only the test build may contain
 
 /** One self-contained HTML page from an entry module of the tsc output. */
 function page(entry) {
@@ -92,7 +92,7 @@ if (process.argv.includes('--check')) {
   }
   if (cur !== html) {
     console.error(`${out} does NOT match the current source (checked-in sha256 ${sha(cur).slice(0, 16)}…, fresh build ${sha(html).slice(0, 16)}…).`);
-    console.error('Run "npm run build" and commit dist/netatlas.html.');
+    console.error('Regenerate it with "npm run build" and commit dist/netatlas.html (review the diff first: git diff --stat).');
     process.exit(1);
   }
   console.log(`${out} matches a fresh build of the current source (sha256 ${sha(html).slice(0, 16)}…, ${modules.length} modules)`);

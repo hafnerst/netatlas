@@ -44,6 +44,7 @@ import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
 import { glyphFor } from './icons';
 import { serviceListText } from '../model/service-registry';
+import { Lanes, addLanes, newLanes, orthoRoute, simplify } from '../layout/orthogonal';
 
 export interface LogicalOptions {
   showLabels: boolean;
@@ -54,6 +55,8 @@ export interface LogicalOptions {
   showGroups?: boolean;
   hiddenProtocols: Set<string>;
   positions: Map<string, Pt>;
+  /** route relations, network memberships and next-hop lines with horizontal and vertical segments only (the Structured arrangement) */
+  orthogonal?: boolean;
 }
 
 export function logicalNodes(layout: LogicalLayout, positions: Map<string, Pt>): Map<string, LNode> {
@@ -161,16 +164,26 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
 
   // ---- network membership
   if (opts.showNetworks) {
+    const memberLanes = newLanes();
     for (const nw of model.networks) {
       const nn = nodes.get('network:' + nw.id);
       if (!nn) continue;
       for (const m of networkMembers(model, nw.id)) {
         const dn = dev(m.device);
         if (!dn) continue;
-        const s = clipToBox(dn, { x: nn.cx, y: nn.cy }, 1);
-        const e = clipToBox(nn, { x: dn.cx, y: dn.cy }, 1);
+        let s = clipToBox(dn, { x: nn.cx, y: nn.cy }, 1);
+        let e = clipToBox(nn, { x: dn.cx, y: dn.cy }, 1);
+        let d = lineD(s, e);
+        if (opts.orthogonal) {
+          // Structured: out of the side of the device that faces the network, into the side of the network that faces it
+          const pts = memberRoute(dn, nn, nodes, m.device, memberLanes);
+          addLanes(memberLanes, pts);
+          d = polylineD(pts);
+          // (the addresses are written along the longest segment)
+          [s, e] = middleSegment(pts, [false, false]);
+        }
         // from the device to the network (data-member: the device; the traffic animation follows it)
-        members.push(h('path', { class: 'member', 'data-ref': 'network:' + nw.id, 'data-member': m.device, d: lineD(s, e) }));
+        members.push(h('path', { class: 'member', 'data-ref': 'network:' + nw.id, 'data-member': m.device, d }));
         // every address of the device inside the network, in full
         if (opts.showLabels) memberLabels.push({ ref: 'network:' + nw.id, s, e, addresses: memberAddresses(model, nw.id, m.device) });
       }
@@ -188,7 +201,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       if (d) rows.set(n.id, deviceRows(model, d, n));
     } else if (n.kind === 'network' && opts.showNetworks) netBoxes.push(boxRect(n, 4));
   });
-  const routes = routeLogical(model, nodes, rows, bundles, multi, netBoxes);
+  const routes = routeLogical(model, nodes, rows, bundles, multi, netBoxes, !!opts.orthogonal);
   const routeRects: Rect[] = [];
   const keepLine = (pts: Pt[], halfW: number): void => {
     for (let k = 0; k + 1 < pts.length; k++) placer.blockLine(pts[k], pts[k + 1], halfW);
@@ -387,7 +400,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   }
 
   // ---- static routes: a dotted line from a route's line in its table to the interface of its next hop
-  const nhLines = showRoutes ? nextHopLines(model, nodes, rows) : { nodes: [], points: [] };
+  const nhLines = showRoutes ? nextHopLines(model, nodes, rows, !!opts.orthogonal) : { nodes: [], points: [] };
   for (const p of nhLines.points) routeRects.push({ x: p.x - 4, y: p.y - 4, w: 8, h: 8 });
 
   // ---- nodes
@@ -440,7 +453,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   for (const r of routeRects) rects.push({ x: r.x - 12, y: r.y - 12, w: r.w + 24, h: r.h + 24 });
   return {
     conflicts: placer.conflicts + nodeOverlaps(Array.from(nodes.values()).filter((n) => n.kind !== 'network' || opts.showNetworks).map((n) => boxRect(n))),
-    root: h('g', { class: 'scene scene-logical' }, [
+    root: h('g', { class: 'scene scene-logical' + (opts.orthogonal ? ' orthogonal' : '') }, [
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-members' }, members),
       h('g', { class: 'layer-relations' }, relNodes),
@@ -476,7 +489,7 @@ export function routeLineRows(items: EntryItem[], top: number): Map<string, numb
  * Drawn under the boxes; in route order (device, then route ref), so the
  * result depends only on the model and the positions.
  */
-function nextHopLines(model: Model, nodes: Map<string, LNode>, rows: Map<string, Map<string, RowSpan>>): { nodes: VNode[]; points: Pt[] } {
+function nextHopLines(model: Model, nodes: Map<string, LNode>, rows: Map<string, Map<string, RowSpan>>, orthogonal = false): { nodes: VNode[]; points: Pt[] } {
   const out: VNode[] = [];
   const points: Pt[] = [];
   const boxes: Array<{ id: string; r: Rect }> = [];
@@ -507,7 +520,9 @@ function nextHopLines(model: Model, nodes: Map<string, LNode>, rows: Map<string,
         const s1 = { x: s.x + (right ? 10 : -10), y };
         const e1 = { x: e.x + (right ? -12 : 12), y: ty };
         const others = boxes.filter((b) => b.id !== d.id && b.id !== t.device).map((b) => b.r);
-        const pts = [s, s1, ...detour(s1, e1, others, 0, 10), e1, e];
+        const pts = orthogonal
+          ? simplify([s, ...orthoRoute(s1, { x: right ? 1 : -1, y: 0 }, e1, { x: right ? -1 : 1, y: 0 }, others, 10), e])
+          : [s, s1, ...detour(s1, e1, others, 0, 10), e1, e];
         const dd = pts.map((p, i) => (i ? 'L' : 'M') + r1(p.x) + ' ' + r1(p.y)).join('');
         out.push(
           h('g', { class: 'next-hop', 'data-ref': ref, 'data-target': t.iface !== undefined ? `iface:${t.device}:${t.iface}` : 'device:' + t.device }, [
@@ -521,6 +536,44 @@ function nextHopLines(model: Model, nodes: Map<string, LNode>, rows: Map<string,
     }
   }
   return { nodes: out, points };
+}
+
+/**
+ * A membership line with horizontal and vertical segments only (the
+ * Structured arrangement): from the side of the device's box that faces the
+ * network to the side of the network's box that faces the device, around the
+ * other boxes.
+ */
+function memberRoute(dn: LNode, nn: LNode, nodes: Map<string, LNode>, device: string, lanes: Lanes): Pt[] {
+  const side = (from: LNode, to: LNode): Pt => {
+    const dx = to.cx - from.cx;
+    const dy = to.cy - from.cy;
+    // above or below unless the other box lies beside it
+    const apartY = Math.abs(dy) - (from.h + to.h) / 2;
+    const apartX = Math.abs(dx) - (from.w + to.w) / 2;
+    return apartY >= apartX ? { x: 0, y: dy >= 0 ? 1 : -1 } : { x: dx >= 0 ? 1 : -1, y: 0 };
+  };
+  const sd = side(dn, nn);
+  const ed = { x: -sd.x, y: -sd.y };
+  // where the two boxes overlap across the line, it is one straight segment through the middle of the overlap
+  const at = (n: LNode, d: Pt, other: LNode): Pt => {
+    if (d.y !== 0) {
+      const lo = Math.max(n.cx - n.w / 2, other.cx - other.w / 2) + 6;
+      const hi = Math.min(n.cx + n.w / 2, other.cx + other.w / 2) - 6;
+      return { x: hi > lo ? (lo + hi) / 2 : n.cx, y: n.cy + d.y * (n.h / 2 + 1) };
+    }
+    const lo = Math.max(n.cy - n.h / 2, other.cy - other.h / 2) + 6;
+    const hi = Math.min(n.cy + n.h / 2, other.cy + other.h / 2) - 6;
+    return { x: n.cx + d.x * (n.w / 2 + 1), y: hi > lo ? (lo + hi) / 2 : n.cy };
+  };
+  const s = at(dn, sd, nn);
+  const e = at(nn, ed, dn);
+  const obstacles: Rect[] = [];
+  nodes.forEach((n) => {
+    if ((n.kind === 'device' && n.id === device) || n === nn || n.kind === 'hub') return;
+    obstacles.push(boxRect(n.kind === 'device' ? deviceRect(n) : n, 4));
+  });
+  return simplify([s, ...orthoRoute(s, sd, e, ed, obstacles, 10, lanes), e]);
 }
 
 /** The arrow of a next-hop line at the side of the next hop's box, pointing into it (`dir` 1: rightwards). */

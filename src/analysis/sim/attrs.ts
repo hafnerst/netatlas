@@ -5,6 +5,7 @@
  * Hypervisor and Container engine services). Pure.
  */
 import { capabilities, deviceRoutingRole } from '../../model/capabilities';
+import { ipConfigured } from '../../model/ipv6';
 import { protocolBase } from '../../model/protocols';
 import { Device, Interface, Model, Relation, deviceInterfaces, relationDevices } from '../../model/types';
 import { DeviceFacts, IfaceFacts, ParamDef, RelFacts, deviceParams, deviceParamByYaml, interfaceParams, relationParams, vlanParams } from './params';
@@ -18,7 +19,7 @@ export function deviceFacts(model: Model, d: Device): DeviceFacts {
     type: d.type,
     layer3: d.layer3,
     caps: capabilities(d),
-    ip: ifs.some((i) => i.addresses.length > 0 || i.dhcp),
+    ip: ifs.some((i) => ipConfigured(i)),
     routes: deviceRoutingRole(d) === 'router',
     aggregate: d.logical.some((i) => i.type === 'virtual' && i.members.length > 0),
     ipsec: rels.some((r) => base(r.protocol) === 'ipsec'),
@@ -37,10 +38,10 @@ export function ifaceFacts(model: Model, d: Device, i: Interface): IfaceFacts {
   const wireless = port && model.links.some((l) => l.medium === 'wireless' && ((l.a.device === d.id && l.a.iface === i.id) || (l.b.device === d.id && l.b.iface === i.id)));
   return {
     port,
-    ip: i.addresses.length > 0 || i.dhcp,
+    ip: ipConfigured(i),
     dhcp: i.dhcp,
     lag,
-    bridgePort: capabilities(d).switchFeatures && ((port && !member && !(i.addresses.length > 0 || i.dhcp)) || lag),
+    bridgePort: capabilities(d).switchFeatures && ((port && !member && !ipConfigured(i)) || lag),
     radio: capabilities(d).wirelessAccess && wireless,
   };
 }

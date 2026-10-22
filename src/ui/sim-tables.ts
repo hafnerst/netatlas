@@ -13,8 +13,9 @@
  */
 import { ArpRow, ConnRow, GridTable, Headers, MacRow, McDecision, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
+import { tcpFlagsLong, tcpFlagsText, tcpHeaderLen } from '../analysis/sim/tcp';
 
-export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone';
+export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone' | 'mqtt' | 'mqttc' | 'ipv6' | 'ptp' | 'ntp';
 
 export interface ConnData {
   rows: ConnRow[];
@@ -28,18 +29,23 @@ export interface FwData {
 }
 
 export interface PacketData {
-  hdr: Headers;
+  /** its frame's headers (none: illustrative data on a non-IP interconnect, which has no headers at all) */
+  hdr?: Headers;
+  /** illustrative data on a non-IP interconnect: what it is, in rows, and its notice (analysis/sim/opaque.ts) */
+  opaque?: { title: string; label: string; rows: Array<[string, string]>; notice: string };
   /** when it was on its way, and where ("t = 3.4 s, on cable l2 (r1 → fw1)") */
   where: string;
   /** Follow message: whether its conversation is followed, and the button's action */
   follow?: { on: boolean; act: () => void };
   /** the multicast forwarding decisions about this hop: the one that sent it, the one where it arrived */
   forwarding?: Array<{ title: string; d: McDecision }>;
+  /** what the simulation does of its protocol (its support statement), for the Fidelity section */
+  support?: { label: string; level: string; does: string; not?: string };
 }
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
 
-const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6 configuration', ptp: 'PTP clock', ntp: 'NTP status' };
 
 export interface ArpData {
   v4: ArpRow[];
@@ -270,7 +276,7 @@ export class TablePanels {
       this.announce(p, n);
       return;
     }
-    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone') {
+    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone' || p.kind === 'mqtt' || p.kind === 'mqttc' || p.kind === 'ipv6' || p.kind === 'ptp' || p.kind === 'ntp') {
       this.announce(p, this.gridPanel(p));
       return;
     }
@@ -350,7 +356,7 @@ export class TablePanels {
     for (const r of d.rows) {
       tb.appendChild(
         el(this.doc, 'tr', { 'data-state': r.state }, [
-          el(this.doc, 'td', {}, [r.proto.toUpperCase()]),
+          el(this.doc, 'td', {}, [r.proto === 'other' ? 'IP' : r.proto.toUpperCase()]),
           el(this.doc, 'td', { class: 'mono' }, [r.flow]),
           el(this.doc, 'td', {}, [r.state]),
           el(this.doc, 'td', {}, [r.rule]),
@@ -384,8 +390,18 @@ export class TablePanels {
 
   /** The packet inspector: a frame's headers, layer by layer. */
   private packet(d: PacketData): HTMLElement {
-    const h = d.hdr;
     const box = el(this.doc, 'div', { class: 'pi' });
+    // illustrative data on a non-IP interconnect: no layers (no Ethernet, IP or transport header exists), its rows and the notice
+    if (d.opaque || !d.hdr) {
+      const o = d.opaque || { title: 'No headers', label: '', rows: [], notice: '' };
+      box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${o.label} — ${d.where}`]));
+      const dl = el(this.doc, 'dl');
+      for (const [k, v] of o.rows) dl.appendChild(el(this.doc, 'div', { style: 'display:contents' }, [el(this.doc, 'dt', {}, [k]), el(this.doc, 'dd', {}, [v])]));
+      box.appendChild(el(this.doc, 'section', { class: 'pi-layer pi-opaque' }, [el(this.doc, 'h4', {}, [o.title]), dl]));
+      if (o.notice) box.appendChild(el(this.doc, 'p', { class: 'pi-notice', role: 'note' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['ⓘ ']), o.notice]));
+      return box;
+    }
+    const h = d.hdr;
     box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${h.label} — ${h.cast}; ${d.where}`]));
     if (d.follow) {
       const fb = el(this.doc, 'button', { type: 'button', class: d.follow.on ? 'pi-follow' : 'primary pi-follow', 'aria-pressed': d.follow.on ? 'true' : 'false', id: 'pi-follow' }, [d.follow.on ? 'Stop following' : 'Follow message']);
@@ -427,6 +443,7 @@ export class TablePanels {
       ];
       if (ip.version === 4) rows.splice(3, 0, ['Don’t Fragment', ip.df ? 'set' : 'not set']);
       if (ip.frag) rows.push(['Fragment', ip.frag]);
+      if (ip.options) rows.push(['Options', ip.options]);
       if (ip.encap) rows.push(['Carries', `${ip.encap}, with the packet below inside`]);
       layer(`Layer 3 – IPv${ip.version}${h.l3.length > 1 ? (i === 0 ? ' (outer)' : i === h.l3.length - 1 ? ' (inner)' : ` (${i + 1})`) : ''}`, rows);
     });
@@ -451,16 +468,27 @@ export class TablePanels {
       } else if (l4.proto === 'other') rows.push(['IP protocol', String(l4.num)]);
       else {
         rows.push(['Source port', String(l4.sport)], ['Destination port', String(l4.dport)]);
-        if (l4.flags) rows.push(['Flags', l4.flags.join(', ')]);
+        if (l4.proto === 'tcp') rows.push(['Flags', `${tcpFlagsText(l4.flags)} ${tcpFlagsLong(l4.flags)}`]);
         if (l4.seq !== undefined && l4.proto === 'tcp') rows.push(['Sequence, acknowledgement', `${l4.seq}${l4.ack !== undefined ? ', ' + l4.ack : ''}`]);
+        if (l4.mss !== undefined) rows.push(['Options', `MSS ${l4.mss} (the largest segment its sender takes)`]);
+        if (l4.proto === 'tcp') rows.push(['Header length', `${tcpHeaderLen(l4)} bytes${l4.mss !== undefined ? ' (20 and the MSS option, 4)' : ''}`]);
       }
       layer(`Layer 4 – ${l4.proto === 'icmp' ? (h.l3.length && h.l3[h.l3.length - 1].version === 6 ? 'ICMPv6' : 'ICMP') : l4.proto === 'other' ? 'protocol' : l4.proto.toUpperCase()}`, rows);
     }
+    if (h.app) layer(h.app.title, h.app.rows);
     layer('Payload', [['Carries', h.payload]]);
     // why it was sent then: what caused it, what it waited for
     const why: Array<[string, string]> = [['Caused by', h.causedBy || 'its own timer or start (nothing it answers)']];
     why.push(['Waited for', h.waited && h.waited.length ? h.waited.join('; ') : 'nothing: sent at once']);
     layer('Timing', why);
+    // which fields the simulation computed, which it leaves out, and what is only described
+    const computed = ['addresses and MACs', 'the VLAN tag', h.l3.length ? (h.l3[0].version === 4 ? 'TTL, DF and fragments' : 'the hop limit and fragments') : '', l4 && l4.proto === 'icmp' ? 'the ICMP type, code and quoted header' : '', l4 && (l4.proto === 'tcp' || l4.proto === 'udp') ? 'the ports' : '', l4 && l4.proto === 'tcp' ? 'the TCP flags, sequence and acknowledgement numbers (the connection’s own state)' : '', 'the sizes'].filter((x) => x);
+    const fid: Array<[string, string]> = [
+      ['Computed', computed.join(', ') + ': what the simulation works with.'],
+      ['Left out', 'checksums, IP identification and options, the TCP window and options: nothing in the simulation depends on them.'],
+      ['Described', `the payload (${d.support ? d.support.label : h.protocol}) in words: its contents are the simulation’s own records, not the protocol’s field layout${d.support && d.support.not ? ` — not simulated: ${d.support.not.replace(/\.$/, '')}` : ''}.`],
+    ];
+    layer('Fidelity', fid);
     return box;
   }
 

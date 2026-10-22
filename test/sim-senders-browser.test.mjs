@@ -33,7 +33,8 @@ test('the defaults and the Start dialog: Protocols, then Senders (open), then th
     await page.eval(`netatlas.select(null), netatlas.openStartDialog(), true`);
     await page.settle(150);
     const d = await page.eval(`(() => { const b = document.querySelector('#modal .modal-body'); return { order: Array.from(b.children).map((c) => c.className.split(' ')[0]), snd: document.getElementById('sim-pd-senders-toggle').getAttribute('aria-expanded'), params: Array.from(document.querySelectorAll('#modal .psec-toggle')).every((x) => x.getAttribute('aria-expanded') === 'false'), sum: ${SUM('sim-pd-senders')}, boxes: Array.from(document.querySelectorAll('#sim-pd-senders input[data-sender]')).every((x) => x.checked) }; })()`);
-    assert.deepEqual(d.order.slice(1, 4), ['pp', 'snd', 'psecs']);
+    // (after the execution scope, which comes first since execution scopes: src/ui/scope-ui.ts)
+    assert.deepEqual(d.order.slice(1, 5), ['sim-pd-scope', 'pp', 'snd', 'psecs']);
     assert.equal(d.snd, 'true', 'open in the dialog');
     assert.equal(d.params, true);
     assert.equal(d.sum, 'Senders (all 22)');

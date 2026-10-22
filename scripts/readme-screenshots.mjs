@@ -1,13 +1,15 @@
-// Regenerates the README screenshots in docs/img/ from the test build (build/netatlas-test.html),
-// using headless Chrome/Edge/Chromium (through the DevTools protocol,
-// scripts/cdp.mjs) and the page's deep links
-// (#example=<n or file name>&view=<physical|logical>&select=<ref>&devices=<id,…>). Run after "npm run build":
+// Regenerates the four README screenshots in docs/img/ from the released
+// application (dist/netatlas.html, its public examples only), using headless
+// Chrome/Edge/Chromium through the DevTools protocol (scripts/cdp.mjs). Run
+// after "npm run build":
 //
-//   node scripts/readme-screenshots.mjs                 every screenshot
-//   node scripts/readme-screenshots.mjs a.png b.png     only these
+//   node scripts/readme-screenshots.mjs                         all four
+//   node scripts/readme-screenshots.mjs readme-physical.png     only these
 //
-// Each shot names its theme: the page is opened with that choice stored, as a
-// user who chose it would see it (Dark is the default). The README shows both.
+// Each shot is cropped to the part of the window that shows its point (the
+// diagram, or the diagram with a window or the simulation panels) at a zoom
+// whose labels stay readable at the README's width. Nothing is edited
+// afterwards: the pictures are what the application draws.
 //
 // Set NETATLAS_BROWSER=/path/to/chrome to choose the browser explicitly.
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -16,90 +18,67 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openPage } from './cdp.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-// the test build: the released application, which can also load the internal test models some pictures show (npm run build writes it)
-const html = resolve(root, 'build', 'netatlas-test.html');
-/** the screenshots named on the command line (none: every one) */
+const html = resolve(root, 'dist', 'netatlas.html');
 const only = process.argv.slice(2);
 const outDir = join(root, 'docs', 'img');
 
-// file name -> theme, deep link (example numbers follow the Examples menu), and what to do before the shot
-const SHOTS = [
-  ['editor.png', 'dark', 'example=0&view=logical&select=device:hq-rtr1'],
-  ['wan-physical.png', 'light', 'example=0&view=physical'],
-  ['wan-logical-gre-selected.png', 'dark', 'example=0&view=logical&select=relation:gre-muc'],
-  ['wan-physical-gre-path.png', 'light', 'example=0&view=physical&select=relation:gre-muc'],
-  ['device-types.png', 'light', 'example=device-types.yaml&view=physical'],
-  ['dc-physical.png', 'dark', 'example=datacenter-evpn.yaml&view=physical'],
-  ['metro-physical.png', 'light', 'example=metro-ring.yaml&view=physical'],
-  ['metro-logical.png', 'dark', 'example=metro-ring.yaml&view=logical'],
-  ['wan-physical-filtered.png', 'light', 'example=0&view=physical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
-  ['wan-logical-filtered.png', 'dark', 'example=0&view=logical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
-  ['addressing-physical.png', 'light', 'example=addressing.yaml&view=physical'],
-  ['addressing-logical-dark.png', 'dark', 'example=addressing.yaml&view=logical'],
-  ['ports-logical.png', 'dark', 'example=port-bindings.yaml&view=logical&select=relation:ospf-s1'],
-  ['ports-physical-lag.png', 'light', 'example=port-bindings.yaml&view=physical&select=iface:core-a:Po1'],
-  ['routes-logical.png', 'dark', 'example=branch-routing.yaml&view=logical&select=route:br-rtr:1'],
-  ['tagging-physical.png', 'light', 'example=vlan-ports.yaml&view=physical', 'netatlas.fit()'],
-  ['virtualization-physical.png', 'dark', 'example=virtualization.yaml&view=physical', 'netatlas.fit()'],
-  ['addressing-overview.png', 'light', 'example=addressing.yaml&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
-];
+/** centre the diagram on some objects at a zoom (the app's own view state, as a user's pan and zoom) */
+const CENTER = `const center = (refs, k) => {
+  const bs = refs.map((r) => document.querySelector('#canvas [data-ref="' + r + '"]').getBBox());
+  const x0 = Math.min(...bs.map((b) => b.x)), y0 = Math.min(...bs.map((b) => b.y));
+  const x1 = Math.max(...bs.map((b) => b.x + b.width)), y1 = Math.max(...bs.map((b) => b.y + b.height));
+  const svg = document.getElementById('canvas');
+  netatlas.zoom = { k, tx: svg.clientWidth / 2 - ((x0 + x1) / 2) * k, ty: svg.clientHeight / 2 - ((y0 + y1) / 2) * k };
+  netatlas.applyZoom();
+};`;
 
-// the simulation layout: file name, window width and height
-const SIM_SHOTS = [
-  ['sim-layout-wide.png', 1440, 900],
-  ['sim-layout-narrow.png', 800, 900],
-  ['sim-layout-short.png', 800, 600],
+// name, theme, window size, what to crop (the diagram and these elements), the steps in the page, real ms to wait
+const SHOTS = [
+  // an industrial cell: devices, ports and cables, zones as groups (physical view, Default)
+  ['readme-physical.png', 'light', [1680, 840], [], `netatlas.loadExampleNamed('ot-network.yaml'); netatlas.setView('physical'); netatlas.fit();`],
+  // a campus in the logical view, arranged with Compact: VLAN networks, the core's interfaces, routes, groups
+  ['readme-logical.png', 'light', [1680, 1180], [], `netatlas.loadExampleNamed('enterprise-campus.yaml'); netatlas.setView('logical'); document.getElementById('btn-arrange-compact').click(); await new Promise((r) => setTimeout(r, 200)); netatlas.fit();`],
+  // Analyze → Trace path across a hybrid cloud, with the return path: the request, the hops marked in the diagram, the evidence, the results
+  ['readme-analysis.png', 'dark', [1680, 1000], ['#outline', '#side', '#sim-dock'], `netatlas.loadExampleNamed('hybrid-cloud.yaml'); netatlas.setView('physical'); netatlas.setTraceForm({ from: 'dc-pc', to: 'web-1', back: true }); netatlas.openTrace(); netatlas.runTrace(); netatlas.fit();`],
+  // a protocol simulation of the home network: the first of five pings from the laptop to the NAS on the riser cable, the Network events
+  // form, the protocols' status and the event log
+  ['readme-simulation.png', 'dark', [1440, 900], ['#sim-actions', '#sim-dock'], `netatlas.loadExampleNamed('private-house.yaml'); netatlas.setView('physical'); sessionStorage.clear(); localStorage.removeItem('netatlas.dockHeight');
+    netatlas.startProtocolSimulation({ senders: ['laptop', 'nas'] }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(30000);
+    const set = (id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev || 'change')); };
+    set('sim-t-type', 'unicast'); set('sim-t-from', 'laptop'); set('sim-t-to', 'nas'); set('sim-t-kind', 'icmp'); set('sim-t-count', '5', 'input'); set('sim-t-interval', '1', 'input');
+    document.getElementById('sim-t-send').click(); c.setPlaying(true); await new Promise((r) => setTimeout(r, 100));
+    center(['device:laptop', 'device:nas', 'device:dist', 'device:core'], 0.62);`, 11000],
 ];
 
 async function main() {
   if (!existsSync(html)) {
-    console.error('build/netatlas-test.html not found: run "npm run build" first');
+    console.error('dist/netatlas.html not found: run "npm run build" first');
     process.exit(1);
   }
   mkdirSync(outDir, { recursive: true });
-  const base = pathToFileURL(html).href;
-  const page = await openPage(base, { width: 1700, height: 1050 });
-  try {
-    for (const [name, theme, link, action] of SHOTS) {
-      if (only.length && only.indexOf(name) < 0) continue;
-      await page.eval(`localStorage.setItem('netatlas.theme', ${JSON.stringify(theme)}), window.__old = true`);
-      // a new document each time (a changed '#…' alone would not load the page again)
-      await page.cmd('Page.navigate', { url: base + '?' + name + '#' + link });
-      for (let i = 0; i < 200; i++) {
-        try {
-          if (await page.eval(`!window.__old && document.readyState === 'complete' && !!window.netatlas && !!netatlas.session`)) break;
-        } catch {
-          /* navigating */
-        }
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      if (action) await page.eval(`(() => { ${action}; return true; })()`);
-      await page.mouse('mouseMoved', 1690, 1040);
-      await page.settle(300);
-      const shot = await page.cmd('Page.captureScreenshot', { format: 'png' });
-      writeFileSync(join(outDir, name), Buffer.from(shot.data, 'base64'));
-      console.log(`wrote docs/img/${name} (${theme})`);
-    }
-  } finally {
-    await page.eval(`localStorage.removeItem('netatlas.theme'), true`).catch(() => {});
-    await page.close();
-  }
-  // the simulation layout (protocol-simulation.yaml, dark) at three window sizes: wide, narrow, narrow and short
-  for (const [name, width, height] of SIM_SHOTS) {
+  for (const [name, theme, [width, height], parts, steps, wait] of SHOTS) {
     if (only.length && only.indexOf(name) < 0) continue;
-    const p = await openPage(base, { width, height });
+    const page = await openPage(pathToFileURL(html).href, { width, height });
     try {
-      await p.settle(200);
-      const ex = 'protocol-simulation.yaml';
-      await p.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), netatlas.select('device:core1'), netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25200), netatlas.fit(), true`);
-      await p.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 20; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
-      await p.mouse('mouseMoved', width - 10, height - 10);
-      await p.settle(400);
-      const shot = await p.cmd('Page.captureScreenshot', { format: 'png' });
+      await page.settle(150);
+      await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.theme.set(${JSON.stringify(theme)}), true`);
+      await page.eval(`(async () => { ${CENTER} ${steps} return true; })()`);
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+      await page.eval(`(() => { const t = document.getElementById('toast'); if (t) t.hidden = true; return true; })()`);
+      // the pointer out of the way (no hover marks)
+      await page.mouse('mouseMoved', width - 3, height - 3);
+      await page.settle(400);
+      const rs = [await page.rect('#canvas-wrap')];
+      for (const sel of parts) rs.push(await page.rect(sel));
+      const x0 = Math.min(...rs.map((r) => r.x));
+      const y0 = Math.min(...rs.map((r) => r.y));
+      const x1 = Math.max(...rs.map((r) => r.x + r.w));
+      const y1 = Math.max(...rs.map((r) => r.y + r.h));
+      const shot = await page.cmd('Page.captureScreenshot', { format: 'png', clip: { x: x0, y: y0, width: x1 - x0, height: y1 - y0, scale: 1 } });
       writeFileSync(join(outDir, name), Buffer.from(shot.data, 'base64'));
-      console.log(`wrote docs/img/${name} (dark, ${width} × ${height})`);
+      console.log(`wrote docs/img/${name} (${theme}, ${Math.round(x1 - x0)} × ${Math.round(y1 - y0)})`);
     } finally {
-      await p.close();
+      await page.close();
     }
   }
 }

@@ -35,6 +35,16 @@
  * banner's text (with a broadcast storm's warning), what is down, a
  * highlighted broadcast domain, and Exit.
  *
+ * An experiment plays with the same controller (the Experiments workspace,
+ * analysis/sim/experiment.ts): it adopts the experiment's simulation
+ * (`simulation`), shows only the experiment's traffic (`experiment.relevant`:
+ * the rest runs, hidden, and neither waits on screen nor holds the clock),
+ * mutes nothing, stops its clock at the experiment's end, offers no
+ * in-diagram events (the experiment's actions are its events) and has no
+ * panels of its own (the workspace's bottom panel shows the run). The dots,
+ * their labels and hit areas, the packet inspector, Follow, the device
+ * states and the reduced-motion arrows are the same.
+ *
  * The checkboxes only choose what is shown (dots and event log): the
  * simulation always computes every protocol, so changing them never
  * restarts it or changes its time, and the tables keep filling. Parameters
@@ -43,11 +53,13 @@
  * happens. Nothing here changes the model or adds an undo step (a device's
  * Simulation settings are edited in the Actions panel, see modelChanged).
  */
+import type { SendPrefill } from '../analysis/comm-identity';
+import { ExecScope, scopedModel } from '../analysis/exec-scope';
 import { virtBridgeId } from '../model/virtual';
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
-import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
+import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, flightKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
@@ -59,9 +71,10 @@ import { textWidth } from '../layout/text';
 type QuerierMark = 'querier' | 'starting' | 'standby' | 'none';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
-import { IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
+import { AppForm, IfaceForm, JoinForm, LeaveForm, OpaqueFailForm, OpaqueForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
+import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { Flight, Headers, McDecision, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces } from '../model/types';
@@ -118,7 +131,8 @@ export interface SimHost {
 }
 
 /** Why the simulation is paused: by the user (Pause, Step), or while the packet inspector is in use. */
-export type PauseReason = 'user' | 'inspector' | null;
+/** Why it is paused: the user, the packet inspector, or Analyze in front (resumed when Analyze is left) */
+export type PauseReason = 'user' | 'inspector' | 'analyze' | null;
 
 export interface SimStartOptions {
   /** the protocols shown at the start (all when left out) */
@@ -127,9 +141,15 @@ export interface SimStartOptions {
   senders?: string[];
   /** the simulation-wide parameters that differ from their defaults */
   params?: { [key: string]: ParamValue };
+  /** what it runs (analysis/exec-scope.ts): the entire model when left out */
+  scope?: ExecScope;
+  /** a simulation to show instead of a new one (an experiment's) */
+  simulation?: Simulation;
+  /** an experiment playing: which flights are its own (the only ones shown), and the simulated time it ends at */
+  experiment?: { relevant(f: Flight): boolean; until(): number; notable?(t: number): number | null };
 }
 
-const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c' };
+const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c', opaque: '#7048b6' };
 
 /** The protocols of Layer 2 (the event log's layer filter); the link events are Layer 1, tests and services Layer 4. */
 const LAYER2 = ['arp', 'ndp', 'garp', 'stp', 'lacp', 'lldp', 'cdp'];
@@ -147,7 +167,7 @@ export type MenuItem = { label: string; act: () => void };
 
 /** The tables of a device the simulation panel can show (the status side's tabs). */
 type DevTable = Exclude<TableKind, 'packet'>;
-const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone', mqtt: 'MQTT sessions', mqttc: 'MQTT clients', ipv6: 'IPv6', ptp: 'PTP', ntp: 'NTP' };
 
 /** An interval in seconds as the form has it: "1 s", "0.25 s". */
 function secText(sec: number): string {
@@ -189,6 +209,9 @@ export class SimController implements SimulationMode {
   private leaveForm: LeaveForm | null = null;
   private streamForm: StreamForm | null = null;
   private ifaceForm: IfaceForm | null = null;
+  private appForm: AppForm | null = null;
+  private opaqueForm: OpaqueForm | null = null;
+  private opaqueFailForm: OpaqueFailForm | null = null;
   private domainKey = '';
   /** the status side shows the protocols' status, or a table of the selected device */
   private statusView: { kind: DevTable; dev: string } | null = null;
@@ -202,9 +225,10 @@ export class SimController implements SimulationMode {
     opts: SimStartOptions | string[] = {},
   ) {
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
-    // the real-time schedule (a stream's interval) counts the page's own clock
-    const win = host.doc.defaultView;
-    this.sim = new Simulation(host.model(), { params: o.params, realClock: () => (win && win.performance ? win.performance.now() : Date.now()) });
+    // an execution scope runs a model of its own (the devices outside are not run at all; display and analysis are not changed by it)
+    this.scope = o.scope && o.scope.kind !== 'entire' ? o.scope : null;
+    this.sim = o.simulation || new Simulation(this.scope ? scopedModel(host.model(), this.scope) : host.model(), { params: o.params });
+    this.experiment = o.experiment || null;
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
     // closing the packet inspector ends the pause it caused
@@ -222,16 +246,28 @@ export class SimController implements SimulationMode {
     this.pacer = new Pacer(
       {
         engine: this.sim.engine,
-        shown: (f) => f.view === this.host.view() && this.flightShown(f),
+        // (shown: in the view on screen, of what is shown, and drawn there — a track of the scene the dot can travel)
+        shown: (f) => f.view === this.host.view() && this.flightShown(f) && this.renderable(f),
         typical: (v) => this.typical(v),
         headers: (f) => f.hdr,
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
-        foreground: () => this.sim.foregroundActive(),
-        realtime: () => this.sim.realtimeActive(),
+        foreground: () => !this.experiment && this.sim.foregroundActive(),
+        until: () => (this.experiment ? this.experiment.until() : null),
+        notable: (t) => (this.experiment && this.experiment.notable ? this.experiment.notable(t) : null),
+        epoch: () => this.sim.presentationEpoch,
       },
       MAX_DOTS,
     );
+    if (this.experiment) {
+      // everything shown is the experiment's: nothing muted, nothing hidden holding it, its exchanges drawn rather than bundled
+      this.pacer.mute = false;
+      this.pacer.hiddenHoldsNothing = true;
+      this.pacer.convLimit = 40;
+      this.pacer.summarizeRepeats = false;
+      // its starting state is seen before anything is skipped
+      this.pacer.rest();
+    }
     host.doc.addEventListener('visibilitychange', this.onVis);
     this.schedule();
   }
@@ -316,9 +352,11 @@ export class SimController implements SimulationMode {
     this.badges = null;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
-    // nothing scheduled sends again
+    // nothing scheduled sends again, and nothing waits for a dot
+    this.pacer.detach();
     this.sim.close();
     this.closeMenu();
+    if (this.sendersUi) this.sendersUi.dispose();
     this.host.doc.removeEventListener('visibilitychange', this.onVis);
   }
 
@@ -355,7 +393,6 @@ export class SimController implements SimulationMode {
   /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
   schedule(): void {
     // the real-time schedule runs while the simulation does (paused, hidden or closed: it stands)
-    this.sim.setRealTimeRunning(this.running());
     const w = this.host.doc.defaultView;
     if (!w) return;
     if (this.raf) w.cancelAnimationFrame(this.raf);
@@ -383,8 +420,6 @@ export class SimController implements SimulationMode {
 
   /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
   advance(wallMs: number): void {
-    // the streams of Network events first: what is due now goes at the current simulated time
-    if (this.sim.pumpRealTime()) this.actionsKey = '';
     this.pacer.frame(wallMs);
   }
 
@@ -414,6 +449,8 @@ export class SimController implements SimulationMode {
     const s = this.playState();
     const vis = d.getElementById('sim-state');
     if (vis && vis.textContent !== s) vis.textContent = s;
+    // who holds the pause, and what ends it
+    if (vis) vis.title = this.playing ? '' : this.pausedBy === 'inspector' ? 'The packet inspector paused it: it plays again when you close the inspector (or press Play).' : 'You paused it: it stays paused until you press Play.';
     // Send and play only while paused
     const sp = d.getElementById('sim-t-sendplay');
     if (sp) sp.hidden = this.playing;
@@ -430,15 +467,20 @@ export class SimController implements SimulationMode {
     this.watchInspector(true);
   }
 
-  /** The inspector is no longer in use (closed, left, hidden): resume, if it was what paused the simulation. */
+  /** The inspector is closed (or gone from the window): resume, if it was what paused the simulation. */
   resumeFromInspector(): boolean {
     if (this.stopped || this.playing || this.pausedBy !== 'inspector') return false;
     this.setPlaying(true);
     return true;
   }
 
-  /** Is the packet inspector shown (in the page, with a size, inside the window and not covered)? */
-  inspectorVisible(): boolean {
+  /**
+   * Is the packet inspector still open: in the page, not hidden, with a
+   * size, and not entirely outside the window? Focus moving away, a click
+   * elsewhere, another window over it for a while: still open — the pause
+   * it made lasts until it is closed (or Play is pressed).
+   */
+  inspectorOpen(): boolean {
     const box = this.tables.panelOf('packet');
     if (!box || !box.isConnected || box.hidden) return false;
     const r = box.getBoundingClientRect();
@@ -446,44 +488,18 @@ export class SimController implements SimulationMode {
     if (r.width < 1 || r.height < 1 || !w) return false;
     if (r.right <= 0 || r.bottom <= 0 || r.left >= w.innerWidth || r.top >= w.innerHeight) return false;
     const cs = w.getComputedStyle(box);
-    if (cs.visibility === 'hidden' || cs.display === 'none') return false;
-    // covered: what is at its title bar is not the inspector
-    const x = Math.max(1, Math.min(w.innerWidth - 2, r.left + r.width / 2));
-    const y = Math.max(1, Math.min(w.innerHeight - 2, r.top + 8));
-    const at = this.host.doc.elementFromPoint(x, y);
-    return !!at && box.contains(at);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
   }
 
-  private onInspectorFocusOut = (e: FocusEvent): void => {
-    const box = this.tables.panelOf('packet');
-    const to = e.relatedTarget as Node | null;
-    // the focus went somewhere else on the page (not just out of the window); Play / Pause and Step decide for themselves
-    if (box && to && !box.contains(to) && !(to instanceof Element && to.closest('#sim-play, #sim-step, #sim-step-x'))) this.resumeFromInspector();
-  };
-
-  private onPointerElsewhere = (e: Event): void => {
-    const box = this.tables.panelOf('packet');
-    const t = e.target as Element;
-    if (!box || box.contains(t)) return;
-    // Play / Pause and Step decide for themselves
-    if (t.closest && t.closest('#sim-play, #sim-step, #sim-step-x')) return;
-    this.resumeFromInspector();
-  };
-
-  /** Watch the inspector while it holds the simulation: its focus, a click elsewhere, its visibility. */
+  /** Watch the inspector while it holds the simulation: once it is closed (or gone from the window), it plays again. */
   private watchInspector(on: boolean): void {
-    const doc = this.host.doc;
-    const w = doc.defaultView;
-    doc.removeEventListener('focusout', this.onInspectorFocusOut, true);
-    doc.removeEventListener('pointerdown', this.onPointerElsewhere, true);
+    const w = this.host.doc.defaultView;
     if (this.inspectorTimer !== null && w) w.clearInterval(this.inspectorTimer);
     this.inspectorTimer = null;
     if (!on || !w) return;
-    doc.addEventListener('focusout', this.onInspectorFocusOut, true);
-    doc.addEventListener('pointerdown', this.onPointerElsewhere, true);
     this.inspectorTimer = w.setInterval(() => {
       if (this.pausedBy !== 'inspector') return this.watchInspector(false);
-      if (!this.inspectorVisible()) this.resumeFromInspector();
+      if (!this.inspectorOpen()) this.resumeFromInspector();
     }, 300);
   }
 
@@ -524,6 +540,7 @@ export class SimController implements SimulationMode {
   setPacing(mode: PaceMode, scale?: number): void {
     this.pacer.mode = mode;
     if (scale !== undefined && PACE_SCALES.indexOf(scale) >= 0) this.pacer.scale = scale;
+    this.pacer.reshow();
     this.refresh(true);
   }
 
@@ -565,7 +582,11 @@ export class SimController implements SimulationMode {
     this.shownChanged();
   }
 
+  /** the view the pacing last showed */
+  private viewSeen: string | null = null;
+
   private shownChanged(): void {
+    this.pacer.reshow();
     this.logKey = '';
     if (this.picker) this.picker.set(this.shown);
     if (this.host.shownChanged) this.host.shownChanged(new Set(this.shown));
@@ -581,8 +602,14 @@ export class SimController implements SimulationMode {
     return this.shown.has(protocol);
   }
 
-  /** A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and their sender is chosen. */
-  private flightShown = (f: Flight): boolean => f.test !== undefined || ((this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f));
+  /** an experiment playing (only its traffic shown), or null */
+  readonly experiment: { relevant(f: Flight): boolean; until(): number; notable?(t: number): number | null } | null;
+
+  /**
+   * A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and
+   * their sender is chosen. An experiment's: its own traffic only.
+   */
+  private flightShown = (f: Flight): boolean => (this.experiment ? this.experiment.relevant(f) : f.test !== undefined || ((this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f)));
 
   // ------------------------------------------------------------ senders
 
@@ -616,6 +643,7 @@ export class SimController implements SimulationMode {
     this.sim.engine.setSenders(all ? null : next, all ? 'every device' : names.length ? names.join(', ') : 'none');
     if (this.sendersUi) this.sendersUi.set(this.senders);
     if (this.host.sendersChanged) this.host.sendersChanged(new Set(this.senders));
+    this.pacer.reshow();
     this.logKey = '';
     this.actionsKey = '';
     this.badgesKey = '';
@@ -690,10 +718,24 @@ export class SimController implements SimulationMode {
   /** the devices' lifecycle, as of a state version of the simulation (every power change counts one) */
   private powerStates: { ver: number; states: Map<string, DeviceStateView> } | null = null;
 
-  /** The devices' lifecycle now (computed again only when the simulation's state changed). */
+  /** The execution scope it runs (null: the entire model). */
+  readonly scope: ExecScope | null;
+
+  /** "Execution scope: Entire model (12 devices)" — or how many it runs and how many it does not. */
+  scopeText(): string {
+    const n = this.host.model().devices.length;
+    if (!this.scope) return `Execution scope: Entire model (${n} device${n === 1 ? '' : 's'} run).`;
+    return `Execution scope: ${this.scope.label}. ${this.scope.devices.size} of ${n} devices run, ${n - this.scope.devices.size} not run (marked Not run); ${this.scope.boundary.length} cable${this.scope.boundary.length === 1 ? '' : 's'} lead out of it.`;
+  }
+
+  /** The devices' lifecycle now (computed again only when the simulation's state changed); a device outside the execution scope is "Not run". */
   private deviceStates(): Map<string, DeviceStateView> {
     const ver = this.sim.engine.stateVersion;
-    if (!this.powerStates || this.powerStates.ver !== ver) this.powerStates = { ver, states: this.sim.deviceStates() };
+    if (!this.powerStates || this.powerStates.ver !== ver) {
+      const states = this.sim.deviceStates();
+      if (this.scope) for (const d of this.host.model().devices) if (!this.scope.devices.has(d.id)) states.set(d.id, { state: 'outside', label: 'Not run', detail: `outside the execution scope (${this.scope.label}): not simulated, nothing answers from it` });
+      this.powerStates = { ver, states };
+    }
     return this.powerStates.states;
   }
 
@@ -714,7 +756,8 @@ export class SimController implements SimulationMode {
     const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     const marks = this.querierMarks();
     const snoops = this.snoopBadges();
-    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
+    const ptps = this.ptpMarks();
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(ptps).map(([d, m]) => d + '=' + m.text + m.state).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state + m.detail).join('|')}|${Array.from(snoops).map(([d, rs]) => d + '=' + rs.map((r) => r.text + r.detail).join(';')).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
@@ -776,6 +819,48 @@ export class SimController implements SimulationMode {
       led.setAttribute('cx', (at.x + 9).toFixed(1));
       led.setAttribute('cy', (at.y + H / 2).toFixed(1));
       tx.setAttribute('x', (at.x + 16).toFixed(1));
+      tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
+      s.setAttribute('data-edge', at.edge);
+    }
+    // each PTP clock's role (★ the grandmaster), beside its status: the same compact mark as a querier's
+    for (const [dev, m] of ptps) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const s = doc.createElementNS(NS, 'g');
+      s.setAttribute('class', 'sim-ptp');
+      s.setAttribute('data-device', dev);
+      s.setAttribute('data-state', m.state);
+      s.setAttribute('role', 'img');
+      s.setAttribute('aria-label', m.detail);
+      const t = doc.createElementNS(NS, 'title');
+      t.textContent = m.detail;
+      const r = doc.createElementNS(NS, 'rect');
+      const tx = doc.createElementNS(NS, 'text');
+      tx.textContent = (m.state === 'grandmaster' ? '★ ' : m.state === 'synchronized' ? '✓ ' : m.state === 'holdover' || m.state === 'unsynchronized' ? '✕ ' : '') + m.text;
+      s.appendChild(t);
+      s.appendChild(r);
+      s.appendChild(tx);
+      g.appendChild(s);
+      let tw = (tx.textContent || '').length * 5.4;
+      try {
+        tw = (tx as SVGTextContentElement).getComputedTextLength() || tw;
+      } catch (e) {
+        /* not laid out: the estimate */
+      }
+      const w = Math.ceil(tw + 12);
+      const at = place.find(b, w, H);
+      r.setAttribute('x', at.x.toFixed(1));
+      r.setAttribute('y', at.y.toFixed(1));
+      r.setAttribute('width', String(w));
+      r.setAttribute('height', String(H));
+      r.setAttribute('rx', '3');
+      tx.setAttribute('x', (at.x + 6).toFixed(1));
       tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
       s.setAttribute('data-edge', at.edge);
     }
@@ -896,6 +981,16 @@ export class SimController implements SimulationMode {
    * candidate down, snooping only — and whether the VLAN has a querier), by
    * device; switches with snooping enabled nowhere have none.
    */
+  /** Each PTP clock's role now (the clocks' own view, never the configuration's): grandmaster, synchronized, acquiring, holdover … */
+  ptpMarks(): Map<string, { text: string; state: string; detail: string }> {
+    const out = new Map<string, { text: string; state: string; detail: string }>();
+    for (const dev of Array.from(this.sim.ptp.clocks.keys()).sort()) {
+      const m = this.sim.ptp.mark(dev);
+      if (m) out.set(dev, m);
+    }
+    return out;
+  }
+
   snoopBadges(): Map<string, SnoopRole[]> {
     const out = new Map<string, SnoopRole[]>();
     for (const id of Array.from(this.sim.engine.net.devices.keys()).sort()) {
@@ -981,6 +1076,14 @@ export class SimController implements SimulationMode {
     return out;
   }
 
+  /**
+   * Can a flight be drawn in the scene on screen: its track is there (not filtered out, collapsed, switched off by
+   * IP / Non-IP, or without geometry)? Outside the pan and zoom is still there. No scene (yet): as it is.
+   */
+  private renderable(f: Flight): boolean {
+    return !this.host.scene() || this.trackLength(f) !== null;
+  }
+
   /** The on-screen length of a flight's line (diagram units), in the view on screen; null elsewhere. */
   private lengths = new Map<string, number | null>();
   private trackLength(f: Flight): number | null {
@@ -1063,7 +1166,16 @@ export class SimController implements SimulationMode {
 
   /** The diagram was drawn again: the dots on the new scene. */
   sceneChanged(): void {
+    // (another view, or a hop's track gone from the scene or back — a filter, a collapsed group, IP / Non-IP: what it
+    // shows of what was delivered meanwhile is history, not dots on their way; a hold on a dot no longer drawn is let go)
+    const v = this.host.view();
+    const before = this.pacer.items.map((it) => this.lengths.get(`${it.f.view}|${it.f.track.ref}|${it.f.track.from}|${it.f.track.to}`));
     this.lengths.clear();
+    const moved = this.pacer.items.some((it, i) => before[i] !== undefined && (before[i] === null) !== (this.trackLength(it.f) === null));
+    if (v !== this.viewSeen || moved) {
+      this.viewSeen = v;
+      this.pacer.reshow();
+    }
     this.badgesKey = '';
     this.powerKey = '';
     this.refresh(false);
@@ -1082,7 +1194,7 @@ export class SimController implements SimulationMode {
   /** A protocol's short name for the cable activity ("OSPF", "ARP"): its setup entry's label, else its id. */
   private protocolName(p: string): string {
     const e = this.entries.find((x) => x.id === p);
-    if (!e) return p === 'mcast' ? 'Multicast' : p.toUpperCase();
+    if (!e) return p === 'mcast' ? 'Multicast' : p === 'opaque' ? 'Non-IP' : p.toUpperCase();
     // "ICMP / ICMPv6" → "ICMP", "TCP (tests)" → "TCP"
     return e.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '');
   }
@@ -1207,6 +1319,26 @@ export class SimController implements SimulationMode {
     return `${a.target}: streaming from t = ${fmtSec(this.t)}, one datagram every ${interval / 1000} s of real time; see Active events.`;
   }
 
+  /** Start application: an event of the list, its messages until they are done or Stop. */
+  startApp(dev: string, app: string): string {
+    const a = this.sim.actApp(dev, app);
+    // its first message is on screen now (paused too: there it waits for Play)
+    this.pacer.take();
+    this.logKey = '';
+    this.actionsKey = '';
+    this.refresh(true);
+    if (a.error) return a.error;
+    return `${a.target}: started at t = ${fmtSec(this.t)}; see Active events.`;
+  }
+
+  /** Start application… from a device's menu: the form, open, with the device. */
+  appFrom(dev: string): void {
+    if (!this.appForm) return;
+    this.openSection('sim-ne-app');
+    this.appForm.setDevice(dev);
+    this.appForm.focus();
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
     return this.did(this.sim.stopStream(dev, iface, group), `${dev}:${iface} stops its stream to ${group}`);
   }
@@ -1261,6 +1393,22 @@ export class SimController implements SimulationMode {
     if (this.sim.netsvc.hasLeases(dev)) out.push('dhcp');
     if (this.sim.netsvc.hasZones(dev)) out.push('dnszone');
     if (this.sim.netsvc.resolves(dev)) out.push('dnscache');
+    // MQTT: a broker's sessions, a device's clients
+    if (this.sim.mqtt.brokers.has(dev)) out.push('mqtt');
+    if (this.sim.mqtt.clients.some((c) => c.run.dev === dev)) out.push('mqttc');
+    if (this.sim.ipv6.hasTable(dev)) out.push('ipv6');
+    if (this.sim.ptp.clocks.has(dev)) out.push('ptp');
+    if (this.sim.ntp.has(dev)) out.push('ntp');
+    return out;
+  }
+
+  /** Automatic IPv6 as the diagram writes it into the interfaces' reserved lines. */
+  ipv6Marks(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const h of this.sim.ipv6.hosts.values()) {
+      const m = this.sim.ipv6.mark(h.dev, h.iface);
+      if (m) out.set(`iface:${h.dev}:${h.iface}`, m);
+    }
     return out;
   }
 
@@ -1298,6 +1446,11 @@ export class SimController implements SimulationMode {
     if (kind === 'dhcp') return () => this.sim.leaseGrid(dev);
     if (kind === 'dnscache') return () => this.sim.dnsCacheGrid(dev);
     if (kind === 'dnszone') return () => this.sim.dnsZoneGrid(dev);
+    if (kind === 'mqtt') return () => this.sim.mqttBrokerTable(dev);
+    if (kind === 'mqttc') return () => this.sim.mqttClientTable(dev);
+    if (kind === 'ipv6') return () => this.sim.ipv6.table(dev);
+    if (kind === 'ptp') return () => this.sim.ptp.table(dev);
+    if (kind === 'ntp') return () => this.sim.ntp.table(dev);
     if (kind === 'arp') return () => ({ v4: this.sim.arpTable(dev), v6: this.sim.ndTable(dev), timers: this.sim.arpTimers(dev), scale: this.sim.timerScale });
     if (kind === 'mac') return () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale });
     if (kind === 'conn') return () => ({ rows: this.sim.connTable(dev), listening: this.sim.transport.listening(dev).text });
@@ -1328,6 +1481,13 @@ export class SimController implements SimulationMode {
   inspectFlight(id: number, near?: { x: number; y: number; w: number; h: number } | null): boolean {
     const it = this.pacer.find(id);
     const f = it ? it.f : this.sim.engine.flights.find((x) => x.id === id);
+    // illustrative data on a non-IP interconnect: its own rows, no layers
+    const op = f ? f.illustrative : undefined;
+    if (f && op) {
+      this.inspectorPause();
+      this.tables.show('packet', 'inspector', near || null, () => ({ where: `t = ${fmtSec(f.t0)}`, opaque: { ...op, label: f.label } }));
+      return true;
+    }
     if (!f || !f.hdr) return false;
     this.inspectorPause();
     const m = this.host.model();
@@ -1336,7 +1496,7 @@ export class SimController implements SimulationMode {
       const l = m.index.links.get(f.track.ref.slice(5));
       if (l) where += `, on cable ${l.id} (${f.track.from === 'a' ? l.a.device + ' → ' + l.b.device : l.b.device + ' → ' + l.a.device})`;
     }
-    const key = it ? it.key : conversationKey(f.protocol, f.hdr, f.label);
+    const key = it ? it.key : flightKey(f, f.hdr);
     this.inspect(f.hdr, where, near, key, f.label, this.forwardingOf(f));
     return true;
   }
@@ -1366,10 +1526,13 @@ export class SimController implements SimulationMode {
   }
 
   private inspect(h: Headers, where: string, near: { x: number; y: number; w: number; h: number } | null | undefined, key: string, label: string, forwarding: Array<{ title: string; d: McDecision }> = []): void {
-    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }> } => ({
+    const ent = this.entries.find((x) => x.id === h.protocol);
+    const support = ent ? { label: ent.label, level: ent.support.level, does: ent.support.does, not: ent.support.not } : undefined;
+    const data = (): { hdr: Headers; where: string; follow: { on: boolean; act: () => void }; forwarding: Array<{ title: string; d: McDecision }>; support?: { label: string; level: string; does: string; not?: string } } => ({
       hdr: h,
       where,
       forwarding,
+      support,
       follow: {
         on: !!this.pacer.follow && this.pacer.follow.key === key,
         act: () => {
@@ -1445,13 +1608,13 @@ export class SimController implements SimulationMode {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       const tabs = this.deviceTables(dev);
-      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
+      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone', mqtt: 'Show MQTT sessions', mqttc: 'Show MQTT clients', ipv6: 'Show IPv6 configuration', ptp: 'Show PTP clock', ntp: 'Show NTP status' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
       // multicast: a host's memberships, a router's IGMP / MLD groups and multicast routes, a switch's snooping table
       for (const k of ['members', 'igmp', 'querier', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
-      for (const k of ['dhcp', 'dnszone', 'dnscache'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      for (const k of ['ipv6', 'dhcp', 'dnszone', 'dnscache', 'mqtt', 'mqttc', 'ptp', 'ntp'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
       else items.push({ label: 'Use as sender', act: () => void this.setSender(dev, true) });
       const sdv = this.sim.engine.net.devices.get(dev);
@@ -1460,6 +1623,7 @@ export class SimController implements SimulationMode {
         for (const j of this.sim.multicast.joined(dev)) items.push({ label: `Leave group ${j.group}`, act: () => void this.leaveGroup(dev, j.iface, j.group) });
         if (this.sim.multicast.joined(dev).length) items.push({ label: 'Leave multicast group…', act: () => this.multicastFrom(dev, 'leave') });
         items.push({ label: 'Start multicast stream…', act: () => this.multicastFrom(dev, 'stream') });
+        if (this.sim.apps.startable(dev).length) items.push({ label: 'Start application…', act: () => this.appFrom(dev) });
         for (const st of this.sim.multicast.streamsOf(dev)) {
           if (st.running) items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
           else items.push({ label: `Start stream ${st.group} again`, act: () => void this.did(this.sim.multicast.restartStream(dev, st.iface, st.group), `${dev} streams to ${st.group} again`) });
@@ -1493,6 +1657,8 @@ export class SimController implements SimulationMode {
 
   /** A click in the diagram during the simulation: a short menu at that spot for a cable, a relation, a device or an interface. */
   diagramClick(ref: string | null, x: number, y: number): boolean {
+    // an experiment's events are its actions: no menu of events in the diagram
+    if (this.experiment) return false;
     if (!ref) return false;
     const items = this.itemsFor(ref, x, y);
     if (!items.length) return false;
@@ -1596,6 +1762,18 @@ export class SimController implements SimulationMode {
 
   // ------------------------------------------------------------ Send test
 
+  /** An analysis's handoff: Send network packets, open and prefilled (nothing is sent until Send). */
+  prefillSend(p: SendPrefill): void {
+    if (!this.testForm) return;
+    this.openSection('sim-ne-send');
+    this.testForm.prefill(p);
+  }
+
+  /** The simulation's state now, frozen for analysis (it never changes after this). */
+  snapshot(): AnalysisSnapshot {
+    return this.sim.snapshot();
+  }
+
   /** Send network packets… from a device's menu: that form of Network events, open, with the device as the source. */
   sendTestFrom(dev: string): void {
     if (!this.testForm) return;
@@ -1638,8 +1816,25 @@ export class SimController implements SimulationMode {
     return this.playing ? (r.count > 1 ? more : `Test sent at t = ${fmtSec(r.t0)}: ${r.series}.`) : `${more} It starts when the simulation plays.`;
   }
 
+  /** Send illustrative data (Network events): its event in Active events; refused: why. */
+  private sendOpaque(spec: import('../analysis/sim/opaque').OpaqueSpec): string {
+    const a = this.sim.actOpaque(spec);
+    this.eventsKey = '';
+    this.refresh(true);
+    if (a.error) return `Not sent: ${a.error}.`;
+    return `${spec.count} illustrative transfer${spec.count === 1 ? '' : 's'} from ${spec.from} at t = ${fmtSec(this.t)}${this.playing ? '' : ' (it goes when the simulation plays)'}; see Active events.`;
+  }
+
+  /** A non-IP failure (Network events): its event, with Restore, in Active events. */
+  private failOpaque(what: 'interconnect' | 'attachment' | 'port', key: string): string {
+    const a = this.sim.actOpaqueFail(what, key);
+    this.eventsKey = '';
+    this.refresh(true);
+    return a.error ? `Not done: ${a.error}.` : `${a.target} ${what === 'interconnect' ? 'failed' : what === 'attachment' ? 'detached' : 'shut'} at t = ${fmtSec(this.t)}; restore it from Active events.`;
+  }
+
   /** An event's control in Active events: Stop, No shut, Leave group. */
-  actionControl(id: number, op: 'stop' | 'noshut' | 'leave'): boolean {
+  actionControl(id: number, op: 'stop' | 'noshut' | 'leave' | 'restore'): boolean {
     if (!this.sim.actionControl(id, op)) return false;
     this.eventsKey = '';
     this.logKey = '';
@@ -1703,6 +1898,8 @@ export class SimController implements SimulationMode {
   private buildSetup(box: HTMLElement): void {
     const doc = this.host.doc;
     while (box.firstChild) box.removeChild(box.firstChild);
+    // (a setup built again: the old senders list lets go of what it listened to)
+    if (this.sendersUi) this.sendersUi.dispose();
     this.picker = protocolPicker(doc, { id: 'sim-setup-protos', entries: this.entries, shown: this.shown, color: (p) => this.color(p), onChange: (ids) => this.setShownSet(ids) });
     box.appendChild(this.picker.el);
     box.appendChild(el(doc, 'p', { class: 'muted small sp-note' }, ['Every protocol runs; unchecked ones are not drawn or logged.']));
@@ -1740,18 +1937,26 @@ export class SimController implements SimulationMode {
       stopFlap: (d: string, i: string) => (this.stopFlap(`iface:${d}:${i}`) ? `${d}:${i} stops flapping at t = ${fmtSec(this.t)}.` : `${d}:${i} is not flapping.`),
       interfacesOf: (d: string) => this.interfaceChoices(d),
       flapTimes: () => this.flapTimes(),
+      startApp: (d: string, a: string) => this.startApp(d, a),
     };
     this.testForm = new TestForm(doc, { sim: () => this.sim, send: (p, play) => this.sendPlan(p, play), playing: () => this.playing }, (d, id, title, body) => this.disclosure(d, id, title, body));
     this.joinForm = new JoinForm(doc, fh);
     this.leaveForm = new LeaveForm(doc, fh);
     this.streamForm = new StreamForm(doc, fh);
     this.ifaceForm = new IfaceForm(doc, fh);
+    this.appForm = new AppForm(doc, fh);
+    // the non-IP interconnects: illustrative data and their failures (only for a model that has them)
+    const hasIc = this.host.model().interconnects.length > 0;
+    this.opaqueForm = hasIc ? new OpaqueForm(doc, { sim: () => this.sim, send: (spec) => this.sendOpaque(spec) }) : null;
+    this.opaqueFailForm = hasIc ? new OpaqueFailForm(doc, { sim: () => this.sim, fail: (what, key) => this.failOpaque(what, key) }) : null;
     const net = this.sec(doc, 'sim-act-net', 'Network events', [
       this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
       this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
       this.action(doc, 'sim-ne-leave', 'Leave multicast group', this.leaveForm.el),
       this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
       this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
+      this.action(doc, 'sim-ne-app', 'Start application', this.appForm.el),
+      ...(this.opaqueForm && this.opaqueFailForm ? [this.action(doc, 'sim-ne-opaque', 'Send illustrative data', this.opaqueForm.el), this.action(doc, 'sim-ne-opaque-fail', 'Non-IP failures', this.opaqueFailForm.el)] : []),
     ]);
     this.bulkControls(doc, net);
     box.appendChild(net);
@@ -1957,6 +2162,10 @@ export class SimController implements SimulationMode {
     if (note && note.parentNode && !setup!.querySelector('#sim-shapes'))
       note.parentNode.insertBefore(el(doc, 'p', { class: 'sim-shapes small', id: 'sim-shapes' }, [el(doc, 'span', {}, [shape('unicast'), ' unicast']), el(doc, 'span', {}, [shape('broadcast'), ' broadcast']), el(doc, 'span', {}, [shape('multicast'), ' multicast']), el(doc, 'span', { class: 'muted' }, ['A dot opens the packet inspector.'])]), note.nextSibling);
     box.appendChild(el(doc, 'p', { id: 'sim-storm', class: 'sim-storm', role: 'alert', hidden: '' }, ['']));
+    // what runs: a narrowed execution scope (what it runs and what not), and a note when the simulation can't keep
+    // up; the entire model, the default, takes no line (the panel keeps its three rows of each table)
+    box.appendChild(el(doc, 'p', { id: 'sim-scope', class: 'small muted', ...(this.scope ? {} : { hidden: '' }) }, [this.scopeText()]));
+    box.appendChild(el(doc, 'p', { id: 'sim-behind', class: 'small', role: 'status', hidden: '' }, ['']));
     // the narrow layout shows one side at a time: tabs
     const tabS = el(doc, 'button', { type: 'button', role: 'tab', id: 'sd-tab-status', 'aria-controls': 'sd-status', 'aria-selected': 'true' }, ['Status']);
     const tabL = el(doc, 'button', { type: 'button', role: 'tab', id: 'sd-tab-log', 'aria-controls': 'sd-log', 'aria-selected': 'false', tabindex: '-1' }, ['Event log']);
@@ -2093,7 +2302,17 @@ export class SimController implements SimulationMode {
     const q = (id: string): HTMLElement | null => d.getElementById(id);
     this.updateClock();
     const drawn = q('sim-drawn');
-    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `at most ${CONV_LIMIT} exchanges as dots at once`}).` : '';
+    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `kinds of message already shown, and at most ${CONV_LIMIT} exchanges as dots at once`}).` : '';
+    // behind for a while (more than 2 s of simulated time): say so, and suggest a smaller execution scope
+    const bh = q('sim-behind');
+    if (bh) {
+      const t = this.pacer.behind > 2000 ? `The simulation is behind its rate (${fmtSec(this.pacer.behind)} of simulated time). ${this.scope ? 'A smaller execution scope' : 'An execution scope (Start simulation: a communication, a dependency slice, a site, a VLAN)'} runs fewer devices; or slow the speed down.` : '';
+      if (bh.textContent !== t) bh.textContent = t;
+      if (bh.hidden !== !t) {
+        bh.hidden = !t;
+        if (this.host.panelChanged) this.host.panelChanged();
+      }
+    }
     // a broadcast storm: a warning
     const storm = q('sim-storm');
     if (storm) {
@@ -2122,7 +2341,7 @@ export class SimController implements SimulationMode {
       }
     }
     // the forms of Network events (a lease bound or lost, a device powered off, an interface shut …)
-    for (const f of [this.testForm, this.joinForm, this.leaveForm, this.streamForm, this.ifaceForm]) if (f && f.el.isConnected) f.sync();
+    for (const f of [this.testForm, this.joinForm, this.leaveForm, this.streamForm, this.ifaceForm, this.opaqueForm, this.opaqueFailForm]) if (f && f.el.isConnected) f.sync();
     // Active events: the events of Network events (newest first) and the other state changes in effect
     const views = this.sim.actions();
     const others = this.sim.otherEvents();
@@ -2234,7 +2453,7 @@ export class SimController implements SimulationMode {
 
   protoLabel(protocol: string): string {
     const e = this.entries.find((x) => x.id === protocol);
-    return e ? e.label : protocol === 'link' ? 'Link' : protocol === 'stp' ? 'STP / MAC' : protocol;
+    return e ? e.label : protocol === 'link' ? 'Link' : protocol === 'stp' ? 'STP / MAC' : protocol === 'opaque' ? 'Non-IP (illustrative)' : protocol;
   }
 
   /** The events the log lists: of shown protocols (and the links), matching the filters, up to now. */

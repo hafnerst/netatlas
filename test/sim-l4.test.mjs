@@ -126,7 +126,8 @@ test('ICMP: TTL exceeded in a routing loop; host unreachable when ARP fails (fro
   assert.equal(host.result, 'Host Unreachable from 10.0.12.2 (r2)');
   // pc's own neighbour does not answer: no ICMP on the wire, the test fails at pc
   const own = run(s, { from: 'pc', to: '10.0.1.77', kind: 'icmp' }, 8000);
-  assert.match(own.result, /^(not sent: 10\.0\.1\.77 does not answer ARP \(host unreachable\)|no answer within 5 s.*)$/);
+  // (ARP gives up after its retries, 3 × 1 s, before the application's 5 s timeout: the sender's own error)
+  assert.equal(own.result, 'not sent: 10.0.1.77 does not answer ARP (host unreachable)');
 });
 
 test('ICMP: fragmentation needed with DF (PMTUD lowers the path MTU), fragments without DF reassembled at the destination', () => {
@@ -141,9 +142,20 @@ test('ICMP: fragmentation needed with DF (PMTUD lowers the path MTU), fragments 
   assert.ok(ev(s, (x) => x.what === 'reassembled' && x.device === 'srv').length === 1);
   // the fragments' dots say so
   assert.ok(s.engine.flights.some((f) => / \(fragment 2\/2\)$/.test(f.label)));
-  // TCP: srv's full-size answer is too big for the path; the Frag Needed makes it send smaller segments
-  const tcp = run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
-  assert.equal(tcp.result, 'refused' === 'x' ? '' : tcp.result);
+  // TCP to a written listener: srv's full-size answer (1460 bytes, DF) is too big for the 1400-byte path;
+  // r2's Frag Needed lowers srv's path MTU and the unacknowledged answer goes again in two segments over the same range
+  const l = sim(CHAIN({ mtu: 1400, srv: ', simulation: {listening: tcp/80}' }));
+  l.runTo(2500);
+  const tcp = run(l, { from: 'pc', to: 'srv', kind: 'tcp', port: 80 });
+  assert.equal(tcp.ok, true);
+  assert.equal(tcp.result, 'connected and answered (1460 bytes)');
+  assert.ok(ev(l, (x) => x.what === 'path MTU' && x.device === 'srv' && /10\.0\.1\.10 is 1400 bytes now \(Frag Needed from 10\.0\.2\.1 \(r2\)\)/.test(x.detail)).length === 1);
+  const again = ev(l, (x) => x.device === 'srv' && x.protocol === 'tcp' && /sent again in smaller segments/.test(x.detail));
+  assert.deepEqual(again.map((x) => /, (\d+) bytes:/.exec(x.detail)[1]), ['1360', '100']);
+  assert.equal(ev(l, (x) => x.device === 'pc' && x.what === 'Test answered').length, 1, 'answered once');
+  // port 81 is not in the listener: refused by a RST, not by PMTUD
+  const closed = run(l, { from: 'pc', to: 'srv', kind: 'tcp', port: 81 });
+  assert.equal(closed.result, 'connection refused: RST from 10.0.2.10 (srv)');
 });
 
 test('ICMP: port unreachable from a closed UDP port; none about a broadcast; the rate limit; Send ICMP errors off', () => {
@@ -486,7 +498,7 @@ test('the packet inspector: each dot’s frame layer by layer (MACs, VLAN tag, I
   s.runTo(2500);
   run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 443 }, 2000);
   run(s, { from: 'pc', to: '203.0.113.1', kind: 'icmp' }, 2000);
-  const syn = s.engine.flights.find((f) => f.label === 'TCP SYN → 10.0.2.10:443' && f.track.ref === 'link:l2');
+  const syn = s.engine.flights.find((f) => f.label === 'TCP [S] → 10.0.2.10:443' && f.track.ref === 'link:l2');
   assert.equal(syn.cast, 'unicast');
   assert.equal(syn.hdr.l2.ethertype, 'IPv4 (0x0800)');
   assert.equal(syn.hdr.l2.vlan, null);
@@ -503,7 +515,7 @@ test('the packet inspector: each dot’s frame layer by layer (MACs, VLAN tag, I
   // a relation's message: its profile's transport (OSPF is IP 89, multicast)
   const o = new S.Simulation(model(example('protocol-simulation.yaml')));
   o.runTo(3000);
-  const hello = o.engine.flights.find((f) => f.protocol === 'ospf' && /Hello/.test(f.label) && f.hdr);
+  const hello = o.engine.flights.find((f) => f.view === 'physical' && f.protocol === 'ospf' && /Hello/.test(f.label) && f.hdr);
   assert.equal(hello.cast, 'multicast');
   assert.equal(hello.hdr.l4.num, 89);
   assert.match(hello.hdr.l2.dstNote, /^IPv4 multicast 224\.0\.0\.5: 01:00:5e/);
@@ -529,11 +541,12 @@ links:
 });
 
 test('BGP’s TCP connection retransmits its SYN by the Layer 4 parameters, then the ConnectRetry timer tries again', () => {
+  // b runs no BGP (no AS): nothing listens on its port 179, and it drops what comes there without a RST
   const Y = `netatlas: 1
 title: bgp
 devices:
   - {id: a, type: router, interfaces: [{id: g0, ip: 10.0.0.1/30}], protocols: {bgp: {asn: 65001}}}
-  - {id: b, type: router, interfaces: [{id: g0, ip: 10.0.0.2/30}], protocols: {bgp: {asn: 65002}}}
+  - {id: b, type: router, interfaces: [{id: g0, ip: 10.0.0.2/30}], simulation: {closed_port_reply: "off"}}
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
 links:
   - {id: l, a: "a:g0", b: "sw:p1"}
@@ -542,12 +555,18 @@ relations:
   - {id: ebgp, protocol: bgp, endpoints: ["a:g0", "b:g0"]}
 `;
   const s = sim(Y, { params: { 'tcp-syn-retries': 2 } });
-  s.powerOff('b');
   s.runTo(10000);
-  const syns = ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.what === 'TCP SYN').map((x) => x.detail);
+  // the common transport's connection: the same SYN (its sequence number) again after 1 s, then 2 s
+  const syns = ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.what === 'TCP SYN');
   assert.ok(syns.length >= 3);
-  assert.match(syns[1], /to port 179, retransmission 1$/);
-  assert.ok(ev(s, (x) => x.what === 'TCP connect timed out' && /after 2 retransmissions \(TCP SYN retries 2 \(simulation\)\)/.test(x.detail)).length === 1);
+  assert.match(syns[1].detail, /^BGP TCP 10\.0\.0\.1:\d+ → 10\.0\.0\.2:179 \[S\] seq \d+, MSS 1460: opens a connection \(BGP ebgp to b\), retransmission 1 \(timeout 1 s\)$/);
+  const seq = (d) => /seq (\d+)/.exec(d)[1];
+  assert.equal(seq(syns[1].detail), seq(syns[0].detail));
+  assert.ok(Math.abs(syns[1].t - syns[0].t - 1000) < 1 && Math.abs(syns[2].t - syns[1].t - 2000) < 1);
+  // the SYN retries spent: the connection times out, the session goes Active, and the ConnectRetry timer tries again
+  assert.ok(ev(s, (x) => x.device === 'a' && x.what === 'connection closed' && /connection timed out: no answer to the SYN and its 2 retransmissions \(TCP SYN retries 2 \(simulation\)\)/.test(x.detail)).length === 1);
+  assert.ok(ev(s, (x) => x.device === 'a' && x.protocol === 'bgp' && x.state === 'Active' && /TCP connection to 10\.0\.0\.2:179 failed: connection timed out/.test(x.detail)).length === 1);
+  assert.ok(s.connTable('a').every((r) => r.state !== 'SYN_SENT'), 'nothing is left half-open');
 });
 
 test('determinism: the same model and the same tests at the same times give the same timeline', () => {

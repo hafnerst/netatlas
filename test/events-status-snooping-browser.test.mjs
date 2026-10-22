@@ -26,7 +26,7 @@ const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** The five actions' state, the bulk buttons, where the heading and the buttons are. */
+/** The six actions' state, the bulk buttons, where the heading and the buttons are. */
 const BULK = `(() => { const r = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
   return { open: Array.from(document.querySelectorAll('#sim-act-net .sim-ne-h .sp-toggle')).map((b) => b.getAttribute('aria-expanded') === 'true' && !document.getElementById(b.getAttribute('aria-controls')).hidden),
     expand: document.getElementById('sim-ne-expand').disabled, collapse: document.getElementById('sim-ne-collapse').disabled,
@@ -56,7 +56,7 @@ const rgb = (hex) => {
 for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900], ['light', 720, 450]]) {
   test(`${theme}, ${width} × ${height}: Expand all / Collapse all of Network events; every device’s status in the diagram; IGMP / MLD snooping per VLAN; the snooping and membership tables live`, { skip, timeout: 300000 }, async () => {
     const page = await openPage(url, { width, height });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const run = (ms) => page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + ${ms}); c.refresh(true); return true; })()`);
     try {
       await page.settle(150);
@@ -126,7 +126,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       // ------------------------------------------------------------ Expand all / Collapse all
       let b = await page.eval(BULK);
       assert.deepEqual(b.names, ['Expand all Network events sections', 'Collapse all Network events sections', 'Expand all Network events sections']);
-      assert.deepEqual(b.open, [true, false, false, false, false]);
+      assert.deepEqual(b.open, [true, false, false, false, false, false]);
       assert.deepEqual([b.expand, b.collapse], [false, false], 'mixed: both');
       const at0 = b.at;
       // a value typed in a form, a stream running: kept through both
@@ -143,7 +143,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.key('Enter');
       await page.settle(60);
       b = await page.eval(BULK);
-      assert.deepEqual(b.open, [true, true, true, true, true]);
+      assert.deepEqual(b.open, [true, true, true, true, true, true]);
       assert.deepEqual([b.expand, b.collapse], [true, false], 'all open: Expand all disabled');
       assert.equal(b.focus, 'sim-ne-collapse', 'the focus handed to Collapse all');
       assert.equal(b.events, false, 'Active events untouched');
@@ -154,12 +154,17 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.key(' ', 'Space', 32);
       await page.settle(60);
       b = await page.eval(BULK);
-      assert.deepEqual(b.open, [false, false, false, false, false]);
+      assert.deepEqual(b.open, [false, false, false, false, false, false]);
       assert.deepEqual([b.expand, b.collapse], [false, true], 'all closed: Collapse all disabled');
       assert.equal(b.focus, 'sim-ne-expand');
       assert.deepEqual(b.at, at0);
-      await wait(2200);
-      const after = await page.eval(`(() => { const v = netatlas.simController().sim.actions().find((v) => v.kind === 'stream'); return [v.status, v.progress.done]; })()`);
+      // (the next datagram: polled, the simulation waits for the dots on screen)
+      const STREAM = `(() => { const v = netatlas.simController().sim.actions().find((v) => v.kind === 'stream'); return [v.status, v.progress.done]; })()`;
+      let after = await page.eval(STREAM);
+      for (let i = 0; i < 60 && after[1] < sent0 + 1; i++) {
+        await wait(500);
+        after = await page.eval(STREAM);
+      }
       assert.equal(after[0], 'running', 'collapsing stops nothing');
       assert.ok(after[1] >= sent0 + 1, `${sent0} → ${after[1]}`);
       await page.eval(`document.getElementById('sim-ne-expand').click(), true`);
@@ -168,7 +173,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       // one opened by hand: mixed again
       await page.eval(`document.getElementById('sim-ne-collapse').click(), document.getElementById('sim-ne-iface-toggle').click(), true`);
       b = await page.eval(BULK);
-      assert.deepEqual([b.open, b.expand, b.collapse], [[false, false, false, false, true], false, false]);
+      assert.deepEqual([b.open, b.expand, b.collapse], [[false, false, false, false, true, false], false, false]);
       // nothing wider than the panel
       assert.equal(await page.eval(`(() => { const box = document.getElementById('sim-act-net'); return box.scrollWidth <= box.clientWidth + 1; })()`), true);
 

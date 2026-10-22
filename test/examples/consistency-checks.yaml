@@ -85,7 +85,9 @@ devices:
     type: router
     group: core
     protocols:
-      bgp: {asn: 65003}                                       # protocol-not-enabled: OSPF (ospf-13) is not enabled
+      bgp:                                                    # protocol-not-enabled: OSPF (ospf-13) is not enabled
+        asn: 65003
+        advertise: [10.99.0.0/16]                             # routing-policy: r3 has no 10.99.0.0/16 to advertise
     interfaces:
       - {id: e0, ip: 10.0.31.2/30}
       - e4
@@ -137,6 +139,15 @@ devices:
     type: endpoint
     interfaces:
       - {id: eth0, ip: 10.73.0.10/24, multicast: {join: [239.9.9.9]}}
+  # multicast-rp-conflict: mc-r3 and mc-r4 share a PIM relation, but each names itself as the static RP
+  - id: mc-r3
+    type: router
+    protocols: {pim: {rp: 10.0.74.1}}
+    interfaces: [{id: e0, ip: 10.0.74.1/30}]
+  - id: mc-r4
+    type: router
+    protocols: {pim: {rp: 10.0.74.2}}
+    interfaces: [{id: e0, ip: 10.0.74.2/30}]
   # DHCP: dhcp1 serves the dhcp-lan network; dhcp-pc is on another segment without a server or a relay there
   - id: dhcp1
     type: server
@@ -154,7 +165,7 @@ devices:
   - id: dhcp-pc
     type: endpoint
     interfaces:
-      - {id: eth0, dhcp: true}
+      - {id: eth0, ipv4: dhcp}
   # virtualization: hv-a's uplink ends on sw3:q1, which carries VLAN 10 only (vswitch-uplink-vlan: port group pg20);
   # vm-a1 has an address in the voice network (VLAN 20) on port group pg10 (vnic-network-vlan); vm-a2 can't restart
   # on hv-b, which has no pg20 (ha-restart-portgroup); hv-a's VMs have more vCPUs and memory than it (hypervisor-overcommit);
@@ -242,6 +253,7 @@ links:
 
   - {id: l-mc-src, a: "mc-src:eth0", b: "mc-r1:e0"}
   - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}
+  - {id: l-mc-r3-r4, a: "mc-r3:e0", b: "mc-r4:e0"}
   - {id: l-dhcp1, a: "dhcp1:eth0", b: "dhcp-r:e0"}
   - {id: l-dhcp-pc, a: "dhcp-pc:eth0", b: "dhcp-r:e1"}
   - {id: l-hv-a, a: "sw3:q1", b: "hv-a:vmnic0"}
@@ -254,6 +266,7 @@ networks:
   - {id: dhcp-lan, cidr: 10.80.0.0/24}
 
 relations:
+  - {id: pim-mc-r3-r4, protocol: pim, endpoints: ["mc-r3:e0", "mc-r4:e0"], over: l-mc-r3-r4}
   # ospf-area-mismatch, ospf-network-type-mismatch, ospf-timer-mismatch
   - id: ospf-12
     protocol: ospf

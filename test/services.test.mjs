@@ -83,7 +83,7 @@ test('a service’s parameters: required ones (always or by the others), written
   assert.match(errs(DEV('    services:\n      proxy: {mode: reverse, listener: 443}\n')).join('\n'), /needs its upstream address/);
   assert.match(errs(DEV('    services:\n      proxy: {mode: forward, listener: 3128, upstream_port: 8080}\n')).join('\n'), /"upstream_port" does not apply here/);
   assert.match(errs(DEV('    services:\n      storage: {protocols: [nfs, ftp]}\n')).join('\n'), /"ftp" is not one of nfs, smb, iscsi/);
-  assert.match(errs(DEV('    services:\n      application: {name: ERP, ports: [tcp/99999]}\n')).join('\n'), /the ports/);
+  assert.match(errs(DEV('    services:\n      applications: [{id: erp, name: ERP, profile: tcp_server, port: 99999}]\n')).join('\n'), /port/);
   assert.match(errs(DEV('    services:\n      nat: {inside: [eth0], outside: [eth0], rules: [{type: pat}]}\n')).join('\n'), /"s" can't run NAT/);
   // who may not run a service is told why, once
   const e = errs(`netatlas: 1\ndevices:\n  - id: sw\n    type: switch\n    services:\n      dhcp: {scopes: []}\n    interfaces: [{id: p, vlans: 1}]\n`);
@@ -205,7 +205,7 @@ test('NAT: PAT out of the outside interface, in the simulation and as a note of 
   void t;
   const t2 = T.tracePath(m, { from: 'cpe:Vlan10', to: '9.9.9.9' });
   void t2;
-  const n = T.tracePath(model(example('dmz-services.yaml').replace('      - {id: eth0, ip: 10.60.0.50/24}', '      - {id: eth0, ip: 10.60.0.50/24}')), { from: 'nas', to: '203.0.113.50' });
+  const n = T.tracePath(model(example('dmz-services.yaml')), { from: 'nas', to: '203.0.113.50' });
   assert.ok(n.paths[0].hops.some((h) => h.notes.some((x) => /^PAT: source 10\.60\.0\.50 → 203\.0\.113\.2 \(fw's NAT, inside → outside\)/.test(x))), T.traceText(n));
 });
 

@@ -68,7 +68,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.equal(d.logical.map((i) => i.id + ':' + i.type).join(), 'lo0:loopback,Po1:virtual,Vlan10:virtual,Vlan20:virtual,nve1:virtual,tun0:tunnel,tun1:tunnel,tun2:tunnel');
   // no nesting and no generic parent anywhere in the model
   for (const i of T.deviceInterfaces(d)) assert.ok(!('parent' in i) && !('children' in i), i.id);
-  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'management', 'portPairs', 'routes', 'services', 'simulation', 'snooping', 'tier', 'type']);
+  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'management', 'opaquePorts', 'opaqueTransit', 'portPairs', 'routes', 'services', 'simulation', 'snooping', 'tier', 'type']);
   // each interface exists once: one flat index, stable "device:interface" ids
   assert.equal(r.model.index.interfaces.size, 12 + 3);
   assert.equal(r.model.index.interfaces.get('sw1:Po1').type, 'virtual');
@@ -77,7 +77,8 @@ test('interfaces are stored once under their device, as physical and logical; ze
   const none = validate.loadModel('netatlas: 1\ndevices:\n  - {id: a}\n  - {id: b, interfaces: [e0]}\n  - {id: c, logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n');
   assert.deepEqual(none.errors, []);
   assert.deepEqual(none.model.devices.map((x) => [x.interfaces.length, x.logical.length]), [[0, 0], [1, 0], [0, 1]]);
-  assert.deepEqual(SCHEMA.device.slice(-5), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes']);
+  // the lists of a device come last; its network policy after them (its rules name its interfaces)
+  assert.deepEqual(SCHEMA.device.slice(-6), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes', 'policy']);
 });
 
 test('a physical interface has no type; a logical interface has one of loopback, virtual, tunnel, vnic, veth', () => {
@@ -86,7 +87,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^unknown key "type" \(known: id, label, vlans, native, routed, dhcp, ip, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
+    assert.match(m[0], /^unknown key "type" \(known: id, label, stack, vlans, native, routed, ipv4, ip, ipv6, ipv6_ra, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
   }
   const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
@@ -543,8 +544,8 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  // the 9 public examples, the 18 internal ones (test/examples/) and the 3 generated fixtures
-  assert.equal(files.length, 9 + 18 + 3);
+  // the 11 public examples, the 20 internal ones (test/examples/) and the 3 generated fixtures
+  assert.equal(files.length, 11 + 20 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);

@@ -25,7 +25,7 @@ async function edit(page, ref) {
 
 /** A real click on an element of the Inspector, scrolled into view first. */
 async function press(page, sel) {
-  await page.eval(`(() => { document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: 'center' }); return true; })()`);
+  await page.call((sel) => { document.querySelector(sel).scrollIntoView({ block: 'center' }); return true; }, sel);
   await page.settle(60);
   await page.click(sel);
   await page.settle(150);
@@ -67,10 +67,13 @@ test('the Services card: off by default; DHCP and DNS ticked show what they need
     assert.equal(c.cards.length, 1);
     assert.ok(['Network *', 'Address range *', 'Default gateway *', 'DNS servers *'].every((l) => c.labels.some((x) => x.indexOf(l) === 0)), c.labels.join(' | '));
     const errs = await page.eval(`(netatlas.mdoc.result.errors || []).map((e) => e.message).filter((m) => /scope 1 of "web"/.test(m))`);
-    assert.ok(['network', 'range', 'default gateway', 'DNS servers'].every((w) => errs.some((m) => m.indexOf(w) >= 0)), errs.join(' | '));
+    // (without its network the scope's family is unknown: an IPv4 scope's range, gateway and DNS servers are asked for once it is chosen)
+    assert.ok(errs.some((m) => m.indexOf('network') >= 0), errs.join(' | '));
     // the network chosen: range, gateway and DNS servers are suggested (servers, the gateway of the network)
     await page.eval(`(() => { const s = document.querySelector('#side-body [data-group="netservices"] select[data-p*="network"]'); s.value = 'servers'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
+    const errs4 = await page.eval(`(netatlas.mdoc.result.errors || []).map((e) => e.message).filter((m) => /scope 1 of "web"/.test(m))`);
+    assert.ok(['range', 'default gateway', 'DNS servers'].every((w) => errs4.some((m) => m.indexOf(w) >= 0)), errs4.join(' | '));
     c = await page.eval(CARD);
     assert.match(c.text, /10\.10\.30\.1 \(core:Vlan30\)/, 'the gateway is suggested');
     assert.match(c.text, /10\.10\.10\.10 \(srv\)/, 'the DNS server srv is suggested');

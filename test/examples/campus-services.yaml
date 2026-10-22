@@ -79,14 +79,14 @@ devices:
   - id: pc1
     type: endpoint
     simulation: {test_traffic: "on", test_targets: "web.campus.example tcp/443", test_interval: 10}
-    interfaces: [{id: eth0, dhcp: true}]
+    interfaces: [{id: eth0, ipv4: dhcp}]
   - id: lap1
     type: endpoint
-    interfaces: [{id: eth0, dhcp: true, mac: "02:00:00:00:10:21"}]
+    interfaces: [{id: eth0, ipv4: dhcp, mac: "02:00:00:00:10:21"}]
   - id: pc2
     type: endpoint
     simulation: {test_traffic: "on", test_targets: "www.campus.example", test_interval: 10}
-    interfaces: [{id: eth0, dhcp: true}]
+    interfaces: [{id: eth0, ipv4: dhcp}]
 
 links:
   - id: up1

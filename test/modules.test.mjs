@@ -129,7 +129,7 @@ test('the format schema is the single source for allowed keys and key order', ()
     ['network', 'networks', '{id: n}'],
   ]) {
     const text = `netatlas: 1\ndevices:\n  - {id: d}\n${section === 'devices' ? '' : section + ':\n  - ' + sample + '\n'}`;
-    const withKey = (k) => text.replace(section === 'devices' ? '{id: d}' : sample, (m) => m.replace('}', `, ${k}: x}`));
+    const withKey = (k) => text.replace(section === 'devices' ? '{id: d}' : sample, (m) => m.slice(0, -1) + `, ${k}: x}`);
     // every key in the schema is accepted (value types aside), and nothing else
     const unknown = validate.loadModel(withKey('not_in_schema')).errors.filter((e) => /unknown key/.test(e.message));
     assert.equal(unknown.length, 1, kind);

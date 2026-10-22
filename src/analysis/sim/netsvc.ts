@@ -1,6 +1,6 @@
 /**
  * DHCP and DNS in the protocol simulation: the servers' scopes and zones
- * (the model's `services:`), the clients (interfaces with `dhcp: true`, and
+ * (the model's `services:`), the clients (interfaces with `ipv4: dhcp`, and
  * every host's resolver), the relays (`dhcp_relay:` on a router's
  * interface).
  *
@@ -19,8 +19,18 @@
  * address (announced with a gratuitous ARP), the gateway as its default
  * route, the DNS servers as its resolver's. Everything else the client
  * sends waits for it (the scheduler's dependency). It renews at T1 (half
- * the lease) by unicast to the server, rebinds at T2 (7/8) by broadcast,
- * and loses the address when the lease ends. Without an offer it sends
+ * the lease) by unicast to the server, rebinds at T2 (7/8) by broadcast —
+ * each sent again after half the time left (to T2, to the lease's end), at
+ * least 60 s apart — and loses the address when the lease ends.
+ *
+ * Each message has its leg's ports (RFC 2131 §4.1, RFC 1542 §4): the
+ * client to a server or relay UDP 68 → 67, the relay to the server and the
+ * server back to the relay 67 → 67, to the client 67 → 68; in the VRF of
+ * the interface it belongs to. A server answers a relayed message to the
+ * relay (its giaddr), a bound client's (ciaddr, no relay) by unicast to
+ * it; it finds the scope by the giaddr, else the ciaddr, else its own
+ * interface. What arrives is taken only on its leg's port (a client 68, a
+ * server or relay 67). Without an offer it sends
  * again after its retransmission delay, doubled each time up to 64 s, for
  * its retries; then it pauses five minutes and starts again, taking a
  * link-local address (169.254.0.0/16, RFC 3927) meanwhile when its
@@ -46,12 +56,13 @@
 import { IpAddr, parseAddress, parsePrefix } from '../../model/ip';
 import { Device, DhcpScope, Model, deviceInterfaces } from '../../model/types';
 import { compareAddr, formatAddr, inPrefix, networkOf, prefixText } from '../ipmath';
-import { DEFAULT_LEASE, derivedRecords, inRange, inZone, recordFqdn } from '../../model/netservices';
+import { DEFAULT_LEASE, inRange, inZone } from '../../model/netservices';
 import { durationText, ifaceRef, scopeRef, zoneRef } from './params';
 import { L3Iface, Lease, SimAddr } from './net';
 import { ProtocolSim } from './protocols';
-import { Msg, Pkt } from './types';
+import { Msg, Pkt, Quote } from './types';
 import { dnsNameKey } from '../../model/dns';
+import { zoneRecords } from '../names';
 
 const BROADCAST = parseAddress('255.255.255.255') as IpAddr;
 const ZERO = parseAddress('0.0.0.0') as IpAddr;
@@ -113,6 +124,17 @@ interface Scope {
 }
 
 type ClientState = 'INIT' | 'SELECTING' | 'REQUESTING' | 'BOUND' | 'RENEWING' | 'REBINDING';
+
+/** The legs of a DHCP exchange and their UDP ports (source, destination). */
+type DhcpLeg = 'to-server' | 'relay-to-server' | 'server-to-relay' | 'to-client';
+const LEG_PORTS: { [leg in DhcpLeg]: [number, number] } = {
+  'to-server': [68, 67],
+  'relay-to-server': [67, 67],
+  'server-to-relay': [67, 67],
+  'to-client': [67, 68],
+};
+/** RENEWING and REBINDING: a request unanswered is sent again after half the time left (to T2, to the lease's end), at least this long (RFC 2131 §4.4.5). */
+const RENEW_MIN = 60000;
 
 interface Client {
   dev: string;
@@ -196,7 +218,7 @@ export class NetServicesSim {
   constructor(private P: ProtocolSim) {
     this.readScopes();
     for (const d of P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
-      for (const i of deviceInterfaces(d)) if (i.dhcp && !i.addresses.length && P.sd(d.id) && P.sd(d.id).l3.get(i.id)) this.clients.set(d.id + ':' + i.id, { dev: d.id, iface: i.id, mac: (P.sd(d.id).l3.get(i.id) as L3Iface).mac, state: 'INIT', xid: 0, attempt: 0, gen: 0 });
+      for (const i of deviceInterfaces(d)) if (i.dhcp && P.sd(d.id) && P.sd(d.id).l3.get(i.id)) this.clients.set(d.id + ':' + i.id, { dev: d.id, iface: i.id, mac: (P.sd(d.id).l3.get(i.id) as L3Iface).mac, state: 'INIT', xid: 0, attempt: 0, gen: 0 });
     }
     P.handlers.set('dhcp', (dev, l3, msg, pkt) => this.dhcpIn(dev, l3, msg, pkt));
     P.handlers.set('dns', (dev, l3, msg, pkt) => (msg.relation ? false : this.dnsIn(dev, l3, msg, pkt)));
@@ -204,7 +226,7 @@ export class NetServicesSim {
     P.ifaceHooks.push((dev, l3, up) => {
       const c = this.clients.get(dev + ':' + l3.id);
       if (!c) return;
-      if (up && c.state === 'INIT' && !this.P.e.leases.has(dev + ':' + l3.id)) this.P.e.at(this.P.e.now + this.P.e.jitter(), () => this.discover(c, 'its link is up'));
+      if (up && c.state === 'INIT' && !this.P.e.leases.has(dev + ':' + l3.id)) this.P.e.at(this.P.e.now + this.P.e.jitter(dev), () => this.discover(c, 'its link is up'));
       if (!up) {
         c.gen++;
         c.state = 'INIT';
@@ -214,7 +236,7 @@ export class NetServicesSim {
     });
     P.bootHooks.push(() => {
       // (an interface up from the start, without a cable to wait for)
-      for (const c of this.clients.values()) if (this.P.e.isL3Up(c.dev, c.iface)) this.P.e.at(this.P.e.jitter(), () => this.discover(c, 'it starts'));
+      for (const c of this.clients.values()) if (this.P.e.isL3Up(c.dev, c.iface)) this.P.e.at(this.P.e.jitter(c.dev), () => this.discover(c, 'it starts'));
     });
   }
 
@@ -254,9 +276,16 @@ export class NetServicesSim {
     return { protocol: 'dhcp', type, label, detail, data: data as unknown as { [k: string]: unknown } };
   }
 
-  private send(dev: string, src: IpAddr, dst: IpAddr, msg: Msg, out?: L3Iface, server = false): void {
-    const pkt = this.P.e.newPacket(src, dst, '', msg);
-    pkt.l4 = { proto: 'udp', num: 17, sport: server ? 67 : 68, dport: server ? 68 : 67 };
+  /**
+   * A DHCP message on one of its legs (RFC 2131 §4.1, RFC 1542 §4): the
+   * client to a server or relay (UDP 68 → 67), a relay to a server and a
+   * server back to the relay (67 → 67), a server or relay to the client
+   * (67 → 68) — in the VRF of the interface it belongs to.
+   */
+  private send(dev: string, src: IpAddr, dst: IpAddr, vrf: string, msg: Msg, leg: DhcpLeg, out?: L3Iface): void {
+    const pkt = this.P.e.newPacket(src, dst, vrf, msg);
+    const [sport, dport] = LEG_PORTS[leg];
+    pkt.l4 = { proto: 'udp', num: 17, sport, dport };
     pkt.len = 8 + 300;
     this.P.e.send(dev, pkt, out);
   }
@@ -278,7 +307,7 @@ export class NetServicesSim {
     const d: DhcpData = { xid: c.xid, chaddr: c.mac, from: c.dev, iface: c.iface };
     const m = this.msg('DHCPDISCOVER', 'DHCPDISCOVER', `DHCPDISCOVER from ${c.dev}:${c.iface} (${c.mac}, xid ${hex(c.xid)}) from 0.0.0.0:68 to 255.255.255.255:67: which server gives me an address? (${c.attempt === 1 ? why : 'attempt ' + c.attempt})`, d);
     this.P.e.note('message', 'dhcp', c.dev, '', 'DHCPDISCOVER', '', m.detail, this.P.e.now, m);
-    this.send(c.dev, ZERO, BROADCAST, m, l3);
+    this.send(c.dev, ZERO, BROADCAST, l3.vrf, m, 'to-server', l3);
     // no offer within the retransmission delay (doubled each time): again; after the retries: a pause (and a link-local address)
     const r = this.P.e.params.get('dhcp-backoff', c.dev, null, ifaceRef(c.dev, c.iface));
     const wait = Math.min(BACKOFF_MAX, Number(r.value) * Math.pow(2, c.attempt - 1));
@@ -330,7 +359,7 @@ export class NetServicesSim {
     const q: DhcpData = { xid: c.xid, chaddr: c.mac, from: c.dev, iface: c.iface, requested: d.yiaddr, server: d.server };
     const m = this.msg('DHCPREQUEST', `DHCPREQUEST ${d.yiaddr}`, `DHCPREQUEST from ${c.dev}:${c.iface} (${c.mac}, xid ${hex(c.xid)}), broadcast: it takes ${d.yiaddr} from server ${d.server}`, q);
     this.P.e.note('message', 'dhcp', c.dev, '', 'DHCPREQUEST', '', m.detail, this.P.e.now, m);
-    this.send(c.dev, ZERO, BROADCAST, m, l3);
+    this.send(c.dev, ZERO, BROADCAST, l3.vrf, m, 'to-server', l3);
     // no answer: from the start
     this.P.e.after(Number(this.P.e.params.get('dhcp-backoff', c.dev, null, ifaceRef(c.dev, c.iface)).value), () => {
       if (c.gen !== gen || c.state !== 'REQUESTING') return;
@@ -373,17 +402,29 @@ export class NetServicesSim {
     });
   }
 
-  /** Renewing (unicast to its server) or rebinding (broadcast to any server). */
-  private renew(c: Client, l: Lease, rebind: boolean): void {
+  /**
+   * Renewing (unicast to its server) or rebinding (broadcast to any
+   * server); unanswered, the request goes again after half the time left —
+   * until T2 while renewing, until the lease's end while rebinding — but at
+   * least 60 s apart (RFC 2131 §4.4.5).
+   */
+  private renew(c: Client, l: Lease, rebind: boolean, again = 0): void {
     const l3 = this.l3(c);
     if (!l3) return;
     c.state = rebind ? 'REBINDING' : 'RENEWING';
-    c.xid = (hash(`${c.dev}|${c.iface}|renew|${this.P.e.now}`) >>> 0) % 0xffffffff;
+    if (!again) c.xid = (hash(`${c.dev}|${c.iface}|renew|${this.P.e.now}`) >>> 0) % 0xffffffff;
+    const gen = c.gen;
     const d: DhcpData = { xid: c.xid, chaddr: c.mac, from: c.dev, iface: c.iface, ciaddr: formatAddr(l.addr.addr), requested: formatAddr(l.addr.addr) };
-    const m = this.msg('DHCPREQUEST', `DHCPREQUEST ${formatAddr(l.addr.addr)} (${rebind ? 'rebind' : 'renew'})`, `DHCPREQUEST from ${c.dev}:${c.iface} (${formatAddr(l.addr.addr)}): ${rebind ? 'rebinding at T2 (7/8 of the lease), broadcast to any server' : `renewing at T1 (half the lease), unicast to its server ${l.server ? formatAddr(l.server) : ''}`}`, d);
+    const m = this.msg('DHCPREQUEST', `DHCPREQUEST ${formatAddr(l.addr.addr)} (${rebind ? 'rebind' : 'renew'})`, `DHCPREQUEST from ${c.dev}:${c.iface} (${formatAddr(l.addr.addr)}): ${rebind ? 'rebinding at T2 (7/8 of the lease), broadcast to any server' : `renewing at T1 (half the lease), unicast to its server ${l.server ? formatAddr(l.server) : ''}`}${again ? ` (sent again, ${again})` : ''}`, d);
     this.P.e.note('message', 'dhcp', c.dev, '', 'DHCPREQUEST', '', m.detail, this.P.e.now, m);
-    if (rebind || !l.server) this.send(c.dev, l.addr.addr, BROADCAST, m, l3);
-    else this.send(c.dev, l.addr.addr, l.server, m);
+    if (rebind || !l.server) this.send(c.dev, l.addr.addr, BROADCAST, l3.vrf, m, 'to-server', l3);
+    else this.send(c.dev, l.addr.addr, l.server, l3.vrf, m, 'to-server');
+    const until = rebind ? l.expires : l.bound + ((l.expires - l.bound) * 7) / 8;
+    const wait = Math.max(RENEW_MIN, (until - this.P.e.now) / 2);
+    if (this.P.e.now + wait >= until) return;
+    this.P.e.after(wait, () => {
+      if (c.gen === gen && c.state === (rebind ? 'REBINDING' : 'RENEWING')) this.renew(c, l, rebind, again + 1);
+    });
   }
 
   // ------------------------------------------------------------ DHCP: what arrives
@@ -392,9 +433,20 @@ export class NetServicesSim {
     const d = (msg.data || {}) as unknown as DhcpData;
     if (!pkt || !l3) return;
     const type = msg.type;
+    const dport = pkt.l4 && pkt.l4.proto === 'udp' ? pkt.l4.dport : undefined;
+    const toClient = type === 'DHCPOFFER' || type === 'DHCPACK' || type === 'DHCPNAK';
+    // what arrives is taken by the port it is sent to: a client on 68, a server or relay on 67 (a message to another port is no
+    // DHCP message for it: dropped as an unknown port would be)
+    // (an answer to a relay — unicast to its giaddr — is the server-to-relay leg: port 67)
+    const toRelay = toClient && !!d.giaddr && !isBroadcast(pkt.dst) && !!this.P.e.ownsAddress(dev, parseAddress(d.giaddr) as IpAddr, pkt.vrf);
+    const want = toClient && !toRelay ? 68 : 67;
+    if (dport !== want) {
+      this.P.e.note('drop', 'dhcp', dev, d.from || '', type, '', `${dev} drops ${msg.label}: sent to UDP port ${dport === undefined ? '?' : dport}, a DHCP ${want === 68 ? 'client' : 'server or relay'} takes it on ${want}`);
+      return;
+    }
     // a client: an answer for it
     const c = d.chaddr ? Array.from(this.clients.values()).find((x) => x.dev === dev && x.mac === d.chaddr) : undefined;
-    if (c && (type === 'DHCPOFFER' || type === 'DHCPACK' || type === 'DHCPNAK')) {
+    if (c && toClient && c.iface === l3.id) {
       if (type === 'DHCPOFFER') this.offered(c, d);
       else if (type === 'DHCPACK') this.acked(c, d);
       else if (d.xid === c.xid) {
@@ -417,7 +469,7 @@ export class NetServicesSim {
           const fwd: DhcpData = { ...d, giaddr: formatAddr(own.addr) };
           const m = this.msg(type, msg.label + ' (relayed)', `${dev} relays ${msg.label} from ${d.from} to the DHCP server ${formatAddr(srv)} as unicast, with giaddr ${formatAddr(own.addr)} (its ${l3.id})`, fwd);
           this.P.e.note('message', 'dhcp', dev, this.P.e.ownerOf(srv) || '', type, '', m.detail, this.P.e.now, m);
-          this.send(dev, own.addr, srv, m, undefined, true);
+          this.send(dev, own.addr, srv, l3.vrf, m, 'relay-to-server');
         }
         return;
       }
@@ -425,11 +477,11 @@ export class NetServicesSim {
       return;
     }
     // a relay: the server's answer to its giaddr goes to the client's segment as a broadcast
-    if ((type === 'DHCPOFFER' || type === 'DHCPACK' || type === 'DHCPNAK') && d.giaddr && this.P.e.ownsAddress(dev, parseAddress(d.giaddr) as IpAddr)) {
-      const out = this.P.e.ownsAddress(dev, parseAddress(d.giaddr) as IpAddr) as L3Iface;
-      const m = this.msg(type, msg.label, `${dev} passes ${msg.label} from the server on to ${d.from} as a broadcast on ${out.id}`, d);
+    if (toClient && d.giaddr && this.P.e.ownsAddress(dev, parseAddress(d.giaddr) as IpAddr, pkt.vrf)) {
+      const out = this.P.e.ownsAddress(dev, parseAddress(d.giaddr) as IpAddr, pkt.vrf) as L3Iface;
+      const m = this.msg(type, msg.label, `${dev} passes ${msg.label} from the server on to ${d.from} as a broadcast on ${out.id} (UDP 67 → 68)`, d);
       this.P.e.note('message', 'dhcp', dev, d.from, type, '', m.detail, this.P.e.now, m);
-      this.send(dev, parseAddress(d.giaddr) as IpAddr, BROADCAST, m, out, true);
+      this.send(dev, parseAddress(d.giaddr) as IpAddr, BROADCAST, out.vrf, m, 'to-client', out);
     }
   }
 
@@ -443,9 +495,14 @@ export class NetServicesSim {
     return i && i.dhcpRelay ? i.dhcpRelay.map((x) => parseAddress(x) as IpAddr) : [];
   }
 
-  /** The scope a request is for: the one whose network holds the giaddr, else the receiving interface's address. */
+  /**
+   * The scope a request is for (RFC 2131 §4.3): the one whose network holds
+   * the giaddr (relayed), else the client's own address (ciaddr: a renewal
+   * unicast from a bound client, maybe from another network), else the
+   * receiving interface's address.
+   */
   private scopeFor(dev: string, l3: L3Iface, d: DhcpData): Scope | undefined {
-    const at = d.giaddr ? [parseAddress(d.giaddr) as IpAddr] : l3.addrs.filter((a) => a.addr.version === 4).map((a) => a.addr);
+    const at = d.giaddr ? [parseAddress(d.giaddr) as IpAddr] : d.ciaddr ? [parseAddress(d.ciaddr) as IpAddr] : l3.addrs.filter((a) => a.addr.version === 4).map((a) => a.addr);
     return this.scopes.find((s) => s.dev === dev && at.some((a) => inPrefix(s.net, a)));
   }
 
@@ -468,7 +525,10 @@ export class NetServicesSim {
         return;
       }
       s.leases.set(formatAddr(ip), { ip: formatAddr(ip), mac: d.chaddr, client: `${d.from}:${d.iface || ''}`, state: 'offered', expires: now + OFFER_HOLD, scope: s.index });
+      // (the offer after its delay: not by a server powered off meanwhile)
+      const epoch = this.P.e.powerEpoch(dev);
       this.P.e.after(delay, () => {
+        if (this.P.e.powerEpoch(dev) !== epoch || !this.P.e.deviceOn(dev)) return;
         const a: DhcpData = { xid: d.xid, chaddr: d.chaddr, from: d.from, iface: d.iface, yiaddr: formatAddr(ip), server: formatAddr(me), giaddr: d.giaddr, prefix: s.net.prefix, gateway: s.gateway ? formatAddr(s.gateway) : undefined, dns: s.dns.map(formatAddr), lease: s.lease, domain: s.domain };
         const m = this.msg('DHCPOFFER', `DHCPOFFER ${formatAddr(ip)} · lease ${leaseText(s.lease)}`, `DHCPOFFER from ${dev} (${formatAddr(me)}) to ${d.from} (${d.chaddr}): ${formatAddr(ip)}/${s.net.prefix}, lease ${durationText(s.lease)}${s.gateway ? ', gateway ' + formatAddr(s.gateway) : ''}${s.dns.length ? ', DNS ' + s.dns.map(formatAddr).join(', ') : ''}${delay > 0 ? ` (after ${ping.value === 'on' ? 'the ping check and ' : ''}${durationText(delay)})` : ''}`, a);
         this.answer(dev, l3, me, m, d);
@@ -492,10 +552,10 @@ export class NetServicesSim {
     s.leases.set(formatAddr(want as IpAddr), { ip: formatAddr(want as IpAddr), mac: d.chaddr, client: `${d.from}:${d.iface || ''}`, state: 'bound', expires: now + s.lease, scope: s.index });
     const a: DhcpData = { xid: d.xid, chaddr: d.chaddr, from: d.from, iface: d.iface, yiaddr: formatAddr(want as IpAddr), server: formatAddr(me), giaddr: d.giaddr, prefix: s.net.prefix, gateway: s.gateway ? formatAddr(s.gateway) : undefined, dns: s.dns.map(formatAddr), lease: s.lease, domain: s.domain };
     const m = this.msg('DHCPACK', `DHCPACK ${formatAddr(want as IpAddr)} · lease ${leaseText(s.lease)}`, `DHCPACK from ${dev} to ${d.from} (${d.chaddr}): ${formatAddr(want as IpAddr)}/${s.net.prefix} is leased for ${durationText(s.lease)}`, a);
-    // a renewal from a bound client: unicast back to it
-    if (d.ciaddr && !isBroadcast(pkt.dst)) {
+    // a renewal from a bound client (no relay: RFC 2131 §4.1, a giaddr wins): unicast back to its ciaddr
+    if (d.ciaddr && !d.giaddr) {
       this.P.e.note('message', 'dhcp', dev, d.from, 'DHCPACK', '', m.detail, this.P.e.now, m);
-      this.send(dev, me, parseAddress(d.ciaddr) as IpAddr, m, undefined, true);
+      this.send(dev, me, parseAddress(d.ciaddr) as IpAddr, l3.vrf, m, 'to-client');
       return;
     }
     this.answer(dev, l3, me, m, d);
@@ -504,8 +564,8 @@ export class NetServicesSim {
   /** The answer goes back the way the request came: to the relay (unicast to giaddr), else broadcast on the segment. */
   private answer(dev: string, l3: L3Iface, me: IpAddr, m: Msg, d: DhcpData): void {
     this.P.e.note('message', 'dhcp', dev, d.from, m.type, '', m.detail, this.P.e.now, m);
-    if (d.giaddr) this.send(dev, me, parseAddress(d.giaddr) as IpAddr, m, undefined, true);
-    else this.send(dev, me, BROADCAST, m, l3, true);
+    if (d.giaddr) this.send(dev, me, parseAddress(d.giaddr) as IpAddr, l3.vrf, m, 'server-to-relay');
+    else this.send(dev, me, BROADCAST, l3.vrf, m, 'to-client', l3);
   }
 
   private serverAddr(dev: string, l3: L3Iface): IpAddr {
@@ -546,11 +606,15 @@ export class NetServicesSim {
 
   // ------------------------------------------------------------ DNS: the resolver
 
-  /** The DNS servers of a host: its lease's, else its configured ones. */
+  /** the DNS servers a host learned for IPv6 (router advertisements, DHCPv6; ipv6.ts) */
+  v6Dns: ((dev: string) => IpAddr[]) | null = null;
+
+  /** The DNS servers of a host: its lease's, else its configured ones; then those it learned for IPv6. */
   dnsServers(dev: string): IpAddr[] {
-    for (const l of this.P.e.leases.values()) if (l.dev === dev && l.dns.length) return l.dns.slice();
+    const learned = this.v6Dns ? this.v6Dns(dev) : [];
+    for (const l of this.P.e.leases.values()) if (l.dev === dev && l.dns.length) return l.dns.concat(learned);
     const d = this.P.m.index.devices.get(dev);
-    return d && d.dnsServers ? d.dnsServers.map((x) => parseAddress(x) as IpAddr) : [];
+    return (d && d.dnsServers ? d.dnsServers.map((x) => parseAddress(x) as IpAddr) : []).concat(learned);
   }
 
   /**
@@ -588,7 +652,9 @@ export class NetServicesSim {
     q.attempt++;
     const d: DnsData = { id: q.id, name: q.name, qtype: q.qtype, from: q.dev };
     const m: Msg = { protocol: 'dns', type: 'Query', label: `DNS ${q.qtype}? ${q.name}`, detail: `DNS query from ${q.dev} to ${formatAddr(srv)}:53 (UDP): ${q.qtype}? ${q.name} (id ${q.id}${q.attempt > 1 ? ', attempt ' + q.attempt : ''})`, data: d as unknown as { [k: string]: unknown } };
-    const src = this.srcTo(q.dev, srv);
+    // (its source and VRF as any of its packets get them: by the route to the server)
+    const from = this.P.transport ? this.P.transport.sourceFor(q.dev, srv) : null;
+    const src = from ? from.src : this.srcTo(q.dev, srv);
     if (!src) {
       q.done = true;
       this.queries.delete(q.id);
@@ -596,7 +662,7 @@ export class NetServicesSim {
       return;
     }
     this.P.e.note('message', 'dns', q.dev, this.P.e.ownerOf(srv) || '', 'Query', '', m.detail, this.P.e.now, m);
-    const pkt = this.P.e.newPacket(src, srv, '', m);
+    const pkt = this.P.e.newPacket(src, srv, from ? from.vrf : '', m);
     pkt.l4 = { proto: 'udp', num: 17, sport: 49152 + (q.id % 16000), dport: 53 };
     pkt.len = 8 + 40;
     this.P.e.send(q.dev, pkt);
@@ -611,6 +677,21 @@ export class NetServicesSim {
       }
       this.P.e.withTest(test, () => this.ask(q));
     });
+  }
+
+  /**
+   * An ICMP error reached a host about one of its DNS queries (its server runs no DNS: port unreachable): the
+   * query goes to its next server at once — no point waiting out the timeout. True when it was one of its queries.
+   */
+  queryRefused(dev: string, q: Quote, what: string): boolean {
+    if (q.dport !== 53 || q.sport === undefined) return false;
+    const query = Array.from(this.queries.values()).find((x) => !x.done && x.dev === dev && !x.forFor && 49152 + (x.id % 16000) === q.sport && x.si < x.servers.length && formatAddr(x.servers[x.si]) === q.dst);
+    if (!query) return false;
+    this.P.e.note('note', 'dns', dev, this.P.e.ownerOf(query.servers[query.si]) || '', 'Query refused', '', `${dev}: ${what} about its DNS query to ${q.dst}: ${q.dst} runs no DNS — ${query.si + 1 < query.servers.length ? 'it asks its next DNS server, ' + formatAddr(query.servers[query.si + 1]) : 'it has no other DNS server'}`);
+    query.si++;
+    query.attempt = 0;
+    this.ask(query);
+    return true;
   }
 
   private srcTo(dev: string, dst: IpAddr): IpAddr | null {
@@ -645,7 +726,11 @@ export class NetServicesSim {
     if (msg.type !== 'Query') return;
     const sd = this.P.m.index.devices.get(dev);
     const dns = sd && sd.netServices ? sd.netServices.dns : undefined;
-    if (!dns) return;
+    if (!dns) {
+      // a host that runs no DNS server: its port 53 is closed (ICMP port unreachable, RFC 1122 §4.1.3.1), never silence
+      if (this.P.transport && pkt.l4) this.P.transport.refuseService(dev, l3, pkt, 'it runs no DNS server');
+      return;
+    }
     // a server that listens on one address only answers there
     if (dns.listen && formatAddr(pkt.dst) !== dns.listen) {
       this.P.e.note('drop', 'dns', dev, d.from, 'Query', '', `${dev} listens for DNS on ${dns.listen} only: ${msg.label} to ${formatAddr(pkt.dst)} is not answered`);
@@ -653,33 +738,38 @@ export class NetServicesSim {
     }
     const zone = dns.zones.filter((z) => inZone(d.name, z.name)).sort((a, b) => b.name.length - a.name.length)[0];
     if (!zone) {
-      // not one of its zones: its forwarders (a DNS server of the model), else SERVFAIL
-      const fw = dns.forwarders.map((x) => parseAddress(x) as IpAddr).filter((a) => {
-        const o = this.P.e.ownerOf(a);
-        const od = o ? this.P.m.index.devices.get(o) : undefined;
-        return !!od && !!od.netServices && !!od.netServices.dns && od.id !== dev;
-      });
+      // not one of its zones: it asks its forwarders (whether one answers is the query's to find out — a forwarder that runs no
+      // DNS refuses it with a port unreachable, one out of reach never answers: its timeout), else SERVFAIL
+      const fw = dns.forwarders.map((x) => parseAddress(x)).filter((a): a is IpAddr => !!a && this.P.e.ownerOf(a) !== dev);
       if (fw.length) {
         this.P.e.note('note', 'dns', dev, '', 'forward', '', `${dev} has no zone for ${d.name}: it asks its forwarder ${fw.map(formatAddr).join(', ')}`);
-        const q: Query = { dev, name: d.name, qtype: d.qtype, servers: fw, si: 0, attempt: 0, id: ++this.qid, done: false, cb: () => undefined, forFor: { dev, q: pkt, l3 } };
+        // (none of them answering: the client gets SERVFAIL, as from a forwarding server whose forwarders time out)
+        const q: Query = { dev, name: d.name, qtype: d.qtype, servers: fw, si: 0, attempt: 0, id: ++this.qid, done: false, cb: (r) => {
+          if (r.error) this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, `its forwarders gave no answer: ${r.error.replace(/^DNS: /, '')}`);
+        }, forFor: { dev, q: pkt, l3 } };
         this.queries.set(q.id, q);
         this.ask(q);
         return;
       }
-      this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, dns.forwarders.length ? 'its forwarders are outside the model' : 'it has no zone for it and no forwarder');
+      this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, 'it has no zone for it and no forwarder');
       return;
     }
     const ttl = this.P.e.params.num('dns-ttl', dev, null, zoneRef(dev, zone.name));
-    const look = (name: string, depth: number): { answer: string[]; cname?: string } => {
-      const recs = this.zoneRecords(dev, zone.name);
+    // a CNAME is followed within the server's zones (RFC 1034 §4.3.2 step 3a): its target in whichever of them holds it
+    // (the most specific); a target in none of them ends the answer with the CNAME alone
+    const zoneOf = (name: string) => dns.zones.filter((z) => inZone(name, z.name)).sort((a, b) => b.name.length - a.name.length)[0];
+    const look = (name: string, zname: string, depth: number): { answer: string[]; cname?: string } => {
+      const recs = this.zoneRecords(dev, zname);
       const cn = recs.find((r) => r.name === name && r.type === 'CNAME');
       if (cn && depth < 8) {
-        const r = look(dnsNameKey(cn.value), depth + 1);
+        const target = dnsNameKey(cn.value);
+        const tz = zoneOf(target);
+        const r = tz ? look(target, tz.name, depth + 1) : { answer: [] };
         return { answer: r.answer, cname: cn.value };
       }
       return { answer: recs.filter((r) => r.name === name && r.type === d.qtype).map((r) => r.value) };
     };
-    const r = look(d.name, 0);
+    const r = look(d.name, zone.name, 0);
     if (!r.answer.length) {
       const exists = this.zoneRecords(dev, zone.name).some((x) => x.name === d.name);
       this.reply(dev, l3, pkt, exists ? 'NOERROR' : 'NXDOMAIN', [], ttl, r.cname);
@@ -703,12 +793,7 @@ export class NetServicesSim {
 
   /** A server's zone: the model's DNS names in it (A / AAAA), and its own records. */
   zoneRecords(dev: string, zone: string): Array<{ name: string; type: string; value: string; source: string }> {
-    const d = this.P.m.index.devices.get(dev);
-    const z = d && d.netServices && d.netServices.dns ? d.netServices.dns.zones.find((x) => x.name === zone) : undefined;
-    if (!z) return [];
-    const out = derivedRecords(this.P.m, zone).map((r) => ({ name: r.fqdn, type: r.type as string, value: r.value, source: r.source }));
-    for (const r of z.records) out.push({ name: recordFqdn(zone, r.name), type: r.type, value: r.value, source: 'zone record' });
-    return out;
+    return zoneRecords(this.P.m, dev, zone);
   }
 
   // ------------------------------------------------------------ tables

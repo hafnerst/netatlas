@@ -22,7 +22,7 @@ const EVENTS = `Array.from(document.querySelectorAll('#sim-events > li')).map((l
 for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 640]]) {
   test(`${theme}, ${width} px: Network events: four direct actions, then Active events with one event per operation; the selection never overwrites a form; focus and details kept on updates`, { skip, timeout: 240000 }, async () => {
     const page = await openPage(url, { width, height: 900 });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const click = async (id) => {
       await page.eval(`document.getElementById(${JSON.stringify(id)}).scrollIntoView({ block: 'nearest' }), true`);
       await page.eval(`document.getElementById(${JSON.stringify(id)}).click(), true`);
@@ -42,7 +42,7 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 640]]) 
         obj: !!document.getElementById('sim-obj'), shows: /Show /.test(net.textContent),
         after: !!(net.compareDocumentPosition(document.getElementById('sim-act-events')) & Node.DOCUMENT_POSITION_FOLLOWING),
         none: document.getElementById('sim-failed').textContent }; })()`);
-      assert.deepEqual(S.actions, [['Send network packets', 'true', 'sim-ne-send'], ['Join multicast group', 'false', 'sim-ne-join'], ['Leave multicast group', 'false', 'sim-ne-leave'], ['Start multicast stream', 'false', 'sim-ne-stream'], ['Interface actions', 'false', 'sim-ne-iface']]);
+      assert.deepEqual(S.actions, [['Send network packets', 'true', 'sim-ne-send'], ['Join multicast group', 'false', 'sim-ne-join'], ['Leave multicast group', 'false', 'sim-ne-leave'], ['Start multicast stream', 'false', 'sim-ne-stream'], ['Interface actions', 'false', 'sim-ne-iface'], ['Start application', 'false', 'sim-ne-app']]);
       assert.deepEqual([S.heading, S.obj, S.shows, S.after], [true, false, false, true]);
       assert.equal(S.none, 'None yet: start one above, or from the diagram’s menus.');
       // the tables stay where they belong: the device's menu, the panel's status side

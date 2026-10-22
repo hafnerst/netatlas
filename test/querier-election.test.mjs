@@ -262,11 +262,12 @@ test('an IPv6 leave says MLD, never IGMP; the form’s note names the message, t
   s.runTo(10000);
   assert.equal(s.joinGroup('rx1', 'eth0', 'ff05::5', []), null);
   assert.equal(s.joinGroup('rx1', 'eth0', '239.5.5.5', []), null);
-  assert.equal(s.leaveContext('rx1', 'eth0', 'ff05::5'), 'rx1:eth0 (2001:db8:5::11, VLAN 10) sends an MLDv2 report that blocks ff05::5 to ff02::16; its membership ends at once.');
+  // (MLD's source is the host's link-local address, never its global one: RFC 3810 §5)
+  assert.match(s.leaveContext('rx1', 'eth0', 'ff05::5'), /^rx1:eth0 \(fe80::[0-9a-f:]+, VLAN 10\) sends an MLDv2 report that blocks ff05::5 to ff02::16; its membership ends at once\.$/);
   assert.equal(s.leaveContext('rx1', 'eth0', '239.5.5.5'), 'rx1:eth0 (10.5.0.11, VLAN 10) sends an IGMPv3 report that blocks 239.5.5.5 to 224.0.0.22; its membership ends at once.');
   const lv = s.actLeave('rx1', 'eth0', 'ff05::5');
   const m = s.events().find((e) => e.test === lv.traffic && e.kind === 'message');
-  assert.match(m.detail, /^MLDv2 Report from rx1 \(2001:db8:5::11\) to ff02::16/);
+  assert.match(m.detail, /^MLDv2 Report from rx1 \(fe80::[0-9a-f:]+\) to ff02::16/);
   // the other group stays
   assert.deepEqual(s.memberTable('rx1').rows.map((r) => r[1]), ['239.5.5.5']);
 });

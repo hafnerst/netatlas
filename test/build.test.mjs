@@ -5,12 +5,13 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { root } from './helpers.mjs';
+import { SIZE_BUDGET } from '../scripts/release-check.mjs';
 
 const html = readFileSync(join(root, 'dist', 'netatlas.html'), 'utf8');
-const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
+const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
 const js = scripts.map((m) => m[2]).join('\n');
 // The document markup without the script body (the script legitimately contains test strings).
-const markup = html.replace(/<script([^>]*)>[\s\S]*?<\/script>/g, '<script$1></script>');
+const markup = html.replace(/<script\b([^>]*)>[\s\S]*?<\/script\b[^>]*>/gi, '<script$1></script>');
 
 test('exactly one inline script, no external script/style/link/img/iframe sources', () => {
   assert.equal(scripts.length, 1);
@@ -77,14 +78,17 @@ test('no third-party runtime code: every bundled module comes from src/', () => 
 });
 
 test('reasonable size, and the examples, the manual and the license are embedded', () => {
-  // one self-contained page with every example, the manual's screenshots and the license embedded; a sanity limit, not a budget
-  // (5 MiB since virtualization: the Hypervisor and Container engine services' editing, the hosts' interiors, the simulation of virtual networking, its example and manual sections)
-  assert.ok(html.length < 5 * 1024 * 1024, `${html.length} bytes`);
-  // the screenshots are small, cropped WebP images: together under 1000 KiB as data: URLs (the manual's simulation sections added some: the packet inspector, a broadcast domain, the simulation layout and the Device types filter; then a port's VLANs, and the port labels in the diagrams; then virtualization: a host's interior, its Services card and the HA restart in a simulation; then the Send test form)
+  // one self-contained page with every example, the manual's screenshots and the license embedded: the release budget
+  // (SIZE_BUDGET in scripts/release-check.mjs, in bytes; 5 973 779 bytes at 0.1.3 + the played experiments, 95 % of it)
+  // (5 MiB since virtualization: the Hypervisor and Container engine services' editing, the hosts' interiors, the simulation of virtual networking, its example and manual sections;
+  //  6 MiB since the architecture-validation workflow: communication checks, allocation-aware addressing, service dependencies, what-if, failure domains, saved expectations and Design checks;
+  //  6.5 MiB since the non-IP interconnects, decided by the maintainer: 6 211 064 bytes before them, 6 354 764 with them — opaque ports, interconnects, their diagram, editor, illustrative data and manual section)
+  assert.ok(Buffer.byteLength(html) <= SIZE_BUDGET, `${Buffer.byteLength(html)} bytes, over the budget of ${SIZE_BUDGET}`);
+  // the screenshots are small, cropped WebP images: together under 1080 KiB as data: URLs (the manual's simulation sections added some: the packet inspector, a broadcast domain, the simulation layout and the Device types filter; then a port's VLANs, and the port labels in the diagrams; then virtualization: a host's interior, its Services card and the HA restart in a simulation; then the Send test form; then a device's applications and the PTP clocks' marks; then a saved experiment's run, the saved views and the execution scope)
   const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
   assert.ok(images.length >= 8, String(images.length));
   const total = images.reduce((n, s) => n + s.length, 0);
-  assert.ok(total < 1000 * 1024, `${total} bytes of screenshots`);
+  assert.ok(total < 1080 * 1024, `${total} bytes of screenshots`);
   assert.match(js, /Apache License\\n\s+Version 2\.0, January 2004/);
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);

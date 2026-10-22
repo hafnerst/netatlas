@@ -115,7 +115,7 @@ test('the source and destination labels: each interface "name - address", a DHCP
   assert.equal(src('isp').ok, false);
   assert.equal(src('isp').short, 'Cannot send IP packets');
   assert.match(src('isp').reason, /no IP stack of its own/);
-  assert.deepEqual(src('core').ifaces.map((i) => i.label), ['Vlan10 - 192.168.10.1', 'Vlan110 - 10.0.10.2', 'Vlan120 - 10.0.20.2', 'Vlan130 - 10.0.30.2', 'Vlan20 - 192.168.20.1', 'Vlan30 - 192.168.30.1', 'Vlan99 - 192.168.99.1']);
+  assert.deepEqual(src('core').ifaces.map((i) => i.label), ['Vlan10 - 192.168.10.1, fd00:10::1', 'Vlan110 - 10.0.10.2', 'Vlan120 - 10.0.20.2', 'Vlan130 - 10.0.30.2', 'Vlan20 - 192.168.20.1', 'Vlan30 - 192.168.30.1', 'Vlan99 - 192.168.99.1']);
   // a DHCP client before and after its lease
   assert.deepEqual(src('guest-phone').ifaces.map((i) => [i.label, i.usable, i.ready]), [['wlan0 - No DHCP lease', true, false]]);
   s.runTo(9000);

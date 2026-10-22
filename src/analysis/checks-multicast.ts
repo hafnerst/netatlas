@@ -12,6 +12,8 @@ import { protocolBase } from '../model/protocols';
 import { Device, Interface, Model, deviceInterfaces, relationDevices } from '../model/types';
 import { compareAddr, formatAddr } from './ipmath';
 import { lookup } from './routing';
+import { RpEnv, rpConflicts, rpFor } from './pim-rp';
+import { routerIdFor } from '../model/services';
 import { capabilities } from '../model/capabilities';
 import { SNOOPING_KEY, unsetSnoopingVlans } from '../model/snooping';
 import { vlanRangesShown } from '../model/derive';
@@ -81,13 +83,29 @@ function sources(model: Model): Array<{ d: Device; i: Interface; addr: IpAddr; g
 }
 
 /** The static RP the model names (a router's pim rp, a PIM relation's rp, a candidate RP), or null. */
-function rpOf(model: Model): string | null {
-  for (const d of model.devices) {
-    const s = d.services.find((x) => x.id === 'pim');
-    if (s && (s.values.get('rp') || s.values.get('candidate_rp') === 'yes')) return s.values.get('rp') || d.id;
-  }
-  for (const r of model.relations) if (protocolBase(model.protocols, r.protocol) === 'pim' && r.attrs.some(([k]) => k === 'rp')) return (r.attrs.find(([k]) => k === 'rp') as [string, string])[1];
-  return null;
+/** The RP choice's view of the model (analysis/pim-rp.ts): the configured addresses, the router IDs, every router on. */
+function rpEnv(model: Model): RpEnv {
+  return {
+    ownerOf(a: IpAddr): string | null {
+      const d = model.devices.find((x) => deviceInterfaces(x).some((i) => addrs(i).some((y) => compareAddr(y.addr, a) === 0)));
+      return d ? d.id : null;
+    },
+    routerId(dev: string): IpAddr | null {
+      const d = model.index.devices.get(dev);
+      const own = routerIdFor(d, 'pim');
+      if (own && own.address) return parseAddress(own.address);
+      const v4 = (loop: boolean): IpAddr[] => (d ? deviceInterfaces(d) : []).filter((i) => (i.type === 'loopback') === loop).flatMap((i) => addrs(i).map((x) => x.addr)).filter((x) => x.version === 4).sort(compareAddr);
+      const l = v4(true);
+      const all = l.length ? l : v4(false);
+      return all.length ? all[all.length - 1] : null;
+    },
+    v6Addr(dev: string): IpAddr | null {
+      const d = model.index.devices.get(dev);
+      const ifs = (d ? deviceInterfaces(d) : []).slice().sort((x, y) => Number(y.type === 'loopback') - Number(x.type === 'loopback') || cmp(x.id, y.id));
+      for (const i of ifs) for (const x of addrs(i)) if (x.addr.version === 6 && x.addr.bytes[0] !== 0xfe) return x.addr;
+      return null;
+    },
+  };
 }
 
 export const MULTICAST_CHECKS: McCheck[] = [
@@ -140,7 +158,7 @@ export const MULTICAST_CHECKS: McCheck[] = [
         const s = d.services.find((x) => x.id === 'pim');
         return !!s && (s.values.get('mode') || 'sparse') === 'sparse';
       });
-      if (!sparse.length || rpOf(model)) return;
+      if (!sparse.length) return;
       const groups = new Set<string>();
       for (const j of joins(model)) {
         const g = parseAddress(j.group);
@@ -151,8 +169,37 @@ export const MULTICAST_CHECKS: McCheck[] = [
         if (g && !isSsm(g)) groups.add(s.group);
       }
       if (!groups.size) return;
-      const d = sparse.sort((a, b) => cmp(a.id, b.id))[0];
-      emit({ message: `PIM sparse mode on ${sparse.map((x) => x.id).sort(cmp).join(', ')}, any-source groups ${Array.from(groups).sort(cmp).join(', ')}, but no rendezvous point: write rp under a router's protocols: pim (or candidate_rp: yes), or use source-specific groups (232.0.0.0/8)`, refs: sparse.map((x) => 'device:' + x.id), at: { ref: 'device:' + d.id, field: 'protocols' } });
+      // each router's own RP for each group (its static RP, its relations' rp, its domain's candidate): those that have none
+      const env = rpEnv(model);
+      const none = new Map<string, string[]>();
+      for (const r of sparse.slice().sort((a, b) => cmp(a.id, b.id))) for (const g of Array.from(groups).sort(cmp)) if (!rpFor(model, env, r.id, g)) none.set(r.id, (none.get(r.id) || []).concat([g]));
+      if (!none.size) return;
+      const ids = Array.from(none.keys());
+      const gs = Array.from(new Set(Array.from(none.values()).flat())).sort(cmp);
+      emit({ message: `PIM sparse mode on ${ids.join(', ')}, any-source group${gs.length === 1 ? '' : 's'} ${gs.join(', ')}, but no rendezvous point there (no static rp, no rp on its PIM relations, no candidate RP in its PIM domain, or none of the group's address family): write rp under a router's protocols: pim (or candidate_rp: yes), or use source-specific groups (232.0.0.0/8)`, refs: ids.map((x) => 'device:' + x), at: { ref: 'device:' + ids[0], field: 'protocols' } });
+    },
+  },
+  {
+    id: 'multicast-rp-conflict',
+    severity: 'warning',
+    title: 'Routers of one PIM domain use different rendezvous points for a group',
+    reads: 'protocols: pim (rp, candidate_rp); PIM relations: rp; interfaces: multicast join and streams',
+    run(model, emit) {
+      const env = rpEnv(model);
+      const routers = model.devices.filter(pim).map((d) => d.id);
+      const groups = Array.from(new Set(sources(model).map((s) => s.group).concat(joins(model).map((j) => j.group)))).filter((g) => {
+        const a = parseAddress(g);
+        return !!a && !isSsm(a);
+      }).sort(cmp);
+      const seen = new Set<string>();
+      for (const g of groups) {
+        for (const c of rpConflicts(model, env, routers, g)) {
+          const k = `${c.a}|${c.b}|${formatAddr(c.ra.addr)}|${formatAddr(c.rb.addr)}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          emit({ message: `${c.a} uses ${formatAddr(c.ra.addr)} (${c.ra.dev}, ${c.ra.how}) as the RP of ${g}, ${c.b} ${formatAddr(c.rb.addr)} (${c.rb.dev}, ${c.rb.how}): in one PIM domain their shared trees do not meet`, refs: ['device:' + c.a, 'device:' + c.b], at: { ref: 'device:' + c.a, field: 'protocols' } });
+        }
+      }
     },
   },
   {
@@ -162,12 +209,20 @@ export const MULTICAST_CHECKS: McCheck[] = [
     reads: 'interfaces: multicast streams; protocols: pim; routes and relations (the unicast route); PIM relations (the neighbours)',
     run(model, emit) {
       const targets: Array<{ addr: IpAddr; what: string }> = sources(model).map((s) => ({ addr: s.addr, what: `the source ${formatAddr(s.addr)} (${s.d.id}) of ${s.group}` }));
-      const rp = rpOf(model);
-      const rpa = rp ? parseAddress(rp) : null;
-      if (rpa) targets.push({ addr: rpa, what: `the RP ${rp}` });
+      const env = rpEnv(model);
+      const asm = Array.from(new Set(sources(model).map((s) => s.group).concat(joins(model).map((j) => j.group)))).filter((g) => {
+        const a = parseAddress(g);
+        return !!a && !isSsm(a);
+      }).sort(cmp);
       const seen = new Set<string>();
       for (const r of model.devices.filter(pim).sort((a, b) => cmp(a.id, b.id))) {
-        for (const t of targets) {
+        // the RP this router itself uses (for each any-source group), besides the sources
+        const own = targets.slice();
+        for (const g of asm) {
+          const rp = rpFor(model, env, r.id, g);
+          if (rp && !own.some((t) => compareAddr(t.addr, rp.addr) === 0)) own.push({ addr: rp.addr, what: `its RP ${formatAddr(rp.addr)} (${rp.dev})` });
+        }
+        for (const t of own) {
           const k = r.id + '|' + formatAddr(t.addr);
           if (seen.has(k)) continue;
           seen.add(k);

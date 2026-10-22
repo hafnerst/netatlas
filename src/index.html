@@ -50,6 +50,8 @@
     <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
       <button id="btn-find" type="button" role="menuitem" data-command="find.diagram" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
       <button id="btn-outline-filter" type="button" role="menuitem" data-command="find.outline" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+      <button id="btn-views" type="button" role="menuitem" aria-haspopup="dialog" data-command="view.saved" title="Open or create a model first" disabled><span class="mi-label">Saved views…</span></button>
+      <button id="btn-browse" type="button" role="menuitem" aria-haspopup="dialog" data-command="find.browse" title="Open or create a model first" disabled><span class="mi-label">Applications, VLANs and VRFs…</span></button>
       <button id="btn-palette" type="button" role="menuitem" aria-haspopup="dialog" data-command="palette.open" title="Search every action and every object of the model, and run or select it (Ctrl+K)"><span class="mi-label">Command palette…</span><span class="mi-hint">Ctrl+K</span></button>
     </div>
   </div>
@@ -65,12 +67,14 @@
       <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
+      <button id="btn-checks" type="button" role="menuitem" data-command="analyze.checks" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Design checks…</span></button>
     </div>
   </div>
   <div class="menu-wrap">
     <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: a hypothetical state in a window of its own; it never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
     <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
       <button id="btn-sim-start" type="button" role="menuitem" data-command="sim.start" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Start simulation…</span></button>
+      <button id="btn-experiments" type="button" role="menuitem" data-command="sim.experiments" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Experiments…</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>
@@ -99,7 +103,7 @@
     <div class="arrange-btns">
       <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
       <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
-      <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
+      <button id="btn-arrange-structured" type="button" class="arrange-btn" data-strategy="structured" aria-label="Auto-arrange: Structured" aria-pressed="false" disabled>Structured</button>
     </div>
     <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
@@ -132,6 +136,8 @@
   </div>
   <label class="opt" data-priority="4"><input id="opt-labels" type="checkbox" checked disabled> Labels</label>
   <label class="opt" data-priority="3"><input id="opt-groups" type="checkbox" checked disabled> Groups / Locations</label>
+  <label class="opt physical-only ic-opt" data-priority="2" title="The cables of the IP side (off: the non-IP interconnects alone, with the devices on them; a filtered view is arranged afresh, nothing is deleted)" hidden><input id="opt-ip" type="checkbox" checked disabled> IP</label>
+  <label class="opt physical-only ic-opt" data-priority="2" title="The non-IP interconnects (off: the IP side alone; a filtered view is arranged afresh, nothing is deleted)" hidden><input id="opt-nonip" type="checkbox" checked disabled> Non-IP</label>
   <label class="opt logical-only" data-priority="2"><input id="opt-networks" type="checkbox" checked disabled> Networks</label>
   <label class="opt logical-only" data-priority="1" title="Show the static routes in the device boxes and the lines to their next hops (off: hidden; nothing moves, nothing is deleted)"><input id="opt-routes" type="checkbox" checked disabled> Routes</label>
 
@@ -157,6 +163,8 @@
     <div id="sim-setup" class="sim-panel" hidden>
       <div class="ol-header"><h2 id="sim-setup-title" class="ol-heading">Simulation setup</h2></div>
       <div id="sim-setup-body" class="sp-body"></div>
+      <div id="ws-exp-left" class="sp-body ws-body" hidden></div>
+      <div id="ws-an-left" class="sp-body ws-body" hidden></div>
     </div>
   </aside>
   <section id="canvas-wrap">
@@ -189,6 +197,12 @@
         <span id="sim-short" class="mb-text mb-short" aria-hidden="true"></span>
 
         <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
+      </div>
+      <div id="mb-ws" class="mb-row" hidden>
+        <span id="ws-icon" class="mb-icon" aria-hidden="true"></span>
+        <span id="ws-text" class="mb-text" role="status"></span>
+        <span id="ws-short" class="mb-text mb-short" aria-hidden="true"></span>
+        <button id="ws-exit-banner" type="button" class="mini" data-command="ws.exit">Exit</button>
       </div>
       <div id="mb-trace" class="mb-row" hidden>
         <span class="mb-icon" aria-hidden="true">⇢</span>
@@ -234,7 +248,7 @@
       </div>
     </div>
     <div id="errors" class="overlay error-overlay"></div>
-    <div id="sim-badge" class="sim-badge" aria-hidden="true" hidden><span class="sim-badge-mark">◈</span> Simulation running</div>
+    <div id="sim-badge" class="sim-badge" aria-hidden="true" hidden><span id="sim-badge-mark" class="sim-badge-mark">◈</span> <span id="sim-badge-text">Simulation running</span></div>
     <div id="tooltip" role="tooltip" hidden></div>
     <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
@@ -253,6 +267,8 @@
     <div id="sim-actions" class="sim-panel" hidden>
       <div class="ol-header"><h2 id="sim-actions-title" class="ol-heading">Actions</h2></div>
       <div id="sim-actions-body" class="sp-body"></div>
+      <div id="ws-exp-right" class="sp-body ws-body" hidden></div>
+      <div id="ws-an-right" class="sp-body ws-body" hidden></div>
     </div>
     <details id="keys" class="keys" open>
       <summary>Mouse &amp; keyboard</summary>
@@ -289,6 +305,8 @@
     <div id="dock-splitter" class="dock-splitter" role="separator" aria-orientation="horizontal" aria-label="Height of the simulation panel" aria-controls="sim-dock" tabindex="0" title="Drag to change the height of the simulation panel; double-click to reset it. With the keyboard: ↑ taller, ↓ lower (Shift: faster), Enter resets"></div>
     <h2 id="sim-dock-title" class="sr-only">Simulation panel</h2>
     <div id="sim-dock-body" class="sd"></div>
+    <div id="ws-exp-dock" class="sd ws-dock" hidden></div>
+    <div id="ws-an-dock" class="sd ws-dock" hidden></div>
   </section>
 </main>
 <footer id="status" aria-live="polite"></footer>

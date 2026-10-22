@@ -42,6 +42,7 @@ import { parsePrefix, IpAddr } from '../../model/ip';
 import { Device, Interface, Link, LinkEnd, Model, PortGroup, deviceInterfaces, ifaceKey } from '../../model/types';
 import { cnetRef, clusterMembers, networkAttachments, portGroupAttachments, portGroupL2, portGroupOf, virtBridgeId, virtLinkId, vswitchRef, isVm } from '../../model/virtual';
 import { networkOf } from '../ipmath';
+import { ipConfigured } from '../../model/ipv6';
 import { IfaceMac, interfaceMacs } from './mac';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -109,6 +110,10 @@ export interface L3Iface {
   ports: string[];
   mac: string;
   macSimulated: boolean;
+  /** its IPv6 link-local address once duplicate address detection passed (ipv6.ts) */
+  ll?: SimAddr;
+  /** its written IPv6 addresses not usable now (tentative until duplicate address detection passes, or duplicates; ipv6.ts) */
+  unusable?: string[];
 }
 
 export interface SimDevice {
@@ -174,6 +179,12 @@ export interface SimNet {
   standby: Map<string, Map<string, Map<string, string>>>;
   /** a host port whose cable ends elsewhere now (an uplink at its virtual switch, a passthrough port at its VM): model port key → where */
   moved: Map<string, { device: string; port: string }>;
+}
+
+/** The model's "device:port" of a port key: its first "|" (the end of the device part) becomes ":". */
+export function portRefOf(key: string): string {
+  const i = key.indexOf('|');
+  return i < 0 ? key : key.slice(0, i) + ':' + key.slice(i + 1);
 }
 
 export function portKey(device: string, port: string): string {
@@ -327,13 +338,13 @@ export function buildNet(model: Model): SimNet {
       }
       if (i.type === 'virtual' && i.members.length) {
         // a routed aggregate (no VLANs): one layer-3 interface over its members
-        if (!bridgeKind(i.id) && (addrs.length || i.dhcp || routedPort(i.id) || !bridge)) sd.l3.set(i.id, { ...base, kind: 'aggregate', vlan: 0, ports: i.members.slice().sort(cmp) });
+        if (!bridgeKind(i.id) && (addrs.length || ipConfigured(i) || routedPort(i.id) || !bridge)) sd.l3.set(i.id, { ...base, kind: 'aggregate', vlan: 0, ports: i.members.slice().sort(cmp) });
         continue;
       }
       if (i.type === 'virtual') {
         const vs = interfaceVlans(model, i);
         const vlan = vs.length ? vs[0] : 0;
-        if (!addrs.length && !i.dhcp) continue;
+        if (!addrs.length && !ipConfigured(i)) continue;
         const parent = subinterfaceParent(model, i);
         if (parent !== undefined) {
           // a subinterface ("ge-0/0/2.10"): its VLAN 802.1Q-tagged on its port (an aggregate: on its members)
@@ -346,7 +357,7 @@ export function buildNet(model: Model): SimNet {
       }
       // a physical port: routed (a router's port without VLANs, a Layer 3 switch's routed port), or on a device that does not bridge
       if (memberOf.has(i.id)) continue;
-      if (routedPort(i.id) || ((addrs.length || i.dhcp) && !bridgeKind(i.id)) || !bridge) sd.l3.set(i.id, { ...base, kind: 'routed', vlan: 0, ports: [i.id] });
+      if (routedPort(i.id) || ((addrs.length || ipConfigured(i)) && !bridgeKind(i.id)) || !bridge) sd.l3.set(i.id, { ...base, kind: 'routed', vlan: 0, ports: [i.id] });
     }
     if (bridge) {
       // bridge ports: cabled ports without addresses; an aggregate without addresses is one port
@@ -723,58 +734,250 @@ export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) =
 }
 
 /**
- * The layer-3 interfaces in the broadcast domain of one (static: every
- * cable up, no spanning tree): out of its ports, through the bridges in the
- * VLAN the frames have there, to the routed interfaces, subinterfaces and
- * VLAN interfaces they reach. What a DHCP broadcast from it reaches (the
- * consistency checks). Its own interface is left out.
+ * The state a broadcast domain is taken in. Static analysis passes nothing
+ * (every cable and port up, no spanning tree) or a failure's state; the
+ * engine passes its live state.
  */
-export function broadcastPeers(net: SimNet, dev: string, iface: string): Array<{ dev: string; l3: L3Iface }> {
-  const out: Array<{ dev: string; l3: L3Iface }> = [];
-  const sd = net.devices.get(dev);
-  const me = sd ? sd.l3.get(iface) : undefined;
-  if (!sd || !me) return out;
-  const seen = new Set<string>();
+export interface L2State {
+  /** is a cable up */
+  cableUp?(link: string): boolean;
+  /** is a port up (a device that is off: none of its ports) */
+  portUp?(dev: string, port: string): boolean;
+  /** does a device forward frames (a device that is off does not; a failed-open inline one does, as a wire) */
+  forwards?(dev: string): boolean;
+  /** is a bridge port blocked in a VLAN (the spanning tree, a port still learning) */
+  blocked?(dev: string, bp: string, vlan: number): boolean;
+  /** may an aggregate's member port distribute (LACP) */
+  memberReady?(dev: string, port: string): boolean;
+}
+
+/** One layer-3 interface a broadcast domain reaches. */
+export interface L2Reach {
+  dev: string;
+  /** the layer-3 interface */
+  l3: L3Iface;
+  /** the port it was reached at (its own port; for a VLAN interface, its own id) */
+  port: string;
+}
+
+/** A broadcast domain: what a broadcast from an interface (or within a cable's VLAN) reaches at layer 2. */
+export interface L2Domain {
+  /** the VLAN it starts in (0: untagged, no VLAN known); null: no VLAN context could be determined (see `ambiguous`) */
+  vlan: number | null;
+  /** the layer-3 interfaces reached, its own included */
+  reached: L2Reach[];
+  /** the bridges it crosses, with the VLAN it has in each */
+  bridges: Array<{ dev: string; vlan: number }>;
+  /** the bridge ports it enters a bridge at, and leaves it by ("device|bridgePort") */
+  entered: string[];
+  left: string[];
+  /** the physical ports it leaves a device by ("device|port") */
+  out: string[];
+  /** the cables it crosses */
+  links: string[];
+  /** the start names no VLAN context (a trunk port, a radio with several Wi-Fi networks, an interface without a cable): why */
+  ambiguous?: string;
+  /** the start has no cable: the model says nothing about its segment */
+  uncabled?: boolean;
+}
+
+/**
+ * The broadcast domain of an interface (or of a cable in one VLAN), one
+ * definition for the simulation, the consistency checks and the static
+ * analysis: out of the interface's ports, through the bridges in the VLAN
+ * the frames have there (a port's access VLAN, a trunk's tag or native
+ * VLAN, a Wi-Fi network's VLAN, a port group's VLAN, a container network),
+ * to the routed interfaces, subinterfaces and VLAN interfaces it reaches.
+ * No router passes it on. An inline or pass-through device passes it
+ * between its paired ports only (a one-way pair: from a to b); a filtering
+ * bridge into its other domain only; a Wi-Fi network tunneled to its
+ * controller ends at its access point. A start that names no VLAN context
+ * (a trunk port, a radio with several networks, without `vlan`) is
+ * ambiguous: nothing is reached, and `ambiguous` says why — an unknown VLAN
+ * never means every VLAN.
+ */
+export function l2Domain(net: SimNet, from: { dev: string; iface: string; vlan?: number } | { link: string; vlan: number }, st: L2State = {}): L2Domain {
+  const out: L2Domain = { vlan: null, reached: [], bridges: [], entered: [], left: [], out: [], links: [] };
+  const cableUp = (id: string): boolean => !st.cableUp || st.cableUp(id);
+  const portUp = (d: string, p: string): boolean => !st.portUp || st.portUp(d, p);
+  const forwards = (d: SimDevice): boolean => !st.forwards || st.forwards(d.virt ? d.virt.owner : d.id);
+  const blocked = (d: string, bp: string, v: number): boolean => !!st.blocked && st.blocked(d, bp, v);
+  const ready = (d: string, p: string): boolean => !st.memberReady || st.memberReady(d, p);
+  const seenL3 = new Set<string>();
+  const seenLink = new Set<string>();
   const done = new Set<string>();
-  const add = (d: string, l: L3Iface): void => {
-    const k = d + ':' + l.id;
-    if (seen.has(k) || (d === dev && l.id === iface)) return;
-    seen.add(k);
-    out.push({ dev: d, l3: l });
+  const reach = (d: SimDevice, l3: L3Iface, port: string): void => {
+    const k = d.id + ':' + l3.id;
+    if (seenL3.has(k)) return;
+    seenL3.add(k);
+    out.reached.push({ dev: d.id, l3, port });
   };
   const l3At = (od: SimDevice, port: string, tag: number | null): L3Iface | undefined => {
     const cands = Array.from(od.l3.values()).filter((l) => l.ports.indexOf(port) >= 0).sort((a, b) => cmp(a.id, b.id));
     if (tag) return cands.find((l) => l.kind === 'subif' && l.vlan === tag);
-    return cands.find((l) => l.kind === 'routed' || l.kind === 'aggregate' || l.kind === 'subif');
+    return cands.find((l) => l.kind === 'routed' || l.kind === 'aggregate' || (l.kind === 'subif' && !l.vlan));
   };
-  const bridge = (b: SimDevice, from: string | null, vlan: number): void => {
-    const key = b.id + '|' + vlan;
-    if (done.has(key)) return;
-    done.add(key);
-    for (const l of b.l3.values()) if (l.kind === 'svi' && l.vlan === vlan) add(b.id, l);
-    for (const bp of Array.from(b.bridgePorts.values()).sort((x, y) => cmp(x.id, y.id))) {
-      if (bp.id === from) continue;
-      const c = carries(bp.vlans, vlan);
-      if (!c) continue;
-      for (const m of bp.members) cross(b.id, m, c === 'untagged' ? null : vlan);
+  // what may leave a bridge after entering at a port (see the function comment); null: any port
+  const onlyTo = (sd: SimDevice, from: string | null): string[] | null => {
+    if (from === null) return null;
+    const c = sd.caps;
+    const d = sd.dev;
+    if (c.inline || c.passThrough) {
+      const pair = d.portPairs.find((p) => p.a === from || p.b === from);
+      if (!pair || (pair.direction === 'a_to_b' && pair.a !== from)) return [];
+      return [pair.a === from ? pair.b : pair.a];
     }
+    if (c.securityGateway && d.separation && c.separation === 'filtering_bridge') {
+      const fromD = d.separation.domains.find((x) => x.interfaces.indexOf(from) >= 0);
+      const toD = fromD ? d.separation.domains.find((x) => x.name !== fromD.name) : undefined;
+      return toD ? toD.interfaces.slice() : [];
+    }
+    return null;
   };
-  const cross = (d: string, port: string, tag: number | null): void => {
-    const e = net.ends.get(portKey(d, port));
-    if (!e) return;
+  const tunneled = (sd: SimDevice, port: string): boolean => {
+    const k = port.indexOf('~');
+    if (k < 0 || !sd.dev.wireless) return false;
+    const l = net.links.get(port.slice(k + 1));
+    const w = l ? sd.dev.wireless.networks.find((x) => x.id === l.wirelessNetwork) : undefined;
+    return !!w && w.forwarding === 'tunneled';
+  };
+  const cross = (dev: string, port: string, tag: number | null): void => {
+    const e = net.ends.get(portKey(dev, port));
+    if (!e || !cableUp(e.link) || !portUp(dev, port)) return;
     const o = otherEnd(net, e);
     const od = net.devices.get(o.device);
-    if (!od) return;
-    const bp = od.bridge ? od.portOf.get(o.port) : undefined;
-    if (bp !== undefined) {
-      const v = ingressVlan((od.bridgePorts.get(bp) as BridgePort).vlans, tag);
-      if (v !== null) bridge(od, bp, v);
+    const bpId = od && od.bridge ? od.portOf.get(o.port) : undefined;
+    // a cable whose far end discards (a VLAN it does not carry, an alternate port of the spanning tree) is not in the domain
+    const v = od && bpId !== undefined ? ingressVlan((od.bridgePorts.get(bpId) as BridgePort).vlans, tag) : null;
+    if (od && bpId !== undefined && (v === null || blocked(od.id, bpId, v))) return;
+    out.out.push(portKey(dev, port));
+    if (!seenLink.has(e.link)) {
+      seenLink.add(e.link);
+      out.links.push(e.link);
+    }
+    if (!od || !portUp(o.device, o.port)) return;
+    if (bpId !== undefined) {
+      bridge(od, bpId, v as number);
       return;
     }
-    const l = l3At(od, o.port, tag);
-    if (l) add(od.id, l);
+    const l3 = l3At(od, o.port, tag);
+    if (l3) reach(od, l3, o.port);
   };
-  if (me.kind === 'svi' && sd.bridge) bridge(sd, null, me.vlan);
-  else for (const p of me.ports) cross(dev, p, me.kind === 'subif' && me.vlan ? me.vlan : null);
+  const bridge = (sd: SimDevice, fromBp: string | null, v: number): void => {
+    if (fromBp !== null) out.entered.push(portKey(sd.id, fromBp));
+    const key = sd.id + '|' + v + '|' + (fromBp !== null && onlyTo(sd, fromBp) ? fromBp : '');
+    if (done.has(key)) return;
+    done.add(key);
+    if (!out.bridges.some((b) => b.dev === sd.id && b.vlan === v)) out.bridges.push({ dev: sd.id, vlan: v });
+    if (!forwards(sd)) return;
+    if (fromBp !== null && tunneled(sd, fromBp)) return;
+    for (const l3 of sd.l3.values()) if (l3.kind === 'svi' && l3.vlan === v) reach(sd, l3, l3.id);
+    const only = onlyTo(sd, fromBp);
+    for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
+      if (bp.id === fromBp || (only && only.indexOf(bp.id) < 0 && !bp.members.some((m) => only.indexOf(m) >= 0))) continue;
+      const c = carries(bp.vlans, v);
+      if (!c || blocked(sd.id, bp.id, v) || tunneled(sd, bp.id)) continue;
+      const up = bp.members.filter((m) => portUp(sd.id, m) && ready(sd.id, m) && net.ends.has(portKey(sd.id, m))).sort(cmp);
+      if (!up.length) continue;
+      out.left.push(portKey(sd.id, bp.id));
+      cross(sd.id, up[0], c === 'untagged' ? null : v);
+    }
+  };
+  if ('link' in from) {
+    out.vlan = from.vlan;
+    const l = net.links.get(from.link);
+    if (!l) return out;
+    for (const e of [l.a, l.b]) {
+      const sd = net.devices.get(e.device);
+      const p = linkPort(net.model, l, e);
+      const bpId = sd && sd.bridge ? sd.portOf.get(p) : undefined;
+      if (sd && bpId !== undefined && carries((sd.bridgePorts.get(bpId) as BridgePort).vlans, from.vlan) && !blocked(sd.id, bpId, from.vlan)) bridge(sd, null, from.vlan);
+      else if (sd) {
+        const l3 = l3At(sd, p, from.vlan || null) || l3At(sd, p, null);
+        if (l3) reach(sd, l3, p);
+      }
+    }
+    if (cableUp(from.link) && !seenLink.has(from.link)) out.links.push(from.link);
+    return out;
+  }
+  const sd = net.devices.get(from.dev);
+  if (!sd) return out;
+  const own = sd.l3.get(from.iface);
+  if (own) {
+    if (own.kind === 'loopback' || own.kind === 'tunnel') {
+      out.ambiguous = `${from.dev}:${from.iface} is a ${own.kind}: it is on no switched segment`;
+      return out;
+    }
+    reach(sd, own, own.kind === 'svi' ? own.id : own.ports[0] || own.id);
+    if (own.kind === 'svi') {
+      out.vlan = own.vlan;
+      bridge(sd, null, own.vlan);
+      return out;
+    }
+    out.vlan = own.kind === 'subif' ? own.vlan : 0;
+    const cabled = own.ports.some((p) => net.ends.has(portKey(sd.id, p)));
+    if (!cabled) out.uncabled = true;
+    for (const p of own.ports) {
+      if (!portUp(sd.id, p) || !net.ends.has(portKey(sd.id, p))) continue;
+      cross(sd.id, p, own.kind === 'subif' && own.vlan ? own.vlan : null);
+      break;
+    }
+    return out;
+  }
+  // a bridge port (a switch port, a radio): the VLAN it says, or the one given
+  const bpId = sd.bridge ? sd.portOf.get(from.iface) : undefined;
+  if (bpId !== undefined || (sd.bridge && sd.dev.wireless && sd.dev.wireless.networks.some((w) => w.radio === from.iface))) {
+    const pvs = bpId !== undefined ? [(sd.bridgePorts.get(bpId) as BridgePort).vlans] : Array.from(sd.bridgePorts.values()).filter((b) => b.id.indexOf(from.iface + '~') === 0).map((b) => b.vlans);
+    const known = new Set<number>();
+    for (const pv of pvs) {
+      if (pv.untagged !== null && pv.mode !== 'trunk') known.add(pv.untagged);
+      else if (pv.mode === 'trunk') known.add(-1);
+    }
+    let v: number | undefined = from.vlan;
+    if (v === undefined && known.size === 1 && !known.has(-1)) v = Array.from(known)[0];
+    if (v === undefined) {
+      out.ambiguous = `${from.dev}:${from.iface} ${bpId !== undefined ? `is a ${portVlansText(pvs[0])}` : 'is a radio with several Wi-Fi networks'}: name the VLAN to take its segment`;
+      return out;
+    }
+    if (!pvs.some((pv) => carries(pv, v as number))) {
+      out.ambiguous = `${from.dev}:${from.iface} does not carry VLAN ${v}`;
+      return out;
+    }
+    out.vlan = v;
+    bridge(sd, null, v);
+    return out;
+  }
+  // a cabled port of a device that neither bridges nor has a layer-3 interface there
+  if (net.ends.has(portKey(sd.id, from.iface))) {
+    out.vlan = from.vlan !== undefined ? from.vlan : 0;
+    cross(sd.id, from.iface, from.vlan ? from.vlan : null);
+    return out;
+  }
+  out.uncabled = true;
   return out;
+}
+
+/**
+ * The layer-3 interfaces in the broadcast domain of one (static: every
+ * cable up, no spanning tree; l2Domain). What a DHCP broadcast from it
+ * reaches (the consistency checks). Its own interface is left out.
+ */
+export function broadcastPeers(net: SimNet, dev: string, iface: string): Array<{ dev: string; l3: L3Iface }> {
+  const sd = net.devices.get(dev);
+  if (!sd || !sd.l3.get(iface)) return [];
+  return l2Domain(net, { dev, iface })
+    .reached.filter((r) => !(r.dev === dev && r.l3.id === iface))
+    .map((r) => ({ dev: r.dev, l3: r.l3 }));
+}
+
+const netCache = new WeakMap<Model, SimNet>();
+
+/** The simulated network of a model, built once per model (for the static analysis; the engine builds its own). */
+export function netOf(model: Model): SimNet {
+  let n = netCache.get(model);
+  if (!n) {
+    n = buildNet(model);
+    netCache.set(model, n);
+  }
+  return n;
 }

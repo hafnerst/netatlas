@@ -9,7 +9,7 @@
  */
 import type { App } from './app';
 import { EXAMPLES } from '../generated/examples';
-import { STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
+import { STRATEGIES, STRATEGY_HINT, STRATEGY_KEYWORDS, STRATEGY_LABEL } from '../layout/strategies';
 import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS } from '../analysis/focus';
 
 export type CommandGroup = 'File' | 'Example' | 'Export' | 'Find' | 'Analyze' | 'Simulate' | 'Window' | 'Help' | 'Edit' | 'View' | 'Auto-arrange' | 'Filters' | 'Zoom' | 'Panel' | 'Theme';
@@ -215,6 +215,7 @@ export function buildCommands(): Command[] {
       state: (app) => {
         const f = app.session ? app.session.state.focus : null;
         if (!f) return off('Focus mode is off');
+        if (f.context) return off('A contextual focus shows what the object takes part in: it has no hops');
         return f.hops >= FOCUS_MAX_HOPS ? off(`Focus mode shows ${FOCUS_MAX_HOPS} hops at most`) : on(`Show ${f.hops + 1} hops around the focused object`);
       },
       run: (app) => app.changeFocusHops(1),
@@ -228,6 +229,7 @@ export function buildCommands(): Command[] {
       state: (app) => {
         const f = app.session ? app.session.state.focus : null;
         if (!f) return off('Focus mode is off');
+        if (f.context) return off('A contextual focus shows what the object takes part in: it has no hops');
         return f.hops <= FOCUS_MIN_HOPS ? off(`Focus mode shows ${FOCUS_MIN_HOPS} hop at least`) : on(`Show ${f.hops - 1} hop${f.hops - 1 > 1 ? 's' : ''} around the focused object`);
       },
       run: (app) => app.changeFocusHops(-1),
@@ -275,8 +277,17 @@ export function buildCommands(): Command[] {
       group: 'Analyze',
       mode: true,
       keywords: 'spof redundancy partition resilience failure report n-1 window csv',
-      state: (app) => needDiagram(app, 'A window with the cables, devices and LAGs whose failure alone cuts the network or brings relations down: a sortable table of the model as written'),
+      state: (app) => needDiagram(app, 'A window with the cables, devices and LAGs whose failure alone cuts the network, brings relations down or makes configured services unavailable, and what-if checks of failure domains'),
       run: (app) => app.openSpof(),
+    },
+    {
+      id: 'analyze.checks',
+      label: 'Design checks…',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'expectations requirements policy blocked available consistency findings problems validation design review',
+      state: (app) => needDiagram(app, 'A window with the saved expectations (evaluated statically, on demand) and the consistency findings, grouped, with their consequences and next steps'),
+      run: (app) => app.openDesignChecks(),
     },
     // ---------------------------------------------------------- tool windows
     {
@@ -313,8 +324,88 @@ export function buildCommands(): Command[] {
       mode: true,
       keywords: 'start protocol simulation ospf bgp arp hello packets messages simulate window layer 2',
       // the same three states in the menu and the palette: no model; a model, nothing running; a simulation running
-      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.simulationOn() ? off('A simulation is already running') : on('Choose the protocols and start the protocol simulation: a freshly booted network, its messages as labelled dots')),
+      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.experimentRunning() ? off('An experiment is running: stop it first (Experiments → Stop)') : app.simulationOn() ? off('A simulation is already running') : on('Choose the protocols and start the protocol simulation: a freshly booted network, its messages as labelled dots')),
       run: (app) => void app.openStartDialog(),
+    },
+    {
+      id: 'edit.bulk-ports',
+      label: 'Bulk edit ports…',
+      group: 'Find',
+      keywords: 'bulk edit ports vlan many several access trunk native add remove batch',
+      state: (app) => {
+        if (!app.session) return off('Open or create a model first');
+        if (app.editLock()) return off(app.editLock());
+        return app.bulkTarget() ? on('One VLAN change on several ports of the selected device, previewed, as one undo step') : off('Select a device with ports');
+      },
+      run: (app) => void app.openBulkPorts(),
+    },
+    {
+      id: 'find.browse',
+      label: 'Applications, VLANs and VRFs…',
+      group: 'Find',
+      keywords: 'browse navigate application app vlan vrf list focus context large model',
+      state: (app) => needDiagram(app, 'A window listing every application, VLAN and VRF, each with Focus on the devices it involves'),
+      run: (app) => app.openBrowse(),
+    },
+    {
+      id: 'view.collapse',
+      label: 'Collapse group',
+      group: 'Find',
+      keywords: 'collapse group site room rack box fold hide members summarize large model',
+      state: (app) => {
+        const g = app.collapseTarget();
+        if (!app.session) return off('Open or create a model first');
+        if (g === null) return off('Select a group, or a device in one');
+        return app.session.state.collapsed.has(g) ? off('This group is drawn as one box already') : on('Draw the group as one box; its connections out of it go to the box (display only)');
+      },
+      run: (app) => app.setGroupCollapsed(app.collapseTarget(), true),
+    },
+    {
+      id: 'view.expand',
+      label: 'Expand group',
+      group: 'Find',
+      keywords: 'expand group uncollapse unfold show members',
+      state: (app) => {
+        const g = app.collapseTarget();
+        if (!app.session) return off('Open or create a model first');
+        return g !== null && app.session.state.collapsed.has(g) ? on('Draw the group’s devices again') : off('Select a collapsed group');
+      },
+      run: (app) => app.setGroupCollapsed(app.collapseTarget(), false),
+    },
+    {
+      id: 'view.expand-all',
+      label: 'Expand all groups',
+      group: 'Find',
+      keywords: 'expand all groups uncollapse unfold',
+      state: (app) => (app.session && app.session.state.collapsed.size ? on('Draw every collapsed group’s devices again') : off('No group is collapsed')),
+      run: (app) => app.expandAllGroups(),
+    },
+    {
+      id: 'view.saved',
+      label: 'Saved views…',
+      group: 'Find',
+      keywords: 'view saved save named viewport focus filters bookmark layout display',
+      state: (app) => needDiagram(app, 'A window with the model’s saved views: open one, or save the diagram, focus, filters and zoom on screen as one'),
+      run: (app) => app.openSavedViews(),
+    },
+    {
+      id: 'sim.experiments',
+      label: 'Experiments…',
+      group: 'Simulate',
+      mode: true,
+      keywords: 'experiment repeatable scenario run actions observations compare baseline failure test sequence',
+      state: (app) => (app.workspace() === 'experiments' ? off('Experiments is open') : needDiagram(app, 'The Experiments workspace: build an experiment’s actions and observations, run it from its defined start, inspect and compare the results (nothing runs until Run)')),
+      run: (app) => void app.enterExperiments(),
+    },
+    {
+      id: 'ws.exit',
+      label: 'Exit workspace',
+      menuLabel: 'Exit workspace',
+      group: 'Simulate',
+      mode: true,
+      keywords: 'exit leave close experiments analyze workspace back to editing',
+      state: (app) => (app.workspace() === 'experiments' || app.workspace() === 'analyze' ? on(app.workspace() === 'experiments' ? 'Back to editing: Exit Experiments' : 'Back from Analyze') : off('No Experiments or Analyze workspace is open')),
+      run: (app) => void app.exitWorkspace(),
     },
     {
       id: 'sim.exit',
@@ -423,10 +514,10 @@ export function buildCommands(): Command[] {
         label: 'Auto-arrange: ' + STRATEGY_LABEL[st],
         group: 'Auto-arrange',
         keys: st === 'default' ? { combos: [{ key: 'a' }] } : undefined,
-        keywords: 'layout positions tidy',
+        keywords: STRATEGY_KEYWORDS[st],
         state: (app) => {
           const why = app.arrangeBlocked(st);
-          return why ? off(why) : on(`Arrange the view on screen: ${STRATEGY_LABEL[st]}`);
+          return why ? off(why) : on(`Arrange the view on screen: ${STRATEGY_LABEL[st]} — ${STRATEGY_HINT[st]}`);
         },
         run: (app) => void app.arrangeCurrentView(st),
       }),

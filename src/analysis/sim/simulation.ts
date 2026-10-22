@@ -5,15 +5,20 @@
  * only. Deterministic: the same model, the same actions at the same
  * simulated times, the same timeline. It never changes the model.
  */
-import { SimGroup, simProfile } from '../../model/sim-profiles';
+import { CUSTOM_SUPPORT, SimGroup, simProfile } from '../../model/sim-profiles';
+import type { Support } from '../../model/support';
+import { IC_SUPPORT } from '../../model/interconnect';
+import { serviceDef } from '../../model/service-registry';
+import { autoIpv6, ipConfigured } from '../../model/ipv6';
 import { Model } from '../../model/types';
 import { capabilities } from '../../model/capabilities';
 import { snoopingChoice, switchedVlans } from '../../model/snooping';
 import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
+import { lookup } from '../routing';
 import { formatAddr } from '../ipmath';
+import type { AnalysisSnapshot, SnapTiming } from '../snapshot';
 import { DevicePower, Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
-import { RealTimeScheduler } from './realtime';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
@@ -21,6 +26,12 @@ import { ParamChange, ParamValue, Resolved, SimParams, durationText, formatValue
 import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
+import { AppSim } from './apps';
+import { MqttSim } from './mqtt';
+import { Ipv6Sim } from './ipv6';
+import { NtpSim } from './ntp';
+import { OpaqueSim } from './opaque';
+import { PtpSim } from './ptp';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
@@ -38,8 +49,30 @@ export interface SimProtocolEntry {
   group: SimEntryGroup;
   /** how many devices, relations, demands or streams use it */
   uses: number;
-  /** what `uses` counts: "device", "relation", "demand", "stream" */
-  unit: 'device' | 'relation' | 'demand' | 'stream';
+  /** what `uses` counts: "device", "relation", "demand", "stream", "interconnect" */
+  unit: 'device' | 'relation' | 'demand' | 'stream' | 'interconnect';
+  /** what the simulation does for it (model/support.ts): a custom protocol's is drawn only */
+  support: Support;
+}
+
+/** The support of the entries that are no relation protocol's profile: the tests' transport and the traffic. */
+const ENTRY_SUPPORT: { [id: string]: Support } = {
+  icmp: { level: 'modeled', does: 'Echo requests and replies, and the ICMP errors routers and hosts send (unreachable, time exceeded, fragmentation needed with path MTU discovery).', not: 'ICMP redirects, router discovery over ICMPv4.' },
+  tcp: { level: 'modeled', does: 'A byte stream per connection: the handshake, sequence and acknowledgement numbers (SYN and FIN take one each), segments by the path MTU, cumulative acknowledgements, retransmission of the earliest unacknowledged segment with backoff, duplicates and out-of-order segments, each message delivered once after its last byte, RST, FIN, TIME_WAIT, keepalive probes, firewall sessions; BGP, LDP, HTTPS and SSL VPN run over it.', not: 'windows, congestion control, fast retransmit, SACK and options: every segment of a write goes at once, and no throughput is computed.' },
+  udp: { level: 'modeled', does: 'Datagrams to open ports and their answers; ICMP port unreachable from a closed port.', not: 'payload contents.' },
+  demand: { level: 'modeled', does: 'Representative packets of each demand (one every 1–4 s, more often for more bandwidth) along the path routing gives it, rerouted after failures: they show its way and whether it gets through.', not: 'its bandwidth: the stated rate is capacity analysis’s; no cable is loaded, queued or congested by it, and no throughput or latency under load is concluded.' },
+  mcast: { level: 'modeled', does: 'Each stream’s datagrams, replicated by snooping switches and multicast routing to the members.', not: 'bandwidth and rate limits.' },
+  dhcpv6: { level: 'modeled', does: 'Stateful (Solicit, Advertise, Request, Reply; Renew at T1, Rebind at T2, expiry) and stateless (Information-request, Reply) DHCPv6 between a client and a server on its link, with DNS servers and duplicate address detection of the address.', not: 'prefix delegation, relay agents, Decline and Release, DUID types other than DUID-LL, authentication.' },
+};
+
+/** The support of an entry of the setup's list: its profile's, else the traffic's (custom: drawn only). */
+function entrySupport(id: string): Support {
+  if (ENTRY_SUPPORT[id]) return ENTRY_SUPPORT[id];
+  if (id === 'mqtt') return (serviceDef('mqtt_broker') as { support: Support }).support;
+  if (id === 'opaque') return IC_SUPPORT;
+  if (id === 'ptp') return (serviceDef('ptp') as { support: Support }).support;
+  const p = simProfile(id);
+  return p && p.support ? p.support : CUSTOM_SUPPORT;
 }
 
 /** "3 relations", "1 device". */
@@ -120,7 +153,7 @@ export function runActive(r: TestRun): boolean {
 const DHCP_STATE: { [k: string]: string } = { INIT: 'about to ask', SELECTING: 'asking (DHCPDISCOVER)', REQUESTING: 'requesting the offered address', RENEWING: 'renewing', REBINDING: 'rebinding' };
 
 /** What a Simulation takes: the engine's options, and the real-time schedule's clock (real ms; the tests' fake). */
-export type SimOptions = EngineOptions & { realClock?: () => number };
+export type SimOptions = EngineOptions;
 
 /**
  * A device's lifecycle in words: the state, a short label (the diagram's
@@ -131,7 +164,7 @@ export type SimOptions = EngineOptions & { realClock?: () => number };
  * the simulation has no such device (yet).
  */
 export interface DeviceStateView {
-  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown';
+  state: 'operational' | 'off' | 'booting' | 'passive' | 'external' | 'unknown' | 'outside';
   /** "Operational", "Powered off", "Booting", "Passive", "External", "Unknown" */
   label: string;
   /** "Booting: up at t = 45 s", "Powered off at t = 12 s (down with its host esx-01)" */
@@ -163,12 +196,21 @@ export class Simulation {
   readonly netsvc: NetServicesSim;
   readonly model: Model;
   /** the real-time schedule of Network events (a stream's datagrams); its clock injected for the tests */
-  readonly realtime: RealTimeScheduler;
+  /** the applications: listeners answer, clients run when started (apps.ts) */
+  readonly apps: AppSim;
+  /** MQTT: the brokers and their clients (mqtt.ts) */
+  readonly mqtt: MqttSim;
+  /** IPv6 host configuration: link-local addresses, router discovery, SLAAC, DAD, DHCPv6 (ipv6.ts) */
+  readonly ipv6: Ipv6Sim;
+  /** NTP's synchronization state (ntp.ts) and PTP (ptp.ts): kept apart, neither disciplines the other */
+  readonly ntp: NtpSim;
+  /** illustrative data on the non-IP interconnects and their failures (opaque.ts): never part of the IP side */
+  readonly opaque: OpaqueSim;
+  readonly ptp: PtpSim;
 
   constructor(model: Model, opts: SimOptions = {}) {
     this.model = model;
     this.engine = new Engine(model, opts);
-    this.realtime = new RealTimeScheduler(opts.realClock);
     this.protocols = new ProtocolSim(this.engine, { ...ROUTING_BEHAVIOURS, ...OTHER_BEHAVIOURS });
     installBootGarp(this.protocols);
     installFhrp(this.protocols);
@@ -177,9 +219,10 @@ export class Simulation {
     installDemands(this.protocols);
     installCustomL2(this.protocols);
     this.multicast = new Multicast(this.protocols);
-    this.multicast.realtime = this.realtime;
     this.multicast.install();
     this.netsvc = new NetServicesSim(this.protocols);
+    this.ipv6 = new Ipv6Sim(this.protocols);
+    this.netsvc.v6Dns = (d) => this.ipv6.dnsServers(d);
     this.transport = new Transport(this.protocols);
     this.transport.multicast = this.multicast;
     this.transport.netsvc = this.netsvc;
@@ -187,6 +230,18 @@ export class Simulation {
     // a join of Network events is done when a multicast router records it
     this.multicast.onMember = (rdev, riface, group, reporter) => this.memberRecorded(rdev, riface, group, reporter);
     this.transport.install();
+    this.apps = new AppSim(this.protocols, this.transport);
+    this.mqtt = new MqttSim(this.protocols, this.transport, this.apps);
+    // the non-IP interconnects: illustrative data only, apart from everything IP (opaque.ts)
+    this.opaque = new OpaqueSim(this.engine, this.model, () => this.transport.reserveId());
+    // (the interconnects' own traffic once the simulation runs; a device powered off stops its hops on their way)
+    this.protocols.bootHooks.push(() => this.opaque.startConfigured());
+    this.protocols.deviceHooks.push((dev, up) => {
+      if (!up) this.opaque.deviceDown();
+    });
+    this.ntp = new NtpSim(this.protocols);
+    this.ntp.install();
+    this.ptp = new PtpSim(this.protocols, this.multicast);
     this.protocols.start();
   }
 
@@ -195,28 +250,9 @@ export class Simulation {
     return this.engine.now;
   }
 
-  /**
-   * The real-time schedule's turn (once an animation frame, before the clock moves): the streams of
-   * Network events send what is due now, at the current simulated time; returns how many datagrams.
-   */
-  pumpRealTime(): number {
-    return this.realtime.pump();
-  }
-
-  /** Is anything on the real-time schedule (a stream of Network events running)? */
-  realtimeActive(): boolean {
-    return this.realtime.active();
-  }
-
-  /** The simulation plays or pauses (a hidden tab pauses it too): the real-time schedule with it. */
-  setRealTimeRunning(on: boolean): void {
-    this.realtime.setRunning(on);
-  }
-
   /** The simulation is closed (Exit simulation, another model): nothing scheduled sends again. */
   close(): void {
-    this.realtime.clear();
-    this.realtime.setRunning(false);
+    // (everything it schedules is on the simulated clock, and nothing drives that clock any more: nothing to cancel)
   }
 
   /** A device's lifecycle as the diagram, its menu and the events say it (the state packet processing reads). */
@@ -253,48 +289,67 @@ export class Simulation {
   /** Fail a cable or relation ("link:x", "relation:x"). */
   fail(ref: string): boolean {
     if (!failableRef(this.model, ref) || (ref.indexOf('link:') !== 0 && ref.indexOf('relation:') !== 0)) return false;
-    return this.engine.fail(ref);
+    return this.changed(this.engine.fail(ref));
   }
 
   restore(ref: string): boolean {
-    return this.engine.restore(ref);
+    return this.changed(this.engine.restore(ref));
   }
 
   /** Start flapping a cabled port ("iface:dev:port"; its cable follows). A cable is no target: false. */
   startFlap(ref: string): boolean {
-    return this.engine.startFlap(ref);
+    return this.changed(this.engine.startFlap(ref));
   }
 
   stopFlap(ref: string): boolean {
-    return this.engine.stopFlap(ref);
+    return this.changed(this.engine.stopFlap(ref));
   }
 
   shut(dev: string, iface: string): boolean {
-    return this.engine.shut(dev, iface);
+    return this.changed(this.engine.shut(dev, iface));
   }
 
   noShut(dev: string, iface: string): boolean {
-    const ok = this.engine.noShut(dev, iface);
+    const ok = this.changed(this.engine.noShut(dev, iface));
     if (ok) for (const a of this.acts) if (a.shut && a.shut.dev === dev && a.shut.iface === iface && a.shut.upAt === undefined) a.shut.upAt = this.now;
     return ok;
   }
 
   powerOff(dev: string): boolean {
-    return this.engine.powerOff(dev);
+    return this.changed(this.engine.powerOff(dev));
   }
 
   powerOn(dev: string): boolean {
-    return this.engine.powerOn(dev);
+    return this.changed(this.engine.powerOn(dev));
   }
 
   /** Stop a device's container engine (its containers and container networks stop). */
   stopEngine(dev: string): boolean {
-    return this.engine.stopEngine(dev);
+    return this.changed(this.engine.stopEngine(dev));
   }
 
   /** Start a device's container engine again (its containers as their restart policy says). */
   startEngine(dev: string): boolean {
-    return this.engine.startEngine(dev);
+    return this.changed(this.engine.startEngine(dev));
+  }
+
+  /** the network changed from outside (a failure, a restore, a power change, a shut …), successfully: counted */
+  private changes = 0;
+  private changed(ok: boolean): boolean {
+    if (ok) this.changes++;
+    return ok;
+  }
+
+  /**
+   * The presentation's epoch: it moves with every change of the network from outside — an event of the list,
+   * a failure or restore (cables, relations, the non-IP side), a power change, a shut or no shut, flapping
+   * started, stopped or going down or up (not the model's own flapping: the scenario), a container engine stopped or started, a membership joined or left,
+   * a stream stopped — never with a packet or the network's own state changes. The display's steady state
+   * (pacing.ts: what was seen once is cable activity) starts afresh with it, so what such a change causes is
+   * shown, then summarized again.
+   */
+  get presentationEpoch(): number {
+    return this.actionCount + this.changes + this.engine.flapTransitions;
   }
 
   /** End an event of the list (Restore, Stop flapping, No shut, Power on, Start engine). */
@@ -315,7 +370,7 @@ export class Simulation {
       if (ev.kind === 'join') return this.leaveGroup(dev, iface, g);
       if (ev.kind === 'leave') return this.joinGroup(dev, iface, g, []) === null;
       if (ev.kind === 'stream') return this.stopStream(dev, iface, g);
-      return this.multicast.restartStream(dev, iface, g);
+      return this.changed(this.multicast.restartStream(dev, iface, g));
     }
     return this.powerOn(id);
   }
@@ -331,6 +386,7 @@ export class Simulation {
   joinGroup(dev: string, iface: string, group: string, sources: string[]): string | null {
     const r = this.multicast.join(dev, iface, group, sources, 'event');
     if (r === null) this.engine.stateVersion++;
+    this.changed(r === null);
     return r;
   }
 
@@ -392,6 +448,7 @@ export class Simulation {
 
   private keepAction(a: ActionRecord): ActionRecord {
     this.acts.push(a);
+    this.actionCount++;
     // bounded: the oldest finished ones go first (a hard limit of twice as many, the oldest whatever their state)
     const views = (): ActionView[] => this.acts.map((x) => actionView(x, this.actionContext()));
     if (this.acts.length > MAX_ACTIONS) {
@@ -420,8 +477,11 @@ export class Simulation {
         return null;
       },
       shut: (d, i) => this.engine.isShut(d, i),
-      rtPaused: !this.realtime.running,
       deviceOn: (d) => this.engine.deviceOn(d),
+      appView: (a) => {
+        const c = a.app ? this.mqtt.clientOf(a.app) : undefined;
+        return c ? this.mqtt.view(a, c) : null;
+      },
       flapCycles: this.engine.params.num('flap-cycles'),
       flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,
     };
@@ -469,6 +529,32 @@ export class Simulation {
     if (typeof st === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, error: st });
     this.engine.stateVersion++;
     return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, traffic, stream: st });
+  }
+
+  /** Start application (Network events): a client application's messages, one event until they are done or Stop. */
+  actApp(dev: string, id: string, how: 'event' | 'start' | 'experiment' = 'event'): ActionRecord {
+    // (an experiment starts it on scenario time, as the scenario's own applications run: a Network event's repeats on real time)
+    const r = this.apps.start(dev, id, how);
+    const a = this.apps.app(dev, id);
+    const target = `${dev}/${id}${a && a.peer ? ' → ' + a.peer : a && a.broker ? ' → ' + a.broker : ''}`;
+    if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, error: r });
+    this.engine.stateVersion++;
+    return this.keepAction({ id: ++this.actSeq, kind: 'app', at: this.now, target, app: r });
+  }
+
+  /** An MQTT broker's sessions (Show MQTT sessions). */
+  mqttBrokerTable(dev: string): GridTable {
+    return this.mqtt.brokerTable(dev);
+  }
+
+  /** A device's MQTT clients (Show MQTT clients). */
+  mqttClientTable(dev: string): GridTable {
+    return this.mqtt.clientTable(dev);
+  }
+
+  /** What stops a device's application from being started now (Start application's checks), or null. */
+  appProblem(dev: string, id: string): string | null {
+    return this.apps.problem(dev, id);
   }
 
   /** Shut interface (Network events): done at once; the interface stays down until No shut. */
@@ -523,6 +609,14 @@ export class Simulation {
       } else if (a.flap) {
         // flapping until its cycles are done or it is stopped
         if (!a.flap.obj.ended) return true;
+      } else if (a.opaque) {
+        // illustrative data until its transfers are sent and settled
+        const r = a.opaque;
+        if ((!r.stopped && r.sent < r.spec.count) || r.deliveries.some((d) => d.ok === null)) return true;
+      } else if (a.app) {
+        // an application until its messages are sent and settled (one waiting for its source's DHCP lease does not count yet)
+        if (this.apps.pending(a.app)) return true;
+        if (a.app.tests.some((t) => !t.done && t.result.indexOf('waiting for a DHCP lease') !== 0)) return true;
       }
     }
     return false;
@@ -536,15 +630,37 @@ export class Simulation {
   }
 
   /** An event's control: Stop (a send, a stream, flapping), No shut, Leave group. */
-  actionControl(id: number, op: 'stop' | 'noshut' | 'leave'): boolean {
+  actionControl(id: number, op: 'stop' | 'noshut' | 'leave' | 'restore'): boolean {
     const a = this.acts.find((x) => x.id === id);
     if (!a) return false;
     if (op === 'stop' && a.run) return this.stopRun(a.run.id);
     if (op === 'stop' && a.stream) return this.stopStream(a.stream.dev, a.stream.iface, a.stream.group);
     if (op === 'stop' && a.flap) return this.stopFlap(a.flap.ref);
+    if (op === 'stop' && a.app) return this.apps.stop(a.app);
     if (op === 'noshut' && a.shut) return this.noShut(a.shut.dev, a.shut.iface);
     if (op === 'leave' && a.join) return this.leaveGroup(a.join.dev, a.join.iface, a.join.group);
+    if (op === 'stop' && a.opaque) return this.opaque.stop(a.opaque.id);
+    if (op === 'restore' && a.icfail && a.icfail.restoredAt === undefined) {
+      const f = a.icfail;
+      const done = f.what === 'interconnect' ? this.opaque.restoreInterconnect(f.key) : f.what === 'attachment' ? this.opaque.reattach(f.key) : this.opaque.noShutPort(f.key);
+      if (done) f.restoredAt = this.now;
+      return this.changed(done);
+    }
     return false;
+  }
+
+  /** Send illustrative data (Network events): a series of abstract transfers on the non-IP interconnects; refused: a failed event. */
+  actOpaque(spec: import('./opaque').OpaqueSpec): ActionRecord {
+    const target = `${spec.from} → ${spec.to.join(', ') || '?'}${spec.initiator && spec.initiator !== spec.from ? ` (initiated by ${spec.initiator})` : ''}`;
+    const r = this.opaque.start(spec);
+    if (typeof r === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'opaque', at: this.now, target, error: r });
+    return this.keepAction({ id: ++this.actSeq, kind: 'opaque', at: this.now, target, opaque: r });
+  }
+
+  /** A non-IP failure (Network events): an interconnect failed, a participant detached, an opaque port shut — until restored. */
+  actOpaqueFail(what: 'interconnect' | 'attachment' | 'port', key: string): ActionRecord {
+    const why = what === 'interconnect' ? this.opaque.failInterconnect(key) : what === 'attachment' ? this.opaque.detach(key) : this.opaque.shutPort(key);
+    return this.keepAction({ id: ++this.actSeq, kind: 'icfail', at: this.now, target: what === 'interconnect' ? `interconnect ${key}` : key, ...(why ? { error: why } : { icfail: { what, key } }) });
   }
 
   /** Clear finished: the events no longer queued or in progress leave the list. */
@@ -593,11 +709,36 @@ export class Simulation {
     const r = this.multicast.addStream(dev, iface, group, port, interval, size, 'event');
     if (typeof r === 'string') return r;
     this.engine.stateVersion++;
+    this.changed(true);
     return null;
   }
 
+  /** An experiment's multicast stream: on scenario time (a Network event's runs on real time), the same checks; the error, or null. */
+  startExperimentStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): { error: string } | { traffic: number } {
+    // its datagrams and every copy carry an id of their own (the experiment's traffic)
+    const traffic = this.transport.reserveId();
+    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'experiment', 0, '', traffic);
+    if (typeof st === 'string') return { error: st };
+    this.engine.stateVersion++;
+    return { traffic };
+  }
+
+  /** An experiment's join: as Join group, its reports carrying an id of their own (the experiment's traffic). */
+  joinTagged(dev: string, iface: string, group: string): { error: string } | { traffic: number } {
+    const traffic = this.transport.reserveId();
+    const r = this.multicast.join(dev, iface, group, [], 'event', traffic);
+    if (r) return { error: r };
+    this.engine.stateVersion++;
+    return { traffic };
+  }
+
+  /** What a host received of a multicast group so far (Multicast tables' reception), or null. */
+  multicastReceived(dev: string, group: string): { count: number; first: number; last: number } | null {
+    return this.multicast.received(dev, group);
+  }
+
   stopStream(dev: string, iface: string, group: string): boolean {
-    return this.multicast.stopStream(dev, iface, group);
+    return this.changed(this.multicast.stopStream(dev, iface, group));
   }
 
   /** A router's IGMP / MLD groups, a switch's multicast table, a router's multicast routes. */
@@ -621,6 +762,28 @@ export class Simulation {
   /** What the diagram marks as down (cables, relations, interfaces, devices). */
   downRefs(): string[] {
     return this.engine.downRefs();
+  }
+
+  /** The state now, frozen for analysis (analysis/snapshot.ts): it never changes after this call. */
+  snapshot(): AnalysisSnapshot {
+    const s = this.engine.analysisSnapshot(this.downRefs());
+    // the clocks' observed timing state: the protocol state, never an accuracy
+    const timing: SnapTiming[] = [];
+    for (const [dev, st] of Array.from(this.ntp.devs.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      const src = st.source ? st.upstreams.find((u) => u.addr === st.source) : undefined;
+      const t: SnapTiming = { dev, protocol: 'ntp', synchronized: this.ntp.synchronized(dev), text: this.ntp.text(dev) };
+      if (src && src.dev && t.synchronized) t.source = src.dev;
+      if (src && t.synchronized && !src.byDevice) t.address = src.addr;
+      timing.push(t);
+    }
+    for (const [dev, c] of Array.from(this.ptp.clocks.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      // (a transparent clock corrects others' messages and has no time of its own to be synchronized: no timing state, as timingState says)
+      if (c.kind === 'transparent') continue;
+      const t: SnapTiming = { dev, protocol: 'ptp', synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: c.state + (c.parent ? ` to the grandmaster ${c.parent.gmDev}` : '') };
+      if (c.parent) t.source = c.parent.gmDev;
+      timing.push(t);
+    }
+    return { ...s, timing };
   }
 
   // ------------------------------------------------------------ parameters
@@ -658,7 +821,14 @@ export class Simulation {
   /** Run towards t, stopping at the first moment a message that `visible` accepts is sent; returns the time reached. */
   advance(t: number, visible: (f: Flight) => boolean): number {
     const from = this.engine.flightSerial;
-    this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    // (a jump, as runTo: past the presentation's hold — what it passes is history to the pacing)
+    const hold = this.engine.hold;
+    this.engine.hold = null;
+    try {
+      this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    } finally {
+      this.engine.hold = hold;
+    }
     return this.engine.now;
   }
 
@@ -694,6 +864,69 @@ export class Simulation {
 
   status(): SessionStatus[] {
     return this.protocols.status();
+  }
+
+  // ------------------------------------------------------------ what experiments observe (state the simulation already keeps)
+
+  /** An address an interface obtained at runtime: its DHCPv4 lease (with when it was bound), or a preferred SLAAC / DHCPv6 address; null: none. */
+  acquiredAddress(dev: string, iface: string, family?: string): { text: string; how: string; since?: number } | null {
+    if (family !== 'ipv6') {
+      const l = this.engine.leases.get(dev + ':' + iface);
+      if (l && l.kind === 'dhcp') return { text: l.addr.text, how: 'DHCPv4', since: l.bound };
+    }
+    if (family !== 'ipv4') {
+      const a = this.ipv6.acquiredAddress(dev, iface);
+      if (a) return { text: a.text, how: a.kind === 'slaac' ? 'SLAAC' : 'DHCPv6' };
+    }
+    return null;
+  }
+
+  /** A complete ARP (IPv4) or neighbor (IPv6) entry of a device for an address, or null. */
+  neighborEntry(dev: string, ip: string): { mac: string; iface: string; state: string } | null {
+    const rows = this.engine.arpRows(dev, 4).concat(this.engine.arpRows(dev, 6));
+    const r = rows.find((x) => x.ip === ip && x.mac !== '' && x.type !== 'incomplete' && x.state !== 'INCOMPLETE');
+    return r ? { mac: r.mac, iface: r.iface, state: r.state || r.type } : null;
+  }
+
+  /** The device's effective route lookup for an address, in a VRF (default: the global table): how it forwards (null: the address is none). */
+  routeLookup(dev: string, ip: string, vrf = ''): { kind: 'forward' | 'local' | 'blackhole' | 'none'; text: string } | null {
+    const a = parseAddress(ip);
+    if (!a) return null;
+    const d = lookup(this.model, dev, vrf, a, this.engine.ctx(dev));
+    const e = d.entries[0];
+    const via = d.hops.map((h) => `${h.gateway ? 'via ' + formatAddr(h.gateway) + ' ' : ''}out ${h.iface}`).join(', ');
+    return { kind: d.kind, text: d.kind === 'none' ? `no route to ${ip}` : d.kind === 'local' ? `${ip} is its own address` : d.kind === 'blackhole' ? `${ip}: the selected route drops it` : `${e ? `${formatAddr(e.net)}/${e.net.prefix} (${e.kind})` : ip}${via ? ' ' + via : ''}` };
+  }
+
+  /** A device's sessions of a protocol (with a peer, else any): the simulation's status of them. */
+  sessions(dev: string, protocol: string, peer?: string): SessionStatus[] {
+    const p = protocol.toLowerCase();
+    return this.status().filter((x) => (x.protocol.toLowerCase() === p || x.protocol.toLowerCase().indexOf(p + ':') === 0) && (x.device === dev || (x.peer === dev && !!peer)) && (!peer || x.peer === peer || x.device === peer));
+  }
+
+  /** A device's timing state: its PTP clock's, its NTP client's (by protocol, or either). */
+  timingState(dev: string, protocol?: string): { synchronized: boolean; text: string } | null {
+    const out: Array<{ synchronized: boolean; text: string }> = [];
+    if (protocol !== 'ntp') {
+      const c = this.ptp.clocks.get(dev);
+      if (c && c.kind !== 'transparent') out.push({ synchronized: c.state === 'synchronized' || c.state === 'grandmaster', text: `PTP ${c.state}` });
+    }
+    if (protocol !== 'ptp') {
+      // (the NTP state's own definition — never a request session's row of the same device, which is "Answered" whatever it took)
+      if (this.ntp.has(dev)) out.push({ synchronized: this.ntp.synchronized(dev), text: `NTP ${this.ntp.synchronized(dev) ? 'synchronized' : 'unsynchronized'}: ${this.ntp.text(dev)}` });
+    }
+    if (!out.length) return null;
+    const ok = out.find((x) => x.synchronized);
+    return ok || out[0];
+  }
+
+  /** What an MQTT client (device/application) received from its broker, on a topic or in all. */
+  mqttReceived(dev: string, app: string, topic?: string): { count: number; state: string } | null {
+    const cs = this.mqtt.clients.filter((c) => c.run.dev === dev && c.run.app.id === app);
+    if (!cs.length) return null;
+    let n = 0;
+    for (const c of cs) c.received.forEach((v, t) => (n += !topic || t === topic ? v : 0));
+    return { count: n, state: cs[cs.length - 1].state };
   }
 
   arpTable(dev: string): ArpRow[] {
@@ -762,6 +995,8 @@ export class Simulation {
   private runs: TestRun[] = [];
   private runSeq = 0;
   private acts: ActionRecord[] = [];
+  /** Network events submitted since the start (the pacing: what the scenario shows after one is news again) */
+  actionCount = 0;
   private actSeq = 0;
 
   private keepRun(r: TestRun): void {
@@ -897,7 +1132,7 @@ export class Simulation {
   /** Is a DHCP client interface still waiting for its lease (a test from it waits too)? */
   private leaseWaits(dev: string, iface: string): boolean {
     const mi = this.model.index.interfaces.get(dev + ':' + iface);
-    return !!mi && !!mi.dhcp && !mi.addresses.length && !this.engine.leases.get(dev + ':' + iface);
+    return !!mi && !!mi.dhcp && !this.engine.leases.get(dev + ':' + iface);
   }
 
   /** The Send tests (each with its messages), newest first. */
@@ -941,7 +1176,7 @@ export class Simulation {
       const options: TestDestOption[] = [];
       for (const l of Array.from(sd.l3.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
         const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
-        if (mi && mi.dhcp && !mi.addresses.length) {
+        if (mi && mi.dhcp) {
           const lease = e.leases.get(d.id + ':' + l.id);
           options.push({ value: `${l.id}|dhcp`, iface: l.id, addr: 'dhcp', label: lease ? `${l.id} - ${formatAddr(lease.addr.addr)} (${lease.kind === 'dhcp' ? 'DHCP' : 'link-local'})` : `${l.id} - No DHCP lease`, ok: !!lease });
           continue;
@@ -977,11 +1212,13 @@ export class Simulation {
       const l3s = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       for (const l of l3s) {
         const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
-        const dhcp = !!mi && !!mi.dhcp && !mi.addresses.length;
+        const dhcp = !!mi && !!mi.dhcp;
         const at = this.attachment(d.id, l.id);
+        // automatic IPv6: its state in a few words (SLAAC pending, DHCPv6 pending, an address, no default router …)
+        const v6 = this.ipv6.status(d.id, l.id);
         if (!dhcp) {
           if (!l.addrs.length) {
-            ifaces.push({ id: l.id, dhcp: false, ready: false, usable: false, label: `${l.id} - No IP address`, status: 'no IP address' });
+            ifaces.push({ id: l.id, dhcp: false, ready: false, usable: false, label: `${l.id} - ${v6 || 'No IP address'}`, status: v6 || 'no IP address' });
             continue;
           }
           ifaces.push({ id: l.id, dhcp: false, ready: true, usable: true, label: `${l.id} - ${l.addrs.map((a) => formatAddr(a.addr)).join(', ')}`, bcast: bcastOf(l.addrs), status: `${l.addrs.map((a) => a.text).join(', ')}${at ? ' · ' + at : ''}` });
@@ -1006,7 +1243,7 @@ export class Simulation {
           status = `link-local ${lease.addr.text} (no DHCP server answered: only its own segment)`;
         } else status = `DHCP: no lease yet (${cs ? DHCP_STATE[cs.state] || cs.state : 'not started'}): a test waits for it`;
         const label = lease ? `${l.id} - ${formatAddr(lease.addr.addr)} (${lease.kind === 'dhcp' ? 'DHCP' : 'link-local'})` : `${l.id} - No DHCP lease`;
-        ifaces.push({ id: l.id, dhcp: true, ready, usable: true, label, bcast: lease ? bcastOf([lease.addr]) : undefined, status: status + (at ? ' · ' + at : '') });
+        ifaces.push({ id: l.id, dhcp: true, ready, usable: true, label, bcast: lease ? bcastOf([lease.addr]) : undefined, status: status + (v6 ? ' · IPv6: ' + v6 : '') + (at ? ' · ' + at : '') });
       }
       const usable = ifaces.filter((i) => i.usable);
       if (!usable.length) {
@@ -1130,7 +1367,7 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   const seen = new Map<string, SimProtocolEntry>();
   const users = new Map<string, Set<string>>();
   const add = (id: string, label: string, group: SimEntryGroup, unit: SimProtocolEntry['unit'], user: string): void => {
-    if (!seen.has(id)) seen.set(id, { id, label, group, uses: 0, unit });
+    if (!seen.has(id)) seen.set(id, { id, label, group, uses: 0, unit, support: entrySupport(id) });
     const u = users.get(id) || new Set<string>();
     u.add(user);
     users.set(id, u);
@@ -1140,11 +1377,11 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   const ifs = (d: Model['devices'][number]): Model['devices'][number]['interfaces'] => d.interfaces.concat(d.logical);
   for (const d of model.devices) {
     // (a DHCP client too: it has its address once leased)
-    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && (i.addresses.length || i.dhcp));
+    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && ipConfigured(i));
     if (!addrs.length) continue;
     add('arp', 'ARP', 'Layer 2', 'device', d.id);
     add('garp', 'Gratuitous ARP', 'Layer 2', 'device', d.id);
-    if (addrs.some((i) => i.addresses.some((a) => a.indexOf(':') >= 0))) add('ndp', 'NDP', 'Layer 2', 'device', d.id);
+    if (addrs.some((i) => i.addresses.some((a) => a.indexOf(':') >= 0) || autoIpv6(i.ipv6) || !!i.ra)) add('ndp', 'NDP', 'Layer 2', 'device', d.id);
   }
   for (const r of model.relations) {
     const p = relationProfile(model, r);
@@ -1160,8 +1397,24 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   for (const dm of model.demands) add('demand', 'Demands (data)', 'Traffic', 'demand', dm.id);
   // Layer 3 and 4: ICMP (echo, errors), TCP and UDP (tests, health checks, probes): every addressed device can send them
   for (const d of model.devices) {
-    if (!ifs(d).some((i) => i.addresses.length || i.dhcp)) continue;
+    if (!ifs(d).some((i) => ipConfigured(i))) continue;
     for (const [id, label] of [['icmp', 'ICMP / ICMPv6'], ['tcp', 'TCP (tests)'], ['udp', 'UDP (tests)']]) add(id, label, 'Traffic', 'device', d.id);
+  }
+  // DHCPv6: its servers (a scope on an IPv6 network) and clients
+  for (const d of model.devices) {
+    const v6scope = !!d.netServices && !!d.netServices.dhcp && d.netServices.dhcp.scopes.some((s) => {
+      const n = s.network ? model.networks.find((x) => x.id === s.network) : undefined;
+      return !!n && !!n.cidr && n.cidr.indexOf(':') >= 0;
+    });
+    if (v6scope || ifs(d).some((i) => i.ipv6 === 'dhcpv6' || i.ipv6 === 'slaac_dhcpv6' || (i.ipv6 === 'slaac' && model.devices.some((r) => ifs(r).some((x) => !!x.ra && x.ra.other))))) add('dhcpv6', 'DHCPv6', 'Services', 'device', d.id);
+  }
+  // PTP: its clocks (and NTP, the service's own state, beside its relations)
+  for (const d of model.devices) {
+    if (d.appServices && d.appServices.has('ptp')) add('ptp', 'PTP', 'Services', 'device', d.id);
+  }
+  // MQTT: its brokers and clients
+  for (const d of model.devices) {
+    if ((d.appServices && d.appServices.has('mqtt_broker')) || (d.applications || []).some((a) => a.profile === 'mqtt_client')) add('mqtt', 'MQTT', 'Services', 'device', d.id);
   }
   // DHCP: its servers and clients; DNS: its servers (and the hosts that ask them)
   for (const d of model.devices) {
@@ -1179,6 +1432,8 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
     if (querierVlans.some((v) => snoopingChoice(d, v) === 'enabled' && switchedVlans(d).indexOf(v) >= 0 && svi(v))) add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
     for (const i of ifs(d)) for (const st of i.multicast ? i.multicast.streams : []) add('mcast', 'Multicast streams', 'Multicast', 'stream', `${d.id}:${i.id}:${st.group}`);
   }
+  // the non-IP interconnects: their illustrative data (their own traffic, Send illustrative data) — shown or not like a protocol
+  for (const ic of model.interconnects) add('opaque', 'Non-IP data', 'Traffic', 'interconnect', ic.id);
   for (const e of seen.values()) e.uses = (users.get(e.id) as Set<string>).size;
   const order = (g: SimEntryGroup): number => ENTRY_GROUPS.indexOf(g);
   return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));

@@ -60,7 +60,7 @@ async function open(page, example, ref) {
 
 /** Press a button the way a keyboard user does: focus it, Enter. */
 async function press(page, sel) {
-  const ok = await page.eval(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return false; b.scrollIntoView({ block: 'nearest' }); b.focus(); return document.activeElement === b; })()`);
+  const ok = await page.call((sel) => { const b = document.querySelector(sel); if (!b) return false; b.scrollIntoView({ block: 'nearest' }); b.focus(); return document.activeElement === b; }, sel);
   assert.ok(ok, 'focusable: ' + sel);
   await page.key('Enter', 'Enter', 13);
   await page.settle(120);
@@ -84,7 +84,7 @@ async function undoBack(page, what, back, gone) {
   await page.key('z', 'KeyZ', 90, CTRL);
   await page.settle(120);
   assert.equal(await page.eval(gone), true, `${what}: undone`);
-  const ok = await page.eval(`(() => { const a = document.activeElement; return a !== document.body && a.matches(${JSON.stringify(back)}); })()`);
+  const ok = await page.call((back) => { const a = document.activeElement; return a !== document.body && a.matches(back); }, back);
   assert.ok(ok, `${what}: after undo the focus is on ${back}, not ${await page.eval(`document.activeElement.outerHTML.slice(0, 120)`)}`);
 }
 
@@ -196,7 +196,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     // an address typed into "+ add" and Enter: the new address is focused and selected
     await open(page, 'enterprise-wan.yaml', 'iface:hq-rtr1:ge-0/0/1');
     const add = `#side-body details.card[open] input.append[data-t="list-append"]`;
-    await page.eval(`(() => { const i = document.querySelector(${JSON.stringify(add)}); i.scrollIntoView({ block: 'nearest' }); i.focus(); return true; })()`);
+    await page.call((add) => { const i = document.querySelector(add); i.scrollIntoView({ block: 'nearest' }); i.focus(); return true; }, add);
     await page.type('10.0.0.9/28');
     await page.key('Enter', 'Enter', 13);
     let s = await page.eval(STATE);
@@ -204,7 +204,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     assert.match(s.toast, /^Address 10\.0\.0\.9\/28 added\.$/);
     await undoBack(page, 'address', 'input.append[data-t="list-append"]', `!netatlas.exportText().includes('10.0.0.9/28')`);
     // … with Tab: marked, revealed and announced, but the focus is not pulled back
-    await page.eval(`(() => { const i = document.querySelector(${JSON.stringify(add)}); i.focus(); return true; })()`);
+    await page.call((add) => { const i = document.querySelector(add); i.focus(); return true; }, add);
     await page.type('10.0.0.10/28');
     await page.key('Tab', 'Tab', 9);
     s = await page.eval(STATE);

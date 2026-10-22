@@ -42,11 +42,14 @@ import { Flap } from './engine';
 import { LeaveWatch, Stream } from './multicast';
 import { DELIVERY_LABEL, KIND_LABEL, TestPlan } from './test-plan';
 import { Test } from './transport';
+import { AppRun, appCadence, appOutcome, appSummaryText } from './apps';
+import { appProfile } from '../../model/applications';
+import { OpaqueRun } from './opaque';
 
-export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap';
+export type ActionKind = 'send' | 'join' | 'leave' | 'stream' | 'shut' | 'flap' | 'app' | 'opaque' | 'icfail';
 export type ActionStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped' | 'cancelled';
 
-export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping' };
+export const ACTION_TITLE: Record<ActionKind, string> = { send: 'Send network packets', join: 'Join multicast group', leave: 'Leave multicast group', stream: 'Multicast stream', shut: 'Shut interface', flap: 'Flapping', app: 'Application', opaque: 'Send illustrative data', icfail: 'Non-IP failure' };
 export const STATUS_LABEL: Record<ActionStatus, string> = { queued: 'Queued', running: 'In progress', paused: 'Paused', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', cancelled: 'Cancelled' };
 /** An icon per state (beside its word: never the colour alone). */
 export const STATUS_ICON: Record<ActionStatus, string> = { queued: '◷', running: '▶', paused: '❚❚', completed: '✓', failed: '✕', stopped: '■', cancelled: '⊘' };
@@ -88,11 +91,17 @@ export interface ActionRecord {
   stream?: Stream;
   shut?: { dev: string; iface: string; upAt?: number };
   flap?: { ref: string; obj: Flap };
+  /** Start application: its run (apps.ts), or an MQTT client's session (mqtt.ts) */
+  app?: AppRun;
+  /** Send illustrative data on the non-IP interconnects (opaque.ts) */
+  opaque?: OpaqueRun;
+  /** a non-IP failure: an interconnect failed, a participant detached, an opaque port shut — until restored */
+  icfail?: { what: 'interconnect' | 'attachment' | 'port'; key: string; restoredAt?: number };
 }
 
 /** A control of an event: Stop (a send, a stream, flapping), No shut, Leave group. */
 export interface ActionControl {
-  op: 'stop' | 'noshut' | 'leave';
+  op: 'stop' | 'noshut' | 'leave' | 'restore';
   label: string;
 }
 
@@ -231,19 +240,106 @@ export interface ActionContext {
   /** the flapping cycles in effect (0: until stopped), its down and up times */
   flapCycles: number;
   flapTimes: string;
-  /** the real-time schedule stands (the simulation paused) */
-  rtPaused?: boolean;
   /** is a device on (a stream's source) */
   deviceOn?(dev: string): boolean;
+  /** an MQTT client's session has a view of its own (mqtt.ts) */
+  appView?(a: ActionRecord): ActionView | null;
 }
 
 function failedView(a: ActionRecord, title: string): ActionView {
   return { id: a.id, kind: a.kind, title, target: a.target, status: 'failed', at: a.at, ended: a.at, summary: a.error as string, controls: [], details: [`Refused at ${at(a.at)}: ${a.error}`], tests: [] };
 }
 
+/** The view of a started application: its messages as one operation, with what each came to. */
+export function appView(a: ActionRecord, c: ActionContext): ActionView {
+  const r = a.app as AppRun;
+  if (c.appView) {
+    const v = c.appView(a);
+    if (v) return v;
+  }
+  const p = appProfile(r.app.profile);
+  const o = appOutcome(r);
+  const active = (!r.stopped && (r.count === null || r.sent < r.count)) || r.tests.some((t) => !t.done);
+  const status: ActionStatus = active ? 'running' : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
+  let ended: number | undefined;
+  if (!active) {
+    ended = r.stoppedAt !== undefined ? r.stoppedAt : r.t0;
+    for (const t of r.tests) ended = Math.max(ended, t.ended !== undefined ? t.ended : t.started);
+    for (const s of r.skipped) ended = Math.max(ended, s.t);
+  }
+  const details: string[] = [];
+  details.push(`${r.dev}/${r.app.id} (${r.app.name}): ${p ? p.label : r.app.profile} to ${r.target}, ${appCadence(r)}; started ${at(a.at)}.`);
+  details.push(p && !p.answered ? 'Success: the datagram reached its receiver (the simulation sees it; nothing comes back).' : 'Success: answered (a TCP connection with its answer, a UDP answer); a request that timed out is sent again up to its retries.');
+  const shown = r.tests.length <= 12 ? r.tests : r.tests.slice(0, 3).concat(r.tests.slice(-9));
+  for (const t of shown) details.push(`#${t.msg || 1}${t.retry ? ` (retry ${t.retry})` : ''} at ${at(t.started)}${t.resolved ? ` · ${t.resolved}` : ''}: ${t.done ? t.result : t.result === 'waiting' ? 'on its way' : t.result}`);
+  if (shown.length < r.tests.length) details.splice(details.length - 9, 0, `… ${r.tests.length - shown.length} more …`);
+  for (const s of r.skipped.slice(-3)) details.push(`#${s.n} at ${at(s.t)}: ${s.why}`);
+  if (r.stopped && r.stoppedAt !== undefined) details.push(`Stopped at ${at(r.stoppedAt)} after ${r.sent} message${r.sent === 1 ? '' : 's'}.`);
+  return {
+    id: a.id,
+    kind: 'app',
+    title: ACTION_TITLE.app,
+    target: `${r.dev}/${r.app.id} → ${r.target}`,
+    status,
+    at: a.at,
+    ended,
+    progress: { done: r.sent, total: r.count, unit: 'sent' },
+    outcome: { ok: o.ok, failed: o.failed, pending: o.pending, unknown: 0, cancelled: o.cancelled, rate: true, basis: details[1] },
+    summary: appSummaryText(r, o),
+    // (Stop also while its last message is on its way: no retry of it follows)
+    controls: active && !r.stopped ? [{ op: 'stop', label: 'Stop' }] : [],
+    details,
+    tests: r.tests.map((t) => t.id),
+  };
+}
+
 /** The view of any operation. */
+/** Send illustrative data: its transfers delivered, stopped on their way (with where and why), pending. */
+function opaqueView(a: ActionRecord, now: number): ActionView {
+  const r = a.opaque as OpaqueRun;
+  const s = r.spec;
+  // (the counts: every transfer; the list keeps what is on its way and the last ones settled)
+  const ok = r.delivered;
+  const failed = r.failed;
+  const pending = r.deliveries.filter((d) => d.ok === null).length;
+  const total = s.count * s.to.length;
+  const more = !r.stopped && r.sent < s.count;
+  const status: ActionStatus = more || pending ? 'running' : r.stopped ? (ok + failed ? 'stopped' : 'cancelled') : failed && !ok ? 'failed' : 'completed';
+  const ended = status === 'running' ? undefined : Math.max(r.stoppedAt || r.t0, ...r.deliveries.map((d) => d.ended || d.t));
+  const parts = [ok ? `${ok} delivered` : '', failed ? `${failed} not delivered` : '', pending ? `${pending} on their way` : ''].filter((x) => !!x);
+  const last = r.deliveries.filter((d) => d.ok === false).slice(-1)[0];
+  return {
+    id: a.id,
+    kind: 'opaque',
+    title: ACTION_TITLE.opaque,
+    target: a.target,
+    status,
+    at: a.at,
+    ended,
+    progress: { done: ok + failed, total, unit: 'transfers' },
+    outcome: { ok, failed, pending, unknown: 0, cancelled: 0, rate: true, basis: 'Delivered: the illustrative data reached the recipient along the modelled connection. No protocol of the interconnect is simulated.' },
+    summary: (parts.join(' · ') || 'nothing sent yet') + (last ? ` · ${last.why}` : ''),
+    controls: more ? [{ op: 'stop', label: 'Stop' }] : [],
+    details: [
+      `Initiated by ${s.initiator}; data from ${s.from} to ${s.to.join(', ')}; ${s.size} bytes; ${s.count} transfer${s.count === 1 ? '' : 's'}${s.count > 1 ? ' every ' + sec(s.interval) : ''} · submitted ${at(a.at)}.`,
+      ...r.deliveries.slice(-6).map((d) => `#${d.n + 1} to ${d.to}: ${d.ok === null ? 'on its way' : d.why}${d.path ? ' (' + d.path + ')' : ''}`),
+      'Illustrative traffic — protocol behaviour not simulated: no enumeration, addressing, arbitration, acknowledgment or timing.',
+    ],
+    tests: [r.traffic as number],
+  };
+  void now;
+}
+
 export function actionView(a: ActionRecord, c: ActionContext): ActionView {
   if (a.kind === 'send' && a.run) return sendView(a, c.now);
+  if (a.kind === 'opaque' && a.opaque && !a.error) return opaqueView(a, c.now);
+  if (a.kind === 'icfail' && a.icfail && !a.error) {
+    const f = a.icfail;
+    const on = f.restoredAt === undefined;
+    const word = f.what === 'interconnect' ? 'failed' : f.what === 'attachment' ? 'detached' : 'shut';
+    return { id: a.id, kind: 'icfail', title: ACTION_TITLE.icfail, target: a.target, status: 'completed', at: a.at, ended: a.at, summary: `${a.target} ${word}`, state: on ? `${word} (no illustrative data crosses it)` : `restored at ${at(f.restoredAt as number)}`, controls: on ? [{ op: 'restore', label: f.what === 'port' ? 'Bring port up' : f.what === 'attachment' ? 'Reattach' : 'Restore' }] : [], details: [`${a.target} ${word} at ${at(a.at)}: ${f.what === 'interconnect' ? 'the whole connection or bus segment' : 'that participant alone'}; no electrical fault beyond it is inferred.`], tests: [] };
+  }
+  if (a.kind === 'app' && a.app) return appView(a, c);
   const title = ACTION_TITLE[a.kind];
   if (a.error) return failedView(a, title);
   const base = { id: a.id, kind: a.kind, title, target: a.target, at: a.at, tests: a.traffic !== undefined ? [a.traffic] : ([] as number[]) };
@@ -294,11 +390,10 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
     const got = rx.reduce((n, x) => n + x[1], 0);
     // where its copies stop (a router without multicast routing, no member behind a snooping switch …): from the log
     const stop = a.traffic !== undefined ? c.lastDrop(a.traffic) : null;
-    const real = st.rt !== undefined;
     const off = st.running && c.deviceOn ? !c.deviceOn(st.dev) : false;
-    const status: ActionStatus = !st.running ? 'stopped' : real && c.rtPaused ? 'paused' : 'running';
-    const every = `every ${sec(st.interval)}${real ? ' of real time' : ''}`;
-    const left = (st.skipped || 0) + (st.offMissed || 0);
+    const status: ActionStatus = !st.running ? 'stopped' : 'running';
+    const every = `every ${sec(st.interval)} of simulated time`;
+    const left = st.offMissed || 0;
     return {
       ...base,
       status,
@@ -308,9 +403,9 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
       controls: st.running ? [{ op: 'stop', label: 'Stop stream' }] : [],
       details: [
         `Stream #${st.id}: UDP to ${st.group}:${st.port} from source port ${st.sport}, ${st.size} bytes ${every} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`,
-        ...(real ? ['The interval is real time: the first datagram at the start, then one every interval of playing time (a pause shifts the schedule; the playback speed and the scenario don’t change it). Each datagram goes at the simulated time it is due.'] : []),
+        'The interval is simulated time (the scenario’s): the first datagram at the start, then one every interval — the same datagrams whatever the pacing, the speed or the page’s frame rate; those only change how fast they are shown.',
         `Generated: ${st.sent} datagram${st.sent === 1 ? '' : 's'} at the source (the copies multicast replicates are not counted). Received: ${got} in all, counted at the members (a member's copy is one).`,
-        ...(left ? [`Not sent: ${left}${st.offMissed ? ` (${st.offMissed} while ${st.dev} was off)` : ''}${st.skipped ? ` (${st.skipped} the page was too late for: the browser was busy or suspended)` : ''}.`] : []),
+        ...(left ? [`Not sent: ${left} while ${st.dev} was off.`] : []),
         'Who receives it: the members of the group (Join multicast group) in its VLAN — a switch with IGMP / MLD snooping enabled sends it only to ports where a member reported it, and to its multicast router ports — and in other subnets those multicast routing (PIM) reaches.',
         ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : []),
       ],

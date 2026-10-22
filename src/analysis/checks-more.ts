@@ -13,7 +13,7 @@ import { IpAddr, parseAddress, parsePrefix } from '../model/ip';
 import { protocolBase } from '../model/protocols';
 import { bgpAsn } from '../model/services';
 import { Interface, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, relationDevices } from '../model/types';
-import { addrBig, compareAddr, inPrefix, prefixRange, prefixText } from './ipmath';
+import { addrBig, compareAddr, inPrefix, networkOf as networkOfPrefix, prefixRange, prefixText } from './ipmath';
 import { vrfKey, vrfName } from './routing';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
@@ -53,7 +53,7 @@ function relParamOwn(r: Relation, key: string, device: string): string | undefin
 }
 
 /** The base protocol of a relation (an alias such as ibgp gives bgp). */
-function baseProtocol(model: Model, r: Relation): string {
+export function baseProtocol(model: Model, r: Relation): string {
   return protocolBase(model.protocols, r.protocol);
 }
 
@@ -155,6 +155,42 @@ function push<T>(m: Map<string, T[]>, name: string, v: T): void {
 // ------------------------------------------------------------ the checks
 
 export const MORE_CHECKS: MoreCheck[] = [
+  {
+    id: 'routing-policy',
+    severity: 'warning',
+    title: 'A routing policy names what the model does not have',
+    reads: 'devices: protocols: <routing protocol>: advertise, default_route, redistribute, import, export; their connected networks and static routes; the protocol\u2019s relations',
+    run(model, emit) {
+      for (const d of model.devices) {
+        for (const svc of d.services) {
+          const pol = svc.policy;
+          if (!pol) continue;
+          const at = { ref: 'device:' + d.id, field: `protocols.${svc.id}` };
+          const own = d.interfaces.concat(d.logical).flatMap((i) => i.addresses.map((a) => parsePrefix(a, false)).filter((p): p is NonNullable<typeof p> => !!p && p.prefix < (p.version === 4 ? 32 : 128)));
+          const has = (t: string): boolean => {
+            const p = parsePrefix(t);
+            if (!p) return false;
+            const net = prefixText(networkOfPrefix(p));
+            return own.some((o) => prefixText(networkOfPrefix(o)) === net) || d.routes.some((r) => {
+              const rp = parsePrefix(r.prefix);
+              return !!rp && prefixText(networkOfPrefix(rp)) === net;
+            });
+          };
+          for (const t of pol.advertise || []) if (!has(t)) emit({ message: `${d.id} advertises ${t} into ${svc.id}, but has no connected network or static route ${t}: it is not advertised`, refs: ['device:' + d.id], at });
+          for (const src of pol.redistribute) if (src !== 'connected' && src !== 'static' && !d.services.some((x) => x.id === src)) emit({ message: `${d.id} redistributes ${src} into ${svc.id}, but does not enable ${src}: nothing is redistributed`, refs: ['device:' + d.id], at });
+          const neighbours = new Set<string>();
+          for (const r of model.relations) if (protocolBase(model.protocols, r.protocol) === svc.id && relationDevices(r).indexOf(d.id) >= 0) for (const x of relationDevices(r)) if (x !== d.id) neighbours.add(x);
+          for (const dir of ['import', 'export'] as const) {
+            const rules = pol[dir];
+            rules.forEach((rule, k) => {
+              if (rule.peer !== undefined && !neighbours.has(rule.peer)) emit({ message: `${d.id} ${svc.id} ${dir} rule ${k + 1} names ${rule.peer}, which is no ${svc.id} neighbour of ${d.id}: the rule never matches`, refs: ['device:' + d.id].concat(model.index.devices.has(rule.peer) ? ['device:' + rule.peer] : []), at });
+            });
+            if (rules.length && !rules.some((x) => x.prefix === undefined && x.peer === undefined)) emit({ message: `${d.id} ${svc.id} ${dir} filter has no catch-all rule: every route its rules don't match is denied (the implicit deny at the end); add {action: permit} or {action: deny} to say so`, refs: ['device:' + d.id], at });
+          }
+        }
+      }
+    },
+  },
   {
     id: 'link-mtu-mismatch',
     severity: 'warning',

@@ -15,6 +15,8 @@
  *   links      only links whose two ends are on included devices; a cable to
  *              a left-out device is not drawn at all (no dangling stub). The
  *              tagging of their ends is kept as it is (VLAN IDs).
+ *   interconnects  each with its attachments on included devices; one with
+ *              fewer than two left (a point-to-point one: not both) is left out.
  *   relations  only relations whose every endpoint device is included. A
  *              relation that also reaches a left-out device is left out
  *              entirely, never drawn as if it were complete.
@@ -39,6 +41,7 @@
  */
 import { derive, endNetworks } from './derive';
 import { Device, Group, Interface, Link, Model, ModelIndex, Network, Relation, Route, ifaceKey, relationDevices, routeKey } from './types';
+import { keptInterconnects, opaqueIndex } from './interconnect';
 
 export type FilterView = 'physical' | 'logical';
 
@@ -69,7 +72,7 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   const relIds = new Set(rels0.map((r) => r.id));
 
   // networks: membership is decided by the included devices' addresses only
-  const draft: Model = { ...model, devices, links, relations: [], networks: model.networks, groups: [], index: indexOf(devices, links, model.networks, [], []), layout: emptyLayout() };
+  const draft: Model = { ...model, devices, links, relations: [], interconnects: [], networks: model.networks, groups: [], index: { ...indexOf(devices, links, model.networks, [], []), ...opaqueIndex(devices, []) }, layout: emptyLayout() };
   const members = derive(draft).members;
   const netIds = new Set<string>();
   for (const n of model.networks) {
@@ -98,23 +101,40 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   }
   const groups: Group[] = model.groups.filter((g) => keep.has(g.id));
 
+  // (the interconnects among the devices kept: their attachments there)
+  const kept = new Set(devices.map((d) => d.id));
+  const interconnects = keptInterconnects(model.interconnects, (d) => kept.has(d));
   return {
     ...model,
     devices,
     links,
     networks,
     relations,
+    interconnects,
     groups,
     layout: emptyLayout(),
-    index: indexOf(devices, links, networks, relations, groups),
+    index: { ...indexOf(devices, links, networks, relations, groups), ...opaqueIndex(devices, interconnects) },
   };
 }
 
-function emptyLayout(): Model['layout'] {
-  return { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
+/**
+ * The physical view's connections filter: IP only (the cables; no
+ * interconnect, the devices stay) or non-IP only (the interconnects and
+ * the devices on them; no cable). A new, self-consistent Model.
+ */
+export function withConnections(model: Model, mode: 'ip' | 'nonip'): Model {
+  if (mode === 'ip') return { ...model, interconnects: [], layout: emptyLayout(), index: { ...model.index, ...opaqueIndex(model.devices, []) } };
+  const on = new Set<string>();
+  for (const ic of model.interconnects) for (const e of ic.endpoints) on.add(e.device);
+  const part = filterModel(model, on, 'physical');
+  return { ...part, links: [], index: { ...part.index, links: new Map(), ifaceLink: new Map(), radioLinks: new Map() } };
 }
 
-function indexOf(devices: Device[], links: Link[], networks: Network[], relations: Relation[], groups: Group[]): ModelIndex {
+function emptyLayout(): Model['layout'] {
+  return { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: {} };
+}
+
+function indexOf(devices: Device[], links: Link[], networks: Network[], relations: Relation[], groups: Group[]): Omit<ModelIndex, 'interconnects' | 'opaquePorts' | 'portInterconnect'> {
   const interfaces = new Map<string, Interface>();
   for (const d of devices) for (const i of d.interfaces.concat(d.logical)) interfaces.set(ifaceKey(d.id, i.id), i);
   const ifaceLink = new Map<string, string>();

@@ -92,6 +92,8 @@ export const BUILTIN_SERVICES: readonly ServiceDef[] = [
     params: [
       int('asn', 'Local AS number', 'device', 1, 4294967295, { required: true, help: 'The device’s own AS (1–4294967295); iBGP or eBGP follows from both ends.' }),
       int('peer-as', 'Peer AS expected', 'endpoint', 1, 4294967295, { help: 'The AS this device expects the other end to be in.' }),
+      int('hold', 'Hold time (s)', 'endpoint', 0, 65535, { suggest: ['90'], help: 'The hold time this device proposes in its OPEN; the session uses the smaller of both. 0: no keepalives and no hold timer; 1 and 2 are refused by the peer.' }),
+      int('keepalive', 'Keepalive (s)', 'endpoint', 1, 21845, { suggest: ['30'], help: 'At most a third of the negotiated hold time is used.' }),
       DISTANCE,
     ],
   },
@@ -104,7 +106,8 @@ export const BUILTIN_SERVICES: readonly ServiceDef[] = [
     params: [
       int('process', 'Process ID', 'device', 1, 65535, { suggest: ['1'], help: 'Only where the platform numbers its OSPF processes.' }),
       { key: 'area', label: 'Area', type: 'area', scope: 'endpoint', suggest: ['0.0.0.0'], help: 'A number or a dotted area id (0 and 0.0.0.0 are the backbone).' },
-      { key: 'network-type', label: 'Network type', type: 'enum', scope: 'endpoint', values: ['broadcast', 'point-to-point', 'non-broadcast', 'point-to-multipoint'] },
+      { key: 'network-type', label: 'Network type', type: 'enum', scope: 'endpoint', values: ['broadcast', 'point-to-point', 'non-broadcast', 'point-to-multipoint'], help: 'Broadcast unless written (a tunnel: point-to-point); broadcast and non-broadcast elect a DR and BDR.' },
+      int('priority', 'Router priority', 'endpoint', 0, 255, { suggest: ['1'], help: 'DR / BDR election on broadcast and non-broadcast networks (default 1); 0: never DR or BDR.' }),
       int('hello', 'Hello interval (s)', 'endpoint', 1, 65535, { suggest: ['10'] }),
       int('dead', 'Dead interval (s)', 'endpoint', 1, 65535, { suggest: ['40'] }),
       COST(65535),

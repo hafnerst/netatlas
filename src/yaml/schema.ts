@@ -11,14 +11,14 @@
 export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
-  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'demands', 'checks', 'layout'],
+  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'interconnects', 'demands', 'failure_domains', 'expectations', 'experiments', 'views', 'checks', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
+  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'opaque_transit', 'igmp_mld_snooping', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes', 'policy'],
   /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN gateway's VPN gateway, a Security gateway's Domain separation */
-  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'application'],
+  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'ptp', 'mqtt_broker', 'applications'],
   wireless: ['controller', 'networks'],
   wirelessNetwork: ['id', 'ssid', 'vlan', 'untagged', 'radio', 'security', 'passphrase', 'forwarding'],
   ntp: ['stratum', 'upstreams'],
@@ -31,7 +31,10 @@ export const SCHEMA = {
   natRule: ['type', 'source', 'to', 'port', 'to_port', 'protocol'],
   wireless_controller: ['aps'],
   storage: ['protocols'],
-  application: ['name', 'ports'],
+  mqtt_broker: ['port', 'retry_interval'],
+  ptp: ['clock', 'profile', 'domain', 'interfaces', 'role', 'priority1', 'clock_class', 'clock_accuracy', 'variance', 'priority2', 'announce_interval', 'sync_interval', 'delay_req_interval', 'announce_receipt_timeout', 'clock_offset', 'drift', 'timestamping'],
+  /** an application instance: an entry of `services.applications` (the order of model/applications.ts APP_PARAMS) */
+  application: ['id', 'name', 'profile', 'port', 'peer', 'broker', 'client_id', 'publish', 'subscribe', 'qos', 'interval', 'count', 'start', 'payload_size', 'request_size', 'response_size', 'response_delay', 'timeout', 'retries', 'ip_version', 'keepalive', 'retry_interval', 'bind', 'description'],
   inspection: ['block'],
   /** two ports a device passes traffic between: an entry of `port_pairs` */
   portPair: ['a', 'b', 'direction', 'copy'],
@@ -72,9 +75,13 @@ export const SCHEMA = {
   dnsZone: ['name', 'records', 'simulation'],
   dnsRecord: ['name', 'type', 'value'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'vlans', 'native', 'routed', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  interface: ['id', 'label', 'stack', 'vlans', 'native', 'routed', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  /** a System's opaque transit group: an entry of its `opaque_transit` */
+  opaqueTransit: ['ports'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'ipv4', 'ip', 'ipv6', 'ipv6_ra', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  /** a router interface's IPv6 router advertisements (`ipv6_ra:`) */
+  ipv6Ra: ['prefixes', 'dns', 'managed', 'other', 'autonomous', 'router_lifetime', 'interval', 'preferred_lifetime', 'valid_lifetime', 'dns_lifetime'],
   /** an interface's `multicast:` block, a group it joins written as a mapping, a stream it sends */
   multicast: ['join', 'streams'],
   mcJoin: ['group', 'sources'],
@@ -83,17 +90,41 @@ export const SCHEMA = {
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
+  /** a saved view (`views:`, model/views.ts) and its parts */
+  savedView: ['id', 'name', 'view', 'focus', 'devices', 'collapse', 'hide_types', 'hide_protocols', 'options', 'viewport', 'description'],
+  viewFocus: ['target', 'hops', 'context', 'vlan', 'vrf', 'group'],
+  /** a saved experiment (`experiments:`, model/experiments.ts), its actions and observations */
+  experiment: ['id', 'name', 'duration', 'start', 'settle', 'scope', 'params', 'actions', 'observe', 'description'],
+  expScope: ['group', 'vlan', 'domain', 'device'],
+  expAction: ['id', 'at', 'after', 'do', 'target', 'to', 'service', 'group', 'count', 'interval', 'port', 'size', 'for'],
+  expObserve: ['id', 'at', 'after', 'within', 'of', 'target', 'to', 'service', 'group', 'family', 'protocol', 'topic', 'min', 'expect'],
+  /** a device's network policy (`policy:`, model/net-policy.ts), its rules and zones */
+  netPolicy: ['default', 'stateful', 'zones', 'rules'],
+  policyRule: ['name', 'action', 'source', 'destination', 'proto', 'sport', 'dport', 'in', 'out', 'from_zone', 'to_zone'],
+  policyZone: ['name', 'interfaces'],
   link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'wireless_network', 'simulation', 'description', 'attrs'],
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'speed', 'duplex'],
   network: ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs'],
   relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'direction', 'simulation', 'description', 'attrs'],
+  /** a non-IP physical interconnect (`interconnects:`, model/interconnect.ts) */
+  interconnect: ['id', 'label', 'topology', 'technology', 'protocol', 'connector', 'access', 'endpoints', 'traffic', 'description', 'attrs'],
+  /** an interconnect's technology, or the protocol it carries */
+  icTechnology: ['name', 'version'],
+  /** an attachment of a port to an interconnect: an entry of its `endpoints` */
+  icEndpoint: ['port', 'role', 'data', 'system_controller'],
+  /** illustrative data that runs with the simulation: an entry of an interconnect's `traffic` */
+  icTraffic: ['initiator', 'from', 'to', 'interval', 'count', 'size'],
   /** a relation endpoint written as a mapping (the same as "device:interface") */
   endpoint: ['device', 'interface'],
   /** a traffic demand: an entry of `demands` */
   demand: ['id', 'label', 'source', 'destination', 'bandwidth', 'class', 'description'],
+  /** a shared-failure domain: an entry of `failure_domains` */
+  failureDomain: ['id', 'label', 'kind', 'members', 'description'],
+  /** a saved architecture expectation: an entry of `expectations` */
+  expectation: ['id', 'name', 'expect', 'from', 'to', 'service', 'vrf', 'family', 'enforce', 'boundary', 'method', 'failure', 'description'],
   /** the presentation-only layout section */
-  layout: ['physical', 'logical', 'manual'],
+  layout: ['routing', 'physical', 'logical', 'manual'],
 };
 
 export type SchemaKind = keyof typeof SCHEMA;

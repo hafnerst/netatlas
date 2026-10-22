@@ -22,6 +22,7 @@
  */
 import { Capabilities, DeviceLike, capabilities } from './capabilities';
 import { DEVICE_TYPE_IDS, deviceTypeLabel } from './device-types';
+import type { Support } from './support';
 
 /** What a parameter holds, as written. */
 export type SvcParamType =
@@ -38,7 +39,8 @@ export type SvcParamType =
   | 'interfaces'
   | 'secret'
   | 'portlist'
-  | 'duration';
+  | 'duration'
+  | 'topics';
 
 export interface SvcParam {
   key: string;
@@ -54,6 +56,8 @@ export interface SvcParam {
   max?: number;
   help: string;
   placeholder?: string;
+  /** shown in the collapsed Advanced section of its card (an infrequently changed setting, a modelling default) */
+  advanced?: boolean;
 }
 
 /** A list of entries of a service (a NAT's rules, a Wireless access's networks), each with its parameters. */
@@ -88,6 +92,8 @@ export interface SvcDef {
   lists?: SvcList[];
   /** read and edited by its own code (DHCP, DNS, the Hypervisor, the Container engine, the VPN gateway, Domain separation, Wireless access) */
   custom?: boolean;
+  /** what NetAtlas does with it: drawn, checked, or simulated, and what it leaves out (model/support.ts) */
+  support: Support;
 }
 
 const SERVERS = ['server', 'vm', 'container'];
@@ -95,6 +101,8 @@ const PORT = { min: 1, max: 65535 };
 const routedFirewall = (c: Capabilities): string | null => (c.firewallPolicy && !c.l3Forward ? 'a transparent firewall forwards no IP of its own: make it routed' : null);
 const l3Switch = (c: Capabilities): string | null => (c.switchFeatures && !c.l3Forward ? 'a Layer 2 switch routes nothing: tick Supports Layer 3 first' : routedFirewall(c));
 const systemHost = (c: Capabilities, d: DeviceLike): string | null => (d.type === 'system' && !c.host ? 'only a System whose purpose is Host runs services' : null);
+/** an application runs on a device with an IP stack of its own that is an end system (a host): never on a passive or forwarding-only one */
+const hostOnly = (c: Capabilities, d: DeviceLike): string | null => (d.type === 'system' ? systemHost(c, d) : !c.host && !c.serviceHost ? 'it has no host IP stack of its own for applications' : null);
 
 export const SERVICES: ReadonlyArray<SvcDef> = [
   {
@@ -102,6 +110,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'DHCP server',
     badge: 'DHCP',
     help: 'Leases addresses to the clients of its scopes.',
+    support: { level: 'modeled', does: 'IPv4 leases from its scopes (DISCOVER, OFFER, REQUEST and ACK, through relays too, renewal, rebinding and expiry); DHCPv6 from its IPv6 scopes on its own link, stateful (Solicit, Advertise, Request, Reply, renewal) and stateless (DNS servers only).', not: 'DHCPDECLINE, RELEASE, INFORM, option 82; DHCPv6 relays and prefix delegation.' },
     types: ['router', 'switch', 'firewall', ...SERVERS],
     needs: l3Switch,
     params: [],
@@ -112,6 +121,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'DNS server',
     badge: 'DNS',
     help: 'Answers queries for its zones; a router or firewall as a forwarder.',
+    support: { level: 'modeled', does: 'Answers A and AAAA queries from its zones (the model’s DNS names and its own records), follows CNAMEs, asks its forwarders.', not: 'DNSSEC, zone transfers, TCP fallback.' },
     types: ['router', 'firewall', ...SERVERS],
     needs: routedFirewall,
     params: [],
@@ -122,6 +132,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'NTP',
     badge: 'NTP',
     help: 'Serves time: its own stratum, or what it takes from its upstreams.',
+    support: { level: 'modeled', does: 'Serves time on UDP 123 (its stratum, or one more than its upstream’s) and asks its upstreams at the poll interval; whether it is synchronized follows from their answers.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
     types: ['router', 'switch', 'firewall', 'server', 'vm', 'system'],
     needs: systemHost,
     params: [
@@ -134,6 +145,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'AAA',
     badge: 'AAA',
     help: 'Authenticates its clients by RADIUS or TACACS+.',
+    support: { level: 'modeled', does: 'Its clients send authentication requests at a demonstration interval and get an answer (reachability and policy apply).', not: 'credentials and the shared secret are not checked; no accounting.' },
     types: SERVERS,
     params: [
       { key: 'protocol', label: 'Protocol', type: 'enum', required: true, options: [{ id: 'radius', label: 'RADIUS' }, { id: 'tacacs', label: 'TACACS+' }], help: 'RADIUS (UDP 1812) or TACACS+ (TCP 49).' },
@@ -146,6 +158,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Syslog collector',
     badge: 'LOG',
     help: 'Collects log messages from its senders.',
+    support: { level: 'modeled', does: 'Its senders send log messages at a demonstration interval (one way; reachability and policy apply).', not: 'message contents, severities and facilities.' },
     types: [...SERVERS, 'system'],
     needs: systemHost,
     params: [
@@ -159,6 +172,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Monitoring',
     badge: 'MON',
     help: 'Probes its targets by ICMP and polls them by SNMP.',
+    support: { level: 'modeled', does: 'ICMP probes and SNMP polls of its targets, with their intervals and timeouts, and each target’s up or down state.', not: 'MIB contents, traps, thresholds.' },
     types: [...SERVERS, 'system'],
     needs: systemHost,
     params: [
@@ -172,6 +186,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Proxy',
     badge: 'PRX',
     help: 'Ends client connections and opens its own to the upstream.',
+    support: { level: 'modeled', does: 'Ends each client connection and opens its own to the upstream (a full TCP proxy), with its connect and client timeouts.', not: 'caching, HTTP semantics, TLS inspection.' },
     types: [...SERVERS, 'firewall'],
     needs: routedFirewall,
     params: [
@@ -186,6 +201,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Load balancing',
     badge: 'LB',
     help: 'Spreads a virtual service over its healthy backends.',
+    support: { level: 'modeled', does: 'Spreads connections over its healthy backends by its algorithm, with health checks, persistence and source NAT.', not: 'layer 7 rules, TLS offload.' },
     types: ['load_balancer', ...SERVERS],
     builtIn: ['load_balancer'],
     params: [
@@ -201,6 +217,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'VPN gateway',
     badge: 'VPN',
     help: 'Ends site-to-site tunnels or remote-access clients.',
+    support: { level: 'configured', does: 'Its tunnels, remote-access pool and protected networks are checked; it forwards only to and from them. The tunnels’ own sessions are the IPsec / WireGuard / OpenVPN relations’.', not: 'remote-access client logins and their key exchange.' },
     types: ['vpn_gateway', 'router', 'firewall', 'server', 'vm'],
     needs: routedFirewall,
     builtIn: ['vpn_gateway'],
@@ -213,6 +230,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'NAT',
     badge: 'NAT',
     help: 'Translates addresses between its inside and outside interfaces.',
+    support: { level: 'modeled', does: 'PAT, source NAT and destination NAT (port forwarding) between its inside and outside interfaces, with the translations for the replies.', not: 'ALGs, hairpinning, port-block allocation.' },
     types: ['router', 'switch', 'firewall', 'load_balancer', 'vpn_gateway', 'vm', 'system'],
     needs: (c) => (!c.l3Forward ? 'NAT is a Layer 3 forwarder’s: it routes nothing' : null),
     params: [
@@ -241,6 +259,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Wireless access',
     badge: 'WIFI',
     help: 'Its Wi-Fi networks, each bridged to its VLAN.',
+    support: { level: 'modeled', does: 'Each Wi-Fi network bridged to its VLAN, client association (its time), beacons and the idle timeout.', not: 'radio propagation, interference, roaming, the security handshake.' },
     types: ['ap', 'router'],
     builtIn: ['ap'],
     required: true,
@@ -252,6 +271,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Wireless controller',
     badge: 'WLC',
     help: 'Manages access points (CAPWAP control).',
+    support: { level: 'modeled', does: 'The CAPWAP control channel to its access points (echo requests at the RFC 5415 interval).', not: 'firmware and radio management (channels, power).' },
     types: ['server', 'vm', 'system'],
     needs: systemHost,
     params: [{ key: 'aps', label: 'Managed access points', type: 'devices', required: true, help: 'The access points it manages (each in Controller-managed mode).' }],
@@ -261,6 +281,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Hypervisor',
     badge: 'HV',
     help: 'Runs VMs on its virtual switches.',
+    support: { level: 'modeled', does: 'Its virtual switches with port groups and teaming, uplink failover, VMs powered with their host and restarted by HA.', not: 'live migration traffic, resource scheduling.' },
     types: ['server'],
     params: [],
     custom: true,
@@ -270,6 +291,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Container engine',
     badge: 'CTR',
     help: 'Runs containers on its container networks.',
+    support: { level: 'modeled', does: 'Its container networks (bridge with NAT, host, macvlan, ipvlan, overlay), published ports and container start and restart.', not: 'orchestration, service discovery, overlay encapsulation details.' },
     types: ['server', 'vm'],
     params: [],
     custom: true,
@@ -279,6 +301,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Storage service',
     badge: 'STOR',
     help: 'Serves storage by NFS, SMB or iSCSI.',
+    support: { level: 'configured', does: 'Its protocols are checked and their ports (NFS 2049, SMB 445, iSCSI 3260) are open in the simulation, so tests and applications reach them.', not: 'NFS, SMB and iSCSI themselves.' },
     types: ['storage', 'server', 'vm'],
     params: [
       {
@@ -293,22 +316,63 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     ],
   },
   {
-    id: 'application',
-    label: 'Application',
-    badge: 'APP',
-    help: 'An application of its own, listening on its ports.',
-    types: [...SERVERS, 'storage', 'system'],
+    id: 'ptp',
+    label: 'PTP',
+    badge: 'PTP',
+    help: 'Precision Time Protocol (IEEE 1588-2008): an ordinary, boundary or transparent clock.',
+    support: { level: 'modeled', does: 'PTPv2 of IEEE 1588-2008, its Default delay request-response profile over UDP/IPv4 multicast, two-step: Announce and the best master clock algorithm, Sync and Follow_Up, Delay_Req and Delay_Resp, port states, boundary clocks, end-to-end transparent clocks (residence time), the offset and path delay from the modelled timestamps.', not: 'clock accuracy is not verified: the estimates follow the modelled timestamps; no one-step, peer delay, gPTP / IEEE 802.1AS, other profiles, TSN, management messages, holdover quality.' },
+    types: ['endpoint', 'server', 'storage', 'system', 'switch', 'router', 'firewall'],
+    needs: (c, d) => (d.type === 'system' && !c.host && !c.l2Forward && !c.l3Forward ? 'only a System that is a host or a forwarder keeps a PTP clock' : !c.ipStack ? 'PTP over UDP/IPv4 needs an IP stack' : null),
+    params: [
+      { key: 'clock', label: 'Clock function', type: 'enum', required: true, options: [{ id: 'ordinary', label: 'Ordinary clock (one port)' }, { id: 'boundary', label: 'Boundary clock (several ports)' }, { id: 'transparent', label: 'Transparent clock (end-to-end)' }], help: 'Ordinary: one port. Boundary: synchronized on one port, a source on others. Transparent: corrects.' },
+      { key: 'profile', label: 'Profile', type: 'enum', required: true, options: [{ id: 'default_e2e_udp4', label: 'IEEE 1588-2008 Default (E2E), UDP/IPv4, two-step' }], help: 'The one supported: delay request-response over UDP/IPv4 multicast (224.0.1.129).' },
+      { key: 'domain', label: 'Domain', type: 'int', min: 0, max: 127, required: (v) => v.clock !== 'transparent', when: (v) => v.clock !== 'transparent', help: 'Its PTP domain (0–127): only clocks of one domain and connected by the network sync.', placeholder: '0' },
+      { key: 'interfaces', label: 'Interfaces', type: 'interfaces', required: true, help: 'Its PTP ports: an ordinary clock’s one, a boundary clock’s several, a transparent clock’s ports.' },
+      { key: 'role', label: 'Role', type: 'enum', required: (v) => v.clock === 'ordinary', when: (v) => v.clock === 'ordinary', options: [{ id: 'source_capable', label: 'May become the grandmaster' }, { id: 'receiver_only', label: 'Receiver only (slave-only)' }], help: 'Whether it may become the time source, by the best master clock algorithm.' },
+      { key: 'priority1', label: 'Priority 1', type: 'int', min: 0, max: 255, advanced: true, when: (v) => v.clock !== 'transparent', help: 'Lower wins the election first (the profile’s default: 128).', placeholder: '128' },
+      { key: 'clock_class', label: 'Clock class', type: 'int', min: 0, max: 255, advanced: true, when: (v) => v.clock !== 'transparent', help: 'Its traceability (6: locked to a primary reference; 248: default; 255: receiver only).', placeholder: '248' },
+      { key: 'clock_accuracy', label: 'Clock accuracy', type: 'int', min: 0, max: 255, advanced: true, when: (v) => v.clock !== 'transparent', help: 'The accuracy class it announces (0x20: 25 ns … 0xFE: unknown, the default 254).', placeholder: '254' },
+      { key: 'variance', label: 'Offset scaled log variance', type: 'int', min: 0, max: 65535, advanced: true, when: (v) => v.clock !== 'transparent', help: 'Its stability as announced (the default 65535: not computed).', placeholder: '65535' },
+      { key: 'priority2', label: 'Priority 2', type: 'int', min: 0, max: 255, advanced: true, when: (v) => v.clock !== 'transparent', help: 'The tie-break before the clock identity (default 128).', placeholder: '128' },
+      { key: 'announce_interval', label: 'Announce interval', type: 'duration', advanced: true, when: (v) => v.clock !== 'transparent', help: '1, 2, 4, 8 or 16 s (the profile’s default: 2 s).', placeholder: '2s' },
+      { key: 'sync_interval', label: 'Sync interval', type: 'duration', advanced: true, when: (v) => v.clock !== 'transparent', help: '0.5, 1 or 2 s (default 1 s).', placeholder: '1s' },
+      { key: 'delay_req_interval', label: 'Delay request interval', type: 'duration', advanced: true, when: (v) => v.clock !== 'transparent', help: '1, 2, 4 … 32 s (default 1 s, logMinDelayReqInterval 0).', placeholder: '1s' },
+      { key: 'announce_receipt_timeout', label: 'Announce receipt timeout', type: 'int', min: 2, max: 10, advanced: true, when: (v) => v.clock !== 'transparent', help: 'Announce intervals without an Announce before a master is lost (default 3).', placeholder: '3' },
+      { key: 'clock_offset', label: 'Initial clock offset', type: 'text', advanced: true, when: (v) => v.clock !== 'transparent', help: 'Its clock against true time at the start, e.g. +250us, -3ms (empty: a modelling default).', placeholder: 'from the device (±500 µs)' },
+      { key: 'drift', label: 'Clock drift', type: 'text', advanced: true, when: (v) => v.clock !== 'transparent', help: 'Its oscillator’s frequency error, e.g. 20ppm, -5ppm (empty: a modelling default).', placeholder: 'from the device (±20 ppm)' },
+      { key: 'timestamping', label: 'Timestamping', type: 'enum', advanced: true, options: [{ id: 'hardware', label: 'Hardware (8 ns, on the wire)' }, { id: 'software', label: 'Software (1 µs, before queueing)' }], help: 'Where its timestamps are taken (a modelling assumption; empty: software).' },
+    ],
+  },
+  {
+    id: 'mqtt_broker',
+    label: 'MQTT broker',
+    badge: 'MQTT',
+    help: 'Takes its clients’ publications and passes each to the subscribers whose filters match (MQTT 3.1.1).',
+    support: { level: 'modeled', does: 'CONNECT / CONNACK (a second client with the same identifier takes over), SUBSCRIBE with + and # filters, the fan-out of each PUBLISH to the matching subscribers (QoS 0, QoS 1 with PUBACK and DUP retries), UNSUBSCRIBE, PINGREQ and the keep alive (1.5 ×), DISCONNECT; its sessions, subscriptions and counters.', not: 'QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents.' },
+    types: [...SERVERS, 'system'],
     needs: systemHost,
     params: [
-      { key: 'name', label: 'Name', type: 'text', required: true, help: 'The application’s name.', placeholder: 'ERP' },
-      { key: 'ports', label: 'Ports', type: 'portlist', required: true, help: 'Where it listens: tcp/443, udp/5060 …', placeholder: 'tcp/443' },
+      { key: 'port', label: 'Listener port', type: 'port', ...PORT, help: 'The TCP port its clients connect to (1883, the IANA port without TLS, if empty).', placeholder: '1883' },
+      { key: 'retry_interval', label: 'QoS 1 retry interval', type: 'duration', advanced: true, help: 'A QoS 1 delivery without PUBACK goes again (DUP) after this (empty: 20 s, a default).', placeholder: '20s' },
     ],
+  },
+  {
+    id: 'applications',
+    label: 'Applications',
+    badge: 'APP',
+    help: 'Its applications: listeners, clients, periodic messages, MQTT clients.',
+    support: { level: 'modeled', does: 'Each application’s profile: listeners, TCP and UDP clients, periodic messages, MQTT clients (see each profile); one that starts with the simulation starts once, when its device is operational; one outcome per original message, retries counted apart; Stop while its last message is on its way.', not: 'payload contents and application semantics: a name such as Modbus TCP labels it only.' },
+    types: [...SERVERS, 'storage', 'system', 'endpoint'],
+    needs: hostOnly,
+    params: [],
+    custom: true,
   },
   {
     id: 'inspection',
     label: 'Inspection',
     badge: 'IPS',
     help: 'Inspects what passes: blocks inline, alerts passively.',
+    support: { level: 'modeled', does: 'Traffic matching its block list is dropped inline or alerted on passively, with its inspection latency and fail-open or fail-closed.', not: 'signatures and protocol decoding beyond ports.' },
     types: ['ids_ips'],
     builtIn: ['ids_ips'],
     params: [{ key: 'block', label: 'Block / alert on', type: 'portlist', help: 'Traffic it acts on (tcp/23, udp/69, icmp): inline it drops it, passive it alerts.', placeholder: 'tcp/23' }],
@@ -318,6 +382,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Domain separation',
     badge: 'SEP',
     help: 'Transfers between its two domains only what its policy permits.',
+    support: { level: 'modeled', does: 'Only permitted transfers cross, by its implementation: a filtering bridge, a filtering router, or a protocol break with its transfer profiles.', not: 'content inspection of what it transfers.' },
     types: ['security_gateway'],
     builtIn: ['security_gateway'],
     required: true,
@@ -381,6 +446,8 @@ interface HasServices {
   hypervisor?: unknown;
   containerEngine?: unknown;
   appServices?: Map<string, unknown>;
+  /** its application instances (services.applications) */
+  applications?: unknown[];
 }
 
 /** The services a device runs, in the registry's order (its built-in functions among them). */
@@ -401,6 +468,8 @@ export function deviceServices(d: HasServices): SvcDef[] {
         return !!d.hypervisor;
       case 'container_engine':
         return !!d.containerEngine;
+      case 'applications':
+        return !!d.applications && d.applications.length > 0;
     }
     return (!!d.appServices && d.appServices.has(s.id)) || (!!s.builtIn && s.builtIn.indexOf(d.type) >= 0 && !s.required);
   };
@@ -414,11 +483,15 @@ export const MAX_BADGES = 3;
 export function serviceBadgesText(d: HasServices): string {
   const all = deviceServices(d);
   if (!all.length) return '';
-  const shown = all.slice(0, MAX_BADGES).map((s) => s.badge).join(' · ');
+  const n = d.applications ? d.applications.length : 0;
+  // the applications are one badge, with their number ("APP×3"): never one per application
+  const badge = (s: SvcDef): string => (s.id === 'applications' && n > 1 ? `APP×${n}` : s.badge);
+  const shown = all.slice(0, MAX_BADGES).map(badge).join(' · ');
   return all.length > MAX_BADGES ? `${shown} +${all.length - MAX_BADGES}` : shown;
 }
 
 /** Every service of a device in words (the badges' tooltip, the details). */
 export function serviceListText(d: HasServices): string {
-  return deviceServices(d).map((s) => `${s.label} (${s.badge})`).join(', ');
+  const n = d.applications ? d.applications.length : 0;
+  return deviceServices(d).map((s) => (s.id === 'applications' ? `${n} application${n === 1 ? '' : 's'} (APP)` : `${s.label} (${s.badge})`)).join(', ');
 }

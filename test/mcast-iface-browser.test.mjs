@@ -31,7 +31,7 @@ const FORM = `(() => { const g = (id) => document.getElementById(id); return { s
 for (const theme of ['light', 'dark']) {
   test(`${theme}: a multicast join’s and stream’s packets are drawn and inspectable; Interface actions show the interface’s state and its reverse action`, { skip, timeout: 240000 }, async () => {
     const page = await openPage(url, { width: 1440, height: 900 });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     // (a press half a second after the last of the same button: a quicker one counts as the same press)
     const press = async (id) => {
       await new Promise((r) => setTimeout(r, 550));

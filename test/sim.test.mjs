@@ -278,7 +278,7 @@ test('determinism: the same model and the same actions give the same timeline', 
   assert.deepEqual(run(), run());
 });
 
-test('a failure: dropped packets marked where they were lost, the dead interval, reconvergence, and the full handshake after the restore', () => {
+test('a failure: the far end’s own news reroutes before the dead interval, the dead interval, reconvergence, and the full handshake after the restore', () => {
   const s = sim(pe);
   s.runTo(60000);
   s.fail('link:l-carrier-r3');
@@ -287,10 +287,13 @@ test('a failure: dropped packets marked where they were lost, the dead interval,
   assert.ok(events(s, (e) => e.device === 'r3' && /OSPF ospf-r1-r3: r3 → r1 Down \(interface ge0 went down\)/.test(e.detail)).length);
   const dead = events(s, (e) => e.device === 'r1' && /r1 → r3 Down \(dead interval expired \(40 s/.test(e.detail))[0];
   assert.ok(dead && dead.t > t0 + 25000 && dead.t <= t0 + 41000, String(dead && dead.t));
-  assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /flooding/.test(e.detail)).length > 2, 'LSU flooding');
+  // the change floods: r1's and r3's new records, and the others pass them on
+  assert.ok(events(s, (e) => e.t >= t0 && e.what === 'LSU' && /(adjacencies or interfaces changed|learned from \S+) \(?.*: \S+#\d+/.test(e.detail)).length > 2, 'LSU flooding');
   // the users' traffic now goes via r2
   assert.ok(events(s, (e) => e.t > t0 + 2000 && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail)).length);
-  assert.ok(s.engine.flights.length >= 0);
+  // r3 noticed its own interface at once and flooded its new record: r1 learned it (through r2) long before its own dead interval
+  const learned = events(s, (e) => e.t >= t0 && e.device === 'r1' && e.what === 'learned' && /r3 sequence/.test(e.detail))[0];
+  assert.ok(learned && learned.t < dead.t - 20000, `learned at ${learned && learned.t}, dead at ${dead.t}`);
   s.restore('link:l-carrier-r3');
   const t1 = s.now;
   s.runTo(t1 + 60000);
@@ -404,8 +407,8 @@ const CASES = [
   ['eigrp', { svc: 'eigrp: {asn: 10}' }, ['Hello', 'Update', 'ACK'], 'Up'],
   ['rip', { svc: 'rip: {}' }, ['Request', 'Response'], 'Heard'],
   ['bgp', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'TCP SYN-ACK', 'TCP ACK', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
-  ['evpn', { ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
-  ['l3vpn', { ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
+  ['evpn', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
+  ['l3vpn', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }, ['TCP SYN', 'OPEN', 'KEEPALIVE', 'UPDATE'], 'Established'],
   ['ldp', { svc: 'ldp: {}' }, ['Hello', 'TCP SYN', 'Initialization', 'Keepalive', 'Label Mapping'], 'Operational'],
   ['pseudowire', { ep: ['r1:lo0', 'r2:lo0'] }, ['Targeted Hello', 'Initialization', 'Keepalive', 'Label Mapping (PW)'], 'Operational'],
   ['vpls', { ep: ['r1:lo0', 'r2:lo0'] }, ['Targeted Hello', 'Initialization', 'Label Mapping (VPLS)'], 'Operational'],
@@ -470,7 +473,7 @@ test('profiles: failure and restore of a session (OSPF over a failed cable goes 
   b.runTo(20000);
   b.fail('link:l');
   b.runTo(20000 + 185000);
-  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min \(3 × bgp keepalive, default/.test(e.detail)).length, 'the hold time');
+  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min, negotiated\)/.test(e.detail)).length, 'the hold time');
   assert.ok(events(b, (e) => e.what === 'NOTIFICATION').length);
 });
 
@@ -544,4 +547,42 @@ test('simulation: the protocols of a model for the setup’s checkboxes, grouped
   const r = new S.Simulation(m);
   r.runTo(30000);
   assert.equal(JSON.stringify(m.devices.map((d) => [d.id, d.interfaces.map((i) => i.mac)])), before);
+});
+
+test('NDP: an advertisement that is not solicited (b defends its address against c’s DAD probe, to ff02::1) leaves a’s STALE entry for b as it is — the same link-layer address (RFC 4861 §7.2.5); a solicited one makes it REACHABLE', () => {
+  const t = `netatlas: 1
+title: nd
+devices:
+  - {id: a, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8::1/64"}]}
+  - {id: b, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8::2/64"}]}
+  - {id: c, type: endpoint, interfaces: [{id: eth0, ip: "2001:db8::3/64"}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+links:
+  - {id: la, a: "a:eth0", b: "sw:p1"}
+  - {id: lb, a: "b:eth0", b: "sw:p2"}
+  - {id: lc, a: "c:eth0", b: "sw:p3"}
+`;
+  const s = sim(t);
+  s.runTo(5000);
+  const r = s.sendTest({ from: 'a', to: '2001:db8::2', kind: 'icmp' });
+  s.runTo(60000);
+  assert.equal(r.ok, true, r.result);
+  const entry = () => s.engine.arpRows('a', 6).find((x) => x.ip === '2001:db8::2');
+  assert.equal(entry().state, 'STALE', 'reachable time over');
+  const mac = entry().mac;
+  const t0 = s.now;
+  const target = ip.parseAddress('2001:db8::2');
+  s.engine.dadSolicit('c', s.engine.net.devices.get('c').l3.get('eth0'), target);
+  s.runTo(t0 + 500);
+  const na = events(s, (e) => e.t >= t0 && e.device === 'b' && e.kind === 'message' && e.what === 'Neighbor Advertisement');
+  assert.equal(na.length, 1);
+  assert.match(na[0].detail, /not solicited/);
+  assert.deepEqual([entry().state, entry().mac], ['STALE', mac], 'not solicited, the same address: unchanged');
+  // a solicited one (a's own resolution when it probes b again) makes it REACHABLE
+  const r2 = s.sendTest({ from: 'a', to: '2001:db8::2', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(r2.ok, true, r2.result);
+  assert.equal(entry().state, 'DELAY', 'used while STALE: DELAY (RFC 4861 §7.3.3)');
+  s.runTo(s.now + 5000);
+  assert.equal(entry().state, 'REACHABLE', 'its probe answered by a solicited advertisement');
 });

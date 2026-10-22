@@ -20,6 +20,8 @@
  * "default" in the event log when the model writes nothing.
  */
 
+import type { Support } from './support';
+
 export type SimGroup = 'Layer 2' | 'Routing' | 'Redundancy' | 'Tunnels and overlays' | 'Services' | 'Custom';
 export const SIM_GROUPS: readonly SimGroup[] = ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Services', 'Custom'];
 
@@ -75,6 +77,8 @@ export interface SimProfile {
   label: string;
   group: SimGroup;
   behaviour: SimBehaviour;
+  /** what the simulation does for it, and what it leaves out (model/support.ts; filled from SUPPORT below) */
+  support?: Support;
   messages: SimMessage[];
   /** how its messages travel: protocol / port, unicast or multicast address, a handshake */
   transport: string;
@@ -92,12 +96,23 @@ export interface SimProfile {
   response?: string;
   /** service: the last endpoint sends the requests (SNMP: the manager polls the agents) */
   fromServer?: boolean;
+  /**
+   * UDP ports of a protocol between peers (not a client and a server): 'same' — both sides send from and to the
+   * protocol's port (IKE 500 ↔ 500, LDP 646, RIP 520, GTP-U, L2TP, WireGuard); 'to' — each side from an ephemeral
+   * port of its own to the protocol's port (BFD, RFC 5881 §4; VXLAN, Geneve: the source port a flow hash). Unset:
+   * the initiator is the client (an ephemeral port to the protocol's), its peer answers from it.
+   */
+  ports?: 'same' | 'to';
+  /** the TTL / hop limit of its unicast packets when the protocol fixes one (single-hop BFD: 255, RFC 5881 §5) */
+  ttl?: number;
   /** messages that carry data (data, tunnels): their name */
   dataMsg?: string;
   /** an encapsulation header the protocol adds ("GRE", "ESP", "VXLAN") */
   encap?: string;
   /** the transport's short form for the event log ("UDP 3784", "IP 89") */
   proto: string;
+  /** over IPv6, when it differs (RIPng: UDP 521, RFC 2080 §2.1) */
+  proto6?: string;
   /** a well-known multicast group or MAC address the protocol sends to */
   group4?: string;
   group6?: string;
@@ -261,7 +276,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
       { name: 'LSU', does: 'Link-State Update carrying LSAs; flooded again when the topology changes' },
       { name: 'LSAck', does: 'acknowledges an LSU' },
     ],
-    transport: 'IP protocol 89; Hello and LSU to 224.0.0.5 / ff02::5 (AllSPFRouters), DBD and LSR unicast',
+    transport: 'IP protocol 89; Hello to 224.0.0.5 / ff02::5 (AllSPFRouters); DBD, LSR, LSU and LSAck unicast to the neighbour (the simulation floods adjacency by adjacency: a router multicasts its first flood to AllSPFRouters / AllDRouters, RFC 2328 §13.3)',
     proto: 'IP 89',
     group4: '224.0.0.5',
     group6: 'ff02::5',
@@ -312,6 +327,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'rip',
+    ports: 'same',
     label: 'RIP',
     group: 'Routing',
     behaviour: 'rip',
@@ -321,6 +337,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     ],
     transport: 'UDP 520 to 224.0.0.9 (RIPv2); RIPng UDP 521 to ff02::9',
     proto: 'UDP 520',
+    proto6: 'UDP 521',
     group4: '224.0.0.9',
     group6: 'ff02::9',
     timers: [T('hello', 'Update timer', 30, 'RFC 2453'), T('dead', 'Timeout', 180, 'RFC 2453')],
@@ -342,13 +359,14 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     ],
     transport: 'TCP 179, unicast between the peers (often loopbacks, reached over the IGP)',
     proto: 'TCP 179',
-    timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10 (hold time / 3)'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10 (suggested)')],
+    timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)', 'hold'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10 (hold time / 3)', 'keepalive'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10 (suggested)')],
     states: ['Idle', 'Connect', 'Active', 'OpenSent', 'OpenConfirm', 'Established'],
     failure: 'KEEPALIVEs are lost; when the hold time expires the session sends NOTIFICATION and goes Idle, and UPDATEs withdraw its prefixes from the other peers. (With BFD, the session goes down as soon as BFD does.)',
     restore: 'Once the peer is reachable again: TCP handshake, OPEN, KEEPALIVE, Established, UPDATEs.',
   },
   {
     id: 'ldp',
+    ports: 'same',
     label: 'LDP',
     group: 'Routing',
     behaviour: 'ldp',
@@ -408,6 +426,8 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'bfd',
+    ttl: 255,
+    ports: 'to',
     label: 'BFD',
     group: 'Routing',
     behaviour: 'bfd',
@@ -441,7 +461,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     group: 'Redundancy',
     behaviour: 'fhrp',
     messages: [{ name: 'Hello', does: 'state and priority, from the active and the standby router' }],
-    transport: 'UDP 1985 to 224.0.0.2 (v1); virtual MAC 00:00:0c:07:ac:GG',
+    transport: 'UDP 1985 to 224.0.0.2 (v1; 224.0.0.102 v2, for groups above 255); IPv6 (v2) UDP 2029 to ff02::66; virtual MAC 00:00:0c:07:ac:GG (v1), 00:00:0c:9f:fG:GG (v2), 00:05:73:a0:0G:GG (IPv6)',
     proto: 'UDP 1985',
     group4: '224.0.0.2',
     timers: [T('hello', 'Hello time', 3, 'RFC 2281'), T('dead', 'Hold time', 10, 'RFC 2281')],
@@ -455,11 +475,11 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     group: 'Redundancy',
     behaviour: 'fhrp',
     messages: [{ name: 'Hello', does: 'the AVG and the forwarders announce themselves' }],
-    transport: 'UDP 3222 to 224.0.0.102; virtual MACs 00:07:b4:…',
+    transport: 'UDP 3222 to 224.0.0.102 / ff02::66; virtual MACs 00:07:b4:…',
     proto: 'UDP 3222',
     group4: '224.0.0.102',
     timers: [T('hello', 'Hello time', 3, 'Cisco default'), T('dead', 'Hold time', 10, 'Cisco default')],
-    states: ['Listen', 'Speak', 'Standby', 'Active'],
+    states: ['Initial', 'Listen', 'Speak', 'Standby', 'Active'],
     failure: 'The standby AVG takes over the virtual address after the hold time.',
     restore: 'A preempting higher-priority gateway becomes AVG again.',
   },
@@ -501,6 +521,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   // ------------------------------------------------------------ tunnels and overlays
   {
     id: 'ipsec',
+    ports: 'same',
     label: 'IPsec (IKEv2)',
     group: 'Tunnels and overlays',
     behaviour: 'ike',
@@ -556,6 +577,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'wireguard',
+    ports: 'same',
     label: 'WireGuard',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -608,6 +630,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'l2tp',
+    ports: 'same',
     label: 'L2TP',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -660,6 +683,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'gtp',
+    ports: 'same',
     label: 'GTP',
     group: 'Tunnels and overlays',
     behaviour: 'session',
@@ -719,6 +743,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'pseudowire',
+    ports: 'same',
     label: 'Pseudowire',
     group: 'Tunnels and overlays',
     behaviour: 'ldp',
@@ -768,6 +793,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'vxlan',
+    ports: 'to',
     label: 'VXLAN',
     group: 'Tunnels and overlays',
     behaviour: 'data',
@@ -783,6 +809,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   },
   {
     id: 'geneve',
+    ports: 'to',
     label: 'Geneve',
     group: 'Tunnels and overlays',
     behaviour: 'data',
@@ -809,7 +836,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     ],
     transport: 'MP-BGP, TCP 179 between loopbacks',
     proto: 'TCP 179',
-    timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
+    timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)', 'hold'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10', 'keepalive'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
     states: ['Idle', 'Connect', 'Active', 'OpenSent', 'OpenConfirm', 'Established'],
     failure: 'The hold time expires: the session goes down and its MAC/IP routes are withdrawn.',
     restore: 'The session is re-established and the routes advertised again.',
@@ -827,13 +854,14 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     ],
     transport: 'MP-BGP, TCP 179 between the PEs; traffic with an MPLS label stack',
     proto: 'TCP 179',
-    timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
+    timers: [T('hold', 'Hold time', 90, 'RFC 4271 §10 (suggested)', 'hold'), T('keepalive', 'Keepalive time', 30, 'RFC 4271 §10', 'keepalive'), T('connect-retry', 'ConnectRetry time', 120, 'RFC 4271 §10')],
     states: ['Idle', 'Connect', 'Active', 'OpenSent', 'OpenConfirm', 'Established'],
     failure: 'The hold time expires: the VPN routes are withdrawn.',
     restore: 'The session is re-established and the VPN routes advertised again.',
   },
   {
     id: 'vpls',
+    ports: 'same',
     label: 'VPLS',
     group: 'Tunnels and overlays',
     behaviour: 'ldp',
@@ -906,7 +934,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   { ...service('snmp', 'SNMP', 'UDP 161', 'GetRequest', 'GetResponse', 60, 'the manager (the last endpoint) polls each agent'), fromServer: true, transport: 'UDP 161, unicast from the manager (the last endpoint) to each agent' },
   service('radius', 'RADIUS / TACACS+', 'UDP 1812 (TACACS+ TCP 49)', 'Access-Request', 'Access-Accept', 60, 'authentication requests to the server'),
   {
-    // DHCP is simulated from the servers' scopes (services: dhcp) and the clients' dhcp: true (analysis/sim/netsvc.ts):
+    // DHCP is simulated from the servers' scopes (services: dhcp) and the clients' ipv4: dhcp (analysis/sim/netsvc.ts):
     // a relation of it is drawn, not run as a session of its own (its behaviour has no engine)
     id: 'dhcp',
     label: 'DHCP',
@@ -963,8 +991,55 @@ export function customProfile(id: string, label: string): SimProfile {
     states: ['Sending'],
     failure: 'Packets are lost where the way is broken.',
     restore: 'Packets pass again.',
+    support: CUSTOM_SUPPORT,
   };
 }
+
+/**
+ * What the simulation does for each built-in protocol, by its behaviour,
+ * with a protocol's own statement where it differs. Every built-in
+ * protocol has a behaviour of the engine, so each is modeled within the
+ * stated scope; a protocol of the model's own (customProfile) is drawn
+ * only, whatever demonstration packets it sends.
+ */
+const SESSION_NOT = 'payload contents and cryptographic operations; each protocol’s own negotiation beyond its profile’s steps (OpenVPN’s TLS in control packets, L2TP’s control connection, GTP’s path management, the HA protocols’ state synchronisation) — a session up means its steps were answered, not that the real protocol would agree.';
+const BY_BEHAVIOUR: { [b: string]: Support } = {
+  arp: { level: 'modeled', does: 'Requests, replies and the ARP table with its timers are simulated before IPv4 unicast.', not: 'proxy ARP, ARP inspection.' },
+  ndp: { level: 'modeled', does: 'Neighbor Solicitation and Advertisement with the neighbour states (INCOMPLETE … PROBE); router discovery (Router Solicitation, Router Advertisement with prefixes, flags, lifetimes and DNS servers); SLAAC; duplicate address detection of every link-local, automatic and written global address (tentative until it passes; a duplicate is never used); default routers and their expiry.', not: 'SEND, proxy NDP, redirects, route information and router preference options, privacy addresses (identifiers come from the MAC), optimistic DAD.' },
+  garp: { level: 'modeled', does: 'Announcements when an interface comes up and when a redundancy group’s master changes are simulated.', not: 'ARP inspection or conflict handling beyond the log.' },
+  stp: { level: 'modeled', does: 'A spanning tree per VLAN blocks loops; ports converge with the RSTP or STP timers and BPDUs are shown.', not: 'the tree is computed from the topology, not negotiated BPDU by BPDU; no MSTP regions.' },
+  advert: { level: 'modeled', does: 'Periodic advertisements and each neighbour entry with its hold time are simulated.', not: 'their TLV contents.' },
+  lacp: { level: 'modeled', does: 'LACPDUs on every member (slow or fast rate), bundling and min-links are simulated; an aggregate bundles only members whose partner (its system and aggregate) is the same.', not: 'system and port priorities, standby links beyond the maximum.' },
+  ospf: { level: 'modeled', does: 'Hellos (their intervals, area and network type must match), the interface states with the DR and BDR election of RFC 2328 (priority 0, Waiting, non-preemptive), the adjacency states up to Full: the DBD exchange negotiates master and slave by router ID and rejects a DBD whose interface MTU is larger than its own (stuck in ExStart), then LSR, LSU, LSAck with retransmission; LSUs are taken only from a neighbour in Exchange or beyond; each router’s routes come from the records its OSPF LSUs brought it (flooded, acknowledged, sent again after 5 s), never from another protocol’s.', not: 'LSA types and contents field by field (a record per router: its OSPF adjacencies and its interfaces), DBD paging and the M bit (one DBD holds the database), area types and inter-area summarization, authentication.' },
+  isis: { level: 'modeled', does: 'IIHs, CSNPs, PSNPs and LSPs as frames on the link: the adjacency forms over the cable whatever the interfaces’ IP addresses, by the NET’s system ID and area and the level (level 1 only within an area, never with a duplicate system ID), with the three-way handshake and the holding time; each router’s routes come from the records its IS-IS LSPs brought it (an unnumbered interface: out of it to the neighbour’s own address; numbered interfaces in different subnets: no IPv4 next hop, said so).', not: 'LSPs field by field (a record per router), separate level-1 and level-2 databases and route leaking, the designated IS, authentication.' },
+  eigrp: { level: 'modeled', does: 'Hellos, the init Updates and their ACKs, the neighbour states with their hold time; a change is sent as a reliable Update, a lost neighbour as a Query that every other neighbour must answer with a Reply (one that has not after the 3 min active timer is reset: stuck in active); routes come from what its Updates and Queries brought, from neighbours that are Up.', not: 'DUAL’s feasibility condition and the Active hold of a route (another neighbour’s route is used at once), metrics from bandwidth and delay.' },
+  rip: { level: 'modeled', does: 'A distance vector: Responses carry prefixes and metrics (the router’s own with 0, through its export filter); a receiver adds the cost (1), takes a new prefix below 16, its neighbour’s new metric whatever it is (16: withdrawn) and another neighbour’s only when lower; split horizon with poisoned reverse; a route not refreshed for the timeout (180 s) is set to 16 and deleted after 120 s; an interface going down invalidates its routes at once; every change goes out in a triggered Response after 1 to 5 s, the whole table every 30 s; RIPv2 on UDP 520, RIPng on UDP 521 with its Responses from the link-local address (hop count 255 to ff02::9), checked on input.', not: 'authentication, hold-down timers, RIPv1, route tags beyond the origin carried for redistribution.' },
+  bgp: { level: 'modeled', does: 'The session over a TCP connection of the transport, OPEN as structured parameters (AS checked, hold time negotiated, 0 for none), KEEPALIVE, the hold timer, NOTIFICATION and UPDATEs (taken only in Established); each router’s routes come from what its BGP UPDATEs brought it — never from another protocol’s floods — through the routing-policy subset (advertised prefixes, a default route, redistribution, ordered import/export filters, local preference, AS-path length and prepending).', not: 'NLRI field by field (an UPDATE carries the speakers’ records: their BGP sessions and interfaces), communities, MED, route reflection, iBGP split horizon, authentication.' },
+  ldp: { level: 'modeled', does: 'Hellos, the session over a TCP connection of the transport (with its hold time) and its label mapping messages are simulated.', not: 'label-switched forwarding: traffic follows the IP path.' },
+  pim: { level: 'modeled', does: 'Hellos with the DR election, Join/Prune, Register and Register-Stop, the RPF check and multicast forwarding (sparse, SSM, dense) are simulated; each router uses its own RP (its static RP, its relations’ rp, else the candidate RP with the highest router ID among those whose Bootstraps reached it — each kept for its holdtime of 2.5 Bootstrap periods, then dropped — of the group’s address family).', not: 'a separate bootstrap router and C-RP-Advertisements (each candidate floods its own Bootstrap), BSR and RP priorities, group ranges per RP, Auto-RP, asserts.' },
+  igmp: { level: 'modeled', does: 'Reports, leaves, queries, the querier election and switches’ snooping per VLAN are simulated; every message with TTL 1 and the Router Alert option, its length by its version; MLD from the link-local address once valid (:: for a host’s Report before), the querier elected by link-local address; a message without Router Alert, or MLD from a global address, is ignored.', not: 'IGMP proxying, IGMPv1, source-specific queries.' },
+  bfd: { level: 'modeled', does: 'Control packets with the three-way state machine; each end sends no faster than the peer takes, and detects after the peer’s multiplier × the slower interval (RFC 5880 §6.8.4, from what the Control packets say); a session down takes its client protocols down.', not: 'echo mode, demand mode, authentication.' },
+  fhrp: { level: 'modeled', does: 'Each protocol its own election: VRRP and CARP a master that alone advertises (IP 112, TTL 255, only TTL 255 taken; the address owner master at once with priority 255; preemption by default); HSRP and GLBP’s gateway an Active and a Standby that both send Hellos (UDP, HSRP with TTL 1), the others Listen, a Speaking router becomes Standby or Active after the hold time, preemption only when configured (Coup and Resign); the holder of the virtual address answers with the virtual MAC, failover with a gratuitous ARP.', not: 'object tracking and priority decrements, GLBP’s load sharing (one virtual forwarder: the gateway’s), VRRP’s accept mode, authentication.' },
+  ike: { level: 'modeled', does: 'IKEv2 exchanges, SA lifetimes, rekeying and dead peer detection are simulated; traffic is carried in ESP.', not: 'cryptographic operations: proposals, keys and authentication are not checked.' },
+  session: { level: 'modeled', does: 'A generic session: its profile’s handshake steps in order, its keepalives and its dead interval (WireGuard its own timers: the handshake sent again every 5 s for up to 90 s, a new one after 120 s, keys rejected after 180 s; SSL VPN over a TCP connection of the transport); traffic is encapsulated where the profile has a header.', not: SESSION_NOT },
+  data: { level: 'modeled', does: 'Traffic is encapsulated in its header along the relation and decapsulated at the far end.', not: 'a control plane of its own (learning, signalling).' },
+  service: { level: 'modeled', does: 'Requests (and their answers) cross the network at a demonstration interval between the relation’s ends: reachability, firewall policy and closed ports apply.', not: 'message contents and the server’s application logic.' },
+  'dhcp-server': { level: 'modeled', does: 'DISCOVER, OFFER, REQUEST and ACK, relays, leases with renewal, rebinding and expiry are simulated from the servers’ scopes; DHCPv6 (stateful and stateless) on the server’s own link.', not: 'DHCPDECLINE, RELEASE, INFORM, option 82; DHCPv6 relays and prefix delegation.' },
+};
+const BY_PROTOCOL: { [id: string]: Support } = {
+  dns: { level: 'modeled', does: 'A relation’s demonstration queries cross the network; name resolution itself (A / AAAA, CNAME, forwarders, the resolver cache) is simulated from the DNS servers’ zones.', not: 'DNSSEC, TCP fallback, recursion beyond the model’s servers.' },
+  ntp: { level: 'modeled', does: 'Client requests and server responses at the poll interval; each response carries the stratum its server knows (16: unsynchronized), and a client knows its upstreams only by those responses — synchronized to one that answered below 16, its stratum one more; a source answering 16 ends it at once, one silent for 8 polls (the reach register) too.', not: 'clock filtering, selection and discipline: no offset or accuracy is computed.' },
+  https: { level: 'modeled', does: 'TCP connections of the transport with the TLS 1.3 flights (ClientHello; ServerHello with the server’s Finished; the client’s Finished before its first request — the server takes no request before it), then requests and answers at a demonstration interval.', not: 'TLS itself: certificates, cipher negotiation and encryption are not checked; session resumption.' },
+  stp: BY_BEHAVIOUR.stp,
+};
+for (const p of SIM_PROFILES) p.support = BY_PROTOCOL[p.id] || BY_BEHAVIOUR[p.behaviour];
+
+/** What a protocol of the model's own gets: drawn, with demonstration packets of its name. */
+export const CUSTOM_SUPPORT: Support = {
+  level: 'drawn',
+  does: 'Its relations are drawn; in the simulation it only sends demonstration packets of its name between the endpoints.',
+  not: 'its messages, states and timers (they are unknown to NetAtlas).',
+};
 
 const BY_ID = new Map(SIM_PROFILES.map((p) => [p.id, p] as [string, SimProfile]));
 

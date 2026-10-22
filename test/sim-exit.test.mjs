@@ -70,7 +70,7 @@ function assertBack(s, tab, sel, how) {
 }
 
 async function start(page, tab) {
-  await page.eval(`(() => { netatlas.select('device:core1'); netatlas.showTab(${JSON.stringify(tab)}); return true; })()`);
+  await page.call((tab) => { netatlas.select('device:core1'); netatlas.showTab(tab); return true; }, tab);
   await page.settle(120);
   await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {} }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(20000); c.showTable('arp', 'core1'); c.refresh(true); return true; })()`);
   await page.settle(150);

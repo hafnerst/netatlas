@@ -51,7 +51,7 @@ devices:
   - id: laptop
     type: endpoint
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 links:
   - {id: l1, a: "r1:e0", b: "r2:e0"}
   - id: l2
@@ -197,10 +197,10 @@ test('CSV: one line per network and VRF, RFC 4180 quoting, CRLF, exact counts', 
   const csv = U.addressingCsv(A.addressingOverview(model(base)));
   const lines = csv.split('\r\n');
   assert.equal(lines[lines.length - 1], '', 'ends with CRLF');
-  assert.equal(lines[0], 'vrf,prefix,vlan,name,network_id,nested_in,gateways,members,used,size,utilization,ipv6_64s,next_free,free_ranges');
+  assert.equal(lines[0], 'vrf,prefix,vlan,name,network_id,nested_in,gateways,members,used,size,utilization,ipv6_64s,next_free,free_ranges,configured,reserved,acquired,dhcp_pool,in_subnets,unallocated,allocated,dhcp_pools,context');
   // site is listed in the default table and in the VRFs red and blue (it holds their addresses too)
   assert.equal(lines.length, 1 + 8 + 1);
-  assert.match(lines[2], /^,10\.1\.1\.0\/24,10,Users,users,10\.1\.0\.0\/16,10\.1\.1\.254 \(gateway: default route of pc\); 10\.1\.1\.254 \(VIP: VRRP group 1\),r1:e0 10\.1\.1\.1\/24; r2:e0 10\.1\.1\.2\/24; pc:eth0 10\.1\.1\.50\/24; laptop:wlan0 dhcp,4,254,1\.6,,10\.1\.1\.3\/24,10\.1\.1\.3-10\.1\.1\.49; 10\.1\.1\.51-10\.1\.1\.253$/);
+  assert.match(lines[2], /^,10\.1\.1\.0\/24,10,Users,users,10\.1\.0\.0\/16,10\.1\.1\.254 \(gateway: default route of pc\); 10\.1\.1\.254 \(VIP: VRRP group 1\),r1:e0 10\.1\.1\.1\/24; r2:e0 10\.1\.1\.2\/24; pc:eth0 10\.1\.1\.50\/24; laptop:wlan0 dhcp,4,254,1\.6,,10\.1\.1\.3\/24,10\.1\.1\.3-10\.1\.1\.49; 10\.1\.1\.51-10\.1\.1\.253,4,0,0,0,0,250,1\.6,,Configured model$/);
   assert.match(csv, /,2001:db8:1:1::\/64,10,users6,users6,,.*,2,18446744073709551616,,1,2001:db8:1:1::3\/64,/);
   const quoted = U.addressingCsv(A.addressingOverview(model(base.replace('label: Users}', 'label: "Users, floor 1 \\"A\\""}'))));
   assert.match(quoted, /,"Users, floor 1 ""A""",users,/);

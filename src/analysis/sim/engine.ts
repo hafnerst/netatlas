@@ -84,12 +84,14 @@ import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/ty
 import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
 import { compareAddr, formatAddr, inPrefix } from '../ipmath';
-import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
+import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import { virtualGateways } from '../identity';
+import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
-import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree, linkPort } from './net';
+import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, l2Domain, otherEnd, portKey, portRefOf, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
-import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
+import { ArpRow, ArpType, Cast, Flight, Headers, L4, MacRow, McDecision, McPort, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, SnoopResult, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 import { capabilities } from '../../model/capabilities';
 import { SeparationSim } from './separation';
@@ -101,6 +103,8 @@ export const REASSEMBLY_MS = 30000;
 export const STORM_ROUNDS = 6;
 /** Flights are kept this long after they end (for the animation and the export). */
 const FLIGHT_KEEP = 4000;
+/** Within one moment, the presentation's frame budget is asked every this many events (runUntil's yieldNow). */
+const YIELD_EVERY = 64;
 /** The jitter of starts and timers: up to this share of a typical hop's time. */
 export const JITTER_SHARE = 0.6;
 /** A message's payload in bytes when its protocol says nothing (for the serialization time). */
@@ -125,6 +129,8 @@ export interface NdPdu {
   lladdr: string;
   solicited: boolean;
   unsolicited?: boolean;
+  /** a duplicate address detection probe (from ::) */
+  dad?: boolean;
 }
 
 export interface Frame {
@@ -167,6 +173,8 @@ export interface Protocols {
   tunnelUp(dev: string, iface: string): boolean;
   /** is a relation's own state up (a session over it) */
   sessionUp?(relation: string): boolean;
+  /** the outer header of what a tunnel relation carries from a device: its data's transport (ESP; IP 4, 47; UDP 51820, 4789 …) */
+  outerL4?(relation: string, dev: string): L4 | undefined;
   /** a device was powered off: its sessions, groups and timers stop */
   deviceDown?(dev: string): void;
   /** a device finished booting: its sessions start afresh */
@@ -174,7 +182,7 @@ export interface Protocols {
   /** parameters changed: periodic timers are rescheduled */
   paramsChanged?(changes: ParamChange[]): void;
   /** a firewall's policy for a packet it would forward: pass, or dropped / rejected (it logs and answers itself) */
-  filter?(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean;
+  filter?(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null): boolean;
   /** a packet a device sent itself could not go (no route, no ARP answer, too big): the sender's own error, no ICMP on the wire */
   localError?(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void;
   /** the table sweep (once a second): the transport's timers and the firewalls' sessions */
@@ -183,14 +191,25 @@ export interface Protocols {
   snoop?(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): SnoopResult | null;
   /** a routed multicast packet at a router: true when multicast routing took it */
   mroute?(dev: string, l3: L3Iface, pkt: Pkt): boolean;
+  /** has a device's own interface joined a group (a router listening as a host: a PTP clock's port)? */
+  joined?(dev: string, iface: string, group: IpAddr): boolean;
   /** a router recomputed its routes (multicast checks its RPF interfaces) */
   routesChanged?(dev: string): void;
+  /** what routing depends on changed: routers whose own adjacencies changed advertise their new record */
+  originate?(): void;
+  /** a distance-vector protocol's tables as the routers hold them (RIP), and their version (bumped at every change); null: none */
+  dvTables?(protocol: string): DvTables | null;
+  dvVersion?(): number;
+  /** what a router has learned (its records of every origin), null when it runs no routing protocol */
+  viewOf?(dev: string): Array<{ origin: string; inst: string; seq: number; at: number; adj: string[]; up: string[] }> | null;
 }
 
 interface QItem {
   t: number;
   seq: number;
   fn: () => void;
+  /** a delivery: the flights (dots) that bring it — a presentation hold on one of them stops runUntil before it */
+  gates?: number[];
 }
 
 interface ArpEntry {
@@ -257,6 +276,8 @@ export interface Flap {
   down: boolean;
   done: number;
   token: number;
+  /** the model's own (an interface's flapping attribute): the scenario, not a change from outside */
+  configured?: boolean;
   /** how it ended (its cycles done, or Stop flapping) and when; unset while it flaps */
   ended?: 'done' | 'stopped';
   endedAt?: number;
@@ -268,9 +289,8 @@ export class Engine {
   protocols: Protocols | null = null;
   now = 0;
   timerScale: number;
-  readonly random: () => number;
-  /** the start-up and timer jitter: its own seeded sequence (so that it changes nothing else's) */
-  private jitterRandom: () => number;
+  /** the seeded streams, one per kind and object ("jitter|r1", "loss|l2"): an object's numbers depend on nothing else in the model */
+  private streams = new Map<string, () => number>();
   private q: QItem[] = [];
   private seq = 0;
   private logSeq = 0;
@@ -287,8 +307,6 @@ export class Engine {
   private causeFlight: number | null = null;
   /** the parameters in effect (params.ts): simulation-wide, and each device's own */
   readonly params: SimParams;
-  /** the loss of frames: its own seeded sequence (the start-up jitter stays the same whatever the loss) */
-  private lossRandom: () => number;
   /** the Security gateways' permitted transfers (sim/separation.ts) */
   sep: SeparationSim;
   /** failed cables and relations, by id, with when they failed */
@@ -314,6 +332,8 @@ export class Engine {
   private fwdAt = new Map<string, number>();
   /** bumped whenever what the diagram marks changes (an event, a cable going down or up) */
   stateVersion = 0;
+  /** the transitions of flapping ports so far (each down and each up): the presentation's epoch counts them (Simulation.presentationEpoch) */
+  flapTransitions = 0;
   private stp = new Map<number, Tree>();
   private arp = new Map<string, Map<string, ArpEntry>>();
   private macs = new Map<string, Map<string, MacEntry>>();
@@ -340,14 +360,119 @@ export class Engine {
   private wifiActive = new Map<string, number>();
   /** the log line of a message, by the message (its headers when it is sent) */
   private msgEvents = new WeakMap<Msg, SimEvent>();
+  /**
+   * IPv6 host configuration (ipv6.ts): what duplicate address detection
+   * hears, and the learned on-link prefixes and default routers routing
+   * takes into account.
+   */
+  v6Hook: {
+    /** a DAD probe (an NS from ::) for a target arrived */
+    dadProbe(dev: string, l3: L3Iface, target: IpAddr): void;
+    /** is an address of the interface tentative (or a duplicate): it answers no solicitation for it (RFC 4862 §5.4) */
+    unusable(dev: string, l3: L3Iface, target: IpAddr): boolean;
+    /** a Neighbor Advertisement for a target arrived */
+    advert(dev: string, l3: L3Iface, target: IpAddr, lladdr: string): void;
+    connected(dev: string): Connected[];
+    routes(dev: string, vrf: string): RibEntry[];
+    /** the IPv6 addresses the hosts acquired (link-local, SLAAC, DHCPv6) with their state, for analysis snapshots */
+    addresses(): SnapAddr[];
+  } | null = null;
+  /**
+   * PTP (ptp.ts): what a transparent clock sees of the event messages it
+   * forwards (their arrival at its port, their start on the wire of each
+   * port they leave by: the residence time), and the moment a clock's own
+   * message starts on the wire (its hardware timestamp). `egress` may give
+   * back the frame with its correction field updated (a copy).
+   */
+  ptpHook: {
+    ingress(dev: string, port: string, frame: Frame, t: number): void;
+    egress(dev: string, port: string, frame: Frame, tIn: number, tOut: number): Frame;
+  } | null = null;
+  /** the IPv6 addresses ipv6.ts gave each interface ("dev:iface"): the simulation's, never the model's */
+  private dyn6 = new Map<string, SimAddr[]>();
+
+  /**
+   * The learned IPv6 addresses of an interface (SLAAC, DHCPv6; preferred
+   * first, deprecated after): they replace the ones it had; routing
+   * follows, and what waited for an address goes.
+   */
+  setV6(dev: string, iface: string, list: SimAddr[]): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!sd || !l3) return;
+    const k = dev + ':' + iface;
+    const was = this.dyn6.get(k) || [];
+    const same = was.length === list.length && was.every((a, i) => compareAddr(a.addr, list[i].addr) === 0);
+    this.dyn6.set(k, list.slice());
+    l3.addrs = l3.addrs.filter((a) => was.indexOf(a) < 0).concat(list);
+    if (same) return;
+    this.stateVersion++;
+    this.routingChanged();
+    if (this.protocols) this.protocols.ifaceChange(dev, l3, this.isL3Up(dev, iface));
+    this.recheckWaits();
+  }
+
+  /** An interface's link-local address (null: none, or not yet validated). */
+  setLinkLocal(dev: string, iface: string, a: SimAddr | null): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!l3) return;
+    if (a) l3.ll = a;
+    else delete l3.ll;
+    this.stateVersion++;
+    if (a) this.recheckWaits();
+  }
+
+  /** Duplicate address detection: a Neighbor Solicitation from :: for a tentative address, to its solicited-node group (RFC 4862 §5.4.2). */
+  dadSolicit(dev: string, l3: L3Iface, target: IpAddr): void {
+    const sn = solicitedNode(target);
+    const msg: Msg = { protocol: 'ndp', type: 'Neighbor Solicitation', label: `NDP NS DAD ${formatAddr(target)}`, detail: `Neighbor Solicitation (ICMPv6 135) for duplicate address detection: is ${formatAddr(target)} in use? From :: (the address is tentative) to ${formatAddr(sn)} (${multicastMac(sn)}), no source link-layer address (RFC 4862 §5.4.2)` };
+    const pkt = this.newPacket(parseAddress('::') as IpAddr, sn, l3.vrf, msg, [], 255);
+    pkt.l4 = { proto: 'icmp', num: 58, icmpType: 135, icmpCode: 0, icmpName: 'Neighbor Solicitation' };
+    pkt.len = 24;
+    this.note('message', 'ndp', dev, '', msg.type, '', msg.detail, this.now, msg);
+    this.emit(dev, l3, { src: l3.mac, dst: multicastMac(sn), msg, nd: { op: 'NS', src: parseAddress('::') as IpAddr, target, lladdr: '', solicited: false, dad: true }, ip: pkt });
+  }
+
+  /** Is the address one of the interface's own: configured, leased, learned, or its link-local one? */
+  private hasOwn(l3: L3Iface, a: IpAddr): boolean {
+    return l3.addrs.some((x) => compareAddr(x.addr, a) === 0 && this.usableAddr(l3, x.addr)) || (!!l3.ll && compareAddr(l3.ll.addr, a) === 0);
+  }
+
+  /**
+   * A device's addresses now, each with its interface: its written ones that are usable (not tentative, not a
+   * duplicate), what SLAAC and DHCPv6 added to them, and its DHCP leases — the identity a policy's device or
+   * interface spec has in the simulation (analysis/policy.ts PolicyIds). An expired lease is not one.
+   */
+  effectiveAddrs(dev: string): Array<{ iface: string; addr: IpAddr }> {
+    const out: Array<{ iface: string; addr: IpAddr }> = [];
+    const sd = this.net.devices.get(dev);
+    if (sd) for (const l of sd.l3.values()) for (const a of l.addrs) if (this.usableAddr(l, a.addr)) out.push({ iface: l.id, addr: a.addr });
+    for (const c of this.leaseConnected(dev)) if (!out.some((x) => x.iface === c.iface && compareAddr(x.addr, c.addr) === 0)) out.push({ iface: c.iface, addr: c.addr });
+    return out;
+  }
+
+  /** Is one of an interface's written addresses usable now (not a tentative or duplicate IPv6 address)? */
+  usableAddr(l3: L3Iface, a: IpAddr): boolean {
+    return !l3.unusable || !l3.unusable.length || l3.unusable.indexOf(formatAddr(a)) < 0;
+  }
+
+  /** A written IPv6 address becomes unusable (tentative, a duplicate) or usable (its duplicate address detection passed). */
+  setUsable(dev: string, iface: string, a: IpAddr, usable: boolean): void {
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (!l3) return;
+    const t = formatAddr(a);
+    const list = (l3.unusable || []).filter((x) => x !== t);
+    if (!usable) list.push(t);
+    l3.unusable = list;
+    this.stateVersion++;
+  }
 
   constructor(model: Model, opts: EngineOptions = {}) {
     this.model = model;
     this.net = buildNet(model);
     this.timerScale = opts.timerScale || 1;
-    this.random = rng(modelSeed(model));
-    this.jitterRandom = rng(modelSeed(model) + '|jitter');
-    this.lossRandom = rng(modelSeed(model) + '|loss');
     const eng = this;
     this.sep = new SeparationSim({
       get now(): number {
@@ -355,7 +480,7 @@ export class Engine {
       },
       note: (kind, protocol, device, peer, what, state, detail) => eng.note(kind, protocol, device, peer, what, state, detail),
       param: (key, dev) => eng.params.get(key, dev),
-      loss: () => eng.lossRandom(),
+      loss: () => eng.stream('loss', 'separation')(),
     });
     const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
     for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
@@ -374,9 +499,26 @@ export class Engine {
 
   // ------------------------------------------------------------ time and events
 
-  /** Run fn at simulated time t (never before now). */
-  at(t: number, fn: () => void): void {
-    const item = { t: Math.max(t, this.now), seq: this.seq++, fn };
+  /**
+   * The presentation's hold (the pacing's: is a flight's dot still on its way on screen?). runUntil stops
+   * before a delivery one of whose flights it holds, and leaves it and everything after it pending; run
+   * (the tests, a jump, an experiment's result) never asks. Null: nothing is held (headless).
+   */
+  hold: ((flight: number) => boolean) | null = null;
+  /** the flight runUntil last stopped before (its hold), null when it did not stop for one */
+  held: number | null = null;
+
+  /** Run fn at simulated time t (never before now); `gates`: the flights whose arrival it is (a delivery). */
+  at(t: number, fn: () => void, gates?: number[]): void {
+    const item: QItem = { t: Math.max(t, this.now), seq: this.seq++, fn };
+    if (gates && gates.length) {
+      item.gates = gates;
+      // (each flight knows its deliveries still queued: pending until processed, whatever their time — Flight.due)
+      for (const g of gates) {
+        const f = this.flightById.get(g);
+        if (f) f.due = (f.due || 0) + 1;
+      }
+    }
     const q = this.q;
     q.push(item);
     let i = q.length - 1;
@@ -389,8 +531,8 @@ export class Engine {
     q[i] = item;
   }
 
-  after(dt: number, fn: () => void): void {
-    this.at(this.now + dt, fn);
+  after(dt: number, fn: () => void, gates?: number[]): void {
+    this.at(this.now + dt, fn, gates);
   }
 
   private pop(): QItem | undefined {
@@ -426,24 +568,58 @@ export class Engine {
   /**
    * Process the events up to time t moment by moment, and stop after the
    * first moment at which `stop` says so (the clock is at that moment);
-   * else set the clock to t.
+   * else set the clock to t. A delivery whose dot the presentation holds
+   * (`hold`) stops it before that delivery, event by event — even within a
+   * moment, so what comes before it at the same time (by its sequence) is
+   * done and what comes after it is not: `held` names the flight, the
+   * clock stays at the last event done, and true is returned. `yieldNow`
+   * (the presentation's frame budget) is asked every YIELD_EVERY events
+   * within a moment too: a moment of very many events may end partway
+   * (false is returned, the clock at that moment); the rest stays queued in
+   * its order and the next call goes on with it.
    */
-  runUntil(t: number, stop: () => boolean): void {
+  runUntil(t: number, stop: () => boolean, yieldNow?: () => boolean): boolean {
+    this.held = null;
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
+      let k = 0;
       while (this.nextTime() === n) {
-        const it = this.pop() as QItem;
-        this.now = it.t;
-        it.fn();
+        const g = this.q[0].gates;
+        if (g && this.hold) {
+          const h = this.holder(g);
+          if (h !== null) {
+            this.held = h;
+            this.prune();
+            return true;
+          }
+        }
+        this.exec(this.pop() as QItem);
+        if (yieldNow && ++k % YIELD_EVERY === 0 && this.nextTime() === n && yieldNow()) {
+          this.prune();
+          return false;
+        }
       }
       if (stop()) {
         this.prune();
-        return;
+        return false;
       }
     }
     this.now = Math.max(this.now, t);
     this.prune();
+    return false;
+  }
+
+  /** The first of a delivery's flights the presentation holds (null: none). */
+  private holder(gates: number[]): number | null {
+    for (const g of gates) if (g >= 0 && (this.hold as (f: number) => boolean)(g)) return g;
+    return null;
+  }
+
+  /** The delivery next due waits for a held flight (the pacing's status: what it waits for); null: none. */
+  heldNext(): number | null {
+    const g = this.q.length ? this.q[0].gates : undefined;
+    return g && this.hold ? this.holder(g) : null;
   }
 
   /** The serial number the next flight gets. */
@@ -463,12 +639,24 @@ export class Engine {
     for (;;) {
       const n = this.nextTime();
       if (n === null || n > t) break;
-      const it = this.pop() as QItem;
-      this.now = it.t;
-      it.fn();
+      this.exec(this.pop() as QItem);
     }
     this.now = Math.max(this.now, t);
     this.prune();
+  }
+
+  /** Do an event; a delivery's flights are processed then (no longer pending), whatever the delivery found (it may have been cancelled). */
+  private exec(it: QItem): void {
+    this.now = it.t;
+    if (it.gates)
+      for (const g of it.gates) {
+        const f = this.flightById.get(g);
+        if (f && f.due) {
+          f.due--;
+          f.delivered = true;
+        }
+      }
+    it.fn();
   }
 
   private prune(): void {
@@ -492,10 +680,10 @@ export class Engine {
   cause: string | null = null;
 
   /**
-   * The devices chosen as senders (null: every device). Only the optional
-   * traffic depends on it (an endpoint's test traffic is sent by senders
-   * only); every protocol still runs everywhere. What is shown is the
-   * screen's business (sim-controller.ts).
+   * The devices chosen as senders (null: every device): what is shown is
+   * the screen's business (sim-controller.ts). Nothing the network does
+   * depends on it — every protocol runs everywhere, and optional traffic
+   * is generated where its own settings say (test traffic, applications).
    */
   senders: Set<string> | null = null;
 
@@ -521,12 +709,7 @@ export class Engine {
     }
   }
 
-  /** Is a device a sender? */
-  isSender(dev: string): boolean {
-    return !this.senders || this.senders.has(dev);
-  }
-
-  /** Choose the senders (null: every device), at the current time; logged. */
+  /** Choose the senders (null: every device), at the current time; logged. They choose what is shown, never what runs or is generated. */
   setSenders(s: Set<string> | null, text: string): void {
     this.senders = s ? new Set(s) : null;
     this.note('note', '', '', '', 'Senders', '', `Senders changed: ${text}`);
@@ -599,9 +782,16 @@ export class Engine {
       return this.relationUp(id) && (!this.protocols || !this.protocols.sessionUp || this.protocols.sessionUp(id));
     }
     if (cond.indexOf('lease:') === 0) {
-      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen)
+      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen); IPv4 traffic's
       const [dev, iface] = cond.slice(6).split(':');
       return iface !== undefined ? this.addressReady(dev, iface) : !this.waitsForLease(dev);
+    }
+    if (cond.indexOf('ll:') === 0) {
+      // "ll:<device>|<interface>": the interface's link-local address valid (duplicate address detection passed)
+      const [dev, iface] = cond.slice(3).split('|');
+      const sd = this.net.devices.get(dev);
+      const l3 = sd ? sd.l3.get(iface) : undefined;
+      return !!(l3 && l3.ll);
     }
     if (cond.indexOf('route:') === 0) {
       const [dev, vrf, a] = cond.slice(6).split('|');
@@ -632,9 +822,9 @@ export class Engine {
   }
 
   /** How many things wait for a condition (tests, the status). */
-  waiting(): Array<{ cond: string; label: string; why: string; since: number }> {
-    const out: Array<{ cond: string; label: string; why: string; since: number }> = [];
-    for (const [cond, list] of this.waits) for (const w of list) out.push({ cond, label: w.msg.label, why: w.why, since: w.since });
+  waiting(): Array<{ cond: string; label: string; why: string; since: number; origin?: string }> {
+    const out: Array<{ cond: string; label: string; why: string; since: number; origin?: string }> = [];
+    for (const [cond, list] of this.waits) for (const w of list) out.push({ cond, label: w.msg.label, why: w.why, since: w.since, origin: w.msg.origin });
     return out;
   }
 
@@ -688,6 +878,14 @@ export class Engine {
   /** Is a device on (powered and booted)? An inline appliance that failed open is off, but passes frames. */
   deviceOn(dev: string): boolean {
     return !this.off.has(dev);
+  }
+
+  /** how many times each device was powered off: what a device scheduled before it went off checks it is still the same run */
+  private powerEpochs = new Map<string, number>();
+
+  /** A device's power epoch: it changes when the device is powered off (what it meant to do before is void after a reboot). */
+  powerEpoch(dev: string): number {
+    return this.powerEpochs.get(dev) || 0;
   }
 
   /**
@@ -804,6 +1002,7 @@ export class Engine {
       },
       leases: (device: string) => self.leaseConnected(device),
       extraRoutes: (device: string, vrf: string) => self.leaseRoutes(device, vrf),
+      dv: (protocol: string) => (self.protocols && self.protocols.dvTables ? self.protocols.dvTables(protocol) : null),
     };
     return this.ctxObj;
   }
@@ -824,7 +1023,14 @@ export class Engine {
       for (const a of devs) for (const b of devs) if (a !== b) adj.set(r.id + '|' + a + '|' + b, (live.adjUp as (r: string, f: string, t: string) => boolean)(r.id, a, b));
     }
     const self = this;
+    // the distance-vector tables as they are now (a frozen copy)
+    const dvNow = new Map<string, DvTables>();
+    if (this.protocols && this.protocols.dvTables) for (const p of ['rip']) {
+      const t = this.protocols.dvTables(p) as (DvTables & { frozen?: () => DvTables }) | null;
+      if (t) dvNow.set(p, t.frozen ? t.frozen() : t);
+    }
     return {
+      dv: (protocol: string) => dvNow.get(protocol) || null,
       up(device: string, iface: string): boolean {
         const k = device + ':' + iface;
         if (ifs.has(k)) return ifs.get(k) !== false;
@@ -848,6 +1054,52 @@ export class Engine {
     };
   }
 
+  /**
+   * The state analysis reads, frozen now for good (analysis/snapshot.ts):
+   * what is up, the adjacencies, the connected networks and default routes
+   * the leases and router advertisements added, and the acquired addresses.
+   * Unlike snapshot(), nothing of it reads the live simulation later.
+   */
+  analysisSnapshot(down: string[]): AnalysisSnapshot {
+    const base = this.snapshot();
+    const conn = new Map<string, Connected[]>();
+    const routes = new Map<string, RibEntry[]>();
+    for (const d of this.model.devices) {
+      const c = this.leaseConnected(d.id);
+      if (c.length) conn.set(d.id, c.map((x) => ({ ...x, net: { ...x.net, bytes: x.net.bytes.slice() }, addr: { ...x.addr, bytes: x.addr.bytes.slice() } })));
+      for (const vrf of deviceVrfs(this.model, d.id)) {
+        const r = this.leaseRoutes(d.id, vrf);
+        if (r.length) routes.set(d.id + '\0' + vrf, r.map((x) => ({ ...x })));
+      }
+    }
+    const addresses: SnapAddr[] = [];
+    for (const l of this.leases.values()) {
+      const s: SnapAddr = { device: l.dev, iface: l.iface, vrf: l.vrf, address: l.addr.text, text: formatAddr(l.addr.addr), version: 4, method: l.kind === 'dhcp' ? 'dhcpv4' : 'link-local', state: 'bound' };
+      if (l.server) s.from = formatAddr(l.server);
+      if (l.kind === 'dhcp') s.validUntil = l.expires;
+      addresses.push(s);
+    }
+    if (this.v6Hook) addresses.push(...this.v6Hook.addresses());
+    const cmpS = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+    addresses.sort((a, b) => cmpS(a.device, b.device) || cmpS(a.iface, b.iface) || a.version - b.version || cmpS(a.text, b.text));
+    const ctx: RoutingCtx = {
+      ...base,
+      leases: (device: string) => conn.get(device) || [],
+      extraRoutes: (device: string, vrf: string) => routes.get(device + '\0' + vrf) || [],
+    };
+    // each router's installed routes: what it had learned at its last recomputation (its own interfaces as they are now)
+    const per = new Map<string, RoutingCtx>();
+    const baseUp = base.up as (d: string, i: string) => boolean;
+    for (const [d, c] of Array.from(this.devCtx)) {
+      const cu = c.up as (dv: string, i: string) => boolean;
+      per.set(d, { ...c, up: (device: string, iface: string) => (device === d ? baseUp(device, iface) : cu(device, iface)), leases: ctx.leases, extraRoutes: ctx.extraRoutes });
+    }
+    ctx.at = (device: string) => per.get(device);
+    const at = this.now;
+    const key = `${at}|${this.stateVersion}|${this.routingVersion}|${down.join(',')}`;
+    return { at, ctx, addresses, down: down.slice().sort(cmpS), key };
+  }
+
   // ------------------------------------------------------------ DHCP leases (the client's side)
 
   /** the addresses DHCP leased (or a link-local fallback), by "device:interface": the simulation's, never the model's */
@@ -864,7 +1116,8 @@ export class Engine {
     if (!sd || !l3) return;
     const had = this.leases.get(l.dev + ':' + l.iface);
     this.leases.set(l.dev + ':' + l.iface, l);
-    l3.addrs = [l.addr];
+    // (the IPv4 address it leased; its IPv6 addresses stay)
+    l3.addrs = l3.addrs.filter((a) => a.addr.version !== 4).concat([l.addr]);
     this.stateVersion++;
     this.routingChanged();
     if (!had || compareAddr(had.addr.addr, l.addr.addr) !== 0) {
@@ -881,7 +1134,7 @@ export class Engine {
     this.leases.delete(k);
     const sd = this.net.devices.get(dev);
     const l3 = sd ? sd.l3.get(iface) : undefined;
-    if (l3) l3.addrs = [];
+    if (l3) l3.addrs = l3.addrs.filter((a) => a !== l.addr);
     this.flushIface(dev, iface, why);
     this.stateVersion++;
     this.routingChanged();
@@ -890,16 +1143,21 @@ export class Engine {
   /** Does an interface have its address: a configured one, or (a DHCP client) a lease? */
   addressReady(dev: string, iface: string): boolean {
     const i = this.model.index.interfaces.get(dev + ':' + iface);
-    if (!i || !i.dhcp || i.addresses.length) return true;
+    if (!i || !i.dhcp) return true;
     return this.leases.has(dev + ':' + iface);
   }
 
-  /** Is a device waiting for a DHCP lease (a client interface without one, and no address elsewhere)? */
-  waitsForLease(dev: string): string | null {
+  /**
+   * Is a device waiting for a DHCP lease (a client interface without one, and no IPv4 address elsewhere)?
+   * IPv6 traffic (version 6) never waits for one: a lease is IPv4, and an IPv6 address (SLAAC, DHCPv6,
+   * written) is no IPv4 address to send from.
+   */
+  waitsForLease(dev: string, version: 4 | 6 = 4): string | null {
+    if (version === 6) return null;
     const sd = this.net.devices.get(dev);
     if (!sd) return null;
     const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'loopback');
-    if (ls.some((l) => l.addrs.length)) return null;
+    if (ls.some((l) => l.addrs.some((a) => a.addr.version === 4))) return null;
     const c = ls.find((l) => !this.addressReady(dev, l.id));
     return c ? c.id : null;
   }
@@ -910,6 +1168,7 @@ export class Engine {
       if (l.dev !== device) continue;
       out.push({ device, iface: l.iface, vrf: l.vrf, net: { version: l.addr.net.version, bytes: l.addr.net.bytes, prefix: l.addr.net.prefix }, addr: l.addr.addr, address: l.addr.text });
     }
+    if (this.v6Hook) out.push(...this.v6Hook.connected(device));
     return out;
   }
 
@@ -920,6 +1179,7 @@ export class Engine {
       const zero = { version: 4 as const, bytes: [0, 0, 0, 0], prefix: 0 };
       out.push({ kind: 'static', device, vrf, net: zero, distance: 254, metric: 0, iface: l.iface, via: l.gateway, blackhole: false });
     }
+    if (this.v6Hook) out.push(...this.v6Hook.routes(device, vrf));
     return out;
   }
 
@@ -929,10 +1189,32 @@ export class Engine {
    * recomputation delay (the routers whose recomputation falls on the same
    * moment share it).
    */
+  /**
+   * Forget the routing contexts made so far (a router's own included): the next question makes them anew from the state
+   * then. Used once the sessions are built — what was asked before (the owner of an NTP upstream, by the configured
+   * routing) saw no session yet, every adjacency counting as up, and must not become the routers' first tables (a cold
+   * start: nothing learned before an adjacency forms).
+   */
+  forgetRoutingContexts(): void {
+    this.ctxObj = null;
+    this.devCtx.clear();
+    this.viewCtxs.clear();
+    this.estimates.clear();
+  }
+
+  /** A distance-vector router's table changed (RIP): the routing contexts are made again (the routers recompute by their delay). */
+  dynamicChanged(): void {
+    this.ctxObj = null;
+    this.routingVersion++;
+    this.estimates.clear();
+  }
+
   routingChanged(): void {
     this.ctxObj = null;
     this.routingVersion++;
     this.estimates.clear();
+    // the routers whose own adjacencies or interfaces changed advertise it (the others learn when that reaches them)
+    if (this.protocols && this.protocols.originate) this.protocols.originate();
     // a route or a tunnel may be there now: what waited for it goes
     this.recheckWaits();
     for (const d of Array.from(this.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
@@ -942,6 +1224,102 @@ export class Engine {
       const t = this.now + Number(r.value);
       this.at(t, () => this.recompute(d.id, t, r));
     }
+  }
+
+  /** A router learned something (an advertisement reached it): its routes are recomputed after its route recomputation delay. */
+  recomputeSoon(dev: string): void {
+    const d = this.net.devices.get(dev);
+    if (!d || !d.routes || this.spfPending.has(dev) || this.off.has(dev)) return;
+    this.spfPending.add(dev);
+    const r = this.params.get('spf-delay', dev);
+    const t = this.now + Number(r.value);
+    this.at(t, () => this.recompute(dev, t, r));
+  }
+
+  /** the routing contexts of learned states, by their signature (routers that learned the same share one) */
+  private viewCtxs = new Map<string, RoutingCtx>();
+
+  /**
+   * A router's state for its route computation: what is up now on the
+   * router itself, and for every other router what its databases say (each
+   * instance's record of that origin: its adjacencies of the instance —
+   * a relation's adjacency is known only through its own protocol's
+   * instance — and its interfaces when it last advertised them, as far as
+   * that has reached this router). A protocol's computation reads an
+   * origin's interfaces from that protocol's record of the interface's VRF
+   * on the origin (OSPF's newer news of an interface never changes what BGP
+   * last advertised); a question without a protocol, from the newest record.
+   * A router that runs no routing protocol: the state now.
+   */
+  private viewCtx(dev: string, base: RoutingCtx): RoutingCtx {
+    const view = this.protocols && this.protocols.viewOf ? this.protocols.viewOf(dev) : null;
+    if (!view) return base;
+    const recs = view.slice().sort((a, b) => cmp(a.origin, b.origin) || cmp(a.inst, b.inst));
+    const sig = `${this.routingVersion}|${this.protocols && this.protocols.dvVersion ? this.protocols.dvVersion() : 0}|${dev}:${this.l3Sig(dev)}|${recs.map((r) => r.origin + '@' + r.inst + ':' + r.seq).join(',')}`;
+    const hit = this.viewCtxs.get(sig);
+    if (hit) return hit;
+    const adj = new Set<string>();
+    // an origin's interfaces: per instance of the origin ("origin|protocol|vrf", the newest copy this router holds), and the newest of all
+    const ups = new Map<string, { at: number; seq: number; up: Set<string> }>();
+    const newest = new Map<string, { at: number; up: Set<string> }>();
+    for (const r of recs) {
+      for (const a of r.adj) {
+        const i = a.lastIndexOf('|');
+        adj.add(`${a.slice(0, i)}|${r.origin}|${a.slice(i + 1)}`);
+      }
+      if (r.origin === dev) continue;
+      const k = r.origin + '|' + r.inst;
+      const was = ups.get(k);
+      if (!was || r.seq > was.seq) ups.set(k, { at: r.at, seq: r.seq, up: new Set(r.up) });
+      const n = newest.get(r.origin);
+      if (!n || r.at > n.at) newest.set(r.origin, { at: r.at, up: new Set(r.up) });
+    }
+    const self = this;
+    const ctx: RoutingCtx = {
+      ...base,
+      // (a relation's adjacency counts when both ends' records say so: the two-way check of a route computation)
+      relUp: () => true,
+      adjUp: (relation: string, from: string, to: string) => adj.has(`${relation}|${from}|${to}`) && adj.has(`${relation}|${to}|${from}`),
+      up(device: string, iface: string, protocol?: string): boolean {
+        const sd = self.net.devices.get(device);
+        const l = sd ? sd.l3.get(iface) : undefined;
+        if (l) {
+          // (the origin's VRF of that interface: a name on the origin itself, compared with the origin's own instances only)
+          const u = protocol ? ups.get(`${device}|${protocol}|${l.vrf}`) : newest.get(device);
+          if (u) return u.up.has(iface);
+        }
+        return (base.up as (d: string, i: string) => boolean)(device, iface);
+      },
+    };
+    if (this.viewCtxs.size > 256) this.viewCtxs.clear();
+    this.viewCtxs.set(sig, ctx);
+    return ctx;
+  }
+
+  /**
+   * A router's own interfaces are never stale in its own tables: one that
+   * went down is unusable at once (its connected routes, a next hop out of
+   * it), before the route recomputation delay has passed — what the router
+   * learned of the others waits for that.
+   */
+  private ownLive(dev: string, inner: RoutingCtx): RoutingCtx {
+    const self = this;
+    const innerUp = inner.up as (d: string, i: string, p?: string) => boolean;
+    return {
+      ...inner,
+      up(device: string, iface: string, protocol?: string): boolean {
+        if (device !== dev) return innerUp(device, iface, protocol);
+        const sd = self.net.devices.get(dev);
+        if (sd && sd.l3.has(iface)) return self.l3State.get(dev + ':' + iface) !== false;
+        return self.portUp(dev, iface);
+      },
+    };
+  }
+
+  /** a device's interfaces' state now, as a signature */
+  private l3Sig(dev: string): string {
+    const d = this.net.devices.get(dev);
+    return d ? Array.from(d.l3.keys()).map((k) => (this.isL3Up(dev, k) ? '1' : '0')).join('') : '';
   }
 
   private recompute(dev: string, t: number, r: Resolved): void {
@@ -958,7 +1336,7 @@ export class Engine {
       });
     }
     at.devs.push(dev);
-    this.devCtx.set(dev, at.ctx);
+    this.devCtx.set(dev, this.ownLive(dev, this.viewCtx(dev, at.ctx)));
     if (this.protocols && this.protocols.routesChanged) this.protocols.routesChanged(dev);
     // the device's new routes: what waited for a route goes
     this.recheckWaits();
@@ -1023,9 +1401,22 @@ export class Engine {
       tr.loops.sort(cmp);
       t = tr;
       this.stp.set(vlan, t);
+      // root guard: a guarded port with a better root behind it is blocked — said once, whenever the tree is computed with it
+      for (const k of Array.from(tr.inconsistent).sort(cmp)) {
+        const nk = vlan + '|' + k;
+        if (this.rootGuardNoted.has(nk)) continue;
+        this.rootGuardNoted.add(nk);
+        const cut = k.indexOf('|');
+        const gDev = k.slice(0, cut);
+        this.note('link', 'stp', gDev, '', 'Root guard', 'blocked', `${gDev}:${k.slice(cut + 1)} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
+      }
+      for (const nk of Array.from(this.rootGuardNoted)) if (nk.indexOf(vlan + '|') === 0 && !tr.inconsistent.has(nk.slice(nk.indexOf('|') + 1))) this.rootGuardNoted.delete(nk);
     }
     return t;
   }
+
+  /** guarded ports noted root-inconsistent ("vlan|dev|port") */
+  private rootGuardNoted = new Set<string>();
 
   /**
    * What the spanning tree reads of the switches and their ports: the
@@ -1089,7 +1480,7 @@ export class Engine {
       // its first BPDU arrives with the far end's first hello
       const guard = this.params.get('stp-bpdu-guard', dev, null, at);
       if (guard.value === 'on') {
-        this.at(this.now + this.jitter(), () => {
+        this.at(this.now + this.jitter(dev), () => {
           if (!this.linkUp(link) || this.shutPorts.has(portKey(dev, port))) return;
           this.note('link', 'stp', dev, o.device, 'BPDU guard', 'err-disabled', `BPDU guard on ${dev}:${bp} (${resolvedText(guard)}): a BPDU from ${o.device}:${o.port}, a bridge where a host was expected; the port is err-disabled (shut down) until No shut`);
           this.shut(dev, port);
@@ -1239,9 +1630,7 @@ export class Engine {
           this.note('link', 'stp', dev, '', 'Port forwarding', 'forwarding', `${dev}:${bp} is forwarding in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} (the spanning tree converged)`);
         });
       }
-      this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map((k) => k.replace('|', ':')).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
-      // root guard: a better root behind a guarded port blocks it
-      for (const k of Array.from(n.inconsistent).sort(cmp)) if (!t.inconsistent || !t.inconsistent.has(k)) this.note('link', 'stp', k.split('|')[0], '', 'Root guard', 'blocked', `${k.replace('|', ':')} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
+      this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map(portRefOf).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
       for (const tab of this.macs.values()) {
         for (const [k, e] of Array.from(tab)) if (e.type === 'dynamic' && e.vlan === vlan) tab.delete(k);
       }
@@ -1296,7 +1685,10 @@ export class Engine {
   emit(dev: string, l3: L3Iface, frame: Frame, t = this.now): void {
     this.mark(frame.msg, dev);
     const was = this.emitting;
-    this.emitting = { dev, l3, t, net: frame.msg.relation ? null : this.networkOf(l3, frame), first: null };
+    const net = frame.msg.relation ? null : this.networkOf(l3, frame);
+    this.emitting = { dev, l3, t, net, first: null };
+    // the logical view: a message without a relation goes from its sender to its network now (on to each receiver when it arrives there)
+    if (net && this.emitting) this.emitting.first = this.flight(t, t + this.hopTime() / 2, frame.msg, 'logical', { ref: 'network:' + net, from: dev, to: 'net' }, undefined, frameEncap(frame)).id;
     try {
       this.emitFrame(dev, l3, frame, t);
     } finally {
@@ -1330,7 +1722,7 @@ export class Engine {
       this.bridge(sd, null, l3.vlan, frame, t, undefined, new Set([dev]));
       return;
     }
-    const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p) && this.net.ends.has(portKey(dev, p)));
+    const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p) && this.cabledOrBoundary(dev, p));
     if (!ports.length) return;
     const port = ports.length === 1 ? ports[0] : ports[hashIndex(frame.src + frame.dst + (frame.ip ? frame.ip.flow : ''), ports.length)];
     // a subinterface's frames carry its VLAN's 802.1Q tag on its port (a routed port: its own frames are untagged)
@@ -1383,16 +1775,24 @@ export class Engine {
    * before it has been sent (one at a time), is on the wire for its
    * serialization time and arrives a propagation delay later.
    */
-  private wire(link: string, end: 'a' | 'b', frame: Frame, t: number): { start: number; end: number; lost: boolean } {
+  private wire(link: string, end: 'a' | 'b', frame: Frame, t: number): { start: number; end: number; lost: boolean; dup: boolean; impaired: boolean } {
     const key = link + '>' + end;
     const free = this.cableFree.get(key) || 0;
     const start = Math.max(t, free);
     const ser = (this.frameBytes(frame) * 8 * 1000) / Number(this.speed(link).value);
     this.cableFree.set(key, start + ser);
     const loss = Number(this.loss(link).value);
-    const lost = loss > 0 && this.lossRandom() * 100 < loss;
-    return { start, end: start + ser + Number(this.latency(link).value), lost };
+    const lost = loss > 0 && this.stream('loss', link)() * 100 < loss;
+    const imp = this.impair ? this.impair(link, frame) : null;
+    return { start, end: start + ser + Number(this.latency(link).value) + (imp && imp.delay ? imp.delay : 0), lost: lost || !!(imp && imp.lose), dup: !!(imp && imp.dup), impaired: !!(imp && imp.lose) && !lost };
   }
+
+  /**
+   * A test's impairment of one frame on a cable (never set by the
+   * application): lose it, deliver it twice, or delay it (so that what was
+   * sent after it overtakes it). Null: none.
+   */
+  impair: ((link: string, frame: Frame) => { lose?: boolean; dup?: boolean; delay?: number } | null) | null = null;
 
   /**
    * A small seeded jitter (ms) for a start or a periodic message: less than
@@ -1400,8 +1800,20 @@ export class Engine {
    * what starts together runs together (on screen too) without being drawn
    * on top of each other.
    */
-  jitter(): number {
-    return this.jitterRandom() * JITTER_SHARE * this.hopTime();
+  jitter(scope = ''): number {
+    return this.stream('jitter', scope)() * JITTER_SHARE * this.hopTime();
+  }
+
+  /** A seeded number in [0, 1) of an object's own stream (a device's, a cable's): the same model, the same numbers for it, whatever else it holds. */
+  random(scope = ''): number {
+    return this.stream('random', scope)();
+  }
+
+  private stream(kind: string, scope: string): () => number {
+    const k = kind + '|' + scope;
+    let r = this.streams.get(k);
+    if (!r) this.streams.set(k, (r = rng(`${modelSeed(this.model)}|${kind}|${scope}`)));
+    return r;
   }
 
   /**
@@ -1427,7 +1839,7 @@ export class Engine {
       const d = this.linkUpDelay(id);
       const tok = ++this.tokens;
       this.carrierToken.set('link:' + id, tok);
-      this.at(Number(d.value) + this.jitter(), () => {
+      this.at(Number(d.value) + this.jitter('link:' + id), () => {
         if (this.carrierToken.get('link:' + id) !== tok) return;
         this.carrierToken.delete('link:' + id);
         if (!this.physUp(id)) return;
@@ -1479,9 +1891,23 @@ export class Engine {
   }
 
   /** A frame onto a cable from a port: it arrives after its serialization and the cable's latency (one frame per cable and direction at a time). */
+  /** A port with a cable, or one at an execution scope's boundary (its cable leads out of the scope: transmit says so). */
+  private cabledOrBoundary(dev: string, port: string): boolean {
+    return this.net.ends.has(portKey(dev, port)) || (!!this.model.execScope && this.model.execScope.boundary.has(dev + ':' + port));
+  }
+
   private transmit(dev: string, port: string, frame: Frame, tag: number | null, t: number, parent: number | undefined, seen: Set<string>): void {
     const e = this.net.ends.get(portKey(dev, port));
-    if (!e) return;
+    if (!e) {
+      // the boundary of an execution scope: the cable leads to a device this simulation does not run (said, never answered)
+      const out = this.model.execScope ? this.model.execScope.boundary.get(dev + ':' + port) : undefined;
+      const k = `scope|${dev}|${port}|${frame.msg.protocol}`;
+      if (out !== undefined && (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000)) {
+        this.stormNoted.set(k, t);
+        this.noteAt(t, 'drop', frame.msg.protocol, dev, out, frame.msg.type, '', `${frame.msg.label} leaves the execution scope at ${dev}:${port}: ${out} is outside it (${this.model.execScope ? this.model.execScope.label : ''}) and is not run, so nothing answers from there`);
+      }
+      return;
+    }
     const l = this.net.links.get(e.link) as Link;
     if (l.direction === 'unidirectional' && e.end === 'b') return;
     if (l.medium === 'wireless') {
@@ -1491,6 +1917,7 @@ export class Engine {
       frame = this.toUnicast(e.link, dev, frame, t);
     }
     const w = this.wire(e.link, e.end, frame, t);
+    if (this.ptpHook && frame.msg.protocol === 'ptp') frame = this.ptpHook.egress(dev, port, frame, t, w.start);
     const o = otherEnd(this.net, e);
     const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + e.link, from: e.end, to: o.end }, parent, frameEncap(frame));
     this.inspectable(f, frame, tag);
@@ -1505,10 +1932,35 @@ export class Engine {
       f.dropped = (w.start + w.end) / 2;
       f.t1 = f.dropped;
       const r = this.loss(e.link);
-      this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (packet loss ${resolvedText(r)}): ${frame.msg.label}`);
+      this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (${w.impaired ? 'an impairment of the test' : 'packet loss ' + resolvedText(r)}): ${frame.msg.label}`);
       return;
     }
-    this.arrive(o.device, o.port, frame, tag, w.end, f.id, seen);
+    // it arrives when it arrives: the next device decides then, with its state then (a port shut, a spanning tree
+    // changed, the device off, its MAC table aged meanwhile) — never in advance at the moment the frame was sent
+    // (in the context it was sent in: its emission, its cause, its Send test — as if it had all happened at once)
+    const ctx = { em: this.emitting, cause: this.cause, causeMsg: this.causeMsg, test: this.testCtx, flight: this.causeFlight };
+    const go = (at: number): void => {
+      this.at(at, () => {
+        if (f.dropped !== undefined || f.hidden) return;
+        const was = { em: this.emitting, cause: this.cause, causeMsg: this.causeMsg, test: this.testCtx, flight: this.causeFlight };
+        this.emitting = ctx.em;
+        this.cause = ctx.cause;
+        this.causeMsg = ctx.causeMsg;
+        this.testCtx = ctx.test;
+        this.causeFlight = ctx.flight;
+        try {
+          this.arrive(o.device, o.port, frame, tag, at, f.id, seen);
+        } finally {
+          this.emitting = was.em;
+          this.cause = was.cause;
+          this.causeMsg = was.causeMsg;
+          this.testCtx = was.test;
+          this.causeFlight = was.flight;
+        }
+      }, [f.id]);
+    };
+    go(w.end);
+    if (w.dup) go(w.end + 0.001);
   }
 
   /** A flight's shape (unicast, broadcast, multicast) and the frame's headers for the inspector; the message's log line gets them too (as first sent). */
@@ -1526,7 +1978,18 @@ export class Engine {
     if (waited.length) f.hdr.waited = waited;
     const ev = this.msgEvents.get(frame.msg);
     if (ev && !ev.hdr) ev.hdr = f.hdr;
+    // the logical view's dots of the message (no frame of their own): the headers it was sent with, for their inspector
+    const waiting = this.logicalNoHdr.get(frame.msg);
+    if (waiting) {
+      this.logicalNoHdr.delete(frame.msg);
+      for (const x of waiting) if (!x.hdr) x.hdr = f.hdr;
+    }
   }
+
+  /** the logical view's dots of a message, until its first frame's headers are known */
+  private logicalNoHdr = new WeakMap<Msg, Flight[]>();
+  /** the logical view's dots of a message along its relation, to each device (what holds its delivery there on screen) */
+  private lanes = new WeakMap<Msg, Flight[]>();
 
   /**
    * A frame on a wireless link: a client silent for its access point's idle
@@ -1598,7 +2061,7 @@ export class Engine {
     let p = frame.ip;
     let inner: Pkt | undefined;
     while (p) {
-      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap });
+      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap, options: p.routerAlert ? (p.dst.version === 4 ? 'Router Alert (option 20)' : 'Hop-by-Hop: Router Alert (MLD)') : undefined });
       inner = p;
       p = p.inner;
     }
@@ -1613,6 +2076,8 @@ export class Engine {
     };
     if (frame.arp) h.arp = { op: frame.arp.gratuitous ? 'request (gratuitous)' : frame.arp.op, senderMac: frame.arp.sha, senderIp: formatAddr(frame.arp.spa), targetMac: frame.arp.tha, targetIp: formatAddr(frame.arp.tpa) };
     if (inner && inner.l4) h.l4 = inner.l4;
+    const ins = frame.msg.data ? (frame.msg.data as { inspect?: Headers['app'] }).inspect : undefined;
+    if (ins) h.app = ins;
     return h;
   }
 
@@ -1687,6 +2152,7 @@ export class Engine {
     const fromUplink = !!sd.virt && sd.virt.kind === 'vswitch' && from !== null && sd.virt.uplinks.indexOf(from) >= 0;
     if (fromUplink && isGroupMac(frame.dst) && this.standbyUplink(sd, from as string)) return;
     if (from !== null && !wire && !fromUplink) this.learn(sd, vlan, frame.src, from, t);
+    if (from !== null && this.ptpHook && frame.msg.protocol === 'ptp') this.ptpHook.ingress(sd.id, from, frame, t);
     if (sd.caps.inspection && !wire) t += this.params.num('ips-latency', sd.id);
     // to its own VLAN interface (the switch's management or routing interface)
     if (from !== null && !wire) {
@@ -1763,7 +2229,7 @@ export class Engine {
     for (const bp of to) {
       const c = carries(bp.vlans, vlan);
       if (!c || this.blocked(sd.id, bp.id, vlan) || this.tunneledNet(sd, bp.id)) continue;
-      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
+      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.cabledOrBoundary(sd.id, m));
       if (!up.length) continue;
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
       this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);
@@ -2015,7 +2481,47 @@ export class Engine {
   // ------------------------------------------------------------ container NAT
 
   /** translations of container hosts: "host|outside src|remote|proto|port" → the container's address */
-  private natTable = new Map<string, { inside: IpAddr; port?: number }>();
+  /** source translations: by "device|outside address|remote|protocol|outside port", the inside address, port and VRF they stand for */
+  private natTable = new Map<string, { inside: IpAddr; port?: number; vrf: string }>();
+  /** the next outside port a PAT tries on a collision, per device */
+  private patNext = new Map<string, number>();
+
+  /**
+   * A source translation: the outside port is the inside one unless that is
+   * taken towards the same remote end by another inside address or VRF
+   * (PAT then gives the next free one, from 1024): two inside hosts never
+   * share a translation, and the reply goes back to the one it belongs to.
+   */
+  /**
+   * A translation of the NAT table: the outside address, the remote end and
+   * the protocol, and the flow's own identity there — TCP and UDP their
+   * source port, an ICMP echo its identifier (RFC 5508 §3.1: two inside
+   * hosts pinging one destination are two translations, never one) —
+   * translated when it collides (PAT); returns the identity used outside.
+   */
+  private translate(dev: string, to: IpAddr, pkt: Pkt, vrf: string, pat: boolean): number | undefined {
+    const proto = pkt.l4 ? pkt.l4.proto : '';
+    const sport = natPort(pkt.l4, 'src');
+    const base = `${dev}|${formatAddr(to)}|${formatAddr(pkt.dst)}|${proto}|`;
+    const mine = (e: { inside: IpAddr; port?: number; vrf: string } | undefined): boolean => !!e && compareAddr(e.inside, pkt.src) === 0 && e.port === sport && e.vrf === vrf;
+    let port = sport;
+    if (pat && sport !== undefined) {
+      const cur = this.natTable.get(base + sport);
+      if (cur && !mine(cur)) {
+        // the same flow translated before keeps its port
+        const again = Array.from(this.natTable).find(([k, e]) => k.indexOf(base) === 0 && mine(e));
+        if (again) port = Number(again[0].slice(base.length));
+        else {
+          let n = this.patNext.get(dev) || 1024;
+          while (this.natTable.has(base + n)) n = n >= 65535 ? 1024 : n + 1;
+          this.patNext.set(dev, n >= 65535 ? 1024 : n + 1);
+          port = n;
+        }
+      }
+    }
+    this.natTable.set(base + (port !== undefined ? port : ''), { inside: pkt.src, port: sport, vrf });
+    return port;
+  }
 
   /** The container network a host interface is the bridge of (docker0), with NAT or not. */
   private bridgeNet(dev: string, l3: L3Iface): { name: string; nat: boolean } | null {
@@ -2046,20 +2552,23 @@ export class Engine {
       const own = out.addrs.find((x) => x.addr.version === pkt.src.version);
       const to = rule && typeof rule.to === 'string' ? parseAddress(rule.to) : own ? own.addr : null;
       if (rule && to) {
-        const port = pkt.l4 ? pkt.l4.sport : undefined;
-        this.natTable.set(`${dev}|${formatAddr(to)}|${formatAddr(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
-        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)} → ${formatAddr(to)} (${pkt.msg.label})`, this.now, pkt.msg);
-        return { ...pkt, src: to };
+        const sport = natPort(pkt.l4, 'src');
+        const port = this.translate(dev, to, pkt, from.vrf, rule.type === 'pat');
+        const moved = port !== sport && port !== undefined;
+        const icmp = !!pkt.l4 && pkt.l4.proto === 'icmp';
+        this.note('route', pkt.msg.protocol, dev, '', rule.type === 'pat' ? 'PAT' : 'SNAT', '', `${dev} translates the source (${rule.type === 'pat' ? 'PAT' : 'source NAT'}, ${from.id} → ${out.id}): ${formatAddr(pkt.src)}${moved ? (icmp ? ' (echo identifier ' + sport + ')' : ':' + sport) : ''} → ${formatAddr(to)}${moved ? (icmp ? ' (echo identifier ' + port + ')' : ':' + port) + ' (its ' + (icmp ? 'identifier' : 'port') + ' is taken towards ' + formatAddr(pkt.dst) + ')' : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, src: to, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'src', port as number) : pkt.l4 };
       }
     }
     const b = this.bridgeNet(dev, from);
     if (!b || !b.nat || out.id === from.id || this.bridgeNet(dev, out)) return pkt;
     const a = out.addrs.find((x) => x.addr.version === pkt.src.version);
     if (!a) return pkt;
-    const port = pkt.l4 ? pkt.l4.sport : undefined;
-    this.natTable.set(`${dev}|${formatAddr(a.addr)}|${formatAddr(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
-    this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)} → ${formatAddr(a.addr)} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
-    return { ...pkt, src: a.addr };
+    const sport = natPort(pkt.l4, 'src');
+    const port = this.translate(dev, a.addr, pkt, from.vrf, true);
+    const moved = port !== sport && port !== undefined;
+    this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)}${moved ? ':' + sport : ''} → ${formatAddr(a.addr)}${moved ? ':' + port : ''} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
+    return { ...pkt, src: a.addr, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'src', port as number) : pkt.l4 };
   }
 
   /** A packet to a container host's own address: the reply to a translated packet, or to a published port, goes on to its container. */
@@ -2068,12 +2577,26 @@ export class Engine {
     const nat = natOf(this.model, dev);
     if (!d || (!d.containerEngine && !nat)) return null;
     const proto = pkt.l4 ? pkt.l4.proto : '';
-    const dport = pkt.l4 ? pkt.l4.dport : undefined;
+    // an ICMP error about a translated packet (unreachable, Fragmentation Needed): its quote names the translation; it goes to
+    // the inside host with the quote translated back too, so that its sender finds its connection (PMTUD through NAT)
+    const q = pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.quote : undefined;
+    if (q) {
+      const qport = q.proto === 'icmp' ? q.echoId : q.sport;
+      const e = this.natTable.get(`${dev}|${q.src}|${q.dst}|${q.proto}|${qport !== undefined ? qport : ''}`);
+      if (e) {
+        const inside = formatAddr(e.inside);
+        const quote = { ...q, src: inside, sport: q.proto === 'icmp' ? q.sport : e.port, echoId: q.proto === 'icmp' ? e.port : q.echoId, flow: q.flow.replace(`${q.src}:${qport !== undefined ? qport : 0}>`, `${inside}:${e.port !== undefined ? e.port : 0}>`) };
+        this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates an ICMP error back: destination ${formatAddr(pkt.dst)} → ${inside}, its quoted header ${q.src}${qport !== undefined ? ':' + qport : ''} → ${inside}${e.port !== undefined ? ':' + e.port : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, dst: e.inside, vrf: e.vrf, l4: { ...(pkt.l4 as L4), quote } };
+      }
+    }
+    const dport = natPort(pkt.l4, 'dst');
     const k = `${dev}|${formatAddr(pkt.dst)}|${formatAddr(pkt.src)}|${proto}|${dport !== undefined ? dport : ''}`;
     const back = this.natTable.get(k);
     if (back) {
-      this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)} → ${formatAddr(back.inside)} (${pkt.msg.label})`, this.now, pkt.msg);
-      return { ...pkt, dst: back.inside };
+      const moved = back.port !== undefined && back.port !== dport;
+      this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)}${moved ? ':' + dport : ''} → ${formatAddr(back.inside)}${moved ? ':' + back.port : ''}${back.vrf ? ' in VRF ' + back.vrf : ''} (${pkt.msg.label})`, this.now, pkt.msg);
+      return { ...pkt, dst: back.inside, vrf: back.vrf, l4: moved && pkt.l4 ? withNatPort(pkt.l4, 'dst', back.port as number) : pkt.l4 };
     }
     // a published port: on to the container (TCP and UDP); a NAT service's port forward: on to its inside address
     if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined) return null;
@@ -2131,10 +2654,15 @@ export class Engine {
   private deliverL3(dev: string, l3: L3Iface, frame: Frame, t: number, flight: number): void {
     // the logical view: a message without a relation goes from its sender to the network and on to this receiver
     const em = this.emitting;
-    if (em && em.net && em.dev !== dev && t > em.t) {
-      const mid = em.t + (t - em.t) / 2;
-      if (em.first === null) em.first = this.flight(em.t, mid, frame.msg, 'logical', { ref: 'network:' + em.net, from: em.dev, to: 'net' }, undefined, frameEncap(frame)).id;
-      this.flight(mid, t, frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame));
+    // (the dots that bring it, in either view: its last cable's, and the logical view's — the network line's second half,
+    // or its relation's lane to this device — so that the view on screen holds it until its dot is there)
+    const gates = [flight];
+    if (em && em.net && em.dev !== dev && t > em.t && em.first !== null) {
+      const mid = Math.min(em.t + this.hopTime() / 2, t);
+      gates.push(this.flight(mid, Math.max(t, mid), frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame)).id);
+    } else {
+      const lane = (this.lanes.get(frame.msg) || []).find((x) => x.track.to === dev);
+      if (lane) gates.push(lane.id);
     }
     const d: Delivery = { dev, l3, frame, flight, cancelled: false };
     this.pending.push(d);
@@ -2143,13 +2671,13 @@ export class Engine {
       if (i >= 0) this.pending.splice(i, 1);
       if (d.cancelled || this.off.has(dev)) return;
       this.caused(frame.msg, () => this.receive(dev, l3, frame), d.flight);
-    });
+    }, gates);
   }
 
   // ------------------------------------------------------------ flights (the dots)
 
   flight(t0: number, t1: number, msg: Msg, view: Flight['view'], track: Track, parent?: number, encap?: string[]): Flight {
-    const f: Flight = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent };
+    const f: Flight = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent, type: msg.type };
     if (encap && encap.length) f.encap = encap;
     // sent while a delivery is handled: caused by the flight that delivered it (the display keeps that order)
     if (parent === undefined && this.causeFlight !== null && this.causeFlight !== f.id) f.cause = this.causeFlight;
@@ -2158,6 +2686,19 @@ export class Engine {
     if (msg.sender !== undefined) f.sender = msg.sender;
     if (msg.origin !== undefined) f.origin = msg.origin;
     if (msg.test !== undefined) f.test = msg.test;
+    if (msg.conv !== undefined) f.conv = msg.conv;
+    if (msg.flags !== undefined) f.flags = msg.flags;
+    if (view === 'logical') {
+      const l = this.logicalNoHdr.get(msg);
+      if (l) l.push(f);
+      else this.logicalNoHdr.set(msg, [f]);
+      // a relation's lane (or a hub's spoke) to a device: the delivery there waits for it on screen
+      if (track.ref.indexOf('relation:') === 0 && track.to !== 'hub') {
+        const r = this.lanes.get(msg);
+        if (r) r.push(f);
+        else this.lanes.set(msg, [f]);
+      }
+    }
     this.flights.push(f);
     this.flightById.set(f.id, f);
     return f;
@@ -2183,7 +2724,7 @@ export class Engine {
     for (const l3 of Array.from(sd.l3.values()).sort((x, y) => cmp(x.id, y.id))) {
       if (vrf !== undefined && l3.vrf !== vrf) continue;
       if (!this.isL3Up(dev, l3.id)) continue;
-      if (l3.addrs.some((x) => compareAddr(x.addr, a) === 0)) return l3;
+      if (this.hasOwn(l3, a)) return l3;
       if (this.protocols && this.protocols.owns(dev, l3.id).some((o) => compareAddr(o.addr, a) === 0)) return l3;
     }
     return undefined;
@@ -2197,7 +2738,11 @@ export class Engine {
     // its own broadcast or multicast, back over a loop: ignored
     if ((bcast || isMulticastIp(pkt.dst)) && (frame.loops || 0) > 0 && this.ownsAddress(dev, pkt.src)) return;
     // a routed group at a router: multicast routing (the RPF check, the outgoing interfaces); link-local groups and IGMP are its own
-    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) return;
+    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) {
+      // (a group its own interface joined, as a host: it takes it too, besides routing it)
+      if (this.protocols.joined && this.protocols.joined(dev, l3.id, pkt.dst)) this.deliverLocal(dev, l3, pkt.vrf === l3.vrf ? pkt : { ...pkt, vrf: l3.vrf });
+      return;
+    }
     // to a container host's address: a reply to a translated packet, or to a published port, goes on to its container
     if (own && !bcast && !isMulticastIp(pkt.dst) && !pkt.encap) {
       const back = this.dnat(dev, pkt);
@@ -2347,6 +2892,16 @@ export class Engine {
       this.emit(dev, out, { src: out.mac, dst: multicastMac(pkt.dst), msg: pkt.msg, ip: pkt });
       return;
     }
+    // a link-local destination (fe80::/10): out of the interface it is for, its neighbour resolved there; never routed (RFC 4291 §2.5.6)
+    if (pkt.dst.version === 6 && isLinkLocal6(pkt.dst)) {
+      if (!out) {
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `not sent: ${formatAddr(pkt.dst)} is a link-local address and no interface was given (${pkt.msg.label})`);
+        return;
+      }
+      const o = out;
+      this.resolve(dev, o, pkt.dst, pkt, (mac) => this.emit(dev, o, { src: o.mac, dst: mac, msg: pkt.msg, ip: pkt }));
+      return;
+    }
     // a broadcast: the limited broadcast out of `out` (else its first interface that is up with an IPv4 address); a broadcast of one of its own subnets out of that interface
     if (pkt.dst.version === 4) {
       const sd = this.net.devices.get(dev) as SimDevice;
@@ -2383,9 +2938,10 @@ export class Engine {
    * of 8 bytes but the last); a fragment is cut again the same way.
    */
   private fragment(pkt: Pkt, mtu: number): Pkt[] {
-    const hdr = 20;
+    // IPv4: its 20-byte header; IPv6: its 40 bytes and an 8-byte fragment header
+    const hdr = pkt.dst.version === 6 ? 48 : 20;
     const per = Math.max(8, Math.floor((mtu - hdr) / 8) * 8);
-    const total = ipLen(pkt) - hdr;
+    const total = ipLen(pkt) - (pkt.frag && pkt.dst.version === 6 ? 48 : pkt.dst.version === 6 ? 40 : 20);
     const base = pkt.frag ? pkt.frag.offset : 0;
     const whole = pkt.frag ? pkt.frag.whole : total;
     const n = Math.ceil(total / per);
@@ -2436,13 +2992,14 @@ export class Engine {
     }
     // a VPN gateway forwards only to and from its VPN
     if (came && sd.caps.vpnOnlyTransit && !this.vpnTransit(sd, came.l3, out, pkt)) return;
-    // a firewall applies its policy to what it forwards (it logs and rejects itself)
-    if (came && sd.caps.firewallPolicy && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
+    // a firewall, or a router with a network policy, applies it to what it forwards (it logs and rejects itself)
+    if (came && (sd.caps.firewallPolicy || !!sd.dev.policy) && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out, hop.gateway || null)) return;
     // then source NAT on the way out (its policy saw the packet as it came, its sessions stay those of the inside addresses):
     // a container bridge's masquerade, a NAT service's PAT / SNAT, the reply of a port forward
     if (came) pkt = this.snat(dev, came.l3, out, pkt);
     // a next hop outside the model (no device has it): a tunnel's outer packet takes its declared underlay; anything else leaves the model
-    if (hop.gateway && !this.ownerOf(hop.gateway)) {
+    // (a redundancy group's virtual address is the model's even while no member holds it: ARP for it goes unanswered then)
+    if (hop.gateway && !this.ownerOf(hop.gateway) && !virtualGateways(this.model).some((g) => compareAddr(g.address, hop.gateway as IpAddr) === 0)) {
       if (!came && this.viaUnderlay(dev, pkt)) return;
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `leaves the model at ${dev}: the next hop ${formatAddr(hop.gateway)} is outside it (${pkt.msg.label})`);
       return;
@@ -2470,7 +3027,13 @@ export class Engine {
     const mtu = this.mtu(dev, out);
     const size = ipLen(pkt);
     let pkts = [pkt];
-    if (size > Number(mtu.value)) {
+    // an IPv6 sender fragments its own packet (a fragment header each) to its interface's MTU or the path MTU it learned; routers never do
+    const own6 = !came && pkt.dst.version === 6 && !pkt.df && !pkt.frag;
+    const limit = own6 && pkt.pmtu ? Math.min(Number(mtu.value), pkt.pmtu) : Number(mtu.value);
+    if (own6 && size > limit) {
+      pkts = this.fragment(pkt, limit);
+      this.note('route', pkt.msg.protocol, dev, '', 'fragmented', '', `${dev} fragments its own ${pkt.msg.label} (${size} bytes) into ${pkts.length} for ${pkt.pmtu && pkt.pmtu < Number(mtu.value) ? 'the path MTU it learned, ' + pkt.pmtu : 'the MTU of ' + out.id + ', ' + resolvedText(mtu)} (IPv6: the sender fragments): ${pkts.map((p) => (p.len as number) + 48).join(' + ')} bytes`);
+    } else if (size > Number(mtu.value)) {
       if (pkt.dst.version === 6 || pkt.df) {
         const text = `${pkt.msg.label} (${size} bytes${pkt.dst.version === 4 ? ', DF set' : ''}) is larger than the MTU of ${dev}:${out.id}, ${resolvedText(mtu)}`;
         this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${text}${pkt.dst.version === 6 ? ' (IPv6 routers never fragment)' : ''}`);
@@ -2505,8 +3068,8 @@ export class Engine {
    */
   /** The device that has an address (null: none in the model). */
   ownerOf(a: IpAddr): string | null {
-    for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (l.addrs.some((x) => compareAddr(x.addr, a) === 0)) return d.id;
-    if (this.protocols) for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (this.protocols.owns(d.id, l.id).length) return d.id;
+    for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (this.hasOwn(l, a)) return d.id;
+    if (this.protocols) for (const d of this.net.devices.values()) for (const l of d.l3.values()) if (this.protocols.owns(d.id, l.id).some((o) => compareAddr(o.addr, a) === 0)) return d.id;
     return null;
   }
 
@@ -2664,7 +3227,10 @@ export class Engine {
       const proto = layer.relation ? this.relProtocol(layer.relation) : 'gre';
       const msg: Msg = { ...pkt.msg, label: pkt.msg.label, detail: `${pkt.msg.detail} — in ${layers.map((l) => l.label).slice(0, layers.indexOf(layer) + 1).join(' in ')} (${formatAddr(e.src)} → ${formatAddr(e.dst)})`, data: { ...(pkt.msg.data || {}), encap: (((pkt.msg.data || {}) as { encap?: string[] }).encap || []).concat([layer.label]), outer: proto } };
       cur = { ...this.newPacket(e.src, e.dst, '', msg, rides.slice()), inner: cur, encap: layer.label, df: cur.df };
-      cur.l4 = /ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 };
+      // (the outer header the relation's own data has — IP-in-IP 4, WireGuard and VXLAN UDP to their port, IPsec ESP; a tunnel
+      // without a relation: GRE)
+      const o = layer.relation && this.protocols && this.protocols.outerL4 ? this.protocols.outerL4(layer.relation, dev) : undefined;
+      cur.l4 = o || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
     }
     this.forward(dev, cur, null);
   }
@@ -2715,7 +3281,7 @@ export class Engine {
     if (!src) return;
     this.icmpLast.set(dev, this.now);
     const t = icmpType(kind, v);
-    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, pkt: pkt.id, flow: pkt.flow };
+    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, echoId: pkt.l4 && pkt.l4.proto === 'icmp' ? pkt.l4.echoId : undefined, num: pkt.l4 ? pkt.l4.num : undefined, pkt: pkt.id, flow: pkt.flow };
     const name = v === 4 ? 'ICMP' : 'ICMPv6';
     const label = `${name} ${t.short}${kind === 'frag' ? ` (MTU ${o.mtu})` : ''} from ${formatAddr(src)}`;
     const detail = `${dev} (${formatAddr(src)}) → ${formatAddr(pkt.src)}: ${name} ${t.name} (type ${t.type}, code ${t.code}${kind === 'frag' ? ', MTU ' + o.mtu : ''}) about ${quoteText(quote)}: ${pkt.msg.label}`;
@@ -2794,7 +3360,8 @@ export class Engine {
 
   /** An ARP Request (or Neighbor Solicitation): broadcast / to the solicited-node address, or unicast to `mac` (a refresh, a probe). */
   private solicit(dev: string, l3: L3Iface, ip: IpAddr, mac: string): void {
-    const src = l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version);
+    const ll = ip.version === 6 && l3.ll && (isLinkLocal6(ip) || !l3.addrs.some((a) => a.addr.version === 6)) ? l3.ll : undefined;
+    const src = ll || l3.addrs.find((a) => a.addr.version === ip.version && inNetAddr(a, ip)) || l3.addrs.find((a) => a.addr.version === ip.version) || (ip.version === 4 ? this.borrowed(dev, l3) : undefined);
     if (!src) return;
     const sim = l3.macSimulated ? ' (simulated)' : '';
     if (ip.version === 4) {
@@ -2813,11 +3380,25 @@ export class Engine {
     this.emit(dev, l3, { src: l3.mac, dst: mac || multicastMac(sn), msg, nd: { op: 'NS', src: src.addr, target: ip, lladdr: l3.mac, solicited: false }, ip: pkt });
   }
 
+  /**
+   * The address an unnumbered interface (no IPv4 address of its own) uses:
+   * the device's loopback address in its VRF (as `ip unnumbered Loopback0`),
+   * for its ARP requests and the ARP requests it answers.
+   */
+  private borrowed(dev: string, l3: L3Iface): SimAddr | undefined {
+    if (l3.kind === 'loopback' || l3.addrs.some((a) => a.addr.version === 4)) return undefined;
+    const sd = this.net.devices.get(dev) as SimDevice;
+    const loops = Array.from(sd.l3.values()).filter((l) => l.kind === 'loopback' && l.vrf === l3.vrf).sort((x, y) => cmp(x.id, y.id));
+    for (const l of loops) for (const a of l.addrs) if (a.addr.version === 4) return a;
+    return undefined;
+  }
+
   private arpReceive(dev: string, l3: L3Iface, frame: Frame, a: ArpPdu): void {
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     const key = this.entryKey(l3.id, a.spa);
     const e = tab.get(key);
-    const ownTarget = l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0);
+    const lent = this.borrowed(dev, l3);
+    const ownTarget = l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0) || (!!lent && compareAddr(lent.addr, a.tpa) === 0);
     const vip = this.protocols ? this.protocols.owns(dev, l3.id).find((o) => compareAddr(o.addr, a.tpa) === 0) : undefined;
     if (a.gratuitous) {
       // a gratuitous ARP updates an entry the receiver has (RFC 826's merge; Linux's default): it creates none, so a
@@ -2837,7 +3418,7 @@ export class Engine {
       this.emit(dev, l3, { src: mac, dst: a.sha, msg, arp: { op: 'reply', sha: mac, spa: a.tpa, tha: a.sha, tpa: a.spa } });
       return;
     }
-    if (a.op === 'reply' && compareAddr(a.tpa, a.spa) !== 0 && (l3.addrs.some((x) => compareAddr(x.addr, a.tpa) === 0) || e)) {
+    if (a.op === 'reply' && compareAddr(a.tpa, a.spa) !== 0 && (ownTarget || e)) {
       this.learnEntry(dev, l3, a.spa, a.sha, isVirtual(a.sha) ? 'virtual' : 'dynamic', 'ARP Reply');
       return;
     }
@@ -2847,8 +3428,22 @@ export class Engine {
   private ndReceive(dev: string, l3: L3Iface, frame: Frame, nd: NdPdu): void {
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     if (nd.op === 'NS') {
-      const own = l3.addrs.some((x) => compareAddr(x.addr, nd.target) === 0);
+      const own = this.hasOwn(l3, nd.target) && !(this.v6Hook && this.v6Hook.unusable(dev, l3, nd.target));
       const vip = this.protocols ? this.protocols.owns(dev, l3.id).find((o) => compareAddr(o.addr, nd.target) === 0) : undefined;
+      if (nd.dad) {
+        // duplicate address detection by another node: the owner defends its address (an NA to all-nodes, RFC 4861 §7.2.4);
+        // a node probing the same tentative address learns it is a duplicate (RFC 4862 §5.4.3)
+        if (this.v6Hook) this.v6Hook.dadProbe(dev, l3, nd.target);
+        if (!own) return;
+        const all = parseAddress('ff02::1') as IpAddr;
+        const msg: Msg = { protocol: 'ndp', type: 'Neighbor Advertisement', label: `NDP NA ${formatAddr(nd.target)} is in use`, detail: `Neighbor Advertisement (ICMPv6 136, not solicited, override): ${formatAddr(nd.target)} is at ${l3.mac} — to ff02::1 (all nodes): it defends its address against a duplicate address detection probe` };
+        const pkt = this.newPacket(nd.target, all, l3.vrf, msg, [], 255);
+        pkt.l4 = { proto: 'icmp', num: 58, icmpType: 136, icmpCode: 0, icmpName: 'Neighbor Advertisement' };
+        pkt.len = 32;
+        this.note('message', 'ndp', dev, '', msg.type, '', msg.detail, this.now, msg);
+        this.emit(dev, l3, { src: l3.mac, dst: multicastMac(all), msg, nd: { op: 'NA', src: nd.target, target: nd.target, lladdr: l3.mac, solicited: false }, ip: pkt });
+        return;
+      }
       if (!own && !vip) return;
       // RFC 4861 7.2.3: the solicitation's source goes in as STALE (created or updated)
       const k = this.entryKey(l3.id, nd.src);
@@ -2864,14 +3459,18 @@ export class Engine {
       this.emit(dev, l3, { src: mac, dst: nd.lladdr, msg, nd: { op: 'NA', src: nd.target, target: nd.target, lladdr: mac, solicited: true }, ip: pkt });
       return;
     }
-    // an advertisement: solicited → REACHABLE; unsolicited → STALE (an entry it updates; none is created, RFC 4861 7.2.5)
+    // an advertisement (RFC 4861 §7.2.5; its Override flag set, as every NA of the simulation): it updates an entry, never
+    // creates one — Solicited: REACHABLE; not solicited (an unsolicited one, or one defending an address against a DAD
+    // probe): STALE when it brings another link-layer address (or completes an incomplete entry), else the entry stays as it is
+    if (this.v6Hook) this.v6Hook.advert(dev, l3, nd.target, nd.lladdr);
     const k = this.entryKey(l3.id, nd.target);
     const e = tab.get(k);
-    if (nd.unsolicited) {
-      if (e && e.mac !== nd.lladdr) this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'gratuitous', 'unsolicited Neighbor Advertisement', 'STALE');
+    if (!e) return;
+    if (nd.solicited) {
+      this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'dynamic', 'Neighbor Advertisement', 'REACHABLE');
       return;
     }
-    if (e) this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : 'dynamic', 'Neighbor Advertisement', 'REACHABLE');
+    if (e.mac !== nd.lladdr) this.learnEntry(dev, l3, nd.target, nd.lladdr, isVirtual(nd.lladdr) ? 'virtual' : nd.unsolicited ? 'gratuitous' : 'dynamic', nd.unsolicited ? 'unsolicited Neighbor Advertisement' : 'Neighbor Advertisement', 'STALE');
   }
 
   /** An entry is learned or refreshed; waiting packets go. */
@@ -3204,8 +3803,8 @@ export class Engine {
 
   /** The model's name of a simulated port key ("hv1/vSwitch0|vmnic0" → "hv1:vmnic0"). */
   private modelPortRef(key: string): string {
-    for (const [k, v] of this.net.moved) if (portKey(v.device, v.port) === key) return 'iface:' + k.replace('|', ':');
-    return 'iface:' + key.replace('|', ':');
+    for (const [k, v] of this.net.moved) if (portKey(v.device, v.port) === key) return 'iface:' + portRefOf(k);
+    return 'iface:' + portRefOf(key);
   }
 
   /**
@@ -3213,10 +3812,11 @@ export class Engine {
    * for the up time, for the cycles (0: until stopped); its cable follows (down while the port is). A cable is
    * no target, and one cable flaps from one of its ends at a time.
    */
-  startFlap(ref: string, why = ''): boolean {
+  startFlap(ref: string, why = '', configured = false): boolean {
     const link = this.flapLink(ref);
     if (!link || this.flaps.has(link)) return false;
     const fl: Flap = { link, ref, since: this.now, down: false, done: 0, token: ++this.tokens };
+    if (configured) fl.configured = true;
     this.flaps.set(link, fl);
     const p = (k: string): string => resolvedText(this.params.get(k));
     this.note('link', 'link', '', '', 'Flapping', 'flapping', `Port ${ref.slice(6)} starts flapping${why} (its cable ${link} follows): down ${p('flap-down')}, up ${p('flap-up')}, ${p('flap-cycles')} cycles`);
@@ -3229,6 +3829,9 @@ export class Engine {
     if (this.flaps.get(fl.link) !== fl) return;
     fl.down = !fl.down;
     if (!fl.down) fl.done++;
+    // (a transition of flapping started from outside changes the network: the display's steady state starts afresh;
+    // the model's own flapping is the scenario)
+    if (!fl.configured) this.flapTransitions++;
     const cycles = this.params.num('flap-cycles');
     this.note('link', 'link', '', '', fl.down ? 'Flap down' : 'Flap up', fl.down ? 'down' : 'up', `Flapping port ${fl.ref.slice(6)}: ${fl.down ? 'down' : 'up'}, its cable ${fl.link} with it (cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''})`);
     this.updateCable(fl.link);
@@ -3398,6 +4001,7 @@ export class Engine {
       return true;
     }
     this.off.set(dev, this.now);
+    this.powerEpochs.set(dev, this.powerEpoch(dev) + 1);
     const open = sd.caps.inspection && this.params.str('ips-fail', dev) === 'open';
     if (open) this.bypass.add(dev);
     const mode = sd.caps.inspection ? ` It fails ${open ? 'open: frames pass through unchecked' : 'closed: nothing passes'} (${resolvedText(this.params.get('ips-fail', dev))}).` : '';
@@ -3655,7 +4259,7 @@ export class Engine {
     for (const d of this.model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
       for (const i of d.interfaces) {
         if (!i.simulation || i.simulation.get('flapping') !== 'on') continue;
-        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)'));
+        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)', true));
       }
     }
   }
@@ -3809,92 +4413,107 @@ export class Engine {
    * VLAN). It ends at every layer-3 interface: no router passes it on.
    */
   broadcastDomain(from: { dev: string; iface: string } | { link: string; vlan: number }): { vlan: number; refs: string[]; devices: string[]; links: string[] } {
+    // (one definition with the static analysis: net.ts l2Domain, here in the simulation's state)
+    const d = l2Domain(this.net, from, {
+      cableUp: (id) => this.cableUp(id),
+      portUp: (dev, port) => this.portUp(dev, port),
+      forwards: (dev) => !(this.off.has(dev) && !this.bypass.has(dev)),
+      blocked: (dev, bp, v) => this.blocked(dev, bp, v),
+      memberReady: (dev, port) => this.memberReady(dev, port),
+    });
     const refs = new Set<string>();
     const devs = new Set<string>();
-    const links = new Set<string>();
-    const done = new Set<string>();
-    let vlan = 0;
-    const reach = (dev: string, iface: string): void => {
-      devs.add(dev);
-      refs.add('device:' + dev);
-      refs.add(`iface:${dev}:${iface}`);
-    };
-    const cross = (dev: string, port: string, tag: number | null): void => {
-      const e = this.net.ends.get(portKey(dev, port));
-      if (!e || !this.cableUp(e.link) || !this.portUp(dev, port)) return;
-      const o = otherEnd(this.net, e);
-      const od = this.net.devices.get(o.device);
-      const bpId = od && od.bridge ? od.portOf.get(o.port) : undefined;
-      // a cable whose far end discards (an alternate port of the spanning tree) is not in the domain
-      const v = od && bpId !== undefined ? ingressVlan((od.bridgePorts.get(bpId) as BridgePort).vlans, tag) : null;
-      if (od && bpId !== undefined && (v === null || this.blocked(od.id, bpId, v))) return;
-      links.add(e.link);
-      refs.add('link:' + e.link);
-      if (!od || !this.portUp(o.device, o.port)) return;
-      if (bpId !== undefined) {
-        bridge(od, bpId, v as number);
+    for (const b of d.bridges) devs.add(b.dev);
+    for (const r of d.reached) {
+      devs.add(r.dev);
+      refs.add(`iface:${r.dev}:${'link' in from || r.l3.kind === 'svi' || !(r.dev === from.dev && r.l3.id === from.iface) ? r.port : r.l3.id}`);
+    }
+    // (the start's own port it leaves by)
+    if (!('link' in from)) {
+      const first = d.out.find((k) => k.split('|')[0] === from.dev);
+      if (first) refs.add(`iface:${from.dev}:${first.split('|')[1]}`);
+    }
+    for (const k of d.entered.concat(d.left)) refs.add(`iface:${k.split('|')[0]}:${k.split('|')[1]}`);
+    for (const x of devs) refs.add('device:' + x);
+    for (const l of d.links) refs.add('link:' + l);
+    return { vlan: d.vlan === null ? 0 : d.vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: d.links.slice().sort(cmp) };
+  }
+
+  /**
+   * The one device that has an address on the segment a device's interface reaches now (its broadcast domain), with the
+   * interface it has it on (its VRF is that interface's); null: none or several.
+   */
+  holderOnSegment(dev: string, iface: string, a: IpAddr): { dev: string; iface: string } | null {
+    const d = l2Domain(this.net, { dev, iface }, {
+      cableUp: (id) => this.cableUp(id),
+      portUp: (x, port) => this.portUp(x, port),
+      forwards: (x) => !(this.off.has(x) && !this.bypass.has(x)),
+      blocked: (x, bp, v) => this.blocked(x, bp, v),
+      memberReady: (x, port) => this.memberReady(x, port),
+    });
+    const found = new Map<string, { dev: string; iface: string }>();
+    for (const r of d.reached) if (r.dev !== dev && this.effectiveAddrs(r.dev).some((x) => x.iface === r.l3.id && compareAddr(x.addr, a) === 0)) found.set(`${r.dev}:${r.l3.id}`, { dev: r.dev, iface: r.l3.id });
+    const devs = new Set(Array.from(found.values()).map((x) => x.dev));
+    return found.size === 1 && devs.size === 1 ? Array.from(found.values())[0] : null;
+  }
+
+  /**
+   * Which device an address is, seen from a device in a VRF: the one device that has it; else, following the
+   * routes from there, the holder of each next hop on the segment it is reached on, to the one that has the
+   * address on the last segment — so an address two VRFs both have is the one this traffic goes to. Each next
+   * hop is continued in the VRF of the interface it was reached on (never another interface of that device that
+   * happens to have the same address). Equal-cost next hops are all followed: the owner is the one they all lead
+   * to. `out`, `via`: the interface the packet actually leaves by and its next hop there (the forwarding choice already
+   * made: two gateways can share an interface) — only that next hop is followed from here. A device on the way is the
+   * owner only when it has the address in the routing context walked (Engine.ownsAddress — what forwarding itself
+   * decides), never because it has it in another VRF. Null when that can't be told (no route, several on one segment,
+   * next hops leading to different owners, or more than 16 hops).
+   */
+  ownerSeenFrom(dev: string, vrf: string, a: IpAddr, out?: string, via?: IpAddr | null): string | null {
+    const all = Array.from(this.net.devices.keys()).filter((x) => this.effectiveAddrs(x).some((y) => compareAddr(y.addr, a) === 0));
+    if (all.length <= 1) return all.length ? all[0] : null;
+    const owners = new Set<string>();
+    let unknown = false;
+    const seen = new Set<string>();
+    const walk = (at: string, v: string, depth: number): void => {
+      if (unknown) return;
+      if (depth > 16) {
+        unknown = true;
         return;
       }
-      const l3 = this.l3At(od, o.port, tag);
-      if (l3) reach(od.id, o.port);
+      if (at !== dev && this.ownsAddress(at, a, v)) {
+        owners.add(at);
+        return;
+      }
+      const key = `${at}|${v}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const d = lookup(this.model, at, v, a, this.ctx(at));
+      if (d.kind === 'local') {
+        owners.add(at);
+        return;
+      }
+      if (d.kind !== 'forward' || !d.hops.length) {
+        unknown = true;
+        return;
+      }
+      const chosen = depth === 0 && out !== undefined ? d.hops.filter((h) => h.iface === out && (via === undefined || (via === null ? !h.gateway : !!h.gateway && compareAddr(h.gateway, via) === 0))) : [];
+      for (const h of chosen.length ? chosen : d.hops) {
+        const target = h.gateway || a;
+        const next = this.holderOnSegment(at, h.iface, target);
+        if (!next) {
+          unknown = true;
+          return;
+        }
+        if (!h.gateway) owners.add(next.dev);
+        else {
+          const nl = (this.net.devices.get(next.dev) as SimDevice).l3.get(next.iface);
+          walk(next.dev, nl ? nl.vrf : '', depth + 1);
+        }
+      }
     };
-    const bridge = (sd: SimDevice, fromBp: string | null, v: number): void => {
-      if (fromBp !== null) refs.add(`iface:${sd.id}:${fromBp}`);
-      const key = sd.id + '|' + v;
-      if (done.has(key)) return;
-      done.add(key);
-      devs.add(sd.id);
-      refs.add('device:' + sd.id);
-      if (this.off.has(sd.id) && !this.bypass.has(sd.id)) return;
-      for (const l3 of sd.l3.values()) if (l3.kind === 'svi' && l3.vlan === v) refs.add(`iface:${sd.id}:${l3.id}`);
-      for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
-        if (bp.id === fromBp) continue;
-        const c = carries(bp.vlans, v);
-        if (!c || this.blocked(sd.id, bp.id, v)) continue;
-        const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m))).sort(cmp);
-        if (!up.length) continue;
-        refs.add(`iface:${sd.id}:${bp.id}`);
-        cross(sd.id, up[0], c === 'untagged' ? null : v);
-      }
-    };
-    if ('link' in from) {
-      vlan = from.vlan;
-      const l = this.net.links.get(from.link);
-      if (l) {
-        for (const e of [l.a, l.b]) {
-          const sd = this.net.devices.get(e.device);
-          const bpId = sd && sd.bridge ? sd.portOf.get(linkPort(this.model, l, e)) : undefined;
-          if (sd && bpId !== undefined && carries((sd.bridgePorts.get(bpId) as BridgePort).vlans, from.vlan) && !this.blocked(sd.id, bpId, from.vlan)) bridge(sd, null, from.vlan);
-          else if (sd) {
-            const l3 = this.l3At(sd, linkPort(this.model, l, e), from.vlan || null) || this.l3At(sd, linkPort(this.model, l, e), null);
-            if (l3) reach(sd.id, linkPort(this.model, l, e));
-          }
-        }
-        if (this.cableUp(from.link)) {
-          links.add(from.link);
-          refs.add('link:' + from.link);
-        }
-      }
-    } else {
-      const sd = this.net.devices.get(from.dev);
-      const l3 = sd ? sd.l3.get(from.iface) : undefined;
-      if (sd && l3) {
-        reach(sd.id, l3.id);
-        if (l3.kind === 'svi') {
-          vlan = l3.vlan;
-          bridge(sd, null, l3.vlan);
-        } else {
-          vlan = l3.kind === 'subif' ? l3.vlan : 0;
-          for (const p of l3.ports) {
-            if (!this.portUp(sd.id, p)) continue;
-            refs.add(`iface:${sd.id}:${p}`);
-            cross(sd.id, p, l3.kind === 'subif' && l3.vlan ? l3.vlan : null);
-            break;
-          }
-        }
-      }
-    }
-    return { vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: Array.from(links).sort(cmp) };
+    walk(dev, vrf, 0);
+    return !unknown && owners.size === 1 ? Array.from(owners)[0] : null;
   }
 
   /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */
@@ -4007,7 +4626,8 @@ export class Engine {
 
 /** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
 export function ipLen(p: Pkt): number {
-  const hdr = p.dst.version === 4 ? 20 : 40;
+  // (an IPv6 fragment has its 8-byte fragment header besides; the Router Alert option: 4 bytes in IPv4, an 8-byte Hop-by-Hop header in IPv6)
+  const hdr = (p.dst.version === 4 ? 20 : p.frag ? 48 : 40) + (p.routerAlert ? (p.dst.version === 4 ? 4 : 8) : 0);
   if (p.inner) return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
   if (p.len !== undefined) return hdr + p.len;
   const d = p.msg.data as { size?: unknown } | undefined;
@@ -4057,14 +4677,20 @@ export function subnetBroadcast(a: { net: IpAddr & { prefix: number } }): IpAddr
 }
 
 /** The limited broadcast 255.255.255.255. */
+/** Is it an IPv6 link-local unicast address (fe80::/10)? */
+export function isLinkLocal6(a: IpAddr): boolean {
+  return a.version === 6 && a.bytes[0] === 0xfe && (a.bytes[1] & 0xc0) === 0x80;
+}
+
 export function isLimitedBroadcast(a: IpAddr): boolean {
   return a.version === 4 && a.bytes.every((b) => b === 255);
 }
 
 /** The IP protocol of a packet as the inspector names it ("TCP (6)", "GRE (47)"). */
 function protoText(p: Pkt): string {
-  if (p.inner) return /ESP/i.test(p.encap || '') ? 'ESP (50)' : 'GRE (47)';
   const l = p.l4;
+  // (an encapsulation: its outer header's protocol — ESP, GRE, IP-in-IP, or UDP for WireGuard, VXLAN …)
+  if (p.inner && (!l || l.proto === 'other')) return l && l.num === 4 ? 'IP-in-IP (4)' : l && l.num === 50 ? 'ESP (50)' : !l && /ESP/i.test(p.encap || '') ? 'ESP (50)' : l && l.num !== 47 ? `${l.num}` : 'GRE (47)';
   if (!l) return '—';
   if (l.proto === 'icmp') return p.dst.version === 4 ? 'ICMP (1)' : 'ICMPv6 (58)';
   if (l.proto === 'tcp') return 'TCP (6)';
@@ -4130,7 +4756,7 @@ function inNetAddr(a: { net: IpAddr & { prefix: number } }, ip: IpAddr): boolean
 
 /** Is it the virtual MAC of a VRRP / CARP, HSRP or GLBP group? */
 export function isVirtual(mac: string): boolean {
-  return /^00:00:5e:00:0[12]:/.test(mac) || /^00:00:0c:07:ac:/.test(mac) || /^00:07:b4:/.test(mac);
+  return /^00:00:5e:00:0[12]:/.test(mac) || /^00:00:0c:07:ac:/.test(mac) || /^00:00:0c:9f:f/.test(mac) || /^00:05:73:a0:0/.test(mac) || /^00:07:b4:/.test(mac);
 }
 
 /** The protocols of the encapsulation a frame's packet is in (outermost last). */
@@ -4210,4 +4836,17 @@ function inspectionMatch(model: Model, dev: string, frame: Frame): string | null
     if ('list' in r && portsMatch(r.list, proto, proto === 'icmp' ? 0 : (pkt.l4.dport as number))) return b;
   }
   return null;
+}
+
+/** A flow's identity at NAT, one side of it: TCP and UDP the port, an ICMP echo (request or reply) its identifier. */
+function natPort(l4: L4 | undefined, side: 'src' | 'dst'): number | undefined {
+  if (!l4) return undefined;
+  if (l4.proto === 'icmp') return l4.quote ? undefined : l4.echoId;
+  return side === 'src' ? l4.sport : l4.dport;
+}
+
+/** The header with that identity replaced (the port, or the echo identifier). */
+function withNatPort(l4: L4, side: 'src' | 'dst', v: number): L4 {
+  if (l4.proto === 'icmp') return { ...l4, echoId: v };
+  return side === 'src' ? { ...l4, sport: v } : { ...l4, dport: v };
 }

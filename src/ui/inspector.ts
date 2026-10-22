@@ -12,6 +12,7 @@
  * model on every render, are read-only, and are never written to the file.
  */
 import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, RouteEntry, SECTION, kindOfSection, portIdFor, portRange, DeviceModelKey } from '../editor/document';
+import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS } from '../model/routing-policy';
 import { BlockTarget } from '../editor/yaml-block';
 import { DialogOpts } from './dialogs';
 import { el, icon, materialize } from './dom';
@@ -34,7 +35,8 @@ import { BUILTIN_SERVICES, ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from 
 import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
 import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, nextFreeContainerAddr, platformOui, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanChoices, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
-import { Model, relationDevices } from '../model/types';
+import { Device, Model, relationDevices } from '../model/types';
+import { ACCESS_TEXT, DATA_TEXT, IC_TOPOLOGIES, PROTOCOL_SUGGESTIONS, ROLE_TEXT, TECHNOLOGY_SUGGESTIONS, TOPOLOGY_TEXT } from '../model/interconnect';
 import { deviceAttributes, interfaceAttributes, relationAttributes, vlanAttributes } from '../analysis/sim/attrs';
 import { ParamDef as SimParamDef, ParamValue, SimParams, ceRef, deviceParamByYaml, fieldText, fieldUnit, formatValue, hvRef, ifaceRef, parseValue, relRef, scopeRef, serviceParams, vlanRef, vswRef, zoneRef } from '../analysis/sim/params';
 import { derivedRecords } from '../model/netservices';
@@ -43,6 +45,11 @@ import { containerNetworks, hostOf, portGroupAttachments, portGroupL2, portGroup
 import { scopeSuggestions } from '../analysis/helpers';
 import { purposeIcons } from '../diagram/icons';
 import { SERVICES, SvcDef, SvcParam, serviceDef, serviceEligibility, isBuiltIn, builtInServices } from '../model/service-registry';
+import { APP_PARAMS, APP_PROFILES, appProfile, appSummary } from '../model/applications';
+import { CUSTOM_SUPPORT, simProfile } from '../model/sim-profiles';
+import { supportNote } from './support-note';
+import { IPV6_METHODS } from '../model/ipv6';
+import { formatAddr, networkOf } from '../analysis/ipmath';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 /**
@@ -97,6 +104,10 @@ export interface ConnectionDraft {
 
 const J = (p: Path): string => JSON.stringify(p);
 
+/** A suffix for element ids that tie a label or a list to its control: unique within the page. */
+let uidSeq = 0;
+const nextUid = (): string => (++uidSeq).toString(36);
+
 /** Can the user type into or change this control now (enabled, writable, shown)? */
 function editable(f: HTMLInputElement): boolean {
   if (f.disabled || f.readOnly || f.type === 'hidden' || f.closest('fieldset[disabled]')) return false;
@@ -120,6 +131,7 @@ const KIND_TITLE: { [k in EntityKind]: string } = {
   relation: 'Relations (logical)',
   group: 'Groups / locations',
   protocol: 'Protocols',
+  interconnect: 'Interconnects (non-IP)',
 };
 
 export class Editor {
@@ -464,7 +476,7 @@ export class Editor {
       );
     }
     const counts = this.issueCounts();
-    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'interconnect', 'group', 'protocol'];
     const allFolded = kinds.every((k) => this.collapsed.has(k));
     // The selection hint shares the row of "Collapse all", which is always there: selecting,
     // switching and clearing change its text only, never the position of anything below it.
@@ -1071,6 +1083,8 @@ export class Editor {
     if (kind === 'device') {
       // a guest (a VM, a container): its host is its first field, its location is the host's
       const dtype = doc.text(base.concat('type')) || '';
+      // several ports at once on a device that bridges (the command keeps it in step: the model not locked)
+      if (capabilities({ type: dtype, mode: doc.text(base.concat('mode')) }).l2Forward) w.appendChild(this.e('div', { class: 'helpers grp-collapse' }, [this.e('button', { type: 'button', 'data-command': 'edit.bulk-ports' }, ['Bulk edit ports…'])]));
       const guest = isGuest({ type: dtype });
       g('Identity', [guest ? this.hostField(base, index) : null, this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o), ...this.modelFields(base, index), this.layer3Field(base, index)], 'identity');
       g('Placement', [guest && !doc.get(base.concat('group')) ? this.guestLocationField(base) : this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
@@ -1079,6 +1093,9 @@ export class Editor {
       for (const x of this.applianceGroups(base, index)) w.appendChild(x);
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
+      const devNow = doc.result.model ? doc.result.model.index.devices.get(String(doc.text(base.concat('id')))) : undefined;
+      const npol = devNow ? this.netPolicyGroup(index, devNow) : null;
+      if (npol) w.appendChild(npol);
       const snoop = this.snoopingGroup(base, index);
       if (snoop) w.appendChild(snoop);
       const svcs = this.netServicesGroup(base, index);
@@ -1123,8 +1140,11 @@ export class Editor {
         .concat(this.ids('protocol'))
         .filter((x) => !l2 || !relationNeedsLayer3(rm ? protocolBase(rm.protocols, x) : x, (builtinProtocols().get(x) || { category: '' }).category));
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      const pname = doc.text(base.concat('protocol'));
+      const pprof = pname && rm ? simProfile(protocolBase(rm.protocols, pname)) : undefined;
       g('Protocol', [
         this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'),
+        pname ? supportNote(this.d, pprof && pprof.support ? pprof.support : CUSTOM_SUPPORT, pprof ? pprof.label : pname) : null,
         this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'),
         this.directionField(base.concat('direction')),
       ], 'protocol');
@@ -1137,6 +1157,28 @@ export class Editor {
         if (sim) w.appendChild(sim);
       }
       notes();
+    } else if (kind === 'interconnect') {
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'text', undefined, 'Empty: its technology names it in the diagram.')], 'identity');
+      const tname = (doc.text(base.concat('technology', 'name')) || '').toLowerCase();
+      const known = TECHNOLOGY_SUGGESTIONS.find((t) => t.name.toLowerCase() === tname);
+      g('Technology', [
+        this.textField(base.concat('technology', 'name'), 'Technology *', 'icTechnology', 'text', TECHNOLOGY_SUGGESTIONS.map((t) => t.name), 'Required. Suggestions only — any name may be written. Physical modelling: no protocol of it is simulated.', 'USB, RS-485, CAN, VME, PCIe …'),
+        this.textField(base.concat('technology', 'version'), 'Version / revision', 'icTechnology', 'text', known ? known.versions : [], 'Text as written: "2.0", "FD", "revision B".'),
+        this.field('Topology *', this.labelledSelect(base.concat('topology'), o, IC_TOPOLOGIES.map((t) => [t, TOPOLOGY_TEXT[t]] as [string, string]), 'Select topology'), base.concat('topology'), known ? `${known.name} is usually ${TOPOLOGY_TEXT[known.topology].toLowerCase()}.` : 'Point to point: exactly two ports. Shared: one medium (a bus) with its attachments.'),
+        this.field('Access', this.labelledSelect(base.concat('access'), o, [['controller_target', ACCESS_TEXT.controller_target]], ACCESS_TEXT.peer), base.concat('access'), 'Controllers initiate transfers with targets (several controllers are allowed; no arbitration is simulated), or all participants are peers.'),
+      ], 'technology');
+      g('Endpoints', [this.icEndpoints(base)], 'endpoints');
+      // the protocol it carries and its connector: optional, folded until they are used
+      const more = !!doc.get(base.concat('protocol')) || !!doc.get(base.concat('connector'));
+      const det = this.e('details', { class: 'fgroup ic-more', 'data-group': 'ic-more' }, [
+        this.e('summary', { class: 'fgroup-title' }, ['Carried protocol and connector']),
+        this.textField(base.concat('protocol', 'name'), 'Application protocol', 'icTechnology', 'text', PROTOCOL_SUGGESTIONS.slice(), 'What it carries, if it matters (Modbus RTU over RS-485 …): descriptive.'),
+        this.textField(base.concat('protocol', 'version'), 'Protocol version', 'icTechnology', 'text'),
+        this.textField(base.concat('connector'), 'Connector', o, 'text', ['USB-A', 'USB-B', 'USB-C', 'DB9', 'RJ45', 'M12', 'VPX'], 'Descriptive: it decides nothing.'),
+      ]);
+      if (more) det.setAttribute('open', '');
+      w.appendChild(det);
+      notes();
     } else if (kind === 'group') {
       const self = doc.text(base.concat('id'));
       // a public cloud's group (a region, a VPC, a VNet) names its provider
@@ -1144,10 +1186,16 @@ export class Editor {
       const provider = cloudKind || doc.get(base.concat('provider')) ? this.textField(base.concat('provider'), 'Provider', o, 'text', CLOUD_PROVIDERS.map((x) => x.id), cloudKind ? 'The cloud this region or virtual network is in (aws, azure, gcp, oci, or any other).' : 'Only a cloud group (cloud_region, vpc, vnet) has a provider.', 'aws') : null;
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o), this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS, undefined, 'Select or type a group kind'), provider], 'identity');
       g('Placement', [this.refField(base.concat('parent'), 'Parent group', o, this.ids('group').filter((x) => x !== self))], 'placement');
+      // the diagram: the group as one box, or its devices again (display state, like a filter; the commands keep these in step)
+      w.appendChild(this.e('div', { class: 'helpers grp-collapse', role: 'group', 'aria-label': `Diagram of group ${self || ''}` }, [
+        this.e('button', { type: 'button', 'data-command': 'view.collapse' }, ['Collapse in diagram']),
+        this.e('button', { type: 'button', 'data-command': 'view.expand' }, ['Expand']),
+      ]));
       notes();
     } else if (kind === 'protocol') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)')], 'drawing');
+      const own = simProfile(normalizeProtocol(doc.text(base.concat('id')) || ''));
+      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)'), supportNote(this.d, own && own.support ? own.support : CUSTOM_SUPPORT, doc.text(base.concat('label')) || doc.text(base.concat('id')) || 'this protocol')], 'drawing');
       // a protocol of the model as a routing service devices can enable
       const pm = doc.result.model;
       const pid = doc.text(base.concat('id')) || '';
@@ -1229,7 +1277,7 @@ export class Editor {
     const model = this.doc.result.model;
     const choices = model ? vrfChoices(model) : [];
     const val = this.doc.text(path) || '';
-    const uid = 'vrf-' + Math.random().toString(36).slice(2, 9);
+    const uid = 'vrf-' + nextUid();
     const input = this.input(path, 'text', val, {
       role: 'combobox',
       'aria-autocomplete': 'list',
@@ -1486,7 +1534,182 @@ export class Editor {
     }
     const atEp = paramsAt(def, 'endpoint');
     if (atEp.length) card.appendChild(this.e('p', { class: 'muted small' }, [`${atEp[0].label}${atEp.length > 1 ? ' and more' : ''}: per ${name} relation.`]));
+    if (POLICY_PROTOCOLS.indexOf(id) >= 0) card.appendChild(this.routingPolicyBox(sp, devId, id, name));
     return card;
+  }
+
+  /**
+   * A device's network policy (model/net-policy.ts), for a device that
+   * forwards IP or a firewall: one collapsed line until opened. Without
+   * one, a choice of the default action starts it (nothing is chosen for
+   * the user). With one: the default action, statefulness, zones, and the
+   * ordered rules as a compact table (action, source, destination,
+   * protocol, destination port; the name, source port, interfaces and
+   * zones behind "More").
+   */
+  private netPolicyGroup(devIndex: number, d: Device): HTMLElement | null {
+    const caps = capabilities(d);
+    if (caps.securityGateway || (deviceRoutingRole(d) !== 'router' && !caps.firewallPolicy)) return null;
+    const pp: Path = ['devices', devIndex, 'policy'];
+    const pol = d.policy;
+    const key = `np:${d.id}`;
+    const summary = pol ? `default ${pol.default}${pol.stateful !== undefined ? (pol.stateful ? ' · stateful' : ' · stateless') : caps.firewallPolicy ? ' · stateful (its sessions)' : ' · stateless'} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}${pol.zones.length ? ` · ${pol.zones.length} zone${pol.zones.length === 1 ? '' : 's'}` : ''}` : caps.firewallPolicy ? 'none written: the relations through it and its allow list, default deny' : 'none: it forwards everything it routes';
+    const box = this.e('details', { class: 'rp-box np-box', 'data-card': key, 'data-np': d.id }, [this.e('summary', {}, [`Network policy · ${summary}`])]);
+    if (this.open.has(key) || this.doc.issuesAt(pp).length) box.setAttribute('open', '');
+    if (!pol && !this.doc.get(pp)) {
+      const sel = this.e('select', { 'data-t': 'np-add', 'data-p': J(pp), 'data-card-key': key, 'aria-label': `Add a network policy to ${d.id}` }, [this.e('option', { value: '' }, ['Add a policy…']), this.e('option', { value: 'deny' }, ['Default deny (permit by rules)']), this.e('option', { value: 'permit' }, ['Default permit (deny by rules)'])]);
+      box.appendChild(this.field('Start a policy', sel, pp, 'Its default action decides what no rule matches.'));
+      return this.group('Network policy', [box], 'policy');
+    }
+    box.appendChild(this.field('Default action', this.selectEl(pp.concat('default'), 'text', '', ['permit', 'deny'], this.doc.text(pp.concat('default')) || '', 'Select…'), pp.concat('default'), 'What no rule matches gets.'));
+    box.appendChild(this.field('Stateful', this.selectEl(pp.concat('stateful'), 'yesno', '', ['true', 'false'], this.doc.text(pp.concat('stateful')) || '', caps.firewallPolicy ? 'its sessions (default)' : 'stateless (default)'), pp.concat('stateful'), 'Replies of permitted flows pass back by their session.'));
+    // zones: name and interfaces, one row each
+    const zn = this.doc.get(pp.concat('zones'));
+    const zones = zn && zn.kind === 'seq' ? zn.items : [];
+    const zbox = this.e('div', { class: 'rule-ed', 'data-np-zones': '' }, [this.e('div', { class: 'rule-title' }, ['Zones'])]);
+    zones.forEach((_z, k) => {
+      const zp = pp.concat('zones', k);
+      zbox.appendChild(this.e('div', { class: 'list-row' }, [this.input(zp.concat('name'), 'text', this.doc.text(zp.concat('name')) || '', { placeholder: 'name', 'aria-label': `Name of zone ${k + 1}` }), this.input(zp.concat('interfaces'), 'csv', this.csvOf(zp.concat('interfaces')), { placeholder: 'interfaces, comma-separated', 'aria-label': `Interfaces of zone ${k + 1}` }), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(zp), 'aria-label': `Delete zone ${k + 1}` }, ['×'])]));
+    });
+    zbox.appendChild(this.e('div', { class: 'rule-add' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(pp.concat('zones')), 'data-what': 'zone' }, ['+ zone'])]));
+    box.appendChild(zbox);
+    // the rules
+    const rn = this.doc.get(pp.concat('rules'));
+    const items = rn && rn.kind === 'seq' ? rn.items : [];
+    const wrap = this.e('div', { class: 'rule-ed', 'data-rules': 'policy' }, [this.e('div', { class: 'rule-title' }, ['Rules (first match wins)'])]);
+    if (items.length) {
+      const t = this.e('table', { class: 'rule-table' });
+      t.appendChild(this.e('thead', {}, [this.e('tr', {}, ['#', 'Action', 'Source', 'Destination', 'Proto', 'Port', ''].map((h, k) => this.e('th', { scope: 'col' }, k === 6 ? [this.e('span', { class: 'sr-only' }, ['Actions'])] : [h])))]));
+      const tb = this.e('tbody');
+      const refs = this.doc.result.model ? this.doc.result.model.devices.map((x) => x.id).concat(this.doc.result.model.networks.map((n) => n.id)) : [];
+      const dl = this.datalist(['any'].concat(refs));
+      wrap.appendChild(dl.node);
+      items.forEach((_it, k) => {
+        const rp = pp.concat('rules', k);
+        const label = `rule ${k + 1}`;
+        const more = this.e('details', { class: 'rule-more' }, [this.e('summary', {}, ['More'])]);
+        more.appendChild(this.e('label', { class: 'rule-mini' }, ['name ', this.input(rp.concat('name'), 'text', this.doc.text(rp.concat('name')) || '', { 'aria-label': `Name of ${label}` })]));
+        more.appendChild(this.e('label', { class: 'rule-mini' }, ['sport ', this.input(rp.concat('sport'), 'text', this.doc.text(rp.concat('sport')) || '', { 'aria-label': `Source port of ${label}` })]));
+        for (const [k2, lab] of [['in', 'in'], ['out', 'out']] as Array<[string, string]>) more.appendChild(this.e('label', { class: 'rule-mini' }, [lab + ' ', this.input(rp.concat(k2), 'csv', this.csvOf(rp.concat(k2)), { 'aria-label': `${lab === 'in' ? 'Interfaces it comes in at' : 'Interfaces it leaves by'}, ${label}` })]));
+        for (const [k2, lab] of [['from_zone', 'from zone'], ['to_zone', 'to zone']] as Array<[string, string]>) more.appendChild(this.e('label', { class: 'rule-mini' }, [lab + ' ', this.input(rp.concat(k2), 'text', this.doc.text(rp.concat(k2)) || '', { 'aria-label': `${lab} of ${label}` })]));
+        if (['name', 'sport', 'in', 'out', 'from_zone', 'to_zone'].some((x) => this.doc.get(rp.concat(x)))) more.setAttribute('open', '');
+        tb.appendChild(
+          this.e('tr', { class: this.doc.issuesAt(rp).some((x) => x.severity === 'error') ? 'invalid' : '' }, [
+            this.e('td', {}, [String(k + 1)]),
+            this.e('td', {}, [this.selectEl(rp.concat('action'), 'text', '', ['permit', 'deny'], this.doc.text(rp.concat('action')) || '', 'Select…', { 'aria-label': `Action of ${label}` })]),
+            this.e('td', {}, [this.input(rp.concat('source'), 'csv', this.csvOf(rp.concat('source')), { list: dl.id, placeholder: 'any', 'aria-label': `Source of ${label}` }), more]),
+            this.e('td', {}, [this.input(rp.concat('destination'), 'csv', this.csvOf(rp.concat('destination')), { list: dl.id, placeholder: 'any', 'aria-label': `Destination of ${label}` })]),
+            this.e('td', {}, [this.selectEl(rp.concat('proto'), 'text', '', ['tcp', 'udp', 'icmp'], this.doc.text(rp.concat('proto')) || '', 'any', { 'aria-label': `Protocol of ${label}` })]),
+            this.e('td', {}, [this.input(rp.concat('dport'), 'text', this.doc.text(rp.concat('dport')) || '', { placeholder: 'any', 'aria-label': `Destination port of ${label}` })]),
+            this.e('td', { class: 'nowrap' }, [
+              this.e('button', { type: 'button', class: 'mini', 'data-act': 'move-up', 'data-p': J(rp), title: 'Move up', 'aria-label': `Move ${label} up`, ...(k === 0 ? { disabled: '' } : {}) }, ['↑']),
+              this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(rp), title: 'Delete', 'aria-label': `Delete ${label}` }, ['×']),
+            ]),
+          ]),
+        );
+      });
+      t.appendChild(tb);
+      wrap.appendChild(t);
+    }
+    wrap.appendChild(this.e('div', { class: 'rule-add' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'rule-add', 'data-p': J(pp.concat('rules')), 'data-v': 'permit' }, ['+ permit rule']), this.e('button', { type: 'button', class: 'mini', 'data-act': 'rule-add', 'data-p': J(pp.concat('rules')), 'data-v': 'deny' }, ['+ deny rule'])]));
+    box.appendChild(wrap);
+    box.appendChild(this.e('div', { class: 'rule-add' }, [this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(pp), title: 'Remove the policy (Ctrl+Z brings it back)' }, ['Remove policy'])]));
+    return this.group('Network policy', [box], 'policy');
+  }
+
+  /** A short list as comma-separated text (one scalar, or a list). */
+  private csvOf(p: Path): string {
+    const n = this.doc.get(p);
+    if (!n) return '';
+    if (n.kind === 'scalar') return scalarText(n) || '';
+    return n.kind === 'seq' ? n.items.map((x) => scalarText(x) || '').filter((x) => x).join(', ') : '';
+  }
+
+  /**
+   * A routing protocol's policy (model/routing-policy.ts), collapsed by
+   * default with a one-line summary: what the device advertises, a default
+   * route, what it redistributes, and the ordered rules (import, export)
+   * (a compact table each: action, prefix, peer; the lengths and BGP's
+   * attributes behind "More"). Export is not offered for a link-state
+   * protocol.
+   */
+  private routingPolicyBox(sp: Path, devId: string, id: string, name: string): HTMLElement {
+    const m = this.doc.result.model;
+    const d = m ? m.index.devices.get(devId) : undefined;
+    const svc = d ? d.services.find((x) => x.id === id) : undefined;
+    const pol = svc ? svc.policy : undefined;
+    const ls = LINK_STATE.indexOf(id) >= 0;
+    const parts: string[] = [];
+    if (pol) {
+      parts.push(pol.advertise ? `advertises ${pol.advertise.length} prefix${pol.advertise.length === 1 ? '' : 'es'}` : 'advertises its connected networks');
+      if (pol.defaultRoute) parts.push(`default route ${pol.defaultRoute === 'always' ? 'always' : 'if installed'}`);
+      if (pol.redistribute.length) parts.push('redistributes ' + pol.redistribute.join(', '));
+      if (pol.import.length) parts.push(`import ${pol.import.length} rule${pol.import.length === 1 ? '' : 's'}`);
+      if (pol.export.length) parts.push(`export ${pol.export.length} rule${pol.export.length === 1 ? '' : 's'}`);
+    }
+    // (collapsed unless the user opened it, or it has a problem: the summary says what it holds; the open state survives a redraw)
+    const key = `rp:${devId}:${id}`;
+    const box = this.e('details', { class: 'rp-box', 'data-rp': id, 'data-card': key }, [this.e('summary', {}, [`Routing policy · ${parts.length ? parts.join(' · ') : 'none: every connected network is advertised, every route accepted'}`])]);
+    if (this.open.has(key) || ROUTE_POLICY_KEYS.some((k) => this.doc.issuesAt(sp.concat(k)).length > 0)) box.setAttribute('open', '');
+    box.appendChild(this.listField(sp.concat('advertise'), 'Advertise (instead of every connected network)', '', '10.10.0.0/16', 'Prefixes it originates; each needs a connected network or a static route.'));
+    const dr = this.selectEl(sp.concat('default_route'), 'text', '', ['always', 'if_installed'], this.doc.text(sp.concat('default_route')) || '', 'Not originated');
+    box.appendChild(this.field('Default route', dr, sp.concat('default_route'), 'Always, or only while it has a default route itself (if_installed).'));
+    // redistribution: a check box per source
+    const red = this.e('div', { class: 'rp-red', role: 'group', 'aria-label': `Redistribute into ${name}` });
+    const cur = new Set(pol ? pol.redistribute : []);
+    for (const src of REDISTRIBUTE_SOURCES) {
+      if (src === id) continue;
+      const cid = `rp-${devId}-${id}-${src}`.replace(/[^A-Za-z0-9_-]/g, '_');
+      const cb = this.e('input', { type: 'checkbox', id: cid, 'data-act': 'rp-red', 'data-p': J(sp.concat('redistribute')), 'data-v': src }) as HTMLInputElement;
+      cb.checked = cur.has(src);
+      red.appendChild(this.e('label', { class: 'check', for: cid }, [cb, ' ' + src]));
+    }
+    box.appendChild(this.field('Redistribute', red, sp.concat('redistribute'), 'Sources it originates too; no route re-enters a domain it came through.'));
+    const neighbours = new Set<string>();
+    if (m) for (const r of m.relations) if (protocolBase(m.protocols, r.protocol) === id && relationDevices(r).indexOf(devId) >= 0) for (const x of relationDevices(r)) if (x !== devId) neighbours.add(x);
+    for (const dir of ls ? (['import'] as const) : (['import', 'export'] as const)) box.appendChild(this.ruleTable(sp.concat(dir), dir, id, Array.from(neighbours).sort()));
+    if (ls) box.appendChild(this.e('p', { class: 'muted small' }, [`${name} floods: no export rules; its import: rules decide what it installs.`]));
+    return box;
+  }
+
+  /** An ordered filter (first match wins, the implicit deny at the end) as a compact table. */
+  private ruleTable(lp: Path, dir: 'import' | 'export', proto: string, neighbours: string[]): HTMLElement {
+    const n = this.doc.get(lp);
+    const items = n && n.kind === 'seq' ? n.items : [];
+    const wrap = this.e('div', { class: 'rule-ed', 'data-rules': dir });
+    wrap.appendChild(this.e('div', { class: 'rule-title' }, [dir === 'import' ? 'Import rules (what it accepts)' : 'Export rules (what it advertises)']));
+    if (items.length) {
+      const t = this.e('table', { class: 'rule-table' });
+      t.appendChild(this.e('thead', {}, [this.e('tr', {}, ['#', 'Action', 'Prefix', 'Peer', ''].map((h, k) => this.e('th', { scope: 'col' }, k === 4 ? [this.e('span', { class: 'sr-only' }, ['Actions'])] : [h])))]));
+      const tb = this.e('tbody');
+      items.forEach((_it, k) => {
+        const rp = lp.concat(k);
+        const label = `${dir} rule ${k + 1}`;
+        const act = this.selectEl(rp.concat('action'), 'text', '', ['permit', 'deny'], this.doc.text(rp.concat('action')) || '', 'Select…', { 'aria-label': `Action of ${label}` });
+        const pre = this.input(rp.concat('prefix'), 'text', this.doc.text(rp.concat('prefix')) || '', { placeholder: 'any route', 'aria-label': `Prefix of ${label}` });
+        const peer = this.selectEl(rp.concat('peer'), 'text', '', neighbours, this.doc.text(rp.concat('peer')) || '', 'any neighbour', { 'aria-label': `Peer of ${label}` });
+        const more = this.e('details', { class: 'rule-more' }, [this.e('summary', {}, ['More'])]);
+        for (const [k2, lab] of [['ge', 'ge'], ['le', 'le']] as Array<[string, string]>) more.appendChild(this.e('label', { class: 'rule-mini' }, [lab + ' ', this.input(rp.concat(k2), 'int', this.doc.text(rp.concat(k2)) || '', { inputmode: 'numeric', 'aria-label': `${lab} of ${label}` })]));
+        if (proto === 'bgp' && dir === 'import') more.appendChild(this.e('label', { class: 'rule-mini' }, ['local-pref ', this.input(rp.concat('local_pref'), 'int', this.doc.text(rp.concat('local_pref')) || '', { inputmode: 'numeric', 'aria-label': `Local preference of ${label}` })]));
+        if (proto === 'bgp' && dir === 'export') more.appendChild(this.e('label', { class: 'rule-mini' }, ['prepend ', this.input(rp.concat('prepend'), 'int', this.doc.text(rp.concat('prepend')) || '', { inputmode: 'numeric', 'aria-label': `AS prepend of ${label}` })]));
+        if (['ge', 'le', 'local_pref', 'prepend'].some((x) => this.doc.get(rp.concat(x)))) more.setAttribute('open', '');
+        const tools = this.e('td', { class: 'nowrap' }, [
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'move-up', 'data-p': J(rp), title: 'Move up', 'aria-label': `Move ${label} up`, ...(k === 0 ? { disabled: '' } : {}) }, ['↑']),
+          this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(rp), title: 'Delete', 'aria-label': `Delete ${label}` }, ['×']),
+        ]);
+        tb.appendChild(this.e('tr', { class: this.doc.issuesAt(rp).some((x) => x.severity === 'error') ? 'invalid' : '' }, [this.e('td', {}, [String(k + 1)]), this.e('td', {}, [act]), this.e('td', {}, [pre, more]), this.e('td', {}, [peer]), tools]));
+      });
+      t.appendChild(tb);
+      wrap.appendChild(t);
+      wrap.appendChild(this.e('p', { class: 'muted small' }, ['First match wins; a route no rule matches is denied (the implicit deny).']));
+    }
+    wrap.appendChild(
+      this.e('div', { class: 'rule-add' }, [
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'rule-add', 'data-p': J(lp), 'data-v': 'permit' }, [`+ permit rule`]),
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'rule-add', 'data-p': J(lp), 'data-v': 'deny' }, [`+ deny rule`]),
+      ]),
+    );
+    return wrap;
   }
 
   /** A protocol parameter's field, by its type: a choice for an enum, a number field for an int, else text; suggestions offered. */
@@ -1978,7 +2201,7 @@ export class Editor {
     const errs = iss.filter((i) => i.severity === 'error').length;
     const addrs = this.listTexts(p.concat('ip'));
     const dhcp = doc.dhcpOn(p);
-    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : interfaceKindLabel(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
+    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : o === 'interface' && doc.text(p.concat('stack')) === 'opaque' ? 'Opaque port' : interfaceKindLabel(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
     const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-iface': id || '', 'data-kind': kind });
     const selected = !!this.sel && !!this.sel.iface && J(this.sel.iface) === J(p);
     if (this.open.has(J(p)) || selected) card.setAttribute('open', '');
@@ -1991,6 +2214,17 @@ export class Editor {
       ]),
     );
     card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
+    if (o === 'interface' && !isGuest({ type: doc.text(['devices', devIndex, 'type']) || '' }))
+      card.appendChild(this.field('Port stack', this.labelledSelect(p.concat('stack'), 'interface', [['opaque', 'Opaque: no network stack (USB, serial, a bus or backplane)']], 'Network (Ethernet, IP)'), p.concat('stack'), 'An opaque port has no addresses, VLANs or MAC: it connects only through an interconnect.'));
+    if (o === 'interface' && doc.text(p.concat('stack')) === 'opaque') {
+      card.appendChild(this.textField(p.concat('label'), 'Label', o));
+      const model = doc.result.model;
+      const devName = doc.text(['devices', devIndex, 'id']) || '';
+      const on = model && id ? model.index.portInterconnect.get(`${devName}:${id}`) : undefined;
+      card.appendChild(this.e('p', { class: 'help' }, [on ? `Attached to the interconnect ${on}.` : 'On no interconnect yet: add it to an interconnect’s endpoints (Interconnects in the Objects list).']));
+      card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
+      return card;
+    }
     card.appendChild(this.ifTypeField(p, entry));
     // a guest's virtual NIC and a container's network attachment: what they are attached to, right after what they are
     if (kind === 'vnic') for (const f of this.vnicFields(devIndex, p, id || '')) card.appendChild(f);
@@ -2000,6 +2234,10 @@ export class Editor {
     if (o === 'interface' || isLagCard || doc.get(p.concat('vlans')) || doc.get(p.concat('native')) || doc.get(p.concat('routed'))) card.appendChild(this.portVlanField(devIndex, p, entry));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
     card.appendChild(this.addressField(p, loop, o));
+    // how it gets its IPv6 addresses, and a router's advertisements on it
+    if (!loop && kind !== 'tunnel') card.appendChild(this.ipv6Field(p, o));
+    const raCard = this.raCard(devIndex, p, o, id || '');
+    if (raCard) card.appendChild(raCard);
     if (!loop && !dhcp && id) {
       const nf = this.nextFreeField(devIndex, p, id);
       if (nf) card.appendChild(nf);
@@ -2070,10 +2308,74 @@ export class Editor {
   }
 
   /**
+   * An interface's IPv6 method (`ipv6:`): static from its written addresses
+   * (none written: no IPv6), or automatic by SLAAC, DHCPv6 or both. One
+   * choice instead of independent flags, so no contradictory state can be
+   * set; what it learned is the simulation's (its status, its tables).
+   */
+  private ipv6Field(p: Path, o: string): HTMLElement {
+    const doc = this.doc;
+    const cur = doc.text(p.concat('ipv6')) || '';
+    const v6 = this.listTexts(p.concat('ip')).some((a) => a.indexOf(':') >= 0);
+    const sel = this.e('select', { 'data-p': J(p.concat('ipv6')), 'data-t': 'ipv6-method', 'data-o': o }) as HTMLSelectElement;
+    sel.appendChild(this.e('option', { value: '' }, [v6 ? 'Static (its IPv6 addresses above)' : 'None (no IPv6 address)']));
+    for (const m of IPV6_METHODS) if (m.id !== 'static') sel.appendChild(this.e('option', { value: m.id }, [m.label]));
+    if (cur === 'static') sel.appendChild(this.e('option', { value: 'static' }, ['Static (written)']));
+    sel.value = cur;
+    const def = IPV6_METHODS.find((x) => x.id === cur);
+    return this.field('IPv6', sel, p.concat('ipv6'), def ? def.help : v6 ? 'Only the addresses written above; no router discovery.' : 'SLAAC or DHCPv6 can give it addresses; nothing is configured until you choose.');
+  }
+
+  /**
+   * A routing interface's router advertisements (`ipv6_ra:`): off until
+   * switched on, then its prefixes (each written: the interface's own /64s
+   * are offered, never filled in), the rest collapsed under Advanced with
+   * RFC 4861's defaults as placeholders.
+   */
+  private raCard(devIndex: number, p: Path, o: string, id: string): HTMLElement | null {
+    const doc = this.doc;
+    const rp = p.concat('ipv6_ra');
+    const on = !!doc.get(rp);
+    const kind = doc.text(p.concat('type')) || 'physical';
+    if (!on && (!this.capsAt(devIndex).l3Forward || kind === 'loopback' || kind === 'tunnel' || doc.get(p.concat('vlans')))) return null;
+    const box = this.e('details', { class: 'card ra-card', 'data-card': J(rp) });
+    if (this.open.has(J(rp)) || doc.issuesAt(rp).some((x) => x.severity === 'error')) box.setAttribute('open', '');
+    const cb = this.e('input', { type: 'checkbox', id: `ra-${devIndex}-${id}`, 'data-act': 'ra-toggle', 'data-p': J(rp) }) as HTMLInputElement;
+    cb.checked = on;
+    const iss = doc.issuesAt(rp);
+    box.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [`IPv6 router advertisements${on ? ': ' + (this.listTexts(rp.concat('prefixes')).join(', ') || 'no prefix yet') : ''}`]), iss.length ? this.badge(iss.filter((x) => x.severity === 'error').length, iss.filter((x) => x.severity !== 'error').length) : null]));
+    box.appendChild(this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `ra-${devIndex}-${id}` }, [cb, ' Send router advertisements on this interface'])]));
+    box.appendChild(supportNote(this.d, (simProfile('ndp') as { support: import('../model/support').Support }).support, 'Router advertisements'));
+    if (!on) return box;
+    const own = this.listTexts(p.concat('ip')).map((a) => parsePrefix(a, false)).filter((x): x is NonNullable<typeof x> => !!x && x.version === 6);
+    const sug = Array.from(new Set(own.map((x) => `${formatAddr(networkOf({ ...x, prefix: 64 }))}/64`))).filter((x) => this.listTexts(rp.concat('prefixes')).indexOf(x) < 0);
+    const owner = `${doc.text(['devices', devIndex, 'id']) || ''} ${id}`.trim();
+    box.appendChild(this.withHelpers(this.listField(rp.concat('prefixes'), 'Prefixes *', 'ipv6Ra', '2001:db8:10::/64', 'Each prefix it advertises (its own /64s are offered); SLAAC hosts form an address in each.'), rp.concat('prefixes'), 'text', sug.map((x) => ({ value: x, label: x, title: `Advertise ${x} (a prefix of ${id})` })), 'prefix', owner));
+    const adv = this.e('details', { class: 'adv-section', 'data-card': J(rp.concat('#advanced')) });
+    const advKeys = ['dns', 'managed', 'other', 'autonomous', 'router_lifetime', 'interval', 'preferred_lifetime', 'valid_lifetime', 'dns_lifetime'];
+    const set = advKeys.filter((k) => doc.get(rp.concat(k)) !== undefined).length;
+    if (this.open.has(J(rp.concat('#advanced'))) || advKeys.some((k) => doc.issuesAt(rp.concat(k)).some((x) => x.severity === 'error'))) adv.setAttribute('open', '');
+    adv.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+    adv.appendChild(this.listField(rp.concat('dns'), 'DNS servers (RDNSS)', 'ipv6Ra', '2001:db8:10::53', 'IPv6 DNS servers it advertises (RFC 8106).'));
+    const yn = (k: string, label: string, help: string, dflt: string): HTMLElement => this.field(label, this.selectEl(rp.concat(k), 'yesno', 'ipv6Ra', ['true', 'false'], doc.text(rp.concat(k)) || '', `default (${dflt})`), rp.concat(k), help);
+    adv.appendChild(yn('managed', 'Managed (M flag)', 'Hosts may get their addresses by DHCPv6 (a host’s method decides).', 'no'));
+    adv.appendChild(yn('other', 'Other configuration (O flag)', 'Hosts with SLAAC ask DHCPv6 for DNS (stateless DHCPv6).', 'no'));
+    adv.appendChild(yn('autonomous', 'Prefixes for SLAAC (A flag)', 'Hosts form addresses in its prefixes (each a /64).', 'yes'));
+    const dur = (k: string, label: string, ph: string, help: string): HTMLElement => this.textField(rp.concat(k), label, 'ipv6Ra', 'text', undefined, help, ph);
+    adv.appendChild(dur('router_lifetime', 'Router lifetime', '30min (3 × interval)', 'How long hosts keep it as a default router (0: it is none).'));
+    adv.appendChild(dur('interval', 'Advertisement interval', '600s (MaxRtrAdvInterval)', 'The longest time between two unsolicited advertisements.'));
+    adv.appendChild(dur('preferred_lifetime', 'Preferred lifetime', '7d', 'How long an address in its prefixes is preferred.'));
+    adv.appendChild(dur('valid_lifetime', 'Valid lifetime', '30d', 'How long such an address is valid at all.'));
+    adv.appendChild(dur('dns_lifetime', 'DNS servers’ lifetime', '30min (3 × interval)', 'How long hosts keep its DNS servers.'));
+    box.appendChild(adv);
+    return box;
+  }
+
+  /**
    * The addresses of an interface, with the DHCP switch next to them. While
    * DHCP is on, manual addresses can't be entered (a file that has both shows
    * them, with the error, so they can be removed). A loopback can't use
-   * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+   * DHCP, so it has no switch, unless its file says "ipv4: dhcp": then the
    * switch is shown so that it can be turned off.
    */
   private addressField(p: Path, loop: boolean, o: string): HTMLElement {
@@ -2106,7 +2408,7 @@ export class Editor {
     f.setAttribute('data-dhcp', on ? 'on' : 'off');
     // the switch sits beside the label (see .field[data-dhcp] in the styles)
     f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
-    for (const is of doc.issuesAt(p.concat('dhcp'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    for (const is of doc.issuesAt(p.concat('ipv4'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     return f;
   }
 
@@ -2239,7 +2541,7 @@ export class Editor {
   }
 
   private datalist(values: string[]): { id: string; node: HTMLElement } {
-    const id = 'dl-' + Math.random().toString(36).slice(2, 9);
+    const id = 'dl-' + nextUid();
     const dl = this.e('datalist', { id });
     for (const v of values) dl.appendChild(this.e('option', { value: v }));
     return { id, node: dl };
@@ -2391,7 +2693,7 @@ export class Editor {
       const on = !!doc.get(sp.concat(id));
       const cb = this.e('input', { type: 'checkbox', id: `svc-${id}-${devIndex}`, 'data-act': 'netsvc', 'data-svc': id, 'data-index': String(devIndex), title }) as HTMLInputElement;
       cb.checked = on;
-      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label])]);
+      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label]), on ? supportNote(this.d, (serviceDef(id) as SvcDef).support, label) : null]);
     };
     if (may('dhcp') || doc.get(sp.concat('dhcp'))) kids.push(box('dhcp', 'DHCP server', 'Leases addresses to the DHCP clients of its scopes’ networks'));
     const dhcp = doc.get(sp.concat('dhcp'));
@@ -2430,6 +2732,8 @@ export class Editor {
       kids.push(box('container_engine', 'Container engine', 'Runs containers: its container networks'));
       if (doc.get(sp.concat('container_engine'))) kids.push(this.engineCard(sp.concat('container_engine'), dev, devIndex), this.guestsField(dev, devIndex, 'container'));
     }
+    // its applications: each a collapsed entry, with Add application
+    if (doc.get(sp.concat('applications'))) kids.push(this.applicationsCard(devIndex));
     // the other services of the registry it runs (a router's Wireless access among them), then Add service…
     const builtIn = builtInServices(like).map((x) => x.id);
     for (const def of SERVICES) {
@@ -2438,6 +2742,101 @@ export class Editor {
     }
     kids.push(this.addServiceField(sp, devIndex, like));
     return this.group(isContainer({ type: type }) ? 'Services (DHCP, DNS)' : 'Services', kids, 'netservices');
+  }
+
+  /**
+   * Applications (`services.applications`): each a collapsed entry with its
+   * one-line summary ("Management · TCP listener · 443"); opened: its id,
+   * name and profile, the profile's basic fields, and its other fields in
+   * a collapsed Advanced section; Duplicate and Remove. Add application
+   * appends one and focuses its profile (nothing is chosen for it).
+   */
+  private applicationsCard(devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const lp = doc.appsPath(devIndex);
+    const n = doc.get(lp);
+    const items = n && n.kind === 'seq' ? n.items : [];
+    const card = this.e('div', { class: 'svc-card', 'data-svc-card': 'applications', role: 'group', 'aria-label': 'Applications' }, [
+      this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [`Applications (${items.length})`])]),
+      this.e('p', { class: 'help' }, ['TCP, UDP and MQTT behaviour; a name such as “Modbus TCP” only labels it.']),
+    ]);
+    for (const is of doc.issuesAt(lp, true)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    items.forEach((_it, k) => card.appendChild(this.appEntry(devIndex, k)));
+    card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-app', 'data-index': String(devIndex) }, ['+ Add application'])]));
+    return card;
+  }
+
+  /** One application: its summary; opened, its fields (basic, then Advanced), Duplicate and Remove. */
+  private appEntry(devIndex: number, k: number): HTMLElement {
+    const doc = this.doc;
+    const p = doc.appsPath(devIndex).concat(k);
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const v = this.valuesAt(p);
+    const id = doc.text(p.concat('id')) || '';
+    const portText = doc.text(p.concat('port'));
+    const summary = appSummary({ id, name: doc.text(p.concat('name')), profile: doc.text(p.concat('profile')), port: portText !== undefined && /^[0-9]+$/.test(portText) ? Number(portText) : undefined, peer: doc.text(p.concat('peer')), broker: doc.text(p.concat('broker')), publish: this.listTexts(p.concat('publish')), subscribe: this.listTexts(p.concat('subscribe')) });
+    const iss = doc.issuesAt(p);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card app-card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-app': id });
+    if (this.open.has(J(p))) card.setAttribute('open', '');
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [summary]), iss.length ? this.badge(errs, iss.length - errs) : null]));
+    const o = 'application';
+    card.appendChild(this.field('Id *', this.input(p.concat('id'), 'app-id', id, { required: '' }), p.concat('id'), `Unique on ${dev || 'the device'}; others name it ${dev || 'device'}/${id || 'id'}. Renaming updates them.`));
+    const shown = APP_PARAMS.filter((x) => x.key !== 'id' && (!x.when || x.when(v)));
+    for (const prm of shown.filter((x) => !x.advanced)) card.appendChild(this.appParamField(p, prm, devIndex, o));
+    const adv = shown.filter((x) => x.advanced);
+    if (adv.length && v.profile) {
+      const ap = p.concat('#advanced');
+      const set = adv.filter((x) => doc.get(p.concat(x.key)) !== undefined).length;
+      const advErr = adv.some((x) => doc.issuesAt(p.concat(x.key)).some((i) => i.severity === 'error'));
+      const box = this.e('details', { class: 'adv-section', 'data-card': J(ap) });
+      if (this.open.has(J(ap)) || advErr) box.setAttribute('open', '');
+      box.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+      box.appendChild(this.e('p', { class: 'help' }, ['Empty fields take the profile’s modelling defaults (their placeholders).']));
+      for (const prm of adv) box.appendChild(this.appParamField(p, prm, devIndex, o));
+      card.appendChild(box);
+    }
+    for (const is of iss.filter((x) => !x.key && doc.pathOf(x.node) !== null && J(doc.pathOf(x.node) as Path) === J(p))) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    card.appendChild(
+      this.e('div', { class: 'app-actions' }, [
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-app', 'data-index': String(devIndex), 'data-k': String(k), title: `Duplicate ${id}` }, ['Duplicate']),
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-app', 'data-index': String(devIndex), 'data-k': String(k), title: `Remove ${id}`, 'aria-label': `Remove the application ${id}` }, ['Remove']),
+      ]),
+    );
+    return card;
+  }
+
+  /** A field of an application: its peer and broker with what the model offers, its topic lists; the others as a service's. */
+  private appParamField(p: Path, prm: SvcParam, devIndex: number, o: string): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const fp = p.concat(prm.key);
+    const req = typeof prm.required === 'function' ? prm.required(this.valuesAt(p)) : !!prm.required;
+    const label = prm.label + (req ? ' *' : '');
+    if (prm.key === 'profile') {
+      const sel = this.labelledSelect(fp, o, APP_PROFILES.map((x) => [x.id, x.label] as [string, string]), 'Select a profile');
+      sel.setAttribute('data-t', 'app-profile');
+      const prof = appProfile(doc.text(fp));
+      const f = this.field(label, sel, fp, (prof || { help: prm.help }).help);
+      if (prof) f.appendChild(supportNote(this.d, prof.support, prof.label));
+      return f;
+    }
+    if (prm.key === 'peer') {
+      // the listeners of the other devices this profile can talk to, then the devices
+      const prof = appProfile(doc.text(p.concat('profile')));
+      const apps: string[] = [];
+      for (const d of model ? model.devices : []) for (const a of d.applications || []) if (d.id !== dev && prof && prof.peerProfiles.indexOf(a.profile) >= 0) apps.push(`${d.id}/${a.id}`);
+      return this.textField(fp, label, o, 'text', apps.concat(this.ids('device').filter((x) => x !== dev)), prm.help, apps[0] || prm.placeholder);
+    }
+    if (prm.key === 'broker') {
+      const brokers = model ? model.devices.filter((d) => !!d.appServices && d.appServices.has('mqtt_broker')).map((d) => d.id) : [];
+      return this.field(label, this.selectEl(fp, 'text', o, brokers, doc.text(fp) || '', brokers.length ? 'Select the broker' : 'No device runs an MQTT broker'), fp, prm.help);
+    }
+    if (prm.key === 'client_id') return this.textField(fp, label, o, 'text', undefined, prm.help, `${dev}-${doc.text(p.concat('id')) || 'app'}`);
+    if (prm.type === 'topics') return this.listField(fp, label, o, prm.placeholder || 'a/topic', prm.help);
+    if (prm.key === 'description') return this.textField(fp, label, o, 'textarea', undefined, prm.help);
+    return this.svcParamField(p, prm, o, devIndex);
   }
 
   /**
@@ -2475,12 +2874,23 @@ export class Editor {
       this.e('span', { class: 'svc-name' }, [def.label + (builtIn ? ' (built in)' : '')]),
       builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': def.id, 'data-index': String(devIndex), title: `Remove ${def.label}`, 'aria-label': `Remove ${def.label}` }, ['×']),
     ]);
-    const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help])]);
+    const card = this.e('div', { class: 'svc-card', 'data-svc-card': def.id, role: 'group', 'aria-label': def.label }, [head, this.e('p', { class: 'help' }, [def.help]), supportNote(this.d, def.support, def.label)]);
     if (!doc.get(p)) {
       card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-block', 'data-p': J(p), 'data-what': def.label + ' configuration' }, [`+ Configure ${def.label}`])]));
       return card;
     }
-    for (const prm of def.params) card.appendChild(this.svcParamField(p, prm, order, devIndex));
+    for (const prm of def.params.filter((x) => !x.advanced)) card.appendChild(this.svcParamField(p, prm, order, devIndex));
+    // what is seldom changed (modelling defaults, timers): collapsed until opened, open while one of them has an error
+    const adv = def.params.filter((x) => x.advanced && (!x.when || x.when(this.valuesAt(p))));
+    if (adv.length) {
+      const ap = p.concat('#advanced');
+      const set = adv.filter((x) => doc.get(p.concat(x.key)) !== undefined).length;
+      const box = this.e('details', { class: 'adv-section', 'data-card': J(ap) });
+      if (this.open.has(J(ap)) || adv.some((x) => doc.issuesAt(p.concat(x.key)).some((i) => i.severity === 'error'))) box.setAttribute('open', '');
+      box.appendChild(this.e('summary', {}, [`Advanced${set ? ` (${set} set)` : ''}`]));
+      for (const prm of adv) box.appendChild(this.svcParamField(p, prm, order, devIndex));
+      card.appendChild(box);
+    }
     for (const l of def.lists || []) {
       const lp = p.concat(l.key);
       const ln = doc.get(lp);
@@ -2551,6 +2961,7 @@ export class Editor {
         builtIn ? null : this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'wireless', 'data-index': String(devIndex), title: 'Remove Wireless access', 'aria-label': 'Remove Wireless access' }, ['×']),
       ]),
       this.e('p', { class: 'help' }, ['Each Wi-Fi network is bridged to its own VLAN; they share the radio and the uplink.']),
+      supportNote(this.d, (serviceDef('wireless') as SvcDef).support, 'Wireless access'),
     ]);
     if (!doc.get(p)) {
       card.appendChild(this.e('p', { class: 'field-err' }, ['It needs its Wi-Fi networks: none is chosen for it.']));
@@ -2758,7 +3169,7 @@ export class Editor {
     const gt = doc.text(pp.concat('guest_tagging')) === 'true';
     const vl = doc.portVlans(pp);
     const label = name || `port group ${j + 1}`;
-    const uid = `pg-${dev}-${j}-${Math.random().toString(36).slice(2, 7)}`;
+    const uid = `pg-${dev}-${j}-${nextUid()}`;
     const box = this.e('input', { type: 'checkbox', id: uid, 'data-act': 'pg-guest', 'data-p': J(pp) }) as HTMLInputElement;
     box.checked = gt;
     const nat = vl.length > 1 || doc.get(pp.concat('native'));
@@ -2987,15 +3398,30 @@ export class Editor {
     const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p) });
     if (this.open.has(J(p)) || errs) card.setAttribute('open', '');
     card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [[`Scope ${k + 1}`, net || '(no network)', range].filter((x) => x).join(' · ')]), iss.length ? this.badge(errs, iss.length - errs) : null, this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(p), title: 'Delete this scope' }, ['×'])]));
-    const v4nets = model ? model.networks.filter((x) => !!x.cidr && x.cidr.indexOf(':') < 0).map((x) => x.id) : [];
-    card.appendChild(this.refField(p.concat('network'), 'Network *', o, v4nets, 'The network it leases addresses in (an IPv4 network of the model).'));
-    const sug = model && net ? scopeSuggestions(model, net) : { range: [], gateway: [], dns: [] };
+    const nets = model ? model.networks.filter((x) => !!x.cidr).map((x) => x.id) : [];
+    const chosen = model && net ? model.networks.find((x) => x.id === net) : undefined;
+    // an IPv6 network makes it a DHCPv6 scope: stateful with a range, stateless (DNS only) without; no gateway (routers advertise themselves)
+    const v6 = !!chosen && !!chosen.cidr && chosen.cidr.indexOf(':') >= 0;
+    card.appendChild(this.refField(p.concat('network'), 'Network *', o, nets, v6 ? 'An IPv6 network: a DHCPv6 scope (RFC 8415).' : 'The network it leases addresses in (an IPv4 network: DHCP; an IPv6 network: DHCPv6).'));
+    const sug = model && net && !v6 ? scopeSuggestions(model, net) : { range: [], gateway: [], dns: [] };
     const owner = `${dev} scope ${k + 1}`;
-    card.appendChild(this.withHelpers(this.textField(p.concat('range'), 'Address range *', o, 'text', undefined, 'start-end, inside the network; not the gateway or a static address.', '10.1.1.100-10.1.1.199'), p.concat('range'), 'text', sug.range, 'range', owner));
-    card.appendChild(this.withHelpers(this.textField(p.concat('gateway'), 'Default gateway *', o, 'text', undefined, 'The router’s address (or virtual address) in the network.', '10.1.1.1'), p.concat('gateway'), 'text', sug.gateway, 'default gateway', owner));
-    card.appendChild(this.withHelpers(this.listField(p.concat('dns'), 'DNS servers *', o, '10.1.1.10', 'The DNS servers it gives its clients.'), p.concat('dns'), 'text', sug.dns, 'DNS servers', owner));
-    card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'How long a lease lasts (renewed at half of it); empty: 1 day.', '1 day (default)'));
-    card.appendChild(this.listField(p.concat('exclude'), 'Excluded addresses', o, '10.1.1.150', 'Addresses of the range it never leases.'));
+    if (v6) {
+      card.appendChild(this.textField(p.concat('range'), 'Address range', o, 'text', undefined, 'start-end: what it leases (stateful). Empty: DNS only (stateless DHCPv6).', '2001:db8:10::100-2001:db8:10::1ff'));
+      card.appendChild(this.listField(p.concat('dns'), doc.get(p.concat('range')) ? 'DNS servers' : 'DNS servers *', o, '2001:db8:10::53', 'The IPv6 DNS servers it gives its clients.'));
+      if (doc.get(p.concat('gateway'))) card.appendChild(this.textField(p.concat('gateway'), 'Default gateway', o, 'text', undefined, 'DHCPv6 has no gateway option: delete it (routers advertise themselves).'));
+      card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'Its addresses’ preferred and valid lifetime (renewed at half of it); empty: 1 day.', '1 day (default)'));
+    } else {
+      card.appendChild(this.withHelpers(this.textField(p.concat('range'), 'Address range *', o, 'text', undefined, 'start-end, inside the network; not the gateway or a static address.', '10.1.1.100-10.1.1.199'), p.concat('range'), 'text', sug.range, 'range', owner));
+      card.appendChild(this.withHelpers(this.textField(p.concat('gateway'), 'Default gateway *', o, 'text', undefined, 'The router’s address (or virtual address) in the network.', '10.1.1.1'), p.concat('gateway'), 'text', sug.gateway, 'default gateway', owner));
+      card.appendChild(this.withHelpers(this.listField(p.concat('dns'), 'DNS servers *', o, '10.1.1.10', 'The DNS servers it gives its clients.'), p.concat('dns'), 'text', sug.dns, 'DNS servers', owner));
+      card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'How long a lease lasts (renewed at half of it); empty: 1 day.', '1 day (default)'));
+    }
+    card.appendChild(this.listField(p.concat('exclude'), 'Excluded addresses', o, v6 ? '2001:db8:10::150' : '10.1.1.150', 'Addresses of the range it never leases.'));
+    if (v6) {
+      if (doc.get(p.concat('domain'))) card.appendChild(this.textField(p.concat('domain'), 'Domain name', o, 'text', undefined, 'The domain its clients get.', 'hq.example'));
+      for (const is of iss.filter((x) => !x.key)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      return card;
+    }
     // reservations: a MAC address and its address
     const rp = p.concat('reservations');
     const rn = doc.get(rp);
@@ -3469,6 +3895,7 @@ export class Editor {
       }
       const vpnBuiltIn = isBuiltIn(serviceDef('vpn') as SvcDef, this.likeAt(base));
       if (!vpnBuiltIn) kids.unshift(this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, ['A service of this device']), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'remove-service', 'data-svc': 'vpn', 'data-index': String(devIndex), title: 'Remove the VPN gateway', 'aria-label': 'Remove the VPN gateway' }, ['×'])]));
+      kids.push(supportNote(this.d, (serviceDef('vpn') as SvcDef).support, 'VPN gateway'));
       out.push(this.group(vpnBuiltIn ? 'VPN gateway (built in)' : 'VPN gateway', kids, 'vpn'));
     }
     // the other built-in functions: an access point's Wireless access, a load balancer's Load balancing, an IDS/IPS's Inspection
@@ -3502,12 +3929,78 @@ export class Editor {
       kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(ppath), 'data-what': 'port pair' }, ['+ Add port pair'])]));
       out.push(this.group('Port pairs', kids, 'port-pairs'));
     }
+    // opaque transit: the groups of its opaque ports it passes illustrative data between (a System only; none is assumed)
+    const tpath = base.concat('opaque_transit');
+    if (caps.opaqueTransit || doc.get(tpath)) {
+      const opaque = doc.interfaceEntries(devIndex).filter((e) => e.kind === 'interface' && e.id && doc.text(e.path.concat('stack')) === 'opaque').map((e) => e.id as string);
+      const kids: Array<HTMLElement | null> = [this.e('p', { class: 'help' }, [opaque.length ? 'Passes data only between the ports of one group (a fabric switch, an active hub), of one technology: nothing is converted, and without a group nothing passes.' : 'No opaque port yet: set a port’s stack to Opaque first.'])];
+      const tn = doc.get(tpath);
+      const n = tn && tn.kind === 'seq' ? tn.items.length : 0;
+      for (let j = 0; j < n; j++) {
+        const gp = tpath.concat(j);
+        kids.push(
+          this.e('div', { class: 'svc-card transit-card', role: 'group', 'aria-label': `Transit group ${j + 1}` }, [
+            this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [`Transit group ${j + 1}`]), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(gp), title: 'Delete this transit group', 'aria-label': `Delete transit group ${j + 1}` }, ['×'])]),
+            this.chipsField(gp.concat('ports'), 'Ports', opaque, 'Two or more of its opaque ports; a port is in one group at most.', 'Add a port'),
+          ]),
+        );
+      }
+      kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(tpath), 'data-what': 'transit group', ...(opaque.length < 2 ? { disabled: '' } : {}) }, ['+ Add transit group'])]));
+      out.push(this.group('Opaque transit', kids, 'opaque-transit'));
+    }
     // management interfaces
     const mpath = base.concat('management');
     if (caps.managementInterfaces || doc.get(mpath)) {
       out.push(this.group('Management', [this.chipsField(mpath, 'Management interfaces', ports, 'Its interfaces for managing it: never forwarded, in no domain.', 'Add a management interface')], 'management'));
     }
     return out;
+  }
+
+  /**
+   * An interconnect's endpoints, one card each: the opaque port (one not
+   * attached elsewhere), its role (the access model's), what it does with
+   * data (both, send, receive: never the order of the endpoints), and the
+   * descriptive system-controller flag.
+   */
+  private icEndpoints(base: Path): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const ep = base.concat('endpoints');
+    const self = doc.text(base.concat('id')) || '';
+    const access = doc.text(base.concat('access')) === 'controller_target' ? 'controller_target' : 'peer';
+    const roles = access === 'peer' ? (['peer', 'monitor'] as const) : (['controller', 'target', 'controller_target', 'monitor'] as const);
+    // the opaque ports of the model that are free (or this interconnect's own)
+    const free: string[] = [];
+    if (model) for (const d of model.devices) for (const op of d.opaquePorts) {
+      const k = `${d.id}:${op.id}`;
+      const on = model.index.portInterconnect.get(k);
+      if (!on || on === self) free.push(k);
+    }
+    const box = this.e('div', { class: 'ic-endpoints' });
+    const n = doc.get(ep);
+    const count = n && n.kind === 'seq' ? n.items.length : 0;
+    for (let j = 0; j < count; j++) {
+      const ip = ep.concat(j);
+      const port = doc.text(ip.concat('port')) || '';
+      box.appendChild(
+        this.e('div', { class: 'svc-card ic-endpoint', role: 'group', 'aria-label': `Endpoint ${j + 1}${port ? ': ' + port : ''}` }, [
+          this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [port || `Endpoint ${j + 1}`]), this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove this endpoint', 'aria-label': `Remove endpoint ${j + 1}` }, ['×'])]),
+          this.field('Port *', this.selectEl(ip.concat('port'), 'text', 'icEndpoint', free.filter((x) => x === port || !this.listTextsAt(ep, 'port').includes(x)), port, 'Select an opaque port', { 'aria-label': `Endpoint ${j + 1}: port` }), ip.concat('port'), free.length ? undefined : 'No free opaque port: set a port\'s stack to Opaque on its device first.'),
+          this.field(access === 'peer' ? 'Role' : 'Role *', this.labelledSelect(ip.concat('role'), 'icEndpoint', roles.map((r) => [r, ROLE_TEXT[r]] as [string, string]), access === 'peer' ? ROLE_TEXT.peer : 'Select role'), ip.concat('role'), 'On this interconnect only. A target is not receive-only: a controller may read from it.'),
+          this.field('Data', this.labelledSelect(ip.concat('data'), 'icEndpoint', [['send', DATA_TEXT.send], ['receive', DATA_TEXT.receive]], DATA_TEXT.both), ip.concat('data'), 'What this port does with data here. Both is not full duplex, and no reply is made because of it.'),
+          access === 'controller_target' ? this.field('System controller', this.selectEl(ip.concat('system_controller'), 'yesno', 'icEndpoint', ['true'], doc.text(ip.concat('system_controller')) || '', 'no'), ip.concat('system_controller'), 'Descriptive (an arbiter, a slot-1 controller): no arbitration is simulated.') : null,
+        ]),
+      );
+    }
+    box.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(ep), 'data-what': 'endpoint' }, ['+ Add endpoint'])]));
+    return box;
+  }
+
+  /** The values of one key in each map of a list (a list of endpoints' ports). */
+  private listTextsAt(listPath: Path, key: string): string[] {
+    const n = this.doc.get(listPath);
+    if (!n || n.kind !== 'seq') return [];
+    return n.items.map((_, k) => this.doc.text(listPath.concat(k, key)) || '').filter((x) => !!x);
   }
 
   /**
@@ -3572,6 +4065,7 @@ export class Editor {
     if (!impl) isel.classList.add('unset');
     const def = SEPARATION_IMPLEMENTATIONS.find((x) => x.id === impl);
     kids.push(this.field('Implementation *', isel, sp.concat('implementation'), def ? def.help : SEPARATION_IMPLEMENTATIONS.map((x) => `${x.label}: ${x.help}`).join(' ')));
+    kids.push(supportNote(this.d, (serviceDef('separation') as SvcDef).support, 'Domain separation'));
     // the two domains
     const dl = doc.get(sp.concat('domains'));
     const nd = dl && dl.kind === 'seq' ? dl.items.length : 0;
@@ -3823,7 +4317,7 @@ export class Editor {
       );
       return box;
     }
-    const uid = 'vl-' + Math.random().toString(36).slice(2, 9);
+    const uid = 'vl-' + nextUid();
     const chips = this.e('span', { class: 'vlan-chips', role: 'list', 'aria-label': `VLANs of ${id}` });
     for (const v of own) {
       chips.appendChild(
@@ -4603,6 +5097,12 @@ export class Editor {
         const di = Number(target.getAttribute('data-index'));
         const def = serviceDef(val);
         if (!def) return true;
+        if (val === 'applications') {
+          const k = doc.addApplication(di);
+          made = doc.appsPath(di).concat(k, 'profile');
+          note = `Application ${doc.text(doc.appsPath(di).concat(k, 'id')) || ''} added to ${this.devName(di)}: choose its profile.`;
+          break;
+        }
         if (val === 'dhcp' || val === 'dns' || val === 'hypervisor' || val === 'container_engine') doc.setNetService(di, val, true);
         else doc.addBlock(p.concat(val), def.label);
         made = p.concat(val);
@@ -4652,6 +5152,35 @@ export class Editor {
         note = n ? `Renamed; ${n} reference${n > 1 ? 's' : ''} updated.` : undefined;
         break;
       }
+      case 'ipv6-method':
+        if (val) doc.setText(p, val);
+        else doc.remove(p, 'IPv6 static');
+        note = val ? `IPv6: ${(IPV6_METHODS.find((x) => x.id === val) || { label: val }).label}.` : 'IPv6: static (its written addresses).';
+        break;
+      case 'app-profile': {
+        const gone = doc.setAppProfile(p.slice(0, -1), val);
+        note = val ? `Profile: ${(appProfile(val) || { label: val }).label}${gone.length ? ` (${gone.join(', ')} removed: not part of it)` : ''}.` : undefined;
+        break;
+      }
+      case 'app-id': {
+        const di = p[1] as number;
+        const k = p[4] as number;
+        const cur = doc.text(p) || '';
+        if (trimmed === cur) return true;
+        if (!ID_RE.test(trimmed)) {
+          this.host.toast('An application id is letters, digits, “_”, “.” and “-”.');
+          this.host.changed();
+          return true;
+        }
+        if (doc.appIds(di).some((x, j) => j !== k && x === trimmed)) {
+          this.host.toast(`${this.devName(di)} already has an application “${trimmed}”.`);
+          this.host.changed();
+          return true;
+        }
+        const n = doc.renameApplication(di, k, trimmed);
+        note = n ? `Renamed; ${n} peer${n > 1 ? 's' : ''} updated.` : undefined;
+        break;
+      }
       case 'ifid': {
         if (trimmed === '') {
           this.host.toast('The interface ID cannot be empty.');
@@ -4680,6 +5209,20 @@ export class Editor {
       case 'list-item':
       case 'list-scalar':
         doc.setText(p, trimmed);
+        break;
+      case 'csv':
+        doc.setTextList(p, trimmed);
+        break;
+      case 'np-add': {
+        // the default action chosen starts the policy (nothing is chosen for the user)
+        if (val !== 'permit' && val !== 'deny') return true;
+        this.open.add(target.getAttribute('data-card-key') as string);
+        doc.addNetPolicy(Number(p[1]), val);
+        note = `A network policy was started: default ${val}.`;
+        break;
+      }
+      case 'yesno':
+        doc.setYesNo(p, trimmed as '' | 'true' | 'false');
         break;
       case 'list-append':
         if (trimmed === '') return true;
@@ -4862,6 +5405,46 @@ export class Editor {
         this.host.changed(`The Wi-Fi network ${net} was deleted${clients.length ? `; ${clients.length} connection${clients.length === 1 ? '' : 's'} now name${clients.length === 1 ? 's' : ''} a missing network` : ''}.`);
         return true;
       }
+      case 'ra-toggle': {
+        const box = btn as unknown as HTMLInputElement;
+        if (box.checked) {
+          doc.addBlock(p, 'router advertisements');
+          this.didCreate(p.concat('prefixes'), 'Router advertisements on: write the prefixes it advertises (its own /64s are offered).', btn);
+        } else {
+          doc.remove(p, 'Router advertisements off');
+          this.host.changed('Router advertisements off.');
+        }
+        return true;
+      }
+      case 'add-app': {
+        const k = doc.addApplication(index);
+        this.didCreate(doc.appsPath(index).concat(k, 'profile'), `Application ${doc.text(doc.appsPath(index).concat(k, 'id')) || ''} added to ${this.devName(index)}: choose its profile.`, btn);
+        return true;
+      }
+      case 'dup-app': {
+        const k = Number(btn.getAttribute('data-k'));
+        const j = doc.duplicateApplication(index, k);
+        if (j < 0) return true;
+        this.didCreate(doc.appsPath(index).concat(j, 'id'), `Duplicated as ${doc.text(doc.appsPath(index).concat(j, 'id')) || ''}: give it its own port or peer where it needs one.`, btn);
+        return true;
+      }
+      case 'del-app': {
+        const k = Number(btn.getAttribute('data-k'));
+        const dev = doc.text(['devices', index, 'id']) || '';
+        const id = doc.text(doc.appsPath(index).concat(k, 'id')) || '';
+        const refs = doc.applicationRefTexts(dev, id);
+        if (refs.length) {
+          const a = await this.host.dialog({
+            title: `Remove the application ${dev}/${id}?`,
+            body: [`${refs.length === 1 ? 'This application names it as its peer' : `These ${refs.length} applications name it as their peer`}; ${refs.length === 1 ? 'its peer is' : 'their peers are'} removed with it and reported as missing until you choose another:`, this.e('ul', { class: 'removal-list' }, refs.map((x) => this.e('li', {}, [x]))) as unknown as string, 'You can undo this with Ctrl+Z.'],
+            buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Remove', value: 'go', kind: 'danger' }],
+          });
+          if (a !== 'go') return true;
+        }
+        doc.removeApplication(index, k);
+        this.host.changed(`The application ${id} was removed${refs.length ? `; ${refs.length} peer${refs.length === 1 ? '' : 's'} now missing` : ''}.`);
+        return true;
+      }
       case 'add-block': {
         const what = btn.getAttribute('data-what') || 'configuration';
         doc.addBlock(p, what);
@@ -4939,12 +5522,17 @@ export class Editor {
         const refs = ent && ent.id ? doc.references(kind, ent.id) : [];
         // a host: the guests that run on it are named
         const guests = kind === 'device' && ent && ent.id ? doc.guestsOfHost(ent.id) : [];
+        // the saved expectations and failure domains that name it are listed before anything is deleted
+        const users = doc.analysisUsers(refs);
         const answer = await this.host.dialog({
           title: `Delete ${kind} “${ent && ent.id ? ent.id : '(no id)'}”?`,
           body: [
             refs.length
               ? `${refs.length} reference${refs.length > 1 ? 's' : ''} to it will become invalid and will be listed as errors so you can fix or remove them.`
               : 'Nothing refers to it.',
+            ...(users.length
+              ? [' The analysis entries that name it (an expectation can’t be evaluated, a failure domain member is an error, until you change them):', this.e('ul', { class: 'removal-list', 'data-analysis-users': '' }, users.map((x) => this.e('li', {}, [x])))]
+              : []),
             ...(guests.length
               ? [` ${guests.length === 1 ? 'This guest runs' : `These ${guests.length} guests run`} on it (${guests.length === 1 ? 'its host reference breaks' : 'their host references break'}):`, this.e('ul', { class: 'removal-list' }, guests.map((x) => this.e('li', {}, [`${x.id} (${isVm(x) ? 'VM' : 'container'})`])))]
               : []),
@@ -5045,6 +5633,27 @@ export class Editor {
         doc.remove(p);
         this.host.changed();
         return true;
+      case 'rule-add': {
+        // (the box stays open for the rule to be filled in)
+        const card = btn.closest('[data-card]');
+        if (card) this.open.add(card.getAttribute('data-card') as string);
+        doc.addRule(p, btn.getAttribute('data-v') as string, p[p.length - 1] + ' rule');
+        this.host.changed(`A ${btn.getAttribute('data-v')} rule was added at the end.`);
+        return true;
+      }
+      case 'rp-red': {
+        // a redistribution source on or off (the list goes with its last entry)
+        const v = btn.getAttribute('data-v') as string;
+        const n = doc.get(p);
+        const cur = n && n.kind === 'seq' ? n.items.map((x) => scalarText(x) || '') : [];
+        if ((btn as HTMLInputElement).checked) doc.appendText(p, v, 'Redistribute ' + v);
+        else {
+          const k = cur.indexOf(v);
+          if (k >= 0) doc.remove(cur.length === 1 ? p : p.concat(k), 'Stop redistributing ' + v);
+        }
+        this.host.changed();
+        return true;
+      }
       case 'set-value': {
         // a suggestion chip: one undo step; validation follows as for typing
         const v = btn.getAttribute('data-v') as string;
@@ -5240,4 +5849,4 @@ interface SimOwner {
 }
 
 /** The services whose fields this file draws in their own cards (not from their parameters' definitions). */
-const OWN_UI = ['dhcp', 'dns', 'hypervisor', 'container_engine', 'vpn', 'separation'];
+const OWN_UI = ['dhcp', 'dns', 'hypervisor', 'container_engine', 'vpn', 'separation', 'applications'];

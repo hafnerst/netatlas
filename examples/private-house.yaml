@@ -58,6 +58,20 @@
 # to that member. The core routes no multicast (no PIM), so nothing reaches
 # the other VLANs.
 #
+# Dual stack: the Internal network is IPv4 and IPv6. The core's VLAN 10
+# interface has a second address, fd00:10::1/64 (a unique local prefix: the
+# provider gives the house no IPv6 here), and sends router advertisements for
+# fd00:10::/64; the laptop and the phone form their IPv6 address from it
+# (SLAAC, with duplicate address detection) and learn the core as their IPv6
+# default router, while DHCP still gives them their IPv4 lease. The other
+# networks stay IPv4 only.
+#
+# Applications: the thermostat is an Endpoint and stays one, yet runs two
+# applications: Local control, a TCP listener on port 8080 the TV (same IoT
+# network) may reach, and Cloud sync, a TCP client of the web server's HTTPS
+# application every 30 s (allowed by the IoT zone's relation). Network events
+# → Start application starts either client.
+#
 # Simulate ▾ → Start simulation…: the leases (each client in its network's
 # VLAN), the laptop's NAS session by name, HTTPS to the web server from every
 # zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by
@@ -111,9 +125,8 @@ devices:
     tier: 9
     group: provider
     services:
-      application:
-        name: Web
-        ports: [tcp/443]
+      applications:
+        - {id: web, name: Web, profile: tcp_server, port: 443}
     interfaces:
       - {id: eth0, ip: 203.0.113.80/24}
   - id: dsl-router
@@ -170,7 +183,7 @@ devices:
       - {id: up2, vlans: [10, 20, 30, 99], description: to the Second-floor switch}
       - {id: nas, vlans: 10}
     logical_interfaces:
-      - {id: Vlan10, type: virtual, vlan: 10, ip: 192.168.10.1/24}
+      - {id: Vlan10, type: virtual, vlan: 10, ip: [192.168.10.1/24, fd00:10::1/64], ipv6_ra: {prefixes: [fd00:10::/64]}}
       - {id: Vlan20, type: virtual, vlan: 20, ip: 192.168.20.1/24, vrf: iot}
       - {id: Vlan30, type: virtual, vlan: 30, ip: 192.168.30.1/24, vrf: guest}
       - {id: Vlan99, type: virtual, vlan: 99, ip: 192.168.99.1/24}
@@ -276,15 +289,18 @@ devices:
     kind_label: Smart TV
     group: basement
     simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
+    services:
+      applications:
+        - {id: control, name: Thermostat control, profile: tcp_client, peer: thermostat/control, interval: 30s}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: phone
     type: endpoint
     tier: 4
     kind: mobile
     group: floor1
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp, ipv6: slaac}
   - id: guest-phone
     type: endpoint
     tier: 4
@@ -292,7 +308,7 @@ devices:
     group: floor1
     simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
   - id: laptop
     type: endpoint
     tier: 2
@@ -300,15 +316,19 @@ devices:
     group: floor2
     simulation: {test_traffic: "on", test_targets: "nas.home.arpa tcp/445, 203.0.113.80 tcp/443", test_interval: 10}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp, ipv6: slaac}
   - id: thermostat
     type: endpoint
     tier: 2
     kind: other
     kind_label: Thermostat
     group: floor2
+    services:
+      applications:
+        - {id: control, name: Local control, profile: tcp_server, port: 8080}
+        - {id: sync, name: Cloud sync, profile: tcp_client, peer: web/web, interval: 30s}
     interfaces:
-      - {id: wlan0, dhcp: true}
+      - {id: wlan0, ipv4: dhcp}
 
 links:
   - {id: l-dsl, a: "dsl-router:wan", b: "isp:house", medium: dsl, speed: 100M, label: VDSL2 (PPPoE)}
@@ -330,3 +350,68 @@ relations:
   - {id: web-internal, protocol: https, label: Internet (Internal), endpoints: [laptop, phone, web]}
   - {id: web-iot, protocol: https, label: Internet (IoT), endpoints: [tv, thermostat, web]}
   - {id: web-guest, protocol: https, label: Internet (Guest), endpoints: [guest-phone, web]}
+
+# Design checks (Analyze ▾ → Design checks…): requirements kept with the
+# model and checked statically, nothing sent. The guests must not manage an
+# access point; the laptop resolves names with the DSL router and reaches the
+# NAS; the TV's control application reaches the thermostat. Every client
+# takes its address by DHCP, so in the configured model these are
+# indeterminate (the address is assigned at runtime); evaluated on a
+# simulation snapshot (Start simulation, then Evaluate) they have their leases
+# and the guests' SSH is blocked by the DSL router's policy. Single points of
+# failure → What if… Basement power: the DSL router, the core and the
+# basement access point fail together.
+failure_domains:
+  - {id: basement-power, label: Basement power, kind: power, members: [dsl-router, core, ap-b]}
+
+expectations:
+  - {id: guest-no-mgmt, name: Guests can't manage the access points, expect: blocked, from: guest-phone, to: "ap-b:mgmt", service: tcp/22}
+  - {id: laptop-dns, name: The laptop resolves names, expect: available, from: laptop, to: dsl-router/dns}
+  - {id: laptop-nas, name: The laptop reaches the NAS, expect: available, from: laptop, to: nas, service: tcp/445}
+  - {id: tv-control, name: The TV controls the thermostat, expect: dependency, from: tv/control}
+
+# Two repeatable experiments (Simulate ▾ → Experiments…, Run). They play
+# in the diagram with only their own traffic shown: the actions' messages and
+# what they need on the way (a host's DHCP, its ARP, the snooping querier's
+# queries); the rest of the house runs, hidden.
+#
+# cold-tv: a cold start. Every device is off and boots as it does (the
+# switches, the radio, the router, the hosts; boot time counts). The TV's
+# application waits for the TV to come up (said in the run, never skipped);
+# the observations say when the TV was operational, when it had its DHCP
+# lease, when it resolved the thermostat and whether the messages arrived.
+#
+# tv-stream: after the house has settled for a minute, the thermostat sends a
+# multicast stream for 50 s; the TV joins it, receives it, and leaves.
+experiments:
+  - id: cold-tv
+    name: Cold start — the TV gets an address and reaches the thermostat
+    duration: 2min
+    start: cold
+    actions:
+      - {id: control, at: 0s, do: start_app, target: tv/control}
+    observe:
+      - {id: tv-up, at: 0s, within: 60s, of: device, target: tv, expect: operational}
+      - {id: tv-lease, at: 0s, within: 90s, of: address, target: "tv:wlan0", family: ipv4, expect: acquired}
+      - {id: tv-arp, at: 0s, within: 110s, of: neighbor, target: tv, to: thermostat, expect: resolved}
+      - {id: delivered, of: app, target: control, expect: delivered}
+  - id: tv-stream
+    name: The TV joins the thermostat's stream, receives it, and leaves
+    duration: 60s
+    settle: 1min
+    scope: targets
+    actions:
+      - {id: stream, at: 2s, do: start_stream, target: "thermostat:wlan0", group: 239.20.1.1, interval: 1s, for: 50s}
+      - {id: join, at: 5s, do: join, target: "tv:wlan0", group: 239.20.1.1}
+      - {id: leave, at: 30s, do: leave, target: "tv:wlan0", group: 239.20.1.1}
+    observe:
+      - {id: receives, at: 1s, after: join, within: 20s, of: receive, target: "tv:wlan0", group: 239.20.1.1, min: 3, expect: received}
+      - {id: stops, at: 10s, after: leave, within: 10s, of: receive, target: "tv:wlan0", group: 239.20.1.1, expect: not received}
+
+# Saved views (Find ▾ → Saved views…): the IoT VLAN on its own (a VLAN
+# focus: the devices with a port or VLAN interface in it), and the house with
+# the two upper floors collapsed into one box each, their uplinks to the
+# basement kept. Opening one changes only what is drawn.
+views:
+  - {id: iot-vlan, name: The IoT VLAN, view: physical, focus: {target: core, context: vlan, vlan: 20}}
+  - {id: basement, name: The basement with the floors collapsed, view: physical, collapse: [floor1, floor2]}

@@ -7,7 +7,8 @@
 //   npm run build && node scripts/manual-screenshots.mjs && npm run build
 //
 // The browser is controlled through the DevTools protocol (scripts/cdp.mjs).
-// Set NETATLAS_BROWSER=/path/to/chrome to choose the browser.
+// Set NETATLAS_BROWSER=/path/to/chrome to choose the browser. SHOTS=file-menu,simulation
+// writes only the images named (the steps run as always), leaving the others as they are.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,7 +34,9 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   const page = await openPage(pathToFileURL(html).href);
   const saved = [];
+  const only = process.env.SHOTS ? process.env.SHOTS.split(',').map((x) => x.trim()) : null;
   const save = async (name, clip, opts) => {
+    if (only && only.indexOf(name) < 0) return;
     const data = await page.shot(clip, opts);
     writeFileSync(join(outDir, name + '.webp'), data);
     saved.push(`${name}.webp ${(data.length / 1024).toFixed(1)} KiB`);
@@ -133,6 +136,14 @@ async function main() {
     await page.settle();
     await save('toolbar-groups', around([await page.rect('#view-group'), await page.rect('#filters-group')], 8));
 
+    // the private house arranged with Structured (physical view): rows and columns, right-angle lines
+    await page.eval('netatlas.loadExampleNamed("private-house.yaml"), netatlas.setView("physical"), netatlas.select(null), true');
+    await page.click('#btn-arrange-structured');
+    await page.eval(`(() => { document.getElementById('toast').hidden = true; netatlas.fit(); return true; })()`);
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(200);
+    await save('arrange-structured', around([await page.rect('#canvas-wrap')], 0), { scale: 0.7, quality: 30 });
+
     // the addresses of a router in the logical view, at 100 % (addressing example)
     await page.eval('netatlas.loadExampleNamed("addressing.yaml"), netatlas.setView("logical"), netatlas.select("device:core", true), netatlas.select(null), true');
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
@@ -231,13 +242,12 @@ async function main() {
       const ex = 'addressing.yaml';
       await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView("logical"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.addressing'), document.getElementById('btn-addressing').click(), document.querySelector('[data-addr-toggle="|corp"]').click(), true`);
+      await page.eval(`document.getElementById('btn-addressing').click(), netatlas.selectAnalysisItem('net:|corp'), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      const d = await page.rect('#toolwin');
-      const sec = await page.rect('#toolwin .addr-vrf');
-      await save('addressing', { x: d.x, y: d.y, w: d.w, h: Math.min(d.y + d.h, sec.y + 330) - d.y }, { quality: 70 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      // Analyze: the network table at the bottom, the selected network's members on the right
+      await save('addressing', around([await page.rect('#sim-dock'), await page.rect('#side')], 0), { scale: 0.62, quality: 50 });
+      await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -249,8 +259,7 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
-      await save('focus', around([c, await page.rect('#toolwin')], 0), { scale: 0.75, quality: 48 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      await save('focus', around([c, await page.rect('#outline')], 0), { scale: 0.62, quality: 46 });
       await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`);
       await page.settle(150);
       await page.eval(`(() => { const i = document.getElementById('palette-input'); i.value = 'focus'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
@@ -258,7 +267,7 @@ async function main() {
       await save('palette', around([await page.rect('#modal')], 6), { quality: 70 });
       await page.key('Escape', 'Escape', 27);
       await page.settle(100);
-      await page.eval(`document.getElementById('focus-exit').click(), true`);
+      await page.eval(`document.getElementById('focus-exit').click(), netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -266,13 +275,11 @@ async function main() {
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.trace'), netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), true`);
+      await page.eval(`netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      const c = await page.rect('#canvas-wrap');
-      const w = await page.rect('#toolwin');
-      await save('trace', around([c, w], 0), { scale: 0.75, quality: 40 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      await save('trace', await page.rect('main'), { scale: 0.55, quality: 40 });
+      await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -282,9 +289,11 @@ async function main() {
       await page.eval("document.getElementById('toast').hidden = true");
       await page.eval(`localStorage.removeItem('netatlas.window.spof'), netatlas.openSpof(), true`);
       await page.mouse('mouseMoved', 700, 890);
+      // the service impact is checked in steps: the picture shows it done
+      for (let k = 0; k < 200 && !(await page.eval('netatlas.spofServiceDone()')); k++) await page.settle(100);
       await page.settle(250);
-      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 40 });
-      await page.eval(`netatlas.closeToolWindow(), true`);
+      await save('spof', around([await page.rect('#sim-dock')], 0), { scale: 0.75, quality: 34 });
+      await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -301,6 +310,66 @@ async function main() {
       await page.settle(100);
     }
 
+    // TCP flags on the labels: a small model (pc — r1 — r2 — srv, eBGP between the routers) whose labels read at Fit; the physical view
+    // at a TCP test's three steps ([S]; [S,A]; [A] with the request [P,A]), the logical view with the BGP session's own handshake
+    {
+      const TCP_MODEL = `netatlas: 1
+title: TCP handshake
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
+  - {id: r1, type: router, router_id: 10.255.0.1, protocols: {bgp: {asn: 65001}}, interfaces: [{id: g0, ip: 10.0.1.1/24}, {id: g1, ip: 10.0.12.1/30}], routes: [{prefix: 10.0.2.0/24, via: 10.0.12.2}]}
+  - {id: r2, type: router, router_id: 10.255.0.2, protocols: {bgp: {asn: 65002}}, interfaces: [{id: g0, ip: 10.0.12.2/30}, {id: g1, ip: 10.0.2.1/24}], routes: [{prefix: 10.0.1.0/24, via: 10.0.12.1}]}
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.2.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.2.1}], simulation: {listening: tcp/443}}
+links:
+  - {id: l1, a: "pc:eth0", b: "r1:g0"}
+  - {id: l2, a: "r1:g1", b: "r2:g0"}
+  - {id: l3, a: "r2:g1", b: "srv:eth0"}
+networks:
+  - {id: lan1, cidr: 10.0.1.0/24}
+  - {id: wan, cidr: 10.0.12.0/30}
+  - {id: lan2, cidr: 10.0.2.0/24}
+relations:
+  - {id: peering, protocol: ebgp, endpoints: ["r1:g1", "r2:g0"]}
+`;
+      // want: a JavaScript array literal of the labels wanted, as source text
+      const until = async (want, test) => page.eval(`(() => { const c = netatlas.simController(); const lab = () => Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).map((g) => g.textContent); const want = ${want}; for (let i = 0; i < 6000; i++) { c.advance(20); if (i % 3 === 0) { c.refresh(true); const t = lab(); if (want.every((w) => t.some((x) => x.indexOf(${test ? "'Test · '" : "''"} + w) === 0))) { document.getElementById('toast').hidden = true; return true; } } } return false; })()`);
+      // zoomed to 120 % around the labels wanted (the point between them kept in place), cropped around them with room for their way
+      // prefix: a JavaScript string literal, as source text
+      const canvas = async (prefix) => {
+        // half a hop further (Readable: 3 s a hop at 1x), the labels past their fade-in
+        await page.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 50; i++) c.advance(20); c.refresh(true); return true; })()`);
+        await page.eval(`(() => { const c = netatlas.simController(); const ls = Array.from(document.querySelectorAll('#canvas .layer-sim-labels [data-for]')).filter((g) => g.textContent.indexOf(${prefix}) >= 0).map((g) => g.getBoundingClientRect()); if (!ls.length) return false; const r = document.getElementById('canvas').getBoundingClientRect(); const cx = ls.reduce((n, b) => n + b.left + b.width / 2, 0) / ls.length - r.left; const cy = ls.reduce((n, b) => n + b.top + b.height / 2, 0) / ls.length - r.top; const z = netatlas.zoom; const dx = (cx - z.tx) / z.k; const dy = (cy - z.ty) / z.k; z.k = 1.2; z.tx = r.width / 2 - dx * z.k; z.ty = r.height / 2 - dy * z.k; netatlas.applyZoom(); c.refresh(true); return true; })()`);
+        await page.settle(200);
+        const r = await page.rect('#canvas');
+        const w = Math.min(r.w - 8, 600);
+        const h = Math.min(r.h - 8, 300);
+        return { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, w, h };
+      };
+      for (const view of ['logical', 'physical']) {
+        await page.eval(`netatlas.loadText(${JSON.stringify('$MODEL$')}, 'tcp-handshake.yaml'), netatlas.setView('${view}'), true`.replace(JSON.stringify('$MODEL$'), JSON.stringify(TCP_MODEL)));
+        await page.eval("document.getElementById('toast').hidden = true");
+        await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ params: {} }), netatlas.simController().setPlaying(false), netatlas.fit(), true`);
+        await page.settle(150);
+        if (view === 'logical') {
+          // the BGP session's TCP connection along the relation: its SYN-ACK and ACK, then the OPENs
+          if (await until("['BGP TCP [S,A]']", false)) {
+            await page.settle(150);
+            await save('tcp-logical', await canvas("'BGP TCP ['"), { quality: 40 });
+          }
+        } else {
+          await page.eval(`netatlas.simController().runTo(15000), netatlas.simController().sendTest({ from: 'pc', to: 'srv', kind: 'tcp', port: 443 }), true`);
+          for (const [name, want] of [['tcp-syn', "['TCP [S]']"], ['tcp-synack', "['TCP [S,A]']"], ['tcp-ack', "['TCP [A]', 'TCP [P,A]']"]]) {
+            if (!(await until(want, true))) continue;
+            await page.settle(150);
+            await save(name, await canvas("'Test · TCP ['"), { quality: 40 });
+            await page.eval('netatlas.fit(), true');
+          }
+        }
+        await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+        await page.settle(100);
+      }
+    }
+
     // the protocol simulation (protocol-simulation.yaml, an internal test model, physical view): the tables, the packet inspector, a broadcast domain, multicast routes, a device's Simulation section, the start dialog
     {
       await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'test', 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
@@ -313,7 +382,7 @@ async function main() {
       const st = await page.rect('#sd-status');
       await save('arp-table', { x: st.x, y: st.y, w: st.w, h: Math.min(st.h, 300) }, { quality: 55 });
       // the packet inspector for a TCP SYN of pc1's test traffic, with Follow message
-      await page.eval(`(() => { const c = netatlas.simController(); c.showStatus(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP SYN → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP SYN → /.test(x.label)); } return false; })()`);
+      await page.eval(`(() => { const c = netatlas.simController(); c.showStatus(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP \\[S\\] → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP \\[S\\] → /.test(x.label)); } return false; })()`);
       await page.settle(200);
       await save('packet-inspector', around([await page.rect('.sim-table-panel[data-table="packet"]')], 6), { quality: 55 });
       // the lab host's broadcast domain, highlighted
@@ -430,6 +499,18 @@ async function main() {
       };
       await card('private-house', 'ap-b', 'svc-wireless', 'wifi-edit', 560);
       await card('enterprise-campus', 'srv', 'netservices', 'services-add', 560, '[data-svc-card="ntp"]');
+      // the thermostat's applications (private-house.yaml): two collapsed entries, the second opened with its Advanced section closed
+      await page.eval(`netatlas.loadExampleNamed('private-house.yaml'), netatlas.setView("physical"), netatlas.select("device:thermostat"), netatlas.showTab("edit"), true`);
+      await page.settle(150);
+      await page.eval(`(() => { document.getElementById('toast').hidden = true; const d = document.querySelector('#side-body details.app-card[data-app="sync"]'); d.open = true; document.querySelector('#side-body [data-svc-card="applications"]').scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      {
+        const a = await page.rect('#side-body [data-svc-card="applications"]');
+        const sb = await page.rect('#side-body');
+        const top = Math.max(sb.y, a.y - 4);
+        await save('applications', { x: a.x - 4, y: top, w: a.w + 8, h: Math.min(sb.y + sb.h - top, a.y + a.h + 4 - top, 520) }, { quality: 38 });
+      }
     }
 
     // the device model: a System's Identity card (ot-network.yaml); the Security gateway (cross-domain.yaml): the diagram, its
@@ -449,6 +530,15 @@ async function main() {
         const sb = await page.rect('#side-body');
         const top = Math.max(sb.y, t.y - 30);
         await save('device-model', { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h, g.y + g.h + 4) - top }, { quality: 50 });
+      }
+      // the non-IP interconnects (a test example): a USB line, a one-way serial line, an RS-485 bus with its roles, a fabric switch's transit
+      await page.eval(`netatlas.loadExampleNamed("interconnects.yaml"), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      {
+        const r = await page.eval(`(() => { const ids = ['device:ctl', 'device:scope', 'device:gps', 'device:meter1', 'device:meter2', 'interconnect:meter-bus', 'device:fsw', 'device:payload1', 'device:payload3']; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const id of ids) { const b = document.querySelector('#canvas [data-ref="' + id + '"]').getBoundingClientRect(); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.right); y1 = Math.max(y1, b.bottom); } return { x: x0 - 12, y: y0 - 14, w: x1 - x0 + 24, h: y1 - y0 + 28 }; })()`);
+        await save('interconnects', r, { scale: 1.5, quality: 45 });
       }
       await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(await ex('cross-domain'))}), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
       await page.eval("document.getElementById('toast').hidden = true");
@@ -476,10 +566,9 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       {
-        const w = await page.rect('#toolwin');
-        await save('separation-trace', { x: w.x - 4, y: w.y - 4, w: w.w + 8, h: w.h + 8 }, { scale: 0.8, quality: 40 });
+        await save('separation-trace', around([await page.rect('#sim-dock')], 0), { scale: 0.7, quality: 40 });
       }
-      await page.eval(`netatlas.exitTrace(), true`);
+      await page.eval(`netatlas.exitTrace(), netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
@@ -551,6 +640,23 @@ async function main() {
       await page.settle(100);
     }
 
+    // PTP (timing-ptp.yaml): the clocks' marks, gm-a the grandmaster through the transparent and the boundary clock
+    {
+      await page.eval(`netatlas.loadExampleNamed('timing-ptp.yaml'), netatlas.setView('physical'), netatlas.select(null), true`);
+      await page.settle(150);
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ params: {} }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(60000), netatlas.simController().refresh(true), document.getElementById('toast').hidden = true, true`);
+      await page.settle(250);
+      // cell A at 100 %, centred on its transparent clock
+      await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); netatlas.select('device:sw-a', true); netatlas.select(null); return true; })()`);
+      await page.settle(250);
+      const qs = [];
+      for (const d of ['gm-a', 'gm-b', 'sw-a']) qs.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
+      for (const d of ['gm-a', 'gm-b', 'sw-a']) qs.push(await page.rect(`#canvas .sim-ptp[data-device="${d}"]`));
+      await save('ptp', around(qs, 10), { scale: 0.88, quality: 22 });
+      await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
     // input helpers: a tunnel interface's MTU suggestions and MAC Generate (enterprise WAN, hq-rtr1 st0.10)
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("iface:hq-rtr1:st0.10"), netatlas.showTab("edit"), true');
@@ -596,6 +702,44 @@ async function main() {
       const g = await page.rect('#side-body [data-group="checks"]');
       const y = Math.max(side.y, g.y - 4);
       await save('checks', { x: side.x, y, w: side.w, h: Math.min(side.y + side.h, y + 270) - y }, { quality: 70 });
+    }
+
+    // an experiment playing: the private house's cold start, the TV booted and getting its address, only its traffic drawn
+    {
+      await page.eval('netatlas.loadExampleNamed("private-house.yaml"), netatlas.setView("physical"), netatlas.fit(), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`netatlas.enterExperiments().then(() => (netatlas.selectExperimentStep({ exp: 'cold-tv', list: 'observe', index: 1 }), netatlas.runExperiment('cold-tv'), true))`);
+      // the clock on to the TV's first application messages (as frames would move it), then paused there so the picture is steady
+      await page.eval(`(() => { const c = netatlas.experimentPlayback(); for (let k = 0; k < 600 && !(netatlas.experimentRunner().result().observations.length >= 2 && c.pacer.items.some((it) => it.f.protocol === 'tcp' && it.drawn && c.pacer.state(it).phase === 'moving')); k++) c.advance(100); c.setPlaying(false); c.refresh(true); return true; })()`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      // the workspace: the sequence and its start on the left, only the experiment's traffic in the diagram, the progress and verdicts at the bottom
+      await save('experiments', await page.rect('main'), { scale: 0.55, quality: 36 });
+      await page.eval('netatlas.stopExperiment(), netatlas.exitWorkspace().then(() => true)');
+    }
+    // the saved views of the private house
+    {
+      await page.eval('netatlas.loadExampleNamed("private-house.yaml"), netatlas.setView("physical"), true');
+      await page.eval(`localStorage.removeItem('netatlas.window.views'), netatlas.openSavedViews(), true`);
+      await page.settle(250);
+      {
+        const w = await page.rect('#toolwin');
+        const l = await page.rect('#toolwin .vw-list');
+        await save('views', { x: w.x - 6, y: w.y - 6, w: w.w + 12, h: l.y + l.h + 14 - (w.y - 6) }, { scale: 0.8, quality: 34 });
+      }
+      await page.eval('netatlas.closeToolWindow(), true');
+    }
+    // the execution scope in Start simulation: a group of the campus
+    {
+      await page.eval('netatlas.loadExampleNamed("enterprise-campus.yaml"), netatlas.setView("physical"), netatlas.select("group:bldg-a"), true');
+      await page.eval(`sessionStorage.clear(), netatlas.openStartDialog(), true`);
+      await page.settle(200);
+      await page.eval(`(() => { const s = document.getElementById('sim-pd-scope'); const o = Array.from(s.options).find((x) => /group/.test(x.textContent)); s.value = o ? o.value : '0'; s.dispatchEvent(new Event('change')); document.getElementById('sim-pd-scope-detail').open = true; s.focus(); return true; })()`);
+      await page.settle(200);
+      await save('sim-scope', around([await page.rect('#modal .sim-pd-scope')], 8), { scale: 0.85, quality: 38 });
+      await page.key('Escape', 'Escape', 27);
+      await page.settle(100);
     }
 
     // the theme switch with its tooltip, in the dark theme (the default)

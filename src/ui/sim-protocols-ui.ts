@@ -11,6 +11,7 @@
  */
 import { ENTRY_GROUPS, SimEntryGroup, SimProtocolEntry, usesText } from '../analysis/sim/simulation';
 import { el } from './dom';
+import { supportText } from '../model/support';
 
 export interface ProtocolPickerOpts {
   /** a prefix for the element ids (the dialog's and the panel's lists can be on the page together) */
@@ -46,8 +47,11 @@ export function protocolPicker(doc: Document, o: ProtocolPickerOpts): ProtocolPi
   const count = el(doc, 'span', { class: 'pp-count' }, ['']);
   const all = el(doc, 'button', { type: 'button', class: 'mini', id: o.id + '-all' }, ['Select all']) as HTMLButtonElement;
   const none = el(doc, 'button', { type: 'button', class: 'mini', id: o.id + '-none' }, ['Clear']) as HTMLButtonElement;
-  const head = el(doc, 'div', { class: 'pp-head' }, [el(doc, o.heading || 'h3', { class: 'pp-title', id: titleId }, ['Protocols ', count]), el(doc, 'span', { class: 'pp-tools' }, [all, none])]);
-  const list = el(doc, 'div', { class: 'pp-list', role: 'group', 'aria-labelledby': titleId, id: o.id + '-list' });
+  // (what is shown, never what runs: every protocol of the model runs whatever is ticked here)
+  const hint = 'What is drawn and listed. Every protocol of the model runs whatever is ticked: clearing one hides its traffic, it does not stop it.';
+  const head = el(doc, 'div', { class: 'pp-head' }, [el(doc, o.heading || 'h3', { class: 'pp-title', id: titleId, title: hint }, ['Protocol traffic shown ', count]), el(doc, 'span', { class: 'pp-tools' }, [all, none])]);
+  const hintEl = el(doc, 'p', { class: 'sr-only', id: o.id + '-hint' }, [hint]);
+  const list = el(doc, 'div', { class: 'pp-list', role: 'group', 'aria-labelledby': titleId, 'aria-describedby': o.id + '-hint', id: o.id + '-list' });
   const groups: Array<{ g: SimEntryGroup; ids: string[]; count: HTMLElement; all: HTMLButtonElement; none: HTMLButtonElement }> = [];
   const boxes = new Map<string, HTMLInputElement>();
   for (const g of ENTRY_GROUPS) {
@@ -61,21 +65,25 @@ export function protocolPicker(doc: Document, o: ProtocolPickerOpts): ProtocolPi
       el(doc, 'div', { class: 'pp-ghead' }, [el(doc, 'span', { class: 'pp-gname', id: gid }, [g + ' ', gc]), el(doc, 'span', { class: 'pp-gtools' }, [ga, gn])]),
     ]);
     for (const e of es) {
-      const cb = el(doc, 'input', { type: 'checkbox', 'data-sim-proto': e.id, id: protoBoxId(o.id, e.id) }) as HTMLInputElement;
+      // what the simulation does for it: in its tooltip and for a screen reader; a protocol it only draws says so beside its name
+      const did = protoBoxId(o.id, e.id) + '-sup';
+      const cb = el(doc, 'input', { type: 'checkbox', 'data-sim-proto': e.id, id: protoBoxId(o.id, e.id), 'aria-describedby': did }) as HTMLInputElement;
       boxes.set(e.id, cb);
       fs.appendChild(
-        el(doc, 'label', { class: 'check pp-item', for: cb.id }, [
+        el(doc, 'label', { class: 'check pp-item', for: cb.id, title: supportText(e.support), 'data-support': e.support.level }, [
           cb,
           el(doc, 'span', { class: 'sim-swatch', 'aria-hidden': 'true', style: `background:${o.color(e.id)}` }),
           el(doc, 'span', { class: 'pp-name' }, [e.label]),
+          e.support.level !== 'modeled' ? el(doc, 'span', { class: 'pp-fid' }, [e.support.level === 'drawn' ? 'demo packets only' : 'not simulated']) : null,
           el(doc, 'span', { class: 'pp-uses' }, [usesText(e)]),
         ]),
       );
+      fs.appendChild(el(doc, 'span', { class: 'sr-only', id: did }, [supportText(e.support)]));
     }
     list.appendChild(fs);
     groups.push({ g, ids: es.map((e) => e.id), count: gc, all: ga, none: gn });
   }
-  const root = el(doc, 'section', { class: 'pp', id: o.id, 'aria-labelledby': titleId }, [head, list]);
+  const root = el(doc, 'section', { class: 'pp', id: o.id, 'aria-labelledby': titleId }, [head, hintEl, list]);
 
   const sync = (): void => {
     for (const [id, cb] of boxes) cb.checked = sel.has(id);

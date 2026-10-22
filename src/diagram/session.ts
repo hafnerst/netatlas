@@ -33,13 +33,14 @@
  * filtered views with their temporary ones). It never changes the model.
  */
 import { Pt } from '../layout/geometry';
+import { collapseGroups, hidingGroup } from '../model/collapse';
 import { LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
-import { ArrangeStrategy, STRATEGIES, strategyPositions } from '../layout/strategies';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_ROUTING, strategyPositions } from '../layout/strategies';
 import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
-import { filterModel, selectsAll } from '../model/filter';
-import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusUp, focusNeighbourhood, focusSeeds } from '../analysis/focus';
+import { filterModel, selectsAll, withConnections } from '../model/filter';
+import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusContext, FocusUp, contextFocus, focusNeighbourhood, focusSeeds } from '../analysis/focus';
 import type { FailureResult } from '../analysis/failure';
 import { refExists, relatedRefs } from '../model/queries';
 import { typeKey } from '../model/device-types';
@@ -64,8 +65,12 @@ export interface ViewState {
   devices: Set<string> | null;
   /** device type keys (model/device-types.ts typeKey: "server", "switch:l2") whose devices the diagrams leave out */
   hiddenTypes: Set<string>;
-  /** focus mode: the object and the number of hops shown around it; null = off */
-  focus: { ref: string; hops: number } | null;
+  /** focus mode: the object and the number of hops shown around it, or a contextual focus (a VLAN, dependencies, a multicast group, a timing domain); null = off */
+  focus: { ref: string; hops: number; context?: FocusContext } | null;
+  /** groups drawn as one box each (model/collapse.ts); display state only */
+  collapsed: Set<string>;
+  /** the physical view's connections: IP and non-IP (all), IP only (no interconnect), or non-IP only (no cable) */
+  connections: 'all' | 'ip' | 'nonip';
   /**
    * Temporary positions while a node is being dragged, keyed by ref
    * ("device:x", "network:y"). The editor commits them to the document's
@@ -86,7 +91,9 @@ export function createViewState(): ViewState {
     hiddenProtocols: new Set(),
     devices: null,
     hiddenTypes: new Set(),
-      focus: null,
+    focus: null,
+    collapsed: new Set(),
+    connections: 'all',
     positions: { physical: new Map(), logical: new Map() },
   };
 }
@@ -106,6 +113,8 @@ export class Session {
   private filtered: { physical: ViewCache | null; logical: ViewCache | null } = { physical: null, logical: null };
   /** temporary positions of the filtered views, keyed by entity id; null = not arranged yet */
   private temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } = { physical: null, logical: null };
+  /** the routing of a filtered view once it was arranged with an option ('standard' or 'orthogonal'); null: the document's */
+  private tempRouting: { physical: 'standard' | 'orthogonal' | null; logical: 'standard' | 'orthogonal' | null } = { physical: null, logical: null };
   /**
    * Places of the filtered views' nodes as they were when a device type was
    * switched off, so that switching it on again brings its devices back
@@ -190,10 +199,11 @@ export class Session {
     }
     this.filtered = { physical: null, logical: null };
     // focus on an object the edit removed ends, and the views before it come back
-    if (this.state.focus && !focusSeeds(model, this.state.focus.ref).length) this.endFocus();
+    if (this.state.focus && (this.state.focus.context ? !contextFocus(model, this.state.focus.context).devices.size : !focusSeeds(model, this.state.focus.ref).length)) this.endFocus();
     for (const v of ['physical', 'logical'] as LayoutView[]) {
       if (!this.isFiltered(v)) {
         this.temp[v] = null;
+        this.tempRouting[v] = null;
         this.parked[v] = null;
       } else {
         const old = this.temp[v];
@@ -206,7 +216,55 @@ export class Session {
 
   /** Does a view (the one on screen by default) show a proper subset of the devices (by selection, by type or by focus)? */
   isFiltered(view: View = this.state.view): boolean {
-    return this.shownSet(view) !== null;
+    return this.shownSet(view) !== null || this.collapsing() || this.connectionsFilter(view) !== null;
+  }
+
+  /** The physical view's connections filter in effect (only when it leaves something out), else null. */
+  private connectionsFilter(view: View): 'ip' | 'nonip' | null {
+    const c = this.state.connections;
+    if (view !== 'physical' || c === 'all') return null;
+    if (c === 'ip') return this.model.interconnects.length ? 'ip' : null;
+    return this.model.links.length || this.model.devices.some((d) => !d.opaquePorts.length) ? 'nonip' : null;
+  }
+
+  /**
+   * Choose the physical view's connections: IP and non-IP, IP only, non-IP
+   * only. A filtered view is arranged afresh (as a device filter is); all of
+   * them again brings the stored positions back. Returns whether it changed.
+   */
+  setConnections(mode: 'all' | 'ip' | 'nonip'): boolean {
+    if (this.state.connections === mode) return false;
+    this.state.connections = mode;
+    this.filtered = { physical: null, logical: null };
+    this.temp = { physical: null, logical: null };
+    this.parked = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    return true;
+  }
+
+  /** Is a collapsed group drawn as a box (one that still exists and has a device)? */
+  private collapsing(): boolean {
+    const c = this.state.collapsed;
+    if (!c.size) return false;
+    for (const g of Array.from(c)) if (!this.model.index.groups.has(g)) c.delete(g);
+    return c.size > 0 && this.model.devices.some((d) => hidingGroup(this.model, d.id, c) !== null);
+  }
+
+  /**
+   * Draw a group as one box, or its devices again. Display state only: the
+   * diagram is arranged afresh (as a filtered one), the model and its layout
+   * are not touched. Returns whether it changed.
+   */
+  setCollapsed(group: string, on: boolean): boolean {
+    if (!this.model.index.groups.has(group) || this.state.collapsed.has(group) === on) return false;
+    if (on) this.state.collapsed.add(group);
+    else this.state.collapsed.delete(group);
+    this.filtered = { physical: null, logical: null };
+    this.temp = { physical: null, logical: null };
+    this.parked = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    this.state.positions.logical.clear();
+    return true;
   }
 
   /** The selected device ids (every device when there is no filter); device types switched off do not change it. */
@@ -235,7 +293,7 @@ export class Session {
     const hidden = this.state.hiddenTypes;
     const focus = this.state.focus;
     if (!sel && !hidden.size && !focus) return null;
-    const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined) : null;
+    const near = focus ? this.focusDevices(focus, view) : null;
     const out = new Set<string>();
     // (a guest has no cables: in the physical view's focus it goes with the machine it runs on)
     const nearHas = (d: Device): boolean => !near || near.has(d.id) || (view === 'physical' && isGuest(d) && near.has(machineOf(this.model, d).id));
@@ -278,14 +336,14 @@ export class Session {
   private wouldFocus(d: Device): boolean {
     const focus = this.state.focus;
     if (!focus) return true;
-    const near = focusNeighbourhood(this.model, focus.ref, focus.hops, 'physical', this.simUp || undefined);
+    const near = this.focusDevices(focus, 'physical');
     return near.has(d.id) || near.has(machineOf(this.model, d).id);
   }
 
   // ------------------------------------------------------------- focus mode
 
   /** the temporary positions of the views as they were before focus mode began (restored when it ends) */
-  private beforeFocus: { temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } } | null = null;
+  private beforeFocus: { temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; routing: Session['tempRouting'] } | null = null;
 
   /**
    * Show only the neighbourhood of an object: the devices within `hops`
@@ -294,16 +352,17 @@ export class Session {
    * ones next to their neighbours. Returns false when the object has no
    * device to start from (nothing changes then).
    */
-  setFocus(ref: string, hops: number): boolean {
-    if (!focusSeeds(this.model, ref).length) return false;
+  setFocus(ref: string, hops: number, context?: FocusContext): boolean {
+    if (context ? !contextFocus(this.model, context).devices.size : !focusSeeds(this.model, ref).length) return false;
     const n = Math.max(FOCUS_MIN_HOPS, Math.min(FOCUS_MAX_HOPS, Math.round(hops)));
     const cur = this.state.focus;
-    if (cur && cur.ref === ref && cur.hops === n) return false;
+    const sameCtx = (a?: FocusContext, b?: FocusContext): boolean => JSON.stringify(a || null) === JSON.stringify(b || null);
+    if (cur && cur.ref === ref && cur.hops === n && sameCtx(cur.context, context)) return false;
     const views: LayoutView[] = ['physical', 'logical'];
-    const same = !!cur && cur.ref === ref;
+    const same = !!cur && cur.ref === ref && sameCtx(cur.context, context);
     const seeds = same ? views.map((v) => new Map(this.positionsFor(v))) : null;
-    if (!cur) this.beforeFocus = { temp: { ...this.temp }, parked: { ...this.parked } };
-    this.state.focus = { ref, hops: n };
+    if (!cur) this.beforeFocus = { temp: { ...this.temp }, parked: { ...this.parked }, routing: { ...this.tempRouting } };
+    this.state.focus = context ? { ref, hops: n, context } : { ref, hops: n };
     this.filtered = { physical: null, logical: null };
     this.state.positions.physical.clear();
     this.state.positions.logical.clear();
@@ -312,6 +371,11 @@ export class Session {
       this.temp[v] = seeds && this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), seeds[i]) : null;
     });
     return true;
+  }
+
+  /** The devices focus mode shows in a view: the neighbourhood by hops, or the contextual focus's devices. */
+  private focusDevices(focus: { ref: string; hops: number; context?: FocusContext }, view: View): Map<string, number> {
+    return focus.context ? contextFocus(this.model, focus.context).devices : focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined);
   }
 
   /** Leave focus mode: the views come back as they were before it (the model was never changed). Returns whether it was on. */
@@ -327,6 +391,7 @@ export class Session {
       const t = back ? back.temp[v] : null;
       this.temp[v] = t && this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), t) : null;
       this.parked[v] = back && this.isFiltered(v) ? back.parked[v] : null;
+      this.tempRouting[v] = back && this.isFiltered(v) ? back.routing[v] : null;
     }
     return true;
   }
@@ -416,6 +481,20 @@ export class Session {
   private cache(view: View): ViewCache {
     const c = this.filtered[view];
     if (c) return c;
+    let out: ViewCache;
+    if (this.collapsing()) {
+      const base = this.cacheBase(view).model;
+      const model = collapseGroups(base, this.state.collapsed);
+      out = this.filtered[view] = { model, input: layoutInput(model) };
+    } else out = this.cacheBase(view);
+    // (the physical view's connections: IP only, non-IP only)
+    const conn = this.connectionsFilter(view);
+    if (!conn) return out;
+    const model = withConnections(out.model, conn);
+    return (this.filtered[view] = { model, input: layoutInput(model) });
+  }
+
+  private cacheBase(view: View): ViewCache {
     const shown = this.shownSet(view);
     // VMs the simulation restarted elsewhere: drawn in their new host
     if (view === 'physical' && this.placement) {
@@ -436,7 +515,9 @@ export class Session {
     if (this.isFiltered(view)) {
       let t = this.temp[view];
       // a filtered view is arranged once, when it is first shown; afterwards it only changes when the user moves or arranges it
-      if (!t) t = this.temp[view] = autoPositions(view, this.viewInput(view));
+      // (as Structured when the complete view is routed that way, else as Default)
+      if (!t) this.tempRouting[view] = null;
+      if (!t) t = this.temp[view] = this.model.layout.routing[view] === 'orthogonal' ? strategyPositions(view, this.viewInput(view), 'structured') : autoPositions(view, this.viewInput(view));
       return t;
     }
     return this.resolvedPositions(view);
@@ -473,7 +554,20 @@ export class Session {
   filteredArrangedWith(view: LayoutView): ArrangeStrategy[] {
     const cur = this.positionsFor(view);
     const input = this.viewInput(view);
-    return STRATEGIES.filter((st) => samePositions(cur, strategyPositions(view, input, st)));
+    const routing = this.routingFor(view);
+    return STRATEGIES.filter((st) => STRATEGY_ROUTING[st] === routing && samePositions(cur, strategyPositions(view, input, st)));
+  }
+
+  /**
+   * How a view's cables and relations are routed now: 'orthogonal' (the
+   * Structured arrangement) or undefined (the standard routing). The
+   * document says it; a filtered view that was arranged with an option
+   * follows that option until the filter ends.
+   */
+  routingFor(view: LayoutView): 'orthogonal' | undefined {
+    const t = this.isFiltered(view) ? this.tempRouting[view] : null;
+    if (t) return t === 'orthogonal' ? 'orthogonal' : undefined;
+    return this.model.layout.routing[view];
   }
 
   /**
@@ -490,6 +584,7 @@ export class Session {
       if (!q || q.x !== p.x || q.y !== p.y) moved++;
     });
     this.temp[view] = auto;
+    this.tempRouting[view] = STRATEGY_ROUTING[strategy] || 'standard';
     this.parked[view] = null;
     this.state.positions[view].clear();
     return moved;
@@ -585,7 +680,7 @@ export class Session {
   render(): SceneResult {
     const s = this.state;
     if (s.view === 'physical') {
-      return renderPhysical(this.viewModel('physical'), this.physicalLayout(), { showLabels: s.showLabels, showGroups: s.showGroups, positions: new Map() });
+      return renderPhysical(this.viewModel('physical'), this.physicalLayout(), { showLabels: s.showLabels, showGroups: s.showGroups, positions: new Map(), orthogonal: this.routingFor('physical') === 'orthogonal' || undefined });
     }
     return renderLogical(this.viewModel('logical'), this.logicalLayout(), {
       showLabels: s.showLabels,
@@ -594,6 +689,7 @@ export class Session {
       showGroups: s.showGroups,
       hiddenProtocols: s.hiddenProtocols,
       positions: s.positions.logical,
+      orthogonal: this.routingFor('logical') === 'orthogonal' || undefined,
     });
   }
 

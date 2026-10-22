@@ -154,7 +154,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         /* missing */
       }
       if (cur !== text) {
-        console.log('out of date: test/fixtures/' + name);
+        console.error('out of date: test/fixtures/' + name + ' — regenerate with "node scripts/make-fixtures.mjs" (after tsc), then "npm run build" (the test build embeds the fixtures)');
         stale = true;
       }
     } else {
@@ -162,5 +162,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.log('wrote test/fixtures/' + name);
     }
   }
+  if (check && !stale) console.log(`test/fixtures/ is up to date (${outputs.length} fixtures)`);
   process.exit(stale ? 1 : 0);
 }

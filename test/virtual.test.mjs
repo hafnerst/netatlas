@@ -127,7 +127,7 @@ test('a guest needs its host, and the host its service', () => {
   assert.match(one(rep('    host: ch\n', '    host: sw\n')), /"sw" is a switch$/);
   assert.equal(one(rep('  - id: ch\n    type: server\n', '  - id: ch\n    type: server\n    host: hv\n')), 'devices.ch.host: only a VM or a container has a host; "ch" is a server — delete "host"');
   // a VM may run containers (its own container engine): a container's host can be a VM
-  const inVm = rep(VM1, VM1 + '    services: {container_engine: {engine: podman, networks: [{name: b, driver: bridge, interface: podman0, subnet: 10.88.0.0/16, gateway: 10.88.0.1, nat: true}]}}\n') + '  - {id: c2, type: container, host: vm1, logical_interfaces: [{id: eth0, type: veth, network: b, ip: 10.88.0.5}]}\n'.replace(/^/, '');
+  const inVm = rep(VM1, VM1 + '    services: {container_engine: {engine: podman, networks: [{name: b, driver: bridge, interface: podman0, subnet: 10.88.0.0/16, gateway: 10.88.0.1, nat: true}]}}\n') + '  - {id: c2, type: container, host: vm1, logical_interfaces: [{id: eth0, type: veth, network: b, ip: 10.88.0.5}]}\n';
   const m = ok(inVm.replace('links:\n', '  - {id: c2, type: container, host: vm1, logical_interfaces: [{id: eth0, type: veth, network: b, ip: 10.88.0.5}]}\nlinks:\n').replace(/\n {2}- \{id: c2[^\n]*\n$/, '\n'));
   assert.equal(m.index.devices.get('c2').group, 'dc', 'in a VM: the VM’s host’s location');
   assert.match(one(rep(VM1, VM1 + '    services: {hypervisor: {platform: kvm, vswitches: []}}\n')), /the Hypervisor service runs on a server; "vm1" is a virtual machine \(nested virtualization is not modelled\)/);
@@ -198,7 +198,7 @@ test('virtual NICs: a port group of the host, or passthrough of a host port (exc
   // a host interface: on its own port groups, with a role; never passthrough
   assert.match(one(rep('{id: mgmt0, type: vnic, port_group: v10, role: management, ip: 10.10.0.5/24}', '{id: mgmt0, type: vnic, port_group: v10, role: backup, ip: 10.10.0.5/24}')), /"backup" is not a host interface role: use management, migration, storage/);
   assert.match(one(rep('port_group: v10, ip: 10.10.0.21/24', 'port_group: v10, role: storage, ip: 10.10.0.21/24')), /"role" is a hypervisor's host interface's/);
-  assert.match(one(rep('  - id: ch\n    type: server\n', '  - id: ch\n    type: server\n    logical_interfaces: [{id: v0, type: vnic, port_group: x}]\n').replace('    interfaces: [{id: eth0, ip: 10.20.0.50/24}, eth1]\n  - id: c1', '    interfaces: [{id: eth0, ip: 10.20.0.50/24}, eth1]\n  - id: c1')), /a server's vnic is a host interface on its own virtual switch: "ch" has no Hypervisor service/);
+  assert.match(one(rep('  - id: ch\n    type: server\n', '  - id: ch\n    type: server\n    logical_interfaces: [{id: v0, type: vnic, port_group: x}]\n')), /a server's vnic is a host interface on its own virtual switch: "ch" has no Hypervisor service/);
   // guest tagging (or a trunk port group): VLAN subinterfaces of the vnic; on an access port group they are an error
   const sub = (pg) => rep('      - {id: eth0, type: vnic, port_group: v10, ip: 10.10.0.21/24}\n', `      - {id: eth0, type: vnic, port_group: ${pg}}\n      - {id: eth0.20, type: virtual, ip: 10.20.0.9/24}\n`);
   assert.deepEqual(errs(sub('vgt')), []);
@@ -249,7 +249,7 @@ test('containers: their network on the host (or an overlay that lists it), addre
   assert.match(one(veth('      - {id: eth0, type: veth, network: host, ip: 10.20.0.9/24}\n')), /"host" is a host network: the container shares its host's interfaces and addresses — delete its own address/);
   assert.deepEqual(errs(veth('      - {id: eth0, type: veth, network: host}\n')), []);
   assert.match(one(veth('      - {id: eth0, type: veth, network: none, ip: 10.9.9.9/24}\n')), /"none" is a none network: the container has no network there/);
-  assert.match(one(veth('      - {id: eth0, type: veth, network: bridge, dhcp: true}\n')), /DHCP is modelled on macvlan networks only/);
+  assert.match(one(veth('      - {id: eth0, type: veth, network: bridge, ipv4: dhcp}\n')), /DHCP is modelled on macvlan networks only/);
   // published ports: a bridge network's, each host port and protocol once per host address
   assert.match(one(veth('      - {id: eth0, type: veth, network: lan, ip: 10.10.0.70/24, publish: [{host_port: 80, port: 80, protocol: tcp}]}\n')), /published ports are a bridge network's \(DNAT on the host\): "lan" is a macvlan network/);
   assert.match(one(veth('      - {id: eth0, type: veth, network: bridge, ip: 172.17.0.2, publish: [{host_port: 8080, port: 80, protocol: tcp}]}\n      - {id: eth1, type: veth, network: bridge, ip: 172.17.0.3, publish: [{host_port: 8080, port: 81, protocol: tcp}]}\n')), /tcp\/8080 on every address of "ch" is already published by c1:eth0/);

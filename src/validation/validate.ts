@@ -1,7 +1,8 @@
 import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import { bridgePorts, derive, interfaceAddresses, interfaceVlans, isBridgePort, isVlanInterface, portL2, subinterfaceParent } from '../model/derive';
 import { CHECKS, CheckSetting, SEVERITIES, Target, runChecks } from '../analysis/checks';
-import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS } from '../model/types';
+import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS, IcAccess, IcAttachment, IcData, IcRole, IcTopology, IcTraffic, Interconnect, OpaquePort, OpaqueTransit } from '../model/types';
+import { IC_ACCESS, IC_DATA, IC_ROLES, IC_TOPOLOGIES, opaqueIndex, receives, sends } from '../model/interconnect';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
 import { DEVICE_TYPE_IDS, deviceTypeLabel, isDeviceType, NO_DEVICE_TYPE, deviceTypeLine } from '../model/device-types';
@@ -11,6 +12,7 @@ import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizePro
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readDemands } from './demands';
+import { readExpectations, readFailureDomains } from './expectations';
 import { readMulticast } from './multicast';
 import { SimBlock, checkObjectBlocks, readDeviceSimulation, readLinkSimulation, readSimBlock } from './simulation';
 import { NetServiceNodes, checkNetServices, readAddressList, readNetServices } from './netservices';
@@ -20,6 +22,15 @@ import { VirtNodes, checkVirtual, isGuestType, readGuestFields, readVirtIface, r
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 import { isVm } from '../model/virtual';
 import { readServiceBlock, checkServices, ServiceNodes } from './services';
+import { AppNodes, checkApplications } from './applications';
+import { checkPtp } from './ptp';
+import { checkRaPrefixes, readIpv6 } from './ipv6';
+import { ipConfigured } from '../model/ipv6';
+import { PolicyNodes, checkNetPolicies, readNetPolicy } from './policy';
+import { readExperiments } from './experiments';
+import { readViews } from './views';
+import { LINK_STATE, POLICY_PROTOCOLS, REDISTRIBUTE_SOURCES, ROUTE_POLICY_KEYS, ROUTE_RULE_KEYS, RouteFilterRule, RoutingPolicy } from '../model/routing-policy';
+import { parseValue } from '../analysis/sim/params';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -62,6 +73,8 @@ const REL_KEYS = SCHEMA.relation;
 const EP_KEYS = SCHEMA.endpoint;
 const PROTO_KEYS = SCHEMA.protocol;
 const ATTRS_HINT = ' (custom data belongs under "attrs:")';
+/** the keys an opaque port may have (the rest of an interface's belong to a network stack) */
+const OPAQUE_KEYS = ['id', 'label', 'stack', 'description', 'attrs'];
 
 // ------------------------------------------------------------ main entry
 
@@ -270,6 +283,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // ------------------------------------------------------------ devices
   const devices: Device[] = [];
   const interfaces = new Map<string, Interface>();
+  /** "device:port" -> an opaque port (never an Interface: no network stack) */
+  const opaquePorts = new Map<string, OpaquePort>();
   /** "device:iface" -> the YAML node of each address in Interface.addresses (same order) */
   const ifaceAddrNodes = new Map<string, YNode[]>();
   /** "device:iface" -> where the interface is declared, e.g. "devices.r1.logical_interfaces[1]" */
@@ -286,6 +301,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const devNodes = new Map<string, { node: YMap; path: string }>();
   const ifaceNodes = new Map<string, YMap>();
   const routeNodes = new Map<string, { node: YMap; path: string }>();
+  const policyNodes: PolicyNodes[] = [];
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
     const path = `devices[${i}]`;
     const m = r.map(n, path);
@@ -326,6 +342,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
       description: r.field(m, 'description', dpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
       interfaces: [],
+      opaquePorts: [],
+      opaqueTransit: [],
       logical: [],
       dnsNames: [],
       routes: [],
@@ -391,10 +409,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
         im = { kind: 'map', entries: new Map([['id', { key: 'id', keyLine: inode.line, value: inode }]]), line: inode.line, col: inode.col };
       } else im = r.map(inode, ipath);
       if (!im) return null;
-      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT);
+      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT, { dhcp: 'write "ipv4: dhcp" instead: the IPv4 method replaced the earlier DHCP flag' });
       const iid = r.id(im, ipath, IFACE_RE, 'interface id');
       if (!iid) return null;
       const key = ifaceKey(id, iid);
+      if (opaquePorts.has(key)) {
+        c.error(get(im, 'id') as YNode, ipath + '.id', `duplicate interface "${iid}" on device "${id}" (already used by an opaque port; every port and interface of a device has its own id)`);
+        return null;
+      }
       const prev = interfaces.get(key);
       if (prev) {
         c.error(
@@ -410,6 +432,24 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       if (++count > L.maxInterfacesPerDevice) {
         c.error(im, ipath, `too many interfaces on one device (limit ${L.maxInterfacesPerDevice}, physical and logical together)`);
+        return null;
+      }
+      // an opaque port (`stack: opaque`): no network stack — none of a network port's keys; it is never an Interface
+      const stackNode = get(im, 'stack');
+      const stack = isNull(stackNode) ? undefined : r.str(stackNode as YNode, ipath + '.stack', 20);
+      if (stack !== undefined && stack !== 'opaque' && stack !== 'network') c.error(stackNode as YNode, ipath + '.stack', `"${stack}" is not a stack: use opaque (a USB, serial, bus or backplane port without a network stack) or leave it out (a network port)`);
+      if (stack === 'opaque') {
+        if (isGuestType(dev.type) && !dev.cloudInstance) {
+          c.error(im, ipath, `a ${isVm(dev) ? 'VM' : 'container'} has no ports of its own: an opaque port belongs to a physical device`);
+          return null;
+        }
+        for (const [k, e] of im.entries) {
+          if (OPAQUE_KEYS.indexOf(k) >= 0 || SCHEMA.interface.indexOf(k) < 0) continue;
+          c.error(e.value, `${ipath}.${k}`, `an opaque port has no network stack: "${k}" belongs to a network port (remove it here, or remove "stack: opaque")`);
+        }
+        const op: OpaquePort = { id: iid, device: id, label: r.field(im, 'label', ipath, L.maxLabel), description: r.field(im, 'description', ipath, L.maxDescription), attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'), line: im.line };
+        opaquePorts.set(key, op);
+        dev.opaquePorts.push(op);
         return null;
       }
       let type: InterfaceKind = 'physical';
@@ -442,8 +482,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       const isLoop = type === 'loopback';
       const kind = isLoop ? 'loopback' : 'interface';
-      // DHCP is a flag, never an address: omitted means false
-      const dhcp = r.bool(get(im, 'dhcp'), ipath + '.dhcp') === true;
+      // how it gets its IPv4 address: written (static, the default) or by DHCP (`ipv4: dhcp`), never an address
+      const v4n = get(im, 'ipv4');
+      const v4 = isNull(v4n) ? undefined : r.str(v4n as YNode, ipath + '.ipv4', 20);
+      if (v4 !== undefined && v4 !== 'dhcp' && v4 !== 'static') c.error(v4n as YNode, ipath + '.ipv4', `"${v4}" is not an IPv4 method: use dhcp (it obtains its IPv4 address by DHCP) or static (its addresses are written under "ip:")`);
+      const dhcp = v4 === 'dhcp';
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
@@ -463,7 +506,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
             a.toLowerCase() === 'dhcp'
               ? isLoop
                 ? '"dhcp" is not an address, and a loopback cannot obtain its address by DHCP: write its address with prefix length'
-                : '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+                : '"dhcp" is not an address: to say that the interface obtains its IPv4 address by DHCP, delete it here and set "ipv4: dhcp"'
               : prefixProblem(a) || `"${a}" is not a valid address`;
           if (isLoop) c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
           else c.warn(an, `${ipath}.ip[${j}]`, `${why}; it is shown as written`);
@@ -483,16 +526,16 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (dhcp && isLoop) {
         // an address of the device itself is always configured; the flag is reported, not dropped
         c.error(
-          get(im, 'dhcp') as YNode,
-          ipath + '.dhcp',
-          `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "dhcp: true" and write its address under "ip:"`,
+          v4n as YNode,
+          ipath + '.ipv4',
+          `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "ipv4: dhcp" and write its address under "ip:"`,
         );
-      } else if (dhcp && addrNodes.length) {
-        // both are kept as written and reported: neither the flag nor the addresses are discarded
+      } else if (dhcp && addrs.some((a) => a.indexOf(':') < 0)) {
+        // both are kept as written and reported: neither the method nor the addresses are discarded
         c.error(
           ipNode as YNode,
           ipath + '.ip',
-          `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`,
+          `${kind} "${iid}" has "ipv4: dhcp" and manually configured IPv4 addresses; its IPv4 address either comes from DHCP or is written — delete the IPv4 addresses under "ip:" or delete "ipv4: dhcp"`,
         );
       }
       if (isLoop && !addrs.length) {
@@ -515,6 +558,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
       };
+      // its IPv6 method and, a router's, its router advertisements
+      readIpv6(r, c, im, ipath, iface, dev);
+      checkRaPrefixes(c, iface, im, ipath);
       // settings per interface of services the device enables (a VRRP group …)
       const ip = get(im, 'protocols');
       if (!isNull(ip)) iface.services = readServices(r, c, ip as YNode, ipath + '.protocols', services, 'interface', id, [], dev);
@@ -623,8 +669,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const i = readIface(inode, `${dpath}.logical_interfaces[${k}]`, 'logical');
       if (i) dev.logical.push(i);
     });
+    dev.opaqueTransit = readOpaqueTransit(r, c, m, dpath, dev);
     dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
     dev.routes = readRoutes(r, c, m, dpath, dev, routeNodes);
+    const pol = readNetPolicy(r, c, m, dpath, dev, policyNodes);
+    if (pol) dev.policy = pol;
     // the router IDs: the device's (shared by its protocols) and a protocol's own; applicable only with a protocol that uses one
     const ridNode = get(m, 'router_id');
     const ridText = r.field(m, 'router_id', dpath, 64);
@@ -749,6 +798,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const devNode = n.kind === 'map' ? (get(n, 'device') as YNode) : n;
     if (!dev) {
       c.error(devNode, path, `unknown device "${device}"${suggest(device, deviceMap.keys())}`);
+      return null;
+    }
+    if (iface !== undefined && opaquePorts.has(ifaceKey(device, iface))) {
+      c.error(
+        n.kind === 'map' ? (get(n, 'interface') as YNode) : n,
+        path,
+        `"${device}:${iface}" is an opaque port (stack: opaque): it has no network stack and connects only through an interconnect (interconnects:), never by a cable or a relation`,
+      );
       return null;
     }
     if (iface !== undefined && !interfaces.has(ifaceKey(device, iface))) {
@@ -1062,10 +1119,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
+  // ------------------------------------------------------- interconnects
+  const interconnects = readInterconnects(r, c, capped(r.list(get(top, 'interconnects'), 'interconnects'), L.maxLinks, 'interconnects', 'interconnects'), claim, deviceMap, opaquePorts);
+
   // ------------------------------------------------------------- layout
   // Presentation only: problems here are warnings and the entry is ignored,
   // so stored positions can never change what the model means.
-  const layout: ModelLayout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
+  const layout: ModelLayout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() }, routing: {} };
   const layoutNode = get(top, 'layout');
   if (!isNull(layoutNode)) {
     const ln = layoutNode as YNode;
@@ -1091,8 +1151,25 @@ function build(root: YNode | null, c: Ctx): Model | null {
           });
           return;
         }
+        if (view === 'routing') {
+          // how a view's lines are routed: "orthogonal" (the Structured arrangement); without an entry the standard routing
+          if (isNull(e.value)) return;
+          if (e.value.kind !== 'map') {
+            c.warn(e.value, 'layout.routing', 'expected "physical: orthogonal" and/or "logical: orthogonal"; ignored');
+            return;
+          }
+          e.value.entries.forEach((re, rview) => {
+            const v = scalarText(re.value);
+            if ((rview !== 'physical' && rview !== 'logical') || v !== 'orthogonal') {
+              c.warn(re.value, 'layout.routing.' + rview, `"${rview}: ${v === undefined ? kindOf(re.value) : v}" is not a routing: use "physical: orthogonal" or "logical: orthogonal" (horizontal and vertical lines, the Structured arrangement), or no entry for the standard routing; ignored`, { key: rview, line: re.keyLine });
+              return;
+            }
+            layout.routing[rview] = 'orthogonal';
+          });
+          return;
+        }
         if (view !== 'physical' && view !== 'logical') {
-          c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical or manual); it is ignored`, { key: view, line: e.keyLine });
+          c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical, manual or routing); it is ignored`, { key: view, line: e.keyLine });
           return;
         }
         if (isNull(e.value)) return;
@@ -1109,12 +1186,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
             const name = id.slice(k + 1);
             return !!owner && !!owner.containerEngine && owner.containerEngine.networks.some((n) => n.name === name && !!n.subnet && (n.driver === 'bridge' || n.driver === 'overlay'));
           };
+          // (in the physical view also a shared interconnect's bar: a bus is placed like a device)
           const known =
             view === 'physical'
-              ? deviceMap.has(id)
+              ? deviceMap.has(id) || interconnects.some((x) => x.id === id && x.topology === 'shared')
               : deviceMap.has(id) || networkMap.has(id) || (relationMap.has(id) && relationDevices(relationMap.get(id) as Relation).length >= 3) || cnet();
           if (!known) {
-            const what = view === 'physical' ? 'device' : 'device, network or multipoint relation';
+            const what = view === 'physical' ? 'device or shared interconnect' : 'device, network or multipoint relation';
             c.warn(e.value, p, `position for "${id}", which is not a ${what} in this model; it is ignored`, { key: id, line: pe.keyLine });
             return;
           }
@@ -1165,6 +1243,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     ifaceLink,
     radioLinks,
     routes,
+    ...opaqueIndex(devices, interconnects),
   };
   const model: Model = {
     version: FORMAT_VERSION,
@@ -1175,20 +1254,33 @@ function build(root: YNode | null, c: Ctx): Model | null {
     links,
     networks,
     relations,
+    interconnects,
     protocols,
     services,
     layout,
     checks: checkSettings,
     demands: [],
+    failureDomains: [],
+    expectations: [],
+    experiments: [],
+    views: [],
     index,
   };
   model.demands = readDemands(r, c, top, model);
+  model.failureDomains = readFailureDomains(r, c, top, model);
+  model.expectations = readExpectations(r, c, top, model, model.failureDomains);
+  model.experiments = readExperiments(r, c, top, model, model.failureDomains);
+  model.views = readViews(r, c, top, model);
   // the objects' simulation attributes: does each apply to its object (with the whole model known)?
   checkObjectBlocks(c, model, simBlocks);
   // the servers' scopes and zones with the whole model (ranges, gateways, overlaps, records)
   checkNetServices(c, model, svcNodes);
+  // the network policies' interfaces, zones and objects
+  checkNetPolicies(c, model, policyNodes);
   // the services' references, the Wi-Fi networks against the uplinks, the wireless connections, the controllers
   checkServices(c, model, svcBlocks, linkNodes);
+  checkApplications(c, model, svcBlocks.map((b) => b.apps).filter((x): x is AppNodes => !!x));
+  checkPtp(c, model, svcBlocks);
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
     assocs.forEach((a, j) => {
@@ -1400,9 +1492,10 @@ function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: s
     if (capabilities(dev).switchFeatures && !lag && !configured(i)) {
       c.error(a.node, a.path + '.vlans', `"${i.id}" of switch "${dev.id}" needs its VLANs: one VLAN (an access port) or several (a trunk)${dev.layer3 ? ', or "routed: true" for a routed port' : ''}`, { key: 'vlans' });
     }
-    if (cfg.vlans.length && (i.addresses.length || i.dhcp)) {
-      const ipN = get(a.node, i.dhcp ? 'dhcp' : 'ip') as YNode;
-      c.error(ipN, `${a.path}.${i.dhcp ? 'dhcp' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
+    if (cfg.vlans.length && ipConfigured(i)) {
+      const key = i.dhcp ? 'ipv4' : i.addresses.length ? 'ip' : i.ra ? 'ipv6_ra' : 'ipv6';
+      const ipN = get(a.node, key) as YNode;
+      c.error(ipN, `${a.path}.${key}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : key === 'ip' ? 'the address' : key === 'ipv6_ra' ? 'its router advertisements' : 'its IPv6 configuration'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
     }
   }
   for (const g of dev.logical) {
@@ -1410,7 +1503,7 @@ function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: s
     const a = at(g);
     if (!a) continue;
     if (capabilities(dev).switchFeatures && !configured(g)) c.error(a.node, a.path + '.vlans', `aggregate "${g.id}" of switch "${dev.id}" needs its VLANs (its members ${g.members.join(', ')} take them): one VLAN (access) or several (a trunk)${dev.layer3 ? ', or "routed: true"' : ''}`, { key: 'vlans' });
-    if (g.vlans.length && (g.addresses.length || g.dhcp)) c.error(get(a.node, g.dhcp ? 'dhcp' : 'ip') as YNode, `${a.path}.${g.dhcp ? 'dhcp' : 'ip'}`, `aggregate "${g.id}" is a switch port (VLANs ${vlanTextOf(g.vlans)}): it has no address of its own — put it on the VLAN interface of its VLAN`);
+    if (g.vlans.length && (g.addresses.length || g.dhcp)) c.error(get(a.node, g.dhcp ? 'ipv4' : 'ip') as YNode, `${a.path}.${g.dhcp ? 'ipv4' : 'ip'}`, `aggregate "${g.id}" is a switch port (VLANs ${vlanTextOf(g.vlans)}): it has no address of its own — put it on the VLAN interface of its VLAN`);
   }
 }
 
@@ -1543,7 +1636,7 @@ function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, ow
         const names = all.map((i) => i.id);
         c.error(x, ip, `device "${dev.id}" has no interface "${id}"` + (names.length ? suggest(id, names) : ' (the device declares no interfaces)'));
       } else if (target.dhcp) {
-        c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or set "dhcp: false" on "${id}"`);
+        c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or delete "ipv4: dhcp" on "${id}"`);
       } else if (ifaces.indexOf(id) >= 0) {
         c.error(x, ip, `interface "${id}" is listed twice for this DNS name`);
       } else {
@@ -1629,7 +1722,7 @@ function layer2SwitchRules(c: Ctx, m: YMap, dpath: string, dev: Device): void {
   const ridNode = get(m, 'router_id');
   if (ridNode && !isNull(ridNode)) c.error(ridNode as YNode, dpath + '.router_id', `"${dev.id}" is a Layer 2 switch: it has no router ID (${fix})`);
   const all = deviceInterfaces(dev);
-  const addressed = all.filter((i) => i.addresses.length || i.dhcp);
+  const addressed = all.filter((i) => ipConfigured(i));
   const mgmt = addressed[0];
   for (const i of addressed.slice(1)) {
     const at = nodeOf(i);
@@ -1748,7 +1841,9 @@ function readServices(
     if (!isNull(v)) {
       const pm = r.map(v, spath);
       if (pm) {
-        const allowed = own.map((p) => p.key).concat(scope === 'device' && def.routerId !== 'none' ? [ROUTER_ID_KEY] : []);
+        // a routing protocol's policy (model/routing-policy.ts) goes with it, on the device
+        const policyKeys = scope === 'device' && POLICY_PROTOCOLS.indexOf(key) >= 0 ? ROUTE_POLICY_KEYS.slice() : [];
+        const allowed = own.map((p) => p.key).concat(scope === 'device' && def.routerId !== 'none' ? [ROUTER_ID_KEY] : [], policyKeys);
         const where: { [k: string]: string } = {};
         for (const p of def.params) {
           if (p.scope === scope) continue;
@@ -1762,6 +1857,7 @@ function readServices(
             if (t !== undefined) rids.push({ svc, text: t, node: pe.value, path: `${spath}.${pk}` });
             return;
           }
+          if (policyKeys.indexOf(pk) >= 0) return;
           const p = own.find((x) => x.key === pk);
           if (!p) return;
           const pv = pe.value;
@@ -1774,6 +1870,7 @@ function readServices(
           if (why) c.error(pv, `${spath}.${pk}`, why);
           else svc.values.set(pk, t.trim());
         });
+        if (policyKeys.length && policyKeys.some((k) => pm.entries.has(k))) svc.policy = readRoutingPolicy(r, c, pm, spath, key, def.label);
       }
     }
     // mandatory parameters: nothing is chosen for the user
@@ -1786,6 +1883,98 @@ function readServices(
     out.push(svc);
   });
   return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * A routing protocol's policy (model/routing-policy.ts): advertised
+ * prefixes, the default route, redistribution and the ordered filters (import,
+ * export). Syntax only; what it does to the routes is the routing
+ * analysis' (and its consistency check's).
+ */
+function readRoutingPolicy(r: Reader, c: Ctx, pm: YMap, spath: string, proto: string, label: string): RoutingPolicy {
+  const out: RoutingPolicy = { redistribute: [], import: [], export: [] };
+  const adv = pm.entries.get('advertise');
+  if (adv) {
+    out.advertise = [];
+    for (const [k, n] of r.list(adv.value, spath + '.advertise').entries()) {
+      const t = n.kind === 'scalar' ? (scalarText(n) || '').trim() : '';
+      if (!parsePrefix(t)) c.error(n, `${spath}.advertise[${k}]`, `"${t}" is no prefix (an advertised prefix is written as 10.1.0.0/16)`);
+      else out.advertise.push(t);
+    }
+  }
+  const dr = pm.entries.get('default_route');
+  if (dr) {
+    const t = dr.value.kind === 'scalar' ? (scalarText(dr.value) || '').trim() : '';
+    if (t === 'always' || t === 'if_installed') out.defaultRoute = t;
+    else c.error(dr.value, spath + '.default_route', `"${t}" is no default-route origination: use always or if_installed`);
+  }
+  const red = pm.entries.get('redistribute');
+  if (red) {
+    for (const [k, n] of r.list(red.value, spath + '.redistribute').entries() as IterableIterator<[number, YNode]>) {
+      const t = n.kind === 'scalar' ? (scalarText(n) || '').trim() : '';
+      if (REDISTRIBUTE_SOURCES.indexOf(t) < 0) c.error(n, `${spath}.redistribute[${k}]`, `"${t}" can't be redistributed: use ${REDISTRIBUTE_SOURCES.join(', ')}`);
+      else if (t === proto) c.error(n, `${spath}.redistribute[${k}]`, `${label} can't redistribute itself`);
+      else if (out.redistribute.indexOf(t) < 0) out.redistribute.push(t);
+    }
+  }
+  for (const dir of ['import', 'export'] as const) {
+    const ln = pm.entries.get(dir);
+    if (!ln) continue;
+    if (dir === 'export' && LINK_STATE.indexOf(proto) >= 0) {
+      c.error(ln.value, `${spath}.export`, `${label} floods what it learns: it has no export filter (its "import:" filter decides what a router installs; redistribution decides what enters it)`);
+      continue;
+    }
+    const items = r.list(ln.value, `${spath}.${dir}`);
+    items.forEach((n, k) => {
+      const rp = `${spath}.${dir}[${k}]`;
+      const rm = r.map(n, rp);
+      if (!rm) return;
+      r.keys(rm, ROUTE_RULE_KEYS.slice(), rp);
+      const action = r.field(rm, 'action', rp, 10);
+      if (action !== 'permit' && action !== 'deny') {
+        c.error(get(rm, 'action') || rm, rp + '.action', action === undefined ? 'a filter rule needs its action: permit or deny' : `"${action}" is no action: use permit or deny`, get(rm, 'action') ? {} : { key: 'action' });
+        return;
+      }
+      const rule: RouteFilterRule = { action, line: rm.line };
+      const prefix = r.field(rm, 'prefix', rp, 64);
+      if (prefix !== undefined) {
+        const p = parsePrefix(prefix.trim());
+        if (!p) {
+          c.error(get(rm, 'prefix') as YNode, rp + '.prefix', `"${prefix}" is no prefix`);
+          return;
+        }
+        rule.prefix = prefix.trim();
+      }
+      for (const lk of ['ge', 'le'] as const) {
+        const v = r.field(rm, lk, rp, 4);
+        if (v === undefined) continue;
+        const n2 = Number(v);
+        const p = rule.prefix ? parsePrefix(rule.prefix) : null;
+        const max = p && p.version === 6 ? 128 : 32;
+        if (!rule.prefix) c.error(get(rm, lk) as YNode, `${rp}.${lk}`, `${lk} goes with a prefix`);
+        else if (!/^[0-9]+$/.test(v) || n2 < (p as IpPrefix).prefix || n2 > max) c.error(get(rm, lk) as YNode, `${rp}.${lk}`, `${lk} is a prefix length from ${(p as IpPrefix).prefix} to ${max}`);
+        else rule[lk] = n2;
+      }
+      if (rule.ge !== undefined && rule.le !== undefined && rule.ge > rule.le) c.error(get(rm, 'ge') as YNode, rp + '.ge', 'ge is larger than le: the rule matches nothing');
+      const peer = r.field(rm, 'peer', rp, 64);
+      if (peer !== undefined) rule.peer = peer.trim();
+      const lp = r.field(rm, 'local_pref', rp, 12);
+      if (lp !== undefined) {
+        if (proto !== 'bgp' || dir !== 'import') c.error(get(rm, 'local_pref') as YNode, rp + '.local_pref', 'local_pref is set by a BGP rule under `import:` only');
+        else if (!/^[0-9]+$/.test(lp) || Number(lp) > 4294967295) c.error(get(rm, 'local_pref') as YNode, rp + '.local_pref', 'local_pref is a whole number (0–4294967295)');
+        else rule.localPref = Number(lp);
+      }
+      const pre = r.field(rm, 'prepend', rp, 4);
+      if (pre !== undefined) {
+        if (proto !== 'bgp' || dir !== 'export') c.error(get(rm, 'prepend') as YNode, rp + '.prepend', 'prepend is set by a BGP export rule only');
+        else if (!/^[0-9]+$/.test(pre) || Number(pre) < 1 || Number(pre) > 10) c.error(get(rm, 'prepend') as YNode, rp + '.prepend', 'prepend is how many more times the AS is added: 1 to 10');
+        else rule.prepend = Number(pre);
+      }
+      if ((rule.localPref !== undefined || rule.prepend !== undefined) && rule.action === 'deny') c.error(rm, rp, 'a deny rule sets nothing: local_pref and prepend go with permit');
+      out[dir].push(rule);
+    });
+  }
+  return out;
 }
 
 /** A router ID as written: an IPv4 address, or a loopback of the device that has an IPv4 address. */
@@ -1825,4 +2014,223 @@ function inCloudGroup(groups: Map<string, Group>, id: string): boolean {
     if (CLOUD_GROUP_KINDS.some((k) => k.id === g!.kind)) return true;
   }
   return false;
+}
+
+// ------------------------------------------------------------ opaque ports and interconnects
+
+/**
+ * A System's opaque transit (`opaque_transit:`): groups of its opaque ports
+ * that pass illustrative data between each other. Only a System (a fabric
+ * switch module, an active hub, a backplane controller) has it; never
+ * implied by being on one device. Each group names two or more of its
+ * opaque ports, each port in one group at most.
+ */
+function readOpaqueTransit(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device): OpaqueTransit[] {
+  const node = get(m, 'opaque_transit');
+  if (isNull(node)) return [];
+  if (!capabilities(dev).opaqueTransit) {
+    c.error(node as YNode, dpath + '.opaque_transit', `opaque_transit is for a System (a fabric switch module, an active hub); "${dev.id}" is ${dev.type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dev.type) || dev.type}`}`);
+    return [];
+  }
+  const own = new Set(dev.opaquePorts.map((p) => p.id));
+  const used = new Map<string, number>();
+  const out: OpaqueTransit[] = [];
+  r.list(node, dpath + '.opaque_transit').forEach((gn, k) => {
+    const gpath = `${dpath}.opaque_transit[${k}]`;
+    const gm = r.map(gn, gpath);
+    if (!gm) return;
+    r.keys(gm, SCHEMA.opaqueTransit, gpath);
+    const ports: string[] = [];
+    r.list(get(gm, 'ports'), gpath + '.ports', true).forEach((pn, j) => {
+      const p = r.str(pn, `${gpath}.ports[${j}]`, 64);
+      if (p === undefined) return;
+      if (!own.has(p)) {
+        const names = Array.from(own);
+        c.error(pn, `${gpath}.ports[${j}]`, `"${p}" is not an opaque port of "${dev.id}"` + (names.length ? suggest(p, names) : ' (it declares none: write stack: opaque on a port)'));
+        return;
+      }
+      const prev = used.get(p);
+      if (prev !== undefined) c.error(pn, `${gpath}.ports[${j}]`, `"${p}" is already in transit group ${prev + 1}: a port passes data within one group`);
+      else used.set(p, k);
+      if (ports.indexOf(p) < 0) ports.push(p);
+    });
+    if (ports.length < 2) c.error(gm, gpath, 'a transit group joins two or more of the device\'s opaque ports');
+    else out.push({ ports, line: gm.line });
+  });
+  return out;
+}
+
+/**
+ * The `interconnects:` section (model/interconnect.ts): each a topology, a
+ * technology (name and version, as text), the protocol it carries if any,
+ * a connector, an access model and its endpoints — opaque ports, each
+ * attached to one interconnect at most, with a role and a data direction.
+ * What may move where is checked here as far as the model alone says it.
+ */
+function readInterconnects(r: Reader, c: Ctx, items: YNode[], claim: (id: string, kind: string, m: YMap, path: string) => boolean, deviceMap: Map<string, Device>, opaquePorts: Map<string, OpaquePort>): Interconnect[] {
+  const out: Interconnect[] = [];
+  const attached = new Map<string, string>();
+  const L = c.limits;
+  const nameVersion = (m: YMap, key: string, path: string, required: boolean): { name: string; version?: string } | undefined => {
+    const n = get(m, key);
+    if (isNull(n)) {
+      if (required) c.error(m, path, `missing required key "${key}" (its name, and a version if it has one: {name: USB, version: "2.0"})`, { key });
+      return undefined;
+    }
+    const nm = r.map(n as YNode, `${path}.${key}`);
+    if (!nm) return undefined;
+    r.keys(nm, SCHEMA.icTechnology, `${path}.${key}`);
+    const name = r.reqStr(nm, 'name', `${path}.${key}`, 60);
+    if (name === undefined) return undefined;
+    const version = r.field(nm, 'version', `${path}.${key}`, 40);
+    return version !== undefined ? { name, version } : { name };
+  };
+  items.forEach((n, i) => {
+    const path = `interconnects[${i}]`;
+    const m = r.map(n, path);
+    if (!m) return;
+    r.keys(m, SCHEMA.interconnect, path, ATTRS_HINT);
+    const id = r.id(m, path);
+    if (!id) return;
+    const ipath = `interconnects.${id}`;
+    if (!claim(id, 'interconnect', m, path)) return;
+    const topo = r.reqStr(m, 'topology', ipath, 40);
+    if (topo !== undefined && IC_TOPOLOGIES.indexOf(topo as IcTopology) < 0) c.error(get(m, 'topology') as YNode, ipath + '.topology', `"${topo}" is not a topology: use point_to_point (two ports) or shared (one medium with several attachments: a bus)`);
+    const topology: IcTopology = topo === 'shared' ? 'shared' : 'point_to_point';
+    const technology = nameVersion(m, 'technology', ipath, true) || { name: '?' };
+    const protocol = nameVersion(m, 'protocol', ipath, false);
+    const acc = r.field(m, 'access', ipath, 40);
+    if (acc !== undefined && IC_ACCESS.indexOf(acc as IcAccess) < 0) c.error(get(m, 'access') as YNode, ipath + '.access', `"${acc}" is not an access model: use peer (the default) or controller_target (controllers initiate transfers with targets: Master / Slave)`);
+    const access: IcAccess = acc === 'controller_target' ? 'controller_target' : 'peer';
+    const endpoints: IcAttachment[] = [];
+    const epNode = get(m, 'endpoints');
+    if (isNull(epNode)) c.error(m, ipath, 'missing required key "endpoints" (its ports, each with its role: {port: device:port, role: …})', { key: 'endpoints' });
+    r.list(epNode, ipath + '.endpoints').forEach((en, k) => {
+      const epath = `${ipath}.endpoints[${k}]`;
+      const em = r.map(en, epath);
+      if (!em) return;
+      r.keys(em, SCHEMA.icEndpoint, epath);
+      const ref = r.reqStr(em, 'port', epath, 200);
+      if (ref === undefined) return;
+      const pn = get(em, 'port') as YNode;
+      const colon = ref.indexOf(':');
+      const device = colon < 0 ? ref : ref.slice(0, colon);
+      const port = colon < 0 ? '' : ref.slice(colon + 1);
+      const dev = deviceMap.get(device);
+      if (!dev) {
+        c.error(pn, epath + '.port', `unknown device "${device}"${suggest(device, deviceMap.keys())}`);
+        return;
+      }
+      if (!port) {
+        c.error(pn, epath + '.port', `an endpoint is a port: "${device}:port" (one of its opaque ports)`);
+        return;
+      }
+      const key = ifaceKey(device, port);
+      if (!opaquePorts.has(key)) {
+        const names = dev.opaquePorts.map((p) => p.id);
+        const network = deviceInterfaces(dev).some((x) => x.id === port);
+        c.error(pn, epath + '.port', network ? `"${key}" is a network port: an interconnect joins opaque ports (write stack: opaque on a port without a network stack)` : `device "${device}" has no opaque port "${port}"` + (names.length ? suggest(port, names) : ' (it declares none: write stack: opaque on a port)'));
+        return;
+      }
+      const prev = attached.get(key);
+      if (prev !== undefined) {
+        c.error(pn, epath + '.port', `"${key}" is already attached to ${prev === id ? 'this interconnect' : `interconnect "${prev}"`} (a port is attached once)`);
+        return;
+      }
+      attached.set(key, id);
+      const rn = get(em, 'role');
+      const rt = r.field(em, 'role', epath, 40);
+      let role: IcRole = access === 'peer' ? 'peer' : 'target';
+      if (rt === undefined) {
+        if (access === 'controller_target') c.error(em, epath, 'missing required key "role": with controller_target access each endpoint is a controller, a target, controller_target or a monitor', { key: 'role' });
+      } else if (IC_ROLES.indexOf(rt as IcRole) < 0) c.error(rn as YNode, epath + '.role', `"${rt}" is not a role: use ${IC_ROLES.join(', ')}`);
+      else if (access === 'peer' && rt !== 'peer' && rt !== 'monitor') c.error(rn as YNode, epath + '.role', `"${rt}" is a role of controller_target access; between peers a participant is a peer or a monitor (or set access: controller_target)`);
+      else if (access === 'controller_target' && rt === 'peer') c.error(rn as YNode, epath + '.role', 'with controller_target access a participant is a controller, a target, controller_target or a monitor, not a peer');
+      else role = rt as IcRole;
+      const dn = get(em, 'data');
+      const dt = r.field(em, 'data', epath, 20);
+      let data: IcData = role === 'monitor' ? 'receive' : 'both';
+      if (dt !== undefined) {
+        if (IC_DATA.indexOf(dt as IcData) < 0) c.error(dn as YNode, epath + '.data', `"${dt}" is not a data direction: use both (the default), send or receive`);
+        else if (role === 'monitor' && dt !== 'receive') c.error(dn as YNode, epath + '.data', 'a monitor only receives: its data is receive');
+        else data = dt as IcData;
+      }
+      const sc = r.bool(get(em, 'system_controller'), epath + '.system_controller');
+      endpoints.push({ device, port, role, data, systemController: sc === true, line: em.line });
+    });
+    if (topology === 'point_to_point' && endpoints.length !== 2 && !isNull(epNode)) c.error(epNode as YNode, ipath + '.endpoints', `a point_to_point interconnect joins exactly two ports (here ${endpoints.length}); several on one medium are topology: shared`);
+    if (topology === 'shared' && endpoints.length < 2 && !isNull(epNode)) c.error(epNode as YNode, ipath + '.endpoints', 'a shared interconnect has two or more attachments');
+    if (endpoints.length >= 2) {
+      const senders = endpoints.filter(sends);
+      const receivers = endpoints.filter(receives);
+      if (!senders.length || !receivers.length || (senders.length === 1 && receivers.length === 1 && senders[0] === receivers[0])) c.warn(m, ipath, `no data can move on interconnect "${id}": ${!senders.length ? 'no endpoint sends' : 'no other endpoint receives'}`);
+      if (access === 'controller_target' && !endpoints.some((e) => e.role === 'controller' || e.role === 'controller_target')) c.warn(m, ipath, `interconnect "${id}" has controller_target access but no controller: nothing can initiate a transfer`);
+    }
+    // illustrative data that runs with the simulation: started on this interconnect, to recipients anywhere on the opaque side
+    const traffic: IcTraffic[] = [];
+    r.list(get(m, 'traffic'), ipath + '.traffic').forEach((tn, k) => {
+      const tpath = `${ipath}.traffic[${k}]`;
+      const tm = r.map(tn, tpath);
+      if (!tm) return;
+      r.keys(tm, SCHEMA.icTraffic, tpath);
+      const own = (key: string, node: YNode, p: string): boolean => {
+        if (endpoints.some((e) => `${e.device}:${e.port}` === key)) return true;
+        c.error(node, p, `"${key}" is not an endpoint of interconnect "${id}": a transfer is started on its own interconnect` + suggest(key, endpoints.map((e) => `${e.device}:${e.port}`)));
+        return false;
+      };
+      const initiator = r.reqStr(tm, 'initiator', tpath, 200);
+      if (initiator === undefined || !own(initiator, get(tm, 'initiator') as YNode, tpath + '.initiator')) return;
+      const from = r.field(tm, 'from', tpath, 200) || initiator;
+      if (!own(from, (get(tm, 'from') || get(tm, 'initiator')) as YNode, tpath + '.from')) return;
+      const toNode = get(tm, 'to');
+      const to: string[] = [];
+      if (isNull(toNode)) c.error(tm, tpath, 'missing required key "to" (its recipients: device:port, one or a list)', { key: 'to' });
+      else
+        r.list(toNode, tpath + '.to', true).forEach((pn, j) => {
+          const key = r.str(pn, `${tpath}.to[${j}]`, 200);
+          if (key === undefined) return;
+          if (!opaquePorts.has(key)) c.error(pn, `${tpath}.to`, `"${key}" is no opaque port of the model: a recipient is "device:port" of an opaque port`);
+          else if (key === from) c.error(pn, `${tpath}.to`, `"${key}" is the data source itself`);
+          else if (to.indexOf(key) < 0) to.push(key);
+        });
+      const iText = r.field(tm, 'interval', tpath, 20);
+      let interval: number | undefined;
+      if (iText === undefined) c.error(tm, tpath, 'missing required key "interval" (between two transfers: 2s, 500ms)', { key: 'interval' });
+      else {
+        const pv = parseValue({ key: 'interval', yaml: 'interval', label: 'Interval', layer: 0, kind: 'duration', base: 's', dflt: 0, min: 100, max: 86400000, source: '', help: '' }, iText);
+        if ('error' in pv) c.error(get(tm, 'interval') as YNode, tpath + '.interval', `Interval ${pv.error}`);
+        else interval = pv.value as number;
+      }
+      const count = r.int(get(tm, 'count'), tpath + '.count', 1, 10000, 'count');
+      const size = r.int(get(tm, 'size'), tpath + '.size', 0, 65536, 'size (bytes)');
+      if (interval === undefined || !to.length) return;
+      traffic.push({ initiator, from, to, interval, ...(count !== undefined ? { count } : {}), size: size !== undefined ? size : 64, line: tm.line });
+    });
+    out.push({
+      id,
+      topology,
+      technology,
+      protocol,
+      connector: r.field(m, 'connector', ipath, 60),
+      access,
+      endpoints,
+      traffic,
+      label: r.field(m, 'label', ipath, L.maxLabel),
+      description: r.field(m, 'description', ipath, L.maxDescription),
+      attrs: r.attrs(get(m, 'attrs'), ipath + '.attrs'),
+      line: m.line,
+    });
+  });
+  // a transit group passes data within one technology: it converts nothing
+  for (const d of deviceMap.values()) {
+    for (const g of d.opaqueTransit) {
+      const techs = new Map<string, string>();
+      for (const p of g.ports) {
+        const ic = out.find((x) => x.id === attached.get(ifaceKey(d.id, p)));
+        if (ic) techs.set(ic.technology.name.toLowerCase(), ic.technology.name);
+      }
+      if (techs.size > 1) c.error({ kind: 'map', entries: new Map(), line: g.line, col: 1 } as YMap, `devices.${d.id}.opaque_transit`, `transit group of "${d.id}" joins interconnects of different technologies (${Array.from(techs.values()).sort().join(', ')}): a transit group converts nothing — group ports of one technology`);
+    }
+  }
+  return out;
 }

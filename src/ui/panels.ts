@@ -14,6 +14,7 @@ import { compareRoutes, identityLines, routeLine } from '../model/addresses';
 import { formatAddr } from '../analysis/ipmath';
 import { DEFAULT_STATIC_DISTANCE, resolveRoute } from '../analysis/routing';
 import { separationSummary } from '../analysis/separation';
+import { ACCESS_TEXT, DATA_TEXT, ROLE_BADGE, ROLE_TEXT, TOPOLOGY_TEXT, interconnectLabel, p2pArrow, technologyText } from '../model/interconnect';
 
 
 function refLink(ref: string, text: string): VNode {
@@ -172,8 +173,14 @@ export function headOf(model: Model, ref: string): { kind: string; title: string
     return d ? { kind: 'device', title: d.label, id: d.id } : null;
   }
   if (kind === 'iface') {
+    const op = ix.opaquePorts.get(id);
+    if (op) return { kind: 'opaque port', title: op.device + ' ' + op.id };
     const i = ix.interfaces.get(id);
     return i ? { kind: 'interface', title: i.device + ' ' + i.id } : null;
+  }
+  if (kind === 'interconnect') {
+    const ic = ix.interconnects.get(id);
+    return ic ? { kind: 'non-IP interconnect', title: ic.label || technologyText(ic), id: ic.id } : null;
   }
   if (kind === 'link') {
     const l = ix.links.get(id);
@@ -250,6 +257,32 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
   const [kind, id] = splitRef(ref);
   const ix = model.index;
   const kids: Array<VNode | null> = [];
+  // the non-IP side: an interconnect, an opaque port (physical modelling only)
+  const icNote = h('p', { class: 'muted small' }, 'Non-IP: physical modelling only — no protocol of it is simulated; the IP side never uses it. Illustrative data can be sent along it in a simulation.');
+  if (kind === 'interconnect' || (kind === 'iface' && ix.opaquePorts.has(id))) {
+    const ic = ix.interconnects.get(kind === 'interconnect' ? id : ix.portInterconnect.get(id) || '');
+    kids.push(header());
+    if (kind === 'iface') {
+      const e = ic ? ic.endpoints.find((x) => `${x.device}:${x.port}` === id) : undefined;
+      kids.push(kv([['interconnect', ic ? refLink('interconnect:' + ic.id, interconnectLabel(ic)) : 'none: on no interconnect'], ['role', e ? ROLE_TEXT[e.role] + (e.systemController ? ', system controller' : '') : undefined], ['data', e ? DATA_TEXT[e.data] : undefined], ['description', (ix.opaquePorts.get(id) as { description?: string }).description]]));
+    } else if (ic) {
+      kids.push(
+        kv([
+          ['technology', technologyText(ic)],
+          ['carries', ic.protocol ? `${ic.protocol.name}${ic.protocol.version ? ' ' + ic.protocol.version : ''}` : undefined],
+          ['connector', ic.connector],
+          ['topology', TOPOLOGY_TEXT[ic.topology]],
+          ['access', ACCESS_TEXT[ic.access]],
+          ['direction', ic.topology === 'point_to_point' ? p2pArrow(ic) || 'none' : undefined],
+          ['description', ic.description],
+        ]),
+      );
+      kids.push(list('Endpoints', ic.endpoints.map((e) => h('li', {}, [refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device), h('span', {}, ' '), refLink(`iface:${e.device}:${e.port}`, e.port), h('span', { class: 'muted' }, ` — ${ROLE_TEXT[e.role]}${e.systemController ? ', system controller' : ''}; ${DATA_TEXT[e.data].toLowerCase()}`)]))));
+      kids.push(attrsTable('Attributes', ic.attrs));
+    }
+    kids.push(icNote);
+    return h('div', { class: 'details' }, kids);
+  }
   if (kind === 'device') {
     const d = ix.devices.get(id);
     if (!d) return h('div', {}, 'Not found');
@@ -649,6 +682,15 @@ export function tooltipFor(model: Model, ref: string): string[] {
     if (!r) return [];
     return [`${r.device}: ${routeLine(r)}`, r.name || '', r.vrf ? 'VRF ' + r.vrf : '', nextHopWords(model, r)].filter((s) => s);
   }
+  if (kind === 'interconnect') {
+    const ic = ix.interconnects.get(id);
+    if (!ic) return [];
+    return [interconnectLabel(ic), `${TOPOLOGY_TEXT[ic.topology]} · ${ACCESS_TEXT[ic.access]}`, ic.endpoints.map((e) => `${e.device}:${e.port} (${ROLE_BADGE[e.role]})`).join(', '), 'non-IP: physical modelling only'];
+  }
+  if (kind === 'iface' && ix.opaquePorts.has(id)) {
+    const on = ix.portInterconnect.get(id);
+    return [id.replace(':', ' '), 'opaque port (no network stack)', on ? 'on ' + on : 'on no interconnect'];
+  }
   if (kind === 'iface') {
     const i = ix.interfaces.get(id);
     if (!i) return [];
@@ -704,8 +746,8 @@ function row(item: LegendItem): VNode {
   return h('li', { class: 'legend-row' }, [swatchSvg(item.swatch, item.swatchH), h('span', {}, item.label)]);
 }
 
-/** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them). */
-function simStateSection(): LegendSection {
+/** While a simulation runs: what the devices' lifecycle badges say (sim-controller.ts draws them); with PTP clocks, their marks. */
+function simStateSection(model?: Model): LegendSection {
   // (the swatch: the indicator's LED only; its word is the row's label)
   // a snooping badge: its sign and a word, in the role's style
   const snoopSwatch = (role: string, sign: string, word: string, none = false): VNode[] => [h('g', { class: 'sim-snoop-vlan', 'data-role': role, 'data-querier': none ? 'none' : 'heard' }, [h('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), h('text', { class: 'sim-snoop-icon', x: 4, y: 12.5 }, sign), h('text', { x: 14, y: 12.5 }, word)])];
@@ -722,14 +764,27 @@ function simStateSection(): LegendSection {
       { swatch: snoopSwatch('standby', '◇', 'Standby'), label: '◇ VLAN 20 · Standby: a querier candidate that yields to another querier there' },
       { swatch: snoopSwatch('snooping', '○', 'Snooping'), label: '○ VLAN 30 · Snooping · querier heard: no candidate itself, a querier queries the VLAN (behind a multicast router port)' },
       { swatch: snoopSwatch('snooping', '○', 'No querier', true), label: '○ VLAN 40 · Snooping · no querier (grey, dashed): nobody queries the VLAN, so no router port is learned there and a member’s report stays at the switch it reached; ✕ Candidate down, ⏻ Off or Booting: the switch is powered off or still booting' },
+      ...(model && model.devices.some((d) => !!d.appServices && d.appServices.has('ptp')) ? ptpLegend() : []),
     ],
     note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
   };
 }
 
+/** The PTP clocks' marks: the clocks' own state (the election's and the servo's), never a guarantee of accuracy. */
+function ptpLegend(): LegendItem[] {
+  const mark = (state: string, text: string): VNode[] => [h('g', { class: 'sim-ptp', 'data-state': state }, [h('rect', { x: 1, y: 2, width: 62, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, text)])];
+  return [
+    { swatch: mark('grandmaster', '★ PTP'), label: '★ PTP · Grandmaster: the time source the best master clock algorithm elected in its domain (from the Announces it hears; its own clock, not verified against a reference)' },
+    { swatch: mark('synchronized', '✓ PTP'), label: '✓ PTP · Synchronized: three offsets in a row below 1 µs (hardware timestamps) or 100 µs (software) — this model’s rule, not a guaranteed accuracy' },
+    { swatch: mark('acquiring', 'PTP'), label: 'PTP · Acquiring (dashed): a master chosen, its servo not locked yet; Listening: no master heard yet' },
+    { swatch: mark('holdover', '✕ PTP'), label: '✕ PTP · Holdover or Unsynchronized (dotted): no Sync, or no master; its clock runs free from its last correction (holdover quality is not modelled)' },
+    { swatch: mark('transparent', 'PTP · TC'), label: 'PTP · Transparent clock: a switch that corrects the residence time of what it forwards; no time source' },
+  ];
+}
+
 export function legendFor(model: Model, view: View, hidden: Set<string>, simulation = false): VNode {
   const legend = legendOf(model, view);
-  if (simulation) legend.sections.unshift(simStateSection());
+  if (simulation) legend.sections.unshift(simStateSection(model));
   const sections: VNode[] = legend.sections.map((s) =>
     h('section', {}, [
       h('h4', {}, s.title),

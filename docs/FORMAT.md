@@ -3,8 +3,16 @@
 This document is the contract of **NetAtlas YAML model format version 1**,
 the only model format NetAtlas supports. Every file declares it with
 `netatlas: 1`; a missing line or any other value is an error. The model
-format version is independent of the application version: NetAtlas 0.1.3 is
-an application release, and it reads and writes model format 1.
+format version is independent of the application version: an application
+release reads and writes model format 1.
+
+> **Note: the version stays 1 while NetAtlas is not in production.**
+> NetAtlas has no production release yet, so incompatible changes to the
+> format are made within version 1 instead of raising it. A file written for
+> an earlier release can therefore fail to load even though it says
+> `netatlas: 1`: there is no backward compatibility and no conversion. Keys
+> that are gone are reported as errors that say what to write instead (see
+> [Changes since 0.1.3](#changes-since-013)).
 
 A netatlas file describes **one** network architecture. It separates two
 things that are often mixed up in diagrams:
@@ -12,6 +20,7 @@ things that are often mixed up in diagrams:
 | Concept | Section | Drawn in | Meaning |
 |---|---|---|---|
 | Physical connectivity | `links` | Physical view | A real cable / radio link between two ports (what each port carries is configured on the port) |
+| Non-IP connections | `interconnects` | Physical view | A USB, serial, bus, backplane or fabric connection between opaque ports (`stack: opaque`), apart from the IP side ([Interconnects](#interconnects-non-ip-physical-connections)) |
 | Logical relationships | `relations` | Logical view | Protocol sessions, tunnels, overlays, redundancy groups, service dependencies |
 | IP networks | `networks` | Logical view | One IP prefix each, optionally with the VLAN it lives in. Members are derived from addresses. |
 | Static routes | `routes` of a device | Logical view | Destination prefix and next hop, per device and VRF |
@@ -35,8 +44,49 @@ links: [...]
 networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
+failure_domains: [...] # optional: components that fail together (what-if conditions)
+expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
+experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
+views: [...]           # optional: saved views (display state: diagram, focus, filters, zoom)
 checks: {...}          # optional: switch consistency checks off or change their severity
+layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
+
+### Changes since 0.1.3
+
+These changes are made within format 1 (files keep `netatlas: 1`), and they
+are not backward compatible: a file written for 0.1.3 that uses the earlier
+keys gets errors until it is changed by hand. There is no migration.
+
+| Written for 0.1.3 | Now |
+|---|---|
+| `dhcp: true` on an interface | `ipv4: dhcp` ([DHCP](#dhcp)); `ipv4: static` or nothing for written addresses |
+| `dhcp: false` | delete it |
+| `services: {application: {name: …, ports: [tcp/443]}}`, one per device | `services: {applications: [{id: …, name: …, profile: tcp_server, port: 443}, …]}`, a list ([Applications](#applications-servicesapplications)) |
+| applications on Servers, VMs and containers only | also on a host-capable Endpoint (a PLC, an HMI, a camera, a printer, an IoT device …) and a Storage device |
+
+New, with nothing to convert — optional additions to format 1, so a file
+without them means what it meant:
+
+* an interface's IPv6 method and a router's advertisements
+  ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
+  DHCPv6 scopes, the `mqtt_broker` and `ptp` services;
+* a routing protocol's policy keys `advertise`, `default_route`,
+  `redistribute`, `import` and `export` ([Routing policy](#routing-policy))
+  and a device's rule base `policy:` ([Network policy](#network-policy-policy));
+* the top-level sections [`failure_domains`](#failure_domains-shared-failure-domains),
+  [`expectations`](#expectations-saved-design-requirements),
+  [`experiments`](#experiments-saved-repeatable-experiments),
+  [`views`](#views-saved-views) and
+  [`interconnects`](#interconnects-non-ip-physical-connections), with
+  opaque ports (`stack: opaque` on an interface) and a System's
+  `opaque_transit`;
+* `layout.routing` ([`layout`](#layout-diagram-positions)), written by
+  Auto-arrange's Structured option.
+
+A file that loaded in 0.1.3 can also get new consistency findings from
+checks added since; findings never block loading, and each says what it
+is about.
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never
 silently disappear. That includes `scenarios:` and `risk_groups:`, which
@@ -54,7 +104,7 @@ the YAML file**.
 
 | Fact | Configured in (authoritative) | Derived, read-only |
 |---|---|---|
-| Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `dhcp: true` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
+| Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `ipv4: dhcp` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
 | The VLAN of an IP network | `vlan` on the network | the VLAN shown for each interface address inside that network |
 | The VLANs a port carries | `vlans` and `native` on the port, or on its aggregate (one VLAN: access; several: trunk); `routed: true` on a Layer 3 switch's routed port | its mode (access / trunk / routed) and badge, the port's diagram tag, the networks a cable carries (the networks of its ports' VLANs), the "VLANs differ" mark, the cables listed with a network, the VLAN checks |
 | Speed and medium of a physical connection | `speed` and `medium` on the link | cable width, colour and label |
@@ -219,8 +269,8 @@ can declare its own). A parameter is written in one of three places, its
 
 | Protocol | Device parameters | Interface parameters | Endpoint parameters (relation `attrs`) | Router ID |
 |---|---|---|---|---|
-| `bgp` | **`asn`** (1–4294967295) | | `peer-as`, `distance` | optional |
-| `ospf` | `process` (1–65535) | | `area`, `network-type`, `hello`, `dead`, `cost`, `distance` | **required** |
+| `bgp` | **`asn`** (1–4294967295) | | `peer-as`, `hold` (0 or 3–65535 s), `keepalive`, `distance` | optional |
+| `ospf` | `process` (1–65535) | | `area`, `network-type`, `priority` (0–255), `hello`, `dead`, `cost`, `distance` | **required** |
 | `isis` | **`net`** (a NET: `49.0001.1921.6800.1001.00`), `level` (`level-1`, `level-2`, `level-1-2`) | | `cost`, `distance` | |
 | `eigrp` | **`asn`** (1–65535) | | `cost`, `distance` | optional |
 | `rip` | `version` (`1`, `2`, `ng`) | | `distance` | |
@@ -248,6 +298,51 @@ Bold: mandatory once the protocol is enabled. Rules:
   IP addresses, a list of allowed values, OSPF areas (a number or a dotted
   id), NETs.
 
+#### Routing policy
+
+A routing protocol (BGP, OSPF, IS-IS, EIGRP, RIP) may carry a bounded
+policy in its block. Without one, a device originates every connected
+network into the protocol and accepts every route (as before). The path
+tracer and the simulation apply it alike (one routing computation; the
+simulation over the adjacencies that are up).
+
+```yaml
+- id: hq-rtr1
+  protocols:
+    bgp:
+      asn: 65010
+      advertise: [10.10.0.0/16]          # originate these instead of every connected network
+      default_route: always              # or if_installed: only while the device has a default route
+      redistribute: [static, ospf]       # connected, static, bgp, ospf, isis, eigrp, rip (not itself)
+      export:                            # what it advertises to its neighbours, first match wins
+        - {peer: br1-rtr, prefix: 0.0.0.0/0, action: permit}
+        - {peer: br1-rtr, action: deny}  # br1-rtr gets the default route only
+        - {action: permit}
+      import:                            # what it accepts
+        - {prefix: 10.0.0.0/8, ge: 16, le: 24, action: permit, local_pref: 200}
+        - {action: deny}
+    ospf: {}
+```
+
+| Key | Meaning |
+|---|---|
+| `advertise` | the prefixes the device originates, instead of every connected network; each must exist on the device as a connected network or a static route (a black-hole route anchors a summary), else it is not advertised (`routing-policy` check) |
+| `default_route` | `always`: originate a default route (IPv4, and IPv6 where the device has IPv6 networks); `if_installed`: only while the device has one of its own (a static route, or one another protocol installed) |
+| `redistribute` | other sources the device originates too: `connected`, `static` (routes whose next hop is on a connected network, an exit interface or a black hole), another routing protocol's routes it learned. A route keeps the routing domains it came through (a protocol's connected set of adjacencies) and never re-enters one of them: no redistribution loop |
+| `import`, `export` | ordered rules, the first that matches decides, an implicit deny at the end. `action` (`permit`, `deny`) is required; `prefix` (none: every route) matches a route inside it of exactly its length, or of a length from `ge` to `le`; `peer` limits a rule to one neighbour. BGP: `local_pref` on an import rule, `prepend` (1–10) on an export rule |
+
+Selection: the lowest cost over the adjacencies (`cost`, else a hop); for
+BGP first the highest local preference (100 unless an import rule sets it;
+eBGP resets it), then the shortest AS path; a route whose AS path holds the
+receiver's AS is refused. Export filters apply to BGP, EIGRP and RIP; OSPF
+and IS-IS flood what they learn, so they have no `export` (an error), and
+their `import` decides only what a router installs (the routers behind it
+still learn the route). The hop evidence of Trace path names a route's
+origin, its AS path and local preference, and the rules on its way. Not
+modeled: communities, MED, route reflection and iBGP split horizon,
+summarisation of learned routes, areas, route maps beyond these matches and
+sets.
+
 The [consistency checks](#consistency-checks) read the AS numbers and router
 IDs from the enabled protocols (iBGP or eBGP follows from the two local AS
 numbers; duplicate router IDs are looked for per protocol domain) and
@@ -256,6 +351,62 @@ enable, and one enabled but used by no relation. The path tracer and the
 failure analysis use only the protocols a device enables: a routing
 adjacency forms only between devices that both enable its protocol. The
 diagram writes the router ID and the AS number only where they apply.
+
+### Network policy (`policy`)
+
+A router, a Layer 3 switch or a firewall may carry an ordered Layer 3/4
+rule base, `policy:`, after its lists. One engine evaluates it for Trace
+path, the communication checks and the simulation. Without one, a router
+forwards everything it routes and a firewall keeps its implicit policy (the
+model's relations through it and its `allow` list, default deny), now
+evaluated by the same engine. A Security gateway's Domain separation is its
+own policy (a `policy:` there is an error).
+
+```yaml
+- id: edge-fw
+  type: firewall
+  interfaces: [{id: lan, ip: 10.1.0.1/24}, {id: dmz, ip: 10.9.0.1/24}, {id: wan, ip: 203.0.113.2/30}]
+  policy:
+    default: deny                       # required: permit or deny, what no rule matches gets
+    stateful: true                      # optional; without it a firewall keeps sessions, a router is stateless
+    zones:
+      - {name: inside, interfaces: [lan]}
+      - {name: dmz, interfaces: dmz}
+    rules:                              # first match wins
+      - {name: web, action: permit, from_zone: inside, to_zone: dmz, proto: tcp, dport: "80,443"}
+      - {action: permit, source: admin-pc, destination: dmz-web, proto: tcp, dport: 22}
+      - {action: deny, source: 10.1.0.0/16, destination: [mgmt, 10.200.0.0/24]}
+```
+
+| Key of a rule | Meaning |
+|---|---|
+| `action` | required: `permit` or `deny` |
+| `source`, `destination` | one or a list of: a prefix or address, `any`, a device (its addresses), a network (its prefix), `device:interface`; none: any |
+| `proto` | `tcp`, `udp`, `icmp` or `any` (the default) |
+| `sport`, `dport` | with tcp or udp: ports and ranges, `"443"`, `"8000-8080"`, `"80,443"` |
+| `in`, `out` | the device's interfaces it comes in at, leaves by (one or a list) |
+| `from_zone`, `to_zone` | zones of the policy (their interfaces) |
+| `name` | a label |
+
+Semantics: the first rule whose conditions all hold decides; none: the
+default action. An IP packet without ports (GRE, ESP, IP-in-IP, IGMP …)
+matches only rules with `proto: any`, by its addresses, interfaces and
+zones; a stateful policy tracks it by its address pair and IP protocol
+number, so one protocol's session never lets another protocol's packets
+back. What is scoped to the link (224.0.0.0/24, ff02::/16, fe80::/10) is
+not decided by the rules, and an ICMP error about a session's packet (an
+echo by its identifier) belongs to that session. A router's or Layer 3 switch's policy applies to what it
+routes (not to what it bridges within a VLAN); a transparent firewall's to
+what it bridges. Statically, Trace path decides one direction for the
+service given (without one, a decision that depends on it is said, not
+guessed); the simulation decides each packet: stateful, a permitted packet
+that opens a flow opens a session and the replies pass by it; stateless,
+each direction needs its own rule. The trace's hop evidence and the
+simulation's drop name the rule. Validation: a missing or unknown
+`default` or `action`, ports without tcp or udp, an interface, zone or
+object the model doesn't have, and a policy on a device that forwards no IP
+are errors. Not modeled: application identification, TLS inspection, user
+identities, time ranges, NAT rules (the NAT service's), vendor rule syntax.
 
 ### Device types
 
@@ -750,7 +901,7 @@ devices:
 | `id` | required, unique within the device across both lists. This is the stable identifier and the interface name used in references (`core1:Vlan10`). |
 | `label` | optional display name (defaults to the id) |
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
-| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
+| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `ipv4: dhcp` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `vlans`, `native`, `routed` | a port's (or an aggregate's) VLANs: see [Port VLANs](#port-vlans-access-trunk-routed). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
@@ -828,7 +979,7 @@ interfaces:
 | `routed` | `true`: a **routed port** of a Layer 3 switch (a Layer 3 interface: no VLANs, it may have addresses). |
 
 * A port with VLANs is a **bridge port** (a switch port). It has **no
-  address of its own**: an `ip` or `dhcp: true` on it is an error (the
+  address of its own**: an `ip` or `ipv4: dhcp` on it is an error (the
   address goes on the VLAN interface of its VLAN, or the port is made
   routed).
 * **Per device type:**
@@ -1054,17 +1205,20 @@ Every physical interface and every virtual or tunnel interface has an explicit D
 
 ```yaml
     interfaces:
-      - {id: wan1, dhcp: true, description: LTE modem}   # address assigned by DHCP
+      - {id: wan1, ipv4: dhcp, description: LTE modem}   # address assigned by DHCP
       - {id: lan0, ip: 10.30.0.1/24}                     # dhcp omitted: false
       - {id: eth3}                                       # no address, and not DHCP either
 ```
 
-* `dhcp` is `true` or `false`, and an omitted `dhcp` is `false`. An
-  interface without addresses is **not** assumed to use DHCP. The editor
-  creates every interface with DHCP off and writes nothing for it; switching
-  DHCP on writes `dhcp: true`, switching it off removes the key again.
-* DHCP and manual addresses exclude each other. `dhcp: true` together with
-  an `ip` is an **error** (attached to the addresses). Neither value is
+* `ipv4` is the interface's IPv4 method: `dhcp` (it obtains its address by
+  DHCP) or `static` (its IPv4 addresses are the ones written under `ip:`);
+  omitted, it is static. An interface without addresses is **not** assumed
+  to use DHCP. The editor creates every interface with DHCP off and writes
+  nothing for it; switching DHCP on writes `ipv4: dhcp`, switching it off
+  removes the key again. Its IPv6 addresses are independent of it (`ipv6`,
+  below): `ipv4: dhcp` with IPv6 addresses written under `ip:` is fine.
+* DHCP and manual IPv4 addresses exclude each other. `ipv4: dhcp` together
+  with an IPv4 address under `ip` is an **error** (attached to the addresses). Neither value is
   dropped or chosen: fix the file by deleting one of them.
 * DHCP is not an address. The address the interface will obtain is unknown,
   so it contributes to no network's membership and has no derived VLAN until
@@ -1074,10 +1228,10 @@ Every physical interface and every virtual or tunnel interface has an explicit D
   is unchanged. Its DHCP server is modelled as well: see
   [Network services](#network-services-services-dhcp-and-dns-servers).
 * **A loopback can't use DHCP.** It is an address of the device itself and is
-  always configured, so `dhcp: true` on a loopback is an **error** (kept in
+  always configured, so `ipv4: dhcp` on a loopback is an **error** (kept in
   the file, not dropped), and the loopback still needs its address.
-  `dhcp: false` on a loopback is accepted. The editor shows no DHCP switch on
-  a loopback card; if the file has `dhcp: true` there, the switch is shown
+  `ipv4: static` on a loopback is accepted. The editor shows no DHCP switch on
+  a loopback card; if the file has `ipv4: dhcp` there, the switch is shown
   only so that it can be turned off.
 * In the editor the **DHCP** switch sits next to the addresses (not on a loopback). While it is
   on, manual addresses can't be entered. Turning it on for an interface that
@@ -1102,6 +1256,72 @@ an interface of a device that routes (a router, a Layer 3 switch, a
 firewall …) and that has an address; elsewhere it is an error, and so is a
 value that isn't an IPv4 address. The consistency check `dhcp-relay-no-server`
 reports a helper address that is no DHCP server of the model.
+
+### IPv6 host configuration (`ipv6`, `ipv6_ra`)
+
+An interface's IPv6 addresses are written under `ip:` like its IPv4 ones
+(`ip: [192.168.10.1/24, fd00:10::1/64]`), or configured automatically.
+`ipv6` chooses how, one method instead of independent flags:
+
+| `ipv6` | What it does |
+|---|---|
+| omitted | the IPv6 addresses written under `ip:` (none written: no IPv6) |
+| `static` | the same, said explicitly (an error without an IPv6 address under `ip:`) |
+| `slaac` | an address in each advertised prefix (SLAAC, RFC 4862); default routers and DNS from the advertisements |
+| `dhcpv6` | its address from a DHCPv6 server (stateful); default routers from the advertisements |
+| `slaac_dhcpv6` | both |
+
+```yaml
+    interfaces:
+      - {id: wlan0, ipv4: dhcp, ipv6: slaac}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: [192.168.10.1/24, fd00:10::1/64], ipv6_ra: {prefixes: [fd00:10::/64]}}
+```
+
+Every interface with IPv6 also has its **link-local address** (fe80::/64,
+from its MAC address, EUI-64), checked by duplicate address detection
+before it is used. A loopback or a tunnel configures nothing automatically
+(an error); written addresses and `ipv6:` combine (a static address beside
+SLAAC).
+
+**Router advertisements** are configured on the router's interface, never
+implied: `ipv6_ra` turns them on, and its `prefixes` are required (no
+connected prefix is advertised without being written). Only on a device that
+routes, and not on a loopback or a tunnel.
+
+| `ipv6_ra` key | Meaning | Default |
+|---|---|---|
+| **`prefixes`** | the prefixes it advertises (Prefix Information options) | — (required) |
+| `autonomous` | the hosts may form SLAAC addresses in them (A flag); then each must be a /64 | `true` |
+| `managed` | addresses from DHCPv6 (M flag) | `false` |
+| `other` | other configuration (DNS) from DHCPv6 (O flag) | `false` |
+| `dns` | DNS servers (RDNSS option, RFC 8106), IPv6 addresses | none |
+| `interval` | MaxRtrAdvInterval | 600 s (RFC 4861) |
+| `router_lifetime` | how long it is a default router; 0: never one; at least `interval` | 3 × interval |
+| `valid_lifetime`, `preferred_lifetime` | of the prefixes; preferred ≤ valid | 30 days, 7 days |
+| `dns_lifetime` | of the DNS servers (needs `dns`) | 3 × interval |
+
+**DHCPv6** servers are DHCP scopes of an IPv6 network
+([Network services](#network-services-services-dhcp-and-dns-servers)): with a
+`range` stateful (it leases addresses, renewed at T1, rebound at T2, expired
+after the valid lifetime), without one stateless (information only: its
+`dns` are required then). A DHCPv6 scope has **no `gateway`** (an error:
+hosts learn their default router from the advertisements, not from DHCPv6)
+and no reservations. The server answers on its own link; DHCPv6 relay and
+prefix delegation are not modelled.
+
+In the simulation (`analysis/sim/ipv6.ts`) routers send their advertisements
+(RFC 4861: the initial ones faster, then at random within the interval, an
+answer to a Router Solicitation); hosts solicit after their link comes up,
+form addresses, run duplicate address detection, keep each router until its
+lifetime ends and each address until its valid lifetime ends (deprecated
+after the preferred one; the two-hour rule of RFC 4862 §5.5.3 e). An
+interface's status says it briefly: *SLAAC address acquired*, *DHCPv6
+pending*, *No default router*, *Duplicate address*, *Address deprecated*;
+*Show IPv6 configuration* lists its addresses with their origin and lifetimes, its default
+routers and its DNS servers. An application or a test to a host name takes
+the family of its own `ip_version` (AAAA for IPv6) and never falls back to
+the other family.
 
 ### DNS names
 
@@ -1132,7 +1352,7 @@ devices:
   derived from it: no A or AAAA record is created or implied, and no DNS
   server is consulted. Associating a name with one particular address would
   be a separate, future addition to the format.
-* An interface with `dhcp: true` can't be associated; that is an error.
+* An interface with `ipv4: dhcp` can't be associated; that is an error.
 * Errors: an invalid name; the same name twice on one device (names are
   compared without case and without a trailing dot); an unknown interface;
   an interface listed twice for a name; no interface. The same name on
@@ -1193,7 +1413,9 @@ boundary.
 | Hypervisor | `hypervisor` | HV |  | Server |  |
 | Container engine | `container_engine` | CTR |  | Server, Virtual machine |  |
 | Storage service | `storage` | STOR |  | Storage, Server, Virtual machine |  |
-| Application | `application` | APP |  | Server, Virtual machine, Container, Storage, System | only a System whose purpose is Host runs services |
+| PTP | `ptp` | PTP |  | Endpoint, Server, Storage, System, Switch, Router, Firewall | only a System that is a host or a forwarder keeps a PTP clock |
+| MQTT broker | `mqtt_broker` | MQTT |  | Server, Virtual machine, Container, System | only a System whose purpose is Host runs services |
+| Applications | `applications` | APP |  | Server, Virtual machine, Container, Storage, System, Endpoint | only a System whose purpose is Host runs services |
 | Inspection | `inspection` | IPS | IDS/IPS |  |  |
 | Domain separation | `separation` | SEP | Security gateway (its configuration required) |  |  |
 <!-- service-matrix:end -->
@@ -1202,7 +1424,7 @@ The parameters of the services without a section of their own:
 
 | Service | Parameters (required in **bold**) | What the simulation does |
 |---|---|---|
-| `ntp` | **`stratum`** (1–15) or **`upstreams`** (addresses): one of them | asks its upstreams (NTP client request / server response, every 64 s); listens on UDP 123 |
+| `ntp` | **`stratum`** (1–15) or **`upstreams`** (addresses): one of them | asks its upstreams (NTP client request / server response, every 64 s); listens on UDP 123. With a stratum it serves time as a reference (taken as given); with upstreams it is *unsynchronized* (stratum 16) until a usable upstream answered, then *synchronized* to it at one stratum more, and unsynchronized again after 8 unanswered polls. No offset or accuracy is computed; NTP and PTP never discipline each other |
 | `aaa` | **`protocol`** (`radius`, `tacacs`), **`secret`** (a placeholder), **`clients`** (devices) | each client's authentication request and the answer; listens on UDP 1812 (TACACS+: TCP 49) |
 | `syslog` | `port` (514), `transport` (`udp`, `tcp`), `senders` (devices) | its senders' messages (one way), besides its syslog relations |
 | `monitoring` | **`targets`** (devices), `icmp_interval`, `snmp_interval` | polls each target by SNMP (and the ICMP probes of the monitoring attributes) |
@@ -1211,7 +1433,9 @@ The parameters of the services without a section of their own:
 | `nat` | **`inside`**, **`outside`** (interfaces), **`rules`**: each **`type`** `pat` / `snat` (**`source`**, `to`) or `dnat` (**`protocol`**, **`port`**, **`to`**, `to_port`) | translates on the way from inside to outside (PAT, source NAT) and forwards outside ports in (destination NAT), the replies translated back; the path tracer notes the translation |
 | `wireless_controller` | **`aps`** (devices: controller-managed access points) | the CAPWAP control channel with each access point (echo every 30 s); listens on UDP 5246 |
 | `storage` | **`protocols`** (`nfs`, `smb`, `iscsi`) | listens on TCP 2049, 445, 3260 |
-| `application` | **`name`**, **`ports`** (`tcp/443`, `udp/5060` …) | listens on its ports and answers |
+| `mqtt_broker` | `port` (1883), `retry_interval` (advanced) | an MQTT 3.1.1 broker: [MQTT](#mqtt-broker-and-clients) |
+| `applications` | a list: [Applications](#applications-servicesapplications) | each listener, client and periodic sender |
+| `ptp` | [PTP](#ptp-servicesptp) | a PTP clock |
 | `inspection` | `block` (`tcp/23`, `udp/69`, `icmp`) | an inline IDS/IPS drops what it blocks; a passive one raises an alert and lets it pass |
 
 A secret (an AAA shared secret, a Wi-Fi passphrase) is written as a
@@ -1225,6 +1449,153 @@ added twice.
 The diagram writes a device's services as **badges** in a line under its
 type — at most three, then how many more (`DHCP · DNS · NTP +3`); its
 tooltip names every one, and the legend lists the badges the model uses.
+
+### What NetAtlas models: support levels
+
+Every protocol, service and application profile says how far NetAtlas goes
+with it, in one of three levels, where it is chosen or configured (a compact
+**ⓘ** disclosure: closed, keyboard operable, two short lines when opened)
+and in the simulation's protocol list:
+
+| Level | Meaning |
+|---|---|
+| *Diagram only* | drawn and documented; no configuration is checked and nothing is simulated (a user-defined protocol: its demonstration packets carry nothing of it) |
+| *Configuration and validation* | its configuration is structured and checked; its behaviour is not simulated |
+| *Modeled behavior* | the simulation runs it: what it does is the first line, what it does not the second (*Not modeled: …*) |
+
+The statements are kept with their definitions (`model/support.ts`, the
+service registry, `model/sim-profiles.ts`, `model/applications.ts`).
+
+### Applications (`services.applications`)
+
+A device runs any number of applications, a list under `services:`. A
+Server, a VM, a container, a Storage device, a System whose purpose is Host
+and a **host-capable Endpoint** (a PC, a PLC, an HMI, a camera, a printer, an
+IoT device …) may run them; an Endpoint stays an Endpoint. Passive devices
+(a pass-through or monitoring System, a TAP) and a Security gateway run
+none (the latter only its Domain separation).
+
+```yaml
+    services:
+      applications:
+        - {id: registers, name: Modbus TCP registers, profile: tcp_server, port: 502}
+        - {id: telemetry, name: Telemetry, profile: mqtt_client, broker: edge, publish: [plant/cell1/plc-1/temperature], qos: "1", interval: 5s}
+```
+
+Each has an **`id`** (unique on the device; others name it
+`device/id`), a **`name`** (a label: "Modbus TCP" names it, NetAtlas
+simulates TCP, not Modbus) and a **`profile`**, which says what it does and
+which fields it has:
+
+| `profile` | What it does | Its fields (required in **bold**) |
+|---|---|---|
+| `tcp_server` | TCP listener: accepts connections on its port and answers each request | **`port`**, `bind`, `response_size`, `response_delay` |
+| `udp_server` | UDP listener: answers each datagram on its port | **`port`**, `bind`, `response_size`, `response_delay` |
+| `udp_receiver` | UDP receiver: takes datagrams on its port, answers none | **`port`**, `bind` |
+| `tcp_client` | TCP request/response: connects to its peer, sends a request, waits for the answer | **`peer`** (and **`port`** when the peer is no application), `interval`, `count`, `start`, `request_size`, `timeout`, `retries`, `ip_version` |
+| `udp_client` | UDP request/response: a request datagram, waits for the answer | the same |
+| `udp_sender` | periodic one-way UDP messages to its peer | **`peer`** (**`port`**), `interval`, `count`, `start`, `request_size`, `ip_version` |
+| `mqtt_client` | MQTT client: publisher, subscriber or both | **`broker`**, `client_id`, `publish`, `subscribe`, `qos`, `interval`, `count`, `start`, `payload_size`, `keepalive`, `retry_interval` |
+
+* **`peer`**: an application (`plc/registers`: its device and port follow
+  from it, and its profile must answer this one: a TCP client's peer is a
+  TCP listener), or a device, an address or a host name with a `port`. A
+  renamed device or application renames its peers; a removed one lists the
+  applications that name it first, and they report their missing peer.
+* **Sizes, delays, timeouts** are modelling defaults when empty (TCP request
+  120 bytes, answer 1460; UDP 40 and 200; MQTT payload 64), shown as
+  placeholders and never written for you; the editor keeps them in a closed
+  *Advanced* section.
+* **`start`**: empty or `manual`, it runs when started (*Network events →
+  Start application*); `simulation_start`, with the simulation (3 s after
+  the senders start). An application sends nothing unless started: there is
+  no hidden startup traffic. With an `interval` it repeats every interval of
+  real time, `count` times or until stopped (*Active events*); without one it
+  sends one request. Each start is one entry in *Active events*: its
+  messages as one operation, with what each came to.
+* **`ip_version`** (`4`, `6`): the family to its peer, IPv4 if empty (an
+  address peer: its own). A host name is resolved for that family only
+  (A or AAAA); without an address of that family the application fails and
+  says so: there is no fallback to the other family.
+* **Conflicts**: two listeners on one port and protocol of one device (and
+  of an overlapping `bind`), or a listener on a port a service of the device
+  listens on (NTP 123, the MQTT broker's 1883, PTP 319/320 …), are errors.
+  `bind` must name an interface of the device; a `count` needs an
+  `interval`.
+
+### MQTT broker and clients
+
+A device with the `mqtt_broker` service is an MQTT broker (version 3.1.1,
+the one modelled), listening on TCP `port` (1883). An application with the
+profile `mqtt_client` connects to its `broker` (a device of the model with
+the service); it publishes to its `publish` topics (no wildcards: each
+topic gets one message every `interval`) and subscribes to its `subscribe`
+filters (`+` one level, `#` the rest, MQTT §4.7; a `$…` topic matches no
+filter starting with a wildcard). Its `client_id` (empty:
+`device-application`) must be unique at its broker (an error; in the
+simulation a second CONNECT with an identifier in use takes the session
+over, as the standard says).
+
+In the simulation, over TCP: CONNECT and CONNACK (clean sessions only),
+SUBSCRIBE and SUBACK, PUBLISH to the broker, which forwards a copy to every
+matching subscription at the lower QoS of the two; QoS 0, and QoS 1 with
+PUBACK and a retry with DUP (QoS 2 is not modelled); PINGREQ and PINGRESP
+after `keepalive` of silence (the broker drops a client after 1.5 ×);
+UNSUBSCRIBE and DISCONNECT when stopped; a reconnect 5 s after a lost
+connection. Every message goes through the broker: no IP multicast, no
+IGMP. *Show MQTT sessions* (the broker) lists its clients and their
+subscriptions, *Show MQTT clients* a client's state, its publications and
+what it received by topic. A message's inspection shows its fixed header,
+topic, QoS and packet id and the payload's size, never its contents or any
+credentials (none are modelled: no authentication, no TLS, no retained
+messages, no will).
+
+### PTP (`services.ptp`)
+
+A PTP clock: PTPv2 of IEEE 1588-2008, its **Default delay request-response
+profile over UDP/IPv4** (the one supported, `profile: default_e2e_udp4`):
+event messages to UDP 319 and general messages to UDP 320 of 224.0.1.129
+(TTL 1), two-step clocks, end-to-end delay measurement. Nothing is inferred
+from a device's type or kind, and no device type is added: a clock is
+written where it runs.
+
+```yaml
+    services:
+      ptp: {clock: ordinary, profile: default_e2e_udp4, domain: 0, interfaces: [eth0], role: source_capable, priority1: 100}
+```
+
+| Key | Meaning |
+|---|---|
+| **`clock`** | `ordinary` (one port), `boundary` (several ports: a slave port toward the grandmaster, master ports elsewhere), `transparent` (an end-to-end transparent clock: a switch that corrects the residence time of what it forwards; never a time source) |
+| **`profile`** | `default_e2e_udp4` |
+| **`domain`** | 0–127; only clocks of one domain take part in one election (not for a transparent clock, which corrects every domain) |
+| **`interfaces`** | its PTP ports: an ordinary clock's one IPv4 interface, a boundary clock's IPv4 interfaces on a device that routes (at least two), a transparent clock's switch ports (no addresses, at least two, on a device that bridges) |
+| **`role`** | an ordinary clock's: `source_capable` (it may become the grandmaster) or `receiver_only` (slave only: clock class 255) |
+| advanced | `priority1`, `clock_class`, `clock_accuracy`, `variance`, `priority2` (its data set: 128, 248, 254, 65535, 128); `announce_interval` (1–16 s, 2 s), `sync_interval` (0.5–2 s, 1 s), `delay_req_interval` (1–32 s, 1 s), `announce_receipt_timeout` (3); `clock_offset` (`+250us`, `-3ms`) and `drift` (`20ppm`): its modelled local clock (empty: from the device); `timestamping`: `hardware` (8 ns, on the wire) or `software` (1 µs, before queueing; the default) |
+
+In the simulation (`analysis/sim/ptp.ts`) the ports join 224.0.1.129 by
+IGMP; the clocks send Announces and elect the grandmaster with the best
+master clock algorithm (foreign master qualification, the data set
+comparison and the state decision of §9.3), and each port goes through its
+states (INITIALIZING, LISTENING, PRE_MASTER, MASTER, PASSIVE, UNCALIBRATED,
+SLAVE, FAULTY). Masters send Sync and Follow_Up; slaves send Delay_Req and
+get Delay_Resp, and compute their offset and mean path delay from the
+modelled timestamps; a servo corrects their clock. Every clock is a
+modelled local clock (offset and drift) beside the simulation's own time,
+which it never moves. A clock is *synchronized* after three offsets in a
+row below 1 µs (hardware timestamps) or 100 µs (software), the model's
+rule; *acquiring* before; in *holdover* when its master went silent (its
+clock runs free from its last correction; holdover quality is not
+modelled); *unsynchronized* without a master. A grandmaster that fails is
+forgotten after the announce receipt timeout, and the next best clock takes
+over; when it comes back it wins again. Clocks in different domains or
+without a path between them never synchronize. Each clock's state is a
+compact mark on its box (*★ PTP · Grandmaster*, *✓ PTP · Synchronized*,
+*PTP · Acquiring*, *✕ PTP · Holdover*, *PTP · Transparent clock*); *Show PTP clock* lists its ports and their
+states, its data sets, parent and grandmaster, its last offset and path
+delay, and a transparent clock's corrected residence times. Not modelled:
+one-step clocks, peer delay, gPTP / IEEE 802.1AS, other profiles, TSN,
+management messages, clock accuracy against a reference.
 
 ### Wireless access: Wi-Fi networks on VLANs
 
@@ -1349,7 +1720,7 @@ DNS name, a CNAME next to another record of the same name, and an A record
 whose value isn't an IPv4 address (AAAA: IPv6) are errors. A DNS server without a zone is an error; `listen` must be one
 of its own addresses; `forwarders` and `reverse_zones` are optional.
 
-**Clients.** A DHCP client is an interface with `dhcp: true`. Its segment
+**Clients.** A DHCP client is an interface with `ipv4: dhcp`. Its segment
 needs a DHCP server: one in its broadcast domain, or a relay on its gateway
 interface (`dhcp_relay`); else the consistency check `dhcp-no-server`
 reports it. A host's DNS servers come from its lease, else from
@@ -1739,6 +2110,189 @@ The cable shows what both ends carry, the networks of those VLANs, and ⚠
 *VLANs differ* when they disagree. `mode`, `untagged` and `tagged` on a
 link end are unknown keys; the error says where the VLANs go.
 
+## `interconnects` (non-IP physical connections)
+
+Some connections carry no network stack the model knows about: a USB
+instrument, a serial line, an RS-485 or CAN bus, a VME backplane, a
+RapidIO / PCIe fabric in a chassis. They are modelled apart from the IP
+side, in two parts: **opaque ports** on the devices, and **interconnects**
+that join them. NetAtlas does not simulate what runs on them; it shows
+where they go and moves [illustrative data](#illustrative-data-on-interconnects)
+along them.
+
+### Opaque ports (`stack: opaque`)
+
+A port written with `stack: opaque` has no network stack:
+
+```yaml
+devices:
+  - id: ctl
+    type: system
+    interfaces:
+      - {id: eth0, ip: 192.0.2.10/24}
+      - {id: usb0, stack: opaque}
+      - {id: rs485, stack: opaque, label: "Meter bus", description: "terminated"}
+```
+
+* It takes only `id`, `label`, `stack`, `description` and `attrs`. Any
+  key of a network port (addresses, VLANs, `mode`, `speed`, `mtu`,
+  services …) is an error that says so.
+* It is never an IP interface: no address, no MAC, no VLAN, no ARP, no
+  route, no adjacency, no path, no simulation of any protocol of the IP
+  side. Analyses, paths, routing, the logical view and the simulation's
+  IP side never see it.
+* It connects only through an interconnect. A `links` end or a relation
+  endpoint that names it is an error.
+* `stack: network` is the default and is not written; any other value is
+  an error.
+
+### Interconnects
+
+```yaml
+interconnects:
+  - id: scope-usb
+    topology: point_to_point
+    technology: {name: USB, version: "2.0"}
+    protocol: {name: SCPI}
+    connector: USB-B
+    access: controller_target
+    endpoints:
+      - {port: "ctl:usb0", role: controller}
+      - {port: "scope:usb0", role: target}
+  - id: meter-bus
+    topology: shared
+    technology: {name: RS-485}
+    protocol: {name: Modbus RTU}
+    access: controller_target
+    endpoints:
+      - {port: "ctl:rs485", role: controller}
+      - {port: "meter1:rs485", role: target}
+      - {port: "meter2:rs485", role: target}
+  - id: gps-serial
+    topology: point_to_point
+    technology: {name: RS-232}
+    endpoints:
+      - {port: "gps:com1", data: send}
+      - {port: "ctl:com1", data: receive}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `id` | yes | Unique among all the model's ids. |
+| `topology` | yes | `point_to_point`: exactly two ports. `shared`: one medium with two or more attachments (a bus, a backplane), drawn as a bar with a tap per attachment. |
+| `technology` | yes | `{name, version}`: what the connection is, as text (`USB` `2.0`, `RS-485`, `CAN FD`, `VME` `VME64x`, `SRIO` `3.1`). The editor suggests common names; any text is accepted and nothing is derived from it. |
+| `protocol` | | `{name, version}`: the application protocol over it (`SCPI`, `Modbus RTU`, `NMEA 0183`), as text. Shown, never simulated. |
+| `connector` | | The connector, as text (`USB-B`, `DB9`, `M12`). |
+| `access` | | `peer` (the default): every participant may send its own data. `controller_target`: controllers initiate every transfer with targets (Master / Slave). |
+| `endpoints` | yes | The attachments: `{port: device:port, role, data, system_controller}`. `port` names an opaque port; a port is attached to one interconnect only. |
+| `traffic` | | Illustrative data it carries while the simulation runs ([below](#illustrative-data-on-interconnects)): a list of `{initiator, from, to, interval, count, size}`. |
+| `label`, `description`, `attrs` | | |
+
+An endpoint's keys:
+
+| Key | Description |
+|---|---|
+| `role` | With `peer` access: `peer` (the default) or `monitor`. With `controller_target` access (required there): `controller`, `target`, `controller_target` (both, as on a VME card that is master and slave) or `monitor`. A monitor only receives. |
+| `data` | The direction of this port's data: `both` (the default), `send` or `receive`. A monitor's is `receive`. **Direction comes from here, never from the order of the endpoints.** |
+| `system_controller` | `true` for the attachment that is the system controller of a backplane (VME slot 1); shown, not simulated. |
+
+Rules (errors unless said otherwise):
+
+* An endpoint names an opaque port of a known device; a network port, an
+  unknown port or a port attached twice is an error with a suggestion.
+* A `point_to_point` interconnect has exactly two endpoints; a `shared`
+  one two or more.
+* A role must fit the access: `peer` only with `peer` access; `controller`,
+  `target` and `controller_target` only with `controller_target`.
+* Warnings: no endpoint can send, or none other receives (no data can
+  move); `controller_target` access without a controller (nothing can
+  initiate).
+* Separate interconnects never join, even of the same technology: two
+  RS-485 segments are two networks unless a device passes data between
+  them (below).
+
+### Transit through a device (`opaque_transit`)
+
+A backplane switch module, an active hub or a fabric switch passes data
+between some of its opaque ports. That is written on the device, never
+assumed:
+
+```yaml
+  - id: fsw
+    type: system
+    interfaces: [{id: f1, stack: opaque}, {id: f2, stack: opaque}, {id: f4, stack: opaque}, {id: f3, stack: opaque, label: console}]
+    opaque_transit:
+      - {ports: [f1, f2, f4]}
+```
+
+* Only a **System** device takes `opaque_transit`; on any other type it is
+  an error.
+* Each group lists two or more of the device's opaque ports; data passes
+  between the ports of one group, and a port is in one group at most.
+  Without `opaque_transit` a device passes nothing (the default).
+* A group joins interconnects of one technology: it **converts nothing**
+  (a USB-to-serial adapter is two devices in the model, or not modelled).
+  Ports of different technologies in one group are an error.
+
+### Illustrative data on interconnects
+
+In the protocol simulation, **Network events → Send illustrative data**
+moves abstract data along these connections: an interconnect, the
+attachment that initiates it, where the data comes from and where it goes,
+Count, Interval and an illustrative size. Each hop follows its
+interconnect's rules — a sender that sends, a recipient that receives, a
+controller that initiates (one end of the data is its own: a read carries
+a target's data to it), peers that send their own data, transit only where
+written. No reply is made, no header of any layer exists, nothing of the
+technology or protocol is simulated (no enumeration, addressing,
+arbitration, collisions, framing, acknowledgment or timing). The result
+says "delivered along the modelled connection", or where and why the data
+stopped. **Non-IP failures** fail an interconnect (a point-to-point
+connection or a bus segment), detach one attachment or shut one opaque
+port, each restored from Active events. A failure (or a device powered
+off) while data is on its way stops that transfer where it is: its dot is
+lost there, nothing goes on from it, and a restore does not bring it back.
+Interconnects are passive: they take no power and do not boot.
+
+An interconnect's **`traffic`** is illustrative data that runs whenever
+the simulation runs — the scenario's, as the applications that start with
+it (3 s after the start, every `interval` of simulated time, `count`
+transfers or until the simulation ends):
+
+```yaml
+  - id: meter-bus
+    # … topology, technology, access, endpoints as above
+    traffic:
+      - {initiator: "ctl:rs485", to: ["meter1:rs485", "meter2:rs485"], interval: 1s, size: 8}
+      - {initiator: "ctl:rs485", from: "meter1:rs485", to: "ctl:rs485", interval: 2s, size: 16}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `initiator` | yes | The attachment that starts each transfer (`device:port`, an endpoint of this interconnect). |
+| `from` | | Where the data comes from (an endpoint of this interconnect); the initiator when not written. A controller reads a target by naming the target here. |
+| `to` | yes | The recipients: one `device:port` or a list; any opaque port, reached over interconnects and transit groups. |
+| `interval` | yes | Between two transfers (`500ms`, `2s`; a bare number is seconds), 100 ms to 1 day. |
+| `count` | | Transfers in all; empty: until the simulation ends. |
+| `size` | | Illustrative size in bytes, shown only (0–65536; empty: 64). |
+
+The same rules apply as to Send illustrative data, checked when each
+transfer is sent (a transfer the rules refuse says why in the log). Its
+dots are the background's and are drawn every time (the setup's list
+shows or hides them as **Non-IP data**), never summarized as the steady
+state and never waited for: they cause nothing on the IP side.
+
+### In the diagram
+
+The physical view draws a point-to-point interconnect as a dashed line in
+its own colour labelled with its technology and data direction
+(`USB 2.0 ↔`, `RS-232 →`), a shared one as a movable bar with a tap to each
+attachment and the attachment's role as a badge (`C`, `T`, `C/T`, `P`,
+`M`; `*` for a system controller), and opaque ports as diamonds. The
+toolbar's **IP** / **Non-IP** switches show either side alone or both
+(only for a model with interconnects). The logical view never draws them.
+Their positions are kept in `layout.physical` under their ids.
+
 ## `networks`
 
 | Key | Description |
@@ -1757,7 +2311,7 @@ is assigned on [interfaces](#interfaces)) and **no `members` list**.
 
 A device is a member of a network when **at least one statically configured
 address of one of its interfaces (physical or logical) lies inside the
-network's prefix**. An interface with `dhcp: true` has no configured
+network's prefix**. An interface with `ipv4: dhcp` has no configured
 address, so it makes its device a member of nothing.
 The list is computed from the current model every time it is shown. It names
 the device once, with every matching interface (or loopback) and address.
@@ -1871,7 +2425,7 @@ A redundancy group's virtual address is not a relation attribute: it is the
 `virtual_ip` of each member interface's group (`protocols: {vrrp: {group:
 10, virtual_ip: 10.10.10.1}}`), compared with the interface's subnets.
 
-**Parameters the path tracer reads.** The [path tracer](../README.md#path-tracer)
+**Parameters the path tracer reads.** The path tracer (**Analyze → Trace path…**, see *Trace a path* in Help → User Manual)
 learns routes over the relations of the routing protocols (`ospf`, `isis`,
 `eigrp`, `rip`, `bgp` and their aliases) and reads a few more keys, each a
 single value or per device:
@@ -1976,7 +2530,9 @@ failure and after a restore; `src/model/sim-profiles.ts`), used by
 Simulate → Start simulation. The simulation reads these relation
 attributes where they are written (they are *configured*, the first in the
 [order of precedence](#order-of-precedence); else the simulation's value or
-the protocol's default, as the event log says): OSPF `hello`, `dead` and `priority`; BFD
+the protocol's default, as the event log says): OSPF `hello`, `dead`,
+`area`, `network-type` and `priority`; BGP `hold`, `keepalive` and
+`peer-as`; BFD
 `interval` (`300ms`, `1s`) and `multiplier`; PIM `rp` (the RP: an address
 or a device); IGMP `group` (default 239.1.1.1); VRRP / HSRP `preempt`
 (`false` turns it off). A switch's spanning-tree bridge priority is its
@@ -1985,6 +2541,34 @@ simulation attribute `bridge_priority` (default 32768; per VLAN with
 the port's `stp_cost` and `stp_port_priority`. A protocol the model defines
 itself is simulated with dummy packets labelled with its name, in the
 relation's direction.
+
+OSPF. `network-type` is `broadcast` unless written (a tunnel interface:
+`point-to-point`). Broadcast and non-broadcast networks elect a DR and a
+BDR after the Wait timer (the dead interval, or sooner when a Hello shows
+one already elected), by `priority` (default 1; 0: never DR or BDR; no
+eligible router: no DR, and no adjacency beyond 2-Way on the segment),
+non-preemptively; point-to-point and point-to-multipoint never elect.
+Hellos whose hello or dead interval, area or network type differ from
+the receiver's are discarded: no adjacency forms (the log says why). A
+direct router-to-router cable is usually written `point-to-point`.
+
+BGP. A session is a TCP connection to port 179 (the relation's first
+endpoint connects; a device without an AS runs no speaker and nothing
+listens). Each OPEN carries the device's AS, its `hold` time and its BGP
+identifier: the peer refuses it with a NOTIFICATION when the AS is not the
+expected one (`peer-as`, else for iBGP its own, else the peer's `asn`), the
+hold time is 1 or 2, or the identifier is its own. The session uses the
+smaller hold time of the two (0: no keepalives and no hold timer) and
+keepalives at most a third of it.
+
+Routes in the simulation are learned: each router computes its routes from
+the records the routing protocols' advertisements brought it (OSPF and
+IS-IS flooding, EIGRP and RIP updates, BGP UPDATEs), not from the model as
+a whole; an advertisement lost on the way delays what the routers behind it
+learn (OSPF, IS-IS and EIGRP send it again after 5 s, BGP's TCP retransmits
+it, RIP waits for its next periodic Response). PIM: each router's RP is its
+own static `rp`, else the `rp` of its own PIM relations, else the candidate
+RP of its PIM domain, of the group's address family.
 
 ## `demands` (traffic demands)
 
@@ -2008,13 +2592,303 @@ demands:
 ```
 
 `source` and `destination` take what the path tracer takes. A demand is
-traced from its source to its destination like Trace path; equal-cost
-paths share it equally.
+traced from its source to its destination like Trace path; the traffic
+animation shows equal-cost paths sharing it equally.
+
+**Capacity.** What if (Analyze → Single points of failure) compares the
+stated traffic with the stated capacity before and after the failure: the
+demands, and the applications with an `interval` (their sizes, written or
+the profile's defaults; payload rates). A resource is counted once: a cable
+(its `speed`; VLANs and tunnels riding it share it), an aggregate (the
+speeds of its members that are up; one flow at most one member's), a radio
+(its Wi-Fi associations share it). How a demand spreads over equal-cost
+paths or members is not assumed: a resource fits when even all of a demand
+on one path fits, exceeds when even an equal split exceeds, else it depends
+on the distribution. Without stated traffic capacity is not evaluated; a
+cable without a speed is insufficient information. No queues, delay or
+hardware forwarding limits are modeled.
 
 Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
 a bandwidth that isn't one and a duplicate id are **errors**; an end that
 names nothing of the model is a **warning** (the demand can't be traced and
 is shown as lost). At most 2000 demands.
+
+## `failure_domains` (shared-failure domains)
+
+Optional. Components that fail together: a rack, a room or site, shared
+power, a shared conduit, a shared provider. Membership is explicit: a
+group of the diagram is never a failure domain by itself (it may stay
+purely organizational), only one written here is. A failure domain is
+analysis data: Analyze → Single points of failure… → **What if…** fails
+it as one condition and compares the result with the same baseline, and a
+saved expectation can name it as its failure condition. It is a what-if
+condition, never a probability, and a file means the same network with or
+without it.
+
+```yaml
+failure_domains:
+  - id: hq-rack-a           # required, unique, and no id of a device, cable, relation, network or group
+    label: HQ rack A        # optional (the id if empty)
+    kind: rack              # required: rack, room, site, power, conduit, provider, other
+    members: [hq-core1, l-uplink-1, power-a-devices]   # required: devices, cables, relations, groups
+    description: …          # optional
+```
+
+A member is a device, a cable (a link's id), a relation or a group (every
+device in it, nested groups included). What a failed member takes with it
+is what the failure analysis propagates: a device its interfaces and
+cables, a cable its ports, a relation what runs over it.
+
+Validation: unknown keys, a missing or unknown `kind`, no `members`, a
+member that names nothing of the model, a duplicate id and an id that is
+already another object's are **errors**. At most 500 failure domains.
+
+## `expectations` (saved design requirements)
+
+Optional. Requirements kept with the model and checked statically by
+Analyze → **Design checks…**: a communication that must be available or
+blocked (also under a failure condition), a configured dependency that must
+be viable, a timing-source path that must exist. An expectation is analysis
+data: evaluating it never sends anything and never starts the simulation,
+and a file means the same network with or without it.
+
+```yaml
+expectations:
+  - id: guest-no-mgmt                   # required, unique among the expectations
+    name: Guests can't manage the access points   # required: what it is called
+    expect: blocked                     # required: available, blocked, dependency, timing
+    from: guest-phone                   # required: a device, device:interface, an address or device/application
+    to: "ap-b:mgmt"                     # available, blocked: a device, interface, address, device/application or device/service
+    service: tcp/22                     # optional: tcp/<port>, udp/<port> or icmp (else from the applications)
+    vrf: guest                          # optional: the source's table (else the source interface's)
+    family: 4                           # optional: 4 or 6, the address family (else the ends' own, or the client application's)
+    enforce: boundary                   # blocked, optional: unreachable (the default), policy, boundary
+    boundary: ap-b                      # with enforce: boundary: the device that must deny it
+    method: ptp                         # timing, required: ptp, ntp, or either (when either is accepted)
+    failure: [basement-power]           # optional: what fails first: devices, cables, relations, device:interface, failure domains
+    description: …                      # optional
+```
+
+| `expect` | Satisfied when | Note |
+|---|---|---|
+| `available` | the communication check is satisfied: addresses, path, policy and listener (under the failure condition, when given) | only some evaluated equal-cost paths reaching is a violation; a path that leaves the model is indeterminate |
+| `blocked` | no evaluated path delivers it | the reason says whether a policy decision blocks it or something else (no route, a missing adjacency), which may not be the intended control |
+| `dependency` | the client application in `from` can use its configured peer or broker | `to` may be left out |
+| `timing` | by its `method`: a compatible PTP source path (`ptp`), a structurally valid NTP source chain to a modeled reference (`ntp`), or either (`either`: both are evaluated and reported, one is enough) | never proof that the clock synchronizes, or of its accuracy; `to` may name the source the chain must reach. On a simulation snapshot the observed synchronization is added |
+
+A blocked expectation may say how it must be enforced (`enforce`), path by
+path over every evaluated equal-cost path:
+
+| `enforce` | Satisfied when |
+|---|---|
+| `unreachable` (the default) | no evaluated path delivers it, whatever stops it (the actual cause is reported) |
+| `policy` | an evaluated modeled policy denies it on every path; the denial names the device and its rule. A missing route or listener is no denial: a path that stops before any policy decides leaves it indeterminate (not exercised), one that a policy permitted before it stopped violates it |
+| `boundary` | the device in `boundary` denies it on every path; a denial elsewhere, or a path that crosses the boundary without a denial, violates it |
+
+Partial equal-cost outcomes and truncated evaluation never count as
+complete isolation. An end the failure condition takes down leaves the
+control not exercised (indeterminate), never proven.
+
+`from` and `to` take what Trace path takes, plus applications
+(`device/application`) and a device's services (`device/dns`,
+`device/ntp`, `device/mqtt_broker` …; an application of that id first).
+A client application in `from` names its own peer or broker, so an
+`available` or `blocked` expectation from one may leave `to` out.
+
+The verdicts: **Satisfied**, **Violated**, **Indeterminate** (information
+is missing: an address only DHCP or SLAAC assigns at runtime, a failure
+condition that names nothing of the model) and **Unsupported** (a failure
+condition evaluated on a simulation snapshot, which would blend two
+states; a dependency expectation without a client application).
+
+Validation: unknown keys, a missing `name`, `expect` or `from`, an
+unknown `expect`, an unreadable `service`, a `family` other than 4 or 6, an
+`enforce` on anything but a blocked expectation, an unknown `enforce`,
+`enforce: boundary` without `boundary` (or a `boundary` without it), a timing
+expectation without `method` (or a `method` on any other), no `to` where it
+is needed and a duplicate id are **errors**; a `boundary` that is no
+device of the model is a **warning**; an end or a failure entry that names nothing of
+the model is a **warning** (the expectation evaluates as indeterminate). At
+most 1000 expectations and 64 entries per failure condition. Renaming a
+device, an interface, an application or a failure domain updates the
+expectations and failure domains that name it; deleting one lists them in
+the confirmation.
+
+## `experiments` (saved, repeatable experiments)
+
+Optional. A repeatable, explicitly configured sequence of actions and
+observations applied to a defined architecture and starting state
+(Simulate → **Experiments…**, **Run**): not an automatic test of everything,
+and not a scripting language. Analysis data: saving or editing one never
+starts it, and a file means the same network with or without it.
+
+```yaml
+experiments:
+  - id: cold-tv                        # required, unique among the experiments
+    name: Cold start — the TV gets an address   # required (a draft without one is kept: not runnable)
+    duration: 2min                     # required to run: it always ends (at most 1h of scenario time)
+    start: cold                        # optional: booted (the default) or cold
+    settle: 30s                        # optional, booted only: the network runs this long first (not the experiment's time)
+    scope: targets                     # optional: targets, or one of {group: …}, {vlan: …}, {domain: …}, {device: …}; none: the entire model
+    params: {link_up_delay: 1s}        # optional: parameters of Start simulation (the rest: their defaults)
+    actions:                           # at one time, in the order written
+      - {id: ctl, at: 0s, do: start_app, target: tv/control}
+      - {id: join, at: 5s, do: join, target: "rx:e0", group: 239.1.1.1}
+      - {at: 2s, after: join, do: start_stream, target: "src:e0", group: 239.1.1.1, interval: 500ms, for: 30s}
+      - {at: 40s, do: fail, target: cell-cabinet, for: 40s}   # a device, cable, relation or failure domain; restored after 40 s
+    observe:                           # read after that time's actions; without at: at the end
+      - {id: up, at: 0s, within: 60s, of: device, target: tv, expect: operational}
+      - {at: 0s, within: 90s, of: address, target: "tv:wlan0", family: ipv4, expect: acquired}
+      - {at: 3s, after: join, within: 10s, of: receive, target: "rx:e0", group: 239.1.1.1, min: 3, expect: received}
+      - {at: 0s, within: 110s, of: session, target: r1, protocol: ospf, to: r2, expect: established}
+      - {of: app, target: ctl, expect: delivered}
+    description: …
+```
+
+**Durations.** Every duration (`duration`, `settle`, `at`, `within`,
+`interval`, `for`) is one value: a number with `ms`, `s`, `min` or `h`
+(`90s`, `1.5min` is read as 90 s). The editor writes it canonically, in the
+largest whole unit (`2h`, `5min`, `90s`, `1500ms`); the unit it shows (sec,
+min, hours) is the editor's, not the model's.
+
+**Starting state.** `booted` (the default): the network starts up at the
+start, every device on. With `settle`, it runs that long first; that time is
+not the experiment's. `cold`: every device with a power lifecycle is off
+when the run starts and is powered on at t = 0, then boots as the simulation
+boots it — its boot time, its ports negotiating, a VM once its host is up, a
+container by its restart policy. Cables, patch panels, TAPs and external
+networks have no lifecycle and are not powered. Boot time is experiment
+time. A cold start never changes the model's devices.
+
+**Timing.** A step's time is `at` after the start, or `at` after the action
+named by `after` was **submitted** (its own time, resolved along the chain).
+A submitted action is no completed one: a time never promises that a
+protocol's prerequisite has happened; an observation says what happened.
+An action whose device is still coming up (booting, or waiting for its
+host) **waits** for it — said in the run, with how long — and is submitted
+when the device is operational, or **timed out** when the run ends first; a
+time after the start never waits for the whole network. A cycle of `after`,
+or an `after` naming no action, keeps the experiment from running (and is
+said).
+
+| `do` | Target | Required / optional |
+|---|---|---|
+| `send` | the source (device, device:interface, device/application, address) | `to` / `service` (`tcp/443`, `udp/53`, `icmp`), `count`, `interval`; prepared from the communication's identity, as Trace path's handoff |
+| `fail`, `restore` | a device (powered off, on), a cable, a relation, a failure domain (its members) | — / `for` (fail: restored after it) |
+| `shut`, `no_shut` | device:interface | — / `for` (shut: brought up after it) |
+| `flap`, `stop_flap` | device:interface | — / `for` (flap: stopped after it) |
+| `power_off`, `power_on` | a device | — / `for` (power_off: powered on again after it, and booting) |
+| `join`, `leave` | a host's device:interface | `group` |
+| `start_stream`, `stop_stream` | a host's device:interface | `group` / `port` (5000), `interval` (1s), `size` (1000), `for`; on scenario time |
+| `start_app`, `stop_app` | device/application | — / `for` (start_app: stopped after it) |
+
+`for` is how long an action lasts; an action that is instantaneous (a join,
+a send, a power-on) has none.
+
+| `of` | Target | Other fields | `expect` | Window | Evidence (the simulation's own state) |
+|---|---|---|---|---|---|
+| `send` | a send action's `id` | | `delivered` (every message), `failed` | traffic | each message's answer |
+| `app` | a start action's `id`, or device/application | | `delivered`, `failed` | traffic | the application's exchanges (an MQTT client: its publication rounds) |
+| `receive` | a host's device:interface | `group` / `min` | `received`, `not received` | traffic | datagrams of the group that arrived at the host |
+| `mqtt` | a subscribing client (device/application) | — / `topic`, `min` | `delivered`, `not delivered` | traffic | publications the client received from its broker |
+| `reach` | the source | `to` / `service` | `available`, `unavailable` | state | the communication check on the simulation's state |
+| `device` | a device | | `operational`, `booting`, `on`, `off` | state | its power lifecycle |
+| `interface` | device:interface | | `up`, `down` | state | the port's operational state |
+| `link` | a cable | | `up`, `down` | state | the cable at both ends |
+| `address` | a host's device:interface | — / `family` (`ipv4`, `ipv6`) | `acquired`, `none` | state | its DHCPv4 lease (with its binding time), or a preferred SLAAC / DHCPv6 address |
+| `neighbor` | a device | `to` (an address, a device, an interface) | `resolved`, `unresolved` | state | its ARP or neighbor table: a complete entry |
+| `route` | a device | `to` | `present`, `absent` | state | its effective route lookup |
+| `session` | a device | `protocol` / `to` (the peer) | `established`, `down` | state | the protocol's session state |
+| `member` | a multicast router | `group` | `present`, `absent` | state | its IGMP / MLD membership table |
+| `timing` | a device | — / `protocol` (`ptp`, `ntp`) | `synchronized`, `unsynchronized` | state | its PTP clock state, or its NTP client's |
+| `expectations` | `*` (all) or saved expectation ids | | `satisfied`, `violated` | state | the saved expectations evaluated on the run's state |
+
+**Evaluation.** `within` is an evaluation window: a *state* is satisfied as
+soon as it holds within it — *already* so when the window opened, or
+*reached* at a moment the result names (the evidence's own time where it
+has one: a boot's end, a lease's binding, a first datagram; else when it was
+read, every 0.1 s of scenario time, a communication or the expectations
+every second) — and violated when it does not by its end. *Traffic* is
+counted until the window ends: what was sent is not what arrived, a route
+is no delivery, and a timing state is a protocol state, never an accuracy.
+Without a window, an observation is read at once. Verdicts: **satisfied**,
+**violated**, **indeterminate** (not decidable: nothing sent yet, still on
+its way, outside the scope, stopped before it was reached) and
+**unsupported** (the target has no such state: a device observation of an
+external network). `expectations` evaluates the model's own saved
+expectations on the run's state and reports what it could not decide: it
+invents no requirement. A target is always named: nothing defaults to the
+whole architecture. Finishing the sequence proves nothing; only
+observations do.
+
+**Scope.** `targets` runs the devices the steps name (targets, destinations,
+an application's peer or broker) with their dependencies (DHCP and DNS
+providers, the routing domains and switches they need: the dependency slice
+of each); `group`, `vlan`, `domain` and `device` as in Start simulation. A
+narrower scope runs fewer devices: what runs outside it — load on a shared
+link, another host's traffic — is not modeled, and a run says how many
+devices of the model it ran.
+
+**Runs.** Each run starts from the experiment's defined start (a new
+simulation of the model, or of its scope's sub-model, on the shared engine),
+on scenario time only, so a run is repeatable; every step is an event of the
+simulation's clock. A run plays in the diagram with the simulation's own
+pacing and shows only the experiment's traffic: its operations and what they
+cause, and the prerequisite traffic of its devices (a host's DHCP, DNS,
+address resolution and router discovery; the queries of a receiver's LAN;
+the sessions or clocks an observation reads). The rest of the network runs,
+hidden, and never holds the display or the run back. Shown or not, a run
+gives the same result. An action is **submitted**, **refused** (with the
+simulation's reason, or outside the scope), **waiting**, **timed out** or
+**undone** (its `for` ran out). A run can be paused, sped up, skipped to
+its result and stopped; it is compared with the previous one. Not measured:
+convergence time, throughput, synchronization accuracy.
+
+**Validation.** What is written wrong is an **error**: an unknown key,
+action or observation, a value that is no duration or number, a time after
+the end, an expected outcome the observation can't have, an unknown
+parameter, family or protocol, `start: cold` with `settle`, a duplicate id.
+What is not configured yet — a missing `name`, `duration`, `target`, `to`,
+`group`, `protocol` or `expect` — and what names nothing of the model (a
+target, a scope, an `after`) is a **warning**: the step stays in the model
+with what it misses, so that it can be finished, and the experiment can't
+run until nothing is missing. A field the step does not take (`for` on a
+join) is a warning and is not used. At most 200 experiments, 200 actions and
+200 observations each. Renaming a device, cable or relation updates the
+targets.
+
+## `views` (saved views)
+
+Optional. A named way of looking at the model (Find → **Saved views…**):
+display state only. Opening one changes what is drawn — never the
+network, an analysis or a simulation (a running one goes on). **Save
+current view** writes the one on screen.
+
+```yaml
+views:
+  - id: iot-vlan                       # required, unique among the views
+    name: The IoT VLAN                 # required
+    view: logical                      # required: physical or logical
+    focus: {target: core-sw, context: vlan, vlan: 30}   # optional
+    devices: [core-sw, ap1, cam1, cam2]                 # optional: only these (left out: every device)
+    collapse: [garage]                 # optional: groups drawn as one box each
+    hide_types: [server, switch:l2]    # optional: device types left out (a type stands for each of its kinds)
+    hide_protocols: [ospf]             # optional: protocols not drawn
+    options: {labels: false}           # optional: labels, groups, networks, routes (each on when left out)
+    viewport: {x: 420, y: 180, zoom: 1.25}   # optional: the diagram's centre and zoom; left out: fitted
+    description: …
+```
+
+`focus`: `target` (a device, `device:interface`, or `network:…`,
+`group:…`, `link:…`) with `hops` (1–3), or a contextual focus with
+`context`: `vlan` (with `vlan`), `dependencies`, `multicast` (with
+`group`), `timing`, `vrf` (with `vrf`) — as Analyze → Focus has them.
+
+Validation: unknown keys, a missing `name` or `view`, an unknown device
+type, context or option, a zoom outside 0.05–6, hops outside 1–3 and a
+duplicate id are **errors**; a device or focus target that names nothing of
+the model is a **warning** (the view opens without it). Renaming a device
+or interface updates its views.
 
 ## Simulation parameters and device attributes
 
@@ -2053,7 +2927,8 @@ Wherever a value is shown it says where it comes from: *configured on …*,
 *interface …* / *VLAN …* / *relation …* / *scope …* / *zone …*, *device*,
 *simulation* or *default* (with its source). A derived timer
 follows its base: OSPF's dead interval is 4 × the hello interval, BGP's
-hold time 3 × the keepalive. A cable's latency and loss come from the
+hold time 3 × the keepalive (a written `hold` is the device's own; the
+session negotiates the smaller of the two ends'). A cable's latency and loss come from the
 cable, else from one of its devices (a cloud's `latency` and `loss`: the
 larger of the two ends), else from the simulation.
 
@@ -2217,9 +3092,9 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `directed_broadcast` | Forward directed broadcasts | Off | `on`, `off` | RFC 2644 (off by default since 1999) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
 | `storm_control_broadcast` | Storm control: broadcast | off | 0 (off) – 100000000 | off unless configured (Cisco storm-control) | switch ports and their aggregates of switches |  |
 | `storm_control_multicast` | Storm control: multicast | off | 0 (off) – 100000000 | off unless configured (Cisco storm-control) | switch ports and their aggregates of switches |  |
-| `dhcp_retries` | DHCP retries | 4 | 1 – 20 | RFC 2131 §4.1 (4, 8, 16, 32 s: about a minute) | DHCP clients (`dhcp: true`) |  |
-| `dhcp_backoff` | DHCP retransmission delay (s) | 4 s | 100 ms – 64 s | RFC 2131 §4.1 (4 s, doubled each time up to 64 s) | DHCP clients (`dhcp: true`) |  |
-| `link_local_fallback` | Link-local fallback | Off | `on`, `off` | off unless set (RFC 3927: Windows and macOS use it) | DHCP clients (`dhcp: true`) |  |
+| `dhcp_retries` | DHCP retries | 4 | 1 – 20 | RFC 2131 §4.1 (4, 8, 16, 32 s: about a minute) | DHCP clients (`ipv4: dhcp`) |  |
+| `dhcp_backoff` | DHCP retransmission delay (s) | 4 s | 100 ms – 64 s | RFC 2131 §4.1 (4 s, doubled each time up to 64 s) | DHCP clients (`ipv4: dhcp`) |  |
+| `link_local_fallback` | Link-local fallback | Off | `on`, `off` | off unless set (RFC 3927: Windows and macOS use it) | DHCP clients (`ipv4: dhcp`) |  |
 | `igmp_version` | IGMP / MLD version | IGMPv3 / MLDv2 | `v3`, `v2` | Linux, Windows and current routers (RFC 3376, RFC 3810) | interfaces with an address | yes |
 | `unsolicited_report_interval` | Unsolicited report interval (s) | by version: v2 10 s, v3 1 s | 0 (by version: v2 10 s, v3 1 s) – 1 min | RFC 2236 §8.10 (10 s) and RFC 3376 §8.11 (1 s) | interfaces with an address | yes |
 | `igmp_querier` | IGMP / MLD querier | On | `on`, `off` | on where a router runs PIM or IGMP (Cisco IOS, Junos) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) | yes |
@@ -2593,9 +3468,11 @@ README's limitations):
   also on the ports it passes requests on to; a protocol break on its
   transfer profiles' ports). A request of a
   relation to a port its `listening` leaves out is refused like any other.
-- **Firewalls** (routing ones): the traffic of the model's relations (and
-  of its demands, and tests between a service relation's endpoints on its
-  port) is their policy and passes; anything else passes when it belongs to
+- **Firewalls** (routing ones) and devices with a network policy: a
+  written `policy:` decides each packet by its rules (see *Network policy*),
+  keeping sessions when it is stateful. Without one, a firewall's policy
+  is the traffic of the model's relations (and of its demands, and tests
+  between a service relation's endpoints on its port), which passes; anything else passes when it belongs to
   a session (stateful: replies, and ICMP errors about them) or when their
   `allow` list permits it (which opens a session), else the default action
   drops it, or rejects it (TCP RST from the destination's address, else
@@ -2654,8 +3531,12 @@ message of the event log) shows the frame layer by layer: source and
 destination MAC (what a broadcast or multicast MAC is, and how an IP group
 maps to it: 01:00:5e + the low 23 bits, 33:33 + the low 32 bits), the
 802.1Q tag on that cable, the IP headers (outermost first: TTL, DF,
-protocol, length, fragment), the transport header (ports, TCP flags,
-ICMP type and code with the quoted header) and what it carries. A relation's
+protocol, length, fragment, the Router Alert option), the transport header
+(ports, TCP flags and the MSS option, ICMP type and code with the quoted
+header) and what it carries. A TCP segment's dot is labelled with the flags
+of its own header — its letters S, F, R, P, A, U, E, C in that order, in
+brackets: *TCP [S,A]*, *BGP OPEN [P,A]* (the application's message keeps
+its name, the flags are the transport's); *[]* has none. A relation's
 message has its profile's transport (OSPF IP 89, BGP TCP 179 …).
 
 ### DHCP and DNS
@@ -2700,7 +3581,8 @@ Services):
   cache* on a host (each cached name with its server and what is left of
   its TTL).
 
-Simplifications: IPv4 only for DHCP (no DHCPv6); one lease per interface;
+Simplifications: one lease per interface; DHCPv6 on the server's own link
+only (no DHCPv6 relay or prefix delegation);
 no DHCPDECLINE, DHCPRELEASE or DHCPINFORM; no relay agent information
 (option 82); offers are broadcast; no negative caching, DNSSEC or TCP
 fallback, and no recursion beyond the model's DNS servers.
@@ -2805,6 +3687,54 @@ from a fixed seed (the model's title and interfaces) and the interface's
 They are marked *(simulated)* wherever they are shown and never written to
 the model.
 
+## `layout` (diagram positions)
+
+Presentation only: the section never changes what the model means, and
+a broken entry is a warning and ignored. NetAtlas writes it; you don't
+have to.
+
+```yaml
+layout:
+  routing: {physical: orthogonal}   # optional: lines at right angles (Structured)
+  physical:                         # device id: [x, y]
+    core: [520, 140]
+    ap-1: [300, 420]
+  logical:                          # devices, networks and multipoint relations
+    core: [480, 300]
+    internal: [480, 520]
+  manual:                           # optional: what was placed by hand, per view
+    physical: [ap-1]
+```
+
+| Key | Meaning |
+|---|---|
+| `physical`, `logical` | The centre of each node of the view: in the physical view the devices (a guest is drawn inside its host and has no entry); in the logical view the devices, the networks, the relations with three or more devices (their hubs) and a container network drawn as a network (`host/name`). Coordinates are numbers from −1 000 000 to 1 000 000. A view without entries shows the Default arrangement; a node without an entry is placed next to its neighbours, and nothing else moves. |
+| `manual` | The nodes of each view placed by hand (`physical: [ids]`, `logical: [ids]`). It only tells *Manually adjusted* from *Edited since arranged* after a reload. |
+| `routing` | How a view's cables (physical) and relations, memberships and next-hop lines (logical) are drawn: `orthogonal` for horizontal and vertical segments with right-angle bends only, the routing of **Structured**. Without an entry for a view, the standard routing: straight lines that bend around boxes. Any other value is a warning and ignored. |
+
+Opening a file never writes positions. They are written when you drag a
+node, make the first edit that changes the geometry (the positions shown
+are stored, so nothing moves by itself) or use Auto-arrange. **Remove
+stored positions** removes the whole section, routing included.
+
+### Auto-arrange
+
+Auto-arrange computes the positions of the view on screen from the model
+alone, deterministically: the same model (in any key and list order) gets
+the same positions, and arranging twice moves nothing the second time.
+It writes them, with the routing, in one undo step:
+
+| Option | Positions | `routing` of the view |
+|---|---|---|
+| **Default** | Rows by tier, groups placed by their cabling, each row ordered to keep cables short and uncrossed (physical); evenly spaced relations (logical). The layout every model starts with. | removed (standard) |
+| **Compact** | The Default rows packed tight: the slack taken out, rows of leaf devices folded, unconnected groups side by side; the smallest of these that keeps the lines readable, never larger than Default (then Default's positions). | removed (standard) |
+| **Structured** | Rows and columns on a 10 px grid: the rows of the physical Default layout in both views (networks and hubs of the logical view in a row under the highest row they connect), every item aligned with what it is connected to, room between rows for the lines that bend there. | `orthogonal` |
+
+The option a view is arranged with is recognised from its positions *and*
+its routing, so it is right after undo, reload and manual moves. After a
+move the routing stays: a view arranged with Structured keeps its
+right-angle lines.
+
 ## Validation and limits
 
 Validation reports **all** problems it finds (up to 200). Each one comes with
@@ -2827,10 +3757,12 @@ next to the object and field they concern.
   of the device; a tunnel destination that is neither an address nor a
   device or interface of the model; `members`, `vlan`, `source` or
   `destination` on an interface of another type;
-* `dhcp` that isn't `true` or `false`, `dhcp: true` on an interface
-  that also has addresses, and `dhcp: true` on a loopback;
+* `ipv4` that isn't `dhcp` or `static`, `ipv4: dhcp` on an interface
+  that also has IPv4 addresses, and `ipv4: dhcp` on a loopback; an `ipv6`
+  method that isn't one, `ipv6: static` without an IPv6 address, router
+  advertisements on a device that routes nothing or without prefixes;
 * a DNS name that isn't a valid host name, is listed twice on a device, has
-  no interface, names an unknown interface or one with `dhcp: true`, or
+  no interface, names an unknown interface or one with `ipv4: dhcp`, or
   lists an interface twice;
 * `over` cycles;
 * a relation `direction` other than `bidirectional` or `unidirectional`;
@@ -2919,6 +3851,7 @@ VLANs is routed, not "access in VLAN 1").
 | `vlan-access-trunk` | warning | an access port cabled to a trunk whose native VLAN isn't the access port's VLAN | interfaces: `vlans`, `native` |
 | `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines (VLAN 1, the default VLAN, aside) | interfaces: `vlans`; networks and VLAN interfaces: `vlan` |
 | `lag-member-vlans` | warning | members of an aggregate whose far ends carry different VLANs (a bundle carries the same VLANs on every member) | logical interfaces: `members`, `vlans`, `native`; interfaces: `vlans`, `native` at the far ends; links |
+| `routing-policy` | warning | a routing policy that names what the model does not have: an advertised prefix the device has no connected network or static route for, a redistributed protocol it does not enable, a filter rule's peer that is no neighbour of the protocol, a filter without a catch-all rule (the implicit deny) | devices: `protocols:` (advertise, redistribute, import, export); interfaces' addresses; routes; the protocol's relations |
 | `link-mtu-mismatch` | warning | different MTUs at the two ends of a cable | interfaces: `mtu`; links |
 | `tunnel-mtu` | warning | a tunnel interface whose MTU plus the encapsulation overhead (table below) is larger than the MTU of its underlay; the message names the overhead assumed and the largest MTU that fits | tunnel interfaces: `mtu`, `source`; the MTU of the source interface, else of the device's ports on the links in `over`; the tunnel relations bound to it and the tunnels they ride on |
 | `link-speed-mismatch` | warning | port speeds that differ between the ends, or from the link's speed | links: `speed`, `a`/`b` `speed` |
@@ -2951,6 +3884,7 @@ VLANs is routed, not "access in VLAN 1").
 | `snooping-not-configured` | error | a switch that carries VLANs on its ports without an IGMP / MLD snooping choice for each (one finding per switch, listing them); until chosen the simulation floods their multicast | devices (switches): `igmp_mld_snooping`; their ports' and aggregates' `vlans` |
 | `multicast-no-querier` | warning | an interface that joins a group in a subnet where no multicast router (PIM, its querier not off) has an interface, and no switch on its Layer 2 way is a snooping querier | interfaces: `multicast.join`, `ip`; devices: `protocols.pim`, simulation `igmp_querier`, `snooping_querier`; links |
 | `multicast-no-rp` | warning | routers in PIM sparse mode and any-source groups joined or streamed, but no rendezvous point (no `rp`, no `candidate_rp: yes`, no relation `rp`) | devices: `protocols.pim`; relations: `rp`; interfaces: `multicast` |
+| `multicast-rp-conflict` | warning | routers of one PIM domain whose RP for a joined or streamed any-source group differs (each uses its own static `rp`, else its PIM relations' `rp`, else the domain's candidate RP) | devices: `protocols.pim`; relations: `rp`; interfaces: `multicast` |
 | `multicast-rpf-not-pim` | warning | a PIM router whose unicast route towards a stream's source (or the RP) leaves through an interface to a device it has no PIM relation with there: joins cannot go that way and the traffic fails the RPF check | devices: `protocols.pim`, `routes`; interfaces: `multicast.streams`, `ip`; PIM relations |
 
 **Encapsulation overhead** assumed by `tunnel-mtu`, per packet, with an IPv4

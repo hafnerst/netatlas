@@ -257,6 +257,9 @@ test('background labels: the kind in a word or two, never addresses', () => {
   assert.equal(A.bgKind('dns', 'DNS query nas.home.arpa A'), 'DNS');
   assert.equal(A.bgKind('mcast', 'UDP → 239.20.0.1:5004'), 'UDP');
   assert.equal(A.bgKind('ospf', 'OSPF Hello'), 'OSPF Hello');
+  // a TCP segment: its flags, from its header (whatever protocol it is drawn as)
+  assert.equal(A.bgKind('bgp', 'BGP OPEN [P,A]', '[P,A]'), 'BGP [P,A]');
+  assert.equal(A.bgKind('tcp', 'TCP [S] → 10.0.2.10:80', '[S]'), 'TCP [S]');
   assert.equal(A.bgKind('vrrp', 'VRRP Advertisement'), 'VRRP');
   for (const k of ['IGMP Query', 'ARP', 'UDP']) assert.doesNotMatch(k, /\d+\.\d+/);
 });

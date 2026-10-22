@@ -30,7 +30,7 @@ const LAN = (svc, more = {}) => `netatlas: 1
 title: lan
 devices:
   - {id: srv, type: ${more.type || 'server'}, interfaces: [{id: eth0, ip: 10.0.0.10/24}]${svc !== undefined ? ', services: ' + svc : ''}}
-  - {id: pc, type: endpoint, interfaces: [{id: eth0, dhcp: true${more.pc || ''}}]${more.pcDev || ''}}
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp${more.pc || ''}}]${more.pcDev || ''}}
   - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.1/24}]}
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
 links:
@@ -47,8 +47,10 @@ test('the services: off by default; enabled, what they still need is an error; t
   assert.equal(V.loadModel(LAN()).model.index.devices.get('srv').netServices, undefined);
   assert.deepEqual(errs(LAN(SCOPE())), []);
   assert.match(errs(LAN('{dhcp: {}}')).join('|'), /the DHCP server of "srv" needs a scope: add one \(its network, range, default gateway and DNS servers\)/);
-  const e = errs(LAN('{dhcp: {scopes: [{lease: 1h}]}}')).join('|');
-  for (const what of ['network', 'address range', 'default gateway', 'DNS servers']) assert.match(e, new RegExp(`scope 1 of "srv" needs its ${what}`), what);
+  // without its network, what else it needs is not known yet (an IPv4 scope's or a DHCPv6 scope's)
+  assert.match(errs(LAN('{dhcp: {scopes: [{lease: 1h}]}}')).join('|'), /scope 1 of "srv" needs its network/);
+  const e = errs(LAN('{dhcp: {scopes: [{network: lan, lease: 1h}]}}')).join('|');
+  for (const what of ['address range', 'default gateway', 'DNS servers']) assert.match(e, new RegExp(`scope 1 of "srv" needs its ${what}`), what);
   assert.match(errs(LAN('{dns: {}}')).join('|'), /the DNS server of "srv" needs a zone \(its domain name, e\.g\. hq\.example\) or forwarders \(the servers it asks\)/);
   assert.match(errs(LAN(SCOPE(), { type: 'storage' })).join('|'), /"srv" can't run DHCP server: DHCP server runs on Router, Switch, Firewall, Server, Virtual machine or Container/);
   // a VM and a container run them too (on their host, through its virtual networking)
@@ -176,7 +178,7 @@ test('the lease lifecycle: renew at T1 (unicast), rebind at T2 (broadcast), the 
 });
 
 test('an exhausted pool does not answer; the client retries with backoff (4, 8, 16, 32 s), pauses, and takes a link-local address when its fallback is on', () => {
-  const two = LAN('{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.100, gateway: 10.0.0.1, dns: [10.0.0.10]}]}}').replace('  - {id: r1,', '  - {id: pc2, type: endpoint, interfaces: [{id: eth0, dhcp: true, simulation: {link_local_fallback: on}}]}\n  - {id: r1,').replace('{id: p3, vlans: 1}]', '{id: p3, vlans: 1}, {id: p4, vlans: 1}]').replace('links:\n', 'links:\n  - {id: d, a: "pc2:eth0", b: "sw:p4"}\n');
+  const two = LAN('{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.100, gateway: 10.0.0.1, dns: [10.0.0.10]}]}}').replace('  - {id: r1,', '  - {id: pc2, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp, simulation: {link_local_fallback: on}}]}\n  - {id: r1,').replace('{id: p3, vlans: 1}]', '{id: p3, vlans: 1}, {id: p4, vlans: 1}]').replace('links:\n', 'links:\n  - {id: d, a: "pc2:eth0", b: "sw:p4"}\n');
   const s = sim(two);
   s.runTo(70000);
   assert.equal(s.leases().filter((l) => l.kind === 'dhcp').length, 1, 'one address for two clients');
@@ -230,4 +232,170 @@ test('a deterministic timeline with DHCP and DNS', () => {
     return s.events().map((e) => `${e.t}|${e.device}|${e.what}|${e.detail}`);
   };
   assert.deepEqual(run(), run());
+});
+
+// ------------------------------------------------------------------ the legs of a relayed exchange
+
+/** pc (DHCP) — r1 (relay on g0) — fw (UDP 67 only) — srv (the DHCP server); `vrf`: r1's interfaces in that VRF. */
+const RELAYED = (x = {}) => `netatlas: 1
+title: relayed
+devices:
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ipv4: dhcp}]}
+  - id: r1
+    type: router
+    interfaces: [{id: g0, ip: 10.10.0.1/24, dhcp_relay: [10.20.0.10]${x.vrf ? ', vrf: ' + x.vrf : ''}}, {id: g1, ip: 10.0.1.1/30${x.vrf ? ', vrf: ' + x.vrf : ''}}]
+    routes: [{prefix: 10.20.0.0/24, via: 10.0.1.2${x.vrf ? ', vrf: ' + x.vrf : ''}}]
+  - id: fw
+    type: firewall
+    interfaces: [{id: in, ip: 10.0.1.2/30}, {id: out, ip: 10.20.0.1/24}]
+    routes: [{prefix: 10.10.0.0/24, via: 10.0.1.1}]
+    simulation: {allow: "udp/67", default_action: drop}
+  - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.20.0.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.20.0.1}], services: {dhcp: {scopes: [{network: lan, range: 10.10.0.100-10.10.0.110, gateway: 10.10.0.1, dns: [10.20.0.10], lease: ${x.lease || '1h'}}]}}}
+links:
+  - {id: a, a: "pc:eth0", b: "r1:g0"}
+  - {id: b, a: "r1:g1", b: "fw:in"}
+  - {id: c, a: "fw:out", b: "srv:eth0"}
+networks:
+  - {id: lan, cidr: 10.10.0.0/24}
+`;
+/** each DHCP message as sent: [device, type, source port, destination port, VRF] from its headers */
+const legs = (s) =>
+  ev(s, (e) => e.kind === 'message' && e.protocol === 'dhcp' && e.hdr && e.hdr.l4)
+    .map((e) => [e.device, e.what, e.hdr.l4.sport, e.hdr.l4.dport]);
+
+test('DHCP relayed through a firewall that permits only UDP 67: client 68 → 67, relay → server 67 → 67, server → relay 67 → 67, relay → client 67 → 68', () => {
+  const s = sim(RELAYED());
+  s.runTo(30000);
+  assert.ok(s.acquiredAddress('pc', 'eth0'), 'the client is bound through the relay and the firewall');
+  const l = legs(s);
+  const first = (dev, type) => l.find((x) => x[0] === dev && x[1] === type);
+  assert.deepEqual(first('pc', 'DHCPDISCOVER').slice(2), [68, 67]);
+  assert.deepEqual(first('r1', 'DHCPDISCOVER').slice(2), [67, 67], 'the relay to the server');
+  assert.deepEqual(first('srv', 'DHCPOFFER').slice(2), [67, 67], 'the server back to the relay (its giaddr)');
+  assert.deepEqual(first('r1', 'DHCPOFFER').slice(2), [67, 68], 'the relay to the client');
+  assert.deepEqual(first('srv', 'DHCPACK').slice(2), [67, 67]);
+  // nothing of the exchange was dropped by the firewall's policy
+  assert.equal(ev(s, (e) => e.kind === 'drop' && e.device === 'fw' && e.protocol === 'dhcp').length, 0);
+});
+
+test('DHCP: the relay’s legs are in the VRF of its interfaces (the relay’s server reachable only there)', () => {
+  const s = sim(RELAYED({ vrf: 'blue' }));
+  s.runTo(30000);
+  assert.ok(s.acquiredAddress('pc', 'eth0'), 'bound through a relay in VRF blue');
+  const relayed = ev(s, (e) => e.kind === 'message' && e.device === 'r1' && e.what === 'DHCPDISCOVER');
+  assert.ok(relayed.length >= 1);
+  assert.equal(ev(s, (e) => e.kind === 'drop' && e.device === 'r1' && /no route/.test(e.detail)).length, 0);
+});
+
+test('DHCP renewal: a lost unicast renewal is sent again after half the time to T2 (at least 60 s); it renews before T2, no rebinding', () => {
+  // lease 20 min: T1 at 10 min, T2 at 17.5 min
+  const s = sim(RELAYED({ lease: '20m' }));
+  let lost = 0;
+  s.engine.impair = (link, f) => {
+    if (link === 'a' && f.msg.protocol === 'dhcp' && f.msg.type === 'DHCPREQUEST' && f.ip && f.ip.src.bytes[0] === 10 && lost === 0 && /renew/.test(f.msg.label)) {
+      lost++;
+      return { lose: true };
+    }
+    return null;
+  };
+  s.runTo(30000);
+  const bound = s.now;
+  s.runTo(bound + 20 * 60000);
+  const renews = ev(s, (e) => e.kind === 'message' && e.device === 'pc' && e.what === 'DHCPREQUEST' && /renewing at T1/.test(e.detail));
+  assert.equal(lost, 1);
+  assert.ok(renews.length >= 2, renews.map((e) => e.detail).join('\n'));
+  // sent again after half the time left to T2: (17.5 − 10) / 2 = 3.75 min
+  const gap = renews[1].t - renews[0].t;
+  assert.ok(Math.abs(gap - 225000) < 1000, String(gap));
+  assert.ok(/sent again, 1/.test(renews[1].detail));
+  assert.ok(ev(s, (e) => e.kind === 'state' && e.device === 'pc' && e.what === 'Renewed').length >= 1);
+  assert.equal(ev(s, (e) => e.kind === 'message' && e.device === 'pc' && /rebinding at T2/.test(e.detail) && e.t < renews[1].t + 60000).length, 0);
+});
+
+test('DHCP: a message to the wrong port is not taken (the handler does not make a misaddressed packet succeed)', () => {
+  const s = sim(RELAYED());
+  s.runTo(30000);
+  const P = s.protocols;
+  const n = s.events().length;
+  // a DHCPDISCOVER to UDP 68 at the server: no server takes it
+  const pkt = s.engine.newPacket(load('model/ip.js').parseAddress('10.0.1.1'), load('model/ip.js').parseAddress('10.20.0.10'), '', { protocol: 'dhcp', type: 'DHCPDISCOVER', label: 'DHCPDISCOVER', detail: '', data: { xid: 1, chaddr: '02:00:00:00:00:99', from: 'r1', giaddr: '10.10.0.1' } });
+  pkt.l4 = { proto: 'udp', num: 17, sport: 67, dport: 68 };
+  P.handlers.get('dhcp')('srv', s.engine.net.devices.get('srv').l3.get('eth0'), pkt.msg, pkt);
+  const after = s.events().slice(n);
+  assert.ok(after.some((e) => e.kind === 'drop' && /sent to UDP port 68, a DHCP server or relay takes it on 67/.test(e.detail)), after.map((e) => e.detail).join('\n'));
+  s.runTo(s.now + 2000);
+  assert.ok(!s.events().slice(n).some((e) => e.what === 'DHCPOFFER' && e.device === 'srv'));
+});
+
+test('a DHCP server powered off and on during its offer delay sends no offer for the DISCOVER it had before: the client is offered only after asking again', () => {
+  const t = LAN(SCOPE(', simulation: {offer_delay: 3s}')).replace('{id: srv, type: server,', '{id: srv, type: server, simulation: {boot_time: 0.1},');
+  const s = sim(t);
+  let disc = null;
+  for (let at = 100; at < 20000 && disc === null; at += 50) {
+    s.runTo(at);
+    const d = s.events().find((e) => e.kind === 'message' && e.device === 'pc' && e.what === 'DHCPDISCOVER');
+    if (d) disc = d.t;
+  }
+  assert.ok(disc !== null, 'a DISCOVER');
+  s.runTo(disc + 500);
+  s.powerOff('srv');
+  s.runTo(disc + 800);
+  s.powerOn('srv');
+  s.runTo(disc + 3500);
+  const offers = (from, to) => s.events().filter((e) => e.t >= from && e.t < to && e.kind === 'message' && e.device === 'srv' && e.what === 'DHCPOFFER');
+  assert.equal(offers(disc, disc + 3500).length, 0, 'the offer due at +3 s is not sent');
+  s.runTo(disc + 60000);
+  // the client asks again (its backoff); that DISCOVER is offered, after the delay
+  const again = s.events().find((e) => e.t > disc && e.kind === 'message' && e.device === 'pc' && e.what === 'DHCPDISCOVER');
+  assert.ok(again, 'a second DISCOVER');
+  const o = offers(again.t, Infinity);
+  assert.ok(o.length >= 1 && o[0].t - again.t >= 3000 - 1, `offered after the delay: ${o.map((e) => e.t - again.t)}`);
+});
+
+// ------------------------------------------------------------------ DNS: a CNAME into another zone; a server that runs no DNS
+
+const ZONES = (pcDns) => `netatlas: 1
+title: zones
+devices:
+  - id: srv
+    type: server
+    interfaces: [{id: eth0, ip: 10.0.0.10/24}]
+    services: {dns: {zones: [{name: a.example, records: [{name: www, type: CNAME, value: web.b.example}, {name: out, type: CNAME, value: x.elsewhere.example}]}, {name: b.example, records: [{name: web, type: A, value: 10.0.0.20}]}]}}
+  - {id: web, type: server, interfaces: [{id: eth0, ip: 10.0.0.20/24}]}
+  - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.30/24}], dns_servers: [${pcDns}]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+links:
+  - {id: a, a: "srv:eth0", b: "sw:p1"}
+  - {id: b, a: "pc:eth0", b: "sw:p2"}
+  - {id: c, a: "web:eth0", b: "sw:p3"}
+`;
+
+test('DNS: a CNAME into another zone of the same server is followed there (RFC 1034 §4.3.2 step 3a): the answer carries the CNAME and the target’s address; a target in none of its zones: the CNAME alone', () => {
+  const s = sim(ZONES('10.0.0.10'));
+  s.runTo(3000);
+  const r = s.sendTest({ from: 'pc', to: 'www.a.example', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(r.ok, true, r.result);
+  const resp = ev(s, (e) => e.kind === 'message' && e.device === 'srv' && e.what === 'Response')[0];
+  assert.match(resp.detail, /NOERROR www\.a\.example \(CNAME web\.b\.example\) A 10\.0\.0\.20/);
+  const o = s.sendTest({ from: 'pc', to: 'out.a.example', kind: 'icmp' });
+  s.runTo(s.now + 3000);
+  assert.equal(o.ok, false);
+  assert.match(o.result, /could not resolve out\.a\.example \(NOERROR\)/);
+});
+
+test('DNS: a query to a host that runs no DNS server is refused with ICMP port unreachable (RFC 1122 §4.1.3.1), and the resolver asks its next server at once — not after its timeouts', () => {
+  const s = sim(ZONES('10.0.0.20, 10.0.0.10'));
+  s.runTo(3000);
+  const t0 = s.now;
+  const r = s.sendTest({ from: 'pc', to: 'web.b.example', kind: 'icmp' });
+  s.runTo(t0 + 15000);
+  assert.equal(r.ok, true, r.result);
+  const pu = ev(s, (e) => e.t >= t0 && e.kind === 'message' && e.device === 'web' && e.what === 'Port Unreachable');
+  assert.equal(pu.length, 1);
+  assert.equal(pu[0].hdr.l4.icmpCode, 3);
+  const q = ev(s, (e) => e.t >= t0 && e.kind === 'message' && e.device === 'pc' && e.what === 'Query');
+  assert.deepEqual(q.map((e) => /to (\S+):53/.exec(e.detail)[1]), ['10.0.0.20', '10.0.0.10'], 'one query each, no retry to the refusing host');
+  assert.ok(q[1].t - q[0].t < 50, `the next server asked right after the error (${q[1].t - q[0].t} ms)`);
+  assert.match(r.resolved, /\(DNS: [0-9.]+ ms\)/);
 });

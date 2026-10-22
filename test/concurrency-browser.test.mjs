@@ -35,16 +35,17 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       await page.settle(150);
       const t0 = Date.now();
       await page.eval(`netatlas.startProtocolSimulation(), true`);
-      // the first query and its dots: polled, a fresh start
+      // the first query and its dots: polled, a fresh start (the startup's earlier first messages are shown before it, in their order:
+      // the simulation waits for their dots)
       let seen = null;
-      for (let i = 0; i < 40 && !seen; i++) {
+      for (let i = 0; i < 240 && !seen; i++) {
         await wait(250);
         seen = await page.eval(`(() => { const c = netatlas.simController(); const q = c.sim.events().find((e) => e.protocol === 'igmp' && e.what === 'Query'); if (!q) return null; const dots = Array.from(document.querySelectorAll('#canvas .layer-sim [data-flight]')).filter((d) => { const it = c.pacer.find(Number(d.getAttribute('data-flight'))); return it && it.f.protocol === 'igmp'; }).length; return dots ? { t: q.t, dots } : null; })()`);
       }
       const real = (Date.now() - t0) / 1000;
       assert.ok(seen, 'an IGMP query drawn');
       assert.equal(Math.round(seen.t), 2000, 'sent at its deadline (the core’s first port up after the link-up delay)');
-      assert.ok(real < 6, `its dots on screen ${real.toFixed(1)} s after the start (its simulated time 2 s; the page’s first frames)`);
+      assert.ok(real < 60, `its dots on screen ${real.toFixed(1)} s after the start (its simulated time 2 s, after the first messages before it)`);
       // the core's snooping badges: one per VLAN with snooping enabled, each in its startup
       const mark = await page.eval(`(() => { const m = document.querySelector('#canvas .sim-snoop[data-device="core"] .sim-snoop-vlan[data-vlan="20"]'); return m ? { text: m.querySelector('text:not(.sim-snoop-icon)').textContent, role: m.getAttribute('data-role'), tip: m.querySelector('title').textContent } : null; })()`);
       assert.deepEqual([mark.text, mark.role], ['VLAN 20 · Querier (startup)', 'starting']);
@@ -58,8 +59,9 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       // ------------------------------------------------------------ two actions at once, the scenario behind
       await page.eval(`netatlas.loadExampleNamed('protocol-simulation.yaml'), netatlas.setView('physical'), true`);
       await page.settle(150);
-      await page.eval(`(() => { netatlas.startProtocolSimulation(); netatlas.fit(); return true; })()`);
-      await wait(6000);
+      // (to 6 s of simulated time at once: the network up, the scenario's startup behind it)
+      await page.eval(`(() => { netatlas.startProtocolSimulation(); netatlas.fit(); netatlas.simController().runTo(6000); return true; })()`);
+      await wait(2000);
       await page.eval(`(() => { const c = netatlas.simController(); c.startStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500); c.sim.actSend({ delivery: 'unicast', from: 'pc2', target: '10.10.10.21', kind: 'icmp', count: 20, interval: 1 }); c.pacer.take(); return true; })()`);
       await wait(4000);
       let st = await page.eval(`(() => { const c = netatlas.simController(); const p = c.pacer; const ids = c.sim.actions().map((v) => v.tests[0]); const fg = ids.map((id) => p.items.some((it) => it.f.test === id && it.drawn && !p.background(it))); const bg = Array.from(document.querySelectorAll('#canvas .layer-sim .sim-bg')); return { fg, bg: bg.length, flightOnBg: bg.some((e) => e.hasAttribute('data-flight')), pe: bg.length ? getComputedStyle(bg[0]).pointerEvents : '', pace: document.getElementById('sim-pace-text').textContent }; })()`);
@@ -89,7 +91,7 @@ for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900],
       assert.ok(shown);
       // stop the stream and the series: the foreground ends once their dots arrived
       await page.eval(`(() => { const c = netatlas.simController(); for (const v of c.sim.actions()) if (v.controls.some((x) => x.op === 'stop')) c.sim.actionControl(v.id, 'stop'); c.setPlaying(true); return true; })()`);
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 90; i++) {
         await wait(2000);
         if (!(await page.eval(`netatlas.simController().pacer.fgActive()`))) break;
       }

@@ -79,7 +79,8 @@ test('a static path: longest prefix match, hop by hop, with interfaces, addresse
   const m = model(chain);
   const t = trace(m, 'h1', 'h2');
   assert.equal(t.error, undefined);
-  assert.deepEqual(t.source, { device: 'h1', vrf: '', address: '10.1.0.10' });
+  // (the interface the address is on is named even when only the device was given)
+  assert.deepEqual(t.source, { device: 'h1', vrf: '', iface: 'e0', address: '10.1.0.10' });
   assert.deepEqual(t.dest, { address: '10.2.0.20', device: 'h2', iface: 'e0' });
   assert.equal(t.paths.length, 1);
   const p = t.paths[0];

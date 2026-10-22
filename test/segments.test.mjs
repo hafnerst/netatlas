@@ -91,7 +91,7 @@ test('every segment has a complete border in every state, both themes, normal an
             await page.hover(sg.sel);
             for (const p of await page.eval(`${BROKEN}(${JSON.stringify(SEGMENTS)})`)) problems.push(`${where} hover ${sg.sel}: ${p}`);
             // … and the pixels: the right border of the hovered segment has its hover colour, not its neighbour's
-            const g = await page.eval(`(() => { const b = document.querySelector(${JSON.stringify(sg.sel)}); const n = b.nextElementSibling; const r = b.getBoundingClientRect(); return { r: { x: r.left, y: r.top, w: r.width, h: r.height }, own: getComputedStyle(b).borderRightColor, other: n ? getComputedStyle(n).borderLeftColor : null }; })()`);
+            const g = await page.call((sel) => { const b = document.querySelector(sel); const n = b.nextElementSibling; const r = b.getBoundingClientRect(); return { r: { x: r.left, y: r.top, w: r.width, h: r.height }, own: getComputedStyle(b).borderRightColor, other: n ? getComputedStyle(n).borderLeftColor : null }; }, sg.sel);
             if (g.other && dist(rgb(g.own), rgb(g.other)) > 30) {
               const clip = { x: Math.floor(g.r.x) - 2, y: Math.floor(g.r.y) - 2, width: Math.ceil(g.r.w) + 6, height: Math.ceil(g.r.h) + 4, scale: 1 };
               const shot = await page.cmd('Page.captureScreenshot', { format: 'png', clip });
@@ -110,7 +110,7 @@ test('every segment has a complete border in every state, both themes, normal an
             await page.mouse('mouseMoved', 5, Math.round(H / z) - 5);
             await page.mouse('mouseReleased', 5, Math.round(H / z) - 5, 'left');
             // keyboard focus (with its ring): Tab from the control before it
-            await page.eval(`(() => { const all = [...document.querySelectorAll('header.topbar button, header.topbar input')].filter((e) => !e.disabled && e.getClientRects().length && !e.closest('[hidden]')); const b = document.querySelector(${JSON.stringify(sg.sel)}); all[all.indexOf(b) - 1].focus(); return true; })()`);
+            await page.call((sel) => { const all = [...document.querySelectorAll('header.topbar button, header.topbar input')].filter((e) => !e.disabled && e.getClientRects().length && !e.closest('[hidden]')); const b = document.querySelector(sel); all[all.indexOf(b) - 1].focus(); return true; }, sg.sel);
             await page.key('Tab', 'Tab', 9);
             const focused = await page.eval(`document.activeElement === document.querySelector(${JSON.stringify(sg.sel)}) && document.activeElement.matches(':focus-visible')`);
             if (!focused) problems.push(`${where} ${sg.sel}: not reached with Tab`);

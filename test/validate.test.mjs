@@ -46,6 +46,9 @@ test('the WAN example has physical links and several logical layers over the sam
 test('missing version and unsupported version', () => {
   expectError('devices: []\n', /netatlas: 1/);
   expectError('netatlas: 2\n', /unsupported format version/, 1);
+  // format 1 changed without a new version (NetAtlas is not in production): the earlier "dhcp: true" is an unknown key
+  const r = validate.loadModel('netatlas: 1\ndevices:\n  - {id: pc, type: endpoint, interfaces: [{id: eth0, dhcp: true}]}\n');
+  assert.ok(r.errors.some((e) => /unknown key "dhcp" \(write "ipv4: dhcp" instead/.test(e.message)), r.errors.map((e) => e.message).join('\n'));
   expectError('', /empty/);
   expectError('- a\n- b\n', /expected a mapping/);
 });

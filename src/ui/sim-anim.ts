@@ -58,6 +58,13 @@ export function findTrack(scene: Element, t: Track): Geo | null {
   // (a VM restarted on another member: its link there has the same wire, "@host" left out)
   if (t.ref.indexOf('link:~') === 0) return pick(`path.vwire[data-link="${cssEsc(t.ref.slice(5).replace(/@[^@~]*$/, ''))}"]`, t.from === 'b' ? 1 : -1);
   if (t.ref.indexOf('link:') === 0) return pick(`g.cable[data-ref="${ref}"] path.cable-line`, t.from === 'a' ? 1 : -1);
+  // a non-IP interconnect (diagram/interconnects.ts): a bus's tap up to the bar and down the recipient's, or the line itself
+  if (t.ref.indexOf('interconnect:') === 0) {
+    if (t.to === 'bus') return pick(`g.ic.tap[data-ref="${ref}"][data-port="${cssEsc(t.from)}"] path.ic-track`, 1);
+    if (t.from === 'bus') return pick(`g.ic.tap[data-ref="${ref}"][data-port="${cssEsc(t.to)}"] path.ic-track`, -1);
+    const g = scene.querySelector(`g.ic.p2p[data-ref="${ref}"]`);
+    return g ? pick(`g.ic.p2p[data-ref="${ref}"] path.ic-line`, g.getAttribute('data-from') === t.from ? 1 : -1) : null;
+  }
   if (t.ref.indexOf('network:') === 0) {
     if (t.to === 'net') return pick(`path.member[data-ref="${ref}"][data-member="${cssEsc(t.from)}"]`, 1);
     return pick(`path.member[data-ref="${ref}"][data-member="${cssEsc(t.to)}"]`, -1);
@@ -353,18 +360,29 @@ export class SimAnimator {
     for (const d of receivers) add(d, 'sim-rx');
   }
 
+  /** the label place of each cable's activity (its ref): the side it got first, kept while the cable's geometry stays */
+  private actSlots = new Map<string, { geom: string; slot: number }>();
+
   /**
    * Cable activity: each cable (relation, network line) with traffic not drawn as dots lately is lit
    * along its way, in its busiest protocol's colour, with a short count ("OSPF ×3 · ARP ×1") where a
    * label finds room. It never moves and holds nothing: a sign of what the scenario does meanwhile.
+   *
+   * It stands for the cable, not for a direction: its lane is that of the drawn line's own direction
+   * (never of the hop that happened to be counted first, which alternates with two-way traffic), and its
+   * label keeps the side it got when the cable lit up — chosen again only when the cable's geometry
+   * changes (a device dragged, another view).
    */
   private paintActivity(dots: SVGGElement, labels: SVGGElement, opts: DrawOptions, placed: BoxIndex): void {
     const scene = this.scene as Element;
     const name = opts.name || ((p: string): string => p);
+    const lit = new Set<string>();
     for (const a of opts.activity || []) {
       if (a.view !== opts.view || !a.counts.length) continue;
-      const geo = findTrack(scene, a.track);
-      if (!geo) continue;
+      const found = findTrack(scene, a.track);
+      if (!found) continue;
+      const geo: Geo = { path: found.path, len: found.len, dir: 1 };
+      lit.add(a.ref);
       const color = opts.color(a.counts[0][0]);
       const path = trail(this.doc, geo, 1, color);
       path.setAttribute('class', 'sim-activity');
@@ -373,7 +391,19 @@ export class SimAnimator {
       const text = a.counts.slice(0, 2).map(([p, n]) => `${name(p)} ×${n}`).join(' · ') + (a.counts.length > 2 ? ` +${a.counts.length - 2}` : '');
       const p = at(geo, 0.5);
       const w = textWidth(text, FONT) + 4;
-      const box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, FONT + 4, 1), this.obstacles, placed);
+      const cands = candidates(p.x, p.y, p.ux, p.uy, w, FONT + 4, 1);
+      const start = at(geo, 0);
+      const end = at(geo, 1);
+      const geom = `${a.view}|${Math.round(start.x)},${Math.round(start.y)}|${Math.round(end.x)},${Math.round(end.y)}|${Math.round(geo.len)}`;
+      let slot = this.actSlots.get(a.ref);
+      if (!slot || slot.geom !== geom) {
+        const k = placeIndex(cands, this.obstacles, placed);
+        // (no free place: no label this time, and the choice is made again next time)
+        if (k < 0) continue;
+        slot = { geom, slot: k };
+        this.actSlots.set(a.ref, slot);
+      }
+      const box = cands[slot.slot];
       if (!box) continue;
       placed.add(box);
       const lab = label(this.doc, text, box, false, color);
@@ -381,6 +411,8 @@ export class SimAnimator {
       lab.setAttribute('data-activity', a.ref);
       labels.appendChild(lab);
     }
+    // a cable that is dark again chooses its label's side afresh when it lights up next time
+    for (const ref of Array.from(this.actSlots.keys())) if (!lit.has(ref)) this.actSlots.delete(ref);
   }
 
   private paint(dots: SVGGElement, labels: SVGGElement, items: DrawItem[], opts: DrawOptions, arrows: boolean, live: boolean): DrawResult {
@@ -455,7 +487,7 @@ export class SimAnimator {
         // (under the foreground's dots)
         dots.insertBefore(shape, dots.firstChild);
         drawn++;
-        const kind = bgKind(f.protocol, f.label);
+        const kind = bgKind(f.protocol, f.label, f.flags);
         const k = f.track.ref + '|' + kind;
         // one dot of a cable and kind carries the label while it is on its way (then the next one): it never hops between dots
         const owner = this.bgOwners.get(k);
@@ -545,15 +577,17 @@ const BG_FONT = 8.5;
  * Query / Report / Leave, OSPF Hello …); a multicast stream's datagrams are
  * UDP. Never addresses or interfaces (the inspector and the log have them).
  */
-export function bgKind(protocol: string, label: string): string {
+export function bgKind(protocol: string, label: string, flags?: string): string {
   const name = BG_NAMES[protocol] || protocol.toUpperCase().slice(0, 10);
+  // a TCP segment (of whatever protocol): its flags, from its header
+  if (flags !== undefined) return `${name} ${flags}`;
   const m = /\b(Query|Report|Leave|Hello|Join|Prune|Register|Request|Reply|Discover|Offer|Ack|Update|Keepalive|BPDU)\b/.exec(label);
   const type = m ? m[1] : '';
   if (protocol === 'igmp' || protocol === 'mld' || protocol === 'pim' || protocol === 'ospf' || protocol === 'bgp' || protocol === 'stp' || protocol === 'bfd') return type ? `${name} ${type}` : name;
   return name;
 }
 
-const BG_NAMES: { [p: string]: string } = { mcast: 'UDP', igmp: 'IGMP', mld: 'MLD', arp: 'ARP', garp: 'ARP', ndp: 'NDP', dhcp: 'DHCP', dhcpv6: 'DHCPv6', dns: 'DNS', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', ospf: 'OSPF', bgp: 'BGP', pim: 'PIM', stp: 'STP', lacp: 'LACP', lldp: 'LLDP', bfd: 'BFD', vrrp: 'VRRP', demand: 'Traffic', https: 'HTTPS', http: 'HTTP' };
+const BG_NAMES: { [p: string]: string } = { mqtt: 'MQTT', mcast: 'UDP', igmp: 'IGMP', mld: 'MLD', arp: 'ARP', garp: 'ARP', ndp: 'NDP', dhcp: 'DHCP', dhcpv6: 'DHCPv6', dns: 'DNS', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', ospf: 'OSPF', bgp: 'BGP', pim: 'PIM', stp: 'STP', lacp: 'LACP', lldp: 'LLDP', bfd: 'BFD', vrrp: 'VRRP', demand: 'Traffic', https: 'HTTPS', http: 'HTTP' };
 
 /** The way a followed message has come along a track so far. */
 

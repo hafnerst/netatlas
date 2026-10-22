@@ -95,7 +95,8 @@ test('a VLAN the port does not allow is dropped, and the log says which VLANs th
   assert.match(run(s, { from: 'h2', to: '10.2.0.1', kind: 'icmp' }, 10000).result, /does not answer ARP/);
   const drops = ev(s, (e) => e.kind === 'drop' && /VLAN 20 is not allowed on the port/.test(e.detail));
   assert.ok(drops.length, s.events().filter((e) => e.kind === 'drop').map((e) => e.detail).join('\n'));
-  assert.match(drops[0].detail, /^dropped at core:down: VLAN 20 is not allowed on the port \(access port, VLAN 10\) \(ARP Request \(broadcast\): who has 10\.2\.0\.1\?\)$/);
+  // (h2's gratuitous ARP when its link came up is dropped the same way)
+  assert.match(drops.find((e) => /ARP Request/.test(e.detail)).detail, /^dropped at core:down: VLAN 20 is not allowed on the port \(access port, VLAN 10\) \(ARP Request \(broadcast\): who has 10\.2\.0\.1\?\)$/);
 });
 
 test('a native VLAN mismatch leaks frames between the VLANs, and the log explains it', () => {

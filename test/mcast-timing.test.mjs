@@ -123,28 +123,42 @@ test('the same moment: a report processed before a packet of the same instant is
 
 test('on screen: a stream’s copies show from the moment they are forwarded, on every cable at once (no backlog of earlier datagrams); after the leave took effect no new copy towards the TV, the ones forwarded before complete their way', () => {
   const s = sim(HOUSE);
-  const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr, foreground: () => s.foregroundActive(), realtime: () => s.realtimeActive() };
+  const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr, foreground: () => s.foregroundActive() };
   const p = new P.Pacer(host, 48);
   const seen = new Map();
+  // (the display clock when the TV's member port was removed, as soon as a frame sees it)
+  let goneClock = null;
+  let leaveAt = Infinity;
   const frame = () => {
-    s.clock.t += 50;
-    s.pumpRealTime();
+    const before = p.clock;
     p.frame(50);
-    for (const it of p.items) if (it.f.protocol === 'mcast' && it.f.view === 'physical' && !seen.has(it.f.id)) seen.set(it.f.id, { it, clock: p.clock });
+    for (const it of p.items) if (it.f.protocol === 'mcast' && it.f.view === 'physical' && !seen.has(it.f.id)) seen.set(it.f.id, { it, clock: before });
+    if (goneClock === null && s.events().some((e) => e.device === 'core' && e.what === 'member port expired' && e.t >= leaveAt)) goneClock = p.clock;
   };
   const run = (ms) => {
     for (let t = 0; t < ms; t += 50) frame();
   };
-  run(40000);
+  // (to 40 s of simulated time: the scenario's startup is shown in detail first, the simulation waiting for its dots)
+  for (let i = 0; i < 20000 && s.now < 40000; i++) frame();
+  assert.ok(s.now >= 40000);
   s.actStream('thermostat', 'wlan0', '239.20.0.1', 5004, 1000, 500);
   s.joinGroup('tv', 'wlan0', '239.20.0.1', []);
-  run(12000);
-  // the backlog: a copy starts on screen when it is forwarded (within a frame), whatever its place on the way
-  const lags = Array.from(seen.values()).map(({ it }) => it.d0 - Math.max(it.f.t0, 0));
+  // (the join and the example datagram are shown hop by hop first, the simulation waiting for them; then the flow)
+  for (let i = 0; i < 8000 && Array.from(seen.values()).filter(({ it }) => !it.example && it.f.track.ref === 'link:w-tv').length < 10; i++) frame();
+  // the stream's example after the Network events (its first datagram since): hop by hop, each copy after the one it was
+  // forwarded from has arrived on screen — the tree as it is, seen growing
+  const ex = Array.from(seen.values()).filter(({ it }) => it.example).map(({ it }) => it);
+  assert.ok(ex.length >= 2, String(ex.length));
+  for (const it of ex) if (it.parent && it.parent.example) assert.ok(it.d0 >= p.arrival(it.parent) - 1e-6, `${it.f.label} on ${it.f.track.ref} before its upstream copy arrived`);
+  // the backlog: every other copy starts on screen when it is forwarded (in the frame that forwards it), whatever its place on the way
+  const lags = Array.from(seen.values())
+    .filter(({ it }) => !it.example)
+    .map(({ it, clock }) => it.d0 - clock);
   assert.ok(lags.length > 20);
-  assert.ok(Math.max(...lags.map((l) => Math.abs(l))) < 1000, `display lag ${Math.max(...lags)} ms`);
-  const leaveAt = s.now;
+  assert.ok(Math.max(...lags.map((l) => Math.abs(l))) <= 50 + 1e-6, `display lag ${Math.max(...lags)} ms`);
+  leaveAt = s.now;
   s.leaveGroup('tv', 'wlan0', '239.20.0.1');
+  for (let i = 0; i < 4000 && goneClock === null; i++) frame();
   run(10000);
   const gone = s.events().find((e) => e.device === 'core' && e.what === 'member port expired' && e.t >= leaveAt);
   const tv = Array.from(seen.values()).filter(({ it }) => it.f.track.ref === 'link:w-tv').map(({ it }) => it);
@@ -152,6 +166,6 @@ test('on screen: a stream’s copies show from the moment they are forwarded, on
   assert.ok(tv.every((it) => it.f.t0 < gone.t), 'no copy towards the TV forwarded after the removal');
   // the last ones (forwarded during the pending leave) were drawn to their end: on screen at most a hop's time after the removal
   const last = tv.reduce((m, it) => Math.max(m, p.arrival(it)), 0);
-  assert.ok(last <= gone.t + P.HOP_MAX + 100, `${last - gone.t} ms after the removal`);
+  assert.ok(last <= goneClock + P.HOP_MAX + 100, `${last - goneClock} ms after the removal`);
   assert.ok(tv.filter((it) => it.f.t0 >= leaveAt).every((it) => it.drawn), 'the copies of the pending leave are drawn, not erased');
 });

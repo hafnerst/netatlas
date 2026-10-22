@@ -19,7 +19,7 @@ test('toolbar: logo and version, then File, Export, Find, Help, undo/redo, views
   assert.deepEqual(at, at.slice().sort((p, q) => p - q), 'in this order');
   assert.match(header, /<span>netatlas<\/span><span class="version"[^>]*>v__VERSION__<\/span>/);
   // these stay direct controls: none of them is inside the menu
-  for (const id of ['btn-undo', 'btn-redo', 'arrange-group', 'btn-arrange-default', 'btn-arrange-compact', 'btn-arrange-spacious']) assert.ok(!menu.includes(`id="${id}"`), id);
+  for (const id of ['btn-undo', 'btn-redo', 'arrange-group', 'btn-arrange-default', 'btn-arrange-compact', 'btn-arrange-structured']) assert.ok(!menu.includes(`id="${id}"`), id);
   // Find is not in the toolbar any more: it opens from the Find menu (or "/") as a bar over the diagram
   assert.ok(!header.includes('id="search"') && html.includes('id="find-bar"'));
   assert.ok(!/data-view-btn/.test(menu));
@@ -64,7 +64,13 @@ test('File menu: New model, Open model…, Save model, Save model as…, Close m
   for (const gone of ['id="btn-new"', 'id="open"', 'id="btn-save"', 'id="btn-save-as"', 'id="btn-download"', 'id="examples"', '<select']) assert.ok(!outside.includes(gone), gone);
   // the examples are filled in from the embedded files, one entry each, with a place for the "open · modified" state
   assert.match(app, /const menu = this\.\$\('menu-examples'\);\s+EXAMPLES\.forEach/);
-  assert.match(app, /el\(this\.doc, 'span', \{ class: 'mi-hint ex-state' \}\)/);
+  assert.match(app, /el\(this\.doc, 'span', \{ class: 'mi-hint mi-state' \}\)/);
+  // one line per example: the name never wraps (cut with an ellipsis instead), the state takes no room while empty, and no
+  // other panel's rule reaches the menu's state (the Experiments panel's .ex-state used to: it widened the empty state and
+  // wrapped every name onto a second line)
+  assert.match(css, /#menu-examples button \.mi-label \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/);
+  assert.match(css, /#menu-examples button \.mi-state:empty \{ display: none; \}/);
+  assert.doesNotMatch(app, /'mi-hint ex-state'/);
   // modified state is shown by a dot, never by a different border colour of a button
   assert.doesNotMatch(css, /data-dirty="true"\][^{]*\{[^}]*border-color/);
   // drop-downs open over the page: the toolbar must not clip or scroll them
@@ -108,10 +114,10 @@ test('examples: the File menu offers the curated public catalog; the internal ex
   const { EXAMPLES } = load('generated/examples.js');
   const { INTERNAL_EXAMPLES, FIXTURES } = load('generated/test-examples.js');
   // one representative example per architecture family, in the File menu's order
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'timing-ptp.yaml', 'cross-domain.yaml', 'vme-rack.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
   assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
-  assert.equal(INTERNAL_EXAMPLES.length, 18);
+  assert.equal(INTERNAL_EXAMPLES.length, 20);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.ok(!INTERNAL_EXAMPLES.some((x) => EXAMPLES.some((e) => e.name === x.name)), 'no internal example has a public name');
   // every public example has a title and a description
@@ -160,7 +166,9 @@ test('packaging: dist/netatlas.html carries the public examples and none of the 
   for (const e of EXAMPLES.concat(INTERNAL_EXAMPLES, FIXTURES)) assert.ok(testBuild.includes(piece(e)), `${e.name} is in the test build`);
   for (const m of ['generated/test-examples', 'app/selftest', 'app/viewport-check']) assert.ok(testBuild.includes(`__defs[${JSON.stringify(m)}]`), `${m} is in the test build`);
   // the build refuses a release that would contain a test-only module
-  assert.match(read(join(root, 'scripts', 'build.mjs'), 'utf8'), /const TEST_ONLY = \['generated\/test-examples', 'app\/selftest', 'app\/viewport-check', 'app\/main-test'\];[\s\S]*if \(leaked\.length\) throw/);
+  // (the list is shared with the release package check, scripts/release-check.mjs)
+  assert.match(read(join(root, 'scripts', 'release-check.mjs'), 'utf8'), /export const TEST_ONLY = \['generated\/test-examples', 'app\/selftest', 'app\/viewport-check', 'app\/main-test'\];/);
+  assert.match(read(join(root, 'scripts', 'build.mjs'), 'utf8'), /import \{ TEST_ONLY \} from '\.\/release-check\.mjs';[\s\S]*if \(leaked\.length\) throw/);
   // build/ is never committed
   assert.match(read(join(root, '.gitignore'), 'utf8'), /^build\/$/m);
 });
@@ -192,7 +200,7 @@ test('Find menu: next to Export, with Find in diagram… (/) and Filter object l
   assert.match(header, /<span id="view-title" class="tool-group-title">View<\/span>/, 'the View group of Physical / Logical keeps its name');
   const view = /<div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   const entries = [...view.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…']], 'both disabled until a model is open');
+  assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…'], ['btn-views', 'Saved views…'], ['btn-browse', 'Applications, VLANs and VRFs…']], 'disabled until a model is open');
   // the labels say what each one works on: Find searches the diagram, the filter narrows the object list (not the diagram)
   assert.ok(!/Filter outline…|>Find…</.test(html), 'the old labels are gone');
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
@@ -211,14 +219,15 @@ test('diagram filters: one group at the right of the toolbar, with a Filters dro
   const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n  <div class="theme-wrap">[\s\S]*?<\/div>\n<\/header>/.exec(html);
   assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar before the theme switch');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
-  assert.deepEqual(opts, [['opt-labels', 4], ['opt-groups', 3], ['opt-networks', 2], ['opt-routes', 1]]);
+  // (IP and Non-IP: the physical view's connections, shown when the model has non-IP interconnects)
+  assert.deepEqual(opts, [['opt-labels', 4], ['opt-groups', 3], ['opt-ip', 2], ['opt-nonip', 2], ['opt-networks', 2], ['opt-routes', 1]]);
   // the Device types filter stays next to Devices; the old Endpoints and Servers switches are gone
   assert.ok(group[1].indexOf('class="devices-wrap"') < group[1].indexOf('class="types-wrap"') && group[1].indexOf('class="types-wrap"') < group[1].indexOf('id="opt-labels"'));
   assert.doesNotMatch(group[1], /opt-type-|data-device-type/);
   assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
   // on the start screen every filter is disabled; the app enables them once a model is drawn
   const inputs = [...group[1].matchAll(/<input id="(opt-[^"]+)"[^>]*>/g)];
-  assert.equal(inputs.length, 4);
+  assert.equal(inputs.length, 6);
   for (const m of inputs) assert.match(m[0], / disabled>$/, m[1]);
   assert.match(group[1], /<button id="devices-btn"[^>]* disabled>/);
   assert.match(group[1], /<button id="types-btn"[^>]* disabled>/);
@@ -321,7 +330,7 @@ test('PNG export: scale and file names', () => {
   assert.equal(files.pictureBaseName('a/b:c.yaml'), 'a_b_c');
 });
 
-test('Auto-arrange: three direct options (Default, Compact, Spacious) in one labelled group; the matching one is selected and disabled', () => {
+test('Auto-arrange: three direct options (Default, Compact, Structured) in one labelled group; the matching one is selected and disabled; no Spacious anywhere', () => {
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const group = /<div id="arrange-group"[^>]*>([\s\S]*?)\n  <\/div>/.exec(header);
   assert.ok(group, 'the group is in the toolbar');
@@ -329,7 +338,11 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.match(group[1], /<span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange<\/span>/);
   // three buttons, directly in the toolbar (no menu, no dialog to pick one), each named for assistive technology
   const buttons = [...group[1].matchAll(/<button id="btn-arrange-(\w+)" type="button" class="arrange-btn" data-strategy="(\w+)" aria-label="Auto-arrange: (\w+)" aria-pressed="false" disabled>(\w+)<\/button>/g)].map((m) => [m[1], m[2], m[3], m[4]]);
-  assert.deepEqual(buttons, [['default', 'default', 'Default', 'Default'], ['compact', 'compact', 'Compact', 'Compact'], ['spacious', 'spacious', 'Spacious', 'Spacious']]);
+  assert.deepEqual(buttons, [['default', 'default', 'Default', 'Default'], ['compact', 'compact', 'Compact', 'Compact'], ['structured', 'structured', 'Structured', 'Structured']]);
+  // Spacious is gone from the page, the application, the commands, the manual and the strategies
+  const help = readFileSync(join(root, 'src', 'ui', 'help.ts'), 'utf8');
+  const strategies = readFileSync(join(root, 'src', 'layout', 'strategies.ts'), 'utf8');
+  for (const [name, text] of [['index.html', html], ['app.ts', app], ['help.ts', help], ['strategies.ts', strategies], ['commands.ts', readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8')]]) assert.doesNotMatch(text, /spacious/i, name);
   // no check mark or edit icon any more
   assert.doesNotMatch(html + app + css, /arrange-icon|LAYOUT_STATUS_ICON|\\u270E/);
   // the state comes from the positions (document or filtered session), never from the last button pressed
@@ -346,7 +359,7 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.match(css, /\.arrange-btn\.current, \.arrange-btn\.current:disabled \{[^}]*background: var\(--accent-soft\);[^}]*border-color: var\(--accent\);/);
   assert.doesNotMatch(css, /\.arrange-btn\[data-status/);
   // presentation: the label above one row of the three buttons, the whole group in a dashed frame
-  assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-spacious"[^>]*>Spacious<\/button>\s*<\/div>/);
+  assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-structured"[^>]*>Structured<\/button>\s*<\/div>/);
   assert.match(css, /\.tool-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--frame\);/);
   assert.match(css, /\.arrange-btns \{ display: flex; \}/);
   // the label takes no width above the buttons, so no narrow toolbar hides it
@@ -442,14 +455,15 @@ test('Analyze menu: between Find and Simulate, built like the others; Addressing
   assert.match(header, /<button id="btn-trace-exit" type="button" role="menuitem" data-command="trace\.exit"[^>]*><span class="mi-label">Exit path trace<\/span>/);
   // every entry opens a tool window (aria-haspopup="dialog"); Single points of failure is last
   const whole = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.addressing', 'focus.window', 'focus.exit', 'trace.open', 'trace.exit', 'analyze.spof']);
+  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.addressing', 'focus.window', 'focus.exit', 'trace.open', 'trace.exit', 'analyze.spof', 'analyze.checks']);
   assert.match(whole, /<button id="btn-spof" type="button" role="menuitem" data-command="analyze\.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…<\/span><\/button>/);
   // … but no simulation: Analyze is "what is", the model as written
   assert.doesNotMatch(whole, /data-command="sim\./);
   // Simulate ("what if", a state that never changes the model) is the menu right after it
   const sim = /<div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  // the protocol simulation (a window), and Exit simulation; no scenarios, no X, no steps
-  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.start', 'sim.exit']);
+  // the protocol simulation (a window), the saved experiments (a window: run on demand), and Exit simulation; no scenarios, no X, no steps
+  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.start', 'sim.experiments', 'sim.exit']);
+  assert.match(sim, /<button id="btn-experiments" type="button" role="menuitem" data-command="sim\.experiments" aria-haspopup="dialog"[^>]*><span class="mi-label">Experiments…<\/span>/);
   assert.match(sim, /<button id="btn-sim-start" type="button" role="menuitem" data-command="sim\.start" aria-haspopup="dialog"[^>]*><span class="mi-label">Start simulation…<\/span>/);
   assert.match(sim, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
