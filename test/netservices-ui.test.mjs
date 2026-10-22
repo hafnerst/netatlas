@@ -25,7 +25,7 @@ async function edit(page, ref) {
 
 /** A real click on an element of the Inspector, scrolled into view first. */
 async function press(page, sel) {
-  await page.eval(`(() => { document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: 'center' }); return true; })()`);
+  await page.call((sel) => { document.querySelector(sel).scrollIntoView({ block: 'center' }); return true; }, sel);
   await page.settle(60);
   await page.click(sel);
   await page.settle(150);

@@ -60,7 +60,7 @@ const EDGES = (sel) => `(() => {
 })()`;
 
 /** Does the element overlap the diagram's area (where the border is)? */
-const OVER = (sel) => `(() => { const a = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); const c = document.getElementById('canvas-wrap').getBoundingClientRect(); return a.left < c.right && a.right > c.left && a.top < c.bottom && a.bottom > c.top; })()`;
+const OVER = (sel) => { const a = document.querySelector(sel).getBoundingClientRect(); const c = document.getElementById('canvas-wrap').getBoundingClientRect(); return a.left < c.right && a.right > c.left && a.top < c.bottom && a.bottom > c.top; };
 
 for (const dark of [false, true]) {
   test(`in a running simulation (${dark ? 'dark' : 'light'}): every menu, submenu, the palette, the in-diagram menu and the packet inspector are in front of the simulation border and clickable at their edges`, { skip, timeout: 240000 }, async () => {
@@ -92,11 +92,11 @@ for (const dark of [false, true]) {
         await page.click('#' + btn);
         await page.settle(80);
         assert.equal(await page.eval(`!document.getElementById(${JSON.stringify(menu)}).hidden`), true, `${menu} open`);
-        if (await page.eval(OVER('#' + menu))) over.push(menu);
+        if (await page.call(OVER, '#' + menu)) over.push(menu);
         const hits = await page.eval(EDGES('#' + menu));
         assert.ok(hits.length >= 4 && hits.every((h) => h === 'inside'), `${menu}: ${hits.join(', ')}`);
         // clickable at its edge: the first item there gets the click (pointer-events reach it)
-        const item = await page.eval(`(() => { const m = document.getElementById(${JSON.stringify(menu)}); const i = m.querySelector('button:not([disabled]), input, select'); if (!i) return null; const r = i.getBoundingClientRect(); const h = document.elementFromPoint(r.left + 3, r.top + r.height / 2); return !!h && i.contains(h); })()`);
+        const item = await page.call((menu) => { const m = document.getElementById(menu); const i = m.querySelector('button:not([disabled]), input, select'); if (!i) return null; const r = i.getBoundingClientRect(); const h = document.elementFromPoint(r.left + 3, r.top + r.height / 2); return !!h && i.contains(h); }, menu);
         if (item !== null) assert.equal(item, true, `${menu}: its first control takes the click`);
         if (menu === 'export-menu') {
           // the submenu: Export view as ▸ opens under its entry

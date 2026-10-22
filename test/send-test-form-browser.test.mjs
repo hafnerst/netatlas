@@ -42,7 +42,7 @@ const STATE = `(() => {
 for (const theme of ['light', 'dark']) {
   test(`${theme}: Send test asks for the delivery type first, then only what it uses; concise interface options; ports only where they apply; a series with Stop`, { skip, timeout: 240000 }, async () => {
     const page = await openPage(url, { width: 1440, height: 900 });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const st = () => page.eval(STATE);
     try {
       await page.settle(150);

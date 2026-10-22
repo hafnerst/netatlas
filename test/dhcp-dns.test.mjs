@@ -319,7 +319,7 @@ test('details, tooltips and search show DHCP and DNS names; the diagrams stay as
   const i = scene.textOf(panels.detailsFor(m, 'iface:web2:eth0'));
   assert.match(i, /obtained by DHCP \(not known, so in no network\)/);
   assert.match(scene.textOf(panels.detailsFor(m, 'iface:web1:bond0')), /DNS names\s*www\.example\.com/);
-  assert.ok(panels.tooltipFor(m, 'iface:web1:eth0').includes('www.example.com'));
+  assert.ok(panels.tooltipFor(m, 'iface:web1:eth0').some((line) => line === 'www.example.com'));
   assert.ok(panels.tooltipFor(m, 'iface:web2:eth0').includes('DHCP'));
   assert.deepEqual(queries.search(m, 'mgmt.example').map((h) => h.ref), ['device:web1']);
   // the diagrams: no DNS names in the physical view; in the logical view each name once under its device, hidden with Labels

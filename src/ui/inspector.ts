@@ -104,6 +104,10 @@ export interface ConnectionDraft {
 
 const J = (p: Path): string => JSON.stringify(p);
 
+/** A suffix for element ids that tie a label or a list to its control: unique within the page. */
+let uidSeq = 0;
+const nextUid = (): string => (++uidSeq).toString(36);
+
 /** Can the user type into or change this control now (enabled, writable, shown)? */
 function editable(f: HTMLInputElement): boolean {
   if (f.disabled || f.readOnly || f.type === 'hidden' || f.closest('fieldset[disabled]')) return false;
@@ -1273,7 +1277,7 @@ export class Editor {
     const model = this.doc.result.model;
     const choices = model ? vrfChoices(model) : [];
     const val = this.doc.text(path) || '';
-    const uid = 'vrf-' + Math.random().toString(36).slice(2, 9);
+    const uid = 'vrf-' + nextUid();
     const input = this.input(path, 'text', val, {
       role: 'combobox',
       'aria-autocomplete': 'list',
@@ -2537,7 +2541,7 @@ export class Editor {
   }
 
   private datalist(values: string[]): { id: string; node: HTMLElement } {
-    const id = 'dl-' + Math.random().toString(36).slice(2, 9);
+    const id = 'dl-' + nextUid();
     const dl = this.e('datalist', { id });
     for (const v of values) dl.appendChild(this.e('option', { value: v }));
     return { id, node: dl };
@@ -3165,7 +3169,7 @@ export class Editor {
     const gt = doc.text(pp.concat('guest_tagging')) === 'true';
     const vl = doc.portVlans(pp);
     const label = name || `port group ${j + 1}`;
-    const uid = `pg-${dev}-${j}-${Math.random().toString(36).slice(2, 7)}`;
+    const uid = `pg-${dev}-${j}-${nextUid()}`;
     const box = this.e('input', { type: 'checkbox', id: uid, 'data-act': 'pg-guest', 'data-p': J(pp) }) as HTMLInputElement;
     box.checked = gt;
     const nat = vl.length > 1 || doc.get(pp.concat('native'));
@@ -4313,7 +4317,7 @@ export class Editor {
       );
       return box;
     }
-    const uid = 'vl-' + Math.random().toString(36).slice(2, 9);
+    const uid = 'vl-' + nextUid();
     const chips = this.e('span', { class: 'vlan-chips', role: 'list', 'aria-label': `VLANs of ${id}` });
     for (const v of own) {
       chips.appendChild(

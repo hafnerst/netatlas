@@ -377,7 +377,7 @@ test('the diagram says what a port is for (its domain, management, its pair) and
   assert.equal(Dv.endRoleText(ot, { device: 'tap', iface: 'mon' }), 'copy');
   assert.equal(Dv.endRoleText(ot, { device: 'tap', iface: 'net-a' }), 'pair');
   const labels = L.legendOf(ot, 'physical').sections[0].items.map((x) => x.label);
-  assert.ok(labels.some((x) => /^Endpoint · PLC/.test(x)) && labels.some((x) => /^System · Pass-through, Network TAP/.test(x)) && labels.some((x) => /^Switch|Layer 2 switch/.test(x)), labels.join(' | '));
+  assert.ok(labels.some((x) => /^Endpoint · PLC/.test(x)) && labels.some((x) => /^System · Pass-through, Network TAP/.test(x)) && labels.some((x) => /^(Switch|Layer 2 switch)/.test(x)), labels.join(' | '));
 });
 
 test('editor: changing the type, mode, purpose or implementation lists what goes, removes it in one undo step, chooses nothing new', () => {
