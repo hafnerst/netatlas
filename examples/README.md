@@ -57,7 +57,7 @@ self-test), and shows one architecture rather than a list of features.
 ## Adding an example
 
 * A **public** example: write it here, add it to `CATALOG`, run
-  `npm run build`, and describe it in the README's Examples section.
+  `npm run build`, and describe it in [the catalog's table](#why-each-one-is-in-the-catalog) below.
 * A **test scenario**: write it in `test/examples/`; the tests read it with
   `example(name)`, the test build loads it with `loadExampleNamed`. Any model
   in either folder can also be opened with **Open model…**.
@@ -66,7 +66,7 @@ self-test), and shows one architecture rather than a list of features.
 
 The **File** menu offers eleven examples: one representative model for each
 kind of network NetAtlas is meant for, each a coherent architecture rather
-than a list of features. They are in [`examples/`]() and are the
+than a list of features. They are in [`examples/`](.) and are the
 only models built into `dist/netatlas.html`.
 
 | File | Architecture | Why it is in the catalog |
@@ -138,14 +138,18 @@ view draws the house as a cross-section (each device's `tier`).
   path from `core:Vlan30` to `192.168.10.20` with the service `tcp/445`: it
   stops at the DSL router's policy. Fail `l-core-dist`: both upper-floor
   access points lose their uplink; *Single points of failure* lists it.
-* **Limits.** The policy has no zones or directions (see
-  [Limitations](../docs/LIMITATIONS.md)): "Internal may open IoT, IoT may
-  not open Internal" can't be written, so nothing is permitted between the
-  zones. There is no radio or roaming model.
+* **Limits.** The DSL router keeps the implicit policy of the relations
+  through it, which permits a relation's service between its ends without
+  zones or a direction, so nothing is permitted between the zones here. A
+  written rule base (`policy:` with zones, ordered rules and `stateful:
+  true`, [docs/FORMAT.md](../docs/FORMAT.md#network-policy-policy)) could
+  say "Internal may open IoT, IoT may not open Internal"; the example does
+  not use one. There is no radio or roaming model, and no DSL or PPPoE
+  model (see [Limitations](../docs/LIMITATIONS.md)).
 
 ### Internal test examples
 
-[`test/examples/`](../test/examples/) holds nineteen more models. They are test
+[`test/examples/`](../test/examples/) holds twenty more models. They are test
 scenarios, not architectures: each exercises a feature, an edge case,
 validation, layout or the simulation (`addressing.yaml`, `long-labels.yaml`,
 `consistency-checks.yaml`, `protocol-simulation.yaml`, `metro-ring.yaml`,

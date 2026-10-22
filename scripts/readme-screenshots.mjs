@@ -40,14 +40,14 @@ const SHOTS = [
   ['readme-logical.png', 'light', [1680, 1180], [], `netatlas.loadExampleNamed('enterprise-campus.yaml'); netatlas.setView('logical'); document.getElementById('btn-arrange-compact').click(); await new Promise((r) => setTimeout(r, 200)); netatlas.fit();`],
   // Analyze → Trace path across a hybrid cloud, with the return path: the request, the hops marked in the diagram, the evidence, the results
   ['readme-analysis.png', 'dark', [1680, 1000], ['#outline', '#side', '#sim-dock'], `netatlas.loadExampleNamed('hybrid-cloud.yaml'); netatlas.setView('physical'); netatlas.setTraceForm({ from: 'dc-pc', to: 'web-1', back: true }); netatlas.openTrace(); netatlas.runTrace(); netatlas.fit();`],
-  // a protocol simulation of the home network: five pings from the laptop to the NAS on their way, the Network events
+  // a protocol simulation of the home network: the first of five pings from the laptop to the NAS on the riser cable, the Network events
   // form, the protocols' status and the event log
   ['readme-simulation.png', 'dark', [1440, 900], ['#sim-actions', '#sim-dock'], `netatlas.loadExampleNamed('private-house.yaml'); netatlas.setView('physical'); sessionStorage.clear(); localStorage.removeItem('netatlas.dockHeight');
     netatlas.startProtocolSimulation({ senders: ['laptop', 'nas'] }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(30000);
     const set = (id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev || 'change')); };
     set('sim-t-type', 'unicast'); set('sim-t-from', 'laptop'); set('sim-t-to', 'nas'); set('sim-t-kind', 'icmp'); set('sim-t-count', '5', 'input'); set('sim-t-interval', '1', 'input');
     document.getElementById('sim-t-send').click(); c.setPlaying(true); await new Promise((r) => setTimeout(r, 100));
-    center(['device:laptop', 'device:nas', 'device:dist', 'device:core'], 0.62);`, 7000],
+    center(['device:laptop', 'device:nas', 'device:dist', 'device:core'], 0.62);`, 11000],
 ];
 
 async function main() {

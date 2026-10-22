@@ -69,7 +69,7 @@ const UDP_SUPPORT: Support = {
 };
 const MQTT_SUPPORT: Support = {
   level: 'modeled',
-  does: 'MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection.',
+  does: 'MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection (a periodic publisher goes on after it; a round that falls while not connected is skipped); packet identifiers 1–65535 per side, never one still in flight; topics and filters sized in UTF-8 bytes.',
   not: 'QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents.',
 };
 
@@ -121,7 +121,7 @@ export const APP_PARAMS: SvcParam[] = [
   { key: 'qos', label: 'QoS', type: 'enum', when: is('mqtt_client'), options: [{ id: '0', label: '0: at most once' }, { id: '1', label: '1: at least once (PUBACK)' }], help: 'Of its publications and subscriptions (QoS 2 is not modelled). Empty: 0.' },
   { key: 'interval', label: 'Interval', type: 'duration', when: is(...SENDING), help: 'Between two messages (MQTT: publications). Empty: one message each time it is started.', placeholder: '5s' },
   { key: 'count', label: 'Messages', type: 'int', min: 1, max: 10000, when: is(...SENDING), help: 'How many it sends each time it is started (with an interval; empty: until stopped).', placeholder: 'until stopped' },
-  { key: 'start', label: 'Starts', type: 'enum', when: is(...SENDING), options: [{ id: 'manual', label: 'When started from Network events' }, { id: 'simulation_start', label: 'With the simulation' }], help: 'Empty: only when you start it from Network events (Start application).' },
+  { key: 'start', label: 'Starts', type: 'enum', when: is(...SENDING), options: [{ id: 'manual', label: 'When started from Network events' }, { id: 'simulation_start', label: 'With the simulation' }], help: 'With the simulation: by itself, 3 s after the simulation starts (or after its device has booted). Empty: only when you start it from Network events (Start application).' },
   // advanced
   { key: 'payload_size', label: 'Payload size (bytes)', type: 'int', min: 0, max: 65000, advanced: true, when: is('mqtt_client'), help: 'Of each publication’s payload (a modelling default of 64 bytes if empty).', placeholder: '64' },
   { key: 'request_size', label: 'Request size (bytes)', type: 'int', min: 1, max: 65000, advanced: true, when: is(...PEERED), help: 'Of each request or message (a modelling default if empty: 120 bytes TCP, 40 UDP).', placeholder: '120' },

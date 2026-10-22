@@ -361,7 +361,7 @@ export const SERVICES: ReadonlyArray<SvcDef> = [
     label: 'Applications',
     badge: 'APP',
     help: 'Its applications: listeners, clients, periodic messages, MQTT clients.',
-    support: { level: 'modeled', does: 'Each application’s profile: listeners, TCP and UDP clients, periodic messages, MQTT clients (see each profile).', not: 'payload contents and application semantics: a name such as Modbus TCP labels it only.' },
+    support: { level: 'modeled', does: 'Each application’s profile: listeners, TCP and UDP clients, periodic messages, MQTT clients (see each profile); one that starts with the simulation starts once, when its device is operational; one outcome per original message, retries counted apart; Stop while its last message is on its way.', not: 'payload contents and application semantics: a name such as Modbus TCP labels it only.' },
     types: [...SERVERS, 'storage', 'system', 'endpoint'],
     needs: hostOnly,
     params: [],

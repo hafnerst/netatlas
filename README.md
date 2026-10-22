@@ -112,9 +112,9 @@ Each message can be opened in the **packet inspector**, layer by layer.
 Simulated packets exist only inside NetAtlas: nothing is sent to your real
 network.
 
-![A protocol simulation in the dark theme: five pings from the laptop to the NAS on their way through the house's switches, labelled "Test · ICMP Echo"; the Simulation setup, the Network events form, the protocols' status and the event log around the diagram](docs/img/readme-simulation.png)
+![A protocol simulation in the dark theme: the first of five pings from the laptop to the NAS on its way down the house's riser cable, labelled "Test · ICMP Echo → 192.168.10.20", the clock held at t = 30 s while it travels; the Simulation setup, the Network events form, the protocols' status and the event log around the diagram](docs/img/readme-simulation.png)
 
-*A simulation of `private-house.yaml`: test pings on their way, Send network packets in the Actions panel, the status of the protocols' sessions and the event log.*
+*A simulation of `private-house.yaml`: the first test ping on its way (Readable pacing holds the clock until it arrives), Send network packets in the Actions panel, the status of the protocols' sessions and the event log.*
 
 ### Protocols and services
 
@@ -127,7 +127,7 @@ models and what it leaves out (its ⓘ note in the editor and in
 |---|---|---|
 | Switching and discovery | ARP, NDP, STP/RSTP, LLDP, CDP, LACP, MLAG, VLANs, IGMP/MLD snooping | Exchanges, tables and port states |
 | Addressing and network services | DHCP, DHCPv6, SLAAC, DNS, NAT, syslog, SNMP, RADIUS/TACACS+ | Requests, leases and answers; message contents simplified |
-| Routing and redundancy | Static routes, OSPF, IS-IS, BGP, EIGRP, RIP, BFD, VRRP, HSRP | Sessions, timers and routes; no policies or LSA details |
+| Routing and redundancy | Static routes, OSPF, IS-IS, BGP, EIGRP, RIP and RIPng, BFD, VRRP, HSRP | Sessions, timers and routes, a bounded routing policy; databases abstracted (no LSA or BGP path details) |
 | Multicast | IGMP/MLD, PIM sparse, SSM and dense mode | Membership, queriers, joins and forwarding |
 | Tunnels and overlays | IPsec, GRE, WireGuard, VXLAN, EVPN, MPLS L3VPN, SD-WAN | From full exchanges (IPsec) to session or encapsulation only |
 | Applications, messaging and timing | TCP/UDP application profiles, MQTT 3.1.1, NTP, PTP (IEEE 1588 default profile) | Messages and state; no measured clock accuracy |

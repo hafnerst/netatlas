@@ -127,7 +127,7 @@ npm ci             # installs typescript only
 npm run build      # -> dist/netatlas.html (and the test build, build/netatlas-test.html)
 ```
 
-`npm run build` does four things:
+`npm run build` does five things:
 
 1. `scripts/gen-examples.mjs` embeds the public examples (`examples/*.yaml`,
    in the order of its `CATALOG`) into `src/generated/examples.ts` for the
@@ -138,7 +138,10 @@ npm run build      # -> dist/netatlas.html (and the test build, build/netatlas-t
    (`docs/img/manual/*.webp`) into `src/generated/help-assets.ts` for the
    **Help** menu, the images as `data:` URLs (the page may load nothing else).
 3. `tsc` compiles `src/**/*.ts` to CommonJS JavaScript in `build/js/`.
-4. `scripts/build.mjs` bundles those modules into one inline `<script>`. It's
+4. `scripts/gen-support.mjs` writes `docs/SUPPORT.md` from the support
+   catalog (`src/model/support-catalog.ts` and the protocols' own
+   statements); edit those, never the generated file.
+5. `scripts/build.mjs` bundles those modules into one inline `<script>`. It's
    a small wrapper that refuses any non-relative `require`. It then inlines
    `src/styles.css` into `src/index.html` and writes two pages:
    * **`dist/netatlas.html`**, the released application, from

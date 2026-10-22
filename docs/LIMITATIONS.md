@@ -279,7 +279,7 @@ what the advertisements it received told it (below).
   client between loopbacks is served by every single-hop BFD session to
   its peer).
 * **Ports between peers.** IKE from and to UDP 500, LDP's Hellos 646, RIP
-  520, GTP-U, L2TP and WireGuard their port both ways; BFD, VXLAN and
+  520 (RIPng 521), GTP-U, L2TP and WireGuard their port both ways; BFD, VXLAN and
   Geneve from an ephemeral port of each side to theirs; client and server
   services keep the client's ephemeral port.
 * **IKEv2.** Messages belong to an IKE SA (its identity stands in for the
@@ -312,7 +312,13 @@ what the advertisements it received told it (below).
   protocol's outer header: GRE and mGRE 47, IP-in-IP 4, IPsec ESP 50 (no
   NAT traversal), UDP to the protocol's port for WireGuard, OpenVPN, L2TP,
   GTP-U, VXLAN and Geneve; other tunnels' outer header is not stated (GRE
-  assumed). A tunnel interface follows its session's state.
+  assumed). A tunnel interface follows its session's state. In the
+  simulation a packet's size counts each encapsulation as 4 bytes over the
+  outer IP header (IPsec ESP: 36), whatever the tunnel carries in its outer
+  header (a UDP tunnel's UDP and VXLAN or Geneve header are not counted), so
+  fragmentation and Packet Too Big come later than on a device; the static
+  path MTU uses the tunnel-MTU check's overheads instead (*Path MTU*,
+  below).
 * **Routing services describe their configuration.** Each protocol has a
   fixed set of parameters (a protocol of the model may declare its own);
   areas, costs and timers are per relation end; one router ID per protocol.
@@ -570,8 +576,8 @@ published (nor counted toward a count). Packet identifiers are 1–65535
 per side, wrap and skip those awaiting acknowledgment (all in use:
 nothing is sent, said). Topics, filters and client identifiers are sized
 in UTF-8 bytes (client identifiers are ASCII by validation). A TCP
-connection whose SYN cannot leave is closed at once and not retransmitted. A Cloud is one opaque Layer 3 hop with its latency
-and loss.
+connection whose SYN cannot leave is closed at once and not retransmitted.
+A Cloud is one opaque Layer 3 hop with its latency and loss.
 
 **Not supported.** Industrial or building protocol engines (Modbus, OPC UA,
 BACnet), MQTT QoS 2, persistent sessions, retained messages, wills,
@@ -672,7 +678,8 @@ and device actions) from the user.
   them is logged where it leaves the scope. A scope adds the routing domain
   its routes come from, the switches between, its DHCP and DNS servers and
   gateway-group members; a protocol whose peers are all outside it does not
-  form. Experiments always run the entire model. A scope inside one large
+  form. An experiment runs the entire model unless its `scope` names a
+  narrower one (below). A scope inside one large
   routing domain still runs every router of that domain (its routes come
   from them), so where route convergence dominates, a smaller scope gains
   little: the routes are computed again for each routing message's

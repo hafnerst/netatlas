@@ -1746,7 +1746,7 @@ export function traceText(t: Trace, back?: Trace | null): string {
     else desc(back);
   }
   lines.push('');
-  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A Security gateway’s policy, a firewall’s policy (the relations through it and its allow list, by the service you give), a VPN gateway’s tunnels and paired ports are considered; router ACLs are not; NAT for container bridges (SNAT out of the host, DNAT to published ports) and the NAT service.');
+  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A written network policy (a router’s, a Layer 3 switch’s or a firewall’s), a firewall’s implicit policy (the relations through it and its allow list, by the service you give), a Security gateway’s policy, a VPN gateway’s tunnels and paired ports are considered; NAT for container bridges (SNAT out of the host, DNAT to published ports) and the NAT service’s source translation (PAT, SNAT; not its port forwarding).');
   return lines.join('\n');
 }
 
