@@ -168,7 +168,7 @@ export async function openPage(url, { width = 1440, height = 900, dark = false, 
     /** let the page render (two animation frames and a short pause) */
     settle: (ms = 60) => page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, ${ms}))))`),
     /** the bounding box of the first element matching a selector */
-    rect: (sel) => page.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`),
+    rect: (sel) => page.call((sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; }, sel),
     async mouse(type, x, y, button = 'none') {
       await cmd('Input.dispatchMouseEvent', { type, x, y, button, buttons: button === 'left' ? 1 : button === 'right' ? 2 : 0, clickCount: type === 'mouseMoved' ? 0 : 1 });
     },

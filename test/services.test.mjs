@@ -205,7 +205,7 @@ test('NAT: PAT out of the outside interface, in the simulation and as a note of 
   void t;
   const t2 = T.tracePath(m, { from: 'cpe:Vlan10', to: '9.9.9.9' });
   void t2;
-  const n = T.tracePath(model(example('dmz-services.yaml').replace('      - {id: eth0, ip: 10.60.0.50/24}', '      - {id: eth0, ip: 10.60.0.50/24}')), { from: 'nas', to: '203.0.113.50' });
+  const n = T.tracePath(model(example('dmz-services.yaml')), { from: 'nas', to: '203.0.113.50' });
   assert.ok(n.paths[0].hops.some((h) => h.notes.some((x) => /^PAT: source 10\.60\.0\.50 → 203\.0\.113\.2 \(fw's NAT, inside → outside\)/.test(x))), T.traceText(n));
 });
 

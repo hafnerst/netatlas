@@ -181,6 +181,12 @@ export interface SimNet {
   moved: Map<string, { device: string; port: string }>;
 }
 
+/** The model's "device:port" of a port key: its first "|" (the end of the device part) becomes ":". */
+export function portRefOf(key: string): string {
+  const i = key.indexOf('|');
+  return i < 0 ? key : key.slice(0, i) + ':' + key.slice(i + 1);
+}
+
 export function portKey(device: string, port: string): string {
   return device + '|' + port;
 }

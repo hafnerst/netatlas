@@ -32,7 +32,7 @@ const BOXES = `Object.fromEntries(Array.from(document.querySelectorAll('#canvas 
 for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900], ['light', 720, 450]]) {
   test(`${theme}, ${width} × ${height}: the querier election marked in the diagram (startup, settled, failover); Leave multicast group from its form, followed to the switch; Show querier election`, { skip, timeout: 300000 }, async () => {
     const page = await openPage(url, { width, height });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const run = (ms) => page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + ${ms}); c.refresh(true); return true; })()`);
     try {
       await page.settle(150);

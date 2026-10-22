@@ -43,7 +43,7 @@ test('one set of semantic tokens: both themes define the same names, and nothing
   const html = readFileSync(join(root, 'dist', 'netatlas.html'), 'utf8');
   const code = ['ui/theme.ts', 'ui/app.ts', 'app/main.ts'].map((x) => readFileSync(join(root, 'src', x), 'utf8')).join('\n');
   assert.doesNotMatch(css + code, /prefers-color-scheme|matchMedia\('\(prefers-color/);
-  assert.doesNotMatch(html.replace(/<script>[\s\S]*<\/script>/, ''), /prefers-color-scheme/);
+  assert.doesNotMatch(html.replace(/<script\b[^>]*>[\s\S]*<\/script\b[^>]*>/i, ''), /prefers-color-scheme/);
   // the script that sets the theme runs in <head>, before the body exists
   assert.ok(html.indexOf('<script>') < html.indexOf('<body'), 'the script is in <head>');
     // the surfaces the diagram colours are adjusted for are the canvas, panel and raised tokens

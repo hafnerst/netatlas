@@ -22,7 +22,7 @@ const EVENTS = `Array.from(document.querySelectorAll('#sim-events > li')).map((l
 for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 640]]) {
   test(`${theme}, ${width} px: Network events: four direct actions, then Active events with one event per operation; the selection never overwrites a form; focus and details kept on updates`, { skip, timeout: 240000 }, async () => {
     const page = await openPage(url, { width, height: 900 });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const click = async (id) => {
       await page.eval(`document.getElementById(${JSON.stringify(id)}).scrollIntoView({ block: 'nearest' }), true`);
       await page.eval(`document.getElementById(${JSON.stringify(id)}).click(), true`);

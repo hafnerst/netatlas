@@ -8,10 +8,10 @@ import { root } from './helpers.mjs';
 import { SIZE_BUDGET } from '../scripts/release-check.mjs';
 
 const html = readFileSync(join(root, 'dist', 'netatlas.html'), 'utf8');
-const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
+const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)];
 const js = scripts.map((m) => m[2]).join('\n');
 // The document markup without the script body (the script legitimately contains test strings).
-const markup = html.replace(/<script([^>]*)>[\s\S]*?<\/script>/g, '<script$1></script>');
+const markup = html.replace(/<script\b([^>]*)>[\s\S]*?<\/script\b[^>]*>/gi, '<script$1></script>');
 
 test('exactly one inline script, no external script/style/link/img/iframe sources', () => {
   assert.equal(scripts.length, 1);

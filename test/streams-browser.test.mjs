@@ -41,7 +41,7 @@ const DEV = (id) => `(() => { const n = document.querySelector('#canvas .node[da
 for (const theme of ['light', 'dark']) {
   test(`${theme}: two streams side by side on the simulated clock, paused, Stop one; devices operational, powered off and booting in the diagram`, { skip, timeout: 300000 }, async () => {
     const page = await openPage(url, { width: 1440, height: 900 });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     try {
       await page.settle(150);
       await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.theme.set('${theme}'), netatlas.loadExampleNamed('protocol-simulation.yaml'), netatlas.setView('physical'), true`);

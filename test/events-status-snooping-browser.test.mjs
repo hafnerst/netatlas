@@ -56,7 +56,7 @@ const rgb = (hex) => {
 for (const [theme, width, height] of [['light', 1440, 900], ['dark', 1440, 900], ['light', 720, 450]]) {
   test(`${theme}, ${width} × ${height}: Expand all / Collapse all of Network events; every device’s status in the diagram; IGMP / MLD snooping per VLAN; the snooping and membership tables live`, { skip, timeout: 300000 }, async () => {
     const page = await openPage(url, { width, height });
-    const set = (id, v, ev = 'change') => page.eval(`(() => { const e = document.getElementById(${JSON.stringify(id)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event(${JSON.stringify(ev)})); return true; })()`);
+    const set = (id, v, ev = 'change') => page.call((id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); return true; }, id, v, ev);
     const run = (ms) => page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + ${ms}); c.refresh(true); return true; })()`);
     try {
       await page.settle(150);

@@ -101,7 +101,7 @@ test('the logical export carries the names, and its legend lists them only when 
   const sc = s.render();
   const boxes = exportBoxes(s.viewModel(), 'logical', s.state, sc);
   assert.match(textOf(boxes.legend.root), /DNS name \(as configured, not looked up\)/);
-  assert.match(textOf(sc.root), /mgmt\.example\.com/);
+  assert.ok(textOf(sc.root).includes('mgmt.example.com'));
   s.state.showLabels = false;
   const sc2 = s.render();
   assert.doesNotMatch(textOf(exportBoxes(s.viewModel(), 'logical', s.state, sc2).legend.root), /DNS name/);
