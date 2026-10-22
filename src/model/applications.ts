@@ -69,7 +69,7 @@ const UDP_SUPPORT: Support = {
 };
 const MQTT_SUPPORT: Support = {
   level: 'modeled',
-  does: 'MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection.',
+  does: 'MQTT 3.1.1 over TCP: CONNECT / CONNACK, SUBSCRIBE / SUBACK with + and # filters, PUBLISH through the broker to the matching subscribers, QoS 0 and QoS 1 (PUBACK, DUP retries), UNSUBSCRIBE, DISCONNECT, keep alive with PINGREQ and reconnection (a periodic publisher goes on after it; a round that falls while not connected is skipped); packet identifiers 1–65535 per side, never one still in flight; topics and filters sized in UTF-8 bytes.',
   not: 'QoS 2, persistent sessions (every session is clean), retained messages, wills, authentication, TLS and payload contents.',
 };
 

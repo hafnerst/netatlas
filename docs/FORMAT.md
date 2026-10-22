@@ -65,12 +65,28 @@ keys gets errors until it is changed by hand. There is no migration.
 | `services: {application: {name: …, ports: [tcp/443]}}`, one per device | `services: {applications: [{id: …, name: …, profile: tcp_server, port: 443}, …]}`, a list ([Applications](#applications-servicesapplications)) |
 | applications on Servers, VMs and containers only | also on a host-capable Endpoint (a PLC, an HMI, a camera, a printer, an IoT device …) and a Storage device |
 
-New, with nothing to convert: an interface's IPv6 method and a router's
-advertisements ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
-DHCPv6 scopes, the `mqtt_broker` and `ptp` services, and the two analysis
-sections [`failure_domains`](#failure_domains-shared-failure-domains) and
-[`expectations`](#expectations-saved-design-requirements). Both are
-optional additions to format 1: a file without them means what it meant.
+New, with nothing to convert — optional additions to format 1, so a file
+without them means what it meant:
+
+* an interface's IPv6 method and a router's advertisements
+  ([IPv6 host configuration](#ipv6-host-configuration-ipv6-ipv6_ra)),
+  DHCPv6 scopes, the `mqtt_broker` and `ptp` services;
+* a routing protocol's policy keys `advertise`, `default_route`,
+  `redistribute`, `import` and `export` ([Routing policy](#routing-policy))
+  and a device's rule base `policy:` ([Network policy](#network-policy-policy));
+* the top-level sections [`failure_domains`](#failure_domains-shared-failure-domains),
+  [`expectations`](#expectations-saved-design-requirements),
+  [`experiments`](#experiments-saved-repeatable-experiments),
+  [`views`](#views-saved-views) and
+  [`interconnects`](#interconnects-non-ip-physical-connections), with
+  opaque ports (`stack: opaque` on an interface) and a System's
+  `opaque_transit`;
+* `layout.routing` ([`layout`](#layout-diagram-positions)), written by
+  Auto-arrange's Structured option.
+
+A file that loaded in 0.1.3 can also get new consistency findings from
+checks added since; findings never block loading, and each says what it
+is about.
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never
 silently disappear. That includes `scenarios:` and `risk_groups:`, which
@@ -373,7 +389,13 @@ own policy (a `policy:` there is an error).
 | `name` | a label |
 
 Semantics: the first rule whose conditions all hold decides; none: the
-default action. A router's or Layer 3 switch's policy applies to what it
+default action. An IP packet without ports (GRE, ESP, IP-in-IP, IGMP …)
+matches only rules with `proto: any`, by its addresses, interfaces and
+zones; a stateful policy tracks it by its address pair and IP protocol
+number, so one protocol's session never lets another protocol's packets
+back. What is scoped to the link (224.0.0.0/24, ff02::/16, fe80::/10) is
+not decided by the rules, and an ICMP error about a session's packet (an
+echo by its identifier) belongs to that session. A router's or Layer 3 switch's policy applies to what it
 routes (not to what it bridges within a VLAN); a transparent firewall's to
 what it bridges. Statically, Trace path decides one direction for the
 service given (without one, a decision that depends on it is said, not
