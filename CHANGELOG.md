@@ -57,19 +57,24 @@ opens as a draft so it can be fixed in the editor. The built-in examples are
 already changed. What to change by hand is in
 [Changes since 0.1.3](docs/FORMAT.md#changes-since-013).
 
-- **New, optional:** the top-level sections `failure_domains:`,
-  `expectations:`, `experiments:` and `views:` (a file without them means
-  what it meant). New optional keys: an expectation's `family`, `enforce`,
-  `boundary` and `method` (required for timing); a routing protocol's
-  `advertise`, `default_route`, `redistribute`, `import`, `export`; a
-  device's `policy`. A timing expectation written without `method` is now
-  an error (state ptp, ntp or either).
 - **Changed, not backward compatible:** `ipv4: dhcp` replaces
-  `dhcp: true` (`ipv4: static` or nothing for written addresses), and an
-  interface's IPv4 method no longer touches its IPv6 addresses;
-  applications are a list, `services.applications`, each with its id,
-  name and profile — the single `services.application` (a name and ports)
-  is gone.
+  `dhcp: true` (`ipv4: static` or nothing for written addresses;
+  `dhcp: false` is deleted), and an interface's IPv4 method no longer
+  touches its IPv6 addresses; applications are a list,
+  `services.applications`, each with its id, name and profile — the single
+  `services.application` (a name and ports) is gone. Applications may also
+  run on a host-capable Endpoint and a Storage device.
+- **New, optional** (a file without them means what it meant): an
+  interface's IPv6 method and a router's advertisements, DHCPv6 scopes,
+  the `mqtt_broker` and `ptp` services; a routing protocol's `advertise`,
+  `default_route`, `redistribute`, `import` and `export` and a device's
+  `policy:`; the top-level sections `failure_domains:`, `expectations:`
+  (an expectation's `family`, `enforce`, `boundary` and `method`),
+  `experiments:`, `views:` and `interconnects:`, with opaque ports
+  (`stack: opaque`) and a System's `opaque_transit`; `layout.routing`,
+  written by Auto-arrange's Structured option.
+- A file that loaded in 0.1.3 can get new consistency findings from checks
+  added since; findings never block loading.
 
 ### Added
 
