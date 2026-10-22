@@ -447,7 +447,7 @@ already changed. What to change by hand is in
   with a control that proves the observation sees an external request.
 - **Release package check** (`npm run release:check`): no test-only module
   or internal example, one inline script, the strict CSP, the version, the
-  size budget (6 MiB). `npm run release:prepare` writes `netatlas.html`,
+  size budget (6.5 MiB). `npm run release:prepare` writes `netatlas.html`,
   `SHA256SUMS`, `provenance.json` and the release notes to `release/`.
 - **Release workflow** (`.github/workflows/release.yml`), started by hand
   for an existing tag: checks the tag, the version and the CHANGELOG
@@ -468,6 +468,15 @@ already changed. What to change by hand is in
   (docs/REPOSITORY-SETTINGS.md).
 
 ### Changed
+
+#### Documentation
+
+- **The README is a short landing page** (what NetAtlas is, four
+  screenshots, getting started); the detail moved to the User Manual and
+  to [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
+  [docs/TESTING.md](docs/TESTING.md). [docs/SUPPORT.md](docs/SUPPORT.md)
+  is generated from the support catalog and says what NetAtlas models for
+  each protocol, analysis and simulated behaviour.
 
 #### Auto-arrange
 
