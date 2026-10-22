@@ -841,7 +841,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick(20);
         check(
           'enabling DHCP or deleting an interface names the DNS associations it removes; after deleting, no reference is left',
-          asked2.includes('api.example.com') && !/deleted too/.test(asked2) && /association with the DNS name api\.example\.com is removed/.test(asked3) &&
+          /These associations are removed:\s*api\.example\.com/.test(asked2) && !/deleted too/.test(asked2) && /association with the DNS name api\.example\.com is removed/.test(asked3) &&
             JSON.stringify(m().result.model!.devices[0].dnsNames.map((x) => x.interfaces)) === '[["eth0"]]' && m().valid && !inf('lo0'),
           asked3,
         );
