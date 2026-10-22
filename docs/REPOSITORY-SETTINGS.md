@@ -19,7 +19,7 @@ admin access to read and are marked so).
 |---|---|---|
 | Ruleset A "dev and main: pull requests only" | **applied**, active, empty bypass list | [below](#ruleset-a-pull-requests-approval-history-protection) |
 | Ruleset B "dev and main: required checks" | **proposed**, not applied | [below](#ruleset-b-required-checks) |
-| Environment `release` with a required reviewer | **proposed** (no environment exists) | [below](#the-release-environment) |
+| Environment `release` with a required reviewer | **applied** on 2026-10-22: reviewer @hafnerst, self-review allowed, branch `main` only, no secrets (read through the API that day) | [below](#the-release-environment) |
 | Ruleset C "release tags: maintainer only" (optional) | **proposed**, not applied | [below](#ruleset-c-release-tags-optional) |
 | Automatically delete head branches | applied (on) | |
 | Allow auto-merge | applied (**off**); keep it off | |
@@ -43,7 +43,7 @@ admin access to read and are marked so).
 | No force pushes, no deletion of `dev` / `main` | Ruleset A: *Block force pushes*, *Restrict deletions* | Yes (applied) |
 | CI must pass | Ruleset B: *Require status checks to pass* with CI's checks | Yes, **once Ruleset B is applied** |
 | Release PRs into `main` come only from `dev` | CI's *Release PR source* check, required by Ruleset B | Yes, **once Ruleset B is applied** |
-| A release is attached only after the maintainer approves | the `release` environment's required reviewer | Yes, **once the environment is set up**; see its limits |
+| A release is attached only after the maintainer approves | the `release` environment's required reviewer | Yes (applied); see its limits |
 | Only @hafnerst clicks *Merge* | — | **No** (policy), see below |
 | The author never approves their own PR | GitHub itself | Yes (authors cannot approve their own PRs) |
 | Nothing merges by itself | *Allow auto-merge* off; no workflow merges or approves | Yes (applied; the workflows have no write access to pull requests) |
@@ -211,11 +211,12 @@ change without a change to the code.
 
 ## The `release` environment
 
-**Proposed, not set up.** The release workflow's publishing job
+**Applied on 2026-10-22**, before the first release run, as below (read
+back through the API that day). The release workflow's publishing job
 (`.github/workflows/release.yml`, *Attach to a draft release*) runs in the
 environment `release`. GitHub creates an environment of that name, without
-any protection, the first time a workflow uses it, so set it up **before**
-the first release run:
+any protection, the first time a workflow uses it; if it is ever deleted,
+set it up again **before** the next release run:
 
 1. *Settings → Environments → New environment*, name `release`.
 2. **Required reviewers:** @hafnerst. Leave *Prevent self-review* **off**:

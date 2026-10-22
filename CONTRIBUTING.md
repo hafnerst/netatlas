@@ -273,6 +273,6 @@ tag on the current commit.
 The branch rules (pull requests required, approval by the code owner, no
 force pushes or deletion) are configured as a GitHub **ruleset**; that only
 the maintainer merges is policy. The exact settings, what is applied and
-what is only proposed (the required CI checks, the `release` environment,
-the release-tag rules), and what they can and cannot enforce, are in
+what is only proposed (the required CI checks, the release-tag rules), and
+what they can and cannot enforce, are in
 [docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md).
