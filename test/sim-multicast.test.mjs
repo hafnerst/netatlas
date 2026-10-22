@@ -704,3 +704,163 @@ test('IGMPv3: a BLOCK naming only sources the router does not know (RFC 3376 §6
   const ra = s.multicastReceived('rxa', '232.1.1.1');
   assert.ok(ra && ra.last > t0 + 25000, 'rxa still receives s1');
 });
+
+// ------------------------------------------------------------------ members of named sources and members of every source on one LAN
+
+/**
+ * s1, s2 (one LAN) — r1 (its own RP) — sw (snooping disabled: every host sees what r1 forwards) — rxa, rxb, rxc, which join
+ * by events; an ordinary ASM group (239.5.5.5, or ff0e::1:1 with MLD).
+ */
+const MIX = (v6) => {
+  const a = v6
+    ? { s1: '2001:db8:1::10/64', s2: '2001:db8:1::11/64', g0: '2001:db8:1::1/64', g1: '2001:db8:2::1/64', lo: '2001:db8:ff::1/128', rp: '2001:db8:ff::1', ra: '2001:db8:2::21/64', rb: '2001:db8:2::22/64', rc: '2001:db8:2::23/64', d: '::/0', v1: '2001:db8:1::1', v2: '2001:db8:2::1', G: 'ff0e::1:1' }
+    : { s1: '10.1.0.10/24', s2: '10.1.0.11/24', g0: '10.1.0.1/24', g1: '10.2.0.1/24', lo: '10.255.0.1/32', rp: '10.255.0.1', ra: '10.2.0.21/24', rb: '10.2.0.22/24', rc: '10.2.0.23/24', d: '0.0.0.0/0', v1: '10.1.0.1', v2: '10.2.0.1', G: '239.5.5.5' };
+  return `netatlas: 1
+title: mixed members
+devices:
+  - {id: s1, type: server, interfaces: [{id: eth0, ip: "${a.s1}", multicast: {streams: [{group: "${a.G}", port: 5006, interval: 1s}]}}], routes: [{prefix: "${a.d}", via: "${a.v1}"}]}
+  - {id: s2, type: server, interfaces: [{id: eth0, ip: "${a.s2}", multicast: {streams: [{group: "${a.G}", port: 5006, interval: 1s}]}}], routes: [{prefix: "${a.d}", via: "${a.v1}"}]}
+  - {id: swa, type: switch, igmp_mld_snooping: {1: disabled}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
+  - id: r1
+    type: router
+    router_id: 10.255.0.1
+    protocols: {pim: {rp: "${a.rp}"}}
+    interfaces: [{id: g0, ip: "${a.g0}"}, {id: g1, ip: "${a.g1}"}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: "${a.lo}"}]
+  - {id: sw, type: switch, igmp_mld_snooping: {1: disabled}, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]}
+  - {id: rxa, type: endpoint, interfaces: [{id: eth0, ip: "${a.ra}"}], routes: [{prefix: "${a.d}", via: "${a.v2}"}]}
+  - {id: rxb, type: endpoint, interfaces: [{id: eth0, ip: "${a.rb}"}], routes: [{prefix: "${a.d}", via: "${a.v2}"}]}
+  - {id: rxc, type: endpoint, interfaces: [{id: eth0, ip: "${a.rc}"}], routes: [{prefix: "${a.d}", via: "${a.v2}"}]}
+links:
+  - {id: a1, a: "s1:eth0", b: "swa:p1"}
+  - {id: a2, a: "s2:eth0", b: "swa:p2"}
+  - {id: a3, a: "swa:p3", b: "r1:g0"}
+  - {id: c, a: "r1:g1", b: "sw:p1"}
+  - {id: d, a: "sw:p2", b: "rxa:eth0"}
+  - {id: e, a: "sw:p3", b: "rxb:eth0"}
+  - {id: f, a: "sw:p4", b: "rxc:eth0"}
+`;
+};
+const FAM = [
+  { v6: false, G: '239.5.5.5', S1: '10.1.0.10', S2: '10.1.0.11' },
+  { v6: true, G: 'ff0e::1:1', S1: '2001:db8:1::10', S2: '2001:db8:1::11' },
+];
+/** How many of a source device's stream datagrams a host has taken so far. */
+const got = (s, from, rx) => s.multicast.streams.filter((x) => x.dev === from).reduce((n, x) => n + (x.rx.get(rx) || 0), 0);
+/** What each receiver takes of each source in the next `ms`: {rxa: [from s1, from s2], …}. */
+const window = (s, ms) => {
+  const before = {};
+  for (const r of ['rxa', 'rxb', 'rxc']) before[r] = [got(s, 's1', r), got(s, 's2', r)];
+  s.runTo(s.now + ms);
+  const out = {};
+  for (const r of ['rxa', 'rxb', 'rxc']) out[r] = [got(s, 's1', r) - before[r][0], got(s, 's2', r) - before[r][1]];
+  return out;
+};
+/** r1's row of the group on g1 (its sources column), and whether its (*, G) and each source's (S, G) go out of g1. */
+const r1State = (s, f) => {
+  const row = s.igmpTable('r1').rows.find((r) => r[0] === 'g1' && r[1] === f.G);
+  const mr = s.mrouteTable('r1').rows;
+  const out = (src) => mr.some((r) => r[0] === `(${src}, ${f.G})` && /g1/.test(r[2]));
+  return { sources: row ? row[4] : null, star: out('*'), s1: out(f.S1), s2: out(f.S2) };
+};
+
+test('IGMPv3 / MLDv2, a member of one source and a member of every source on one LAN (RFC 3376 §6.4.1, RFC 3810 §7.4.1: INCLUDE + IS_EX {} → EXCLUDE {}): every source is forwarded, whichever joined first; the source-filtered member still takes only its source', () => {
+  for (const f of FAM) {
+    for (const order of [['rxa', 'rxb'], ['rxb', 'rxa']]) {
+      const s = sim(MIX(f.v6));
+      s.runTo(20000);
+      for (const who of order) {
+        assert.equal(s.joinGroup(who, 'eth0', f.G, who === 'rxa' ? [f.S1] : []), null);
+        s.runTo(s.now + 10000);
+      }
+      const tag = `${f.v6 ? 'MLDv2' : 'IGMPv3'}, ${order.join(' then ')}`;
+      // (the shared tree's (*, G) carries every source out of g1: r1, the RP, forwards s1 and s2 by it)
+      const st = r1State(s, f);
+      assert.deepEqual([st.sources, st.star], [`any (also named: ${f.S1})`, true], tag);
+      const w = window(s, 10000);
+      assert.ok(w.rxb[0] >= 9 && w.rxb[1] >= 9, `${tag}: rxb takes s1 and s2 (${w.rxb})`);
+      assert.ok(w.rxa[0] >= 9 && w.rxa[1] === 0, `${tag}: rxa takes s1 only (${w.rxa})`);
+    }
+  }
+});
+
+test('IGMPv3 / MLDv2, mixed members leaving: the member of every source leaving — after the group-specific queries only the named source goes out (s2 no more); the member of one source leaving — every source still goes out, nothing expires', () => {
+  for (const f of FAM) {
+    const tag = f.v6 ? 'MLDv2' : 'IGMPv3';
+    // rxb (every source) leaves; rxa (s1) answers the queries
+    let s = sim(MIX(f.v6));
+    s.runTo(20000);
+    s.joinGroup('rxa', 'eth0', f.G, [f.S1]);
+    s.joinGroup('rxb', 'eth0', f.G, []);
+    s.runTo(40000);
+    assert.equal(s.leaveGroup('rxb', 'eth0', f.G), true);
+    s.runTo(s.now + 5000);
+    assert.deepEqual(r1State(s, f), { sources: f.S1, star: false, s1: true, s2: false }, `${tag}: back to s1 only`);
+    let w = window(s, 10000);
+    assert.ok(w.rxa[0] >= 9, `${tag}: rxa keeps s1 (${w.rxa})`);
+    assert.equal(w.rxc[1] + w.rxb[1], 0);
+    assert.equal(ev(s, (e) => e.device === 'r1' && e.what === 'membership expired').length, 0, `${tag}: the group stays`);
+    // rxa (s1) leaves with a BLOCK {s1}; rxb (every source) stays
+    s = sim(MIX(f.v6));
+    s.runTo(20000);
+    s.joinGroup('rxa', 'eth0', f.G, [f.S1]);
+    s.joinGroup('rxb', 'eth0', f.G, []);
+    s.runTo(40000);
+    const t0 = s.now;
+    assert.equal(s.leaveGroup('rxa', 'eth0', f.G), true);
+    s.runTo(t0 + 5000);
+    assert.ok(ev(s, (e) => e.device === 'rxa' && e.what === 'Report' && e.t >= t0 && /BLOCK/.test(e.detail)).length === 1, `${tag}: rxa's BLOCK`);
+    w = window(s, 30000);
+    assert.ok(w.rxb[0] >= 29 && w.rxb[1] >= 29, `${tag}: rxb keeps s1 and s2 (${w.rxb})`);
+    assert.equal(ev(s, (e) => e.device === 'r1' && e.t >= t0 && e.what === 'membership expired').length, 0, `${tag}: no membership expired`);
+    assert.deepEqual([r1State(s, f).sources, r1State(s, f).star], ['any', true], `${tag}: s1 no longer named`);
+  }
+});
+
+test('IGMPv3 / MLDv2: a named source whose timer runs out while a member of every source remains (its member’s reports lost) — the group stays and every source keeps going out; several members of the same source: one leaving keeps it', () => {
+  for (const f of FAM) {
+    const tag = f.v6 ? 'MLDv2' : 'IGMPv3';
+    const s = sim(MIX(f.v6));
+    s.runTo(20000);
+    s.joinGroup('rxa', 'eth0', f.G, [f.S1]);
+    s.joinGroup('rxb', 'eth0', f.G, []);
+    s.runTo(30000);
+    // rxa's reports never reach r1 from now on: s1's source timer runs out (the membership interval, 260 s)
+    s.engine.impair = (link, fr) => (fr.msg.protocol === 'igmp' && fr.msg.type === 'Report' && (fr.msg.data || {}).from === 'rxa' ? { lose: true } : null);
+    const t0 = s.now;
+    const w = window(s, 300000);
+    assert.ok(ev(s, (e) => e.device === 'r1' && e.t >= t0 && e.what === 'source expired').length >= 1, `${tag}: s1's timer ran out`);
+    assert.equal(ev(s, (e) => e.device === 'r1' && e.t >= t0 && e.what === 'membership expired').length, 0, `${tag}: the group never expired`);
+    assert.ok(w.rxb[0] >= 299 && w.rxb[1] >= 299, `${tag}: rxb took every datagram of s1 and s2 (${w.rxb})`);
+    const st = r1State(s, f);
+    assert.deepEqual([st.sources, st.star], ['any', true], tag);
+    s.engine.impair = null;
+    // rxa and rxc both members of s1, rxb of every source; rxb leaves, then rxa: rxc keeps s1
+    const m = sim(MIX(f.v6));
+    m.runTo(20000);
+    m.joinGroup('rxa', 'eth0', f.G, [f.S1]);
+    m.joinGroup('rxc', 'eth0', f.G, [f.S1]);
+    m.joinGroup('rxb', 'eth0', f.G, []);
+    m.runTo(40000);
+    m.leaveGroup('rxb', 'eth0', f.G);
+    m.runTo(m.now + 5000);
+    m.leaveGroup('rxa', 'eth0', f.G);
+    m.runTo(m.now + 5000);
+    assert.deepEqual(r1State(m, f), { sources: f.S1, star: false, s1: true, s2: false }, `${tag}: s1 only, still`);
+    const w2 = window(m, 10000);
+    assert.ok(w2.rxc[0] >= 9 && w2.rxc[1] === 0, `${tag}: rxc keeps s1 (${w2.rxc})`);
+  }
+});
+
+test('an IPv6 stream to a routable group goes from the interface’s global address, not its link-local one (RFC 6724 §5 rule 2; a link-local source is never routed, RFC 4291 §2.5.6): r1 routes it and a member behind it receives it; its MLD reports still go from the link-local address', () => {
+  const s = sim(MIX(true));
+  s.runTo(20000);
+  assert.equal(s.joinGroup('rxb', 'eth0', 'ff0e::1:1', []), null);
+  s.runTo(30000);
+  const sent = ev(s, (e) => e.kind === 'message' && e.device === 's1' && e.protocol === 'mcast' && e.hdr && e.hdr.l3);
+  assert.ok(sent.length >= 1 && sent.every((e) => e.hdr.l3[0].src === '2001:db8:1::10'), sent.slice(0, 2).map((e) => e.hdr.l3[0].src).join(', '));
+  assert.ok(got(s, 's1', 'rxb') >= 9 && got(s, 's2', 'rxb') >= 9, `${got(s, 's1', 'rxb')}, ${got(s, 's2', 'rxb')}`);
+  assert.equal(ev(s, (e) => e.kind === 'drop' && e.device === 'r1' && /no state for \(fe80::/.test(e.detail)).length, 0);
+  const rep = ev(s, (e) => e.kind === 'message' && e.device === 'rxb' && e.what === 'Report' && e.hdr && e.hdr.l3);
+  assert.ok(rep.length && rep.every((e) => /^fe80:|^::$/.test(e.hdr.l3[0].src)), rep.map((e) => e.hdr.l3[0].src).join(', '));
+});

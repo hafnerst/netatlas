@@ -111,6 +111,8 @@ export interface SimProfile {
   encap?: string;
   /** the transport's short form for the event log ("UDP 3784", "IP 89") */
   proto: string;
+  /** over IPv6, when it differs (RIPng: UDP 521, RFC 2080 §2.1) */
+  proto6?: string;
   /** a well-known multicast group or MAC address the protocol sends to */
   group4?: string;
   group6?: string;
@@ -335,6 +337,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     ],
     transport: 'UDP 520 to 224.0.0.9 (RIPv2); RIPng UDP 521 to ff02::9',
     proto: 'UDP 520',
+    proto6: 'UDP 521',
     group4: '224.0.0.9',
     group6: 'ff02::9',
     timers: [T('hello', 'Update timer', 30, 'RFC 2453'), T('dead', 'Timeout', 180, 'RFC 2453')],

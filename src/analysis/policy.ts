@@ -229,9 +229,13 @@ function ruleMatches(model: Model, pol: NetPolicy, r: PolicyRule, f: PolicyFlow,
 /** The transport and ports of a relation's protocol ("TCP 443", "UDP 1812/1813"), or none. */
 export function relationTransport(model: Model, protocol: string): { proto: string; ports: number[] } | null {
   const p = simProfile(protocolBase(model.protocols, protocol));
-  const m = p ? /\b(TCP|UDP)\s+([0-9]{1,5})((?:\s*\/\s*[0-9]{1,5})*)/.exec(p.proto) : null;
+  const re = /\b(TCP|UDP)\s+([0-9]{1,5})((?:\s*\/\s*[0-9]{1,5})*)/;
+  const m = p ? re.exec(p.proto) : null;
   if (!m) return null;
   const ports = [Number(m[2])].concat((m[3] || '').split('/').map((y) => y.trim()).filter((y) => y).map(Number));
+  // (its IPv6 port too, the same transport: RIPng's UDP 521 beside RIPv2's 520)
+  const m6 = p && p.proto6 ? re.exec(p.proto6) : null;
+  if (m6 && m6[1] === m[1] && ports.indexOf(Number(m6[2])) < 0) ports.push(Number(m6[2]));
   return { proto: m[1].toLowerCase(), ports };
 }
 

@@ -333,3 +333,59 @@ test('connection kept open: the keepalive probe carries SND.NXT − 1 and is ans
   assert.ok(s.events().some((e) => e.device === 'pc' && /reset: none of 9 keepalive probes answered/.test(e.detail)));
   assert.ok(!s.connTable('pc').some((r) => r.state === 'ESTABLISHED'));
 });
+
+// ------------------------------------------------------------------ a connection closed before its SYN could leave
+
+const NOSEND = () => `netatlas: 1
+title: a connection whose SYN can't leave
+devices:
+  - id: h1
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.0.0.1/24}]
+  - id: srv
+    type: server
+    simulation: {listening: "tcp/80"}
+    interfaces: [{id: eth0, ip: 10.0.0.2/24}]
+    services:
+      applications:
+        - {id: web, name: Web, profile: tcp_server, port: 80}
+links:
+  - {id: l1, a: "h1:eth0", b: "srv:eth0"}
+`;
+
+test('a connection whose SYN cannot leave (no route: its cable is down) is closed at once and stays closed — no SYN is sent again from it, nothing reaches the server once the cable is back (no SYN-ACK, no RST “has no connection”), it is closed once', () => {
+  const closed = (s, port) => s.events().filter((e) => e.kind === 'table' && e.device === 'h1' && e.what === 'connection closed' && e.detail.indexOf(`10.0.0.1:${port} `) >= 0);
+  const port = (e) => Number(/10\.0\.0\.1:(\d+) /.exec(e.detail)[1]);
+  // a test
+  let s = sim(NOSEND());
+  s.runTo(5000);
+  s.fail('link:l1');
+  s.runTo(8000);
+  const t = s.sendTest({ from: 'h1', to: '10.0.0.2', kind: 'tcp', port: 80 });
+  s.runTo(10000);
+  assert.equal(t.ok, false);
+  assert.match(t.result, /no route to 10\.0\.0\.2/);
+  const first = s.events().find((e) => e.kind === 'table' && e.device === 'h1' && e.what === 'connection closed');
+  assert.match(first.detail, /connection failed: no route/);
+  const p = port(first);
+  s.restore('link:l1');
+  s.runTo(90000);
+  const syns = s.events().filter((e) => e.kind === 'message' && e.device === 'h1' && e.what === 'TCP SYN' && e.detail.indexOf(`10.0.0.1:${p} `) >= 0);
+  assert.equal(syns.length, 1, syns.map((e) => `${Math.round(e.t)} ${e.detail}`).join('\n'));
+  assert.ok(!s.events().some((e) => e.device === 'srv' && e.what === 'TCP SYN-ACK'), 'the server never hears of it');
+  assert.ok(!s.events().some((e) => e.kind === 'drop' && e.device === 'h1' && /has no connection/.test(e.detail)));
+  assert.equal(closed(s, p).length, 1);
+  // a second connection while the cable is down again: the same — one SYN, closed once
+  s.fail('link:l1');
+  s.runTo(100000);
+  const t2 = s.sendTest({ from: 'h1', to: '10.0.0.2', kind: 'tcp', port: 80 });
+  s.runTo(102000);
+  assert.equal(t2.ok, false);
+  s.restore('link:l1');
+  s.runTo(200000);
+  const all = s.events().filter((e) => e.kind === 'table' && e.device === 'h1' && e.what === 'connection closed');
+  assert.equal(all.length, 2, all.map((e) => e.detail).join('\n'));
+  for (const f of all) assert.equal(s.events().filter((e) => e.kind === 'message' && e.device === 'h1' && e.what === 'TCP SYN' && e.detail.indexOf(`10.0.0.1:${port(f)} `) >= 0).length, 1);
+  assert.ok(!s.events().some((e) => e.device === 'srv' && e.what === 'TCP SYN-ACK'));
+  assert.ok(!s.events().some((e) => e.kind === 'table' && e.device === 'h1' && /the handshake was not completed/.test(e.detail)));
+});

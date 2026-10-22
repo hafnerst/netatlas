@@ -291,10 +291,24 @@ export class RipSim implements DvTables {
     this.ownCheck(s.dev);
   }
 
-  /** A Response out of a session's interface, to the RIP group (224.0.0.9, ff02::9). */
+  /**
+   * A Response out of a session's interface, to the RIP group (224.0.0.9, ff02::9). RIPng's from the interface's
+   * link-local address with a hop count of 255 (RFC 2080 §2.4.2, §2.5.2): none valid yet, none goes (the next one will).
+   */
   send(s: Sess, what: string, list: RipEntry[]): void {
-    const group = parseAddress(ipOf(s.local).version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string)) as IpAddr;
-    this.P.multicast(s, group, 'Response', `${what}: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`, { rip: list });
+    const v6 = ipOf(s.local).version === 6;
+    const group = parseAddress(v6 ? (s.profile.group6 as string) : (s.profile.group4 as string)) as IpAddr;
+    const text = `${what}: ${list.length ? list.map((e) => `${e.prefix} metric ${e.metric}`).join(', ') : 'no routes'}`;
+    if (!v6) {
+      this.P.multicast(s, group, 'Response', text, { rip: list });
+      return;
+    }
+    const ll = s.local.l3.ll;
+    if (!ll) {
+      this.P.e.note('drop', 'rip', s.dev, '', 'Response', '', `${s.dev}:${s.local.l3.id} sends no RIPng Response (${what}) yet: RIPng sends them from its link-local address, not valid there yet (RFC 2080 §2.5.2)`);
+      return;
+    }
+    this.P.multicast(s, group, 'Response', text, { rip: list }, '', { src: ll.addr, hop: 255 });
   }
 
   /** A change: the routes are computed again (after the recomputation delay) and a triggered Response goes out soon. */

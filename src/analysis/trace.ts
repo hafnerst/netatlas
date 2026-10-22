@@ -37,14 +37,14 @@
  */
 import { deviceRoutingRole, isLayer2Switch, capabilities } from '../model/capabilities';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
-import { lookupProtocol } from '../model/protocols';
+import { lookupProtocol, protocolBase } from '../model/protocols';
 import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, Device } from '../model/types';
 import { endL2, interfaceVlanPorts, interfaceVlans, isBridgePort, associationOf } from '../model/derive';
 import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
-import { PolicyFlow, PolicyUnknown, configuredIds, ctxIds, policyDecision, policyKind, undecided } from './policy';
+import { PolicyFlow, PolicyUnknown, configuredIds, ctxIds, policyDecision, policyKind, relationTransport, undecided } from './policy';
 import type { Verdict } from './result';
 import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
 import { deviceTypeInText, deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
@@ -278,7 +278,7 @@ interface Walk {
   srcDev?: string;
   destDev?: string;
   svc?: TraceService | null;
-  /** the walk of a tunnel's outer packet: its protocol is known — an IP protocol without ports (GRE, ESP …), 'other' to a policy */
+  /** the walk of a tunnel's outer packet: its protocol is known — UDP to its port (svc), else an IP protocol without ports (GRE, ESP …), 'other' to a policy */
   outer?: boolean;
 }
 
@@ -621,20 +621,45 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   }
   // between the two: a tunnel's underlay, or the cables
   if (iface && iface.type === 'tunnel') {
-    const t = tunnelStep(w, at.device, iface, next.device);
-    for (const l of t.layers) hop.encap.push(l);
-    for (const r of t.layers) if (r.relation && hop.relations.indexOf(r.relation) < 0) hop.relations.push(r.relation);
-    hop.links = t.links;
-    hop.l2 = t.devices;
-    for (const n of t.networks) if (hop.networks.indexOf(n) < 0) hop.networks.push(n);
-    for (const r of t.relations) if (hop.relations.indexOf(r) < 0) hop.relations.push(r);
-    if (t.underlay) hop.underlay = t.underlay;
-    if (t.note) hop.notes.push(t.note);
-    why.tunnel = `${h.iface} encapsulates it (${encapText(t.layers)}) to ${next.device}: ${t.underlay ? `the outer packet is traced from ${at.device} to ${next.device}` : t.stop ? t.stop.detail : t.note || 'the underlay is not in the model'}`;
-    if (t.stop) {
-      why.stop = t.stop.detail;
-      return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: t.stop.reason, detail: t.stop.detail } }];
-    }
+    // (each of the outer packet's equal-cost alternatives is one of this path's: the path branches here, every alternative
+    // evaluated — never the first alone; which one the simulation's flow takes is its own forwarding's choice)
+    const ts = tunnelStep(w, at.device, iface, next.device);
+    const nx = next;
+    const out: Path[] = [];
+    ts.forEach((t, k) => {
+      if (out.length >= MAX_PATHS) {
+        w.truncated = true;
+        return;
+      }
+      const many = ts.length > 1;
+      const hk: Hop = many ? { ...hop, encap: hop.encap.slice(), links: [], l2: [], virtual: hop.virtual.slice(), networks: hop.networks.slice(), relations: hop.relations.slice(), notes: hop.notes.slice() } : hop;
+      const wk: HopWhy = many ? { ...why, selected: why.selected.slice(), alternatives: why.alternatives.slice(), policy: why.policy.slice() } : why;
+      hk.why = wk;
+      for (const l of t.layers) hk.encap.push(l);
+      for (const r of t.layers) if (r.relation && hk.relations.indexOf(r.relation) < 0) hk.relations.push(r.relation);
+      hk.links = t.links;
+      hk.l2 = t.devices;
+      for (const n of t.networks) if (hk.networks.indexOf(n) < 0) hk.networks.push(n);
+      for (const r of t.relations) if (hk.relations.indexOf(r) < 0) hk.relations.push(r);
+      if (t.underlay) hk.underlay = t.underlay;
+      if (t.note) hk.notes.push(t.note);
+      if (many) hk.notes.push(`the outer packet has ${ts.length} equal-cost alternatives; this is alternative ${k + 1}`);
+      const alt = many ? ` (alternative ${k + 1} of ${ts.length})` : '';
+      wk.tunnel = `${h.iface} encapsulates it (${encapText(t.layers)}) to ${nx.device}: ${t.underlay && !t.stop ? `the outer packet is traced from ${at.device} to ${nx.device}${alt}` : t.stop ? t.stop.detail + alt : t.note || 'the underlay is not in the model'}`;
+      if (t.stop) {
+        wk.stop = t.stop.detail;
+        out.push({ hops: before.concat(hk), end: { kind: 'stopped', device: at.device, reason: t.stop.reason, detail: t.stop.detail } });
+        return;
+      }
+      for (const p of walk(w, { device: nx.device, vrf: nx.vrf, ingress: nx.iface, inAddr: nx.address }, before.concat(hk), seen)) {
+        if (out.length >= MAX_PATHS) {
+          w.truncated = true;
+          break;
+        }
+        out.push(p);
+      }
+    });
+    return out;
   } else {
     const vlan = outNet ? vlanOfNet(model, outNet.net) : undefined;
     w.und = [];
@@ -1269,6 +1294,25 @@ export function encapStack(model: Model, r: Relation): EncapLayer[] {
   return out;
 }
 
+/** UDP-carried tunnels and overlays whose data goes in UDP to the protocol's own port (their control and data share it). */
+const UDP_DATA = ['wireguard', 'openvpn', 'l2tp', 'gtp', 'vxlan', 'geneve'];
+
+/**
+ * The outer header of a tunnel or overlay protocol's data (not its control's, where they differ), as the simulation sends it
+ * and a policy on the way decides it: UDP to the protocol's port (WireGuard, OpenVPN, L2TP, GTP-U, VXLAN, Geneve), an IP
+ * protocol without ports (GRE and DMVPN's mGRE 47, IP-in-IP 4, IPsec's ESP 50 — no NAT traversal); null where the model
+ * does not say (MPLS, TLS over TCP, SD-WAN …).
+ */
+export function tunnelOuter(model: Model, protocol: string): { proto: 'udp'; port: number } | { proto: 'other'; num: number } | null {
+  const id = protocolBase(model.protocols, protocol);
+  if (id === 'ipsec') return { proto: 'other', num: 50 };
+  if (id === 'gre' || id === 'dmvpn') return { proto: 'other', num: 47 };
+  if (id === 'ipip') return { proto: 'other', num: 4 };
+  if (UDP_DATA.indexOf(id) < 0) return null;
+  const t = relationTransport(model, protocol);
+  return t && t.proto === 'udp' && t.ports.length ? { proto: 'udp', port: t.ports[0] } : null;
+}
+
 /** The cables, networks and relations a relation is carried over, down to the cables. */
 export function declaredUnderlay(model: Model, r: Relation): { links: string[]; networks: string[]; relations: string[] } {
   const links: string[] = [];
@@ -1298,7 +1342,7 @@ export function declaredUnderlay(model: Model, r: Relation): { links: string[]; 
  * way of the outer packet (traced from the tunnel's source to its
  * destination; else the relation's `over:` chain).
  */
-function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): TunnelStep {
+function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): TunnelStep[] {
   const { model } = w;
   const rel = tunnelRelation(model, device, t.id);
   const layers = rel ? encapStack(model, rel) : [{ label: `tunnel ${t.id}` }];
@@ -1307,7 +1351,7 @@ function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): T
     const down = layers.find((l) => l.relation && !(w.ctx.relUp as (id: string) => boolean)(l.relation));
     if (down) {
       res.stop = { reason: 'down', detail: `the tunnel ${down.relation} is down` };
-      return res;
+      return [res];
     }
   }
   // the outer packet, traced
@@ -1324,32 +1368,43 @@ function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): T
       inside: w.inside.concat(device + ':' + t.id),
       truncated: false,
     };
-    // (the outer packet's own source: the tunnel's source address — a policy on the way decides it by it, as the simulation)
-    const src = t.source && t.source.iface !== undefined ? pickAddress(model, device, t.source.iface, [outer.dest.version], undefined, w.ctx) : null;
+    // (the outer packet's own source: the tunnel's source address — its interface's, or the address written — a policy on
+    // the way decides it by it, as the simulation)
+    const src = outer.src || (t.source && t.source.iface !== undefined ? (pickAddress(model, device, t.source.iface, [outer.dest.version], undefined, w.ctx) || { addr: undefined }).addr : undefined);
     if (src) {
-      inner.src = src.addr;
-      inner.srcText = formatAddr(src.addr);
+      inner.src = src;
+      inner.srcText = formatAddr(src);
     }
     inner.srcDev = device;
     inner.outer = true;
+    // (the outer packet's own transport, as the simulation sends it: the outermost layer's — UDP to its port for WireGuard,
+    // VXLAN …, so a rule permitting that port decides it; an IP protocol without ports otherwise, 'other' to a policy)
+    const top = layers[layers.length - 1];
+    const topRel = top && top.relation ? model.index.relations.get(top.relation) : undefined;
+    const o = topRel ? tunnelOuter(model, topRel.protocol) : null;
+    if (o && o.proto === 'udp') inner.svc = { proto: 'udp', port: o.port };
     const paths = walk(inner, { device, vrf: outer.vrf }, [], new Set());
-    const p = paths[0];
-    // a policy on the way denies the outer packet: the tunnel carries nothing (never "not in the model" instead)
-    if (p && p.end.kind === 'stopped' && p.end.reason === 'denied') {
-      res.underlay = p;
-      res.stop = { reason: 'denied', detail: `the tunnel's outer packet (${inner.srcText || '?'} → ${formatAddr(outer.dest)}) is denied: ${p.end.detail}` };
-      return res;
-    }
-    if (p && p.end.kind === 'reached' && p.end.device === farDevice) {
-      res.underlay = p;
-      for (const h of p.hops) {
-        for (const l of h.links) if (res.links.indexOf(l) < 0) res.links.push(l);
-        for (const d of h.l2.concat(h.device === device ? [] : [h.device])) if (d !== farDevice && res.devices.indexOf(d) < 0) res.devices.push(d);
-        for (const n of h.networks) if (res.networks.indexOf(n) < 0) res.networks.push(n);
-        for (const r of h.relations) if (res.relations.indexOf(r) < 0) res.relations.push(r);
+    // (more equal-cost underlay paths than evaluated: their outcome is not known — said as the trace's own)
+    if (inner.truncated) w.truncated = true;
+    // every alternative of the outer packet that reaches the far end, or that a policy on the way denies: one step each
+    // (a denied one carries nothing: never "not in the model" instead)
+    const variants: TunnelStep[] = [];
+    for (const p of paths) {
+      const v: TunnelStep = { layers, links: [], devices: [], networks: [], relations: [], underlay: p };
+      if (p.end.kind === 'stopped' && p.end.reason === 'denied') {
+        v.stop = { reason: 'denied', detail: `the tunnel's outer packet (${inner.srcText || '?'} → ${formatAddr(outer.dest)}) is denied: ${p.end.detail}` };
+        variants.push(v);
+      } else if (p.end.kind === 'reached' && p.end.device === farDevice) {
+        for (const h of p.hops) {
+          for (const l of h.links) if (v.links.indexOf(l) < 0) v.links.push(l);
+          for (const d of h.l2.concat(h.device === device ? [] : [h.device])) if (d !== farDevice && v.devices.indexOf(d) < 0) v.devices.push(d);
+          for (const n of h.networks) if (v.networks.indexOf(n) < 0) v.networks.push(n);
+          for (const r of h.relations) if (v.relations.indexOf(r) < 0) v.relations.push(r);
+        }
+        variants.push(v);
       }
-      return res;
     }
+    if (variants.length) return variants;
   }
   // else what the relation is written to run over
   if (rel) {
@@ -1366,25 +1421,39 @@ function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): T
       const downLink = w.ctx.linkUp ? u.links.find((id) => !(w.ctx.linkUp as (x: string) => boolean)(id)) : undefined;
       if (downLink) res.stop = { reason: 'down', detail: `the cable ${downLink} under ${rel.id} is down` };
       else res.note = `the outer packet is not routed in the model; the underlay is the over: chain of ${rel.id}`;
-      return res;
+      return [res];
     }
   }
   res.note = `the underlay of ${t.id} is not in the model`;
-  return res;
+  return [res];
 }
 
-/** The tunnel's outer source VRF and destination address (none when the destination has no address). */
-function outerAddresses(model: Model, device: string, t: Interface): { vrf: string; dest: IpAddr } | null {
-  const vrf = t.source && t.source.iface !== undefined ? ifaceVrf(model, device, t.source.iface) : '';
+/**
+ * The tunnel's outer source VRF, source address when written as one, and destination address (none when the destination has
+ * no address) — as the simulation's tunnel ends: a destination naming a device alone is the far end's tunnel source.
+ */
+function outerAddresses(model: Model, device: string, t: Interface): { vrf: string; dest: IpAddr; src?: IpAddr } | null {
+  const srcAddr = t.source && t.source.address !== undefined ? parseAddress(t.source.address) || undefined : undefined;
+  const srcIface = t.source && t.source.iface !== undefined ? t.source.iface : srcAddr ? (connectedIn(model, device).find((c) => compareAddr(c.addr, srcAddr) === 0) || { iface: undefined }).iface : undefined;
+  const vrf = srcIface !== undefined ? ifaceVrf(model, device, srcIface) : '';
   const d = t.destination;
   if (!d) return null;
-  if (d.address !== undefined) {
-    const a = parseAddress(d.address);
-    return a ? { vrf, dest: a } : null;
-  }
+  const done = (dest: IpAddr | null): { vrf: string; dest: IpAddr; src?: IpAddr } | null => (dest ? { vrf, dest, ...(srcAddr && srcAddr.version === dest.version ? { src: srcAddr } : {}) } : null);
+  if (d.address !== undefined) return done(parseAddress(d.address));
   if (d.device !== undefined) {
-    const c = pickAddress(model, d.device, d.iface, []);
-    return c ? { vrf, dest: c.addr } : null;
+    if (d.iface !== undefined) {
+      const c = pickAddress(model, d.device, d.iface, srcAddr ? [srcAddr.version] : []);
+      return done(c ? c.addr : null);
+    }
+    // the far end's tunnel source (the interface its tunnel is sourced from)
+    const far = model.index.devices.get(d.device);
+    for (const fi of far ? deviceInterfaces(far) : []) {
+      if (fi.type !== 'tunnel' || !fi.source || fi.source.iface === undefined) continue;
+      const c = pickAddress(model, d.device, fi.source.iface, srcAddr ? [srcAddr.version] : []);
+      if (c) return done(c.addr);
+    }
+    const c = pickAddress(model, d.device, undefined, []);
+    return done(c ? c.addr : null);
   }
   return null;
 }

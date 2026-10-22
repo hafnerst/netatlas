@@ -81,6 +81,8 @@ export interface Quote {
   dport?: number;
   /** a quoted ICMP echo's identifier */
   echoId?: number;
+  /** the quoted packet's IP protocol number (IPv6: next header); none: the packet had no transport header */
+  num?: number;
   /** the quoted packet's id, for the sender to match it */
   pkt: number;
   /** the quoted packet's flow (the transport matches its connection) */
