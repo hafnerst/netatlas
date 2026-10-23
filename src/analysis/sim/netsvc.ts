@@ -186,6 +186,14 @@ interface DnsData {
   cname?: string;
 }
 
+/** One DNS query of a resolution and what came of it: lost (its timeout), refused (port unreachable), answered or an error answer. */
+export interface DnsAttempt {
+  server: string;
+  attempt: number;
+  outcome: 'lost' | 'refused' | 'answered' | 'error';
+  at: number;
+}
+
 interface Query {
   dev: string;
   name: string;
@@ -195,9 +203,11 @@ interface Query {
   attempt: number;
   id: number;
   done: boolean;
-  cb: (r: { addr?: IpAddr; error?: string }) => void;
+  cb: (r: { addr?: IpAddr; error?: string; attempts?: DnsAttempt[] }) => void;
   /** a server forwarding it: the client's query it answers */
   forFor?: { dev: string; q: Pkt; l3: L3Iface };
+  /** what each query to a server came to, in order (a Send test's diagnosis: a lost query before the answer) */
+  attempts: DnsAttempt[];
 }
 
 export class NetServicesSim {
@@ -621,7 +631,7 @@ export class NetServicesSim {
    * Resolve a name for a host: from its cache, else by asking its DNS
    * servers (each twice, 5 s apart); `cb` gets the address or why not.
    */
-  resolve(dev: string, name: string, qtype: 'A' | 'AAAA', cb: (r: { addr?: IpAddr; error?: string }) => void): void {
+  resolve(dev: string, name: string, qtype: 'A' | 'AAAA', cb: (r: { addr?: IpAddr; error?: string; attempts?: DnsAttempt[] }) => void): void {
     const key = dnsNameKey(name);
     const c = this.cache.get(dev);
     const hit = c ? c.get(key + '|' + qtype) : undefined;
@@ -635,7 +645,7 @@ export class NetServicesSim {
       cb({ error: `${dev} has no DNS server (none from a DHCP lease, none configured in dns_servers)` });
       return;
     }
-    const q: Query = { dev, name: key, qtype, servers, si: 0, attempt: 0, id: ++this.qid, done: false, cb };
+    const q: Query = { dev, name: key, qtype, servers, si: 0, attempt: 0, id: ++this.qid, done: false, cb, attempts: [] };
     this.queries.set(q.id, q);
     this.ask(q);
   }
@@ -645,7 +655,7 @@ export class NetServicesSim {
     if (q.si >= q.servers.length) {
       q.done = true;
       this.queries.delete(q.id);
-      q.cb({ error: `DNS: no answer for ${q.name} from ${q.servers.map(formatAddr).join(', ')} (${DNS_ATTEMPTS} × ${durationText(DNS_TIMEOUT)} each; timed out)` });
+      q.cb({ error: `DNS: no answer for ${q.name} from ${q.servers.map(formatAddr).join(', ')} (${DNS_ATTEMPTS} × ${durationText(DNS_TIMEOUT)} each; timed out)`, attempts: q.attempts });
       return;
     }
     const srv = q.servers[q.si];
@@ -669,8 +679,10 @@ export class NetServicesSim {
     const at = q.attempt;
     // (a retry of a Send test's query is the test's too)
     const test = this.P.e.testCtx;
+    const si = q.si;
     this.P.e.after(DNS_TIMEOUT, () => {
-      if (q.done || q.attempt !== at) return;
+      if (q.done || q.attempt !== at || q.si !== si) return;
+      q.attempts.push({ server: formatAddr(srv), attempt: at, outcome: 'lost', at: this.P.e.now });
       if (q.attempt >= DNS_ATTEMPTS) {
         q.si++;
         q.attempt = 0;
@@ -688,6 +700,7 @@ export class NetServicesSim {
     const query = Array.from(this.queries.values()).find((x) => !x.done && x.dev === dev && !x.forFor && 49152 + (x.id % 16000) === q.sport && x.si < x.servers.length && formatAddr(x.servers[x.si]) === q.dst);
     if (!query) return false;
     this.P.e.note('note', 'dns', dev, this.P.e.ownerOf(query.servers[query.si]) || '', 'Query refused', '', `${dev}: ${what} about its DNS query to ${q.dst}: ${q.dst} runs no DNS — ${query.si + 1 < query.servers.length ? 'it asks its next DNS server, ' + formatAddr(query.servers[query.si + 1]) : 'it has no other DNS server'}`);
+    query.attempts.push({ server: q.dst, attempt: query.attempt, outcome: 'refused', at: this.P.e.now });
     query.si++;
     query.attempt = 0;
     this.ask(query);
@@ -714,13 +727,14 @@ export class NetServicesSim {
         this.reply(q.forFor.dev, q.forFor.l3, q.forFor.q, d.rcode || 'SERVFAIL', d.answer || [], d.ttl || 0, d.cname);
         return;
       }
+      q.attempts.push({ server: formatAddr(pkt.src), attempt: q.attempt, outcome: d.rcode === 'NOERROR' && d.answer && d.answer.length ? 'answered' : 'error', at: this.P.e.now });
       if (d.rcode === 'NOERROR' && d.answer && d.answer.length) {
         const a = parseAddress(d.answer[0]) as IpAddr;
         const c = this.cache.get(dev) || new Map();
         c.set(q.name + '|' + q.qtype, { addr: a, expires: this.P.e.now + (d.ttl || 0), server: formatAddr(pkt.src), type: q.qtype });
         this.cache.set(dev, c);
-        q.cb({ addr: a });
-      } else q.cb({ error: d.rcode === 'NXDOMAIN' ? `DNS: ${q.name} does not exist (NXDOMAIN from ${formatAddr(pkt.src)})` : `DNS: ${formatAddr(pkt.src)} could not resolve ${q.name} (${d.rcode || 'SERVFAIL'})` });
+        q.cb({ addr: a, attempts: q.attempts });
+      } else q.cb({ attempts: q.attempts, error: d.rcode === 'NXDOMAIN' ? `DNS: ${q.name} does not exist (NXDOMAIN from ${formatAddr(pkt.src)})` : `DNS: ${formatAddr(pkt.src)} could not resolve ${q.name} (${d.rcode || 'SERVFAIL'})` });
       return;
     }
     if (msg.type !== 'Query') return;
@@ -744,7 +758,7 @@ export class NetServicesSim {
       if (fw.length) {
         this.P.e.note('note', 'dns', dev, '', 'forward', '', `${dev} has no zone for ${d.name}: it asks its forwarder ${fw.map(formatAddr).join(', ')}`);
         // (none of them answering: the client gets SERVFAIL, as from a forwarding server whose forwarders time out)
-        const q: Query = { dev, name: d.name, qtype: d.qtype, servers: fw, si: 0, attempt: 0, id: ++this.qid, done: false, cb: (r) => {
+        const q: Query = { dev, name: d.name, qtype: d.qtype, servers: fw, si: 0, attempt: 0, id: ++this.qid, done: false, attempts: [], cb: (r) => {
           if (r.error) this.reply(dev, l3, pkt, 'SERVFAIL', [], 0, undefined, `its forwarders gave no answer: ${r.error.replace(/^DNS: /, '')}`);
         }, forFor: { dev, q: pkt, l3 } };
         this.queries.set(q.id, q);

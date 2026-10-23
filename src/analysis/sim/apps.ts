@@ -301,7 +301,7 @@ export class AppSim {
       timeout: a.timeout !== undefined ? { value: a.timeout } : undefined,
       onDone: (x) => {
         // a request without an answer in time: again, up to its retries (an error or a refusal is no reason to retry)
-        if (x.ok || !p.answered || !/timed out/.test(x.result) || retry >= (a.retries || 0) || run.stopped) return;
+        if (x.ok || !p.answered || !(x.outcome && x.outcome.kind === 'timeout') || retry >= (a.retries || 0) || run.stopped) return;
         run.retried++;
         this.e.withTest(run.how !== 'start' ? x.id : null, () => this.e.note('message', p.transport, run.dev, '', 'retry', '', `${name}: message ${n} got no answer within its timeout: retry ${retry + 1} of ${a.retries}`));
         this.message(run, p, n, retry + 1);
@@ -416,7 +416,7 @@ export function appOutcome(r: AppRun): { ok: number; failed: number; pending: nu
   for (const { t } of last.values()) {
     if (!t) failed++;
     else if (!t.done) pending++;
-    else if (/cancelled \(Stop\)/.test(t.result)) cancelled++;
+    else if (t.outcome && t.outcome.kind === 'cancelled') cancelled++;
     else if (t.ok) ok++;
     else failed++;
   }

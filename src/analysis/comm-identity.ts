@@ -394,29 +394,29 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
   // the run's own record: where a message was dropped and why, when it was sent
   const bad = done.filter((t) => !t.ok);
   for (const t of bad.slice(0, 1)) {
+    // (the test's structured outcome and the drop the engine recorded when it happened: never the result's words)
     const sent = `t = ${(t.started / 1000).toFixed(1)} s`;
-    const drop = /dropped at ([^:]+): ([^(;]+)/.exec(t.result);
+    const o = t.outcome;
+    const d = o && o.drop ? o.drop : null;
+    const cause = d && d.cause ? d.cause.kind : '';
+    const why = d ? d.text.replace(/^dropped at [^:]+: /, '').replace(/ \([^()]*\)$/, '') : '';
     const nowOk = now.verdict === 'satisfied';
-    const downAt = /^not sent: (\S+) is down/.exec(t.result);
-    const unreach = /^Net Unreachable from \S+ \(([^)]+)\)/.exec(t.result);
-    if (unreach) {
-      out.lines.push(`Route not there when sent (${sent}): ${unreach[1]} had no route to ${formatAddr(t.dst)} and answered Net Unreachable; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency that was not up yet)` : ''}`);
-    } else if (downAt) {
-      out.lines.push(`Interface down when sent (${sent}): ${downAt[1]} was not up (a link coming up, shut, or failed); the configured model routes from it${nowOk ? `, and the simulation’s state at ${at} does too` : ''}`);
-    } else if (drop && /no route|no default route|unresolved|no ARP|no neighbo/i.test(drop[2])) {
-      out.lines.push(`Route not there when sent (${sent}): ${drop[1].trim()} had ${drop[2].trim()}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency or a redundancy group that was not up yet)` : ''}`);
-    } else if (/larger than the MTU|too big for the path|Packet Too Big|Frag Needed/i.test(t.result)) {
+    if (o && o.kind === 'unreachable' && (o.icmp === 'Net Unreachable' || o.icmp === 'No Route')) {
+      out.lines.push(`Route not there when sent (${sent}): ${o.by || 'a router'} had no route to ${formatAddr(t.dst)} and answered ${o.icmp}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency that was not up yet)` : ''}`);
+    } else if (o && o.kind === 'not-sent' && o.down) {
+      out.lines.push(`Interface down when sent (${sent}): ${o.down} was not up (a link coming up, shut, or failed); the configured model routes from it${nowOk ? `, and the simulation’s state at ${at} does too` : ''}`);
+    } else if (d && (cause === 'no-route' || cause === 'blackhole' || cause === 'neighbor')) {
+      out.lines.push(`Route not there when sent (${sent}): ${d.device} had ${why}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency or a redundancy group that was not up yet)` : ''}`);
+    } else if ((o && o.kind === 'too-big') || cause === 'too-big') {
       out.lines.push(`Packet too big when sent (${sent}): ${t.result}. The static path MTU is in the Path MTU section: a packet larger than it, with Don’t fragment (or IPv6), is dropped with Fragmentation Needed / Packet Too Big, and the sender learns the path MTU (PMTUD)`);
-    } else if (drop && /off|down|booting/i.test(drop[2])) {
-      out.lines.push(`Runtime endpoint unavailable when sent (${sent}): ${drop[1].trim()}: ${drop[2].trim()}`);
-    } else if (drop && /member|group|snoop/i.test(drop[2])) {
-      out.lines.push(`Membership not learned when sent (${sent}): ${drop[1].trim()}: ${drop[2].trim()}`);
-    } else if (drop && /polic|denied|blocked|not permitted/i.test(drop[2])) {
-      out.lines.push(`Policy at runtime (${sent}): ${drop[1].trim()}: ${drop[2].trim()}`);
-    } else if (/refused|port unreachable|reset/i.test(t.result)) {
+    } else if (d && (cause === 'iface-down' || cause === 'cable' || cause === 'tunnel-down' || cause === 'relation-failed')) {
+      out.lines.push(`Runtime endpoint unavailable when sent (${sent}): ${d.device}: ${why}`);
+    } else if (d && cause === 'policy') {
+      out.lines.push(`Policy at runtime (${sent}): ${d.device}: ${why}`);
+    } else if (o && (o.kind === 'refused' || (o.kind === 'unreachable' && o.icmp === 'Port Unreachable') || o.kind === 'lost')) {
       const lis = layer(check, 'listener');
       out.lines.push(`The destination answered “${t.result}” (${sent}). ${lis && lis.verdict === 'satisfied' ? 'Static analysis found a configured listener; whether the application accepts the connection is runtime behaviour it does not evaluate.' : 'Static analysis did not establish a listener there.'}`);
-    } else if (!out.lines.length && /no answer|timed? ?out/i.test(t.result)) {
+    } else if (!out.lines.length && o && o.kind === 'timeout') {
       out.lines.push(`No answer (${sent}): ${t.result}. Static analysis did not evaluate that behavior: the answer and its way back are runtime behaviour.`);
     }
   }
