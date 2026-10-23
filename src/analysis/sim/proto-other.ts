@@ -871,7 +871,9 @@ function tunnelSend(P: ProtocolSim, s: Sess, type: string, detail: string, data:
   const m = P.msg(s, type, `${s.dev} (${formatAddr(e.src)}) → ${s.peer} (${formatAddr(e.dst)}), ${hdr.proto === 'udp' ? 'UDP ' + hdr.dport : 'IP ' + hdr.num}; ${detail}`, data);
   P.e.note('message', s.protocol, s.dev, s.peer, type, '', m.detail);
   P.lane(s.rel, s.dev, s.peer, m, P.e.estimate(s.dev, e.dst));
-  let pkt: Pkt = P.e.newPacket(e.src, e.dst, '', m, [s.rel.id]);
+  // (in the VRF of the tunnel's source interface, as its data goes)
+  const vrf = P.e.tunnelVrf(s.dev, s.local.l3.id);
+  let pkt: Pkt = P.e.newPacket(e.src, e.dst, vrf, m, [s.rel.id]);
   // (its header — and each layer carrying it its own: ESP 50 …; a policy keeps them apart from another protocol's)
   pkt.l4 = hdr;
   for (const layer of encapStack(P.m, s.rel).slice(1)) {
@@ -882,7 +884,7 @@ function tunnelSend(P: ProtocolSim, s: Sess, type: string, detail: string, data:
       return true;
     }
     const outer: Msg = { ...m, data: { ...(m.data || {}), outer: layer.relation ? P.e.relProtocol(layer.relation) : '' } };
-    pkt = { ...P.e.newPacket(e.src, e.dst, '', outer, pkt.rides.concat(layer.relation ? [layer.relation] : [])), inner: pkt, encap: layer.label };
+    pkt = { ...P.e.newPacket(e.src, e.dst, vrf, outer, pkt.rides.concat(layer.relation ? [layer.relation] : [])), inner: pkt, encap: layer.label, encapProto: layer.relation ? P.e.relProtocol(layer.relation) : 'gre' };
     pkt.l4 = (layer.relation && P.outerL4(layer.relation, s.dev)) || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
   }
   P.e.send(s.dev, pkt);

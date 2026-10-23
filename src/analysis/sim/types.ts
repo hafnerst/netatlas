@@ -108,6 +108,8 @@ export interface Pkt {
   /** an encapsulated packet (GRE, ESP …) and the header's name */
   inner?: Pkt;
   encap?: string;
+  /** the encapsulation's format (encap.ts: its base protocol, "gre", "ipsec"): what it adds to the inner packet's length */
+  encapProto?: string;
   /** for equal-cost path selection: the same flow takes the same path */
   flow: string;
   /** the relations it rides (its session, and the tunnels it is inside), for failures of a relation */

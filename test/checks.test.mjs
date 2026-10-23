@@ -154,11 +154,13 @@ test('tunnel-mtu: the overhead of every encapsulation of the stack is added, and
   assert.deepEqual(found(base, 'tunnel-mtu'), []);
   const f = found(base.replace('{id: tun0, type: tunnel, ip: 172.16.0.1/30, mtu: 1400', '{id: tun0, type: tunnel, ip: 172.16.0.1/30, mtu: 1480'), 'tunnel-mtu');
   assert.equal(f.length, 1);
-  assert.match(f[0].message, /tunnel r1:tun0: MTU 1480 plus 24 bytes of encapsulation is 1504, more than the MTU 1500 of its underlay e1 \(assumed overhead: GRE: 20 IP \+ 4 GRE\); the largest MTU that fits is 1476/);
+  assert.match(f[0].message, /tunnel r1:tun0: MTU 1480 plus 24 bytes of encapsulation is 1504, more than the MTU 1500 of its underlay e1 \(encapsulation: GRE: 20 IPv4 \+ 4 GRE\); the largest MTU that fits is 1476/);
   // GRE over IPsec: both overheads count
   const stacked = base.replace('{id: gre-13, protocol: gre, endpoints: ["r1:tun0", "r3:tun0"], over: l13}', '{id: ipsec-13, protocol: ipsec, endpoints: ["r1:e1", "r3:e0"], over: l13}\n  - {id: gre-13, protocol: gre, endpoints: ["r1:tun0", "r3:tun0"], over: ipsec-13}');
-  assert.deepEqual(found(stacked, 'tunnel-mtu').length, 0, '1400 + 24 + 73 = 1497 fits in 1500');
-  assert.match(found(stacked.replace('mtu: 1400, source: e1', 'mtu: 1450, source: e1'), 'tunnel-mtu')[0].message, /plus 97 bytes .*GRE: 20 IP \+ 4 GRE; IPsec ESP tunnel mode/);
+  // by hand (RFC 4303 §2, AES-CBC + HMAC-SHA1-96): 1400 → GRE 1424 → ESP 20 + 24 + ceil16(1426) = 1440 + 12 = 1496, fits 1500
+  assert.deepEqual(found(stacked, 'tunnel-mtu').length, 0, '1400 in GRE in ESP is 1496');
+  // 1450 → GRE 1474 → ESP 20 + 24 + ceil16(1476) = 1488 + 12 = 1544: 94 bytes more; the largest that fits is 1414
+  assert.match(found(stacked.replace('mtu: 1400, source: e1', 'mtu: 1450, source: e1'), 'tunnel-mtu')[0].message, /plus 94 bytes .* is 1544, .*GRE: 20 IPv4 \+ 4 GRE; IPsec ESP: 20 IPv4 \+ 24 IPsec ESP .*the largest MTU that fits is 1414/);
   // an unknown encapsulation or an underlay without an MTU: nothing is assumed
   assert.deepEqual(found(base.replace('protocol: gre, endpoints: ["r1:tun0"', 'protocol: mytunnel, category: tunnel, endpoints: ["r1:tun0"').replace('mtu: 1400, source: e1', 'mtu: 1499, source: e1'), 'tunnel-mtu'), []);
   assert.deepEqual(found(base.replace('{id: e1, ip: 10.0.13.1/30, mtu: 1500}', '{id: e1, ip: 10.0.13.1/30}').replace('mtu: 1400, source: e1', 'mtu: 1499, source: e1'), 'tunnel-mtu'), []);

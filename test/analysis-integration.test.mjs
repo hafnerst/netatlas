@@ -760,11 +760,13 @@ test('path MTU: nested encapsulation (GRE over IPsec) is the underlay less the o
   const c = C.checkCommunication(wan, { from: 'muc-rtr:lan0', to: 'hq-core1' });
   const r = MT.pathMtu(wan, c);
   const p = r.forward[0];
-  assert.deepEqual(p.overheads.map((o) => o.bytes), [24, 73], 'GRE, then IPsec ESP (worst case)');
+  // worked by hand (RFC 4303 §2, AES-CBC + HMAC-SHA1-96): ESP around a GRE packet of n bytes is 20 + 24 + ceil16(n + 2) + 12;
+  // the largest n within 1500 is 1438 (1438 + 2 = 1440 = 90 × 16), ESP taking 62; GRE then takes 20 + 4 of it: 1414
+  assert.deepEqual(p.overheads.map((o) => o.bytes), [24, 62], 'GRE, then IPsec ESP at this limit');
   const tun = p.constraints.find((x) => x.kind === 'tunnel');
-  assert.equal(tun.mtu, 1500 - 97);
-  assert.match(tun.what, /^gre-muc over ipsec-muc: underlay 1500 \(hq-rtr1:ge-0\/0\/0\) − 97 bytes of encapsulation$/);
-  assert.equal(r.mtu, 1403);
+  assert.equal(tun.mtu, 1414);
+  assert.match(tun.what, /^gre-muc over ipsec-muc: underlay 1500 \(hq-rtr1:ge-0\/0\/0\) − 86 bytes of encapsulation$/);
+  assert.equal(r.mtu, 1414);
   assert.equal(p.limiting.kind, 'tunnel');
 });
 

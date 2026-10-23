@@ -705,6 +705,11 @@ export class Transport {
     return v.mtu;
   }
 
+  /** The path MTU a device learned towards a destination (null: none, or it is no longer valid). */
+  learnedMtu(dev: string, vrf: string, dst: IpAddr): number | null {
+    return this.pathMtu(dev, vrf, dst);
+  }
+
   /** The interface a device's route to a destination leaves by now ('' none). */
   private egressOf(dev: string, vrf: string, dst: IpAddr): string {
     const d = lookup(this.P.m, dev, vrf, dst, this.e.ctx(dev));
@@ -1362,7 +1367,8 @@ export class Transport {
   /** The MSS this end announces in its SYN (RFC 9293 §3.7.1): its interface's MTU towards the peer, less the IP and TCP headers. */
   private ownMss(c: Conn): number {
     const l3 = this.sourceFor(c.dev, c.remote, undefined, c.vrf);
-    const own = l3 && l3.l3 ? Number(this.e.mtu(c.dev, l3.l3).value) : 1500;
+    // (out of a tunnel: what the tunnel takes, its encapsulation deducted — the MSS a device announces over GRE, RFC 4459 §3.2)
+    const own = l3 && l3.l3 ? this.e.egressMtu(c.dev, l3.l3) : 1500;
     return Math.max(8, own - (c.remote.version === 4 ? 40 : 60));
   }
 

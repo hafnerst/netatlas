@@ -88,6 +88,7 @@ import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '.
 import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
+import { ASSUMED_ENCAP, EncapDef, encapDef, ipHeaderBytes, layerText, maxInnerStack, outerLength } from '../encap';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, l2Domain, otherEnd, portKey, portRefOf, portVlansText, spanningTree, linkPort } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef, parsePorts, portsMatch } from './params';
@@ -185,6 +186,8 @@ export interface Protocols {
   filter?(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface, via?: IpAddr | null): boolean;
   /** a packet a device sent itself could not go (no route, no ARP answer, too big): the sender's own error, no ICMP on the wire */
   localError?(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void;
+  /** the path MTU a device learned towards a destination in a VRF (PMTUD), null: none */
+  pathMtu?(dev: string, vrf: string, dst: IpAddr): number | null;
   /** the table sweep (once a second): the transport's timers and the firewalls' sessions */
   sweep?(): void;
   /** a switch forwards a frame to a group MAC: the ports that get it and why (snooping); null: no multicast IP, all ports */
@@ -2061,7 +2064,7 @@ export class Engine {
     let p = frame.ip;
     let inner: Pkt | undefined;
     while (p) {
-      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap, options: p.routerAlert ? (p.dst.version === 4 ? 'Router Alert (option 20)' : 'Hop-by-Hop: Router Alert (MLD)') : undefined });
+      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap && p.inner ? `${p.encap} (${layerText(encapOf(p), p.dst.version)}: ${ipLen(p) - ipLen(p.inner)} bytes around the inner ${ipLen(p.inner)})` : p.encap, options: p.routerAlert ? (p.dst.version === 4 ? 'Router Alert (option 20)' : 'Hop-by-Hop: Router Alert (MLD)') : undefined });
       inner = p;
       p = p.inner;
     }
@@ -2752,7 +2755,8 @@ export class Engine {
       }
     }
     if (isMulticastIp(pkt.dst) || own || bcast) {
-      if (pkt.encap && pkt.inner) {
+      // (a fragment of an outer packet is reassembled first: its inner packet is decapsulated once, whole)
+      if (pkt.encap && pkt.inner && !pkt.frag) {
         this.decapsulate(dev, l3, pkt);
         return;
       }
@@ -2826,7 +2830,8 @@ export class Engine {
     this.frags.delete(key);
     const whole: Pkt = { ...pkt, frag: undefined, len: pkt.frag.whole };
     this.note('table', pkt.msg.protocol, dev, '', 'reassembled', '', `${dev} reassembled ${pkt.msg.label} from its ${b.got.size} fragments (${pkt.frag.whole} bytes)`);
-    if (this.protocols) this.protocols.ip(dev, b.l3, whole);
+    if (whole.encap && whole.inner) this.decapsulate(dev, b.l3, whole);
+    else if (this.protocols) this.protocols.ip(dev, b.l3, whole);
   }
 
   /** The tunnels a packet's outer header ends at: the inner packet continues as if it came in on the tunnel interface. */
@@ -3006,7 +3011,7 @@ export class Engine {
     }
     if (out.kind === 'tunnel') {
       if (came) this.routeNote(dev, pkt, came, out, '', hop.gateway);
-      this.intoTunnel(dev, out, pkt);
+      this.intoTunnel(dev, out, pkt, came ? came.l3 : null);
       return;
     }
     // a directed broadcast (to a subnet of the egress interface): out as a broadcast only where the router forwards them
@@ -3194,8 +3199,62 @@ export class Engine {
     return out;
   }
 
+  /**
+   * The largest inner packet a tunnel takes now (bytes), and why: its
+   * interface's MTU when written, else what its underlay's egress MTU
+   * leaves room for; lower when its head learned a smaller path MTU towards
+   * the tunnel's destination (PMTUD on the outer packets) — each through
+   * the layers' formats (encap.ts), as the static path MTU computes it.
+   */
+  tunnelLimit(dev: string, tun: L3Iface, layers: Array<{ def: EncapDef; outer: 4 | 6 }>, end: { src: IpAddr; dst: IpAddr }, vrf: string): { mtu: number; why: string } | null {
+    const ti = this.model.index.interfaces.get(dev + ':' + tun.id);
+    const sd = this.net.devices.get(dev) as SimDevice;
+    let under: { mtu: number; where: string } | null = null;
+    const d = lookup(this.model, dev, vrf, end.dst, this.ctx(dev));
+    const hop = d.kind === 'forward' && d.hops.length ? sd.l3.get(d.hops[0].iface) : undefined;
+    const src = ti && ti.source && ti.source.iface ? sd.l3.get(ti.source.iface) : undefined;
+    const egress = hop && hop.kind !== 'tunnel' ? hop : src;
+    if (egress) under = { mtu: Number(this.mtu(dev, egress).value), where: `${dev}:${egress.id}` };
+    let out: { mtu: number; why: string } | null = null;
+    if (ti && ti.mtu !== undefined) out = { mtu: ti.mtu, why: `the MTU of ${dev}:${tun.id}, ${ti.mtu}` };
+    else if (under) {
+      const fit = maxInnerStack(layers, under.mtu);
+      if (fit !== null) out = { mtu: fit, why: `what the underlay ${under.where} (MTU ${under.mtu}) leaves room for once encapsulated (${layers.map((l) => layerText(l.def, l.outer)).join(' in ')})` };
+    }
+    const learned = this.protocols && this.protocols.pathMtu ? this.protocols.pathMtu(dev, vrf, end.dst) : null;
+    if (learned) {
+      const fit = maxInnerStack(layers, learned);
+      if (fit !== null && (!out || fit < out.mtu)) out = { mtu: fit, why: `the path MTU ${learned} that ${dev} learned towards ${formatAddr(end.dst)}, less the encapsulation` };
+    }
+    return out;
+  }
+
+  /** The VRF a tunnel's outer packets go in: its source interface's (a front-door VRF), as Trace path traces them. */
+  tunnelVrf(dev: string, iface: string): string {
+    const ti = this.model.index.interfaces.get(dev + ':' + iface);
+    const sd = this.net.devices.get(dev);
+    const src = sd && ti && ti.source && ti.source.iface ? sd.l3.get(ti.source.iface) : undefined;
+    return src ? src.vrf : '';
+  }
+
+  /** The formats of a tunnel's layers (encap.ts; one without a known format is taken as GRE), with the outer family. */
+  tunnelFormats(layers: Array<{ relation?: string }>, outer: 4 | 6): Array<{ def: EncapDef; outer: 4 | 6 }> {
+    return layers.map((l) => ({ def: (l.relation ? encapDef(this.relProtocol(l.relation)) : null) || ASSUMED_ENCAP, outer }));
+  }
+
+  /** The MTU a device sends out of an interface with: a tunnel's what it takes now (tunnelLimit), any other its MTU. */
+  egressMtu(dev: string, l3: L3Iface): number {
+    if (l3.kind === 'tunnel') {
+      const e = this.tunnelEnds(dev, l3.id)[0];
+      const rel = tunnelRelation(this.model, dev, l3.id);
+      const lim = e ? this.tunnelLimit(dev, l3, this.tunnelFormats(rel ? encapStack(this.model, rel) : [{}], e.dst.version), e, this.tunnelVrf(dev, l3.id)) : null;
+      if (lim) return lim.mtu;
+    }
+    return Number(this.mtu(dev, l3).value);
+  }
+
   /** A packet into a tunnel: the tunnel relation's header (GRE …), then ESP when it is carried over IPsec, to the tunnel's destination. */
-  private intoTunnel(dev: string, tun: L3Iface, pkt: Pkt): void {
+  private intoTunnel(dev: string, tun: L3Iface, pkt: Pkt, came: L3Iface | null = null): void {
     const ends = this.tunnelEnds(dev, tun.id).filter((e) => e.src.version === pkt.dst.version || true);
     if (!ends.length) {
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: tunnel ${tun.id} has no source or destination address (${pkt.msg.label})`);
@@ -3207,7 +3266,6 @@ export class Engine {
     }
     const rel = tunnelRelation(this.model, dev, tun.id);
     const layers = rel ? encapStack(this.model, rel) : [{ label: 'GRE' }];
-    let cur = pkt;
     const e = ends[0];
     const rides = pkt.rides.slice();
     for (const layer of layers) {
@@ -3220,17 +3278,51 @@ export class Engine {
         if (this.protocols && this.protocols.sessionUp && !this.protocols.sessionUp(layer.relation)) {
           // over a tunnel that is coming up: it waits for it (the newest of a periodic message only)
           const rid = layer.relation;
-          this.waitFor('rel:' + rid, `${layer.label} ${rid}`, dev, pkt.msg, () => this.intoTunnel(dev, tun, pkt), `${dev}|${pkt.msg.protocol}|${pkt.msg.type}|${formatAddr(pkt.dst)}`);
+          this.waitFor('rel:' + rid, `${layer.label} ${rid}`, dev, pkt.msg, () => this.intoTunnel(dev, tun, pkt, came), `${dev}|${pkt.msg.protocol}|${pkt.msg.type}|${formatAddr(pkt.dst)}`);
           return;
         }
       }
+    }
+    const outerVrf = this.tunnelVrf(dev, tun.id);
+    const defs = this.tunnelFormats(layers, e.dst.version);
+    // the tunnel's MTU: a larger inner packet is fragmented first (IPv4 without DF), else refused with Fragmentation Needed /
+    // Packet Too Big carrying what fits — so its sender learns the inner path MTU (PMTUD through the tunnel, RFC 4459 §3.2)
+    const lim = this.tunnelLimit(dev, tun, defs, e, outerVrf);
+    const size = ipLen(pkt);
+    if (lim && size > lim.mtu) {
+      const v6 = pkt.dst.version === 6;
+      const ownV6 = v6 && !came && !pkt.df;
+      if ((v6 && !ownV6) || pkt.df) {
+        if (!(v6 && lim.mtu < 1280)) {
+          const text = `${pkt.msg.label} (${size} bytes${pkt.dst.version === 4 ? ', DF set' : ''}) is larger than tunnel ${dev}:${tun.id} takes, ${lim.mtu} (${lim.why})`;
+          this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${text}`);
+          if (came) this.icmpError(dev, pkt, 'frag', { from: came, mtu: lim.mtu });
+          else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, pkt, 'frag', text, lim.mtu);
+          return;
+        }
+        // (an IPv6 tunnel MTU below 1280: the tunnel fragments its outer packets instead, RFC 2473 §7.1)
+      } else {
+        const parts = this.fragment(pkt, lim.mtu);
+        this.note('route', pkt.msg.protocol, dev, '', 'fragmented', '', `${dev} fragments ${pkt.msg.label} (${size} bytes) into ${parts.length} for tunnel ${tun.id}, ${lim.mtu} bytes (${lim.why}): ${parts.map((x) => ipLen(x)).join(' + ')} bytes`);
+        for (const x of parts) this.encapsulate(dev, x, layers, defs, e, rides, outerVrf);
+        return;
+      }
+    }
+    this.encapsulate(dev, pkt, layers, defs, e, rides, outerVrf);
+  }
+
+  /** Wrap a packet in a tunnel's layers (innermost first) and send the outer packet, in the underlay's VRF. */
+  private encapsulate(dev: string, pkt: Pkt, layers: Array<{ label: string; relation?: string }>, defs: Array<{ def: EncapDef; outer: 4 | 6 }>, e: { src: IpAddr; dst: IpAddr }, rides: string[], vrf: string): void {
+    let cur = pkt;
+    for (const layer of layers) {
       const proto = layer.relation ? this.relProtocol(layer.relation) : 'gre';
       const msg: Msg = { ...pkt.msg, label: pkt.msg.label, detail: `${pkt.msg.detail} — in ${layers.map((l) => l.label).slice(0, layers.indexOf(layer) + 1).join(' in ')} (${formatAddr(e.src)} → ${formatAddr(e.dst)})`, data: { ...(pkt.msg.data || {}), encap: (((pkt.msg.data || {}) as { encap?: string[] }).encap || []).concat([layer.label]), outer: proto } };
-      cur = { ...this.newPacket(e.src, e.dst, '', msg, rides.slice()), inner: cur, encap: layer.label, df: cur.df };
-      // (the outer header the relation's own data has — IP-in-IP 4, WireGuard and VXLAN UDP to their port, IPsec ESP; a tunnel
-      // without a relation: GRE)
+      const inner: Pkt = cur;
+      cur = { ...this.newPacket(e.src, e.dst, vrf, msg, rides.slice()), inner, encap: layer.label, encapProto: defs[layers.indexOf(layer)].def.protocol, df: inner.df };
+      // (the outer header the relation's own data has — IP-in-IP 4 (an IPv6 inner packet: 41), WireGuard and VXLAN UDP to their
+      // port, IPsec ESP; a tunnel without a relation: GRE)
       const o = layer.relation && this.protocols && this.protocols.outerL4 ? this.protocols.outerL4(layer.relation, dev) : undefined;
-      cur.l4 = o || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
+      cur.l4 = o && o.proto === 'other' && o.num === 4 && inner.dst.version === 6 ? { proto: 'other', num: 41 } : o || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
     }
     this.forward(dev, cur, null);
   }
@@ -4624,11 +4716,23 @@ export class Engine {
   }
 }
 
-/** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
+/** The format of a packet's encapsulation (encap.ts; a tunnel without one is taken as GRE). */
+export function encapOf(p: Pkt): EncapDef {
+  return (p.encapProto && encapDef(p.encapProto)) || ASSUMED_ENCAP;
+}
+
+/**
+ * The bytes of an IP packet: its header, and what it carries — a fragment
+ * its own share (`len`), an encapsulated packet the format's outer bytes
+ * around its inner packet (encap.ts, the definition the static path MTU
+ * uses), else its own length, else its message's size.
+ */
 export function ipLen(p: Pkt): number {
   // (an IPv6 fragment has its 8-byte fragment header besides; the Router Alert option: 4 bytes in IPv4, an 8-byte Hop-by-Hop header in IPv6)
   const hdr = (p.dst.version === 4 ? 20 : p.frag ? 48 : 40) + (p.routerAlert ? (p.dst.version === 4 ? 4 : 8) : 0);
-  if (p.inner) return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
+  // (a fragment of an encapsulated packet carries part of it: its own length, never the whole inner packet again)
+  if (p.frag && p.len !== undefined) return hdr + p.len;
+  if (p.inner) return hdr + outerLength(encapOf(p), ipLen(p.inner), p.dst.version) - ipHeaderBytes(p.dst.version);
   if (p.len !== undefined) return hdr + p.len;
   const d = p.msg.data as { size?: unknown } | undefined;
   return hdr + (d && typeof d.size === 'number' ? d.size : p.msg.protocol === 'demand' ? 1400 : PAYLOAD);
@@ -4690,7 +4794,7 @@ export function isLimitedBroadcast(a: IpAddr): boolean {
 function protoText(p: Pkt): string {
   const l = p.l4;
   // (an encapsulation: its outer header's protocol — ESP, GRE, IP-in-IP, or UDP for WireGuard, VXLAN …)
-  if (p.inner && (!l || l.proto === 'other')) return l && l.num === 4 ? 'IP-in-IP (4)' : l && l.num === 50 ? 'ESP (50)' : !l && /ESP/i.test(p.encap || '') ? 'ESP (50)' : l && l.num !== 47 ? `${l.num}` : 'GRE (47)';
+  if (p.inner && (!l || l.proto === 'other')) return l && l.num === 4 ? 'IP-in-IP (4)' : l && l.num === 41 ? 'IPv6 in IP (41)' : l && l.num === 50 ? 'ESP (50)' : !l && /ESP/i.test(p.encap || '') ? 'ESP (50)' : l && l.num !== 47 ? `${l.num}` : 'GRE (47)';
   if (!l) return '—';
   if (l.proto === 'icmp') return p.dst.version === 4 ? 'ICMP (1)' : 'ICMPv6 (58)';
   if (l.proto === 'tcp') return 'TCP (6)';
