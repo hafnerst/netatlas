@@ -2161,6 +2161,19 @@ export class Engine {
       this.deliverL2(dev, port, frame, t, flight);
       return;
     }
+    // a frame larger than a port of its cable takes (its MTU written in the model, as the static path MTU counts it): the
+    // receiving port, or a switch port it left by, drops it as oversize — silently, no ICMP (a black hole on an MTU mismatch)
+    if (frame.ip) {
+      const size = ipLen(frame.ip);
+      const here = this.net.ends.get(portKey(dev, port));
+      const far = here ? otherEnd(this.net, here) : null;
+      for (const [d, p] of [[dev, port], far ? [far.device, far.port] : ['', '']] as Array<[string, string]>) {
+        const i = d ? this.model.index.interfaces.get(d + ':' + p) : undefined;
+        if (!i || i.mtu === undefined || size <= i.mtu || (d !== dev && !(this.net.devices.get(d) || { bridge: null }).bridge)) continue;
+        this.noteAt(t, 'drop', frame.msg.protocol, d, '', frame.msg.type, '', `dropped at ${d}:${p}: ${frame.msg.label} (${size} bytes) is larger than its MTU, ${i.mtu} — an oversize frame, dropped without an ICMP error`, { kind: 'too-big', iface: p, mtu: i.mtu, pkt: frame.ip.id, flow: flowText(frame.ip) });
+        return;
+      }
+    }
     const bpId = sd.bridge ? sd.portOf.get(port) : undefined;
     if (sd.bridge && bpId !== undefined) {
       const bp = sd.bridgePorts.get(bpId) as BridgePort;

@@ -713,7 +713,7 @@ devices:
     routes: [{prefix: 10.1.0.0/24, via: 10.0.2.1}]
   - id: r3
     type: router
-    interfaces: [{id: a, ip: 10.0.3.2/30, mtu: 1500}, {id: lan, ip: 10.9.0.3/24, mtu: 1500}]
+    interfaces: [{id: a, ip: 10.0.3.2/30, mtu: 1400}, {id: lan, ip: 10.9.0.3/24, mtu: 1500}]
     routes: [{prefix: 10.1.0.0/24, via: 10.0.3.1}]
   - id: sw
     type: switch

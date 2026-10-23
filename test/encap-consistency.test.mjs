@@ -149,3 +149,28 @@ test('the tunnel-MTU check, the MTU suggestion and the static path MTU use the s
   const H = load('analysis/helpers.js');
   assert.equal(H.mtuSuggestions(m, m.index.interfaces.get('a:tun0'))[0].value, '1476');
 });
+
+test('an MTU mismatch on a cable: the static path MTU counts the receiving end; the simulation drops a larger frame there, silently', () => {
+  // found by test/sim-property.test.mjs (seed 103947): hb's port takes 1450, r1's end of the cable 1500
+  const m = model(`netatlas: 1
+title: mismatch
+devices:
+  - {id: ha, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.10/24, mtu: 1500}], routes: [{prefix: 0.0.0.0/0, via: 10.1.0.1}]}
+  - {id: hb, type: endpoint, interfaces: [{id: eth0, ip: 10.2.0.10/24, mtu: 1450}], routes: [{prefix: 0.0.0.0/0, via: 10.2.0.1}]}
+  - {id: r1, type: router, interfaces: [{id: lana, ip: 10.1.0.1/24, mtu: 1500}, {id: lanb, ip: 10.2.0.1/24, mtu: 1500}]}
+links:
+  - {id: la, a: "ha:eth0", b: "r1:lana"}
+  - {id: lb, a: "hb:eth0", b: "r1:lanb"}
+`);
+  const st = MT.pathMtu(m, C.checkCommunication(m, { from: 'ha', to: 'hb' }));
+  assert.equal(st.mtu, 1450);
+  assert.equal(st.forward[0].limiting.what, 'hb:eth0');
+  const s = new S.Simulation(m);
+  s.runTo(70000);
+  // 1450 − 28 = 1422 bytes of data fit; 1423 (a 1451-byte packet) leaves r1 by its 1500-byte port and is dropped at hb:eth0
+  assert.equal(ping(s, 1422, true).ok, true);
+  const t = ping(s, 1423, true);
+  assert.equal(t.ok, false);
+  assert.equal(t.outcome.kind, 'timeout', 'no ICMP error comes back: a black hole');
+  assert.deepEqual([t.outcome.drop.device, t.outcome.drop.cause.kind, t.outcome.drop.cause.mtu], ['hb', 'too-big', 1450]);
+});
