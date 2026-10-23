@@ -113,7 +113,7 @@ test('family: application endpoints — a client’s ip_version, a listener aske
   const nid = { ...id, destination: { binding: 'name', name: 'srv.example.net' } };
   const nh = I.handoffOf(m, nid);
   assert.equal(nh.prefill.family, 6);
-  assert.ok(nh.carried.some((x) => /srv\.example\.net.*AAAA/.test(x)));
+  assert.ok(nh.carried.some((x) => x.indexOf('Destination: srv.example.net, ') === 0 && x.endsWith(' (its AAAA record)')), nh.carried.join(' | '));
   assert.ok(!nh.notTransferred.some((x) => /Family/.test(x)));
 });
 
