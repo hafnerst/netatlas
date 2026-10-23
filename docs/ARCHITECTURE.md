@@ -201,6 +201,34 @@ anything else.
   the adjacencies the records say are up.
 * **A result says what it is, and stays as computed.** Every Analyze tool returns its verdict in one vocabulary (`analysis/result.ts`) with the context it was computed on and its coverage. A result is computed when the user asks (Trace, Evaluate, Analyze, opening a window), never behind their back: an edit marks it outdated (by the model's fingerprint, so moving a node does not), Refresh computes it again. A snapshot of a running simulation is frozen when it is taken; a tool that can't evaluate one correctly says so instead of blending the simulation's state with a what-if.
   *Trade-off:* the user presses Refresh after editing; in return a result being read never changes under the reader.
+* **Evidence is recorded where it is decided; a diagnosis only reads it.**
+  The boundary that decides an outcome records it as data next to its log
+  line: a drop's cause (`DropCause` in `analysis/sim/types.ts`: its kind,
+  the packet id and outer header, the interface, MTU, relation, cable, or
+  the policy's device, rule and default) is set by the engine or the
+  firewall filter that dropped it; a Send test's outcome (`TestOutcome` in
+  `analysis/sim/transport.ts`), its waits, retransmissions and DNS queries
+  by the transport that ended or held it; an equal-cost choice by the
+  forwarding that made it. `analysis/diagnosis.ts` builds the answer to a
+  communication question from the communication check and these records
+  (`Simulation.runEvidence` hands them over without running anything): it
+  never parses an event's text and never reconstructs the past from the
+  current tables. Each link of its evidence chain says whether it is a
+  recorded cause, a prerequisite, a related observation or not established.
+  *Trade-off:* a cause the engine does not record (the rarer drop sites
+  still say only text) stays *not established* in a diagnosis instead of
+  being guessed from the words; the records are bounded by the log's and
+  the test list's retention, which a diagnosis says.
+* **One definition of what an encapsulation adds.** `analysis/encap.ts`
+  states each tunnel format's bytes (outer header of the tunnel's family,
+  outer UDP, header, padding, trailer, inner Ethernet) with the format it
+  assumes; the static path MTU, the tunnel-MTU check, the MTU suggestions
+  and the simulation's packet lengths, tunnel MTU, PMTUD relay and TCP MSS
+  all read it, so the same packet has the same size statically and at run
+  time. The outer protocol and ports stay `trace.ts tunnelOuter`'s.
+  *Trade-off:* one format per protocol (ESP with AES-CBC and HMAC-SHA1-96,
+  GRE without a key …): a device with other options differs by a few bytes,
+  which the result's assumptions say.
 * **What runs, what is drawn and what is evaluated are three things.**
   A simulation's execution scope (`analysis/exec-scope.ts`) decides what
   runs: a sub-model of the scope's devices, closed over what they need

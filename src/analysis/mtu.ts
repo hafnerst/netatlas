@@ -4,27 +4,32 @@
  * packet that crosses each path unfragmented, the component that limits
  * it, and the payload that fits (the MTU less the IP and transport
  * headers: TCP's MSS, a UDP or ICMP payload). It extends the model's MTU
- * facts (an interface's `mtu`) and the tunnel overheads the tunnel-MTU
- * check states (checks-more.ts ENCAP_OVERHEAD), never duplicates them:
+ * facts (an interface's `mtu`) and the encapsulation formats of encap.ts
+ * (the one definition the simulation's packet lengths use too), never
+ * duplicates them:
  *
  *   interfaces  each hop's egress interface, the ports of the cables to the
  *               next hop (switch ports too: a frame must fit them) and the
  *               next hop's ingress interface;
  *   tunnels     a hop that encapsulates (GRE, IPsec, VXLAN …) takes the
  *               inner packet through its traced underlay: the underlay
- *               path's MTU less the overhead of the layers it adds (nested
- *               layers add up), and the tunnel interface's own MTU.
+ *               path's MTU less what the layers it adds take (nested
+ *               layers inside out, ESP's padding to its block included:
+ *               the largest inner packet whose outer packet fits), and the
+ *               tunnel interface's own MTU.
  *
  * Nothing unknown is taken as known: an interface without an MTU written
  * is listed as unknown (the result is then an upper bound, indeterminate),
- * and an encapsulation without a known overhead makes that path's limit
- * unknown. Equal-cost branches and the two directions are reported apart
+ * and an encapsulation without a known format is taken as GRE, as the
+ * simulation takes it, and makes that path's limit an estimate
+ * (indeterminate). Equal-cost branches and the two directions are reported apart
  * where they differ. The simulation fragments IPv4 without DF, drops a
  * larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
  * Big, and learns the path MTU from it (PMTUD): that is runtime behaviour,
  * offered as a prefilled test, never claimed here. Pure and deterministic.
  */
-import { ENCAP_OVERHEAD, baseProtocol } from './checks-more';
+import { baseProtocol, tunnelOuterFamily } from './checks-more';
+import { ASSUMED_ENCAP, EncapDef, encapDef, layerText, maxInnerStack } from './encap';
 import { parseAddress } from '../model/ip';
 import { Model, ifaceKey } from '../model/types';
 
@@ -43,13 +48,18 @@ export interface MtuConstraint {
   mtu: number | null;
 }
 
-/** An encapsulation's overhead, as assumed. */
+/** An encapsulation layer on the way and what it takes. */
 export interface MtuOverhead {
   /** the relation (or tunnel) it belongs to */
   layer: string;
+  /** what it adds at the path's limit (null: the underlay's MTU is not known) */
   bytes: number | null;
-  /** "GRE: 20 IP + 4 GRE" */
+  /** "GRE: 20 IPv4 + 4 GRE" */
   what: string;
+  /** its format as assumed (encap.ts EncapDef.assumes) */
+  assumes: string;
+  /** the format is not known: taken as GRE, the limit is an estimate */
+  assumed?: boolean;
 }
 
 /** One evaluated path's MTU. */
@@ -66,6 +76,8 @@ export interface PathMtuResult {
   overheads: MtuOverhead[];
   /** every constraint, in path order */
   constraints: MtuConstraint[];
+  /** the encapsulations whose format is not known (taken as GRE): the limit is an estimate */
+  assumed: string[];
 }
 
 export interface PathMtu {
@@ -87,6 +99,50 @@ export interface PathMtu {
 
 const ipHeader = (v: 4 | 6): number => (v === 4 ? 20 : 40);
 
+/** The outer family of a hop's encapsulation: its traced underlay's addresses, else the tunnel interface's ends, else null. */
+function outerOf(model: Model, h: Hop): 4 | 6 | null {
+  for (const u of h.underlay ? h.underlay.hops : []) {
+    const a = parseAddress(u.outAddr || u.inAddr || '');
+    if (a) return a.version;
+  }
+  const ti = h.egress !== undefined ? model.index.interfaces.get(ifaceKey(h.device, h.egress)) : undefined;
+  return ti ? tunnelOuterFamily(model, ti) : null;
+}
+
+/** The layers a hop adds (innermost first) with their formats and outer family, and what each takes at a limit. */
+function layersOf(model: Model, h: Hop, added: Array<{ label: string; relation?: string }>, inner: 4 | 6): { layers: Array<{ def: EncapDef; outer: 4 | 6 }>; os: MtuOverhead[]; fam: 4 | 6 | null } {
+  const fam = outerOf(model, h);
+  const outer: 4 | 6 = fam || inner;
+  const layers: Array<{ def: EncapDef; outer: 4 | 6 }> = [];
+  const os: MtuOverhead[] = [];
+  for (const l of added) {
+    const r = l.relation ? model.index.relations.get(l.relation) : undefined;
+    const known = r ? encapDef(baseProtocol(model, r)) : null;
+    const def = known || ASSUMED_ENCAP;
+    layers.push({ def, outer });
+    const o: MtuOverhead = { layer: l.relation || l.label, bytes: null, what: known ? layerText(def, outer) : `${l.label}: format not known, taken as ${layerText(def, outer)}`, assumes: def.assumes };
+    if (!known) o.assumed = true;
+    os.push(o);
+  }
+  return { layers, os, fam };
+}
+
+/** The tunnel constraint of the layers a hop adds over an underlay whose smallest known MTU is `min`. */
+function tunnelConstraint(label: string, ref: string, min: MtuConstraint | null, layers: Array<{ def: EncapDef; outer: 4 | 6 }>, os: MtuOverhead[]): MtuConstraint {
+  const fit = min && min.mtu !== null ? maxInnerStack(layers, min.mtu) : null;
+  if (min && min.mtu !== null && fit !== null) {
+    // what each layer takes at this limit, outermost first: its outer packet less its inner
+    let lim = min.mtu;
+    for (let k = layers.length - 1; k >= 0; k--) {
+      const inner = maxInnerStack([layers[k]], lim);
+      os[k].bytes = inner === null ? null : lim - inner;
+      if (inner !== null) lim = inner;
+    }
+  }
+  const what = `${label}: ${min ? `underlay ${min.mtu} (${min.what})` : 'underlay MTU not known'} − ${min && fit !== null ? (min.mtu as number) - fit + ' bytes of encapsulation' : min ? 'more than it has room for' : 'its encapsulation'}`;
+  return { what, ref, kind: 'tunnel', mtu: min && fit !== null ? fit : min ? 0 : null };
+}
+
 /** The MTU written on an interface, the smaller of an aggregate's and its members' (none: not known). */
 function ifaceMtu(model: Model, dev: string, iface: string | undefined): number | null {
   if (iface === undefined) return null;
@@ -100,15 +156,8 @@ function ifaceMtu(model: Model, dev: string, iface: string | undefined): number 
   return m;
 }
 
-/** The overhead of an encapsulation layer (its relation's protocol), as the tunnel-MTU check assumes it. */
-function layerOverhead(model: Model, layer: { label: string; relation?: string }): MtuOverhead {
-  const r = layer.relation ? model.index.relations.get(layer.relation) : undefined;
-  const o = r ? ENCAP_OVERHEAD[baseProtocol(model, r)] : undefined;
-  return o ? { layer: layer.relation || layer.label, bytes: o.bytes, what: o.what } : { layer: layer.relation || layer.label, bytes: null, what: `${layer.label}: overhead not known` };
-}
-
 /** The constraints of one path, in order (a tunnel's underlay recursively), and its encapsulations. */
-function pathConstraints(model: Model, p: Path, depth: number): { constraints: MtuConstraint[]; overheads: MtuOverhead[] } {
+function pathConstraints(model: Model, p: Path, depth: number, v: 4 | 6, base = 0): { constraints: MtuConstraint[]; overheads: MtuOverhead[] } {
   const constraints: MtuConstraint[] = [];
   const overheads: MtuOverhead[] = [];
   const seen = new Set<string>();
@@ -117,7 +166,8 @@ function pathConstraints(model: Model, p: Path, depth: number): { constraints: M
     seen.add(c.ref + '|' + c.kind);
     constraints.push(c);
   };
-  let prevEncap = 0;
+  // (an underlay's hops name the layers their outer packet already is: those are not added again)
+  let prevEncap = base;
   p.hops.forEach((h: Hop, k) => {
     if (h.ingress !== undefined) add({ what: `${h.device}:${h.ingress}`, ref: `iface:${h.device}:${h.ingress}`, kind: 'interface', mtu: ifaceMtu(model, h.device, h.ingress) });
     if (h.egress === undefined) return;
@@ -125,19 +175,18 @@ function pathConstraints(model: Model, p: Path, depth: number): { constraints: M
     const added = h.encap.slice(prevEncap);
     prevEncap = h.encap.length;
     if (added.length && h.underlay && depth < 4) {
-      const under = pathConstraints(model, h.underlay, depth + 1);
-      const os = added.map((l) => layerOverhead(model, l));
+      const { layers, os, fam } = layersOf(model, h, added, v);
+      const under = pathConstraints(model, h.underlay, depth + 1, fam || v, h.encap.length);
       overheads.push(...os, ...under.overheads);
       const known = under.constraints.filter((c) => c.mtu !== null) as Array<MtuConstraint & { mtu: number }>;
       const min = known.length ? known.reduce((a, b) => (b.mtu < a.mtu ? b : a)) : null;
-      const over = os.some((o) => o.bytes === null) ? null : os.reduce((s, o) => s + (o.bytes as number), 0);
       const label = added.map((l) => l.relation || l.label).join(' over ');
       // the unknowns of the underlay stay unknown
       for (const c of under.constraints) if (c.mtu === null) add({ ...c, what: `${c.what} (in the underlay of ${label})` });
-      add({ what: `${label}: ${min ? `underlay ${min.mtu} (${min.what})` : 'underlay MTU not known'} − ${over === null ? 'an overhead not known' : over + ' bytes of encapsulation'}`, ref: added[0].relation ? 'relation:' + added[0].relation : `iface:${h.device}:${h.egress}`, kind: 'tunnel', mtu: min && over !== null ? min.mtu - over : null });
+      add(tunnelConstraint(label, added[0].relation ? 'relation:' + added[0].relation : `iface:${h.device}:${h.egress}`, min, layers, os));
     } else if (added.length) {
       // a declared underlay (its `over` cables, not traced): the outer packet crosses them; the tunnel's source interface sends it
-      const os = added.map((l) => layerOverhead(model, l));
+      const { layers, os } = layersOf(model, h, added, v);
       overheads.push(...os);
       const under: MtuConstraint[] = [];
       const ti = model.index.interfaces.get(ifaceKey(h.device, h.egress));
@@ -150,8 +199,7 @@ function pathConstraints(model: Model, p: Path, depth: number): { constraints: M
       for (const c of under.filter((x, k) => under.findIndex((y) => y.ref === x.ref) === k)) if (c.mtu === null) add({ ...c, what: `${c.what} (in the underlay of ${label})` });
       const known = under.filter((c) => c.mtu !== null) as Array<MtuConstraint & { mtu: number }>;
       const min = known.length ? known.reduce((a, b) => (b.mtu < a.mtu ? b : a)) : null;
-      const over = os.some((o) => o.bytes === null) ? null : os.reduce((s, o) => s + (o.bytes as number), 0);
-      add({ what: `${label}: ${min ? `underlay ${min.mtu} (${min.what})` : 'underlay MTU not known'} − ${over === null ? 'an overhead not known' : over + ' bytes of encapsulation'}`, ref: added[0].relation ? 'relation:' + added[0].relation : `iface:${h.device}:${h.egress}`, kind: 'tunnel', mtu: min && over !== null ? min.mtu - over : null });
+      add(tunnelConstraint(label, added[0].relation ? 'relation:' + added[0].relation : `iface:${h.device}:${h.egress}`, min, layers, os));
       add({ what: `${h.device}:${h.egress}`, ref: `iface:${h.device}:${h.egress}`, kind: 'interface', mtu: ifaceMtu(model, h.device, h.egress) });
       return;
     }
@@ -174,11 +222,11 @@ function pathConstraints(model: Model, p: Path, depth: number): { constraints: M
   return { constraints, overheads };
 }
 
-function resultOf(model: Model, p: Path, index: number): PathMtuResult {
-  const { constraints, overheads } = pathConstraints(model, p, 0);
+function resultOf(model: Model, p: Path, index: number, v: 4 | 6): PathMtuResult {
+  const { constraints, overheads } = pathConstraints(model, p, 0, v);
   const known = constraints.filter((c) => c.mtu !== null) as Array<MtuConstraint & { mtu: number }>;
   const limiting = known.length ? known.reduce((a, b) => (b.mtu < a.mtu ? b : a)) : undefined;
-  const out: PathMtuResult = { index, mtu: limiting ? limiting.mtu : null, unknown: constraints.filter((c) => c.mtu === null), overheads, constraints };
+  const out: PathMtuResult = { index, mtu: limiting ? limiting.mtu : null, unknown: constraints.filter((c) => c.mtu === null), overheads, constraints, assumed: overheads.filter((o) => o.assumed).map((o) => o.layer) };
   if (limiting) out.limiting = limiting;
   return out;
 }
@@ -201,12 +249,15 @@ export function pathMtu(model: Model, c: CommCheck): PathMtu | null {
   const a = c.from && c.from.address ? parseAddress(c.from.address) : t.dest ? parseAddress(t.dest.address) : null;
   const v: 4 | 6 = a ? a.version : 4;
   const ends = (p: Path): boolean => p.end.kind === 'reached' || p.end.kind === 'delivered';
-  const forward = t.paths.map((p, i) => ({ p, i })).filter((x) => ends(x.p)).map((x) => resultOf(model, x.p, x.i));
+  const forward = t.paths.map((p, i) => ({ p, i })).filter((x) => ends(x.p)).map((x) => resultOf(model, x.p, x.i, v));
   const back = c.reverse ? c.reverse.trace : null;
-  const reverse = back && !back.error ? back.paths.map((p, i) => ({ p, i })).filter((x) => ends(x.p)).map((x) => resultOf(model, x.p, x.i)) : [];
+  const reverse = back && !back.error ? back.paths.map((p, i) => ({ p, i })).filter((x) => ends(x.p)).map((x) => resultOf(model, x.p, x.i, v)) : [];
   const out: PathMtu = { family: v, forward, reverse, mtu: null, payload: null, verdict: 'unsupported', text: '', differs: [], assumptions: [] };
   out.assumptions.push('An interface’s MTU is the one written in the model (an aggregate: the smallest of it and its members); one not written is not known, never taken as 1500.');
-  out.assumptions.push('Encapsulation overheads are the tunnel-MTU check’s, with an IPv4 outer header (IPsec: the worst case of ESP tunnel mode); an encapsulation without a figure leaves its path’s limit unknown.');
+  out.assumptions.push('Encapsulation sizes are the formats the simulation uses too (one definition), with the outer header of the tunnel’s family; an encapsulation without a known format is taken as GRE, which makes the limit an estimate.');
+  const formats = new Set<string>();
+  for (const r of forward.concat(reverse)) for (const o of r.overheads) formats.add(o.assumes);
+  for (const f of formats) out.assumptions.push('Assumed format: ' + f + '.');
   if (!forward.length) {
     out.text = 'No evaluated path reaches the destination: there is no path MTU to evaluate';
     return out;
@@ -224,10 +275,14 @@ export function pathMtu(model: Model, c: CommCheck): PathMtu | null {
     if (f.length && b.length && Math.min(...f) !== Math.min(...b)) out.differs.push(`The directions differ: ${Math.min(...f)} bytes there, ${Math.min(...b)} bytes back.`);
   }
   const unknown = all.reduce((s, r) => s + r.unknown.length, 0);
+  const assumed = Array.from(new Set(all.flatMap((r) => r.assumed)));
   const lim = all.filter((r) => r.mtu === out.mtu).map((r) => r.limiting).find((x) => !!x);
   if (out.mtu === null) {
     out.verdict = 'indeterminate';
     out.text = `The path MTU is not known: no MTU is written on the way (${unknown} interface${unknown === 1 ? '' : 's'} or tunnel${unknown === 1 ? '' : 's'} without one)`;
+  } else if (assumed.length) {
+    out.verdict = 'indeterminate';
+    out.text = `About ${out.mtu} bytes (limited by ${lim ? lim.what : 'a component'}): the format of ${assumed.join(', ')} is not known and is taken as GRE`;
   } else if (!knownAll || unknown) {
     out.verdict = 'indeterminate';
     out.text = `At most ${out.mtu} bytes (limited by ${lim ? lim.what : 'a component'}); ${unknown} component${unknown === 1 ? '' : 's'} on the way ha${unknown === 1 ? 's' : 've'} no known MTU, so the limit may be lower`;

@@ -108,6 +108,8 @@ export interface Pkt {
   /** an encapsulated packet (GRE, ESP …) and the header's name */
   inner?: Pkt;
   encap?: string;
+  /** the encapsulation's format (encap.ts: its base protocol, "gre", "ipsec"): what it adds to the inner packet's length */
+  encapProto?: string;
   /** for equal-cost path selection: the same flow takes the same path */
   flow: string;
   /** the relations it rides (its session, and the tunnels it is inside), for failures of a relation */
@@ -262,6 +264,29 @@ export interface Headers {
 
 export type EventKind = 'message' | 'state' | 'drop' | 'route' | 'link' | 'table' | 'note' | 'wait';
 
+/**
+ * Why a packet was dropped, recorded where it was decided (the event's
+ * text is its presentation, never read back): the kind, the packet (its
+ * id, its outer header), and what decided it — an interface, an MTU, a
+ * relation, a cable, a policy's rule.
+ */
+export type DropKind = 'no-route' | 'blackhole' | 'ttl' | 'too-big' | 'policy' | 'iface-down' | 'tunnel-down' | 'relation-failed' | 'neighbor' | 'cable' | 'loss' | 'not-sent' | 'scope' | 'beyond' | 'vlan' | 'inspection' | 'vpn-only' | 'reassembly' | 'other';
+
+export interface DropCause {
+  kind: DropKind;
+  /** the packet (Pkt.id: a test's pktIds name it) */
+  pkt?: number;
+  /** its outer header as decided on: "192.0.2.1 → 198.51.100.2 GRE (47) carrying 10.1.0.10 → 10.2.0.10" */
+  flow?: string;
+  vrf?: string;
+  iface?: string;
+  link?: string;
+  mtu?: number;
+  relation?: string;
+  /** policy: the device whose rules decided, the rule (1-based, as the decision numbers it), its text, the default */
+  policy?: { device: string; action: 'deny' | 'reject' | 'undecided'; rule?: number; ruleText?: string; byDefault: boolean; text: string };
+}
+
 /** One line of the event log. */
 export interface SimEvent {
   t: number;
@@ -286,6 +311,12 @@ export interface SimEvent {
   origin?: string;
   /** of a Send test (its id): listed whatever the filters, marked Test */
   test?: number;
+  /** a drop: why, structured (DropCause) */
+  cause?: DropCause;
+  /** the packet it is about (Pkt.id) */
+  pkt?: number;
+  /** an equal-cost choice: which of how many next hops (0-based) the packet's flow took, out of which interface */
+  route?: { pkt: number; of: number; index: number; iface: string; gateway?: string };
 }
 
 /** A protocol session's status (the status table). */

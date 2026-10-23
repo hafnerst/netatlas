@@ -14,6 +14,15 @@
  * with its end. Objects are links that select them in the diagram
  * (data-goto). Built from elements and text nodes only; the data comes from
  * analysis/communication.ts and analysis/trace.ts.
+ *
+ * Under the verdict, the Diagnosis (analysis/diagnosis.ts) answers the
+ * question in order: its state and a short explanation, the effective
+ * question (from, to, family, service, routing context, the configured
+ * model or snapshot, the recorded send compared), what prevents or limits
+ * it, the evidence chain behind an expansion, the separate legs, and the
+ * next actions — the existing ones, which prefill and never submit. Each
+ * piece of evidence is a link (data-diag-ref) to the object, rule, layer,
+ * message or event it names.
  */
 import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, HopWhy, Path, Trace, TraceRequest, encapText, endStatus, endText, outcomeLines, traceOutcome, traceText } from '../analysis/trace';
@@ -25,6 +34,7 @@ import { deviceVrfs } from '../analysis/routing';
 import { Verdict, exportFooter, exportHeader, verdictMark, verdictText } from '../analysis/result';
 import { appProfile } from '../model/applications';
 import { Model, deviceInterfaces } from '../model/types';
+import { ChainLink, Diagnosis, DiagnosisState, LinkKind, NextAction, diagnosisText } from '../analysis/diagnosis';
 import { el } from './dom';
 import { ContextBarActions, ContextBarState, contextBar, limitsDetails, verdictLine } from './analysis-ui';
 
@@ -58,6 +68,8 @@ export interface TraceRun {
   compare?: RunComparison | null;
   /** the end-to-end path MTU of the evaluated paths */
   mtu?: PathMtu | null;
+  /** the diagnosis: the static answer, with the recorded send once compared (frozen when made, never recomputed) */
+  diagnosis?: Diagnosis | null;
 }
 
 /** The request a form makes. */
@@ -90,6 +102,123 @@ export interface TracePanelActions extends ContextBarActions {
   experiment(): void;
   /** take another of the end's addresses */
   pick(field: 'from' | 'to', value: string): void;
+  /** go to a piece of evidence (an object, a rule, a layer, a message, an event): it selects or opens it, nothing else */
+  goto(ref: string): void;
+}
+
+/** A diagnosis state in words, its mark, and the verdict colour it is shown in. */
+export const DIAG_STATE: { [k in DiagnosisState]: { label: string; mark: string; tone: Verdict } } = {
+  established: { label: 'Established', mark: '✓', tone: 'satisfied' },
+  blocked: { label: 'Blocked', mark: '✕', tone: 'violated' },
+  waiting: { label: 'Waiting', mark: '⧗', tone: 'indeterminate' },
+  recovered: { label: 'Recovered', mark: '↻', tone: 'satisfied' },
+  partial: { label: 'Partial', mark: '◐', tone: 'partial' },
+  cancelled: { label: 'Cancelled', mark: '–', tone: 'unsupported' },
+  indeterminate: { label: 'Not established', mark: '?', tone: 'indeterminate' },
+  unsupported: { label: 'Not supported', mark: '–', tone: 'unsupported' },
+};
+
+const REL_LABEL: { [k in LinkKind]: string } = { cause: 'Cause', prerequisite: 'Prerequisite', related: 'Related', coincidence: 'Coincidence', hypothesis: 'Not established' };
+
+/** One link of the evidence: what it is, from where, its text and its refs. */
+function chainItem(doc: Document, l: ChainLink, tag: 'li'): HTMLElement {
+  const refs = l.refs.map((r) => el(doc, 'button', { type: 'button', class: 'ref', 'data-diag-ref': r.ref, title: 'Go to ' + r.label }, [r.label]));
+  return el(doc, tag, { class: 'diag-link', 'data-rel': l.rel, 'data-source': l.source }, [
+    el(doc, 'span', { class: 'diag-rel an-chip v-' + (l.rel === 'cause' ? 'violated' : l.rel === 'prerequisite' ? 'indeterminate' : l.rel === 'hypothesis' ? 'unsupported' : 'satisfied') }, [REL_LABEL[l.rel]]),
+    ' ',
+    el(doc, 'span', { class: 'muted' }, [l.source === 'static' ? 'Static · ' : 'Runtime · ']),
+    l.text,
+    ...(refs.length ? [el(doc, 'span', { class: 'diag-refs' }, refs.flatMap((b, k) => (k ? [' ', b] : [b])))] : []),
+  ]);
+}
+
+/**
+ * The Diagnosis (see the module comment). `outdated`: the model changed
+ * after it — said, with Refresh first; the diagnosis itself stays as made.
+ */
+export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewState & { outdated: boolean }, act: TracePanelActions): HTMLElement {
+  const st = DIAG_STATE[d.state];
+  const sec = el(doc, 'section', { class: 'trace-section diag', id: 'diag', 'aria-labelledby': 'diag-h', 'data-state': d.state });
+  sec.appendChild(el(doc, 'h3', { id: 'diag-h' }, ['Diagnosis ', el(doc, 'span', { class: 'an-chip v-' + st.tone, id: 'diag-state' }, [st.mark + ' ' + st.label])]));
+  const flags = [view.outdated ? 'Outdated: the model changed after this diagnosis' : '', d.provisional ? 'Provisional: the send is not finished' : '', d.evidenceLimited ? 'Evidence-limited: some records are no longer kept' : ''].filter((x) => !!x);
+  sec.appendChild(el(doc, 'p', { id: 'diag-summary' }, [d.summary]));
+  if (flags.length) sec.appendChild(el(doc, 'p', { class: 'small diag-flags', id: 'diag-flags' }, [flags.join(' · ')]));
+  // the question as asked and resolved
+  const q = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-question', 'aria-label': 'The question' });
+  const row = (k: string, v: string): void => {
+    q.appendChild(el(doc, 'dt', {}, [k]));
+    q.appendChild(el(doc, 'dd', {}, [v]));
+  };
+  row('From', d.question.from);
+  row('To', d.question.to);
+  row('Family', d.question.family);
+  row('Service', d.question.service);
+  row('Routing context', d.question.vrf);
+  row('Analyzed on', d.question.context);
+  row('Runtime', d.question.run || 'none compared (Compare with simulation adds the newest recorded send of it)');
+  sec.appendChild(q);
+  if (d.question.unresolved.length) sec.appendChild(el(doc, 'p', { class: 'small muted', id: 'diag-open' }, ['Open: ' + d.question.unresolved.join('; ')]));
+  // what prevents or limits it
+  if (d.blockers.length) {
+    sec.appendChild(el(doc, 'h4', { class: 'diag-h4' }, [d.state === 'waiting' ? 'What it waits for, and what limits it' : 'What prevents or limits it']));
+    const ul = el(doc, 'ul', { class: 'diag-list', id: 'diag-blockers' });
+    for (const b of d.blockers) ul.appendChild(chainItem(doc, b, 'li'));
+    sec.appendChild(ul);
+  } else if (d.established.length) {
+    sec.appendChild(el(doc, 'h4', { class: 'diag-h4' }, ['Established']));
+    const ul = el(doc, 'ul', { class: 'diag-list small', id: 'diag-established' });
+    for (const x of d.established) ul.appendChild(el(doc, 'li', {}, [x]));
+    sec.appendChild(ul);
+  }
+  // the evidence chain, behind an expansion
+  if (d.chain.length) {
+    const det = el(doc, 'details', { class: 'layer-ev', id: 'diag-chain' }, [el(doc, 'summary', {}, [`Evidence chain (${d.chain.length})`])]);
+    const ol = el(doc, 'ol', { class: 'diag-list small' });
+    for (const l of d.chain) ol.appendChild(chainItem(doc, l, 'li'));
+    det.appendChild(ol);
+    sec.appendChild(det);
+  }
+  if (d.legs.length) {
+    const ul = el(doc, 'ul', { class: 'comm-legs small', id: 'diag-legs', 'aria-label': 'Legs, each on its own' });
+    for (const g of d.legs) {
+      const t = DIAG_STATE[g.state];
+      ul.appendChild(el(doc, 'li', { 'data-state': g.state }, [el(doc, 'span', { class: 'an-chip v-' + t.tone }, [t.mark + ' ' + t.label]), ' ', g.label, el(doc, 'div', { class: 'muted' }, [g.text])]));
+    }
+    sec.appendChild(ul);
+  }
+  // next actions: the existing ones (they prefill or open; nothing is sent, nothing is changed)
+  if (d.next.length || view.outdated) {
+    const nx = el(doc, 'div', { class: 'tf-actions diag-next', id: 'diag-next', role: 'group', 'aria-label': 'Next' });
+    const next: NextAction[] = view.outdated && !d.next.some((x) => x.id === 'refresh') ? [{ id: 'refresh', label: 'Refresh', why: 'The model changed after this diagnosis' } as NextAction].concat(d.next) : d.next;
+    for (const a of next) {
+      const blocked = a.id === 'handoff' || a.id === 'mtu-test' ? view.handoffBlocked : a.id === 'compare' ? view.compareBlocked : a.id === 'save-exp' || a.id === 'experiment' ? view.locked : '';
+      const b = el(doc, 'button', { type: 'button', class: 'mini', 'data-diag-act': a.id, ...(a.ref ? { 'data-diag-ref': a.ref } : {}), title: blocked || a.why }, [a.label]) as HTMLButtonElement;
+      b.disabled = !!blocked;
+      nx.appendChild(b);
+    }
+    sec.appendChild(nx);
+  }
+  if (d.limits.length) {
+    const det = el(doc, 'details', { class: 'layer-ev', id: 'diag-limits' }, [el(doc, 'summary', {}, ['What this diagnosis can’t establish'])]);
+    const ul = el(doc, 'ul', { class: 'small muted' });
+    for (const x of d.limits) ul.appendChild(el(doc, 'li', {}, [x]));
+    det.appendChild(ul);
+    sec.appendChild(det);
+  }
+  sec.addEventListener('click', (e) => {
+    const b = (e.target as Element).closest('[data-diag-act], [data-diag-ref]') as HTMLButtonElement | null;
+    if (!b || b.disabled) return;
+    const id = b.getAttribute('data-diag-act');
+    const ref = b.getAttribute('data-diag-ref');
+    if (id === 'refresh') act.refresh();
+    else if (id === 'handoff') act.handoff();
+    else if (id === 'compare') act.compare();
+    else if (id === 'mtu-test') act.mtuTest();
+    else if (id === 'save-exp') act.saveExpectation();
+    else if (id === 'experiment') act.experiment();
+    else if (ref) act.goto(ref);
+  });
+  return sec;
 }
 
 /** The path MTU (analysis/mtu.ts): the limit and what sets it, then per path, the overheads, what is not known, the assumptions. */
@@ -245,6 +374,8 @@ function resultBody(doc: Document, model: Model, run: TraceRun, view: TraceViewS
   const t = run.trace;
   const res = el(doc, 'div', { class: 'trace-result' });
   res.appendChild(verdictLine(doc, c.verdict, 'reach', c.headline.replace(/^(Reachable within scope|Indeterminate|Partially reachable|Beyond modeled scope)[,:;]?\s*/, ''), { id: 'trace-verdict', role: 'status', 'data-verdict': c.verdict }));
+  // the diagnosis: the answer in order, its evidence one link away
+  if (run.diagnosis) res.appendChild(diagnosisSection(doc, run.diagnosis, { ...view, outdated: !!view.bar.outdated }, act));
   // the effective ends (and the other addresses an end could stand for, only when there are several)
   const ends = el(doc, 'dl', { class: 'trace-ends small' });
   const row = (k: string, v: Array<Node | string>): void => {
@@ -582,9 +713,16 @@ function whyBox(doc: Document, w: HopWhy): HTMLElement {
 }
 
 /** The whole check as plain text (Copy and Save as text): what, of which model, on what; the verdict and its layers; the hop lists; the assumptions. */
-export function traceExportText(o: { title: string; version?: string; outdated: boolean }, run: TraceRun): string {
+export function traceExportText(o: { title: string; version?: string; outdated: boolean; fingerprint?: string }, run: TraceRun): string {
   const lines = exportHeader({ analysis: 'Trace path', title: o.title, info: run.check.info, version: o.version, outdated: o.outdated });
+  if (o.fingerprint) lines.push(`Model fingerprint: ${o.fingerprint}`);
   lines.push('');
+  // the diagnosis first (the question, the answer, its evidence and limits), then the check and its hops
+  if (run.diagnosis) {
+    for (const l of diagnosisText({ ...run.diagnosis, outdated: o.outdated })) lines.push(l);
+    lines.push('A modeled result: it says what this model (and this simulated run) establish, not how a production network behaves.');
+    lines.push('');
+  }
   for (const l of commText(run.check)) lines.push(l);
   lines.push('');
   lines.push(traceText(run.trace, run.back));

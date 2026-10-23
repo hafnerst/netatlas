@@ -49,6 +49,37 @@ other's back:
 * An execution scope keeps an interconnect's `traffic:` only where its
   initiator, its source, the recipient and every transit device on the
   way are inside; the scope says which transfers it leaves out.
+* **Diagnosis** (Trace path) is built only from what was recorded: the
+  communication check's layers and, once compared, the send's structured
+  records — each message's outcome (answered, refused, unreachable, too
+  big, timed out, lost, not sent, no address, name not resolved,
+  cancelled), the last drop of its own packets with its cause (kind,
+  packet, outer header, interface, MTU, relation, cable, or the policy's
+  device, rule and default) as the engine or the firewall decided it, what
+  it waited for, its TCP retransmissions, its DNS queries' fates, and the
+  equal-cost branch it took. It never reads a cause from a log line's
+  words, never takes a later state for the state when a packet was sent,
+  and links only what a record links: a cause it records, a prerequisite
+  it waited for or lacks, a related observation, or *not established*.
+  Things that merely happened at the same time (a BFD flap near a failed
+  connection) are not linked. A timeout without a recorded drop is *not
+  established*: the answer, or its way back, may be what is missing.
+* What a diagnosis can read is bounded: the event log keeps its latest
+  20 000 events, the transport its last 400 tests, the engine the waits of
+  as many; a diagnosis of a send whose records are no longer kept says it
+  is *evidence-limited* and does not explain it. A diagnosis is kept with
+  its result and never recomputed; after an edit it is marked outdated.
+* An MQTT diagnosis reads the clients' counters: what the publisher sent
+  and the broker acknowledged (QoS 1; at QoS 0 the broker's receipt is not
+  established) and what each subscriber received — per leg, never one
+  from the other, not per publication.
+* Static analysis and simulation still differ where one has state the
+  other has not: a stateful firewall passes a packet as the reply of a
+  session the other direction opened (also for IP protocols without
+  ports, tracked by address pair), which the static policy check, deciding
+  each direction by its rules, does not know; a tunnel whose keepalives a
+  policy denies goes down at run time (no route over it), which the static
+  trace, following the configuration, does not foresee.
 
 **Not supported.** Runtime behaviour that no static analysis establishes
 (that an application accepts a connection, authenticates, answers or
@@ -311,14 +342,12 @@ what the advertisements it received told it (below).
   WireGuard handshakes …) and its data go between its outer ends with the
   protocol's outer header: GRE and mGRE 47, IP-in-IP 4, IPsec ESP 50 (no
   NAT traversal), UDP to the protocol's port for WireGuard, OpenVPN, L2TP,
-  GTP-U, VXLAN and Geneve; other tunnels' outer header is not stated (GRE
-  assumed). A tunnel interface follows its session's state. In the
-  simulation a packet's size counts each encapsulation as 4 bytes over the
-  outer IP header (IPsec ESP: 36), whatever the tunnel carries in its outer
-  header (a UDP tunnel's UDP and VXLAN or Geneve header are not counted), so
-  fragmentation and Packet Too Big come later than on a device; the static
-  path MTU uses the tunnel-MTU check's overheads instead (*Path MTU*,
-  below).
+  GTP-U, VXLAN and Geneve (IPv6 inside IP-in-IP: 41); other tunnels' outer
+  header is not stated (GRE assumed). A tunnel's outer packets are routed in
+  the VRF of its source interface. A tunnel interface follows its session's
+  state. What each encapsulation adds is one definition for the static path
+  MTU, the tunnel-MTU check and the simulation's packet lengths
+  (*Encapsulation sizes*, below).
 * **Routing services describe their configuration.** Each protocol has a
   fixed set of parameters (a protocol of the model may declare its own);
   areas, costs and timers are per relation end; one router ID per protocol.
@@ -409,18 +438,45 @@ to the host's address, DNAT for published ports) in both.
   only; anything else is reported as a limitation.
 
 **Path MTU.** The static path MTU uses the MTUs the model writes (an
-interface's, an aggregate's members', the ports of the cables on the way)
-and the tunnel-MTU check's overheads (an IPv4 outer header; IPsec as the
-worst case of ESP tunnel mode); an MTU not written is not known, so the
-result is an upper bound, and an encapsulation without a figure leaves its
-path's limit unknown. Which equal-cost branch a flow takes is not modeled:
-each branch is given. The simulation fragments IPv4 without DF, drops a
-larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
-Big, and the sender learns the path MTU (PMTUD, per VRF and destination,
-forgotten after 10 min or when the route leaves by another interface); TCP
-segments by it and by the MSS its peer's SYN announced, and an IPv6 sender
-fragments its own UDP and ICMP to it. TCP options other than the MSS,
-jumbo-frame negotiation and PLPMTUD are not modelled.
+interface's, an aggregate's members', the ports of the cables on the way,
+both ends of each cable) and the encapsulation sizes below; an MTU not
+written is not known, so the result is an upper bound. Which equal-cost
+branch a flow takes is not modeled statically: each branch is given (the
+simulation records the branch each Send test's packets took). The
+simulation fragments IPv4 without DF, drops a larger packet with DF (and
+IPv6) with Fragmentation Needed or Packet Too Big, and the sender learns the
+path MTU (PMTUD, per VRF and destination, forgotten after 10 min or when the
+route leaves by another interface); TCP segments by it and by the MSS its
+peer's SYN announced (out of a tunnel: the tunnel's MTU less the headers),
+and an IPv6 sender fragments its own UDP and ICMP to it. A tunnel takes what
+its MTU allows — written, else what its underlay's egress leaves room for,
+lower once its head learned a smaller path MTU towards the tunnel's
+destination: a larger IPv4 packet without DF is fragmented before
+encapsulation, one with DF (or IPv6) is refused with Fragmentation Needed or
+Packet Too Big carrying what fits (RFC 4459). A frame larger than a port of
+its cable takes (its MTU written: the receiving end, or a switch port it
+leaves by) is dropped there as oversize, without an ICMP error — the black
+hole of an MTU mismatch, which the link-MTU check reports. An outer packet's
+fragments are reassembled before it is decapsulated. TCP options other than
+the MSS, MSS clamping on tunnel heads, jumbo-frame negotiation and PLPMTUD
+are not modelled.
+
+**Encapsulation sizes** (src/analysis/encap.ts, one definition): the outer
+IP header of the tunnel's family (20 or 40 bytes; the family written on the
+tunnel's ends, IPv4 assumed and said when not written), a UDP tunnel's UDP
+header (8), and the tunnel's own format: GRE and mGRE 4 (no key, checksum or
+sequence number), IP-in-IP 0, IPsec ESP tunnel mode with AES-CBC and
+HMAC-SHA1-96 (8 SPI and sequence number, 16 IV, the inner packet and its 2
+trailer bytes padded to 16, 12 ICV: exact for this suite, a few bytes off for
+another, such as AES-GCM), WireGuard 16 + a 16-byte tag (its padding to 16
+bytes, which never exceeds the interface MTU, is not counted: a packet of the
+tunnel's MTU is exact, a smaller one up to 15 bytes short), OpenVPN over UDP
+24 (tun mode, P_DATA_V2, an AEAD cipher), L2TPv3 over UDP 12 (no cookie, the
+inner counted as an IP packet), GTP-U 8, VXLAN and Geneve 8 + the inner
+Ethernet header 14 (untagged; Geneve without options). A tunnel whose
+protocol has none of these is taken as GRE, by the simulation and by the
+static path MTU alike, which then calls its limit an estimate
+(indeterminate).
 
 **Not supported.** Application identification, TLS inspection, user
 identities, time ranges, NAT rules in a policy (the NAT service translates),
@@ -838,9 +894,10 @@ helpers and the command palette.
   tab.
 * **Consistency checks compare what the model writes down.** They don't read
   device configurations: they find contradictions in the model, not in the
-  network. The tunnel-MTU check assumes a fixed overhead per encapsulation
-  with an IPv4 outer header (IPsec: the worst case of ESP tunnel mode) and
-  skips protocols without a figure. The underlay check asks whether `over:`
+  network. The tunnel-MTU check uses the encapsulation sizes of
+  *Policy, NAT and boundaries* (the outer header of the tunnel's family; ESP
+  with its padding for the MTU it checks) and skips protocols without a
+  format. The underlay check asks whether `over:`
   connects the endpoints as a graph. OSPF and BGP parameters are read from
   relation attributes with fixed names (`area`, `network-type`, `hello`,
   `dead`, `peer-as`); one value for both ends is taken as agreement. A

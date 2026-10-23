@@ -28,12 +28,14 @@ test('MTU: 1500 and 9000 for a port; for a tunnel also 1476 (GRE), 1400, and its
   // r1:tun0: GRE over e6 (MTU 1500): 1476, the same as the GRE chip, with both reasons
   const t = H.mtuSuggestions(cc, cc.index.interfaces.get('r1:tun0'));
   assert.deepEqual(vals(t), ['1476', '1400', '9000']);
-  assert.match(t[0].title, /The MTU of the underlay e6 \(1500\) less 24 bytes of encapsulation: GRE: 20 IP \+ 4 GRE/);
-  // GRE over IPsec in the enterprise WAN: 1500 − (24 + 73)
+  assert.match(t[0].title, /The MTU of the underlay e6 \(1500\) less 24 bytes of encapsulation: GRE: 20 IPv4 \+ 4 GRE/);
+  // GRE over IPsec (ESP tunnel mode, AES-CBC, HMAC-SHA1-96) in the enterprise WAN, worked by hand (RFC 4303 §2): the ESP
+  // packet is 20 IP + 4 SPI + 4 sequence + 16 IV + the GRE packet and its 2 trailer bytes padded to 16 + 12 ICV. For 1500:
+  // 1500 − 52 = 1448 → 1440 (a multiple of 16) → the GRE packet is at most 1438; less 20 IP + 4 GRE: 1414 (86 bytes in all)
   const wan = model(example('enterprise-wan.yaml'));
   const st = H.mtuSuggestions(wan, wan.index.interfaces.get('hq-rtr1:st0.10'));
-  assert.equal(st[0].label, '1403 (underlay 1500 − 97)');
-  assert.match(st[0].title, /GRE: 20 IP \+ 4 GRE \+ IPsec ESP tunnel mode/);
+  assert.equal(st[0].label, '1414 (underlay 1500 − 86)');
+  assert.match(st[0].title, /GRE: 20 IPv4 \+ 4 GRE; IPsec ESP: 20 IPv4 \+ 24 IPsec ESP \+ padding to 16 with 2 trailer bytes \+ 12 ICV/);
 });
 
 test('MAC: random, locally administered unicast (the bits), unique in the model, in the model’s style', () => {

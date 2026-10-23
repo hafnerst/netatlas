@@ -254,6 +254,16 @@ export function buildCommands(): Command[] {
       run: (app) => app.openTrace(),
     },
     {
+      id: 'analyze.diagnose',
+      label: 'Diagnose communication…',
+      group: 'Analyze',
+      mode: true,
+      keys: { combos: [{ key: 'D', shift: true }] },
+      keywords: 'diagnosis why blocked explain evidence troubleshoot reachability cause',
+      state: (app) => needDiagram(app, 'Diagnose a communication of the selection: a device (its one client application to its peer), an interface, or a relation between its ends — the answer, what prevents it and its evidence (Shift+D)'),
+      run: (app) => app.diagnoseSelection(),
+    },
+    {
       id: 'trace.copy',
       label: 'Copy path trace as text',
       group: 'Analyze',

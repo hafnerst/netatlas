@@ -162,7 +162,9 @@ export class AppSim {
       const x = l ? l.addrs.find((y) => y.addr.version === v) : undefined;
       return x ? x.addr : `it listens on ${dev}:${bind} only, which has no IPv${v} address${this.e.waitsForLease(dev) ? ' yet (waiting for its DHCP lease)' : ''}`;
     }
-    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => Number(x.kind === 'loopback') - Number(y.kind === 'loopback') || cmp(x.id, y.id));
+    // (loopbacks, then a container bridge's interface, last: as Send test resolves a device, communication.ts appAddress)
+    const back = (l: { id: string; kind: string }): number => (l.kind === 'loopback' ? 1 : (this.P.m.index.interfaces.get(dev + ':' + l.id) || { type: '' }).type === 'bridge' ? 2 : 0);
+    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => back(x) - back(y) || cmp(x.id, y.id));
     for (const l of ls) for (const x of l.addrs) if (x.addr.version === v) return x.addr;
     return `${dev} has no IPv${v} address${this.e.waitsForLease(dev) && v === 4 ? ' yet (waiting for its DHCP lease)' : ''}`;
   }
@@ -299,7 +301,7 @@ export class AppSim {
       timeout: a.timeout !== undefined ? { value: a.timeout } : undefined,
       onDone: (x) => {
         // a request without an answer in time: again, up to its retries (an error or a refusal is no reason to retry)
-        if (x.ok || !p.answered || !/timed out/.test(x.result) || retry >= (a.retries || 0) || run.stopped) return;
+        if (x.ok || !p.answered || !(x.outcome && x.outcome.kind === 'timeout') || retry >= (a.retries || 0) || run.stopped) return;
         run.retried++;
         this.e.withTest(run.how !== 'start' ? x.id : null, () => this.e.note('message', p.transport, run.dev, '', 'retry', '', `${name}: message ${n} got no answer within its timeout: retry ${retry + 1} of ${a.retries}`));
         this.message(run, p, n, retry + 1);
@@ -414,7 +416,7 @@ export function appOutcome(r: AppRun): { ok: number; failed: number; pending: nu
   for (const { t } of last.values()) {
     if (!t) failed++;
     else if (!t.done) pending++;
-    else if (/cancelled \(Stop\)/.test(t.result)) cancelled++;
+    else if (t.outcome && t.outcome.kind === 'cancelled') cancelled++;
     else if (t.ok) ok++;
     else failed++;
   }

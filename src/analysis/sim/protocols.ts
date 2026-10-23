@@ -997,6 +997,10 @@ export class ProtocolSim implements Protocols {
     if (this.localErrorHook) this.localErrorHook(dev, pkt, kind, text, mtu);
   }
 
+  pathMtu(dev: string, vrf: string, dst: IpAddr): number | null {
+    return this.transport ? this.transport.learnedMtu(dev, vrf, dst) : null;
+  }
+
   sweep(): void {
     for (const h of this.sweepHooks) h();
   }

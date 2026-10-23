@@ -1763,10 +1763,10 @@ export class SimController implements SimulationMode {
   // ------------------------------------------------------------ Send test
 
   /** An analysis's handoff: Send network packets, open and prefilled (nothing is sent until Send). */
-  prefillSend(p: SendPrefill): void {
-    if (!this.testForm) return;
+  prefillSend(p: SendPrefill): string[] {
+    if (!this.testForm) return ['Send network packets is not available'];
     this.openSection('sim-ne-send');
-    this.testForm.prefill(p);
+    return this.testForm.prefill(p);
   }
 
   /** The simulation's state now, frozen for analysis (it never changes after this). */

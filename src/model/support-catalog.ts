@@ -50,8 +50,14 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   {
     id: 'mtu',
     name: 'Path MTU',
-    does: 'The largest packet that crosses each evaluated path unfragmented, and the payload that fits (TCP MSS, UDP or ICMP payload): the interfaces’ written MTUs, the ports of the cables on the way, tunnels as their underlay less the encapsulation overhead (nested layers added up), equal-cost branches and the return path apart.',
-    not: 'an MTU that is not written (never taken as 1500: the result is then an upper bound); encapsulations without a stated overhead; the size a flow actually uses (the simulation’s fragmentation, Fragmentation Needed / Packet Too Big and PMTUD show it).',
+    does: 'The largest packet that crosses each evaluated path unfragmented, and the payload that fits (TCP MSS, UDP or ICMP payload): the interfaces’ written MTUs, both ends of the cables on the way, tunnels as the largest inner packet their underlay leaves room for, with the encapsulation sizes the simulation’s packets have (the outer header of the tunnel’s family, a UDP tunnel’s UDP, the format’s header, ESP’s padding, VXLAN’s and Geneve’s inner Ethernet; nested layers inside out), equal-cost branches and the return path apart.',
+    not: 'an MTU that is not written (never taken as 1500: the result is then an upper bound); formats other than the one assumed per protocol (a GRE key, AES-GCM, Geneve options: a few bytes); a tunnel without a known format is taken as GRE and its limit called an estimate; the size a flow actually uses (the simulation’s fragmentation, Fragmentation Needed / Packet Too Big and PMTUD show it).',
+  },
+  {
+    id: 'diagnosis',
+    name: 'Diagnosis',
+    does: 'The answer to one communication question in order — its state (established, blocked, waiting, recovered, partial, not established), what prevents or limits it, the evidence chain, the separate legs, the next actions — from the communication check and, once compared, a recorded send’s structured records: each message’s outcome, the recorded cause of the last drop of its packets (the packet, its outer header, the rule or interface), its waits, retransmissions and DNS queries, the equal-cost branch taken; an MQTT client’s legs by their counters; every piece of evidence a link to what it names.',
+    not: 'causes not recorded (said as not established, never guessed), coincidences in time as causes, a single root cause where several blockers exist, records no longer kept (said as evidence-limited), a per-publication MQTT trail, a diagnosis of production networks.',
   },
   {
     id: 'addressing',

@@ -12,6 +12,88 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+The model format is unchanged: files keep `netatlas: 1` and every key means
+what it meant in 0.1.4; a few keys' run-time effect is stated more
+precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since-014)).
+
+### Added
+
+- **Diagnosis** in Trace path: under the verdict, the answer to the
+  question in order — its state (established, blocked, waiting, recovered,
+  partial, not established), a short explanation, the question as resolved
+  (from, to, family, service, routing context, configured model or
+  snapshot, the recorded send compared), what prevents or limits it, the
+  evidence chain, the separate legs (an MQTT publisher's and each
+  subscriber's apart) and the next actions, which prefill and never submit.
+  Each piece of evidence says whether it is a recorded cause, a
+  prerequisite, a related observation or not established, and links to the
+  object, the policy rule's device, the layer or the message it names;
+  following it moves no clock, sends nothing and changes nothing.
+  **Compare with simulation** adds the recorded send's evidence; the
+  diagnosis is kept with the result and marked outdated after an edit.
+- **Analyze → Diagnose communication…** (`Shift+D`): the question from the
+  selection (a device's client application to its peer or broker, a device
+  or interface, a relation between its ends), checked at once.
+- **Structured runtime evidence**: a drop records its cause where the
+  engine or the firewall decided it (the kind, the packet and its outer
+  header, the interface, MTU, relation, cable, or the policy's device, rule
+  and default); a Send test records its outcome kind, the last drop of its
+  own packets, what it waited for (a lease, DNS, a neighbour, a tunnel) and
+  how long, its TCP retransmissions and its DNS queries' fates; an
+  equal-cost choice of a Send test's packet records the branch taken.
+- The text export of Trace path starts with the diagnosis and names the
+  model by a fingerprint id.
+- Tests: hand-worked encapsulation sizes, identity across Analyze and the
+  simulation, the diagnosis regression matrix, bounded property tests of
+  generated models and action sequences with a reducer (test-only), and
+  browser checks of the diagnosis with real keys and in a narrow window.
+
+### Changed
+
+- **One definition of encapsulation sizes** for the static path MTU, the
+  tunnel-MTU check, the MTU suggestions and the simulation's packet lengths
+  (the packet inspector, a frame's time on the wire): the outer header of
+  the tunnel's family (IPv6: 40), a UDP tunnel's UDP header, each format's
+  header, ESP's padding (AES-CBC, HMAC-SHA1-96: exact instead of the worst
+  case), the inner Ethernet header of VXLAN and Geneve; OpenVPN and mGRE
+  have figures now. Static limits change accordingly (GRE over ESP over
+  1500 bytes: 1414 instead of 1403); the simulation's packets grow to
+  their real size (they counted 4 bytes per layer, ESP 36, no UDP).
+- A tunnel enforces its MTU at run time — written, else what its underlay
+  leaves room for — fragmenting IPv4 without DF before encapsulation and
+  refusing DF (and IPv6) with Fragmentation Needed / Packet Too Big
+  carrying what fits; its head passes on the path MTU it learned of its
+  underlay (PMTUD through the tunnel), and TCP over a tunnel announces the
+  matching MSS. Models whose TCP crossed a tunnel at 1500 bytes now show
+  that PMTUD.
+- A frame larger than the MTU written on the receiving end of its cable
+  (or on a switch port it leaves by) is dropped there, silently, as the
+  static path MTU already counted it: an MTU mismatch is a black hole.
+- A tunnel's outer packets are routed in the VRF of its source interface
+  (a front-door VRF), as Trace path traces them; IPv6 inside IP-in-IP is
+  protocol 41.
+- Analyze takes the ends a sender in the simulation takes: a device as the
+  source sends from its route's egress interface (not its first address by
+  kind, a loopback first), a device as the destination is reached at its
+  first interface, loopbacks and container bridges last; the question
+  stays shown as asked.
+- A host name checked for IPv6 is carried into Send network packets with
+  its family (the send asks for AAAA).
+- Compare with simulation, application retries and the status of Network
+  events read the structured outcomes instead of matching the result's
+  words.
+
+### Fixed
+
+- An outer packet fragmented on its way was decapsulated fragment by
+  fragment, delivering the inner packet more than once: it is reassembled
+  first.
+- Object links in the Analyze bottom panel (a hop's device, interface,
+  cable) did nothing; they select the object.
+- Preparing a send no longer writes another value where the form can't
+  take the analysis' choice (a lease's placeholder as an address, a
+  missing interface): what it could not fill in is said.
+
 ## [0.1.4] - 2026-10-22
 
 NetAtlas 0.1.4 is still one self-contained, offline HTML file
