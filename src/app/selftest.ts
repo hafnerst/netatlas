@@ -1572,6 +1572,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       // an edit does not compute it again behind the user's back: the result is marked outdated; Refresh computes it on the model as it is now
       check('after an edit the result is marked outdated (the banner and the window say so), not computed again', /outdated: the model changed/.test(q('#trace-text')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .an-outdated [data-an-refresh]') && /return path: Reachable within scope/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      check('the diagnosis says it is outdated and offers Refresh first; it is not recomputed', /Outdated: the model changed after this diagnosis/.test((q('#diag-flags') || { textContent: '' }).textContent || '') && (q('#diag-next [data-diag-act]') as HTMLElement | null)?.getAttribute('data-diag-act') === 'refresh', (q('#diag') || { textContent: 'no diagnosis' }).textContent || '');
       (q(':is(#toolwin, [data-an-root]) [data-an-refresh]') as HTMLElement).click();
       await tick();
       check('Refresh computes it again: without its default route the server has no way back', /return path: Blocked: 1 evaluated path stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || '') && !q(':is(#toolwin, [data-an-root]) .an-outdated'), q('#trace-text')!.textContent || '');
@@ -2224,8 +2225,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation…, Experiments… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit',
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Diagnose communication…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation…, Experiments… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open analyze.diagnose trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit',
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -6233,6 +6234,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('the path MTU: one line under the layers (collapsed), honest about MTUs the model does not write', !!q('#trace-mtu') && !(q('#trace-mtu') as HTMLDetailsElement).open && /^. ?Path MTU: /.test(q('#trace-mtu summary')!.textContent || '') && (/not known|At most|No evaluated path reaches the destination: there is no path MTU/.test(q('#trace-mtu summary')!.textContent || '') || !!q('#trace-mtu-test')), q('#trace-mtu') ? q('#trace-mtu summary')!.textContent || '' : 'no section');
       check('what the simulation gets is said under the result: carried over, and what is not', !!q('#trace-carry') && /Source: guest-phone/.test(q('#trace-carry')!.textContent || '') && /Not carried over: Expected outcome/.test(q('#trace-carry')!.textContent || ''));
       check('nothing to compare before a send of it (said, nothing sent)', !!q('#trace-compare') && !app.compareTrace() && !q('#trace-compare-res') && /send it first/.test(q('#toast')!.textContent || ''));
+      check('the diagnosis comes first under the verdict: blocked by the policy layer, the question with its context, and a next action that only prepares', (() => {
+        const d = q('#diag') as HTMLElement | null;
+        if (!d || d.getAttribute('data-state') !== 'blocked' || !/Policy — Violated/.test((q('#diag-blockers') || { textContent: '' }).textContent || '') || !/Simulation snapshot at t =/.test((q('#diag-question') || { textContent: '' }).textContent || '')) return false;
+        const before = ctl.sim.actions().length;
+        const now = ctl.sim.now;
+        const b = q('#diag-next [data-diag-act="handoff"]') as HTMLButtonElement | null;
+        if (!b || b.disabled) return false;
+        b.click();
+        return ctl.sim.actions().length === before && ctl.sim.now === now && (q('#sim-t-port') as HTMLInputElement).value === '22';
+      })(), (q('#diag') || { textContent: 'no diagnosis' }).textContent || '');
       // the user sends it; the comparison is then offered, and agrees (blocked statically, not delivered)
       (q('#sim-t-send') as HTMLElement).click();
       ctl.runTo(ctl.sim.now + 30000);
@@ -6240,6 +6251,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.redrawTrace();
       await tick();
       check('after the send: Compare with simulation sets the static result beside it', !!q('#trace-compare') && !(q('#trace-compare') as HTMLButtonElement).disabled && app.compareTrace() && !!q('#trace-compare-res') && q('#trace-compare-res [data-agree]')!.getAttribute('data-agree') === 'yes' && /They agree/.test(q('#trace-compare-res')!.textContent || ''), q('#trace-compare-res') ? q('#trace-compare-res')!.textContent || '' : 'no comparison');
+      check('after Compare the diagnosis has the recorded send: its runtime cause is the firewall’s policy, with the packet and the rule', (() => {
+        const d = q('#diag') as HTMLElement | null;
+        return !!d && d.getAttribute('data-state') === 'blocked' && /send #\d+/.test((q('#diag-question') || { textContent: '' }).textContent || '') && !!q('#diag-blockers [data-source="runtime"][data-rel="cause"]') && !!q('#diag-blockers [data-diag-ref^="policy:"]');
+      })(), (q('#diag') || { textContent: 'no diagnosis' }).textContent || '');
+      check('navigating the evidence selects, and moves no clock, sends nothing, changes no model', (() => {
+        const before = ctl.sim.actions().length;
+        const tests = ctl.sim.tests().length;
+        const now = ctl.sim.now;
+        const y = app.exportText();
+        const ref = q('#diag-blockers [data-diag-ref^="policy:"]') as HTMLElement;
+        ref.click();
+        const dev = (ref.getAttribute('data-diag-ref') || '').split(':')[1];
+        return app.session!.state.selected === 'device:' + dev && ctl.sim.now === now && ctl.sim.actions().length === before && ctl.sim.tests().length === tests && app.exportText() === y;
+      })());
       check('while the simulation runs the model is locked: Save as expectation… says so', (q('#trace-save-exp') as HTMLButtonElement).disabled && !app.traceToExpectation());
       app.exitSimulation();
       await tick();

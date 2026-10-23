@@ -1337,6 +1337,16 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .layer-ev summary { cursor: pointer; color: var(--link); font-size: 11.5px; }
 .layer-ev ul { margin: 2px 0; padding-left: 16px; }
 .comm-legs { margin: 4px 0; padding-left: 18px; }
+/* the diagnosis of a communication (Trace path): the answer, then its evidence */
+.diag { border-left: 3px solid var(--border); padding-left: 10px; }
+.diag h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.diag-h4 { margin: 8px 0 2px; font-size: 12.5px; }
+.diag-list { margin: 2px 0 6px; padding-left: 18px; }
+.diag-list > li { margin: 3px 0; overflow-wrap: anywhere; }
+.diag-rel { font-size: 11px; }
+.diag-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; }
+.diag-flags { color: var(--warn); }
+.diag-next { flex-wrap: wrap; }
 .trace-end.beyond { color: var(--warn); }
 .hop-table .why-btn { display: block; margin-top: 2px; font-size: 11px; padding: 0 4px; white-space: nowrap; }
 .hop-table th.th-n { white-space: nowrap; }

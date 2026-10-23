@@ -338,7 +338,7 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
     // the representative messages: the first that failed, and the first that recovered (never the first branch for its own sake)
     const shown = [failedOnes[0], per.find((x) => x.m.state === 'recovered'), per.find((x) => x.m.state === 'waiting'), okOnes[0]].filter((x, k, a): x is (typeof per)[number] => !!x && a.indexOf(x) === k).slice(0, 2);
     for (const x of shown) {
-      d.chain.push({ rel: 'related', source: 'runtime', text: `Message ${x.t.msg || 1} (sent ${sec(x.t.started)}${x.t.srcAddr ? ' from ' + x.t.srcAddr : ''} to ${formatAddr(x.t.dst)}): ${x.m.summary}`, refs: [{ ref: 'test:' + x.t.id, label: `message ${x.t.msg || 1}` }], t: x.t.started });
+      d.chain.push({ rel: 'related', source: 'runtime', text: `Message ${x.t.msg || 1} (sent ${sec(x.t.started)}${x.t.srcAddr ? `, source ${x.t.srcAddr}` : ''}, to ${formatAddr(x.t.dst)}): ${x.m.summary}`, refs: [{ ref: 'test:' + x.t.id, label: `message ${x.t.msg || 1}` }], t: x.t.started });
       for (const l of x.m.links) d.chain.push(l);
     }
     if (rt.log.dropped > 0 && tests.some((t) => rt.log.first > t.started)) d.evidenceLimited = true;

@@ -412,6 +412,8 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
     // (the family the check decided goes to the tracer too: it resolves a device or an interface in it, never in the other)
     const treq = { from: src, to: dst, service: svc ? (svc.proto === 'icmp' ? 'icmp' : `${svc.proto}/${svc.port}`) : undefined, vrf: req.vrf, family: fam };
     const trace = tracePath(model, treq, ctx);
+    // (the question as asked stays the trace's request: the interfaces chosen for a device are its effective ends)
+    trace.request = { ...trace.request, from: from.kind === 'end' ? from.text : fromDev, to: to.kind === 'end' ? to.text : trace.request.to };
     out.trace = trace;
     if (trace.error) {
       if (/^Destination: .* has no (IPv[46] )?address/.test(trace.error) && toDev === undefined && to.kind === 'end' && to.end.kind !== 'address') noAddress(to.end.device, 'destination');

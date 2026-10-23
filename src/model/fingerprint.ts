@@ -13,6 +13,19 @@ import type { Model } from './types';
 const TOP_SKIP = new Set(['layout', 'index', 'services']);
 const cache = new WeakMap<Model, string>();
 
+/** A short identity of a model's fingerprint (two FNV-1a hashes, 16 hex digits): what an export names the model by. */
+export function fingerprintId(model: Model): string {
+  const t = modelFingerprint(model);
+  let a = 0x811c9dc5;
+  let b = 0x01000193 ^ t.length;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x01000197) >>> 0;
+  }
+  return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');
+}
+
 export function modelFingerprint(model: Model): string {
   const known = cache.get(model);
   if (known !== undefined) return known;
