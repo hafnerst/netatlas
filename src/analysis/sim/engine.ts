@@ -472,9 +472,13 @@ export class Engine {
     this.stateVersion++;
   }
 
+  /** the ports whose MTU the model writes ("dev:port" → bytes): what a frame arriving on a cable is checked against */
+  private portMtu = new Map<string, number>();
+
   constructor(model: Model, opts: EngineOptions = {}) {
     this.model = model;
     this.net = buildNet(model);
+    for (const [k, i] of model.index.interfaces) if (i.mtu !== undefined) this.portMtu.set(k, i.mtu);
     this.timerScale = opts.timerScale || 1;
     const eng = this;
     this.sep = new SeparationSim({
@@ -2163,14 +2167,15 @@ export class Engine {
     }
     // a frame larger than a port of its cable takes (its MTU written in the model, as the static path MTU counts it): the
     // receiving port, or a switch port it left by, drops it as oversize — silently, no ICMP (a black hole on an MTU mismatch)
-    if (frame.ip) {
-      const size = ipLen(frame.ip);
+    if (frame.ip && this.portMtu.size) {
       const here = this.net.ends.get(portKey(dev, port));
       const far = here ? otherEnd(this.net, here) : null;
       for (const [d, p] of [[dev, port], far ? [far.device, far.port] : ['', '']] as Array<[string, string]>) {
-        const i = d ? this.model.index.interfaces.get(d + ':' + p) : undefined;
-        if (!i || i.mtu === undefined || size <= i.mtu || (d !== dev && !(this.net.devices.get(d) || { bridge: null }).bridge)) continue;
-        this.noteAt(t, 'drop', frame.msg.protocol, d, '', frame.msg.type, '', `dropped at ${d}:${p}: ${frame.msg.label} (${size} bytes) is larger than its MTU, ${i.mtu} — an oversize frame, dropped without an ICMP error`, { kind: 'too-big', iface: p, mtu: i.mtu, pkt: frame.ip.id, flow: flowText(frame.ip) });
+        const mtu = d ? this.portMtu.get(d + ':' + p) : undefined;
+        if (mtu === undefined || (d !== dev && !(this.net.devices.get(d) || { bridge: null }).bridge)) continue;
+        const size = ipLen(frame.ip);
+        if (size <= mtu) continue;
+        this.noteAt(t, 'drop', frame.msg.protocol, d, '', frame.msg.type, '', `dropped at ${d}:${p}: ${frame.msg.label} (${size} bytes) is larger than its MTU, ${mtu} — an oversize frame, dropped without an ICMP error`, { kind: 'too-big', iface: p, mtu, pkt: frame.ip.id, flow: flowText(frame.ip) });
         return;
       }
     }
@@ -3076,8 +3081,9 @@ export class Engine {
     const hop = hops.length === 1 ? hops[0] : hops[hashIndex(pkt.flow, hops.length)];
     const out = sd.l3.get(hop.iface);
     if (!out) return;
-    // (the branch this flow takes, recorded: a diagnosis names the runtime branch, never the analyzer's first alternative)
-    if (hops.length > 1) {
+    // (the branch a Send test's flow takes, recorded: a diagnosis names the runtime branch, never the analyzer's first
+    // alternative; background traffic's choices are not logged)
+    if (hops.length > 1 && (pkt.msg.test !== undefined || this.testCtx !== null)) {
       const index = hops.indexOf(hop);
       this.pendingRoute = { pkt: pkt.id, of: hops.length, index, iface: hop.iface, gateway: hop.gateway ? formatAddr(hop.gateway) : undefined };
       this.note('route', pkt.msg.protocol, dev, '', 'equal-cost choice', '', `${dev} has ${hops.length} equal-cost next hops to ${formatAddr(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''}: this flow (${pkt.flow}) takes ${index + 1}, out ${hop.iface}${hop.gateway ? ' via ' + formatAddr(hop.gateway) : ''} (${pkt.msg.label})`);
