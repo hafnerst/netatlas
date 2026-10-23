@@ -1140,6 +1140,35 @@ export class Simulation {
     return this.runs.slice().reverse();
   }
 
+  /**
+   * The recorded evidence of a send, for its diagnosis (analysis/diagnosis.ts): the events of its messages (by test id
+   * or packet id, as recorded), what each waited for in the engine, and how much of the log is still kept. Reading it
+   * changes nothing: no time passes, nothing is sent.
+   */
+  runEvidence(run: TestRun): { run: TestRun; events: SimEvent[]; waits: (test: number) => Array<{ cond: string; why: string; since: number; until?: number }>; log: { first: number; dropped: number }; now: number } {
+    const ids = new Set(run.tests.map((t) => t.id));
+    const pkts = new Set<number>();
+    for (const t of run.tests) for (const p of t.pktIds) pkts.add(p);
+    const log = this.engine.log;
+    const events = log.filter((e) => (e.test !== undefined && ids.has(e.test)) || (e.pkt !== undefined && pkts.has(e.pkt)));
+    return { run, events, waits: (id) => this.engine.waitsOf(id), log: { first: log.length ? log[0].t : this.now, dropped: this.engine.logDropped }, now: this.now };
+  }
+
+  /** An MQTT client's runtime counters (what it published and the broker acknowledged, what it received), null when it never ran. */
+  mqttCounters(dev: string, app: string): { published: number; acked: number; received: number; state: string } | null {
+    const cs = this.mqtt.clients.filter((c) => c.run.dev === dev && c.run.app.id === app);
+    if (!cs.length) return null;
+    let published = 0;
+    let acked = 0;
+    let received = 0;
+    for (const c of cs) {
+      published += c.published;
+      acked += c.pubacked;
+      c.received.forEach((v) => (received += v));
+    }
+    return { published, acked, received, state: cs[cs.length - 1].state };
+  }
+
   /** Stop a series: no more of its messages are sent (those on their way finish). */
   stopRun(id: number): boolean {
     const r = this.runs.find((x) => x.id === id);
