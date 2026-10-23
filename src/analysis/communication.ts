@@ -162,7 +162,11 @@ function failed(req: CommRequest, error: string, context: AnalysisContext): Comm
   return { error, request: req, verdict: 'indeterminate', headline: error, layers: [], legs: [], info: resultInfo(context) };
 }
 
-/** The address an application's clients use for a device (as the simulation's applications pick it): the bind interface's, else the first interface's of the family, loopbacks last. */
+/**
+ * The address a device is reached at (as the simulation's applications and Send test pick it, apps.ts addrOf and
+ * transport.ts resolveTarget): the bind interface's, else the first interface's of the family by id — loopbacks, then a
+ * container bridge's interface, last; never a tunnel's.
+ */
 export function appAddress(model: Model, dev: string, v: 4 | 6, bind: string | undefined, ctx: RoutingCtx): { iface: string; address: string } | null {
   const d = model.index.devices.get(dev);
   if (!d) return null;
@@ -173,7 +177,7 @@ export function appAddress(model: Model, dev: string, v: 4 | 6, bind: string | u
   }
   const kindOf = (i: string): number => {
     const x = model.index.interfaces.get(ifaceKey(dev, i));
-    return x && x.type === 'loopback' ? 1 : 0;
+    return x && x.type === 'loopback' ? 1 : x && x.type === 'bridge' ? 2 : 0;
   };
   const cands = conn.filter((c) => {
     const x = model.index.interfaces.get(ifaceKey(dev, c.iface));
@@ -380,8 +384,31 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
   if (blocked || (nameFailed && !toAddr)) {
     layers.push({ id: 'path', verdict: addr.verdict === 'violated' ? 'violated' : 'indeterminate', text: 'Not traced: ' + (addr.verdict !== 'satisfied' ? 'an end has no address to trace with' : 'the name does not resolve'), detail: [], refs: [] });
   } else {
-    const src = from.kind === 'end' ? from.text : fromDev;
-    const dst = to.kind === 'end' ? to.text : (toAddr as string);
+    let dst = to.kind === 'end' ? to.text : (toAddr as string);
+    // a destination device: the interface a sender of the simulation takes for it (appAddress), not another of its
+    // interfaces — named with the device, so the device stays the destination (an address alone may be several devices')
+    let dstAddr = to.kind === 'end' && to.end.kind === 'address' ? to.end.address : toAddr || '';
+    if (to.kind === 'end' && to.end.kind === 'device') {
+      const pick = appAddress(model, to.end.device, fam || 4, undefined, ctx) || (fam ? null : appAddress(model, to.end.device, 6, undefined, ctx));
+      if (pick) {
+        dst = `${to.end.device}:${pick.iface}`;
+        dstAddr = pick.address;
+      }
+    } else if (to.kind === 'end' && to.end.kind === 'iface') {
+      const c = endpointChoices(model, to.end, ctx).find((x) => fam === undefined || x.version === fam);
+      if (c) dstAddr = c.address;
+    }
+    // a source device (or client application) without an interface: the route's egress gives the address, as the
+    // simulation's sender takes it (egressSource mirrors transport.ts pickSource), not the first address by kind
+    let src = from.kind === 'end' ? from.text : fromDev;
+    let srcHow = '';
+    if (dstAddr && (from.kind === 'app' || (from.kind === 'end' && from.end.kind === 'device'))) {
+      const eg = egressSource(model, fromDev, dstAddr, ctx);
+      if (eg) {
+        src = `${fromDev}:${eg.iface}`;
+        srcHow = `the route to ${dstAddr} leaves ${fromDev} by ${eg.iface}: its address is the source, as the simulation’s sender takes it`;
+      }
+    }
     // (the family the check decided goes to the tracer too: it resolves a device or an interface in it, never in the other)
     const treq = { from: src, to: dst, service: svc ? (svc.proto === 'icmp' ? 'icmp' : `${svc.proto}/${svc.port}`) : undefined, vrf: req.vrf, family: fam };
     const trace = tracePath(model, treq, ctx);
@@ -398,11 +425,11 @@ export function checkCommunication(model: Model, req: CommRequest, snap: Analysi
         addr.text = `From ${s.device}${s.iface ? ':' + s.iface : ''} · ${s.address || 'no address'}${s.iface && s.address ? ` (${ADDR_METHOD_TEXT[methodOf(snap, s.device, s.iface, s.address)]})` : ''}`;
         if (s.iface) addr.refs.push(`iface:${s.device}:${s.iface}`);
         const same = srcChoices.filter((c) => !s.address || c.version === (parseAddress(s.address) as { version: 4 | 6 }).version);
-        if (same.length > 1) addr.detail.push(`${fromDev} has ${same.length} addresses of this family that could be the source; the tracer uses ${s.address} (loopbacks first, then by interface)`);
+        if (same.length > 1) addr.detail.push(`${fromDev} has ${same.length} addresses of this family that could be the source; ${srcHow || `the tracer uses ${s.address} (no route leaves ${fromDev} towards the destination: loopbacks first, then by interface)`}`);
       }
       if (d) {
         const how = d.device && d.iface ? ADDR_METHOD_TEXT[methodOf(snap, d.device, d.iface, d.address)] : 'no modeled device has it';
-        addr.detail.unshift(`To ${d.device ? d.device + (d.iface ? ':' + d.iface : '') + ' · ' : ''}${d.address} (${how})${to.kind === 'app' && to.app.bind ? `: the bind interface of ${to.text}` : to.kind === 'app' ? ': the address the application’s clients use (first interface, loopbacks last)' : ''}`);
+        addr.detail.unshift(`To ${d.device ? d.device + (d.iface ? ':' + d.iface : '') + ' · ' : ''}${d.address} (${how})${to.kind === 'app' && to.app.bind ? `: the bind interface of ${to.text}` : to.kind === 'app' || (to.kind === 'end' && to.end.kind === 'device') ? ': the address a sender takes for the device (first interface, loopbacks last)' : ''}`);
         if (d.device) addr.refs.push(d.iface ? `iface:${d.device}:${d.iface}` : 'device:' + d.device);
         if (toDev && d.device && d.device !== toDev) addr.detail.push(`${d.address} is also an address of ${d.device}: the trace follows ${d.device}`);
       }

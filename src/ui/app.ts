@@ -3933,6 +3933,8 @@ export class App {
   private traceError = '';
   /** the check on screen, the model and snapshot it was computed on (computed again only by Trace or Refresh) */
   private traceRun: (TraceRun & { model: Model; snap: AnalysisSnapshot | null; request: CommRequest }) | null = null;
+  /** what the last handoff's prefill could not fill in (tests read it) */
+  lastPrefillMissed: string[] = [];
 
   /** The check on screen (it stays as computed: an edit marks it outdated, it is not computed again behind the user's back), or null. */
   currentTrace(): TraceRun | null {
@@ -4110,9 +4112,11 @@ export class App {
       if (blocked) this.toast(blocked + '.');
       return false;
     }
+    let missed: string[] = [];
     if (h.kind === 'app' && h.app) this.simCtl.appFrom(h.device);
-    else if (h.prefill) this.simCtl.prefillSend(h.prefill);
-    this.toast(`${h.text}: prefilled in Network events, not sent.`);
+    else if (h.prefill) missed = this.simCtl.prefillSend(h.prefill);
+    this.lastPrefillMissed = missed;
+    this.toast(`${h.text}: prefilled in Network events, not sent.${missed.length ? ' Not filled in: ' + missed.join('; ') + '.' : ''}`);
     return true;
   }
 

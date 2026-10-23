@@ -1021,7 +1021,7 @@ export class Simulation {
     const one = (n: number): Test | string => {
       const d = n === 1 ? first : this.planTarget(p, via);
       if (typeof d === 'string') return `not sent: ${d}`;
-      return this.transport.run({ from: p.from, via, target: d.target, dst: d.dst, name: d.name, kind: p.kind, port: usesPorts(p.kind) ? p.port : 0, size: p.size, df: p.df, keep: p.kind === 'tcp' && !!p.keep, source: 'manual', run: run.id, msg: n });
+      return this.transport.run({ from: p.from, via, target: d.target, dst: d.dst, name: d.name, qtype: d.name && p.family === 6 ? 'AAAA' : undefined, kind: p.kind, port: usesPorts(p.kind) ? p.port : 0, size: p.size, df: p.df, keep: p.kind === 'tcp' && !!p.keep, source: 'manual', run: run.id, msg: n });
     };
     const t = one(1);
     if (typeof t === 'string') return t;

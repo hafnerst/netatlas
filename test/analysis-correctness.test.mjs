@@ -109,11 +109,12 @@ test('family: application endpoints — a client’s ip_version, a listener aske
   const h = I.handoffOf(m, id);
   assert.equal(h.prefill.toAddr, 'fd00:2::20');
   assert.ok(h.carried.some((x) => /IPv6/.test(x)));
-  // a host name can't carry IPv6 into Send network packets (it resolves A): said, not claimed
+  // a host name keeps IPv6 into Send network packets: the send resolves its AAAA record
   const nid = { ...id, destination: { binding: 'name', name: 'srv.example.net' } };
   const nh = I.handoffOf(m, nid);
-  assert.ok(nh.notTransferred.some((x) => /resolves srv\.example\.net for IPv4/.test(x)));
-  assert.ok(!nh.carried.some((x) => /IPv6/.test(x)));
+  assert.equal(nh.prefill.family, 6);
+  assert.ok(nh.carried.some((x) => /srv\.example\.net.*AAAA/.test(x)));
+  assert.ok(!nh.notTransferred.some((x) => /Family/.test(x)));
 });
 
 // ------------------------------------------------------------------ policy identities by effective addresses

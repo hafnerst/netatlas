@@ -162,7 +162,9 @@ export class AppSim {
       const x = l ? l.addrs.find((y) => y.addr.version === v) : undefined;
       return x ? x.addr : `it listens on ${dev}:${bind} only, which has no IPv${v} address${this.e.waitsForLease(dev) ? ' yet (waiting for its DHCP lease)' : ''}`;
     }
-    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => Number(x.kind === 'loopback') - Number(y.kind === 'loopback') || cmp(x.id, y.id));
+    // (loopbacks, then a container bridge's interface, last: as Send test resolves a device, communication.ts appAddress)
+    const back = (l: { id: string; kind: string }): number => (l.kind === 'loopback' ? 1 : (this.P.m.index.interfaces.get(dev + ':' + l.id) || { type: '' }).type === 'bridge' ? 2 : 0);
+    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => back(x) - back(y) || cmp(x.id, y.id));
     for (const l of ls) for (const x of l.addrs) if (x.addr.version === v) return x.addr;
     return `${dev} has no IPv${v} address${this.e.waitsForLease(dev) && v === 4 ? ' yet (waiting for its DHCP lease)' : ''}`;
   }

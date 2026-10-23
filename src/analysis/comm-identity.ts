@@ -167,6 +167,8 @@ export interface SendPrefill {
   toAddr?: string;
   /** an exact address, or a host name */
   target?: string;
+  /** a host name's family (6: its AAAA record) */
+  family?: 4 | 6;
   /** the data size (bytes) and Don't fragment: a path MTU test */
   size?: number;
   df?: boolean;
@@ -218,8 +220,8 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
   carried.push(`Source: ${s.device}${s.iface ? ':' + s.iface : ''}${s.address ? ` (${s.binding === 'address' ? s.address : s.note ? 'its lease when sent' : s.address})` : ''}`);
   if (t.binding === 'name' && t.name) {
     pre.target = t.name;
-    carried.push(`Destination: ${t.name}, ${BINDING_TEXT.name}`);
-    if (id.family === 6) not.push(`Family: Send network packets resolves ${t.name} for IPv4 (an A record); the IPv6 check (AAAA) can't be carried over: write its IPv6 address under To instead`);
+    if (id.family) pre.family = id.family;
+    carried.push(`Destination: ${t.name}, ${BINDING_TEXT.name}${id.family === 6 ? ' (its AAAA record)' : ''}`);
   } else if (t.binding === 'address' && t.address) {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}, ${BINDING_TEXT.address}`);
@@ -233,7 +235,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}`);
   } else return null;
-  carried.push(`Protocol: ${svcText}${id.family && !(t.binding === 'name' && id.family === 6) ? `, IPv${id.family}` : ''}`);
+  carried.push(`Protocol: ${svcText}${id.family ? `, IPv${id.family}` : ''}`);
   // the routing context: the simulation sends in the source interface's VRF
   const si = s.iface ? model.index.interfaces.get(s.device + ':' + s.iface) : undefined;
   if (id.request.vrf !== undefined && si && (si.vrf || '') !== id.request.vrf) not.push(`VRF: the simulation sends in the VRF of ${s.device}:${s.iface} (${si.vrf || 'the default table'}); the VRF chosen here (${id.request.vrf || 'the default table'}) can't be set for a send`);
