@@ -3968,9 +3968,11 @@ export class App {
   }
 
   /**
-   * Go to a piece of a diagnosis' evidence: an object of the diagram (selected), a policy rule (its device), a layer
-   * of the check (its evidence), a message of a send (the packet inspector), a recorded event. It selects or opens;
-   * the simulated clock does not move, nothing is sent, the model does not change. Evidence no longer kept is said.
+   * Go to a piece of a diagnosis' evidence: an object of the diagram (selected), a policy rule or default action (its
+   * device's Network policy, that row marked), a layer of the check (its evidence), a recorded packet, message or event
+   * (the packet inspector, that packet). A runtime record names its execution: one of an earlier simulation — whose
+   * numbers a later one reuses — is not available, and neither is one no longer kept; nothing else is opened instead.
+   * It selects or opens: the simulated clock does not move, nothing is sent, the model and its lock do not change.
    */
   gotoEvidence(ref: string): boolean {
     const i = ref.indexOf(':');
@@ -3985,10 +3987,22 @@ export class App {
       return true;
     }
     if (kind === 'policy') {
-      const [dev, rule] = rest.split(':');
+      const c = rest.lastIndexOf(':');
+      const dev = rest.slice(0, c);
+      const which = rest.slice(c + 1);
+      if (!this.session || !this.session.model.index.devices.has(dev)) {
+        this.toast(`${dev} is not in the model any more: its policy is not available.`);
+        return false;
+      }
       this.select('device:' + dev, true);
-      if (rule) this.toast(`${dev}: rule ${rule} of its policy (its properties list the rules in order).`);
-      return true;
+      if (which === 'implicit') {
+        this.toast(`${dev} has no written network policy: its relations and its allow list decide (its simulation parameters).`);
+        return true;
+      }
+      const ok = this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
+      this.renderSide();
+      if (!ok) this.toast(`${dev} has no rule ${which} in its network policy now (the model changed after the diagnosis?).`);
+      return ok;
     }
     if (kind === 'test' || kind === 'packet' || kind === 'event') {
       const ctl = this.simCtl;
@@ -3996,11 +4010,26 @@ export class App {
         this.toast('That evidence belongs to a simulation that is no longer running: it is not available.');
         return false;
       }
-      const n = Number(rest.split(':')[0]);
-      const ok = kind === 'event' ? ctl.inspectEvent(n) : ctl.inspectTest(n);
-      if (!ok) {
-        const ev = kind === 'event' ? ctl.sim.events().find((e) => e.seq === n) : null;
-        this.toast(ev ? `Recorded at t = ${(ev.t / 1000).toFixed(1)} s at ${ev.device || 'the network'}: ${ev.detail}` : 'That record is no longer kept (the event log keeps the latest events): it is not available.');
+      const [execText, idText] = rest.split(':');
+      const n = Number(idText);
+      if (Number(execText) !== ctl.sim.exec || !Number.isFinite(n)) {
+        this.toast('That evidence belongs to an earlier simulation (a later one numbers its records anew): it is not available.');
+        return false;
+      }
+      let ok: boolean;
+      if (kind === 'packet') {
+        ok = ctl.inspectPacket(n);
+        if (!ok) this.toast('That packet’s record is no longer kept (the latest packets are): it is not available.');
+      } else if (kind === 'event') {
+        const kept = ctl.sim.eventKept(n);
+        ok = kept === 'kept' && ctl.inspectEvent(n);
+        if (!ok) {
+          const ev = kept === 'kept' ? ctl.sim.events().find((e) => e.seq === n) : null;
+          this.toast(ev ? `Recorded at t = ${(ev.t / 1000).toFixed(1)} s at ${ev.device || 'the network'}: ${ev.detail}` : 'That event is no longer kept (the event log keeps the latest events): it is not available.');
+        }
+      } else {
+        ok = ctl.inspectTest(n);
+        if (!ok) this.toast('That message’s packets are no longer kept, or it sent none: it is not available.');
       }
       return ok;
     }
