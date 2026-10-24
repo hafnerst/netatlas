@@ -2443,7 +2443,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         `${theme}: the simulation panel: Pause (primary), Step, the state, the speed 0.1×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
         q('#sim-play')!.classList.contains('primary') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.1 0.25 0.5 1 2 4' && (q('#sim-pace') as HTMLSelectElement).value === 'readable' && (q('#sim-skip') as HTMLInputElement).checked &&
-          q('#sim-pace-text')!.textContent === 'Readable · 3 s per hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
+          q('#sim-pace-text')!.textContent === 'Readable · 3–5 s per hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
       );
       // watch ARP resolve and OSPF reach Full
       ctl.runTo(20000);

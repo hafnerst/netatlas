@@ -248,7 +248,7 @@ test('the pacing on screen: every dot travels its way at the readable pace; a do
       await new Promise((r) => setTimeout(r, i ? 250 : 1500));
       p = await page.eval(PACE);
     }
-    assert.match(p.text, /^Readable · 3 s per hop · 1×( · waiting for packet arrival( \(.+\))?)?$/);
+    assert.match(p.text, /^Readable · 3–5 s per hop · 1×( · waiting for packet arrival( \(.+\))?)?$/);
     assert.ok(p.playing && p.clock > 1000, JSON.stringify(p));
     assert.ok(p.items.every((h) => h >= 2000), 'every hop at least 2 s');
     // a dot: at the moment one is drawn, click it; the simulation pauses and the inspector opens

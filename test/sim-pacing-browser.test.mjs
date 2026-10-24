@@ -1,7 +1,7 @@
 // Even pacing from the first packet, in a real browser (headless Chrome/Edge/
 // Chromium through the DevTools protocol; skipped without one): the screen
 // time of every hop, from the moment its dot starts moving to its arrival,
-// is its configured pacing (Readable: about 3 s, by latency within 2–6 s)
+// is its configured pacing (Readable: 3–5 s, by its modelled cost: travel.ts)
 // for the first messages after the start and for messages a minute later,
 // within a small tolerance. Also after a slow first frame (the main thread
 // blocked as the simulation starts), through the startup burst (many hops

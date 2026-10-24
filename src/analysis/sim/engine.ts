@@ -4854,24 +4854,40 @@ export class Engine {
 
   // ------------------------------------------------------------ estimates (for the logical view's dots)
 
-  /** About how long a packet from a device to an address takes: its traced path's cables × a hop's time (cached per routing state). */
+  /**
+   * About how long a packet from a device to an address takes (the logical view's lane of a relation; presentation only):
+   * the cables of its traced path and of each tunnel's underlay, each its own latency and a small frame at its own speed
+   * (cached per routing state; the first path traced — an illustration, never a runtime dependency). Not traced: two
+   * hops' default time.
+   */
   estimate(dev: string, to: IpAddr): number {
     const key = dev + '>' + formatAddr(to);
     const known = this.estimates.get(key);
     if (known !== undefined) return known;
-    let cables = 1;
+    let ms = 0;
     try {
       const tr = tracePath(this.model, { from: dev, to: formatAddr(to) }, this.ctx());
-      if (tr.paths.length) {
-        const count = (p: { hops: Array<{ links: string[]; underlay?: { hops: Array<{ links: string[] }> } }> }): number => p.hops.reduce((n, h) => n + h.links.length + (h.underlay ? count(h.underlay as never) : 0), 0);
-        cables = Math.max(1, count(tr.paths[0] as never));
-      }
+      type P = { hops: Array<{ links: string[]; underlay?: P }> };
+      const sum = (p: P): number => p.hops.reduce((n, h) => n + h.links.reduce((m, l) => m + this.linkCost(l), 0) + (h.underlay ? sum(h.underlay) : 0), 0);
+      if (tr.paths.length) ms = sum(tr.paths[0] as never);
     } catch (e) {
-      cables = 2;
+      ms = 0;
     }
-    const ms = cables * this.hopTime();
+    if (!(ms > 0)) ms = 2 * this.hopTime();
     this.estimates.set(key, ms);
     return ms;
+  }
+
+  /** Every simulated cable's traversal cost (linkCost; the readable pacing's scale, travel.ts). */
+  cableCosts(): number[] {
+    return Array.from(this.net.links.keys()).sort(cmp).map((l) => this.linkCost(l));
+  }
+
+  /** A cable's traversal cost for a small frame (ms): its latency and the serialization at its speed (a cable not simulated: a hop's default time). */
+  linkCost(link: string): number {
+    if (!this.net.links.has(link)) return this.hopTime();
+    const c = Number(this.latency(link).value) + (PAYLOAD * 8 * 1000) / Number(this.speed(link).value);
+    return c > 0 && isFinite(c) ? c : this.hopTime();
   }
 }
 

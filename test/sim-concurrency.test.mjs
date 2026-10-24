@@ -13,7 +13,7 @@
 // drives the frames (no sleeping).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { example, load, model, withClock } from './helpers.mjs';
+import { example, load, model, withClock, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
@@ -21,7 +21,7 @@ const P = load('analysis/sim/pacing.js');
 /** A simulation with its pacer, as the page has them; `frame(ms)`: one animation frame (the real-time schedule's turn, then the display's). */
 function paced(name, set = {}) {
   const sim = withClock(new S.Simulation(model(example(name))));
-  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, foreground: () => sim.foregroundActive() };
+  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', travel: travelOf(sim.engine), headers: (f) => f.hdr, foreground: () => sim.foregroundActive() };
   const p = new P.Pacer(host, 48);
   Object.assign(p, set);
   const frame = (ms = 50) => {

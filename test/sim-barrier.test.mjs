@@ -11,10 +11,11 @@
 // display and the wall-clock time differ.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { example, load, model, withClock } from './helpers.mjs';
+import { example, load, model, withClock, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
+const T = load('analysis/sim/travel.js');
 
 const PS = example('protocol-simulation.yaml');
 const HOUSE = example('private-house.yaml');
@@ -55,7 +56,7 @@ function paced(text, o = {}) {
   const host = {
     engine: sim.engine,
     shown: (f) => f.view === st.view && !(st.hide && st.hide(f)),
-    typical: () => sim.engine.hopTime(),
+    travel: travelOf(sim.engine),
     headers: (f) => f.hdr,
     foreground: () => sim.foregroundActive(),
     epoch: () => sim.presentationEpoch,
@@ -294,7 +295,7 @@ test('a zero-latency cable: its dot still gets its screen time and the delivery 
   });
   m.until(() => t.done);
   assert.equal(t.ok, true, t.result);
-  assert.ok(min >= P.HOP_MIN, String(min));
+  assert.ok(min >= T.TRAVEL_MIN, String(min));
 });
 
 test('a cable failing under a dot on its way: the dot is lost there, its hold goes with it (no deadlock), and the outcome is the headless one', () => {
@@ -457,7 +458,7 @@ test('the steady state is summarized: a kind of the scenario’s message seen on
   assert.ok(m.p.repeats >= before);
   // and the pacing text says what it waits for, when it waits
   m.until(() => !!m.p.holding(), 120000);
-  assert.match(m.p.describe(), /^Readable · 3 s per hop · 1× · (your events in front · )?waiting for packet arrival/);
+  assert.match(m.p.describe(), /^Readable · 3–5 s per hop · 1× · (your events in front · )?waiting for packet arrival/);
 });
 
 test('the words of a hold: neighbor resolution, establishing TCP, retransmitting SYN, a membership report — from the held hop itself', () => {
@@ -571,7 +572,7 @@ test('equal timestamps: a delivery processed at the engine’s own time is histo
   const msg = (n) => ({ protocol: 'icmp', type: 'probe ' + n, label: 'probe ' + n, detail: '', data: {} });
   // f1 not drawn (filtered), f2 drawn: the engine does f1 at t1 and stops before f2 — at the same time
   const st = { hide: (f) => f.id === f1.id };
-  const p = new P.Pacer({ engine: e, shown: (f) => f.view === 'physical' && !st.hide(f), typical: () => e.hopTime(), headers: (f) => f.hdr }, 48);
+  const p = new P.Pacer({ engine: e, shown: (f) => f.view === 'physical' && !st.hide(f), travel: travelOf(e), headers: (f) => f.hdr }, 48);
   const t1 = e.now + 1;
   const f1 = e.flight(e.now, t1, msg(1), 'physical', { ref: 'link:a', from: 'a', to: 'b' });
   const f2 = e.flight(e.now, t1, msg(2), 'physical', { ref: 'link:b', from: 'a', to: 'b' });
@@ -829,7 +830,7 @@ test('a large same-time batch: a frame stays within its budget (it yields within
   const sim = withClock(new S.Simulation(model(LAN())));
   sim.runTo(3000);
   const e = sim.engine;
-  const p = new P.Pacer({ engine: e, shown: (f) => f.view === 'physical', typical: () => e.hopTime(), headers: (f) => f.hdr }, 48);
+  const p = new P.Pacer({ engine: e, shown: (f) => f.view === 'physical', travel: travelOf(e), headers: (f) => f.hdr }, 48);
   const T = e.now + 5;
   const order = [];
   const busy = () => {
@@ -907,7 +908,7 @@ test('an action while a moment is partly done (a frame’s budget ended it): it 
   };
   // paced: the first frame's budget ends the moment after the first 64 events; the user shuts pc:eth0 then
   const a = build();
-  const p = new P.Pacer({ engine: a.sim.engine, shown: () => false, typical: () => a.sim.engine.hopTime(), headers: (f) => f.hdr }, 48);
+  const p = new P.Pacer({ engine: a.sim.engine, shown: () => false, travel: travelOf(a.sim.engine), headers: (f) => f.hdr }, 48);
   const now = Date.now;
   let clock = 0;
   Date.now = () => (clock += 30);

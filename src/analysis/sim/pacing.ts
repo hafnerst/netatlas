@@ -7,15 +7,16 @@
  * Every message hop (a flight: one cable in the physical view, a relation
  * or a network line in the logical view) gets its own stretch of it:
  *
- *   - Readable (the default): about 3 s per hop, longer for a slower link
- *     and shorter for a faster one, relative to the model's typical hop
- *     (3 s × (1 + 0.6 · log10(latency ÷ typical)), clamped to 2–6 s), so
- *     a WAN link visibly takes longer than a LAN cable and every message
- *     stays readable;
+ *   - Readable (the default): 3–5 s per hop at 1×, from its modelled
+ *     traversal cost on the model's own log scale (travel.ts: the one
+ *     mapping), so a WAN link visibly takes longer than a LAN cable, a
+ *     relation over a long underlay longer than one over a cable, and every
+ *     message stays readable; a line drawn in two halves (to a network, a
+ *     hub, a bus and on) shares its whole's time; no modelled cost: 4 s;
  *   - Proportional: the hop's simulated time × a scale ("1 ms = 1 s"), at
- *     least 0.2 s and at most 30 s;
- *   - either way a dot never moves faster than MAX_SPEED on screen (70 px
- *     per second at 100 % zoom): a long line takes longer.
+ *     least 0.2 s and at most 30 s, and a dot never moves faster than
+ *     MAX_SPEED on screen (70 px per second at 100 % zoom): a long line
+ *     takes longer.
  *
  * A hop starts when its frame is sent, or, when it continues a hop that is
  * still on screen (the next cable after a switch, the second half of a
@@ -135,17 +136,14 @@
  * first hops get the same screen time as later ones.
  */
 import { Flight, Headers } from './types';
+import { TravelScale, TRAVEL_MAX, TRAVEL_MIN, travelMs } from './travel';
 
 export type PaceMode = 'readable' | 'proportional' | 'realtime';
 
 export const PACE_SPEEDS: readonly number[] = [0.1, 0.25, 0.5, 1, 2, 4];
 /** Proportional: display ms per simulated ms ("1 ms = 0.1 s", "1 ms = 1 s", "1 ms = 10 s"). */
 export const PACE_SCALES: readonly number[] = [100, 1000, 10000];
-/** Readable: the time of a typical hop, and the clamps (display ms at 1×). */
-export const HOP_MS = 3000;
-export const HOP_MIN = 2000;
-export const HOP_MAX = 6000;
-/** The fastest a dot moves on screen (px per second at 100 % zoom, i.e. diagram units per second): a long line takes longer. */
+/** Proportional: the fastest a dot moves on screen (px per second at 100 % zoom, i.e. diagram units per second): a long line takes longer. */
 export const MAX_SPEED = 70;
 /** Proportional: the shortest and the longest hop shown. */
 export const PROP_MIN = 200;
@@ -185,12 +183,8 @@ export const FRAME_MAX = 100;
 export const JUMP_BUDGET = 25;
 
 const EPS = 1e-6;
-
-/** Readable: the display time of a hop of `lat` ms where a typical hop takes `ref` ms. */
-export function readableHop(lat: number, ref: number): number {
-  const x = lat > 0 && ref > 0 ? lat / ref : 1;
-  return Math.max(HOP_MIN, Math.min(HOP_MAX, HOP_MS * (1 + 0.6 * Math.log10(x))));
-}
+/** The middle of a line drawn in two halves: a network's, a hub's, a bus's. */
+const HALF = new Set(['net', 'hub', 'bus']);
 
 /** Proportional: `scale` display ms per simulated ms, within the bounds. */
 export function proportionalHop(lat: number, scale: number): number {
@@ -341,9 +335,9 @@ export interface PacerHost {
   };
   /** is a flight one whose dot is drawn (its view, a protocol shown) */
   shown(f: Flight): boolean;
-  /** a typical hop's simulated time in a view (ms) */
-  typical(view: Flight['view']): number;
-  /** the length of a flight's line in the diagram (its units: px at 100 % zoom); null when it is not drawn in the view on screen */
+  /** the model's range of traversal costs (travel.ts; null: none known, every hop takes the neutral time) */
+  travel(): TravelScale | null;
+  /** the length of a flight's line in the diagram (its units: px at 100 % zoom; Proportional's speed limit); null when it is not drawn in the view on screen */
   length?(f: Flight): number | null;
   /** a flight's headers (the conversation key) */
   headers?(f: Flight): Headers | undefined;
@@ -430,11 +424,11 @@ export class Pacer {
     if (this.host.engine.hold) this.host.engine.hold = null;
   }
 
-  /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
+  /** "Readable · 3–5 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
   describe(): string {
     const sp = `${this.speed}×`;
     const behind = this.behind > 0 ? ' · behind' : '';
-    const base = this.mode === 'readable' ? `Readable · ${HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
+    const base = this.mode === 'readable' ? `Readable · ${TRAVEL_MIN / 1000}–${TRAVEL_MAX / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
     const h = this.holding();
     const wait = h ? ` · ${holdText(h.f)}` : '';
     return (this.fgNow ? `${base} · your events in front` : base) + wait;
@@ -482,12 +476,26 @@ export class Pacer {
     return id === null ? null : this.byId.get(id) || null;
   }
 
-  /** The display time of a hop of `lat` simulated ms in a view. */
-  hopTime(lat: number, view: Flight['view'], length?: number | null): number {
+  /** The display time of a hop of `lat` simulated ms (at 1×; the clock's speed applies on top). */
+  hopTime(lat: number, length?: number | null): number {
     if (this.mode === 'realtime') return RT_HOP;
-    const t = this.mode === 'readable' ? readableHop(lat, this.host.typical(view)) : proportionalHop(lat, this.scale);
+    if (this.mode === 'readable') return travelMs(lat, this.host.travel());
     // never faster than MAX_SPEED on screen
+    const t = proportionalHop(lat, this.scale);
     return length ? Math.max(t, (length / MAX_SPEED) * 1000) : t;
+  }
+
+  /**
+   * A hop's display time as taken in: a line drawn in two halves (to a network, a hub, a bus and on) is one traversal in
+   * Readable — its first half half the time of twice its cost, its second the rest of its whole's (the first's start to its
+   * end), so that the whole line takes what one line of that cost takes, never two crossings.
+   */
+  private hopOf(f: Flight, lat: number, parent: PaceItem | undefined): number {
+    const length = this.host.length ? this.host.length(f) : null;
+    if (this.mode !== 'readable') return this.hopTime(lat, length);
+    if (HALF.has(f.track.to)) return this.hopTime(2 * lat) / 2;
+    if (HALF.has(f.track.from) && parent && HALF.has(parent.f.track.to) && parent.f.track.ref === f.track.ref) return Math.max(0, this.hopTime(f.t1 - parent.f.t0) - parent.hop);
+    return this.hopTime(lat);
   }
 
   find(id: number): PaceItem | undefined {
@@ -696,7 +704,7 @@ export class Pacer {
           this.act.push({ f, at: this.clock });
         }
       }
-      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
+      const it: PaceItem = { f, lat, d0, transit, hop: this.hopOf(f, lat, pAny), drawn, key, test, parent: pAny };
       if (sample) it.example = true;
       if (this.gates(it)) it.gate = true;
       this.items.push(it);

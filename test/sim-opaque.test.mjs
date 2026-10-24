@@ -7,7 +7,7 @@
 // what happens. Asserted by the deliveries, the reasons and the dots.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
@@ -136,7 +136,7 @@ test('lifecycle: a series stopped sends nothing more; a device switched off mid-
 test('pacing changes the presentation only: the same transfers, reasons and times with or without the display', () => {
   const run = (paced) => {
     const s = sim();
-    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, typical: () => s.engine.hopTime(), headers: (f) => f.hdr }, 2) : null;
+    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, travel: travelOf(s.engine), headers: (f) => f.hdr }, 2) : null;
     s.runTo(2000);
     s.actOpaque({ initiator: 'ecu1:can0', from: 'ecu1:can0', to: ['ecu2:can0', 'logger:can0'], count: 3, interval: 700, size: 32 });
     s.actOpaque({ initiator: 'payload1:f0', from: 'payload1:f0', to: ['payload2:f0'], count: 2, interval: 900, size: 32 });

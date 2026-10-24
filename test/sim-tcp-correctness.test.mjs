@@ -10,7 +10,7 @@
 // headers as sent (the packet inspector's), the states and the deliveries.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, travelOf } from './helpers.mjs';
 
 const T = load('analysis/sim/tcp.js');
 const S = load('analysis/sim/simulation.js');
@@ -405,7 +405,7 @@ test('logical view: a relation’s connection — its handshake, acknowledgments
 /** Play a model's display (Readable, physical or logical) with the frame budget's clock pinned; the hops it took in. */
 function display(name, view, follow) {
   const sim = new S.Simulation(model(example(name)));
-  const host = { engine: sim.engine, shown: (f) => f.view === view, typical: () => sim.engine.hopTime(), headers: (f) => f.hdr };
+  const host = { engine: sim.engine, shown: (f) => f.view === view, travel: travelOf(sim.engine), headers: (f) => f.hdr };
   const p = new P.Pacer(host, 48);
   const now = Date.now;
   Date.now = () => 0;

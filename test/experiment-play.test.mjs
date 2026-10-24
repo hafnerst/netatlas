@@ -256,7 +256,7 @@ test('played with the pacing (only its traffic shown) or run at once: the same r
   const play = (filtered) => {
     const r = new EX.ExperimentRunner(m, e, 'fp');
     r.prepare();
-    const pacer = new P.Pacer({ engine: r.simulation.engine, shown: (f) => !filtered || r.relevance.classify(f) !== null, typical: () => 1, until: () => r.endTime }, 48);
+    const pacer = new P.Pacer({ engine: r.simulation.engine, shown: (f) => !filtered || r.relevance.classify(f) !== null, travel: () => null, until: () => r.endTime }, 48);
     if (filtered) {
       pacer.mute = false;
       pacer.hiddenHoldsNothing = true;
@@ -332,7 +332,7 @@ test('the cap: a large moment exactly at the end, with budget yields inside it, 
   const order = [];
   // (the pacer first: it takes in the flights made after it, each from the moment it is sent)
   let held = { id: -1 };
-  const pacer = new P.Pacer({ engine: eng, shown: (f) => f.id === held.id || r.relevance.classify(f) !== null, typical: () => 1, until: () => T }, 48);
+  const pacer = new P.Pacer({ engine: eng, shown: (f) => f.id === held.id || r.relevance.classify(f) !== null, travel: () => null, until: () => T }, 48);
   pacer.mute = false;
   pacer.hiddenHoldsNothing = true;
   // batch A at the end, scheduled before the run is prepared: before its end event in the order of the moment
