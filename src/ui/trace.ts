@@ -16,13 +16,18 @@
  * analysis/communication.ts and analysis/trace.ts.
  *
  * Under the verdict, the Diagnosis (analysis/diagnosis.ts) answers the
- * question in order: its state and a short explanation, the effective
- * question (from, to, family, service, routing context, the configured
- * model or snapshot, the recorded send compared), what prevents or limits
- * it, the evidence chain behind an expansion, the separate legs, and the
- * next actions — the existing ones, which prefill and never submit. Each
- * piece of evidence is a link (data-diag-ref) to the object, rule, layer,
- * message or event it names.
+ * question in order: its state and a short explanation, the static and the
+ * runtime answer apart (the simulation's: finished or not, what was
+ * observed, whether its cause is established), the effective question
+ * (from, to, family, service, routing context, the configured model or
+ * snapshot, the run examined), what prevents or limits it — each distinct
+ * cause once, with its messages —, the evidence chain behind an expansion,
+ * the separate legs, and the next actions — the existing ones, which
+ * prefill and never submit. Each piece of evidence is a link
+ * (data-diag-ref) to the object, rule, layer, packet, message or event it
+ * names. When the question is not one (a device with several client
+ * applications), the window asks which (#trace-choice) before anything is
+ * checked.
  */
 import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, HopWhy, Path, Trace, TraceRequest, encapText, endStatus, endText, outcomeLines, traceOutcome, traceText } from '../analysis/trace';
@@ -104,6 +109,8 @@ export interface TracePanelActions extends ContextBarActions {
   pick(field: 'from' | 'to', value: string): void;
   /** go to a piece of evidence (an object, a rule, a layer, a message, an event): it selects or opens it, nothing else */
   goto(ref: string): void;
+  /** take one of the choice's communications (Diagnose communication… with several client applications) */
+  choose(from: string, to: string): void;
 }
 
 /** A diagnosis state in words, its mark, and the verdict colour it is shown in. */
@@ -290,6 +297,8 @@ export interface TraceViewState {
   compareBlocked: string;
   /** why the model can't be edited now ('' it can) */
   locked: string;
+  /** the question is not one yet: which communication (Diagnose communication… with several client applications) */
+  choice?: { title: string; options: Array<{ label: string; from: string; to: string; why: string }> } | null;
 }
 
 /** The window's content: the form, and the result when there is one. */
@@ -302,6 +311,18 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
     ]),
   );
   box.appendChild(contextBar(doc, view.bar, act));
+  // ---- which communication, when the selection is not one: nothing is checked until one is taken
+  if (view.choice) {
+    const ch = el(doc, 'div', { class: 'trace-choice', id: 'trace-choice', role: 'group', 'aria-labelledby': 'trace-choice-h' }, [el(doc, 'p', { id: 'trace-choice-h' }, [el(doc, 'strong', {}, [view.choice.title])])]);
+    const ul = el(doc, 'ul', { class: 'small' });
+    for (const o of view.choice.options) {
+      const b = el(doc, 'button', { type: 'button', class: 'mini', title: o.why, 'data-choice-from': o.from, 'data-choice-to': o.to }, [o.label]);
+      b.addEventListener('click', () => act.choose(o.from, o.to));
+      ul.appendChild(el(doc, 'li', {}, [b]));
+    }
+    ch.appendChild(ul);
+    box.appendChild(ch);
+  }
   // ---- the form
   const f = el(doc, 'form', { class: 'trace-form', 'aria-label': 'Trace path' }) as HTMLFormElement;
   const list = el(doc, 'datalist', { id: 'trace-ends' });

@@ -231,7 +231,13 @@ export class TestForm {
     if (p.via !== undefined) {
       if (opt(this.via, p.via)) this.via.value = p.via;
       else missed.push(`Source interface ${p.from}:${p.via} is not offered (down, or without an address now): choose it under Via`);
-    }
+    } else if (opt(this.via, '')) this.via.value = '';
+    // (what an earlier send left in the form is no part of this one: one message, the default size, Don't fragment and keep open off)
+    this.count.value = '1';
+    this.interval.value = '1';
+    this.size.value = '';
+    this.df.checked = false;
+    this.keep.checked = false;
     if (p.to !== undefined && opt(this.to, p.to)) {
       this.to.value = p.to;
       this.sync();

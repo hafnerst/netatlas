@@ -4078,11 +4078,21 @@ export class App {
     const m = s.model;
     let from = '';
     let to = '';
+    this.traceChoice = null;
     if (kind === 'device' || kind === 'iface') {
       const dev = kind === 'device' ? id : id.slice(0, id.indexOf(':'));
       const d = m.index.devices.get(dev);
       const clients = d && kind === 'device' ? (d.applications || []).filter((a) => (a.profile === 'mqtt_client' ? !!a.broker : !!a.peer) && appProfile(a.profile) && (appProfile(a.profile) as { client?: boolean }).client) : [];
-      from = clients.length === 1 ? `${dev}/${clients[0].id}` : id;
+      if (clients.length === 1) from = `${dev}/${clients[0].id}`;
+      else if (clients.length > 1) {
+        // (several: which one is the user's to say — each, or the device itself to a destination still to give)
+        this.traceChoice = {
+          title: `${dev} runs ${clients.length} client applications: which communication?`,
+          options: clients
+            .map((a) => ({ label: `${dev}/${a.id} → ${a.profile === 'mqtt_client' ? 'broker ' + a.broker : a.peer}`, from: `${dev}/${a.id}`, to: '', why: `${a.name}: its configured ${a.profile === 'mqtt_client' ? 'broker' : 'peer'}` }))
+            .concat([{ label: `${dev} itself, to a destination you give`, from: dev, to: '', why: 'The device as the source: enter the destination' }]),
+        };
+      } else from = id;
     } else if (kind === 'relation') {
       const r = m.index.relations.get(id);
       const ends = r ? r.endpoints : [];
@@ -4093,8 +4103,34 @@ export class App {
     }
     // (the tool first: opening it takes the selection into an empty field, which this question has chosen already)
     if (this.analyzeTool() !== 'trace') this.showAnalyze('trace');
-    if (from) this.traceForm = { ...this.traceForm, from, to: to || (from.indexOf('/') >= 0 ? '' : this.traceForm.to === from ? '' : this.traceForm.to) };
+    // a new question: nothing of the one before it is carried over (its destination, service, VRF, family)
+    if (from || this.traceChoice) this.traceForm = { ...this.traceForm, from, to, service: '', vrf: 'auto', family: '' };
+    if (this.traceChoice) {
+      this.renderTraceWindow();
+      const b = this.doc.querySelector('#trace-choice button') as HTMLElement | null;
+      if (b) b.focus();
+      return;
+    }
     const ready = !!this.traceForm.from && (!!this.traceForm.to || this.traceForm.from.indexOf('/') >= 0);
+    if (!ready || !this.runTrace()) {
+      this.openTrace();
+      return;
+    }
+    const sum = this.doc.getElementById('diag-summary');
+    if (sum) {
+      sum.setAttribute('tabindex', '-1');
+      sum.focus();
+    }
+  }
+
+  /** The choice Diagnose communication… asks for (several client applications), until one is taken; null: none. */
+  private traceChoice: { title: string; options: Array<{ label: string; from: string; to: string; why: string }> } | null = null;
+
+  /** One of the choice's communications: into the form, checked when complete (else the keyboard on the field still open). */
+  chooseTraceQuestion(from: string, to: string): void {
+    this.traceChoice = null;
+    this.traceForm = { ...this.traceForm, from, to, service: '', vrf: 'auto', family: '' };
+    const ready = !!from && (!!to || from.indexOf('/') >= 0);
     if (!ready || !this.runTrace()) {
       this.openTrace();
       return;
@@ -4124,7 +4160,7 @@ export class App {
   private traceBody(): HTMLElement {
     const s = this.session as Session;
     const r = this.traceRun;
-    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock() };
+    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock(), choice: this.traceChoice };
     return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
       input: (field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
@@ -4163,6 +4199,7 @@ export class App {
         if (f) f.focus();
       },
       goto: (ref) => void this.gotoEvidence(ref),
+      choose: (from, to) => this.chooseTraceQuestion(from, to),
     });
   }
 
