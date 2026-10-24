@@ -1183,8 +1183,9 @@ export class Simulation {
   /**
    * An MQTT client's run, as recorded, for its diagnosis (analysis/diagnosis.ts): its newest run (said by its number
    * and start; an earlier run is never taken for it), that run's own publications with their broker receipt, PUBACK
-   * and each subscriber's receipt (mqtt.ts MqttPublication), how many of them are no longer kept, and the given
-   * subscribers' runs. Null when it never ran in this simulation. Reading it changes nothing.
+   * and each subscriber's receipt (mqtt.ts MqttPublication), the tally by topic of those no longer kept (what they had
+   * settled, and how many had not), and the given subscribers' configured filters and runs. Null when it never ran in
+   * this simulation. Reading it changes nothing.
    */
   mqttEvidence(dev: string, app: string, subscribers: Array<{ dev: string; app: string }>): MqttEvidence | null {
     const cs = this.mqtt.clients.filter((c) => c.run.dev === dev && c.run.app.id === app);
@@ -1194,13 +1195,13 @@ export class Simulation {
     const subs = subscribers.map((x) => {
       const runs = this.mqtt.clients.filter((y) => y.run.dev === x.dev && y.run.app.id === x.app).reverse().slice(0, 3);
       const a = this.apps.app(x.dev, x.app);
-      return { dev: x.dev, app: x.app, clientId: a ? mqttClientId(x.dev, a) : `${x.dev}-${x.app}`, runs: runs.map((y) => ({ id: y.run.id, state: y.state, t0: y.run.t0, stoppedAt: y.run.stoppedAt, granted: Array.from(y.granted.entries()) })) };
+      return { dev: x.dev, app: x.app, clientId: a ? mqttClientId(x.dev, a) : `${x.dev}-${x.app}`, filters: a ? a.subscribe.slice() : [], runs: runs.map((y) => ({ id: y.run.id, state: y.state, t0: y.run.t0, stoppedAt: y.run.stoppedAt, granted: Array.from(y.granted.entries()) })) };
     });
     return {
       exec: this.exec,
       run: { id: c.run.id, dev, app, clientId: c.clientId, broker: c.broker, qos: c.run.app.qos === 1 ? 1 : 0, t0: c.run.t0, stopped: c.run.stopped || c.state === 'Stopped', stoppedAt: c.run.stoppedAt, state: c.state, connects: c.connects, missed: c.missed, published: c.published, lastClose: c.lastClose, how: c.run.how, earlier: cs.length - 1 },
       pubs,
-      evicted: Math.max(0, c.published - pubs.length),
+      tally: this.mqtt.tallyOf(c.run.id),
       subscribers: subs,
       now: this.now,
     };

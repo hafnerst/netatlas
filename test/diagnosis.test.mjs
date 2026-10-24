@@ -274,7 +274,7 @@ links:
   assert.ok(legP.state === 'established' || legP.state === 'waiting', legP.text);
   // the broker's fan-out recorded nobody for these publications: a prerequisite not met (the subscriber was not running), not "unknown"
   assert.equal(legS.state, 'blocked', legS.text);
-  assert.match(legS.text, /the broker passed none of the \d+ publications? to it: when they arrived it had no session with a matching subscription .*it was not started in this simulation/);
+  assert.match(legS.text, /the broker passed none of the \d+ publications? on its topics \([^)]+\) to it: when they arrived it had no session with a matching subscription .*it was not started in this simulation/);
   assert.ok(d.blockers.some((b) => b.rel === 'prerequisite' && /^Subscriber hmi\/view/.test(b.text)));
 });
 
