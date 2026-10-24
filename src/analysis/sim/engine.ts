@@ -87,7 +87,7 @@ import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
 import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
-import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
+import { declaredUnderlay, encapStack, layerEnds, tunnelRelation, tracePath } from '../trace';
 import { ASSUMED_ENCAP, EncapDef, encapDef, ipHeaderBytes, layerText, maxInnerStack, outerLength } from '../encap';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimAddr, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, l2Domain, otherEnd, portKey, portRefOf, portVlansText, spanningTree, linkPort } from './net';
@@ -3325,7 +3325,10 @@ export class Engine {
     const sd = this.net.devices.get(dev) as SimDevice;
     let under: { mtu: number; where: string } | null = null;
     const d = lookup(this.model, dev, vrf, end.dst, this.ctx(dev));
-    const hop = d.kind === 'forward' && d.hops.length ? sd.l3.get(d.hops[0].iface) : undefined;
+    // (the next hop the outer packet's flow takes, as forward chooses it among equal-cost ones — not the first listed)
+    const hops = d.kind === 'forward' ? (sd.routes ? d.hops.slice(0, Math.max(1, this.params.num('ecmp-max', dev))) : d.hops) : [];
+    const pick = hops.length === 1 ? hops[0] : hops.length ? hops[hashIndex(formatAddr(end.src) + '>' + formatAddr(end.dst), hops.length)] : undefined;
+    const hop = pick ? sd.l3.get(pick.iface) : undefined;
     const src = ti && ti.source && ti.source.iface ? sd.l3.get(ti.source.iface) : undefined;
     const egress = hop && hop.kind !== 'tunnel' ? hop : src;
     if (egress) under = { mtu: Number(this.mtu(dev, egress).value), where: `${dev}:${egress.id}` };
@@ -3361,7 +3364,10 @@ export class Engine {
     if (l3.kind === 'tunnel') {
       const e = this.tunnelEnds(dev, l3.id)[0];
       const rel = tunnelRelation(this.model, dev, l3.id);
-      const lim = e ? this.tunnelLimit(dev, l3, this.tunnelFormats(rel ? encapStack(this.model, rel) : [{}], e.dst.version), e, this.tunnelVrf(dev, l3.id)) : null;
+      const layers = rel ? encapStack(this.model, rel) : [{}];
+      const ends = e ? this.layerEndsAt(dev, layers, e, this.tunnelVrf(dev, l3.id)) : [];
+      const top = ends[ends.length - 1];
+      const lim = e && top ? this.tunnelLimit(dev, l3, this.tunnelFormats(layers, e.dst.version).map((d, k) => ({ ...d, outer: ends[k].dst.version })), top, top.vrf) : null;
       if (lim) return lim.mtu;
     }
     return Number(this.mtu(dev, l3).value);
@@ -3398,11 +3404,15 @@ export class Engine {
         }
       }
     }
-    const outerVrf = this.tunnelVrf(dev, tun.id);
-    const defs = this.tunnelFormats(layers, e.dst.version);
+    // each layer between its own ends: the tunnel's for its first, a relation's between other addresses its own (layerEnds,
+    // as Trace path routes the outer packet), in that interface's VRF; the outer packet goes by the outermost's
+    const ends2 = this.layerEndsAt(dev, layers, e, this.tunnelVrf(dev, tun.id));
+    const top = ends2[ends2.length - 1];
+    const outerVrf = top.vrf;
+    const defs = this.tunnelFormats(layers, e.dst.version).map((d, k) => ({ ...d, outer: ends2[k].dst.version }));
     // the tunnel's MTU: a larger inner packet is fragmented first (IPv4 without DF), else refused with Fragmentation Needed /
     // Packet Too Big carrying what fits — so its sender learns the inner path MTU (PMTUD through the tunnel, RFC 4459 §3.2)
-    const lim = this.tunnelLimit(dev, tun, defs, e, outerVrf);
+    const lim = this.tunnelLimit(dev, tun, defs, top, outerVrf);
     const size = ipLen(pkt);
     if (lim && size > lim.mtu) {
       const v6 = pkt.dst.version === 6;
@@ -3419,17 +3429,28 @@ export class Engine {
       } else {
         const parts = this.fragment(pkt, lim.mtu);
         this.note('route', pkt.msg.protocol, dev, '', 'fragmented', '', `${dev} fragments ${pkt.msg.label} (${size} bytes) into ${parts.length} for tunnel ${tun.id}, ${lim.mtu} bytes (${lim.why}): ${parts.map((x) => ipLen(x)).join(' + ')} bytes`);
-        for (const x of parts) this.encapsulate(dev, x, layers, defs, e, rides, outerVrf);
+        for (const x of parts) this.encapsulate(dev, x, layers, defs, ends2, rides, outerVrf);
         return;
       }
     }
-    this.encapsulate(dev, pkt, layers, defs, e, rides, outerVrf);
+    this.encapsulate(dev, pkt, layers, defs, ends2, rides, outerVrf);
   }
 
-  /** Wrap a packet in a tunnel's layers (innermost first) and send the outer packet, in the underlay's VRF. */
-  private encapsulate(dev: string, pkt: Pkt, layers: Array<{ label: string; relation?: string }>, defs: Array<{ def: EncapDef; outer: 4 | 6 }>, e: { src: IpAddr; dst: IpAddr }, rides: string[], vrf: string): void {
+  /** Each layer's ends at a device (see intoTunnel): its own (layerEnds) after the first, else the tunnel's, with their VRF. */
+  layerEndsAt(dev: string, layers: Array<{ relation?: string }>, e: { src: IpAddr; dst: IpAddr }, vrf: string): Array<{ src: IpAddr; dst: IpAddr; vrf: string }> {
+    return layers.map((l, k) => {
+      const own = k && l.relation ? layerEnds(this.model, dev, l.relation, e.dst.version) : null;
+      const src = own ? parseAddr(own.src) : null;
+      const dst = own ? parseAddr(own.dst) : null;
+      return own && src && dst ? { src, dst, vrf: own.vrf } : { src: e.src, dst: e.dst, vrf };
+    });
+  }
+
+  /** Wrap a packet in a tunnel's layers (innermost first), each between its ends, and send the outer packet in the outermost's VRF. */
+  private encapsulate(dev: string, pkt: Pkt, layers: Array<{ label: string; relation?: string }>, defs: Array<{ def: EncapDef; outer: 4 | 6 }>, ends: Array<{ src: IpAddr; dst: IpAddr }>, rides: string[], vrf: string): void {
     let cur = pkt;
     for (const layer of layers) {
+      const e = ends[layers.indexOf(layer)];
       const proto = layer.relation ? this.relProtocol(layer.relation) : 'gre';
       const msg: Msg = { ...pkt.msg, label: pkt.msg.label, detail: `${pkt.msg.detail} — in ${layers.map((l) => l.label).slice(0, layers.indexOf(layer) + 1).join(' in ')} (${formatAddr(e.src)} → ${formatAddr(e.dst)})`, data: { ...(pkt.msg.data || {}), encap: (((pkt.msg.data || {}) as { encap?: string[] }).encap || []).concat([layer.label]), outer: proto } };
       const inner: Pkt = cur;

@@ -35,7 +35,7 @@ import { Model, ifaceKey } from '../model/types';
 
 import { CommCheck } from './communication';
 import { Verdict } from './result';
-import { Hop, Path, Trace, TraceService } from './trace';
+import { Hop, Path, Trace, TraceService, layerEnds } from './trace';
 
 /** One MTU on the way: an interface, a port of a cable, or a tunnel (its underlay less its overhead). */
 export interface MtuConstraint {
@@ -111,14 +111,18 @@ function outerOf(model: Model, h: Hop): 4 | 6 | null {
 
 /** The layers a hop adds (innermost first) with their formats and outer family, and what each takes at a limit. */
 function layersOf(model: Model, h: Hop, added: Array<{ label: string; relation?: string }>, inner: 4 | 6): { layers: Array<{ def: EncapDef; outer: 4 | 6 }>; os: MtuOverhead[]; fam: 4 | 6 | null } {
-  const fam = outerOf(model, h);
-  const outer: 4 | 6 = fam || inner;
+  // (the tunnel's own family for its first layer; a layer carried over a relation between other addresses, that
+  // relation's own — layerEnds, as the trace routes the outer packet and the simulation sends it)
+  const ti = h.egress !== undefined ? model.index.interfaces.get(ifaceKey(h.device, h.egress)) : undefined;
+  const fam = (ti ? tunnelOuterFamily(model, ti) : null) || outerOf(model, h);
   const layers: Array<{ def: EncapDef; outer: 4 | 6 }> = [];
   const os: MtuOverhead[] = [];
   for (const l of added) {
     const r = l.relation ? model.index.relations.get(l.relation) : undefined;
     const known = r ? encapDef(baseProtocol(model, r)) : null;
     const def = known || ASSUMED_ENCAP;
+    const own = layers.length && l.relation ? layerEnds(model, h.device, l.relation, fam || undefined) : null;
+    const outer: 4 | 6 = own ? own.family : fam || inner;
     layers.push({ def, outer });
     const o: MtuOverhead = { layer: l.relation || l.label, bytes: null, what: known ? layerText(def, outer) : `${l.label}: format not known, taken as ${layerText(def, outer)}`, assumes: def.assumes };
     if (!known) o.assumed = true;

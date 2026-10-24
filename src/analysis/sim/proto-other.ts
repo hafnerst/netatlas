@@ -872,23 +872,32 @@ function tunnelSend(P: ProtocolSim, s: Sess, type: string, detail: string, data:
   // (logged as the message it is: its relation and, once sent, its headers belong to this line)
   P.e.note('message', s.protocol, s.dev, s.peer, type, '', m.detail, P.e.now, m);
   P.lane(s.rel, s.dev, s.peer, m, P.e.estimate(s.dev, e.dst));
-  // (in the VRF of the tunnel's source interface, as its data goes)
-  const vrf = P.e.tunnelVrf(s.dev, s.local.l3.id);
-  let pkt: Pkt = P.e.newPacket(e.src, e.dst, vrf, m, [s.rel.id]);
+  // (in the VRF of the tunnel's source interface, as its data goes; each layer carrying it between its own ends, as data's)
+  const stack = encapStack(P.m, s.rel);
+  const lends = P.e.layerEndsAt(s.dev, stack, e, P.e.tunnelVrf(s.dev, s.local.l3.id));
+  const first: Pkt = P.e.newPacket(e.src, e.dst, lends[0].vrf, m, [s.rel.id]);
   // (its header — and each layer carrying it its own: ESP 50 …; a policy keeps them apart from another protocol's)
-  pkt.l4 = hdr;
-  for (const layer of encapStack(P.m, s.rel).slice(1)) {
-    if (layer.relation && !P.sessionUp(layer.relation)) {
-      // the tunnel's keepalives wait for what carries it (the newest only: they are periodic)
-      const rid = layer.relation;
-      P.e.waitFor('rel:' + rid, `${layer.label} ${rid}`, s.dev, m, () => P.e.send(s.dev, pkt), `${s.dev}|${s.protocol}|${type}`);
-      return true;
+  first.l4 = hdr;
+  // wrapped from layer k on; a layer whose session is not up yet: it waits for it, then is wrapped in it and the rest
+  const wrap = (k: number, pkt: Pkt): void => {
+    for (; k < stack.length; k++) {
+      const layer = stack[k];
+      const le = lends[k];
+      if (layer.relation && !P.sessionUp(layer.relation)) {
+        // the tunnel's keepalives wait for what carries it (the newest only: they are periodic)
+        const rid = layer.relation;
+        const at = k;
+        const inner = pkt;
+        P.e.waitFor('rel:' + rid, `${layer.label} ${rid}`, s.dev, m, () => wrap(at, inner), `${s.dev}|${s.protocol}|${type}`);
+        return;
+      }
+      const outer: Msg = { ...m, data: { ...(m.data || {}), outer: layer.relation ? P.e.relProtocol(layer.relation) : '' } };
+      pkt = { ...P.e.newPacket(le.src, le.dst, le.vrf, outer, pkt.rides.concat(layer.relation ? [layer.relation] : [])), inner: pkt, encap: layer.label, encapProto: layer.relation ? P.e.relProtocol(layer.relation) : 'gre' };
+      pkt.l4 = (layer.relation && P.outerL4(layer.relation, s.dev)) || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
     }
-    const outer: Msg = { ...m, data: { ...(m.data || {}), outer: layer.relation ? P.e.relProtocol(layer.relation) : '' } };
-    pkt = { ...P.e.newPacket(e.src, e.dst, vrf, outer, pkt.rides.concat(layer.relation ? [layer.relation] : [])), inner: pkt, encap: layer.label, encapProto: layer.relation ? P.e.relProtocol(layer.relation) : 'gre' };
-    pkt.l4 = (layer.relation && P.outerL4(layer.relation, s.dev)) || (/ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 });
-  }
-  P.e.send(s.dev, pkt);
+    P.e.send(s.dev, pkt);
+  };
+  wrap(1, first);
   return true;
 }
 
