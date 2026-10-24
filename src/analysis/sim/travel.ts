@@ -15,15 +15,16 @@
  *
  * Simulated costs are tiny (0.1 ms on a LAN cable, 20 ms on a WAN link), so
  * they are compressed on a log scale over the model's own range rather than
- * clamped: from the model's cheapest cable (TRAVEL_MIN: the quickest a
- * routine LAN hop shows) to TRAVEL_SPAN times its dearest (TRAVEL_MAX; a
- * logical line usually spans a few cables), a window at least
- * TRAVEL_DECADES wide upwards when the cables differ less — so a cheaper hop
- * always shows shorter than a dearer one within the bounds, and in a
- * homogeneous model a relation over two cables, a large frame or a slower
- * link still shows longer than a small frame on one cable. The scale is
- * fixed when the simulation starts (and when a latency or speed parameter
- * changes), never by which messages came first.
+ * clamped: from the model's cheapest cable (TRAVEL_MIN) to TRAVEL_SPAN
+ * times its dearest (TRAVEL_MAX; a logical line usually spans a few
+ * cables). When the cables differ less than TRAVEL_DECADES, the window is
+ * widened to that, a fifth of it below the cheapest cable and the rest above
+ * — so a homogeneous model's cables sit just inside the bounds (about
+ * 3.3 s), never all on the floor, a smaller frame or a faster link shows a
+ * little shorter, and a relation over two cables, a larger frame or a slower
+ * link longer. A cheaper hop always shows shorter than a dearer one within
+ * the bounds. The scale is fixed when the simulation starts (and when a
+ * latency or speed parameter changes), never by which messages came first.
  *
  * Without a cost (none modelled, zero, unknown) or a scale (a model without
  * cables), a hop takes TRAVEL_NEUTRAL: the middle, said nowhere to be a
@@ -39,8 +40,9 @@ export const TRAVEL_MAX = 5000;
 export const TRAVEL_NEUTRAL = 4000;
 /** The scale's top: this many times the dearest cable (a logical line spans several). */
 export const TRAVEL_SPAN = 4;
-/** The scale's narrowest window (decades of cost), widened upwards. */
+/** The scale's narrowest window (decades of cost), and the share of a widening that goes below the cheapest cable. */
 export const TRAVEL_DECADES = 2;
+export const TRAVEL_BELOW = 0.2;
 
 /** The model's range of traversal costs (simulated ms), log-mapped onto TRAVEL_MIN … TRAVEL_MAX. */
 export interface TravelScale {
@@ -54,8 +56,10 @@ const ok = (x: number): boolean => x > 0 && isFinite(x);
 export function travelScale(costs: readonly number[]): TravelScale | null {
   const c = costs.filter(ok);
   if (!c.length) return null;
-  const lo = Math.min(...c);
-  return { lo, hi: Math.max(Math.max(...c) * TRAVEL_SPAN, lo * Math.pow(10, TRAVEL_DECADES)) };
+  const lo = Math.log10(Math.min(...c));
+  const hi = Math.log10(Math.max(...c) * TRAVEL_SPAN);
+  const short = Math.max(0, TRAVEL_DECADES - (hi - lo));
+  return { lo: Math.pow(10, lo - short * TRAVEL_BELOW), hi: Math.pow(10, hi + short * (1 - TRAVEL_BELOW)) };
 }
 
 /** The display time (ms at 1×) of a traversal costing `cost` simulated ms; TRAVEL_NEUTRAL without a cost or a scale. */

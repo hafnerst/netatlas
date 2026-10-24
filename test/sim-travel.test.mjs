@@ -101,15 +101,18 @@ test('the mapping: ordered, distinguishable, within 3–5 s; a homogeneous model
     last = d;
   }
   assert.equal(seen.size, 10, 'every cost its own time');
-  // a homogeneous model: its cables the quickest (the window widened upwards to TRAVEL_DECADES), and still ordered above
-  // them: a lane over two cables, a large frame on one, a link ten times slower
+  // a homogeneous model: the window widened to TRAVEL_DECADES, a fifth of it below its cables — they sit just inside the
+  // bounds, never on the floor; a smaller frame or a faster link a little shorter, a lane over two cables, a larger
+  // frame or a link ten times slower longer
   const hom = T.travelScale([0.1064, 0.1064]);
-  assert.deepEqual(hom, { lo: 0.1064, hi: 0.1064 * 100 });
+  assert.ok(Math.abs(Math.log10(hom.hi / hom.lo) - T.TRAVEL_DECADES) < 1e-9);
   const one = T.travelMs(0.1064, hom);
-  assert.equal(one, T.TRAVEL_MIN);
+  assert.ok(one > T.TRAVEL_MIN + 200 && one < T.TRAVEL_MIN + 400, `a cable of a homogeneous model: ${one}`);
+  assert.ok(T.travelMs(0.101, hom) < one, 'a 64-byte frame: a little shorter');
   assert.ok(T.travelMs(0.112, hom) > one, 'a 1500-byte frame on the same gigabit cable: a little longer');
   assert.ok(T.travelMs(0.2128, hom) > one + 250, 'two cables');
-  assert.ok(T.travelMs(1.064, hom) >= T.TRAVEL_MIN + 1000 - 1e-6 && T.travelMs(1.064, hom) < T.TRAVEL_MAX, 'ten times dearer: the middle');
+  assert.ok(T.travelMs(0.01064, hom) === T.TRAVEL_MIN, 'ten times cheaper: the floor');
+  assert.ok(T.travelMs(1.064, hom) > T.TRAVEL_MIN + 1000 && T.travelMs(1.064, hom) < T.TRAVEL_MAX, 'ten times dearer: above the middle');
   // no cost (none modelled, zero, unknown) or no scale (no cables): the neutral middle
   for (const c of [0, -1, NaN, Infinity, null, undefined]) assert.equal(T.travelMs(c, sc), T.TRAVEL_NEUTRAL, String(c));
   assert.equal(T.travelMs(1, null), T.TRAVEL_NEUTRAL);

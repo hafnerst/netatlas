@@ -411,7 +411,8 @@ function display(name, view, follow) {
   Date.now = () => 0;
   const seen = new Map();
   try {
-    for (let i = 0; i < 8000; i++) {
+    // (160 s of display: a hop of a homogeneous model shows about 3.3 s at 1×, travel.ts)
+    for (let i = 0; i < 10000; i++) {
       p.frame(16);
       for (const it of p.items) if (it.f.view === view && !seen.has(it.f.id)) seen.set(it.f.id, it);
       if (follow && !p.follow) {

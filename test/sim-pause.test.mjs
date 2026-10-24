@@ -198,7 +198,7 @@ test('a hidden tab: the clock stops and goes on when the tab is visible again, o
   }
 });
 
-test('the pace on screen at the defaults: every hop takes at least 2 s of real time (measured), and a dot never moves faster than 70 px per second at 100 % zoom', { skip, timeout: 180000 }, async () => {
+test('the pace on screen at the defaults: every hop takes 3–5 s of real time (measured); in Proportional pacing a dot never moves faster than 70 px per second at 100 % zoom', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await load(page, `localStorage.clear(),`);
@@ -225,10 +225,15 @@ test('the pace on screen at the defaults: every hop takes at least 2 s of real t
       return done;
     })()`);
     assert.ok(r.length >= 2, `hops measured: ${r.length}`);
-    for (const x of r) assert.ok(x.real >= 2000 - 40, `a hop on ${x.ref} took ${Math.round(x.real)} ms of real time`);
-    // the speed: the line's length in the diagram over the hop's time
-    const fast = await page.eval(`(() => { const c = netatlas.simController(); let worst = 0; for (const it of c.pacer.items) { if (it.f.view !== 'physical') continue; const p = document.querySelector('#canvas g.cable[data-ref="' + it.f.track.ref + '"] path.cable-line'); if (!p) continue; worst = Math.max(worst, p.getTotalLength() / (it.hop / 1000)); } return worst; })()`);
-    assert.ok(fast <= 70 + 1e-6, `${fast} px per second at 100 % zoom`);
+    // (a frame or two of a loaded machine above: the clock counts at most 100 ms a frame)
+    for (const x of r) assert.ok(x.real >= 3000 - 40 && x.real <= 5000 + 250, `a hop on ${x.ref} took ${Math.round(x.real)} ms of real time`);
+    // Proportional: the line's length in the diagram over the hop's time, for the hops taken in after the change
+    const before = await page.eval(`JSON.stringify(netatlas.simController().pacer.items.map((it) => it.f.id))`);
+    await page.eval(`netatlas.simController().setPacing('proportional', 1000), true`);
+    await page.settle(3000);
+    const fast = JSON.parse(await page.eval(`(() => { const c = netatlas.simController(); const old = new Set(${before}); let worst = 0, n = 0; for (const it of c.pacer.items) { if (it.f.view !== 'physical' || old.has(it.f.id)) continue; const p = document.querySelector('#canvas g.cable[data-ref="' + it.f.track.ref + '"] path.cable-line'); if (!p) continue; n++; worst = Math.max(worst, p.getTotalLength() / (it.hop / 1000)); } return JSON.stringify({ worst, n }); })()`));
+    assert.ok(fast.n > 0, 'hops taken in under Proportional pacing');
+    assert.ok(fast.worst <= 70 + 1e-6, `${fast.worst} px per second at 100 % zoom`);
   } finally {
     await page.close();
   }
