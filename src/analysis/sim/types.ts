@@ -270,7 +270,12 @@ export type EventKind = 'message' | 'state' | 'drop' | 'route' | 'link' | 'table
  * id, its outer header), and what decided it — an interface, an MTU, a
  * relation, a cable, a policy's rule.
  */
-export type DropKind = 'no-route' | 'blackhole' | 'ttl' | 'too-big' | 'policy' | 'iface-down' | 'tunnel-down' | 'relation-failed' | 'neighbor' | 'cable' | 'loss' | 'not-sent' | 'scope' | 'beyond' | 'vlan' | 'inspection' | 'vpn-only' | 'reassembly' | 'other';
+/**
+ * What decided a drop, where it was decided: closed-port (nothing listens: a RST, ICMP port unreachable or nothing back),
+ * no-answer (it arrived and the device does not answer it: pings off, a listener of another service), not-routed (a host
+ * that does not forward), one-way (a device that passes one direction only), gateway (a Security gateway's policy).
+ */
+export type DropKind = 'no-route' | 'blackhole' | 'ttl' | 'too-big' | 'policy' | 'iface-down' | 'tunnel-down' | 'relation-failed' | 'neighbor' | 'cable' | 'loss' | 'not-sent' | 'scope' | 'beyond' | 'vlan' | 'inspection' | 'vpn-only' | 'reassembly' | 'closed-port' | 'no-answer' | 'not-routed' | 'one-way' | 'gateway' | 'other';
 
 export interface DropCause {
   kind: DropKind;
@@ -278,13 +283,44 @@ export interface DropCause {
   pkt?: number;
   /** its outer header as decided on: "192.0.2.1 → 198.51.100.2 GRE (47) carrying 10.1.0.10 → 10.2.0.10" */
   flow?: string;
+  /** an encapsulated packet: the ids of the packets inside it, innermost last (a test's own packet may be one of them) */
+  carried?: number[];
   vrf?: string;
   iface?: string;
   link?: string;
   mtu?: number;
   relation?: string;
+  /** the relation (session) the packet was one of — its own keepalive, Hello, handshake: what a session that went down heard nothing of */
+  session?: string;
+  /** the device that sent the packet (its sender, as recorded when it was first sent) */
+  from?: string;
+  /** neighbor: the next hop's address that could not be resolved */
+  neighbor?: string;
   /** policy: the device whose rules decided, the rule (1-based, as the decision numbers it), its text, the default */
   policy?: { device: string; action: 'deny' | 'reject' | 'undecided'; rule?: number; ruleText?: string; byDefault: boolean; text: string };
+}
+
+/**
+ * What a test waited for before its packets went (a lease, a DNS answer, a neighbour, a tunnel …): since, until (none:
+ * still), and `met` once the condition held — a wait that ended with its test, unmet, has `until` and no `met`.
+ */
+export interface WaitRecord {
+  cond: string;
+  why: string;
+  since: number;
+  until?: number;
+  met?: boolean;
+}
+
+/**
+ * A packet as it was first sent (the packet inspector's frame), by its id: an inner packet's record is the frame that
+ * carried it (`layer`: its IP header in the frame's, outermost 0), so a diagnosis' link opens that packet and no other.
+ */
+export interface PacketRecord {
+  hdr: Headers;
+  t: number;
+  device: string;
+  layer: number;
 }
 
 /** One line of the event log. */
@@ -317,6 +353,20 @@ export interface SimEvent {
   pkt?: number;
   /** an equal-cost choice: which of how many next hops (0-based) the packet's flow took, out of which interface */
   route?: { pkt: number; of: number; index: number; iface: string; gateway?: string };
+  /** a message: the relation (session) it belongs to */
+  relation?: string;
+  /** a state change, structured: what changed ("relation:gre1", "iface:r1:tun0", "link:c3"), up or down, why as recorded, and for a session the last time it heard its peer (-1 never) */
+  transition?: Transition;
+}
+
+export interface Transition {
+  ref: string;
+  up: boolean;
+  reason?: string;
+  /** a session going down: when it last heard its peer (-1: never); the interval it heard nothing in ends at the transition */
+  lastHeard?: number;
+  /** a session: its device (each end has its own) */
+  device?: string;
 }
 
 /** A protocol session's status (the status table). */

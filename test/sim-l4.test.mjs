@@ -195,6 +195,7 @@ test('TCP: handshake, request and answer, FIN close with TIME_WAIT; a closed por
   assert.ok(!s.connTable('pc').some((r) => r.state === 'TIME_WAIT'), 'TIME_WAIT is over after 60 s');
   const rst = run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 22 });
   assert.equal(rst.result, 'connection refused: RST from 10.0.2.10 (srv)');
+  assert.deepEqual([rst.outcome.by, rst.outcome.reason, rst.outcome.cause], ['srv', 'closed', undefined], 'a closed port: its own RST, said so by srv');
   const u = run(s, { from: 'pc', to: 'srv', kind: 'udp', port: 53 });
   assert.equal(u.result, 'UDP answer from 10.0.2.10:53');
   // reply to closed ports off on srv: the SYN is dropped, the client retransmits and times out
@@ -265,8 +266,13 @@ test('firewall: the model’s relations pass; the allow list opens sessions and 
   // reject: TCP gets a RST (from the destination's address), anything else ICMP administratively prohibited
   const r = sim(FW('{allow: "tcp/443", default_action: reject}'));
   r.runTo(2500);
-  assert.equal(run(r, { from: 'pc', to: 'srv', kind: 'tcp', port: 22 }).result, 'connection refused: RST from 10.0.2.10 (srv)');
-  assert.equal(run(r, { from: 'pc', to: 'srv', kind: 'udp', port: 123 }).result, 'Admin Prohibited from 10.0.1.1 (fw)');
+  // (the RST carries srv's address; it was sent by fw, which recorded why: its policy's rejection)
+  const rej = run(r, { from: 'pc', to: 'srv', kind: 'tcp', port: 22 });
+  assert.equal(rej.result, 'connection refused: RST from 10.0.2.10 (sent by fw, with the address of srv)');
+  assert.deepEqual([rej.outcome.kind, rej.outcome.by, rej.outcome.byAddr, rej.outcome.reason, rej.outcome.cause.kind, rej.outcome.cause.policy.device], ['refused', 'fw', '10.0.2.10', 'policy', 'policy', 'fw']);
+  const adm = run(r, { from: 'pc', to: 'srv', kind: 'udp', port: 123 });
+  assert.equal(adm.result, 'Admin Prohibited from 10.0.1.1 (fw)');
+  assert.deepEqual([adm.outcome.kind, adm.outcome.by, adm.outcome.reason, adm.outcome.cause.kind], ['unreachable', 'fw', 'policy', 'policy']);
   // a test on the DNS relation's port is the relation's traffic: it passes, with a session of its own
   assert.equal(run(r, { from: 'pc', to: 'srv', kind: 'udp', port: 53 }, 2000).result, 'UDP answer from 10.0.2.10:53');
   assert.ok(r.sessionTable('fw').some((x) => x.rule === 'relation dns-1'));

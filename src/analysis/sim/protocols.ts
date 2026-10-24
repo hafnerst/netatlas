@@ -742,7 +742,7 @@ export class ProtocolSim implements Protocols {
     s.state = state;
     s.up = up;
     s.since = this.e.now;
-    this.e.note('state', s.protocol, s.dev, s.peer, state, state, `${s.profile.label} ${s.rel.id}: ${s.dev} → ${s.peer} ${state}${why ? ' (' + why + ')' : ''}`);
+    this.e.note('state', s.protocol, s.dev, s.peer, state, state, `${s.profile.label} ${s.rel.id}: ${s.dev} → ${s.peer} ${state}${why ? ' (' + why + ')' : ''}`, this.e.now, undefined, { transition: { ref: 'relation:' + s.rel.id, up, reason: why, device: s.dev, lastHeard: up ? undefined : s.heard } });
     // (a tunnel interface whose tunnel's own session says whether it is up — GRE with keepalives, WireGuard, OpenVPN …:
     // its state follows, tunnelUp)
     if (s.local.l3.kind === 'tunnel' && s.profile.behaviour === 'session' && s.profile.keepalive) this.e.syncInterfaces();

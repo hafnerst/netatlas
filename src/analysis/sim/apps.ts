@@ -423,6 +423,33 @@ export function appOutcome(r: AppRun): { ok: number; failed: number; pending: nu
   return { ok, failed, pending, cancelled, retries: r.retried };
 }
 
+/** A run's messages by their last attempt sent (what decides each; a skipped last attempt is in `skipped`), in message order. */
+export function lastAttempts(r: AppRun): Test[] {
+  const last = new Map<number, Test>();
+  for (const t of r.tests) {
+    const k = t.msg || 1;
+    const was = last.get(k);
+    if (!was || (t.retry || 0) >= (was.retry || 0)) last.set(k, t);
+  }
+  return Array.from(last.keys())
+    .sort((a, b) => a - b)
+    .map((k) => last.get(k) as Test);
+}
+
+/**
+ * A run as it is compared with a static result (comm-identity.ts RunRecord): each message by its last attempt — a try
+ * sent, or the attempt that could not be sent (then in `skipped`, its earlier tries left out).
+ */
+export function appRunRecord(r: AppRun): { tests: Test[]; skipped: AppRun['skipped']; count: number | null; sent: number; stopped: boolean } {
+  const tests = lastAttempts(r);
+  const lastSkip = new Map<number, number>();
+  for (const s of r.skipped) lastSkip.set(s.n, Math.max(lastSkip.has(s.n) ? (lastSkip.get(s.n) as number) : -1, s.retry || 0));
+  const kept = tests.filter((t) => !lastSkip.has(t.msg || 1) || (t.retry || 0) > (lastSkip.get(t.msg || 1) as number));
+  const keptMsgs = new Set(kept.map((t) => t.msg || 1));
+  const skipped = r.skipped.filter((s) => !keptMsgs.has(s.n) && (s.retry || 0) === lastSkip.get(s.n));
+  return { tests: kept, skipped, count: r.count, sent: r.sent, stopped: r.stopped };
+}
+
 /** "12 answered · 1 failed · 2 retries". */
 export function appSummaryText(r: AppRun, o = appOutcome(r)): string {
   const p = appProfile(r.app.profile);

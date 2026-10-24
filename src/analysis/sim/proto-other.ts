@@ -869,7 +869,8 @@ function tunnelSend(P: ProtocolSim, s: Sess, type: string, detail: string, data:
   if (!hdr) return false;
   const e = ends[0];
   const m = P.msg(s, type, `${s.dev} (${formatAddr(e.src)}) → ${s.peer} (${formatAddr(e.dst)}), ${hdr.proto === 'udp' ? 'UDP ' + hdr.dport : 'IP ' + hdr.num}; ${detail}`, data);
-  P.e.note('message', s.protocol, s.dev, s.peer, type, '', m.detail);
+  // (logged as the message it is: its relation and, once sent, its headers belong to this line)
+  P.e.note('message', s.protocol, s.dev, s.peer, type, '', m.detail, P.e.now, m);
   P.lane(s.rel, s.dev, s.peer, m, P.e.estimate(s.dev, e.dst));
   // (in the VRF of the tunnel's source interface, as its data goes)
   const vrf = P.e.tunnelVrf(s.dev, s.local.l3.id);
