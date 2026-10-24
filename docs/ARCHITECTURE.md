@@ -202,23 +202,52 @@ anything else.
 * **A result says what it is, and stays as computed.** Every Analyze tool returns its verdict in one vocabulary (`analysis/result.ts`) with the context it was computed on and its coverage. A result is computed when the user asks (Trace, Evaluate, Analyze, opening a window), never behind their back: an edit marks it outdated (by the model's fingerprint, so moving a node does not), Refresh computes it again. A snapshot of a running simulation is frozen when it is taken; a tool that can't evaluate one correctly says so instead of blending the simulation's state with a what-if.
   *Trade-off:* the user presses Refresh after editing; in return a result being read never changes under the reader.
 * **Evidence is recorded where it is decided; a diagnosis only reads it.**
-  The boundary that decides an outcome records it as data next to its log
-  line: a drop's cause (`DropCause` in `analysis/sim/types.ts`: its kind,
-  the packet id and outer header, the interface, MTU, relation, cable, or
-  the policy's device, rule and default) is set by the engine or the
-  firewall filter that dropped it; a Send test's outcome (`TestOutcome` in
-  `analysis/sim/transport.ts`), its waits, retransmissions and DNS queries
-  by the transport that ended or held it; an equal-cost choice by the
-  forwarding that made it. `analysis/diagnosis.ts` builds the answer to a
+  The boundary that decides an outcome records it as data on its own log
+  line (`note`'s `ex`, never a pending slot another line could take): a
+  drop's cause (`DropCause` in `analysis/sim/types.ts`: its kind, the
+  packet id, the packets inside an outer one, its sender and session, the
+  outer header, the interface, MTU, next hop, relation, cable, or the
+  policy's device, rule and default) is set by the engine or the firewall
+  filter that dropped it; a RST or ICMP error carries the decision it
+  reports and its sender's reason; a test's outcome (`TestOutcome` in
+  `analysis/sim/transport.ts`: its kind, the device that answered and why,
+  every drop of its exchange marked when it was one of its attempts, how
+  far back the log reached), its waits (met or not), retransmissions and
+  DNS queries by the transport that ended or held it; an equal-cost choice
+  by the forwarding that made it; a state change of an interface, cable or
+  session as a `Transition`; an MQTT publication's fate in its record
+  (`MqttPublication`, `analysis/sim/mqtt.ts`). What a packet released from
+  a queue or a wait sends and notes belongs to its own exchange
+  (`Engine.ownExchange`). `analysis/diagnosis.ts` builds the answer to a
   communication question from the communication check and these records
-  (`Simulation.runEvidence` hands them over without running anything): it
+  (`Simulation.runEvidence`, `appEvidence` and `mqttEvidence` hand them
+  over, scoped to the run asked about, without running anything): it
   never parses an event's text and never reconstructs the past from the
-  current tables. Each link of its evidence chain says whether it is a
-  recorded cause, a prerequisite, a related observation or not established.
-  *Trade-off:* a cause the engine does not record (the rarer drop sites
-  still say only text) stays *not established* in a diagnosis instead of
-  being guessed from the words; the records are bounded by the log's and
-  the test list's retention, which a diagnosis says.
+  current tables. It answers apart whether the run finished, what was
+  observed and whether its cause is established; each link of its
+  evidence chain says whether it is a recorded cause, contributing, a
+  prerequisite (with the recorded transition behind it), a related
+  observation or not established. Runtime references name their
+  execution (`Simulation.exec`), so a later simulation's reused numbers
+  never answer them.
+  *Trade-off:* a cause the engine does not record (protocol-internal and
+  TCP-sequence drops still say only text) stays *not established* in a
+  diagnosis instead of being guessed from the words; the records are
+  bounded by the log's, the packets', the publications' and the test
+  list's retention, which a diagnosis says.
+* **A tunnel layer has its own identity.** `trace.ts layerEnds` resolves
+  each layer of a tunnel stack: the tunnel's ends for its first, a
+  relation carried between other addresses (IPsec between WAN addresses
+  under GRE between loopbacks) its own ends, family and VRF. The tunnel-MTU
+  budget, the static path MTU, Trace path (the outer packet routed by the
+  outermost layer's ends) and the simulation (each header between its
+  ends, keepalives too) all read it; `endpoint-order.ts` is the one order
+  in which a device's interfaces stand for it as an address (an ordinary
+  interface, a loopback, a container bridge's), each consumer keeping its
+  own adapter for usability.
+  *Trade-off:* a layer's ends come from the model's static addresses (a
+  lease is not known statically); a relation without interfaces rides the
+  tunnel's own ends.
 * **One definition of what an encapsulation adds.** `analysis/encap.ts`
   states each tunnel format's bytes (outer header of the tunnel's family,
   outer UDP, header, padding, trailer, inner Ethernet) with the format it

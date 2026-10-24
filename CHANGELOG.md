@@ -19,34 +19,62 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
 ### Added
 
 - **Diagnosis** in Trace path: under the verdict, the answer to the
-  question in order — its state (established, blocked, waiting, recovered,
-  partial, not established), a short explanation, the question as resolved
-  (from, to, family, service, routing context, configured model or
-  snapshot, the recorded send compared), what prevents or limits it, the
-  evidence chain, the separate legs (an MQTT publisher's and each
-  subscriber's apart) and the next actions, which prefill and never submit.
-  Each piece of evidence says whether it is a recorded cause, a
-  prerequisite, a related observation or not established, and links to the
-  object, the policy rule's device, the layer or the message it names;
-  following it moves no clock, sends nothing and changes nothing.
-  **Compare with simulation** adds the recorded send's evidence; the
-  diagnosis is kept with the result and marked outdated after an edit.
+  question in order — its state (established, blocked, not completed with
+  its cause not established, waiting, in progress, recovered, partial,
+  cancelled, not established), a short explanation, the static answer and
+  the simulation's apart (finished or not, what was observed, whether its
+  cause is established), the question as resolved (from, to, family,
+  service — *none given* when it has none —, routing context, configured
+  model or snapshot, the run compared), what prevents or limits it (each
+  distinct cause once, with the messages it stands for), the evidence
+  chain, the separate legs and the next actions, which prefill and never
+  submit. Each piece of evidence says whether it is a recorded cause,
+  contributing, a prerequisite (with the recorded state change behind it),
+  a related observation or not established, and links to the exact record
+  it names: the object, the policy decision (the device's rules in order,
+  the deciding one marked, in place), the layer, the packet, message or
+  event of its own simulation; following it moves no clock, sends nothing
+  and changes nothing. **Compare with simulation** adds the recorded
+  run's evidence — a send, a client application's own newest run with its
+  retries, an MQTT client's newest run by its own publications; the
+  diagnosis is kept with the result (also across leaving Analyze) and
+  marked outdated after an edit.
 - **Analyze → Diagnose communication…** (`Shift+D`): the question from the
   selection (a device's client application to its peer or broker, a device
-  or interface, a relation between its ends), checked at once.
-- **Structured runtime evidence**: a drop records its cause where the
-  engine or the firewall decided it (the kind, the packet and its outer
-  header, the interface, MTU, relation, cable, or the policy's device, rule
-  and default); a Send test records its outcome kind, the last drop of its
-  own packets, what it waited for (a lease, DNS, a neighbour, a tunnel) and
-  how long, its TCP retransmissions and its DNS queries' fates; an
-  equal-cost choice of a Send test's packet records the branch taken.
+  or interface, a relation between its ends), checked at once; a device
+  with several client applications asks which, and nothing of the
+  previous question is carried over.
+- **Structured runtime evidence**: a drop records its cause on its own log
+  line where the engine or the firewall decided it (the kind, the packet,
+  the packets inside an outer one, its sender and session, its outer
+  header, the interface, MTU, next hop, relation, cable, or the policy's
+  device, rule and default); a RST or ICMP error records why its sender
+  sent it (a closed port, a policy's rejection with its decision, no
+  connection) and which device sent it — a firewall's RST is no longer
+  taken for the destination's; a test records its outcome kind, every drop
+  of its exchange (marked when it was one of its attempts), how far back
+  the log reached, what it waited for (met or not) and how long, its TCP
+  retransmissions and its DNS queries' fates; an equal-cost choice records
+  the branch taken; interfaces, cables and sessions record their state
+  changes; packets keep a record of their first frame (the latest 8 192);
+  an MQTT publication its own record (its packets, the broker's receipt,
+  its PUBACK or loss, each subscriber's receipt; the latest 2 000).
 - The text export of Trace path starts with the diagnosis and names the
   model by a fingerprint id.
-- Tests: hand-worked encapsulation sizes, identity across Analyze and the
-  simulation, the diagnosis regression matrix, bounded property tests of
-  generated models and action sequences with a reducer (test-only), and
-  browser checks of the diagnosis with real keys and in a narrow window.
+- Tests: hand-worked encapsulation sizes (also for nested layers of
+  different families, IPv6 outer headers, UDP tunnels, ESP's padding at run
+  time, per-layer VRFs and equal-cost underlays), identity across Analyze
+  and the simulation, the diagnosis regression matrix and its faithfulness
+  to evidence (completion, outcome and cause certainty apart; RST reasons;
+  contributing drops; reworded records; several causes; prerequisite
+  chains), runtime evidence scoped to the question (MQTT publications,
+  application runs, records of their own execution), bounded property
+  tests of generated models and legal action sequences with a reducer
+  (dual stack, four tunnel kinds, equal-cost links, a reused address in
+  another VRF, DHCP, an application with retries and Stop; every refusal
+  classified, every intended branch required; test-only), and browser
+  checks of the workflow with real keys, in a narrow window and both
+  themes.
 
 ### Changed
 
@@ -81,7 +109,27 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
   its family (the send asks for AAAA).
 - Compare with simulation, application retries and the status of Network
   events read the structured outcomes instead of matching the result's
-  words.
+  words. A difference with the static result says only what the records
+  show: a route there later is an observed difference (never "learned
+  after the send"), a neighbour that did not answer is no missing route, a
+  RST says what its sender recorded.
+- **Each layer of a tunnel stack from its own identity**: a relation a
+  tunnel is carried over between other addresses (IPsec between WAN
+  addresses under GRE between loopbacks, of another family or in another
+  VRF) gives its layer its own ends — in the tunnel-MTU check, the path MTU,
+  Trace path (the outer packet routed by its outermost layer) and the
+  simulation (each header between its ends, keepalives too). The
+  tunnel-MTU check takes the stack as Trace path and the simulation do (one
+  relation per level).
+- One order for a device as an address (an ordinary interface, a loopback,
+  a container bridge's), shared by the static check, the applications,
+  Send test, health checks and an MQTT client's broker.
+- A tunnel interface without an MTU of its own takes what its underlay
+  leaves room for in the static path MTU too (it counted as unknown, so
+  every tunnel path's MTU was only an upper bound).
+- Preparing a send resets what an earlier send left in the form (the
+  source interface when none is given, the count, the size, Don't
+  fragment, keep open).
 
 ### Fixed
 
@@ -93,6 +141,21 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
 - Preparing a send no longer writes another value where the form can't
   take the analysis' choice (a lease's placeholder as an address, a
   missing interface): what it could not fill in is said.
+- Packets waiting for the same ARP or NDP answer were released in the
+  exchange of the test whose request got it: another test's drop was
+  noted as that test's, and became its last drop. Each now goes in its
+  own exchange.
+- An MQTT client took its broker's container bridge address when the
+  bridge's interface sorted first; the static check took the broker's
+  ordinary interface.
+- A tunnel keepalive that waited for the IPsec it rides went without that
+  layer once it was up.
+- The simulation's tunnel limit took the first of equal-cost underlay next
+  hops, not the one the outer flow takes.
+- A Security gateway noted a denied flow once: a later test's packet it
+  denied left no record.
+- Closing the packet inspector opened again from another link returned the
+  focus to the first one.
 
 ## [0.1.4] - 2026-10-22
 
