@@ -718,6 +718,20 @@ export class Engine {
     }
   }
 
+  /**
+   * Run `fn` in a message's own exchange: its test, or none — never the exchange being handled now (a queued packet sent
+   * when another test's ARP answer arrives, a wait that ends while another message is received).
+   */
+  ownExchange<T>(msg: Msg, fn: () => T): T {
+    const was = this.testCtx;
+    this.testCtx = msg.test !== undefined ? msg.test : null;
+    try {
+      return fn();
+    } finally {
+      this.testCtx = was;
+    }
+  }
+
   /** Choose the senders (null: every device), at the current time; logged. They choose what is shown, never what runs or is generated. */
   setSenders(s: Set<string> | null, text: string): void {
     this.senders = s ? new Set(s) : null;
@@ -859,7 +873,7 @@ export class Engine {
         this.waits.delete(cond);
         for (const w of list) {
           w.msg.waited = (w.msg.waited || []).concat([`${w.why}: ${durationText(this.now - w.since)}`]);
-          w.fn();
+          this.ownExchange(w.msg, w.fn);
         }
       }
     });
@@ -3731,7 +3745,9 @@ export class Engine {
     if (now !== was) this.tableNote(dev, e, ip.version === 6 ? e.state : e.type, `${why}: ${e.ipText} is at ${mac}${this.simulatedMac(mac) ? ' (simulated)' : ''}${moved ? ' (it was at another MAC)' : ''}`);
     const q = e.queue;
     e.queue = [];
-    for (const w of q) w.send(mac);
+    // (each in its own exchange: the answer that resolved it belongs to whichever test asked first — what is sent and noted
+    // now for a packet is its own test's, or none, never that one's)
+    for (const w of q) this.ownExchange(w.pkt.msg, () => w.send(mac));
   }
 
   private simulatedMac(mac: string): boolean {
@@ -3770,7 +3786,7 @@ export class Engine {
             tab.delete(k);
             this.tableNote(dev, e, 'removed', `${e.ipText} removed: no answer to ${e.tries} ${e.ip.version === 4 ? 'ARP Requests' : 'solicitations'}${e.queue.length ? '; ' + e.queue.length + ' waiting packet' + (e.queue.length === 1 ? '' : 's') + ' dropped' : ''}`);
             for (const w of e.queue) {
-              this.withTest(w.pkt.msg.test, () => {
+              this.ownExchange(w.pkt.msg, () => {
                 this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`, this.now, undefined, { cause: this.causeOf({ kind: 'neighbor', iface: l3.id, neighbor: e.ipText }, w.pkt) });
                 if (w.fwd) this.icmpError(dev, w.pkt, 'host', { from: l3 });
                 else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, w.pkt, 'host', `${e.ipText} does not answer ${e.ip.version === 4 ? 'ARP' : 'neighbour solicitations'} (host unreachable)`);

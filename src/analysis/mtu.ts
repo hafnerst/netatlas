@@ -172,8 +172,19 @@ function pathConstraints(model: Model, p: Path, depth: number, v: 4 | 6, base = 
   };
   // (an underlay's hops name the layers their outer packet already is: those are not added again)
   let prevEncap = base;
+  // (a tunnel interface without an MTU of its own takes what its underlay leaves room for — the tunnel constraint, as the
+  // simulation's tunnel limit: no unknown of its own)
+  const iface = (dev: string, id: string): MtuConstraint | null => {
+    const i = model.index.interfaces.get(ifaceKey(dev, id));
+    if (i && i.type === 'tunnel' && i.mtu === undefined) return null;
+    return { what: `${dev}:${id}`, ref: `iface:${dev}:${id}`, kind: 'interface', mtu: ifaceMtu(model, dev, id) };
+  };
+  const addIface = (dev: string, id: string): void => {
+    const c = iface(dev, id);
+    if (c) add(c);
+  };
   p.hops.forEach((h: Hop, k) => {
-    if (h.ingress !== undefined) add({ what: `${h.device}:${h.ingress}`, ref: `iface:${h.device}:${h.ingress}`, kind: 'interface', mtu: ifaceMtu(model, h.device, h.ingress) });
+    if (h.ingress !== undefined) addIface(h.device, h.ingress);
     if (h.egress === undefined) return;
     // the layers this hop adds: the inner packet goes through the underlay, less their overhead
     const added = h.encap.slice(prevEncap);
@@ -204,10 +215,10 @@ function pathConstraints(model: Model, p: Path, depth: number, v: 4 | 6, base = 
       const known = under.filter((c) => c.mtu !== null) as Array<MtuConstraint & { mtu: number }>;
       const min = known.length ? known.reduce((a, b) => (b.mtu < a.mtu ? b : a)) : null;
       add(tunnelConstraint(label, added[0].relation ? 'relation:' + added[0].relation : `iface:${h.device}:${h.egress}`, min, layers, os));
-      add({ what: `${h.device}:${h.egress}`, ref: `iface:${h.device}:${h.egress}`, kind: 'interface', mtu: ifaceMtu(model, h.device, h.egress) });
+      addIface(h.device, h.egress);
       return;
     }
-    add({ what: `${h.device}:${h.egress}`, ref: `iface:${h.device}:${h.egress}`, kind: 'interface', mtu: ifaceMtu(model, h.device, h.egress) });
+    addIface(h.device, h.egress);
     // a traced underlay carries the outer packet: its cables are the underlay's, not this hop's
     if (added.length) return;
     // the ports of the cables to the next hop (switch ports on the way too)
