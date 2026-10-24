@@ -468,7 +468,7 @@ test('identity: the static result beside the simulation’s send, a difference e
   const k2 = I.compareRun(ospf, c2, s2.testRuns()[0], s2.snapshot());
   assert.deepEqual([k2.runtime, k2.agree], ['failed', false]);
   // (at t = 0 the sender's own interface is not up yet: the link-up delay)
-  assert.match(k2.lines[0], /^Interface down when sent \(t = 0\.0 s\): w-host:eth0 was not up \(a link coming up, shut, or failed\); the configured model routes from it, and the simulation’s state at t = 40\.0 s does too$/);
+  assert.match(k2.lines[0], /^Interface down when sent \(t = 0\.0 s\): w-host:eth0 was not up \(a link coming up, shut, or failed\); the configured model routes from it; at t = 40\.0 s the state routes it$/);
   // just after the interface is up, before the routes are learned: the route was not there
   const s4 = new S.Simulation(ospf);
   s4.runTo(2500);
@@ -476,7 +476,9 @@ test('identity: the static result beside the simulation’s send, a difference e
   s4.runTo(40000);
   const k4 = I.compareRun(ospf, c2, s4.testRuns()[0], s4.snapshot());
   assert.deepEqual([k4.runtime, k4.agree], ['failed', false]);
-  assert.match(k4.lines[0], /^Route not there when sent \(t = 2\.5 s\): w1 had no route to 10\.2\.0\.10 and answered Net Unreachable; the configured model routes it, and the simulation’s state at t = 40\.0 s does too: it was learned after the send/);
+  // (a later working route says nothing of how it came: only the observed difference, never "learned after the send")
+  assert.match(k4.lines[0], /^Route not there when sent \(t = 2\.5 s\): w1 had no route to 10\.2\.0\.10 and answered Net Unreachable; the configured model routes it; the simulation’s state at t = 40\.0 s routes it — what changed between the send and then is not established by this comparison$/);
+  assert.ok(!/learned after|adjacency that was not up/.test(k4.lines.join(' ')));
   // a later send agrees
   s2.sendPlan({ delivery: 'unicast', ...p2 });
   s2.runTo(60000);

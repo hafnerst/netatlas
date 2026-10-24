@@ -39,6 +39,14 @@
  * 65535 and skipping one still waiting for its acknowledgment; SUBACK and
  * UNSUBACK complete only the request of their identifier.
  *
+ * Each logical publication has a bounded record (MqttPublication, the
+ * latest PUBS_KEPT): its run, client, topic, QoS and packet identifier,
+ * the packets that carried it (DUPs and TCP retransmissions included), its
+ * receipt at the broker, its PUBACK or its loss with a closed connection,
+ * and each subscriber the broker passed it to, with that subscriber's
+ * receipt — what a diagnosis correlates its legs by, so an earlier run's,
+ * another publisher's or another topic's traffic never stands for it.
+ *
  * Not modelled: QoS 2, persistent sessions, retained messages, wills,
  * user names and passwords, TLS, payload contents. Message sizes follow
  * the packets' fixed and variable headers (their strings in UTF-8 bytes,
@@ -48,6 +56,7 @@ import { IpAddr } from '../../model/ip';
 import { APP_DEFAULTS, AppInstance, mqttClientId, mqttRole, topicFilterProblem, topicMatches } from '../../model/applications';
 import { MQTT_PORT } from '../listeners';
 import { formatAddr } from '../ipmath';
+import { ordered, reachRank, runtimeKind } from '../endpoint-order';
 import { AppRun, AppSim } from './apps';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
@@ -96,6 +105,43 @@ function nextPid(holder: { nextPid: number }, inUse: (pid: number) => boolean): 
   return null;
 }
 
+/** How many publications' records are kept (the oldest go first; a diagnosis says when its run's are gone). */
+export const PUBS_KEPT = 2000;
+
+/** One logical publication of a client (its DUPs are copies of it) and what became of it, as recorded. */
+export interface MqttPublication {
+  /** its id in this simulation (the order publications were made) */
+  id: number;
+  /** the publisher's run (AppRun id), device, application and client identifier */
+  run: number;
+  dev: string;
+  app: string;
+  clientId: string;
+  broker: string;
+  topic: string;
+  qos: 0 | 1;
+  /** its packet identifier (QoS 1; 0 at QoS 0) */
+  pid: number;
+  /** published at */
+  t: number;
+  /** DUP copies sent (no PUBACK within the retry interval) */
+  dups: number;
+  /** the packets that carried it: its segment, a TCP retransmission, a DUP's (the latest 8) */
+  pkts: number[];
+  /** its first receipt at the broker, and how many copies arrived (DUPs included) */
+  brokerRx?: number;
+  brokerRxCount: number;
+  /** the client identifiers the broker passed it to at its first receipt (empty: nobody was subscribed) */
+  matched?: string[];
+  /** its PUBACK at the publisher (QoS 1) */
+  acked?: number;
+  /** its connection closed before the PUBACK: lost with the clean session (why, as the client recorded it) */
+  lost?: number;
+  lostWhy?: string;
+  /** each subscriber the broker sent it to: its receipt (the first copy) and how many copies arrived; its run */
+  deliveries: Array<{ clientId: string; dev: string; app?: string; qos: 0 | 1; t: number; copies: number; rx?: number; rxCount: number; run?: number; acked?: number; pkts: number[] }>;
+}
+
 /** A broker's session of one client. */
 interface BrokerSession {
   clientId: string;
@@ -109,7 +155,7 @@ interface BrokerSession {
   subs: Map<string, 0 | 1>;
   nextPid: number;
   /** QoS 1 deliveries waiting for PUBACK: packet id → the delivery */
-  inflight: Map<number, { topic: string; bytes: number; tries: number; gen: number; traffic?: number }>;
+  inflight: Map<number, { topic: string; bytes: number; tries: number; gen: number; traffic?: number; pub?: number }>;
   gen: number;
   since: number;
   delivered: number;
@@ -144,8 +190,8 @@ export interface MqttRun {
   /** the publications it sent and how many the broker acknowledged (QoS 1) */
   published: number;
   pubacked: number;
-  /** QoS 1 publications waiting for PUBACK */
-  inflight: Map<number, { topic: string; bytes: number; tries: number; gen: number }>;
+  /** QoS 1 publications waiting for PUBACK (their records' ids) */
+  inflight: Map<number, { topic: string; bytes: number; tries: number; gen: number; pub: number }>;
   nextPid: number;
   /** the packet identifiers of its SUBSCRIBE and UNSUBSCRIBE waiting for SUBACK / UNSUBACK (null: none) */
   subPid: number | null;
@@ -178,6 +224,28 @@ export class MqttSim {
   readonly brokers = new Map<string, Broker>();
   readonly clients: MqttRun[] = [];
   private schedSeq = 0;
+  /** the publications' records, oldest first (the latest PUBS_KEPT), and how many left already */
+  readonly pubs: MqttPublication[] = [];
+  pubsDropped = 0;
+  private pubSeq = 0;
+  private pubById = new Map<number, MqttPublication>();
+
+  /** A publication's record (null: no such id, or no longer kept). */
+  publication(id: unknown): MqttPublication | null {
+    return typeof id === 'number' ? this.pubById.get(id) || null : null;
+  }
+
+  private newPublication(c: MqttRun, topic: string, qos: 0 | 1, pid: number): MqttPublication {
+    const p: MqttPublication = { id: ++this.pubSeq, run: c.run.id, dev: c.run.dev, app: c.run.app.id, clientId: c.clientId, broker: c.broker, topic, qos, pid, t: this.e.now, dups: 0, pkts: [], brokerRxCount: 0, deliveries: [] };
+    this.pubs.push(p);
+    this.pubById.set(p.id, p);
+    while (this.pubs.length > PUBS_KEPT) {
+      const old = this.pubs.shift() as MqttPublication;
+      this.pubById.delete(old.id);
+      this.pubsDropped++;
+    }
+    return p;
+  }
 
   constructor(
     private P: ProtocolSim,
@@ -231,7 +299,8 @@ export class MqttSim {
   private brokerAddr(broker: string, v: 4 | 6): IpAddr | string {
     const sd = this.P.sd(broker);
     if (!sd) return `${broker} is not in the simulation`;
-    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => Number(x.kind === 'loopback') - Number(y.kind === 'loopback') || cmp(x.id, y.id));
+    // (as any device is reached — endpoint-order.ts reach, the static check's broker too: loopbacks, then a bridge's, last)
+    const ls = ordered(Array.from(sd.l3.values()), (l) => reachRank(runtimeKind(l, this.P.m.index.interfaces.get(broker + ':' + l.id))), (l) => l.id);
     for (const l of ls) for (const x of l.addrs) if (x.addr.version === v) return x.addr;
     return `the broker ${broker} has no IPv${v} address`;
   }
@@ -317,9 +386,11 @@ export class MqttSim {
     return c.run.app.keepalive !== undefined ? c.run.app.keepalive : APP_DEFAULTS.mqttKeepalive;
   }
 
-  private send(c: MqttRun, s: AppSocket, type: string, short: string, detail: string, bytes: number, data: { [k: string]: unknown }): void {
+  private send(c: MqttRun, s: AppSocket, type: string, short: string, detail: string, bytes: number, data: { [k: string]: unknown }, carried?: (pkt: number) => void): void {
     c.lastSent = this.e.now;
-    s.send(mqttMsg(type, short, detail, bytes, data));
+    const m = mqttMsg(type, short, detail, bytes, data);
+    if (carried) m.carried = carried;
+    s.send(m);
   }
 
   private clientIn(c: MqttRun, s: AppSocket, m: AppMessage): void {
@@ -361,11 +432,21 @@ export class MqttSim {
         if (!f) return;
         c.inflight.delete(d.pid as number);
         c.pubacked++;
+        const p = this.publication(f.pub);
+        if (p && p.acked === undefined) p.acked = this.e.now;
         return;
       }
       case 'MQTT PUBLISH': {
         const topic = d.topic as string;
         c.received.set(topic, (c.received.get(topic) || 0) + 1);
+        // (this subscriber's receipt of that publication: the broker's copy names it)
+        const p = this.publication(d.pub);
+        const dl = p ? p.deliveries.find((x) => x.clientId === c.clientId) : undefined;
+        if (dl) {
+          if (dl.rx === undefined) dl.rx = this.e.now;
+          dl.rxCount++;
+          dl.run = c.run.id;
+        }
         if (d.qos === 1) this.send(c, s, 'PUBACK', `packet ${d.pid}`, `MQTT PUBACK (packet ${d.pid}) from ${c.clientId}: it has the publication to ${topic}`, packetBytes(2), { pid: d.pid });
         return;
       }
@@ -469,9 +550,14 @@ export class MqttSim {
     }
     c.published++;
     const bytes = packetBytes(str(topic) + (qos ? 2 : 0) + size);
-    this.send(c, s, 'PUBLISH', topic, `MQTT PUBLISH from ${c.clientId} to ${topic}: QoS ${qos}${qos ? `, packet ${pid}` : ''}, a payload of ${size} bytes (its contents are not modelled)`, bytes, { topic, qos, pid, dup: false, payload: size, from: c.run.dev });
+    const rec = this.newPublication(c, topic, qos ? 1 : 0, pid);
+    const carried = (pkt: number): void => {
+      rec.pkts.push(pkt);
+      if (rec.pkts.length > 8) rec.pkts.shift();
+    };
+    this.send(c, s, 'PUBLISH', topic, `MQTT PUBLISH from ${c.clientId} to ${topic}: QoS ${qos}${qos ? `, packet ${pid}` : ''}, a payload of ${size} bytes (its contents are not modelled)`, bytes, { topic, qos, pid, dup: false, payload: size, from: c.run.dev, pub: rec.id }, carried);
     if (!qos) return;
-    const f = { topic, bytes, tries: 0, gen: c.gen };
+    const f = { topic, bytes, tries: 0, gen: c.gen, pub: rec.id };
     c.inflight.set(pid, f);
     const retry = c.run.app.retryInterval !== undefined ? c.run.app.retryInterval : APP_DEFAULTS.mqttRetry;
     const again = (): void => {
@@ -480,7 +566,8 @@ export class MqttSim {
         if (c.inflight.get(pid) !== f || !c.sock || !c.sock.open) return;
         f.tries++;
         c.run.retried++;
-        this.send(c, c.sock, 'PUBLISH', `${topic} (DUP)`, `MQTT PUBLISH from ${c.clientId} to ${topic} again: QoS 1, packet ${pid}, DUP (no PUBACK within ${durationText(retry)})`, bytes, { topic, qos, pid, dup: true, payload: size, from: c.run.dev });
+        rec.dups++;
+        this.send(c, c.sock, 'PUBLISH', `${topic} (DUP)`, `MQTT PUBLISH from ${c.clientId} to ${topic} again: QoS 1, packet ${pid}, DUP (no PUBACK within ${durationText(retry)})`, bytes, { topic, qos, pid, dup: true, payload: size, from: c.run.dev, pub: rec.id }, carried);
         again();
       });
     };
@@ -550,6 +637,13 @@ export class MqttSim {
     c.pingAt = null;
     c.lastClose = why;
     c.lost += c.inflight.size;
+    for (const f of c.inflight.values()) {
+      const p = this.publication(f.pub);
+      if (p && p.acked === undefined && p.lost === undefined) {
+        p.lost = this.e.now;
+        p.lostWhy = why;
+      }
+    }
     c.inflight.clear();
     c.granted.clear();
     this.note(c, 'connection closed', 'Disconnected', `${this.name(c)}: ${was === 'Connecting' ? 'could not connect' : 'its connection is gone'} (${why})${retry ? `; it connects again in ${durationText(RECONNECT_DELAY)}` : ''}`);
@@ -622,12 +716,23 @@ export class MqttSim {
         if (qos === 1) bsend('PUBACK', `packet ${d.pid}`, `MQTT PUBACK (packet ${d.pid}) from ${b.dev} to ${sess.clientId}: it has the publication to ${topic}`, packetBytes(2), { pid: d.pid });
         // a DUP of a publication it already passed on (its PUBACK was lost): passed on again, as MQTT 3.1.1 allows at QoS 1
         b.received++;
-        this.fanOut(b, sess, topic, qos, Number(d.payload) || 0);
+        const p = this.publication(d.pub);
+        if (p) {
+          if (p.brokerRx === undefined) p.brokerRx = this.e.now;
+          p.brokerRxCount++;
+        }
+        this.fanOut(b, sess, topic, qos, Number(d.payload) || 0, p);
         return;
       }
       case 'MQTT PUBACK': {
         if (!sess) return;
-        if (sess.inflight.delete(d.pid as number)) sess.acked++;
+        const f = sess.inflight.get(d.pid as number);
+        if (f && sess.inflight.delete(d.pid as number)) {
+          sess.acked++;
+          const p = this.publication(f.pub);
+          const dl = p ? p.deliveries.find((x) => x.clientId === sess.clientId) : undefined;
+          if (dl && dl.acked === undefined) dl.acked = this.e.now;
+        }
         return;
       }
       case 'MQTT PINGREQ':
@@ -644,23 +749,24 @@ export class MqttSim {
   }
 
   /** The publication goes to each session whose filters match, with the lower of its QoS and the highest granted. */
-  private fanOut(b: Broker, from: BrokerSession, topic: string, qos: 0 | 1, payload: number): void {
+  private fanOut(b: Broker, from: BrokerSession, topic: string, qos: 0 | 1, payload: number, pub: MqttPublication | null): void {
     const to: Array<{ s: BrokerSession; q: 0 | 1 }> = [];
     for (const s of Array.from(b.sessions.values()).sort((x, y) => cmp(x.clientId, y.clientId))) {
       let best = -1;
       for (const [f, q] of s.subs) if (topicMatches(f, topic)) best = Math.max(best, q);
       if (best >= 0) to.push({ s, q: Math.min(qos, best) as 0 | 1 });
     }
+    if (pub && !pub.matched) pub.matched = to.map((x) => x.s.clientId);
     if (!to.length) {
       b.unmatched++;
       this.e.note('message', 'mqtt', b.dev, from.dev, 'no subscriber', '', `MQTT broker ${b.dev}: nobody is subscribed to ${topic} (from ${from.clientId}): the publication goes no further`);
       return;
     }
     this.e.note('message', 'mqtt', b.dev, from.dev, 'fan-out', '', `MQTT broker ${b.dev}: the publication of ${from.clientId} to ${topic} goes to ${to.map((x) => `${x.s.clientId} (QoS ${x.q})`).join(', ')}`);
-    for (const x of to) this.deliver(b, x.s, topic, x.q, payload);
+    for (const x of to) this.deliver(b, x.s, topic, x.q, payload, pub);
   }
 
-  private deliver(b: Broker, s: BrokerSession, topic: string, q: 0 | 1, payload: number): void {
+  private deliver(b: Broker, s: BrokerSession, topic: string, q: 0 | 1, payload: number, pub: MqttPublication | null): void {
     if (!s.sock.open) return;
     const pid = q ? nextPid(s, (x) => s.inflight.has(x)) : 0;
     if (pid === null) {
@@ -671,16 +777,32 @@ export class MqttSim {
     b.delivered++;
     s.delivered++;
     const traffic = this.e.testCtx !== null ? this.e.testCtx : undefined;
-    s.sock.send(mqttMsg('PUBLISH', topic, `MQTT PUBLISH from the broker ${b.dev} to ${s.clientId}: ${topic}, QoS ${q}${q ? `, packet ${pid}` : ''}, a payload of ${payload} bytes`, bytes, { topic, qos: q, pid, dup: false, payload }));
+    // (the publication's record learns this delivery — a DUP the publisher sent again is passed on again: one more copy)
+    let dl = pub ? pub.deliveries.find((x) => x.clientId === s.clientId) : undefined;
+    if (pub && !dl) {
+      dl = { clientId: s.clientId, dev: s.dev, app: s.app, qos: q, t: this.e.now, copies: 0, rxCount: 0, pkts: [] };
+      pub.deliveries.push(dl);
+    }
+    if (dl) dl.copies++;
+    const carried = (pkt: number): void => {
+      if (!dl) return;
+      dl.pkts.push(pkt);
+      if (dl.pkts.length > 8) dl.pkts.shift();
+    };
+    const m0 = mqttMsg('PUBLISH', topic, `MQTT PUBLISH from the broker ${b.dev} to ${s.clientId}: ${topic}, QoS ${q}${q ? `, packet ${pid}` : ''}, a payload of ${payload} bytes`, bytes, { topic, qos: q, pid, dup: false, payload, pub: pub ? pub.id : undefined });
+    m0.carried = carried;
+    s.sock.send(m0);
     if (!q) return;
-    const f = { topic, bytes, tries: 0, gen: s.gen, traffic };
+    const f = { topic, bytes, tries: 0, gen: s.gen, traffic, pub: pub ? pub.id : undefined };
     s.inflight.set(pid, f);
     const g = s.gen;
     const again = (): void => {
       this.e.after(b.retry, () => {
         if (s.gen !== g || s.inflight.get(pid) !== f || !s.sock.open) return;
         f.tries++;
-        this.e.withTest(traffic, () => s.sock.send(mqttMsg('PUBLISH', `${topic} (DUP)`, `MQTT PUBLISH from the broker ${b.dev} to ${s.clientId} again: ${topic}, QoS 1, packet ${pid}, DUP (no PUBACK within ${durationText(b.retry)})`, bytes, { topic, qos: q, pid, dup: true, payload })));
+        const md = mqttMsg('PUBLISH', `${topic} (DUP)`, `MQTT PUBLISH from the broker ${b.dev} to ${s.clientId} again: ${topic}, QoS 1, packet ${pid}, DUP (no PUBACK within ${durationText(b.retry)})`, bytes, { topic, qos: q, pid, dup: true, payload, pub: pub ? pub.id : undefined });
+        md.carried = carried;
+        this.e.withTest(traffic, () => s.sock.send(md));
         again();
       });
     };

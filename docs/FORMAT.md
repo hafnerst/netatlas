@@ -60,7 +60,12 @@ None to the keys: a file valid for 0.1.4 is valid as it is, and still says
 encapsulation sizes under the consistency checks): a tunnel's `mtu` is
 enforced, an interface's `mtu` limits what arrives on its cable as well as
 what leaves, and each encapsulation's size is one definition shared by the
-path MTU, the checks and the simulation.
+path MTU, the checks and the simulation. A tunnel interface without an `mtu`
+takes what its underlay leaves room for, statically as at run time (the
+path MTU no longer counts it as unknown). A relation a tunnel is carried
+`over` gives its layer its own ends — its endpoint interfaces' addresses,
+family and VRF — where it names interfaces (see *Relations* under
+`over`).
 
 ### Changes since 0.1.3
 
@@ -2476,6 +2481,17 @@ it is drawn *inside* that tube. GRE over IPsec shows as a GRE tube inside an
 IPsec tube, and OSPF over that GRE as a line inside it. Several relations
 between the same pair of devices get separate parallel lanes, so none of them
 hide each other.
+
+The layers of such a stack each have their own ends: the tunnel relation
+between the tunnel interfaces' `source` and `destination`, a relation it is
+carried `over` between that relation's own endpoint interfaces (their first
+addresses of a family both ends have) — GRE between loopbacks over IPsec
+between the WAN addresses, of the same or the other family, in the VRF of
+the endpoint interface. Trace path routes the outer packet by its outermost
+layer's ends, the path MTU and the tunnel-MTU check size each layer with its
+own family, and the simulation sends each header between its ends. A
+relation whose endpoints name no interface (or a tunnel interface) rides the
+tunnel's own ends.
 
 ### `protocols`: defining new protocols
 

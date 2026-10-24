@@ -1347,6 +1347,13 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .diag-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; }
 .diag-flags { color: var(--warn); }
 .diag-next { flex-wrap: wrap; }
+.diag-msgs { margin-left: 10px; }
+.diag-rule { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.diag-rule:focus-visible { outline: 2px solid var(--marked-bar); outline-offset: 2px; }
+.diag-rules { margin: 4px 0 6px; padding-left: 18px; }
+.diag-rules > li { padding: 1px 4px; overflow-wrap: anywhere; }
+.trace-choice ul { list-style: none; padding: 0; margin: 4px 0 8px; display: flex; flex-direction: column; gap: 4px; }
+.trace-choice button { text-align: left; white-space: normal; }
 .trace-end.beyond { color: var(--warn); }
 .hop-table .why-btn { display: block; margin-top: 2px; font-size: 11px; padding: 0 4px; white-space: nowrap; }
 .hop-table th.th-n { white-space: nowrap; }

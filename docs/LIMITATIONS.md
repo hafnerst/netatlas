@@ -50,29 +50,54 @@ other's back:
   initiator, its source, the recipient and every transit device on the
   way are inside; the scope says which transfers it leaves out.
 * **Diagnosis** (Trace path) is built only from what was recorded: the
-  communication check's layers and, once compared, the send's structured
-  records — each message's outcome (answered, refused, unreachable, too
-  big, timed out, lost, not sent, no address, name not resolved,
-  cancelled), the last drop of its own packets with its cause (kind,
-  packet, outer header, interface, MTU, relation, cable, or the policy's
-  device, rule and default) as the engine or the firewall decided it, what
-  it waited for, its TCP retransmissions, its DNS queries' fates, and the
-  equal-cost branch it took. It never reads a cause from a log line's
-  words, never takes a later state for the state when a packet was sent,
-  and links only what a record links: a cause it records, a prerequisite
-  it waited for or lacks, a related observation, or *not established*.
-  Things that merely happened at the same time (a BFD flap near a failed
-  connection) are not linked. A timeout without a recorded drop is *not
-  established*: the answer, or its way back, may be what is missing.
+  communication check's layers and, once compared, the structured records
+  of the run asked about — a send, a client application's own newest run
+  (its retries one message's attempts), or an MQTT client's newest run:
+  each message's outcome (answered, refused, unreachable, too big, timed
+  out, lost, not sent, no address, name not resolved, cancelled), the
+  device that answered and the reason it recorded, every drop recorded in
+  its exchange with its cause, what it waited for, its TCP retransmissions,
+  its DNS queries' fates, the equal-cost branch it took, and the recorded
+  state changes of what it needed. It answers apart whether the run
+  finished, what was observed and whether a cause is established. It never
+  reads a cause from a log line's words, never takes a later state for the
+  state when a packet was sent, and links only what a record links. A
+  timeout is an observed outcome: its cause is established only when every
+  attempt has a recorded drop; else the drops are *contributing* and the
+  cause *not established* — the answer, or its way back, may be what is
+  missing. A RST says what its sender recorded (a closed port, a policy's
+  rule, no connection), never more. A route there later is an observed
+  difference: what changed is not established. Things that merely
+  happened at the same time are not linked.
+* A prerequisite chain goes as far as the records: a missing route or a
+  tunnel down → the relation the configured path uses there → its recorded
+  state change (or that it never came up, when the log reaches back to the
+  start) → for a session that heard nothing, the recorded fate of its own
+  packets in that interval (decisive only when each was dropped, all by one
+  cause). A route withdrawn by a routing protocol is linked to the relation
+  the path uses, not to the protocol's individual updates.
 * What a diagnosis can read is bounded: the event log keeps its latest
-  20 000 events, the transport its last 400 tests, the engine the waits of
-  as many; a diagnosis of a send whose records are no longer kept says it
-  is *evidence-limited* and does not explain it. A diagnosis is kept with
-  its result and never recomputed; after an edit it is marked outdated.
-* An MQTT diagnosis reads the clients' counters: what the publisher sent
-  and the broker acknowledged (QoS 1; at QoS 0 the broker's receipt is not
-  established) and what each subscriber received — per leg, never one
-  from the other, not per publication.
+  20 000 events, the packet records the latest 8 192 packets, the MQTT
+  records the latest 2 000 publications, the transport its last 400 tests,
+  the engine the waits of as many. A test's outcome keeps its own drops (at
+  most 8) and how far back the log reached when it ended, so a terminal
+  outcome stays usable after the log moved on; a diagnosis whose records
+  were gone already says it is *evidence-limited* and does not explain it,
+  and a link to an event, packet or message no longer kept — or of an
+  earlier simulation — says it is unavailable. A diagnosis is kept with its
+  result (also across leaving Analyze) and never recomputed; after an edit
+  it is marked outdated.
+* An MQTT diagnosis reads the run's own publications (one record each, its
+  DUP copies counted apart): the broker's receipt (recorded at the broker,
+  also at QoS 0), the PUBACK (still pending: waiting), a loss with a closed
+  connection, and each subscriber's receipt of them; other publishers',
+  other topics' and earlier runs' traffic never count. QoS 2, persistent
+  sessions and retained messages are not modelled.
+* Drops that still record no structured cause: protocol-internal ones
+  (an OSPF Hello ignored, an IKE request outside the window, a DHCP scope
+  exhausted …), TCP's sequence checks (a RST or segment ignored), storm
+  control and illustrative data on non-IP interconnects. A diagnosis says
+  such a failure's cause is not established.
 * Static analysis and simulation still differ where one has state the
   other has not: a stateful firewall passes a packet as the reply of a
   session the other direction opened (also for IP protocols without

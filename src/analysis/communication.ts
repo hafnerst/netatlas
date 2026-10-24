@@ -31,6 +31,7 @@
  * a TCP session or a stateful return decision is not evaluated (said so, and
  * the simulation is offered for it, never started). Pure and deterministic.
  */
+import { modelKind, ordered, reachRank, sourceRank } from './endpoint-order';
 import { AppInstance, AppProfile, appFamily, appProfile, topicMatches } from '../model/applications';
 import { parseAddress } from '../model/ip';
 import { capabilities } from '../model/capabilities';
@@ -175,15 +176,8 @@ export function appAddress(model: Model, dev: string, v: 4 | 6, bind: string | u
     const c = conn.find((x) => x.iface === bind);
     return c ? { iface: c.iface, address: formatAddr(c.addr) } : null;
   }
-  const kindOf = (i: string): number => {
-    const x = model.index.interfaces.get(ifaceKey(dev, i));
-    return x && x.type === 'loopback' ? 1 : x && x.type === 'bridge' ? 2 : 0;
-  };
-  const cands = conn.filter((c) => {
-    const x = model.index.interfaces.get(ifaceKey(dev, c.iface));
-    return !!x && x.type !== 'tunnel';
-  });
-  cands.sort((a, b) => kindOf(a.iface) - kindOf(b.iface) || (a.iface < b.iface ? -1 : a.iface > b.iface ? 1 : 0) || compareAddr(a.addr, b.addr));
+  // (endpoint-order.ts reach: the definition the simulation's senders share)
+  const cands = ordered(conn.slice().sort((a, b) => compareAddr(a.addr, b.addr)), (c) => (model.index.interfaces.has(ifaceKey(dev, c.iface)) ? reachRank(modelKind(model.index.interfaces.get(ifaceKey(dev, c.iface)))) : null), (c) => c.iface);
   return cands.length ? { iface: cands[0].iface, address: formatAddr(cands[0].addr) } : null;
 }
 
@@ -209,11 +203,12 @@ export function egressSource(model: Model, dev: string, dest: string, ctx: Routi
   const out = routed(vrf) as string;
   const own = conn.find((c) => c.iface === out);
   if (own) return { iface: own.iface, address: formatAddr(own.addr) };
-  const isLo = (i: string): number => {
-    const x = model.index.interfaces.get(ifaceKey(dev, i));
-    return x && x.type === 'loopback' ? 0 : 1;
-  };
-  const same = conn.filter((c) => c.vrf === vrf).sort((x, y) => isLo(x.iface) - isLo(y.iface) || (x.iface < y.iface ? -1 : x.iface > y.iface ? 1 : 0));
+  // (endpoint-order.ts source: loopbacks first, as the simulation's sender)
+  const same = ordered(
+    conn.filter((c) => c.vrf === vrf),
+    (c) => sourceRank(modelKind(model.index.interfaces.get(ifaceKey(dev, c.iface)))),
+    (c) => c.iface,
+  );
   return same.length ? { iface: same[0].iface, address: formatAddr(same[0].addr) } : null;
 }
 

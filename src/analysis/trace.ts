@@ -1294,6 +1294,31 @@ export function encapStack(model: Model, r: Relation): EncapLayer[] {
   return out;
 }
 
+/**
+ * The outer ends of one layer of a tunnel stack at a device, as the model writes them: the layer's relation bound to an
+ * interface at this device and at its peer (not a tunnel interface), their first addresses of a family both have — the
+ * one of `want` first, else IPv4 —, and the VRF of this device's interface. A layer carried over another (GRE over an
+ * IPsec relation between other addresses) has its own header between those; null when the relation names no such
+ * interfaces with an address: that layer rides the tunnel's own ends. Static addresses only (a lease is not known here).
+ */
+export function layerEnds(model: Model, device: string, relation: string, want?: 4 | 6): { iface: string; vrf: string; src: string; dst: string; family: 4 | 6 } | null {
+  const r = model.index.relations.get(relation);
+  if (!r) return null;
+  const mine = r.endpoints.find((e) => e.device === device);
+  const peer = r.endpoints.find((e) => e.device !== device);
+  if (!mine || !peer || mine.iface === undefined || peer.iface === undefined) return null;
+  const a = model.index.interfaces.get(ifaceKey(device, mine.iface));
+  const b = model.index.interfaces.get(ifaceKey(peer.device, peer.iface));
+  if (!a || !b || a.type === 'tunnel' || b.type === 'tunnel') return null;
+  const addrs = (i: Interface): IpAddr[] => i.addresses.map((x) => parseAddress(x.split('/')[0])).filter((x): x is IpAddr => !!x);
+  for (const v of want === 6 ? [6, 4] : [4, 6]) {
+    const x = addrs(a).find((p) => p.version === v);
+    const y = addrs(b).find((p) => p.version === v);
+    if (x && y) return { iface: a.id, vrf: a.vrf || '', src: formatAddr(x), dst: formatAddr(y), family: v as 4 | 6 };
+  }
+  return null;
+}
+
 /** UDP-carried tunnels and overlays whose data goes in UDP to the protocol's own port (their control and data share it). */
 const UDP_DATA = ['wireguard', 'openvpn', 'l2tp', 'gtp', 'vxlan', 'geneve'];
 
@@ -1354,8 +1379,12 @@ function tunnelStep(w: Walk, device: string, t: Interface, farDevice: string): T
       return [res];
     }
   }
-  // the outer packet, traced
-  const outer = w.depth < MAX_DEPTH ? outerAddresses(model, device, t) : null;
+  // the outer packet, traced — by its outermost layer's header: a layer carried over a relation between other addresses
+  // (GRE over IPsec between the WAN addresses) is routed by that relation's own ends (layerEnds), as the simulation sends it
+  let outer = w.depth < MAX_DEPTH ? outerAddresses(model, device, t) : null;
+  const topL = layers[layers.length - 1];
+  const own = outer && layers.length > 1 && topL && topL.relation ? layerEnds(model, device, topL.relation, outer.dest.version) : null;
+  if (outer && own) outer = { dest: parseAddress(own.dst) as IpAddr, src: parseAddress(own.src) as IpAddr, vrf: own.vrf };
   if (outer) {
     const inner: Walk = {
       model,

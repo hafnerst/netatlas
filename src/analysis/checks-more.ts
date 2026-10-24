@@ -16,6 +16,7 @@ import { Interface, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, relati
 import { addrBig, compareAddr, inPrefix, networkOf as networkOfPrefix, prefixRange, prefixText } from './ipmath';
 import { vrfKey, vrfName } from './routing';
 import { EncapDef, encapDef, layerText, maxInnerStack, outerLengthStack } from './encap';
+import { encapStack, layerEnds, tunnelRelation } from './trace';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
 
@@ -126,22 +127,17 @@ export function tunnelOuterFamily(model: Model, t: Interface): 4 | 6 | null {
  * format (nothing is assumed then).
  */
 export function tunnelBudget(model: Model, t: Interface): { stack: Relation[]; layers: Array<{ def: EncapDef; outer: 4 | 6 }>; what: string[]; under?: Interface; fits(limit: number): number | null; needs(inner: number): number } | null {
-  const stack: Relation[] = [];
-  const add = (r: Relation): void => {
-    if (stack.indexOf(r) >= 0 || r.category !== 'tunnel') return;
-    stack.push(r);
-    for (const o of r.over) {
-      const c = model.index.relations.get(o);
-      if (c) add(c);
-    }
-  };
-  for (const r of model.relations) if (r.endpoints.some((e) => e.device === t.device && e.iface === t.id)) add(r);
+  // (the stack as Trace path and the simulation take it: the tunnel's relation, then what it is carried over, one each)
+  const top = tunnelRelation(model, t.device, t.id);
+  const stack: Relation[] = top && top.category === 'tunnel' ? encapStack(model, top).map((l) => model.index.relations.get(l.relation as string) as Relation).filter((r) => !!r && r.category === 'tunnel') : [];
   if (!stack.length) return null;
   const defs = stack.map((r) => encapDef(baseProtocol(model, r)));
   if (defs.some((p) => !p)) return null;
-  // (the family of the outer headers: the tunnel's, IPv4 when the model does not say; said so)
+  // (each layer's outer family: the tunnel's own for its first layer, IPv4 when the model does not say (said so); a layer
+  // carried over a relation between other addresses, that relation's own — layerEnds)
   const fam = tunnelOuterFamily(model, t);
-  const layers = (defs as EncapDef[]).map((def) => ({ def, outer: fam || (4 as const) }));
+  const owns = stack.map((r, k) => (k ? layerEnds(model, t.device, r.id, fam || undefined) : null));
+  const layers = (defs as EncapDef[]).map((def, k) => ({ def, outer: owns[k] ? (owns[k] as { family: 4 | 6 }).family : fam || (4 as const) }));
   let under: Interface | undefined = t.source && t.source.iface ? model.index.interfaces.get(ifaceKey(t.device, t.source.iface)) : undefined;
   if (!under || under.mtu === undefined) {
     under = undefined;
@@ -156,7 +152,7 @@ export function tunnelBudget(model: Model, t: Interface): { stack: Relation[]; l
       }
     }
   }
-  const what = layers.map((l) => layerText(l.def, l.outer)).concat(fam ? [] : ['the outer family is not written: IPv4 assumed']);
+  const what = layers.map((l, k) => layerText(l.def, l.outer) + (owns[k] ? ` (${stack[k].id}: its own ends ${(owns[k] as { src: string }).src} → ${(owns[k] as { dst: string }).dst})` : '')).concat(fam ? [] : ['the outer family is not written: IPv4 assumed']);
   const out: { stack: Relation[]; layers: Array<{ def: EncapDef; outer: 4 | 6 }>; what: string[]; under?: Interface; fits(limit: number): number | null; needs(inner: number): number } = { stack, layers, what, fits: (limit) => maxInnerStack(layers, limit), needs: (inner) => outerLengthStack(layers, inner) };
   if (under) out.under = under;
   return out;

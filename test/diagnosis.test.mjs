@@ -105,7 +105,8 @@ test('DNS fallback: the first server lost the query, the second answered — rec
   const c = C.checkCommunication(m, { from: 'pc', to: 'www.example.test' });
   const d = D.diagnose({ check: c, context: configured, runtime: s.runEvidence(run) });
   assert.equal(d.state, 'recovered', d.summary);
-  assert.match(d.summary, /Recovered: answered after DNS: the query to 10\.0\.0\.9 was lost, the query to 10\.0\.0\.9 was lost; 10\.0\.0\.10 answered/);
+  assert.match(d.summary, /1 answered after recovering\. Answered after DNS: the query to 10\.0\.0\.9 was lost, the query to 10\.0\.0\.9 was lost; 10\.0\.0\.10 answered/);
+  assert.deepEqual([d.runtime.completed, d.runtime.outcome, d.runtime.cause, d.provisional], [true, 'succeeded', 'n/a', false]);
   assert.ok(!d.blockers.some((b) => b.source === 'runtime'), 'no runtime blocker');
 });
 
@@ -239,7 +240,7 @@ test('a TCP retransmission that succeeds: recovered, not a failure', () => {
   assert.equal(t.ok, true, t.result);
   assert.equal(t.retx, 1);
   assert.equal(d.state, 'recovered', d.summary);
-  assert.match(d.summary, /Recovered: answered after 1 TCP retransmission/);
+  assert.match(d.summary, /Answered after 1 TCP retransmission/);
 });
 
 // ------------------------------------------------------------------ MQTT: the broker receives, a subscriber does not
@@ -263,16 +264,18 @@ links:
   s.play(4000);
   const c = C.checkCommunication(m, { from: 'sensor/temp' });
   assert.ok(c.legs.length >= 1, 'the static check has the broker → subscriber leg');
-  const pub = s.mqttCounters('sensor', 'temp');
-  assert.ok(pub.acked > 0, JSON.stringify(pub));
-  const sub = s.mqttCounters('hmi', 'view');
-  const mq = { publisher: { dev: 'sensor', app: 'temp', published: pub.published, acked: pub.acked, qos: 1, state: pub.state }, subscribers: [{ dev: 'hmi', app: 'view', received: sub ? sub.received : 0, state: sub ? sub.state : 'not started' }] };
+  const mq = s.mqttEvidence('sensor', 'temp', [{ dev: 'hmi', app: 'view' }]);
+  assert.ok(mq.pubs.length > 0 && mq.pubs.every((p) => p.brokerRx !== undefined), JSON.stringify(mq.pubs));
+  assert.ok(mq.pubs.some((p) => p.acked !== undefined));
   const d = D.diagnose({ check: c, context: configured, mqtt: mq });
-  const legP = d.legs.find((l) => /^Publisher sensor\/temp → broker/.test(l.label));
-  const legS = d.legs.find((l) => /^Broker → subscriber hmi\/view \(runtime\)/.test(l.label));
-  assert.equal(legP.state, 'established', legP.text);
-  assert.equal(legS.state, 'indeterminate', legS.text);
-  assert.match(legS.text, /a publication the broker acknowledged is not proof a subscriber got it/);
+  const legP = d.legs.find((l) => /^Publisher sensor\/temp → broker broker \(runtime, run #\d+\)/.test(l.label));
+  const legS = d.legs.find((l) => /^Broker broker → subscriber hmi\/view \(runtime/.test(l.label));
+  // (its last publication may still wait for its PUBACK: waiting, never a failure)
+  assert.ok(legP.state === 'established' || legP.state === 'waiting', legP.text);
+  // the broker's fan-out recorded nobody for these publications: a prerequisite not met (the subscriber was not running), not "unknown"
+  assert.equal(legS.state, 'blocked', legS.text);
+  assert.match(legS.text, /the broker passed none of the \d+ publications? to it: when they arrived it had no session with a matching subscription .*it was not started in this simulation/);
+  assert.ok(d.blockers.some((b) => b.rel === 'prerequisite' && /^Subscriber hmi\/view/.test(b.text)));
 });
 
 // ------------------------------------------------------------------ a tunnel's outer packet denied
@@ -324,7 +327,12 @@ relations:
   assert.equal(cause.flow, '192.0.2.1 → 198.51.100.2 IP-in-IP (4) carrying 10.1.0.10 → 10.2.0.10', 'the outer header that was decided on, and what it carried');
   const c = C.checkCommunication(m, { from: 'ha', to: 'hb' });
   const d = D.diagnose({ check: c, context: configured, runtime: s.runEvidence(run) });
-  assert.match(d.blockers[0].text, /^fw denied its packet 192\.0\.2\.1 → 198\.51\.100\.2 IP-in-IP \(4\) carrying 10\.1\.0\.10 → 10\.2\.0\.10 .*rule 1/);
+  // (the outer packet carried its own: every attempt it made was dropped there — the decisive cause, with both packets linked)
+  assert.equal(d.blockers[0].rel, 'cause');
+  assert.match(d.blockers[0].text, /^It timed out: its packet was dropped — fw denied it 192\.0\.2\.1 → 198\.51\.100\.2 IP-in-IP \(4\) carrying 10\.1\.0\.10 → 10\.2\.0\.10 .*rule 1/);
+  const refs = d.blockers[0].refs.map((r) => r.ref);
+  assert.ok(refs.indexOf(`packet:${s.exec}:${cause.pkt}`) >= 0 && refs.indexOf(`packet:${s.exec}:${t.pktIds[0]}`) >= 0 && refs.indexOf('policy:fw:1') >= 0, refs.join(' '));
+  assert.equal(d.state, 'blocked');
 });
 
 // ------------------------------------------------------------------ an MTU boundary with encapsulation
@@ -449,15 +457,20 @@ test('the evidence retention boundary: a timeout whose events are no longer kept
   const m = model(CHAIN);
   const c = C.checkCommunication(m, { from: 'pc', to: 'srv' });
   const t = { id: 9, msg: 1, done: true, ok: false, started: 1000, ended: 6000, result: 'no answer within 5 s (timed out)', pktIds: [3], dst: { version: 4, bytes: [10, 0, 2, 10] }, port: 0, outcome: { kind: 'timeout' } };
-  const run = { id: 1, series: 'pc → srv', count: 1, sent: 1, tests: [t], skipped: [], stopped: false };
-  const d = D.diagnose({ check: c, context: configured, runtime: { run, events: [], waits: () => [], log: { first: 50000, dropped: 20000 }, now: 60000 } });
+  const subject = { kind: 'send', id: 1, label: 'send #1 (pc → srv)', t0: 1000, stopped: false, count: 1, sent: 1, skipped: [] };
+  const rt = (retained) => ({ exec: 1, subject, tests: [t], events: [], log: [], waits: () => [], retained, now: 60000 });
+  const d = D.diagnose({ check: c, context: configured, runtime: rt({ first: 50000, firstSeq: 20000, dropped: 20000 }) });
   assert.equal(d.evidenceLimited, true);
   assert.ok(d.chain.some((l) => l.rel === 'hypothesis' && /no longer kept/.test(l.text)));
   assert.match(d.summary, /The recorded evidence does not establish why the exchange failed\./);
+  // a finished timeout whose cause is unknown: failed — not blocked, not on its way, not provisional
+  assert.equal(d.state, 'failed');
+  assert.equal(d.provisional, false);
+  assert.deepEqual([d.runtime.completed, d.runtime.outcome, d.runtime.cause], [true, 'failed', 'unknown']);
   // with the events kept and none of its packets dropped: not established either, without the retention note
-  const d2 = D.diagnose({ check: c, context: configured, runtime: { run, events: [], waits: () => [], log: { first: 0, dropped: 0 }, now: 60000 } });
+  const d2 = D.diagnose({ check: c, context: configured, runtime: rt({ first: 0, firstSeq: 0, dropped: 0 }) });
   assert.equal(d2.evidenceLimited, false);
-  assert.ok(d2.chain.some((l) => l.rel === 'hypothesis' && /does not establish why it was not answered/.test(l.text)));
+  assert.ok(d2.chain.some((l) => l.rel === 'hypothesis' && /no drop of its packets was recorded/.test(l.text)));
 });
 
 // ------------------------------------------------------------------ a model edited after the diagnosis (pure)

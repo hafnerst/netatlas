@@ -214,6 +214,22 @@ export class Editor {
     if (ent) this.sel = { kind: k, index: ent.index };
   }
 
+  /**
+   * A device's network policy, opened, with one rule (1-based) or its default action marked as the selection (a
+   * diagnosis' link to the decision): it selects and opens, nothing in the model changes; false when the device or
+   * that rule is not there.
+   */
+  revealPolicy(dev: string, rule: number | 'default'): boolean {
+    const ent = this.getDoc() ? this.doc.findEntity('device', dev) : null;
+    if (!ent) return false;
+    const pp: Path = ['devices', ent.index, 'policy'];
+    const rn = this.doc.get(pp.concat('rules'));
+    if (rule !== 'default' && !(rn && rn.kind === 'seq' && rule >= 1 && rule <= rn.items.length)) return false;
+    this.open.add(`np:${dev}`);
+    this.sel = { kind: 'device', index: ent.index, entry: rule === 'default' ? pp.concat('default') : pp.concat('rules', rule - 1) };
+    return true;
+  }
+
   /** Diagram ref for the current selection (null if the entity has no valid id). */
   selectedRef(): string | null {
     const s = this.sel;
@@ -731,7 +747,7 @@ export class Editor {
         if (key) this.open.add(key);
       }
     }
-    const key = (this.selectedRef() || '') + '|' + (this.detail ? this.detail.field + '=' + this.detail.value : '') + '|' + (target.getAttribute('data-card') || '');
+    const key = (this.selectedRef() || '') + '|' + (this.detail ? this.detail.field + '=' + this.detail.value : '') + '|' + (target.getAttribute('data-card') || '') + '|' + (s.entry ? J(s.entry) : '');
     if (key === this.markedKey) return;
     this.markedKey = key;
     this.reveal(target);
@@ -746,7 +762,7 @@ export class Editor {
     const all = wrap.querySelectorAll('[data-p]');
     for (let i = 0; i < all.length; i++) {
       const v = all[i].getAttribute('data-p') as string;
-      if (v === key || v.indexOf(pre) === 0) return all[i].closest('.list-row, .g-row, .ep-row, .svc-card, .field') as HTMLElement | null;
+      if (v === key || v.indexOf(pre) === 0) return all[i].closest('.rule-row, .list-row, .g-row, .ep-row, .svc-card, .field') as HTMLElement | null;
     }
     return null;
   }
@@ -1594,7 +1610,7 @@ export class Editor {
         for (const [k2, lab] of [['from_zone', 'from zone'], ['to_zone', 'to zone']] as Array<[string, string]>) more.appendChild(this.e('label', { class: 'rule-mini' }, [lab + ' ', this.input(rp.concat(k2), 'text', this.doc.text(rp.concat(k2)) || '', { 'aria-label': `${lab} of ${label}` })]));
         if (['name', 'sport', 'in', 'out', 'from_zone', 'to_zone'].some((x) => this.doc.get(rp.concat(x)))) more.setAttribute('open', '');
         tb.appendChild(
-          this.e('tr', { class: this.doc.issuesAt(rp).some((x) => x.severity === 'error') ? 'invalid' : '' }, [
+          this.e('tr', { class: 'rule-row' + (this.doc.issuesAt(rp).some((x) => x.severity === 'error') ? ' invalid' : ''), 'data-np-rule': String(k + 1) }, [
             this.e('td', {}, [String(k + 1)]),
             this.e('td', {}, [this.selectEl(rp.concat('action'), 'text', '', ['permit', 'deny'], this.doc.text(rp.concat('action')) || '', 'Select…', { 'aria-label': `Action of ${label}` })]),
             this.e('td', {}, [this.input(rp.concat('source'), 'csv', this.csvOf(rp.concat('source')), { list: dl.id, placeholder: 'any', 'aria-label': `Source of ${label}` }), more]),

@@ -16,13 +16,18 @@
  * analysis/communication.ts and analysis/trace.ts.
  *
  * Under the verdict, the Diagnosis (analysis/diagnosis.ts) answers the
- * question in order: its state and a short explanation, the effective
- * question (from, to, family, service, routing context, the configured
- * model or snapshot, the recorded send compared), what prevents or limits
- * it, the evidence chain behind an expansion, the separate legs, and the
- * next actions — the existing ones, which prefill and never submit. Each
- * piece of evidence is a link (data-diag-ref) to the object, rule, layer,
- * message or event it names.
+ * question in order: its state and a short explanation, the static and the
+ * runtime answer apart (the simulation's: finished or not, what was
+ * observed, whether its cause is established), the effective question
+ * (from, to, family, service, routing context, the configured model or
+ * snapshot, the run examined), what prevents or limits it — each distinct
+ * cause once, with its messages —, the evidence chain behind an expansion,
+ * the separate legs, and the next actions — the existing ones, which
+ * prefill and never submit. Each piece of evidence is a link
+ * (data-diag-ref) to the object, rule, layer, packet, message or event it
+ * names. When the question is not one (a device with several client
+ * applications), the window asks which (#trace-choice) before anything is
+ * checked.
  */
 import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, HopWhy, Path, Trace, TraceRequest, encapText, endStatus, endText, outcomeLines, traceOutcome, traceText } from '../analysis/trace';
@@ -104,13 +109,19 @@ export interface TracePanelActions extends ContextBarActions {
   pick(field: 'from' | 'to', value: string): void;
   /** go to a piece of evidence (an object, a rule, a layer, a message, an event): it selects or opens it, nothing else */
   goto(ref: string): void;
+  /** take one of the choice's communications (Diagnose communication… with several client applications) */
+  choose(from: string, to: string): void;
+  /** close the policy decision shown in place (focus back to the link `ref`) */
+  closeRule(ref: string): void;
 }
 
 /** A diagnosis state in words, its mark, and the verdict colour it is shown in. */
 export const DIAG_STATE: { [k in DiagnosisState]: { label: string; mark: string; tone: Verdict } } = {
   established: { label: 'Established', mark: '✓', tone: 'satisfied' },
   blocked: { label: 'Blocked', mark: '✕', tone: 'violated' },
+  failed: { label: 'Not completed — cause not established', mark: '✕', tone: 'violated' },
   waiting: { label: 'Waiting', mark: '⧗', tone: 'indeterminate' },
+  'in-progress': { label: 'In progress', mark: '…', tone: 'indeterminate' },
   recovered: { label: 'Recovered', mark: '↻', tone: 'satisfied' },
   partial: { label: 'Partial', mark: '◐', tone: 'partial' },
   cancelled: { label: 'Cancelled', mark: '–', tone: 'unsupported' },
@@ -118,19 +129,26 @@ export const DIAG_STATE: { [k in DiagnosisState]: { label: string; mark: string;
   unsupported: { label: 'Not supported', mark: '–', tone: 'unsupported' },
 };
 
-const REL_LABEL: { [k in LinkKind]: string } = { cause: 'Cause', prerequisite: 'Prerequisite', related: 'Related', coincidence: 'Coincidence', hypothesis: 'Not established' };
+const REL_LABEL: { [k in LinkKind]: string } = { cause: 'Cause', contributing: 'Contributing', prerequisite: 'Prerequisite', related: 'Related', coincidence: 'Coincidence', hypothesis: 'Not established' };
 
-/** One link of the evidence: what it is, from where, its text and its refs. */
+/** One link of the evidence: what it is, from where, its text, its refs and — for a group — its messages. */
 function chainItem(doc: Document, l: ChainLink, tag: 'li'): HTMLElement {
-  const refs = l.refs.map((r) => el(doc, 'button', { type: 'button', class: 'ref', 'data-diag-ref': r.ref, title: 'Go to ' + r.label }, [r.label]));
-  return el(doc, tag, { class: 'diag-link', 'data-rel': l.rel, 'data-source': l.source }, [
-    el(doc, 'span', { class: 'diag-rel an-chip v-' + (l.rel === 'cause' ? 'violated' : l.rel === 'prerequisite' ? 'indeterminate' : l.rel === 'hypothesis' ? 'unsupported' : 'satisfied') }, [REL_LABEL[l.rel]]),
+  const btn = (r: { ref: string; label: string }): HTMLElement => el(doc, 'button', { type: 'button', class: 'ref', 'data-diag-ref': r.ref, title: 'Go to ' + r.label }, [r.label]);
+  const refs = l.refs.map(btn);
+  const msgs = (l.messages || []).map(btn);
+  const more = l.count !== undefined && l.messages && l.count > l.messages.length ? l.count - l.messages.length : 0;
+  return el(doc, tag, { class: 'diag-link', 'data-rel': l.rel, 'data-source': l.source, ...(l.count !== undefined ? { 'data-count': String(l.count) } : {}) }, [
+    el(doc, 'span', { class: 'diag-rel an-chip v-' + (l.rel === 'cause' ? 'violated' : l.rel === 'prerequisite' || l.rel === 'contributing' ? 'indeterminate' : l.rel === 'hypothesis' ? 'unsupported' : 'satisfied') }, [REL_LABEL[l.rel]]),
     ' ',
     el(doc, 'span', { class: 'muted' }, [l.source === 'static' ? 'Static · ' : 'Runtime · ']),
     l.text,
     ...(refs.length ? [el(doc, 'span', { class: 'diag-refs' }, refs.flatMap((b, k) => (k ? [' ', b] : [b])))] : []),
+    ...(msgs.length ? [el(doc, 'span', { class: 'diag-refs diag-msgs', 'aria-label': `The ${l.count === 1 ? 'message' : 'messages'} it stands for` }, [`${l.count === 1 ? 'Message' : 'Messages'}: `, ...msgs.flatMap((b, k) => (k ? [' ', b] : [b])), more ? ` and ${more} more` : ''])] : []),
   ]);
 }
+
+const OUTCOME_TEXT: { [k in NonNullable<Diagnosis['runtime']>['outcome']]: string } = { succeeded: 'succeeded', failed: 'failed', cancelled: 'cancelled', mixed: 'mixed outcomes', none: 'nothing yet' };
+const CAUSE_TEXT: { [k in NonNullable<Diagnosis['runtime']>['cause']]: string } = { established: 'established by the records', partly: 'established for some failures only', unknown: 'not established', 'n/a': 'nothing to explain' };
 
 /**
  * The Diagnosis (see the module comment). `outdated`: the model changed
@@ -140,7 +158,7 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   const st = DIAG_STATE[d.state];
   const sec = el(doc, 'section', { class: 'trace-section diag', id: 'diag', 'aria-labelledby': 'diag-h', 'data-state': d.state });
   sec.appendChild(el(doc, 'h3', { id: 'diag-h' }, ['Diagnosis ', el(doc, 'span', { class: 'an-chip v-' + st.tone, id: 'diag-state' }, [st.mark + ' ' + st.label])]));
-  const flags = [view.outdated ? 'Outdated: the model changed after this diagnosis' : '', d.provisional ? 'Provisional: the send is not finished' : '', d.evidenceLimited ? 'Evidence-limited: some records are no longer kept' : ''].filter((x) => !!x);
+  const flags = [view.outdated ? 'Outdated: the model changed after this diagnosis' : '', d.provisional ? 'Provisional: the run is not finished' : '', d.evidenceLimited ? 'Evidence-limited: some records are no longer kept' : ''].filter((x) => !!x);
   sec.appendChild(el(doc, 'p', { id: 'diag-summary' }, [d.summary]));
   if (flags.length) sec.appendChild(el(doc, 'p', { class: 'small diag-flags', id: 'diag-flags' }, [flags.join(' · ')]));
   // the question as asked and resolved
@@ -155,8 +173,17 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   row('Service', d.question.service);
   row('Routing context', d.question.vrf);
   row('Analyzed on', d.question.context);
-  row('Runtime', d.question.run || 'none compared (Compare with simulation adds the newest recorded send of it)');
+  row('Runtime', d.question.run || 'none compared (Compare with simulation adds the newest recorded run of it)');
   sec.appendChild(q);
+  // the static and the runtime answer, each on its own
+  const parts = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-parts', 'aria-label': 'Static and runtime answers' });
+  const sst = DIAG_STATE[d.static.state];
+  parts.appendChild(el(doc, 'dt', {}, ['Static analysis']));
+  parts.appendChild(el(doc, 'dd', { id: 'diag-static', 'data-state': d.static.state }, [el(doc, 'span', { class: 'an-chip v-' + sst.tone }, [sst.mark + ' ' + sst.label]), ' ', d.static.text]));
+  parts.appendChild(el(doc, 'dt', {}, ['Simulation']));
+  const rp = d.runtime;
+  parts.appendChild(el(doc, 'dd', { id: 'diag-runtime', ...(rp ? { 'data-completed': String(rp.completed), 'data-outcome': rp.outcome, 'data-cause': rp.cause } : {}) }, rp ? [`${rp.completed ? 'Finished' : 'Not finished'} · observed: ${OUTCOME_TEXT[rp.outcome]} · cause: ${CAUSE_TEXT[rp.cause]} — ${rp.text}`] : ['None compared (Compare with simulation adds the newest recorded run of it)']));
+  sec.appendChild(parts);
   if (d.question.unresolved.length) sec.appendChild(el(doc, 'p', { class: 'small muted', id: 'diag-open' }, ['Open: ' + d.question.unresolved.join('; ')]));
   // what prevents or limits it
   if (d.blockers.length) {
@@ -198,6 +225,19 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
     }
     sec.appendChild(nx);
   }
+  // the policy decision a link named: the rules in order, the one that decided marked (aria-current), read-only
+  const rv = view.rule;
+  if (rv) {
+    const box = el(doc, 'section', { class: 'diag-rule', id: 'diag-rule', tabindex: '-1', 'aria-labelledby': 'diag-rule-h', 'data-device': rv.device }, [el(doc, 'h4', { class: 'diag-h4', id: 'diag-rule-h' }, [`${rv.device} · Network policy`]), el(doc, 'p', { class: 'small muted' }, [rv.summary])]);
+    if (rv.missing) box.appendChild(el(doc, 'p', { class: 'small' }, [rv.missing]));
+    const ol = el(doc, 'ol', { class: 'diag-rules small' });
+    for (const r of rv.rows) ol.appendChild(el(doc, 'li', { 'data-rule': String(r.n), ...(r.on ? { class: 'sel-mark', 'aria-current': 'true' } : {}) }, [`Rule ${r.n}: ${r.text}`, r.on ? el(doc, 'strong', {}, [' — decided here']) : '']));
+    if (rv.def) ol.appendChild(el(doc, 'li', { 'data-rule': 'default', ...(rv.def.on ? { class: 'sel-mark', 'aria-current': 'true' } : {}) }, [rv.def.text, rv.def.on ? el(doc, 'strong', {}, [' — decided here']) : '']));
+    if (ol.childNodes.length) box.appendChild(ol);
+    const close = el(doc, 'button', { type: 'button', class: 'mini', 'data-diag-act': 'rule-close', 'data-back': rv.ref }, ['Close']);
+    box.appendChild(el(doc, 'div', { class: 'tf-actions' }, [close]));
+    sec.appendChild(box);
+  }
   if (d.limits.length) {
     const det = el(doc, 'details', { class: 'layer-ev', id: 'diag-limits' }, [el(doc, 'summary', {}, ['What this diagnosis can’t establish'])]);
     const ul = el(doc, 'ul', { class: 'small muted' });
@@ -205,6 +245,12 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
     det.appendChild(ul);
     sec.appendChild(det);
   }
+  sec.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !rv || !(e.target as Element).closest('#diag-rule')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    act.closeRule(rv.ref);
+  });
   sec.addEventListener('click', (e) => {
     const b = (e.target as Element).closest('[data-diag-act], [data-diag-ref]') as HTMLButtonElement | null;
     if (!b || b.disabled) return;
@@ -216,6 +262,7 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
     else if (id === 'mtu-test') act.mtuTest();
     else if (id === 'save-exp') act.saveExpectation();
     else if (id === 'experiment') act.experiment();
+    else if (id === 'rule-close') act.closeRule(b.getAttribute('data-back') || '');
     else if (ref) act.goto(ref);
   });
   return sec;
@@ -272,6 +319,24 @@ export interface TraceViewState {
   compareBlocked: string;
   /** why the model can't be edited now ('' it can) */
   locked: string;
+  /** the question is not one yet: which communication (Diagnose communication… with several client applications) */
+  choice?: { title: string; options: Array<{ label: string; from: string; to: string; why: string }> } | null;
+  /** a policy decision a piece of evidence named, shown in place: the device's rules in order, the deciding one marked */
+  rule?: DiagRuleView | null;
+}
+
+/** A device's policy as a diagnosis' link shows it (read-only, in every workspace): its rules, the decision marked. */
+export interface DiagRuleView {
+  /** the evidence link that opened it (focus goes back to it) */
+  ref: string;
+  device: string;
+  /** "default deny, stateful" or a firewall's implicit policy in words */
+  summary: string;
+  rows: Array<{ n: number; text: string; on: boolean }>;
+  /** the default action's line, and whether it decided */
+  def?: { text: string; on: boolean };
+  /** the decision is no longer in the model (it changed after the diagnosis) */
+  missing?: string;
 }
 
 /** The window's content: the form, and the result when there is one. */
@@ -284,6 +349,18 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
     ]),
   );
   box.appendChild(contextBar(doc, view.bar, act));
+  // ---- which communication, when the selection is not one: nothing is checked until one is taken
+  if (view.choice) {
+    const ch = el(doc, 'div', { class: 'trace-choice', id: 'trace-choice', role: 'group', 'aria-labelledby': 'trace-choice-h' }, [el(doc, 'p', { id: 'trace-choice-h' }, [el(doc, 'strong', {}, [view.choice.title])])]);
+    const ul = el(doc, 'ul', { class: 'small' });
+    for (const o of view.choice.options) {
+      const b = el(doc, 'button', { type: 'button', class: 'mini', title: o.why, 'data-choice-from': o.from, 'data-choice-to': o.to }, [o.label]);
+      b.addEventListener('click', () => act.choose(o.from, o.to));
+      ul.appendChild(el(doc, 'li', {}, [b]));
+    }
+    ch.appendChild(ul);
+    box.appendChild(ch);
+  }
   // ---- the form
   const f = el(doc, 'form', { class: 'trace-form', 'aria-label': 'Trace path' }) as HTMLFormElement;
   const list = el(doc, 'datalist', { id: 'trace-ends' });
