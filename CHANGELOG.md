@@ -78,6 +78,38 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
 
 ### Changed
 
+- **Packet dots take 3–5 s per hop at 1×** (Readable pacing), from the
+  hop's modelled traversal: a cable's latency and its frame's serialization
+  (the engine's own wire time, counted once), a relation's lane its
+  underlay — now each traced cable's own latency and speed, not a count of
+  cables at the default — on a log scale of the model's cables, so a WAN
+  link shows longer than a LAN cable; a network line, a hub's spokes or a
+  bus drawn in two halves take the time of one line; a hop without a
+  modelled time takes 4 s. Before: 2–6 s around the typical cable, and a
+  long line slower still (70 px a second). That limit now applies to
+  Proportional pacing only, so Readable stays within its bounds. The
+  seconds are presentation: simulated times, order and outcomes are
+  unchanged; pause, the speed, a view switch and Exit behave as before.
+- **MQTT conclusions by topic and by what is recorded.** A subscriber's
+  leg counts the run's publications on the topics its own filters ask
+  for; another topic the broker kept from it is no failure. Publication
+  records that age out (the latest 2000 are kept) are counted from their
+  run's tally as they had settled; those not settled then are said
+  unavailable and keep the whole run from *established*. Stop discards
+  unacknowledged QoS 1 publications with the clean session: cancelled.
+  The run's state follows the same rule as a send's messages.
+- **Comparisons answer the communication asked.** An application's run is
+  compared only with a question about its own communication (another
+  destination, service, family or VRF is refused, said why); a send carries
+  a host-name check only in its family.
+- **Evidence stays historical.** A policy link shows the rules of the
+  model the diagnosis was made of, the recorded rule marked; a policy
+  edited since is said to differ, never shown as the decision. A missing
+  route's prerequisite comes from the device's own recorded decision (the
+  routes it found unusable then); without it every configured alternative
+  is named as related. A session's silence is a cause only when each of
+  its messages has its own recorded drop. A lost attempt before a RST or
+  ICMP error is listed as contributing.
 - **One definition of encapsulation sizes** for the static path MTU, the
   tunnel-MTU check, the MTU suggestions and the simulation's packet lengths
   (the packet inspector, a frame's time on the wire): the outer header of
@@ -133,6 +165,23 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
 
 ### Fixed
 
+- A host name checked for IPv6 never matched its AAAA send: Compare with
+  simulation found nothing to compare.
+- A client application's run was compared with a question that asked
+  another service or destination.
+- Following a policy link after the policy was edited marked the current
+  rule with that number as the decision.
+- An MQTT subscriber that subscribes to some of a publisher's topics was
+  *partial* although it received every publication of its topics; a run
+  stopped before it published was *not established* rather than
+  cancelled; QoS 1 publications in flight at Stop stayed *waiting for
+  PUBACK*.
+- A missing route's prerequisite was taken from the first configured
+  path, and a session's silence was a cause when its drops merely
+  numbered its messages.
+- A TCP test's answer recorded no sender, and an ICMP or UDP answer's was
+  found by its address alone (another routing context may reuse it): the
+  sender comes from the answer itself, with its address.
 - An outer packet fragmented on its way was decapsulated fragment by
   fragment, delivering the inner packet more than once: it is reassembled
   first.
