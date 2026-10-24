@@ -387,3 +387,19 @@ links:
   assert.ok(d.runtime.groups[0].refs.some((r) => r.ref === `event:${s.exec}:${t.outcome.event}`));
   assert.equal(d.state, 'blocked');
 });
+
+test('where the simulation itself stops (not modelled): no cause is established about the network', () => {
+  const m = model(CHAIN);
+  const c = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/80' });
+  const t = T0({ outcome: { kind: 'timeout', attempts: 1, logFrom: 0 } });
+  t.outcome.drops = [{ seq: 50, t: 1100, device: 'ap1', cause: { kind: 'unsupported', pkt: t.pktIds[0] }, text: 'ap1 tunnels the Wi-Fi network …', attempt: true }];
+  const d = D.diagnose({ check: c, context: configured, runtime: rt([t]) });
+  assert.deepEqual([d.state, d.runtime.cause], ['failed', 'unknown']);
+  assert.match(d.runtime.groups[0].text, /the simulation does not carry it past ap1: not modelled there .* — the outcome establishes nothing about the network/);
+  // a device that does not forward it by its configuration: that is established
+  const t2 = T0({ outcome: { kind: 'timeout', attempts: 1, logFrom: 0 } });
+  t2.outcome.drops = [{ seq: 51, t: 1100, device: 'r1', cause: { kind: 'not-forwarded', pkt: t2.pktIds[0] }, text: 'r1 drops the directed broadcast to 10.0.2.255 (forward directed broadcasts off)', attempt: true }];
+  const d2 = D.diagnose({ check: c, context: configured, runtime: rt([t2]) });
+  assert.deepEqual([d2.state, d2.runtime.cause], ['blocked', 'established']);
+  assert.match(d2.runtime.groups[0].text, /r1 does not forward it, by its configuration/);
+});

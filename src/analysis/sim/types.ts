@@ -273,9 +273,12 @@ export type EventKind = 'message' | 'state' | 'drop' | 'route' | 'link' | 'table
 /**
  * What decided a drop, where it was decided: closed-port (nothing listens: a RST, ICMP port unreachable or nothing back),
  * no-answer (it arrived and the device does not answer it: pings off, a listener of another service), not-routed (a host
- * that does not forward), one-way (a device that passes one direction only), gateway (a Security gateway's policy).
+ * that does not forward), one-way (a device that passes one direction only), gateway (a Security gateway's policy),
+ * not-associated (a Wi-Fi client the access point no longer has), not-forwarded (a device that does not carry it by its
+ * configuration: an external Layer 3 hop, no multicast, a directed or limited broadcast), unsupported (where the
+ * simulation itself stops: a tunneled Wi-Fi network — a limitation, never a failure of the network).
  */
-export type DropKind = 'no-route' | 'blackhole' | 'ttl' | 'too-big' | 'policy' | 'iface-down' | 'tunnel-down' | 'relation-failed' | 'neighbor' | 'cable' | 'loss' | 'not-sent' | 'scope' | 'beyond' | 'vlan' | 'inspection' | 'vpn-only' | 'reassembly' | 'closed-port' | 'no-answer' | 'not-routed' | 'one-way' | 'gateway' | 'other';
+export type DropKind = 'no-route' | 'blackhole' | 'ttl' | 'too-big' | 'policy' | 'iface-down' | 'tunnel-down' | 'relation-failed' | 'neighbor' | 'cable' | 'loss' | 'not-sent' | 'scope' | 'beyond' | 'vlan' | 'inspection' | 'vpn-only' | 'reassembly' | 'closed-port' | 'no-answer' | 'not-routed' | 'one-way' | 'gateway' | 'not-associated' | 'not-forwarded' | 'unsupported' | 'other';
 
 export interface DropCause {
   kind: DropKind;

@@ -2131,7 +2131,7 @@ export class Engine {
     const k = 'idle|' + link;
     if (this.stormNoted.get(k) !== last) {
       this.stormNoted.set(k, last);
-      this.noteAt(t, 'drop', frame.msg.protocol, ap, client, frame.msg.type, '', `${ap} drops ${frame.msg.label} for ${client}: it is not associated (silent since t = ${fmtSec(last)}, client idle timeout ${resolvedText(idle)}); later frames to it are dropped as well until it sends again`);
+      this.noteAt(t, 'drop', frame.msg.protocol, ap, client, frame.msg.type, '', `${ap} drops ${frame.msg.label} for ${client}: it is not associated (silent since t = ${fmtSec(last)}, client idle timeout ${resolvedText(idle)}); later frames to it are dropped as well until it sends again`, this.causeOf({ kind: 'not-associated' }, frame.ip));
     }
     return null;
   }
@@ -2292,7 +2292,7 @@ export class Engine {
         const k = `cloudttl|${sd.id}|${frame.msg.protocol}`;
         if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
           this.stormNoted.set(k, t);
-          this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} is a Layer 3 hop (an external network): ${frame.msg.label} (${formatAddr(frame.ip.src)} → ${formatAddr(frame.ip.dst)}, TTL ${frame.ip.ttl}) does not cross it — run it through a tunnel`);
+          this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} is a Layer 3 hop (an external network): ${frame.msg.label} (${formatAddr(frame.ip.src)} → ${formatAddr(frame.ip.dst)}, TTL ${frame.ip.ttl}) does not cross it — run it through a tunnel`, this.causeOf({ kind: 'not-forwarded' }, frame.ip));
         }
         return;
       }
@@ -2303,7 +2303,7 @@ export class Engine {
       const k = `cloudmc|${sd.id}|${formatAddr(frame.ip.dst)}`;
       if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
         this.stormNoted.set(k, t);
-        this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} carries no multicast (${resolvedText(this.params.get('mc-support', sd.id))}): ${frame.msg.label} to ${formatAddr(frame.ip.dst)} is dropped`);
+        this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} carries no multicast (${resolvedText(this.params.get('mc-support', sd.id))}): ${frame.msg.label} to ${formatAddr(frame.ip.dst)} is dropped`, this.causeOf({ kind: 'not-forwarded' }, frame.ip));
       }
       return;
     }
@@ -2313,7 +2313,7 @@ export class Engine {
       const k = `tunneled|${sd.id}|${tun}`;
       if (!this.stormNoted.has(k)) {
         this.stormNoted.set(k, t);
-        this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} tunnels the Wi-Fi network ${tun} to its controller (forwarding: tunneled): the tunnel is not simulated, so its traffic ends here (a limitation, not a failure of the network)`);
+        this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} tunnels the Wi-Fi network ${tun} to its controller (forwarding: tunneled): the tunnel is not simulated, so its traffic ends here (a limitation, not a failure of the network)`, this.causeOf({ kind: 'unsupported' }, frame.ip));
       }
       return;
     }
@@ -2885,7 +2885,7 @@ export class Engine {
       const at = own || l3;
       this.deliverLocal(dev, at, pkt.vrf === at.vrf ? pkt : { ...pkt, vrf: at.vrf });
       // a broadcast stays in its subnet: no router forwards it
-      if (bcast && sd.routes && isLimitedBroadcast(pkt.dst) && pkt.msg.protocol !== 'dhcp') this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} takes the limited broadcast ${formatAddr(pkt.dst)} itself and routes it nowhere: it never leaves its subnet (${pkt.msg.label})`);
+      if (bcast && sd.routes && isLimitedBroadcast(pkt.dst) && pkt.msg.protocol !== 'dhcp') this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} takes the limited broadcast ${formatAddr(pkt.dst)} itself and routes it nowhere: it never leaves its subnet (${pkt.msg.label})`, this.now, undefined, { cause: this.causeOf({ kind: 'not-forwarded' }, pkt) });
       return;
     }
     if (!sd.routes) {
@@ -3146,7 +3146,7 @@ export class Engine {
     if (came && pkt.dst.version === 4 && this.broadcastFor(out, pkt.dst)) {
       const db = this.params.get('directed-broadcast', dev, null, ifaceRef(dev, out.id));
       if (db.value !== 'on') {
-        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} drops the directed broadcast to ${formatAddr(pkt.dst)} (forward directed broadcasts ${resolvedText(db)}; RFC 2644): ${pkt.msg.label}`);
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} drops the directed broadcast to ${formatAddr(pkt.dst)} (forward directed broadcasts ${resolvedText(db)}; RFC 2644): ${pkt.msg.label}`, this.now, undefined, { cause: this.causeOf({ kind: 'not-forwarded' }, pkt) });
         return;
       }
       this.note('route', pkt.msg.protocol, dev, '', 'directed broadcast', '', `${dev} sends the directed broadcast to ${formatAddr(pkt.dst)} out of ${out.id} as a broadcast to ${BROADCAST} (forward directed broadcasts ${resolvedText(db)}): ${pkt.msg.label}`);

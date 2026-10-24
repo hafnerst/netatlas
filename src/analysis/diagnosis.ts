@@ -298,6 +298,12 @@ function dropDesc(d: { device: string; cause?: DropCause; text: string; t: numbe
       return `the Security gateway ${d.device} denied it (${at})`;
     case 'ttl':
       return `its TTL expired at ${d.device} (${at})`;
+    case 'not-associated':
+      return `${d.device} no longer had its Wi-Fi client associated (silent past its idle timeout) (${at})`;
+    case 'not-forwarded':
+      return `${d.device} does not forward it, by its configuration (${at}): ${d.text.replace(/^dropped at [^:]+: /, '')}`;
+    case 'unsupported':
+      return `the simulation does not carry it past ${d.device}: not modelled there (${at})`;
     default:
       return `dropped at ${d.device || 'the network'} (${at}): ${d.text.replace(/^dropped at [^:]+: /, '')}`;
   }
@@ -413,6 +419,13 @@ function explainAttempt(t: Test, rt: RuntimeEvidence): AttemptView {
   }
   const unmet = waits.filter((w) => w.until !== undefined && !w.met);
   const what = o && o.kind === 'lost' ? 'the connection was lost' : `it timed out${t.retx ? ` after ${plural(t.retx, 'retransmission')}` : ''}`;
+  // (where the simulation itself stops — not modelled — nothing is established about the network: said as that)
+  if (attempts > 0 && covered.size >= attempts && drops.filter((d) => d.attempt).every((d) => d.cause && d.cause.kind === 'unsupported')) {
+    const u = drops.filter((d) => d.attempt)[0];
+    const head = `${what}: ${dropDesc(u)} — the outcome establishes nothing about the network`;
+    links.push({ rel: 'hypothesis', source: 'runtime', text: head, refs: dropRefs(u, exec, own), t: u.t });
+    return { ...base, state: 'failed', key: 'unsupported:' + u.device, rel: 'hypothesis', head, refs: [testRef].concat(dropRefs(u, exec, own)), decisive: [], evicted: false };
+  }
   if (attempts > 0 && covered.size >= attempts) {
     const att = drops.filter((d) => d.attempt);
     const keys = Array.from(new Set(att.map(dropKey))).sort();
@@ -600,7 +613,7 @@ function countsText(k: RuntimePart['counts'], causeUnknown: number, okWord = 'an
 }
 
 /** The runtime part of a send or an application run, and its chain. */
-function runtimeOf(rt: RuntimeEvidence, check: CommCheck): { part: RuntimePart; chain: ChainLink[]; evicted: boolean } {
+function runtimeOf(rt: RuntimeEvidence, check: CommCheck): { part: RuntimePart; chain: ChainLink[]; evicted: boolean; heads: { groups: string[]; waiting?: string; recovered?: string } } {
   const msgs = messagesOf(rt);
   const exec = rt.exec;
   const k = { succeeded: 0, recovered: 0, failed: 0, cancelled: 0, waiting: 0, inFlight: 0, toSend: 0 as number | null };
@@ -628,7 +641,9 @@ function runtimeOf(rt: RuntimeEvidence, check: CommCheck): { part: RuntimePart; 
     else groups.set(m.view.key, { view: m.view, msgs: [m] });
   }
   const gl: ChainLink[] = [];
+  const gh: string[] = [];
   for (const g of groups.values()) {
+    gh.push(cap(g.view.head));
     const msgRefs = g.msgs.filter((m) => !!m.t).slice(0, 12).map((m) => ({ ref: `test:${exec}:${(m.t as Test).id}`, label: `message ${m.n}` }));
     const n = g.msgs.length;
     gl.push({ rel: g.view.rel === 'hypothesis' ? 'hypothesis' : g.view.rel, source: 'runtime', text: `${n > 1 ? `${n} messages — ` : ''}${cap(g.view.head)}`, refs: g.view.refs.filter((r) => r.ref.indexOf('test:') !== 0), t: g.msgs[0].started, count: n, messages: msgRefs });
@@ -654,7 +669,12 @@ function runtimeOf(rt: RuntimeEvidence, check: CommCheck): { part: RuntimePart; 
   const br = branchesOf(rt);
   if (br.length) chain.push({ rel: 'related', source: 'runtime', text: `Equal-cost branches taken (as recorded): ${br.join('; ')}`, refs: [] });
   const evicted = msgs.some((m) => m.view.evicted);
-  return { part, chain, evicted };
+  // (the summary's words come from the message views themselves, never from searching the chain's text)
+  const head = (st: AttemptView['state']): string | undefined => {
+    const m = msgs.find((x) => x.view.state === st);
+    return m ? m.view.head : undefined;
+  };
+  return { part, chain, evicted, heads: { groups: gh, waiting: head('waiting'), recovered: head('recovered') } };
 }
 
 /** An MQTT client's run: the publisher's leg and each subscriber's, from its own publications' records. */
@@ -843,17 +863,15 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
     // the groups: each distinct established cause (and the failures without one) once, with its messages
     for (const g of r.part.groups.slice().reverse()) d.blockers.unshift(g);
     const runText = `In the simulation (${rt.subject.kind === 'send' ? 'send #' + rt.subject.id : 'application run #' + rt.subject.id}): ${r.part.text}`;
-    const est = r.part.groups.filter((g) => g.rel !== 'hypothesis');
     if (d.state === 'waiting') {
-      const w = r.chain.find((l) => l.rel === 'prerequisite' && /^it waits for/.test(l.text));
-      d.summary = `Waiting, not failed${w ? ': ' + w.text.replace(/^it waits for /, 'it waits for ') : ''}. ${runText}.`;
+      d.summary = `Waiting, not failed${r.heads.waiting ? ': ' + r.heads.waiting : ''}. ${runText}.`;
     } else if (k.failed) {
-      const why = est.length > 1 ? `${est.length} distinct causes, no single one: ${est.map((g) => `${g.text.replace(/^\d+ messages — /, '')}${g.count && g.count > 1 ? ` (${g.count} messages)` : ''}`).join('; ')}` : est.length === 1 ? est[0].text.replace(/^\d+ messages — /, '') : '';
-      const unknown = r.part.cause === 'unknown' || r.part.cause === 'partly' ? (est.length ? ' The cause of the other failures is not established.' : ' The recorded evidence does not establish why the exchange failed.') : '';
-      d.summary = `${runText}.${why ? ' ' + why + (/[.]$/.test(why) ? '' : '.') : ''}${unknown}`;
+      const estHeads = r.part.groups.map((g, i) => ({ g, h: r.heads.groups[i] })).filter((x) => x.g.rel !== 'hypothesis');
+      const why = estHeads.length > 1 ? `${estHeads.length} distinct causes, no single one: ${estHeads.map((x) => `${x.h}${x.g.count && x.g.count > 1 ? ` (${x.g.count} messages)` : ''}`).join('; ')}` : estHeads.length === 1 ? estHeads[0].h : '';
+      const unknown = r.part.cause === 'unknown' || r.part.cause === 'partly' ? (estHeads.length ? ' The cause of the other failures is not established.' : ' The recorded evidence does not establish why the exchange failed.') : '';
+      d.summary = `${runText}.${why ? ' ' + why + (why.charAt(why.length - 1) === '.' ? '' : '.') : ''}${unknown}`;
     } else if (d.state === 'recovered') {
-      const m = r.chain.find((l) => /answered (at attempt|after)/.test(l.text));
-      d.summary = `${runText}.${m ? ' ' + cap(m.text.replace(/^Message \d+ \([^)]*\): /, '')) + '.' : ''}`;
+      d.summary = `${runText}.${r.heads.recovered ? ' ' + cap(r.heads.recovered) + '.' : ''}`;
     } else d.summary = `${runText}.${d.state === 'established' ? ' The modeled exchange completed; it establishes only what this run observed.' : ''}`;
     // the comparison's explanations of a difference with the static result (recorded state at the snapshot: related, with its time)
     if (rt.comparison) for (const line of rt.comparison.lines) d.chain.push({ rel: 'related', source: 'runtime', text: line, refs: [] });
