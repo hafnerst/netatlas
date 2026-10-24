@@ -380,6 +380,13 @@ function explainAttempt(t: Test, rt: RuntimeEvidence): AttemptView {
   const own = t.pktIds;
   const out = (key: string, rel: LinkKind, head: string, refs: EvidenceRef[], decisive: OutcomeDrop[] = []): AttemptView => {
     links.push({ rel, source: 'runtime', text: head, refs, t: end });
+    // (what else its exchange recorded — an attempt lost before the answer that decided — contributing, never the outcome)
+    const p = o && o.cause && o.cause.policy;
+    for (const x of drops) {
+      if (decisive.indexOf(x) >= 0 || (o && o.event !== undefined && x.seq === o.event)) continue;
+      if (p && x.cause && x.cause.policy && x.cause.policy.device === p.device && x.cause.policy.rule === p.rule) continue;
+      links.push({ rel: 'contributing', source: 'runtime', text: `also recorded in its exchange: ${dropDesc(x)}`, refs: dropRefs(x, exec, own), t: x.t });
+    }
     return { ...base, state: 'failed', key, rel, head, refs, decisive };
   };
   // (what the answer that ended it reports, as its sender recorded it: a policy's rejection, a closed port)
@@ -434,7 +441,6 @@ function explainAttempt(t: Test, rt: RuntimeEvidence): AttemptView {
     const att = drops.filter((d) => d.attempt);
     const keys = Array.from(new Set(att.map(dropKey))).sort();
     const descs = Array.from(new Set(att.map((d) => dropDesc(d))));
-    for (const d of drops.filter((x) => !x.attempt)) links.push({ rel: 'contributing', source: 'runtime', text: `also recorded in its exchange: ${dropDesc(d)}`, refs: dropRefs(d, exec, own), t: d.t });
     const head = attempts === 1 ? `${what}: its packet was dropped — ${descs[0]}` : keys.length === 1 ? `${what}: each of its ${attempts} attempts was dropped — ${descs[0]}` : `${what}: each of its ${attempts} attempts was dropped — ${descs.join('; ')}`;
     const refs = [testRef].concat(...att.slice(-3).map((d) => dropRefs(d, exec, own)));
     return out('drops:' + keys.join('|'), 'cause', head, refs, att);
@@ -526,11 +532,22 @@ function prereqChain(d: OutcomeDrop, rt: RuntimeEvidence, check: CommCheck): Cha
   if (c.kind === 'tunnel-down' && c.iface) refs.push({ ref: `iface:${d.device}:${c.iface}`, why: `the tunnel interface ${d.device}:${c.iface}`, source: 'runtime' });
   if (c.kind === 'iface-down' && c.iface) refs.push({ ref: `iface:${d.device}:${c.iface}`, why: `${d.device}:${c.iface}`, source: 'runtime' });
   if (c.kind === 'cable' && c.link) refs.push({ ref: 'link:' + c.link, why: `cable ${c.link}`, source: 'runtime' });
-  if (c.kind === 'no-route' || c.kind === 'blackhole') {
-    // (the configured model's route at that device: the relations its hop uses — a learned route's sessions, a tunnel)
-    const hop = check.trace && check.trace.paths[0] ? check.trace.paths[0].hops.find((h) => h.device === d.device) : undefined;
-    const rels = hop ? hop.relations : [];
-    if (rels.length) for (const r of rels) refs.push({ ref: 'relation:' + r, dev: d.device, why: `the configured model's path at ${d.device} uses ${r}`, source: 'static' });
+  if (c.kind === 'no-route' && c.unusable && c.unusable.some((u) => u.relation || u.iface)) {
+    // the routes the device's own decision found unusable at that moment (recorded): each one's interface or relation is
+    // what that route needed — a prerequisite when it was the only one, one of the alternatives when there were several
+    const one = c.unusable.length === 1;
+    for (const u of c.unusable) {
+      const why = `${one ? 'its' : 'one of its'} route${one ? '' : 's'} to it (${u.route}) could not be used at the drop: ${u.detail}`;
+      if (u.relation) refs.push({ ref: 'relation:' + u.relation, dev: d.device, why, source: one ? 'runtime' : 'static' });
+      else if (u.iface) refs.push({ ref: `iface:${d.device}:${u.iface}`, why, source: one ? 'runtime' : 'static' });
+    }
+  } else if (c.kind === 'no-route' || c.kind === 'blackhole') {
+    // (no route has no runtime identity to follow: the configured model's paths at that device are the only clue — every
+    // alternative's relations, none picked as the one it needed; what they did is related, never its established cause)
+    const alts = (check.trace ? check.trace.paths : []).map((p) => p.hops.find((h) => h.device === d.device)).filter((h): h is NonNullable<typeof h> => !!h);
+    const rels = Array.from(new Set(alts.reduce((a: string[], h) => a.concat(h.relations), []))).sort();
+    const several = alts.length > 1 || rels.length > 1;
+    if (rels.length) for (const r of rels) refs.push({ ref: 'relation:' + r, dev: d.device, why: several ? `one of the configured model's alternatives at ${d.device} uses ${r} (${plural(alts.filter((h) => h.relations.indexOf(r) >= 0).length, 'path')} of ${alts.length}): which one the route needed is not recorded` : `the configured model's path at ${d.device} uses ${r}; that the missing route needed it is not recorded`, source: 'static' });
     else out.push({ rel: 'hypothesis', source: 'runtime', text: `What withdrew or never installed the route at ${d.device} is not recorded: the configured model's path there names no relation it is learned over`, refs: [{ ref: 'device:' + d.device, label: d.device }], t: d.t });
   }
   for (const r of refs) {
@@ -539,11 +556,13 @@ function prereqChain(d: OutcomeDrop, rt: RuntimeEvidence, check: CommCheck): Cha
     const at = r.dev || d.device;
     const tr = transitionBefore(rt.log, r.ref, d.t, isRel ? at : undefined);
     const whole = rt.retained.dropped === 0;
+    // (a relation known only from the configured model is related: what it did is said, never as what the drop needed)
+    const staticOnly = r.source === 'static';
     if (!tr) {
       // (no state change kept: from the start, it never came up — said so only when the log reaches back to the start)
       if (isRel && whole) {
-        out.push({ rel: 'prerequisite', source: 'runtime', text: `${label} had not come up at ${at} by ${sec(d.t)}: no state change of it is recorded since the simulation started — ${r.why}`, refs: [{ ref: r.ref, label }], t: d.t });
-        out.push(...silence(label, at, -1, d.t, rt));
+        out.push({ rel: staticOnly ? 'related' : 'prerequisite', source: 'runtime', text: `${label} had not come up at ${at} by ${sec(d.t)}: no state change of it is recorded since the simulation started — ${r.why}`, refs: [{ ref: r.ref, label }], t: d.t });
+        out.push(...silence(label, at, -1, d.t, rt, staticOnly));
       } else out.push({ rel: 'hypothesis', source: r.source, text: `${cap(label)} (${r.why}): no state change of it is ${whole ? 'recorded' : 'kept'} before ${sec(d.t)}${whole ? '' : ' (the log keeps the latest events only)'} — what made it unavailable is not established`, refs: [{ ref: r.ref, label }], t: d.t });
       continue;
     }
@@ -552,19 +571,22 @@ function prereqChain(d: OutcomeDrop, rt: RuntimeEvidence, check: CommCheck): Cha
       out.push({ rel: 'related', source: 'runtime', text: `${label} was last recorded up (${sec(tr.t)}${x.reason ? ': ' + x.reason : ''}) before ${sec(d.t)}; what made it unavailable then is not recorded`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
       continue;
     }
-    out.push({ rel: 'prerequisite', source: 'runtime', text: `${label} went down at ${sec(tr.t)}${x.device ? ' at ' + x.device : ''} (recorded: ${x.reason || 'down'}) — ${r.why}`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
+    out.push({ rel: staticOnly ? 'related' : 'prerequisite', source: 'runtime', text: `${label} went down at ${sec(tr.t)}${x.device ? ' at ' + x.device : ''} (recorded: ${x.reason || 'down'}) — ${r.why}`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
     // a session that heard nothing: its peer's packets, and its own, in that interval as recorded
-    if (isRel && x.lastHeard !== undefined) out.push(...silence(label, x.device || at, x.lastHeard, tr.t, rt));
+    if (isRel && x.lastHeard !== undefined) out.push(...silence(label, x.device || at, x.lastHeard, tr.t, rt, staticOnly));
   }
   return out;
 }
 
 /**
  * Why a session at `dev` heard nothing from `from` to `to` (-1: since the start), as recorded: its peer's messages to it
- * and their drops, else its own messages and theirs. Decisive only when every message of that direction has a recorded
- * drop, all of one cause; else contributing; with no drop recorded, said as not established.
+ * and their drops, else its own messages and theirs. Decisive only when each message of that direction has its own
+ * recorded drop (by the message's identity: a duplicate or a second observation of the same message counts once, a
+ * multicast copy dropped on one way is no loss of the message, another message of the session covers nothing), all of
+ * one cause; else contributing; with no drop recorded, said as not established. `related`: the session itself is only
+ * the configured model's clue (a missing route's alternative) — what it heard is related, never a cause.
  */
-function silence(rel: string, dev: string, from: number, to: number, rt: RuntimeEvidence): ChainLink[] {
+function silence(rel: string, dev: string, from: number, to: number, rt: RuntimeEvidence, related = false): ChainLink[] {
   const inWin = (e: SimEvent): boolean => e.t > from && e.t <= to;
   const msgs = rt.log.filter((e) => e.kind === 'message' && e.relation === rel && inWin(e));
   const drops = rt.log.filter((e) => e.kind === 'drop' && !!e.cause && e.cause.session === rel && inWin(e));
@@ -576,11 +598,18 @@ function silence(rel: string, dev: string, from: number, to: number, rt: Runtime
   const pick = peer.sent.length ? { s: peer, who: `the packets its peer sent to ${dev}` } : { s: own, who: `${dev}’s own packets to its peer (its peer sent nothing back)` };
   const lost = pick.s.lost;
   if (!lost.length) return [{ rel: 'hypothesis', source: 'runtime', text: `${rel} heard nothing at ${dev} from ${since} to ${sec(to)}; no drop of its own packets is recorded in that interval — why is not established`, refs: [{ ref: 'relation:' + rel, label: rel }], t: to }];
-  const keys = Array.from(new Set(lost.map((e) => dropKey(e))));
-  const all = lost.length >= pick.s.sent.length && keys.length === 1;
+  // coverage by identity: each message sent in the interval has a drop of its own (not a copy's)
+  const lostMsgs = new Set(lost.filter((e) => !(e.cause as DropCause).copy && (e.cause as DropCause).msg !== undefined).map((e) => (e.cause as DropCause).msg as number));
+  const covered = pick.s.sent.filter((e) => lostMsgs.has(e.seq));
+  const coverers = lost.filter((e) => covered.some((m) => (e.cause as DropCause).msg === m.seq));
+  const keys = Array.from(new Set((coverers.length ? coverers : lost).map((e) => dropKey(e))));
+  const all = pick.s.sent.length > 0 && covered.length === pick.s.sent.length && keys.length === 1;
   const first = lost[lost.length - 1];
   const desc = dropDesc({ device: first.device, cause: first.cause, text: first.detail, t: first.t });
-  return [{ rel: all ? 'cause' : 'contributing', source: 'runtime', text: `${all ? `It heard nothing because ${pick.who} were dropped` : `Some of ${pick.who} were dropped`} from ${since} to ${sec(to)} (${plural(lost.length, 'drop')} of ${plural(pick.s.sent.length, 'message')}): ${desc}${keys.length > 1 ? ` and ${keys.length - 1} other cause${keys.length === 2 ? '' : 's'}` : ''}`, refs: dropRefs({ seq: first.seq, t: first.t, device: first.device, cause: first.cause, text: first.detail }, rt.exec, []), t: first.t }];
+  const kind: LinkKind = related ? 'related' : all ? 'cause' : 'contributing';
+  const of = `${covered.length} of ${plural(pick.s.sent.length, 'message')} with a drop of its own recorded${lost.length !== covered.length ? `; ${plural(lost.length, 'drop')} in all` : ''}`;
+  const head = !all ? `Some of ${pick.who} were dropped` : related ? `It heard nothing: ${pick.who} were dropped` : `It heard nothing because ${pick.who} were dropped`;
+  return [{ rel: kind, source: 'runtime', text: `${head} from ${since} to ${sec(to)} (${of}): ${desc}${keys.length > 1 ? ` and ${keys.length - 1} other cause${keys.length === 2 ? '' : 's'}` : ''}`, refs: dropRefs({ seq: first.seq, t: first.t, device: first.device, cause: first.cause, text: first.detail }, rt.exec, []), t: first.t }];
 }
 
 /** The equal-cost branches a run's packets took, as recorded (route events): "message 2: at r1 branch 2 of 2 (out c)". */

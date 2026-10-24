@@ -107,9 +107,11 @@ function genModel(r) {
 }
 
 /** A legal action sequence over a model. */
-function genActions(r, g) {
+function genActions(r, g, ri = () => 1) {
   const n = 3 + Math.floor(r() * 6);
   const out = [];
+  // (a cable's frames duplicated or delayed for a while: from a stream of its own, so the other draws stay as they were)
+  if (ri() < 0.35) out.push({ op: 'impair', link: g.links[Math.floor(ri() * g.links.length)], mode: ri() < 0.5 ? 'dup' : 'delay', ms: [5, 400, 2500][Math.floor(ri() * 3)] });
   const send = () => {
     const kind = ['icmp', 'udp', 'tcp'][Math.floor(r() * 3)];
     const from = r() < 0.5 ? 'ha' : 'hb';
@@ -133,7 +135,7 @@ function genActions(r, g) {
 }
 
 /** What a refusal of the simulation may legitimately say, for an action the generator made (anything else: its failure). */
-const EXPECTED_REFUSAL = [/is powered off/, /^ha has no address$/, /is running already/, /has no IPv[46] address/, /is not running/, /waiting for its DHCP lease/, /is booting/];
+const EXPECTED_REFUSAL = [/is powered off/, /^ha has no address$/, /is running already/, /has no IPv[46] address/, /is not running/, /waiting for its DHCP lease/, /is booting/, /^already failed$/, /^already off$/];
 
 /** Run a sequence; the tests it sent (the references returned), the application runs, the refusals. `paced`: frame by frame. */
 function play(g, actions, paced = false) {
@@ -145,6 +147,7 @@ function play(g, actions, paced = false) {
   const runs = [];
   const failed = new Set();
   const off = new Set();
+  const impaired = new Set();
   let appAct = null;
   for (const a of actions) {
     if (a.op === 'send') {
@@ -152,14 +155,22 @@ function play(g, actions, paced = false) {
       if (typeof t === 'string') refused.push({ a, why: t });
       else tests.push(t);
     } else if (a.op === 'fail') {
+      // (a refusal is classified: failing what already failed is the simulation's answer; anything else is not legal)
       if (s.fail(a.ref)) failed.add(a.ref);
+      else refused.push({ a, why: failed.has(a.ref) ? 'already failed' : `${a.ref} could not be failed` });
     } else if (a.op === 'restore-all') {
-      for (const ref of failed) s.restore(ref);
-      for (const d of off) s.powerOn(d);
+      for (const ref of failed) if (!s.restore(ref)) refused.push({ a, why: `${ref} could not be restored` });
+      for (const d of off) if (!s.powerOn(d)) refused.push({ a, why: `${d} could not be powered on` });
       failed.clear();
       off.clear();
+      s.engine.impair = null;
     } else if (a.op === 'power') {
       if (s.powerOff(a.dev)) off.add(a.dev);
+      else refused.push({ a, why: off.has(a.dev) ? 'already off' : `${a.dev} could not be powered off` });
+    } else if (a.op === 'impair') {
+      // a cable's frames duplicated, or delayed by a.ms, until the next restore (frames are never lost by it)
+      s.engine.impair = (l) => (l !== a.link ? null : a.mode === 'dup' ? { dup: true } : { delay: a.ms });
+      impaired.add(a.mode);
     } else if (a.op === 'app-start') {
       const x = s.actApp('ha', 'q', 'experiment');
       if (x.error) refused.push({ a, why: x.error });
@@ -177,7 +188,7 @@ function play(g, actions, paced = false) {
   }
   if (paced) s.play(30000, 50);
   else s.runTo(s.now + 30000);
-  return { s, tests, refused, runs };
+  return { s, tests, refused, runs, impaired };
 }
 
 /** The device that has an address in hb's or ha's default routing context (hc reuses hb's address in VRF blue: never it). */
@@ -198,8 +209,9 @@ const saw = (k) => (reached[k] = (reached[k] || 0) + 1);
 
 /** The invariants: the first violated one's description, or null. */
 function violated(g, actions, count = false) {
-  const { s, tests, refused, runs } = play(g, actions);
+  const { s, tests, refused, runs, impaired } = play(g, actions);
   const note = count ? saw : () => {};
+  for (const m of impaired) note('impair:' + m);
   for (const [k, on] of Object.entries({ v6: g.v6, ecmp: g.ecmp, reuse: g.reuse, dhcp: g.dhcp, app: g.app, lossy: g.lossy, ['tunnel-' + (g.tunnel || 'none')]: true })) if (on) note('model:' + k);
   // refusals: each expected, else the generator made an action that is not legal
   for (const x of refused) {
@@ -225,7 +237,12 @@ function violated(g, actions, count = false) {
     // sender's context (hc, reusing hb's address in VRF blue, never answers ha)
     const own = t.target === 'ha' ? 'ha' : OWNER[t.target];
     if (!own) return `test ${t.id}: the generator sent to ${t.target}, which no device owns`;
-    if (t.ok && t.outcome.by && own && t.outcome.by !== own) return `test ${t.id} to ${t.target} was answered by ${t.outcome.by}, not ${own}`;
+    // (at the packet boundary: the answer records its sender and the address it came from — required, never optional)
+    if (t.ok && (t.outcome.by === undefined || t.outcome.byAddr === undefined)) return `test ${t.id} to ${t.target} was answered without its sender recorded (${JSON.stringify(t.outcome)})`;
+    if (t.ok && t.outcome.by !== own) return `test ${t.id} to ${t.target} was answered by ${t.outcome.by}, not ${own}`;
+    if (t.ok && t.target !== 'ha' && t.outcome.byAddr !== t.target) return `test ${t.id} to ${t.target}: its answer came from ${t.outcome.byAddr}`;
+    if (t.ok && t.target === 'ha' && !/^10\.1\.0\./.test(t.outcome.byAddr)) return `test ${t.id} to ha (its lease): its answer came from ${t.outcome.byAddr}`;
+    if (t.ok && impaired.size) note('answered-impaired');
     if (t.ok && g.reuse && t.target === '10.2.0.10') note('reuse-answered');
     // its recorded drops are of its own exchange, within its time
     for (const d of t.outcome.drops || []) {
@@ -319,13 +336,13 @@ function reduce(g, actions, why) {
 const SEEDS = Array.from({ length: 40 }, (_, i) => 1000 + i * 7919);
 
 /** What the generator is meant to reach over the seeds: each must be reached (a branch never exercised is no property). */
-const MUST = ['model:lossy', 'model:v6', 'model:ecmp', 'model:reuse', 'model:dhcp', 'model:app', 'model:tunnel-gre', 'model:tunnel-wireguard', 'model:tunnel-ipip', 'model:tunnel-gre-ipsec', 'model:tunnel-none', 'outcome:answered', 'outcome:timeout', 'outcome:too-big', 'outcome:refused', 'refused', 'reuse-answered', 'ecmp-choice', 'size:GRE', 'size:UDP', 'size:ESP', 'app-retry', 'app-stopped', 'mtu-boundary', 'diag:blocked', 'diag:cause-unknown'];
+const MUST = ['model:lossy', 'model:v6', 'model:ecmp', 'model:reuse', 'model:dhcp', 'model:app', 'model:tunnel-gre', 'model:tunnel-wireguard', 'model:tunnel-ipip', 'model:tunnel-gre-ipsec', 'model:tunnel-none', 'outcome:answered', 'outcome:timeout', 'outcome:too-big', 'outcome:refused', 'refused', 'reuse-answered', 'ecmp-choice', 'size:GRE', 'size:UDP', 'size:ESP', 'app-retry', 'app-stopped', 'mtu-boundary', 'diag:blocked', 'diag:cause-unknown', 'impair:dup', 'impair:delay', 'answered-impaired'];
 
 test('property: structured outcomes, reply identity, evidence attachment, sizes, application runs, the diagnosis and the static MTU boundary hold over generated models and actions', () => {
   for (const seed of SEEDS) {
     const r = rng(seed);
     const g = genModel(r);
-    const actions = genActions(r, g);
+    const actions = genActions(r, g, rng(seed + 7919));
     const v = violated(g, actions, true);
     if (v) {
       const small = reduce(g, actions, v);
@@ -340,7 +357,7 @@ test('property: the same seed gives the same outcomes, headless and played frame
   for (const seed of SEEDS.slice(0, 10)) {
     const r = rng(seed);
     const g = genModel(r);
-    const actions = genActions(r, g);
+    const actions = genActions(r, g, rng(seed + 7919));
     // (the same schedule both ways: every action at the same simulated moment, the application on scenario time)
     const sig = (x) => x.tests.map((t) => [t.ok, t.outcome && t.outcome.kind, t.outcome && t.outcome.drop ? t.outcome.drop.cause && t.outcome.drop.cause.kind : '', t.ended, t.retx || 0]).concat(x.runs.map((u) => [u.id, u.tests.length, JSON.stringify(A.appOutcome(u))]));
     const a = sig(play(g, actions));

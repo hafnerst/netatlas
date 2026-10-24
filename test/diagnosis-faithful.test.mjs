@@ -159,6 +159,10 @@ test('one lost attempt, then a different final failure: the rejection decides, t
   assert.equal(d.runtime.groups.length, 1);
   assert.match(d.runtime.groups[0].text, /^Fw refused the connection: its policy rejected it/);
   assert.ok(!d.blockers.some((b) => /lost on cable/.test(b.text)), 'the earlier loss is no blocker');
+  // and it is there, as contributing: recorded in its exchange, linked to its own drop line
+  const contrib = d.chain.filter((l) => l.rel === 'contributing' && /lost on cable l1/.test(l.text));
+  assert.equal(contrib.length, 1, d.chain.map((l) => `[${l.rel}] ${l.text}`).join('\n'));
+  assert.ok(contrib[0].refs.some((r) => /^event:\d+:\d+$/.test(r.ref)), contrib[0].refs.map((r) => r.ref).join(' '));
   // and a timeout whose last drop covers only one of two attempts: that drop is contributing, the cause not established
   const s2 = new S.Simulation(model(CHAIN));
   s2.runTo(5000);
@@ -358,6 +362,10 @@ test('a session that went down: the recorded transition, then its silence — th
   const why = d.chain.find((l) => /heard nothing because the packets its peer sent to r1 were dropped/.test(l.text) || /Some of the packets its peer sent to r1 were dropped/.test(l.text));
   assert.ok(why, d.chain.map((l) => `[${l.rel}] ${l.text}`).join('\n'));
   assert.match(why.text, /lost on cable l2/);
+  // which one, by identity: the cause only when each message of the interval has its own drop recorded
+  const [, k, n] = /\((\d+) of (\d+) messages? with a drop of its own recorded/.exec(why.text) || [];
+  assert.ok(n !== undefined, why.text);
+  assert.equal(why.rel, k === n ? 'cause' : 'contributing', why.text);
 });
 
 // ------------------------------------------------------------------ an address not acquired: its recorded failure

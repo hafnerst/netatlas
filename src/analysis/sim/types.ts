@@ -297,6 +297,16 @@ export interface DropCause {
   session?: string;
   /** the device that sent the packet (its sender, as recorded when it was first sent) */
   from?: string;
+  /** the log line of the message the packet carries (its sequence number): which logical message was dropped */
+  msg?: number;
+  /** a copy of a multicast or broadcast message: its drop is no loss of the message to every receiver */
+  copy?: boolean;
+  /**
+   * no route: the device's routes that matched the destination but could not be used at that moment, as its routing
+   * decided — the route, the interface it leaves by (written, or the one its next hop is connected over), that
+   * interface's tunnel relation or the adjacency it was learned over, and why it was unusable
+   */
+  unusable?: Array<{ route: string; iface?: string; relation?: string; detail: string }>;
   /** neighbor: the next hop's address that could not be resolved */
   neighbor?: string;
   /** policy: the device whose rules decided, the rule (1-based, as the decision numbers it), its text, the default */

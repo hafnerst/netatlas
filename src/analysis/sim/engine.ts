@@ -83,8 +83,8 @@ import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
 import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/types';
 import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
-import { compareAddr, formatAddr, inPrefix } from '../ipmath';
-import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import { compareAddr, formatAddr, inPrefix, prefixText } from '../ipmath';
+import { Connected, DvTables, RibEntry, RoutingCtx, connectedIn, deviceVrfs, lookup } from '../routing';
 import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, layerEnds, tunnelRelation, tracePath } from '../trace';
@@ -888,12 +888,27 @@ export class Engine {
 
   // ------------------------------------------------------------ the log
 
+  /** A route that matched but could not be used: its interface (written, else the one its next hop is configured on) and that interface's tunnel relation, or its adjacency. */
+  private unusableRoute(dev: string, e: RibEntry, detail: string): NonNullable<DropCause['unusable']>[number] {
+    const via = e.via;
+    const iface = e.iface || (via ? (connectedIn(this.model, dev).find((c) => c.vrf === e.vrf && inPrefix(c.net, via)) || { iface: undefined }).iface : undefined);
+    const tun = iface ? tunnelRelation(this.model, dev, iface) : undefined;
+    const out: NonNullable<DropCause['unusable']>[number] = { route: `${prefixText(e.net)}${via ? ' via ' + formatAddr(via) : ''}${e.kind === 'dynamic' && e.protocol ? ' (' + e.protocol + ')' : ''}`, detail };
+    if (iface) out.iface = iface;
+    const rel = tun ? tun.id : e.relation;
+    if (rel) out.relation = rel;
+    return out;
+  }
+
   /** A drop's cause with the packet's identity (its id, its outer header as the inspector shows it): for the drop's own log line. */
   causeOf(cause: DropCause, pkt: Pkt | null | undefined): DropCause {
     if (!pkt) return cause;
     const out: DropCause = { ...cause, pkt: pkt.id, flow: flowText(pkt) };
     if (pkt.msg.relation !== undefined && out.session === undefined) out.session = pkt.msg.relation;
     if (pkt.msg.sender !== undefined) out.from = pkt.msg.sender;
+    const mev = this.msgEvents.get(pkt.msg);
+    if (mev) out.msg = mev.seq;
+    if (isMulticastIp(pkt.dst) || (pkt.dst.version === 4 && pkt.dst.bytes[3] === 255)) out.copy = true;
     if (pkt.inner) {
       out.carried = [];
       for (let p: Pkt | undefined = pkt.inner; p; p = p.inner) out.carried.push(p.id);
@@ -3095,7 +3110,10 @@ export class Engine {
     if (d.kind !== 'forward' || !d.hops.length) {
       // a blackhole route drops silently (no ICMP error: that is what it is for)
       const text = `dropped at ${dev}: ${d.kind === 'blackhole' ? 'a blackhole route (silently, no ICMP error)' : 'no route to ' + formatAddr(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''} (${pkt.msg.label})`;
-      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text, this.now, undefined, { cause: this.causeOf({ kind: d.kind === 'blackhole' ? 'blackhole' : 'no-route', vrf: pkt.vrf }, pkt) });
+      const cause: DropCause = { kind: d.kind === 'blackhole' ? 'blackhole' : 'no-route', vrf: pkt.vrf };
+      // (the routes that matched but could not be used now, as this decision found them: what the route needed, recorded)
+      if (d.kind === 'none' && d.unusable.length) cause.unusable = d.unusable.map((u) => this.unusableRoute(dev, u.entry, u.detail));
+      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text, this.now, undefined, { cause: this.causeOf(cause, pkt) });
       if (d.kind !== 'blackhole') {
         if (came) this.icmpError(dev, pkt, 'net', { from: came.l3 });
         else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, pkt, 'net', `no route to ${formatAddr(pkt.dst)} (network unreachable)`);
