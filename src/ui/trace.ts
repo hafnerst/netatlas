@@ -110,7 +110,9 @@ export interface TracePanelActions extends ContextBarActions {
 export const DIAG_STATE: { [k in DiagnosisState]: { label: string; mark: string; tone: Verdict } } = {
   established: { label: 'Established', mark: '✓', tone: 'satisfied' },
   blocked: { label: 'Blocked', mark: '✕', tone: 'violated' },
+  failed: { label: 'Not completed — cause not established', mark: '✕', tone: 'violated' },
   waiting: { label: 'Waiting', mark: '⧗', tone: 'indeterminate' },
+  'in-progress': { label: 'In progress', mark: '…', tone: 'indeterminate' },
   recovered: { label: 'Recovered', mark: '↻', tone: 'satisfied' },
   partial: { label: 'Partial', mark: '◐', tone: 'partial' },
   cancelled: { label: 'Cancelled', mark: '–', tone: 'unsupported' },
@@ -118,19 +120,26 @@ export const DIAG_STATE: { [k in DiagnosisState]: { label: string; mark: string;
   unsupported: { label: 'Not supported', mark: '–', tone: 'unsupported' },
 };
 
-const REL_LABEL: { [k in LinkKind]: string } = { cause: 'Cause', prerequisite: 'Prerequisite', related: 'Related', coincidence: 'Coincidence', hypothesis: 'Not established' };
+const REL_LABEL: { [k in LinkKind]: string } = { cause: 'Cause', contributing: 'Contributing', prerequisite: 'Prerequisite', related: 'Related', coincidence: 'Coincidence', hypothesis: 'Not established' };
 
-/** One link of the evidence: what it is, from where, its text and its refs. */
+/** One link of the evidence: what it is, from where, its text, its refs and — for a group — its messages. */
 function chainItem(doc: Document, l: ChainLink, tag: 'li'): HTMLElement {
-  const refs = l.refs.map((r) => el(doc, 'button', { type: 'button', class: 'ref', 'data-diag-ref': r.ref, title: 'Go to ' + r.label }, [r.label]));
-  return el(doc, tag, { class: 'diag-link', 'data-rel': l.rel, 'data-source': l.source }, [
-    el(doc, 'span', { class: 'diag-rel an-chip v-' + (l.rel === 'cause' ? 'violated' : l.rel === 'prerequisite' ? 'indeterminate' : l.rel === 'hypothesis' ? 'unsupported' : 'satisfied') }, [REL_LABEL[l.rel]]),
+  const btn = (r: { ref: string; label: string }): HTMLElement => el(doc, 'button', { type: 'button', class: 'ref', 'data-diag-ref': r.ref, title: 'Go to ' + r.label }, [r.label]);
+  const refs = l.refs.map(btn);
+  const msgs = (l.messages || []).map(btn);
+  const more = l.count !== undefined && l.messages && l.count > l.messages.length ? l.count - l.messages.length : 0;
+  return el(doc, tag, { class: 'diag-link', 'data-rel': l.rel, 'data-source': l.source, ...(l.count !== undefined ? { 'data-count': String(l.count) } : {}) }, [
+    el(doc, 'span', { class: 'diag-rel an-chip v-' + (l.rel === 'cause' ? 'violated' : l.rel === 'prerequisite' || l.rel === 'contributing' ? 'indeterminate' : l.rel === 'hypothesis' ? 'unsupported' : 'satisfied') }, [REL_LABEL[l.rel]]),
     ' ',
     el(doc, 'span', { class: 'muted' }, [l.source === 'static' ? 'Static · ' : 'Runtime · ']),
     l.text,
     ...(refs.length ? [el(doc, 'span', { class: 'diag-refs' }, refs.flatMap((b, k) => (k ? [' ', b] : [b])))] : []),
+    ...(msgs.length ? [el(doc, 'span', { class: 'diag-refs diag-msgs', 'aria-label': `The ${l.count === 1 ? 'message' : 'messages'} it stands for` }, [`${l.count === 1 ? 'Message' : 'Messages'}: `, ...msgs.flatMap((b, k) => (k ? [' ', b] : [b])), more ? ` and ${more} more` : ''])] : []),
   ]);
 }
+
+const OUTCOME_TEXT: { [k in NonNullable<Diagnosis['runtime']>['outcome']]: string } = { succeeded: 'succeeded', failed: 'failed', cancelled: 'cancelled', mixed: 'mixed outcomes', none: 'nothing yet' };
+const CAUSE_TEXT: { [k in NonNullable<Diagnosis['runtime']>['cause']]: string } = { established: 'established by the records', partly: 'established for some failures only', unknown: 'not established', 'n/a': 'nothing to explain' };
 
 /**
  * The Diagnosis (see the module comment). `outdated`: the model changed
@@ -140,9 +149,18 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   const st = DIAG_STATE[d.state];
   const sec = el(doc, 'section', { class: 'trace-section diag', id: 'diag', 'aria-labelledby': 'diag-h', 'data-state': d.state });
   sec.appendChild(el(doc, 'h3', { id: 'diag-h' }, ['Diagnosis ', el(doc, 'span', { class: 'an-chip v-' + st.tone, id: 'diag-state' }, [st.mark + ' ' + st.label])]));
-  const flags = [view.outdated ? 'Outdated: the model changed after this diagnosis' : '', d.provisional ? 'Provisional: the send is not finished' : '', d.evidenceLimited ? 'Evidence-limited: some records are no longer kept' : ''].filter((x) => !!x);
+  const flags = [view.outdated ? 'Outdated: the model changed after this diagnosis' : '', d.provisional ? 'Provisional: the run is not finished' : '', d.evidenceLimited ? 'Evidence-limited: some records are no longer kept' : ''].filter((x) => !!x);
   sec.appendChild(el(doc, 'p', { id: 'diag-summary' }, [d.summary]));
   if (flags.length) sec.appendChild(el(doc, 'p', { class: 'small diag-flags', id: 'diag-flags' }, [flags.join(' · ')]));
+  // the static and the runtime answer, each on its own
+  const parts = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-parts', 'aria-label': 'Static and runtime answers' });
+  const sst = DIAG_STATE[d.static.state];
+  parts.appendChild(el(doc, 'dt', {}, ['Static analysis']));
+  parts.appendChild(el(doc, 'dd', { id: 'diag-static', 'data-state': d.static.state }, [el(doc, 'span', { class: 'an-chip v-' + sst.tone }, [sst.mark + ' ' + sst.label]), ' ', d.static.text]));
+  parts.appendChild(el(doc, 'dt', {}, ['Simulation']));
+  const rp = d.runtime;
+  parts.appendChild(el(doc, 'dd', { id: 'diag-runtime', ...(rp ? { 'data-completed': String(rp.completed), 'data-outcome': rp.outcome, 'data-cause': rp.cause } : {}) }, rp ? [`${rp.completed ? 'Finished' : 'Not finished'} · observed: ${OUTCOME_TEXT[rp.outcome]} · cause: ${CAUSE_TEXT[rp.cause]} — ${rp.text}`] : ['None compared (Compare with simulation adds the newest recorded run of it)']));
+  sec.appendChild(parts);
   // the question as asked and resolved
   const q = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-question', 'aria-label': 'The question' });
   const row = (k: string, v: string): void => {
@@ -155,7 +173,7 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   row('Service', d.question.service);
   row('Routing context', d.question.vrf);
   row('Analyzed on', d.question.context);
-  row('Runtime', d.question.run || 'none compared (Compare with simulation adds the newest recorded send of it)');
+  row('Runtime', d.question.run || 'none compared (Compare with simulation adds the newest recorded run of it)');
   sec.appendChild(q);
   if (d.question.unresolved.length) sec.appendChild(el(doc, 'p', { class: 'small muted', id: 'diag-open' }, ['Open: ' + d.question.unresolved.join('; ')]));
   // what prevents or limits it

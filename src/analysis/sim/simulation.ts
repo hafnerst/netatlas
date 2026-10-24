@@ -26,7 +26,7 @@ import { ParamChange, ParamValue, Resolved, SimParams, durationText, formatValue
 import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
-import { AppSim } from './apps';
+import { AppRun, AppSim } from './apps';
 import { MqttSim } from './mqtt';
 import { Ipv6Sim } from './ipv6';
 import { NtpSim } from './ntp';
@@ -35,7 +35,9 @@ import { PtpSim } from './ptp';
 import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
-import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
+import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, PacketRecord, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
+import type { MqttEvidence, RuntimeEvidence } from '../diagnosis';
+import { mqttClientId } from '../../model/applications';
 
 
 /** The groups of the protocol checkboxes, in their order (Start simulation…, the Simulation setup panel). */
@@ -187,7 +189,12 @@ export function deviceStateView(p: DevicePower | null, none: 'passive' | 'extern
   return { state: 'operational', label: 'Operational', detail: 'Operational: powered on and booted (its interfaces, cables and peers have their own state)' };
 }
 
+/** The executions started so far (each Simulation's own number: a record of one is never taken for another's). */
+let execSeq = 0;
+
 export class Simulation {
+  /** this execution's number: every runtime evidence reference names it, so a reference to an earlier execution's reused test or event id resolves to nothing */
+  readonly exec = ++execSeq;
   readonly engine: Engine;
   readonly protocols: ProtocolSim;
   readonly transport: Transport;
@@ -1145,28 +1152,70 @@ export class Simulation {
    * or packet id, as recorded), what each waited for in the engine, and how much of the log is still kept. Reading it
    * changes nothing: no time passes, nothing is sent.
    */
-  runEvidence(run: TestRun): { run: TestRun; events: SimEvent[]; waits: (test: number) => Array<{ cond: string; why: string; since: number; until?: number }>; log: { first: number; dropped: number }; now: number } {
-    const ids = new Set(run.tests.map((t) => t.id));
-    const pkts = new Set<number>();
-    for (const t of run.tests) for (const p of t.pktIds) pkts.add(p);
-    const log = this.engine.log;
-    const events = log.filter((e) => (e.test !== undefined && ids.has(e.test)) || (e.pkt !== undefined && pkts.has(e.pkt)));
-    return { run, events, waits: (id) => this.engine.waitsOf(id), log: { first: log.length ? log[0].t : this.now, dropped: this.engine.logDropped }, now: this.now };
+  runEvidence(run: TestRun): RuntimeEvidence {
+    return this.evidenceOf({ kind: 'send', id: run.id, label: `send #${run.id} (${run.series})`, t0: run.t0, stopped: run.stopped, stoppedAt: run.stoppedAt, count: run.count, sent: run.sent, skipped: run.skipped }, run.tests);
   }
 
-  /** An MQTT client's runtime counters (what it published and the broker acknowledged, what it received), null when it never ran. */
-  mqttCounters(dev: string, app: string): { published: number; acked: number; received: number; state: string } | null {
+  /**
+   * The recorded evidence of an application's run (TCP or UDP, apps.ts), for its diagnosis: the same records as a
+   * send's — its messages and their retries (each Test keeps its message number and retry), what could not be sent —
+   * and which run it is. Reading it changes nothing.
+   */
+  appEvidence(r: AppRun): RuntimeEvidence {
+    const how = r.how === 'event' ? 'started from Network events' : r.how === 'start' ? 'started with the simulation' : 'started by an experiment';
+    return this.evidenceOf({ kind: 'app', id: r.id, label: `application run #${r.id} of ${r.dev}/${r.app.id} (${how} at t = ${(r.t0 / 1000).toFixed(1)} s, to ${r.target})`, t0: r.t0, stopped: r.stopped, stoppedAt: r.stoppedAt, count: r.count, sent: r.sent, skipped: r.skipped }, r.tests);
+  }
+
+  /** The runs of a client application (TCP or UDP; an MQTT client's are mqttEvidence's), newest first: those the history still keeps. */
+  appRunsOf(dev: string, app: string): AppRun[] {
+    return this.apps.runs.filter((r) => r.dev === dev && r.app.id === app && r.app.profile !== 'mqtt_client').reverse();
+  }
+
+  private evidenceOf(subject: RuntimeEvidence['subject'], tests: Test[]): RuntimeEvidence {
+    const ids = new Set(tests.map((t) => t.id));
+    const pkts = new Set<number>();
+    for (const t of tests) for (const p of t.pktIds) pkts.add(p);
+    const log = this.engine.log;
+    const events = log.filter((e) => (e.test !== undefined && ids.has(e.test)) || (e.pkt !== undefined && pkts.has(e.pkt)) || (!!e.cause && !!e.cause.carried && e.cause.carried.some((p) => pkts.has(p))));
+    return { exec: this.exec, subject, tests: tests.slice(), events, log, waits: (id) => this.engine.waitsOf(id), retained: { first: log.length ? log[0].t : this.now, firstSeq: log.length ? log[0].seq : this.engine.lastSeq + 1, dropped: this.engine.logDropped }, now: this.now };
+  }
+
+  /**
+   * An MQTT client's run, as recorded, for its diagnosis (analysis/diagnosis.ts): its newest run (said by its number
+   * and start; an earlier run is never taken for it), that run's own publications with their broker receipt, PUBACK
+   * and each subscriber's receipt (mqtt.ts MqttPublication), how many of them are no longer kept, and the given
+   * subscribers' runs. Null when it never ran in this simulation. Reading it changes nothing.
+   */
+  mqttEvidence(dev: string, app: string, subscribers: Array<{ dev: string; app: string }>): MqttEvidence | null {
     const cs = this.mqtt.clients.filter((c) => c.run.dev === dev && c.run.app.id === app);
-    if (!cs.length) return null;
-    let published = 0;
-    let acked = 0;
-    let received = 0;
-    for (const c of cs) {
-      published += c.published;
-      acked += c.pubacked;
-      c.received.forEach((v) => (received += v));
-    }
-    return { published, acked, received, state: cs[cs.length - 1].state };
+    const c = cs[cs.length - 1];
+    if (!c) return null;
+    const pubs = this.mqtt.pubs.filter((p) => p.run === c.run.id).map((p) => ({ ...p, pkts: p.pkts.slice(), matched: p.matched ? p.matched.slice() : undefined, deliveries: p.deliveries.map((x) => ({ ...x, pkts: x.pkts.slice() })) }));
+    const subs = subscribers.map((x) => {
+      const runs = this.mqtt.clients.filter((y) => y.run.dev === x.dev && y.run.app.id === x.app).reverse().slice(0, 3);
+      const a = this.apps.app(x.dev, x.app);
+      return { dev: x.dev, app: x.app, clientId: a ? mqttClientId(x.dev, a) : `${x.dev}-${x.app}`, runs: runs.map((y) => ({ id: y.run.id, state: y.state, t0: y.run.t0, stoppedAt: y.run.stoppedAt, granted: Array.from(y.granted.entries()) })) };
+    });
+    return {
+      exec: this.exec,
+      run: { id: c.run.id, dev, app, clientId: c.clientId, broker: c.broker, qos: c.run.app.qos === 1 ? 1 : 0, t0: c.run.t0, stopped: c.run.stopped || c.state === 'Stopped', stoppedAt: c.run.stoppedAt, state: c.state, connects: c.connects, missed: c.missed, published: c.published, lastClose: c.lastClose, how: c.run.how, earlier: cs.length - 1 },
+      pubs,
+      evicted: Math.max(0, c.published - pubs.length),
+      subscribers: subs,
+      now: this.now,
+    };
+  }
+
+  /** A packet as it was first sent, by id (null: not this execution's, or no longer kept): what an evidence link opens. */
+  packet(id: number): PacketRecord | null {
+    return this.engine.packets.get(id) || null;
+  }
+
+  /** Is an event (by its sequence number) still in the log, gone from it (the log keeps the latest events), or never written? */
+  eventKept(seq: number): 'kept' | 'evicted' | 'unknown' {
+    const log = this.engine.log;
+    if (seq < 0 || seq > this.engine.lastSeq) return 'unknown';
+    return log.length && seq >= log[0].seq ? 'kept' : 'evicted';
   }
 
   /** Stop a series: no more of its messages are sent (those on their way finish). */

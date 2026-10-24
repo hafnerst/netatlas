@@ -35,6 +35,7 @@ import { AnalysisSnapshot, ADDR_METHOD_TEXT, snapAddrsOf } from './snapshot';
 import { TraceService } from './trace';
 import type { TestPlan } from './sim/test-plan';
 import type { SendRun } from './sim/actions';
+import type { Test } from './sim/transport';
 
 /** How an end is bound (see the module comment). */
 export type Binding = 'address' | 'interface' | 'name' | 'application';
@@ -194,6 +195,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
   const s = id.source;
   if (!s.device) return null;
   const svc = id.service;
+  // (no service in the question: the send proposes an ICMP echo — a test choice, said as one, not what was asked)
   const svcText = svc ? (svc.proto === 'icmp' ? 'ICMP' : `${svc.proto.toUpperCase()} ${svc.port}`) : 'ICMP (ping)';
   const carried: string[] = [];
   const not: string[] = [];
@@ -235,7 +237,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
     pre.target = t.address;
     carried.push(`Destination: ${t.address}`);
   } else return null;
-  carried.push(`Protocol: ${svcText}${id.family ? `, IPv${id.family}` : ''}`);
+  carried.push(`Protocol: ${svcText}${id.family ? `, IPv${id.family}` : ''}${svc ? '' : ' — proposed: the question gives no service'}`);
   // the routing context: the simulation sends in the source interface's VRF
   const si = s.iface ? model.index.interfaces.get(s.device + ':' + s.iface) : undefined;
   if (id.request.vrf !== undefined && si && (si.vrf || '') !== id.request.vrf) not.push(`VRF: the simulation sends in the VRF of ${s.device}:${s.iface} (${si.vrf || 'the default table'}); the VRF chosen here (${id.request.vrf || 'the default table'}) can't be set for a send`);
@@ -335,21 +337,37 @@ export interface RunComparison {
 }
 
 /**
- * Compare a communication's static result with a send of the simulation
+ * A run compared with a static result: a send, or a client application's run (its messages by their last attempt, apps.ts
+ * lastAttempts; `count` null: until stopped).
+ */
+export interface RunRecord {
+  tests: Test[];
+  skipped: Array<{ n: number; t: number; why: string }>;
+  count: number | null;
+  sent: number;
+  stopped: boolean;
+}
+
+/**
+ * Compare a communication's static result with a run of the simulation
  * that carries it. A difference is explained from recorded state only:
  * the snapshot taken now (the address a lease gave, a route or adjacency
- * that is or is not there, an end that is off), the run's own result
- * text, and the layers the static analysis did not evaluate. Nothing is
- * inferred from the outcome alone.
+ * that is or is not there, an end that is off), the run's structured
+ * outcomes (each distinct one, as its sender recorded it), and the layers
+ * the static analysis did not evaluate. Nothing is inferred from the
+ * outcome alone, and a state seen later explains nothing about the send:
+ * only the difference is said.
  */
-export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: AnalysisSnapshot): RunComparison {
+export function compareRun(model: Model, check: CommCheck, run: SendRun | RunRecord, snap: AnalysisSnapshot): RunComparison {
   const tests = run.tests;
   const done = tests.filter((t) => t.done);
   const ok = done.filter((t) => t.ok);
   // (a message that could not be sent at all is a failure of the run; what Stop cancelled is no result either way)
   const failed = done.length - ok.length + run.skipped.length;
-  const counts = { delivered: ok.length, failed, pending: tests.length - done.length, unsent: run.stopped ? 0 : Math.max(0, run.count - run.sent), cancelled: run.stopped ? Math.max(0, run.count - run.sent) : 0 };
-  const final = counts.pending === 0 && counts.unsent === 0;
+  const ongoing = run.count === null && !run.stopped;
+  const left = run.count === null ? 0 : Math.max(0, run.count - run.sent);
+  const counts = { delivered: ok.length, failed, pending: tests.length - done.length, unsent: run.stopped ? 0 : left, cancelled: run.stopped ? left : 0 };
+  const final = counts.pending === 0 && counts.unsent === 0 && !ongoing;
   const runtime: RunComparison['runtime'] = !ok.length && !failed ? 'pending' : !failed ? 'delivered' : ok.length ? 'mixed' : 'failed';
   const results = tests.slice(0, 5).map((t) => `#${t.msg || 1}: ${t.done ? t.result : 'on its way'}`).concat(run.skipped.slice(0, 2).map((x) => `#${x.n}: ${x.why}`));
   if (counts.cancelled) results.push(`${counts.cancelled} message${counts.cancelled === 1 ? '' : 's'} not sent: stopped`);
@@ -391,31 +409,44 @@ export function compareRun(model: Model, check: CommCheck, run: SendRun, snap: A
   for (const dev of [check.from ? check.from.device : undefined, check.to ? check.to.device : undefined]) {
     if (dev && snap.down.indexOf('device:' + dev) >= 0) out.lines.push(`Runtime endpoint unavailable: ${dev} is down at ${at}`);
   }
-  // the run's own record: where a message was dropped and why, when it was sent
-  const bad = done.filter((t) => !t.ok);
-  for (const t of bad.slice(0, 1)) {
-    // (the test's structured outcome and the drop the engine recorded when it happened: never the result's words)
+  // the run's own record: each distinct structured outcome once (its first message), never the result's words
+  const nowOk = now.verdict === 'satisfied';
+  const later = nowOk ? `; the simulation’s state at ${at} routes it — what changed between the send and then is not established by this comparison` : '';
+  const seen = new Set<string>();
+  for (const t of done.filter((x) => !x.ok)) {
     const sent = `t = ${(t.started / 1000).toFixed(1)} s`;
     const o = t.outcome;
-    const d = o && o.drop ? o.drop : null;
-    const cause = d && d.cause ? d.cause.kind : '';
-    const why = d ? d.text.replace(/^dropped at [^:]+: /, '').replace(/ \([^()]*\)$/, '') : '';
-    const nowOk = now.verdict === 'satisfied';
-    if (o && o.kind === 'unreachable' && (o.icmp === 'Net Unreachable' || o.icmp === 'No Route')) {
-      out.lines.push(`Route not there when sent (${sent}): ${o.by || 'a router'} had no route to ${formatAddr(t.dst)} and answered ${o.icmp}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency that was not up yet)` : ''}`);
+    // (the drop that decided it: one of its own attempts, the last recorded)
+    const ds = o ? (o.drops || (o.drop ? [o.drop] : [])).filter((x) => x.attempt) : [];
+    const d = ds.length ? ds[ds.length - 1] : null;
+    const c = d && d.cause ? d.cause : null;
+    const key = `${o ? o.kind : ''}|${o ? o.by || '' : ''}|${o ? o.reason || '' : ''}|${c ? c.kind + ':' + (c.policy ? c.policy.device + ':' + (c.policy.rule || '') : '') : ''}`;
+    if (seen.has(key) || seen.size >= 3) continue;
+    seen.add(key);
+    if (o && o.kind === 'unreachable' && o.reason === 'policy' && o.cause && o.cause.policy) {
+      out.lines.push(`Policy at runtime (${sent}): ${o.cause.policy.device} rejected it (${o.cause.policy.rule ? 'rule ' + o.cause.policy.rule : o.cause.policy.byDefault ? 'its default action' : o.cause.policy.ruleText || 'its policy'}) and answered ${o.icmp}`);
+    } else if (o && o.kind === 'unreachable' && (o.icmp === 'Net Unreachable' || o.icmp === 'No Route')) {
+      out.lines.push(`Route not there when sent (${sent}): ${o.by || 'a router'} had no route to ${formatAddr(t.dst)} and answered ${o.icmp}; the configured model routes it${later}`);
+    } else if (o && o.kind === 'unreachable' && (o.icmp === 'Host Unreachable' || o.icmp === 'Address Unreachable')) {
+      out.lines.push(`Next hop not resolved when sent (${sent}): ${o.by || 'a router'} answered ${o.icmp} — it had a route, the destination or next hop did not answer ARP / NDP${nowOk ? ` (at ${at} the state routes it; what changed is not established)` : ''}`);
     } else if (o && o.kind === 'not-sent' && o.down) {
-      out.lines.push(`Interface down when sent (${sent}): ${o.down} was not up (a link coming up, shut, or failed); the configured model routes from it${nowOk ? `, and the simulation’s state at ${at} does too` : ''}`);
-    } else if (d && (cause === 'no-route' || cause === 'blackhole' || cause === 'neighbor')) {
-      out.lines.push(`Route not there when sent (${sent}): ${d.device} had ${why}; the configured model routes it${nowOk ? `, and the simulation’s state at ${at} does too: it was learned after the send (an adjacency or a redundancy group that was not up yet)` : ''}`);
-    } else if ((o && o.kind === 'too-big') || cause === 'too-big') {
-      out.lines.push(`Packet too big when sent (${sent}): ${t.result}. The static path MTU is in the Path MTU section: a packet larger than it, with Don’t fragment (or IPv6), is dropped with Fragmentation Needed / Packet Too Big, and the sender learns the path MTU (PMTUD)`);
-    } else if (d && (cause === 'iface-down' || cause === 'cable' || cause === 'tunnel-down' || cause === 'relation-failed')) {
-      out.lines.push(`Runtime endpoint unavailable when sent (${sent}): ${d.device}: ${why}`);
-    } else if (d && cause === 'policy') {
-      out.lines.push(`Policy at runtime (${sent}): ${d.device}: ${why}`);
+      out.lines.push(`Interface down when sent (${sent}): ${o.down} was not up (a link coming up, shut, or failed); the configured model routes from it${nowOk ? `; at ${at} the state routes it` : ''}`);
+    } else if (c && c.kind === 'neighbor') {
+      out.lines.push(`Next hop not resolved when sent (${sent}): ${d ? d.device : ''} had a route, but ${c.neighbor || 'its next hop'} did not answer ${t.dst.version === 6 ? 'NDP' : 'ARP'}${c.iface ? ' on ' + c.iface : ''}; that is no missing route${nowOk ? ` (at ${at} the state routes it; what changed is not established)` : ''}`);
+    } else if (c && (c.kind === 'no-route' || c.kind === 'blackhole')) {
+      out.lines.push(`Route not there when sent (${sent}): ${d ? d.device : ''} had ${c.kind === 'blackhole' ? 'a blackhole route' : 'no route'} for it${c.vrf ? ' in VRF ' + c.vrf : ''}; the configured model routes it${later}`);
+    } else if ((o && o.kind === 'too-big') || (c && c.kind === 'too-big')) {
+      out.lines.push(`Packet too big when sent (${sent}): ${o && o.mtu ? `the path takes ${o.mtu} bytes` : c && c.mtu ? `${d ? d.device : ''}${c.iface ? ':' + c.iface : ''} takes ${c.mtu} bytes` : 'larger than the path takes'}. The static path MTU is in the Path MTU section: a packet larger than it, with Don’t fragment (or IPv6), is dropped with Fragmentation Needed / Packet Too Big, and the sender learns the path MTU (PMTUD)`);
+    } else if (c && (c.kind === 'iface-down' || c.kind === 'cable' || c.kind === 'tunnel-down' || c.kind === 'relation-failed')) {
+      out.lines.push(`Unavailable when sent (${sent}): at ${d ? d.device : ''} ${c.kind === 'cable' ? 'cable ' + c.link + ' was down' : c.kind === 'tunnel-down' ? 'tunnel ' + c.iface + ' was down' : c.kind === 'relation-failed' ? (c.relation || 'a relation') + ' had failed' : (c.iface || 'an interface') + ' was down'}`);
+    } else if (c && c.kind === 'policy' && c.policy) {
+      out.lines.push(`Policy at runtime (${sent}): ${c.policy.device} ${c.policy.action === 'undecided' ? 'could not decide on' : 'denied'} it (${c.policy.rule ? 'rule ' + c.policy.rule : c.policy.byDefault ? 'its default action' : c.policy.ruleText || 'its policy'})`);
+    } else if (o && (o.kind === 'refused' || o.kind === 'lost') && o.reason === 'policy' && o.cause && o.cause.policy) {
+      out.lines.push(`Policy at runtime (${sent}): ${o.cause.policy.device} rejected the connection (${o.cause.policy.rule ? 'rule ' + o.cause.policy.rule : o.cause.policy.byDefault ? 'its default action' : o.cause.policy.ruleText || 'its policy'}) with a RST carrying the destination’s address`);
     } else if (o && (o.kind === 'refused' || (o.kind === 'unreachable' && o.icmp === 'Port Unreachable') || o.kind === 'lost')) {
       const lis = layer(check, 'listener');
-      out.lines.push(`The destination answered “${t.result}” (${sent}). ${lis && lis.verdict === 'satisfied' ? 'Static analysis found a configured listener; whether the application accepts the connection is runtime behaviour it does not evaluate.' : 'Static analysis did not establish a listener there.'}`);
+      const said = o.reason === 'closed' ? `${o.by || 'the destination'} recorded the port as closed` : o.reason === 'no-connection' ? `${o.by || 'the destination'} had no connection for it` : o.kind === 'lost' ? 'the connection was lost' : `${o.by || 'a device'} answered without recording why`;
+      out.lines.push(`The destination answered “${t.result}” (${sent}): ${said}. ${lis && lis.verdict === 'satisfied' ? 'Static analysis found a configured listener; whether the application accepts the connection is runtime behaviour it does not evaluate.' : 'Static analysis did not establish a listener there.'}`);
     } else if (!out.lines.length && o && o.kind === 'timeout') {
       out.lines.push(`No answer (${sent}): ${t.result}. Static analysis did not evaluate that behavior: the answer and its way back are runtime behaviour.`);
     }

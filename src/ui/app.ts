@@ -41,7 +41,8 @@ import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex 
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
 import { CommRequest, checkCommunication } from '../analysis/communication';
-import { Handoff, commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
+import { commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
+import { appRunRecord } from '../analysis/sim/apps';
 import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { diagnose } from '../analysis/diagnosis';
 import { portL2 } from '../model/derive';
@@ -4190,7 +4191,7 @@ export class App {
   /** Why there is nothing to compare the check with ('' there is). */
   private traceCompareBlocked(): string {
     const r = this.traceRun;
-    if (!r || !r.identity || !r.handoff || (r.handoff.kind !== 'send' && !(r.handoff.kind === 'app' && r.identity.profile === 'mqtt_client'))) return 'Only a send of the simulation (or an MQTT client’s legs) can be compared';
+    if (!r || !r.identity || !r.handoff) return 'Only a send of the simulation, or a client application’s own run, can be compared';
     return this.simCtl ? '' : 'No simulation runs';
   }
 
@@ -4229,39 +4230,56 @@ export class App {
     return true;
   }
 
-  /** The check beside the simulation's latest send that carries it, with what explains a difference. */
+  /**
+   * The check beside what the simulation recorded of the same communication, with what explains a difference: for a
+   * client application, its own newest run (an MQTT client's: its run's own publications and each subscriber's receipt
+   * of them) — never a send prepared like it, never an earlier run; for any other question, the newest send that
+   * carries it (runMatches). Which run it is is said; nothing else is substituted when there is none.
+   */
   compareTrace(): boolean {
     const r = this.traceRun;
     if (!r || !r.identity || !this.simCtl || this.traceCompareBlocked()) return false;
     const id = r.identity;
-    // an MQTT client: its legs' runtime counters (what it published and the broker acknowledged, what each subscriber received)
-    if (r.handoff && r.handoff.kind === 'app' && id.profile === 'mqtt_client' && id.source.device && r.handoff.app) {
-      const sim = this.simCtl.sim;
-      const p = sim.mqttCounters(id.source.device, r.handoff.app);
-      const dd = r.model.index.devices.get(id.source.device);
-      const app = dd && dd.applications ? dd.applications.find((a) => a.id === (r.handoff as Handoff).app) : undefined;
-      // (each subscriber leg is a check from that subscriber's application: "dev/app")
-      const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ['', x[0], x[1]]);
-      const mqtt = {
-        publisher: p ? { dev: id.source.device, app: r.handoff.app, published: p.published, acked: p.acked, qos: app && app.qos === 1 ? 1 : 0, state: p.state } : undefined,
-        subscribers: subs.map((x) => {
-          const c = sim.mqttCounters(x[1], x[2]);
-          return { dev: x[1], app: x[2], received: c ? c.received : 0, state: c ? c.state : 'not started' };
-        }),
-      };
-      r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, mqtt });
+    const sim = this.simCtl.sim;
+    const h = r.handoff;
+    if (h && h.kind === 'app' && id.source.device && h.app) {
+      const name = `${id.source.device}/${h.app}`;
+      if (id.profile === 'mqtt_client') {
+        // (each subscriber leg is a check from that subscriber's application: "dev/app")
+        const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ({ dev: x[0], app: x[1] }));
+        const mq = sim.mqttEvidence(id.source.device, h.app, subs);
+        if (!mq) {
+          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare.`);
+          return false;
+        }
+        r.compare = null;
+        r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, mqtt: mq });
+      } else {
+        const run = sim.appRunsOf(id.source.device, h.app)[0];
+        if (!run) {
+          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare. A send prepared like it is not its run.`);
+          return false;
+        }
+        r.compare = compareRun(r.model, r.check, appRunRecord(run), this.simCtl.snapshot());
+        r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...sim.appEvidence(run), comparison: r.compare } });
+      }
       this.renderTraceWindow();
+      const sum = this.doc.getElementById('diag-summary');
+      if (sum) {
+        sum.setAttribute('tabindex', '-1');
+        sum.focus();
+      }
       return true;
     }
     // (the newest send that carries it: testRuns lists the newest first)
-    const run = this.simCtl.sim.testRuns().find((x) => runMatches(id, x, r.model));
+    const run = sim.testRuns().find((x) => runMatches(id, x, r.model));
     if (!run) {
       this.toast('Nothing to compare yet: no send carries this check (the same source interface — and the source address, for a check from an exact address —, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
       return false;
     }
     r.compare = compareRun(r.model, r.check, run, this.simCtl.snapshot());
     // the diagnosis with the recorded send: its records as they are now, frozen with the result (never recomputed later)
-    r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...this.simCtl.sim.runEvidence(run), comparison: r.compare } });
+    r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...sim.runEvidence(run), comparison: r.compare } });
     this.renderTraceWindow();
     const sec = this.doc.getElementById('trace-compare-res');
     if (sec) {
