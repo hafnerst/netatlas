@@ -39,9 +39,12 @@ import { Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { AddressingOverview, addressingOverview } from '../analysis/addressing';
 import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
-import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
+import { DiagRuleView, TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
+import { policyRuleText } from '../model/net-policy';
+import { allowList } from '../analysis/policy';
 import { CommRequest, checkCommunication } from '../analysis/communication';
-import { Handoff, commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
+import { commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
+import { appRunRecord } from '../analysis/sim/apps';
 import { mtuTestSizes, pathMtu } from '../analysis/mtu';
 import { diagnose } from '../analysis/diagnosis';
 import { portL2 } from '../model/derive';
@@ -291,6 +294,7 @@ export class App {
     this.session = model ? new Session(model) : null;
     if (this.session) this.session.setView(prevView);
     this.traceRun = null;
+    this.traceKept = null;
     this.traceError = '';
     this.endForNewModel();
     this.tab = doc.errors.length || doc.warnings.length ? 'problems' : this.tab === 'yaml' ? 'yaml' : 'legend';
@@ -889,6 +893,7 @@ export class App {
     this.editor.reset();
     this.tab = 'legend';
     this.traceRun = null;
+    this.traceKept = null;
     this.traceError = '';
     this.endForNewModel();
     if (this.ws !== 'edit') this.showWorkspace('edit');
@@ -3967,9 +3972,11 @@ export class App {
   }
 
   /**
-   * Go to a piece of a diagnosis' evidence: an object of the diagram (selected), a policy rule (its device), a layer
-   * of the check (its evidence), a message of a send (the packet inspector), a recorded event. It selects or opens;
-   * the simulated clock does not move, nothing is sent, the model does not change. Evidence no longer kept is said.
+   * Go to a piece of a diagnosis' evidence: an object of the diagram (selected), a policy rule or default action (its
+   * device's Network policy, that row marked), a layer of the check (its evidence), a recorded packet, message or event
+   * (the packet inspector, that packet). A runtime record names its execution: one of an earlier simulation — whose
+   * numbers a later one reuses — is not available, and neither is one no longer kept; nothing else is opened instead.
+   * It selects or opens: the simulated clock does not move, nothing is sent, the model and its lock do not change.
    */
   gotoEvidence(ref: string): boolean {
     const i = ref.indexOf(':');
@@ -3984,10 +3991,25 @@ export class App {
       return true;
     }
     if (kind === 'policy') {
-      const [dev, rule] = rest.split(':');
+      const c = rest.lastIndexOf(':');
+      const dev = rest.slice(0, c);
+      const which = rest.slice(c + 1);
+      if (!this.session || !this.session.model.index.devices.has(dev)) {
+        this.toast(`${dev} is not in the model any more: its policy is not available.`);
+        return false;
+      }
       this.select('device:' + dev, true);
-      if (rule) this.toast(`${dev}: rule ${rule} of its policy (its properties list the rules in order).`);
-      return true;
+      // in place, in every workspace (read-only: nothing is unlocked); in the Inspector too when it is in front
+      const view = this.ruleView(ref, dev, which);
+      this.diagRule = view;
+      if (which !== 'implicit' && this.workspace() === 'edit') {
+        this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
+        this.renderSide();
+      }
+      this.renderTraceWindow();
+      const box = this.doc.getElementById('diag-rule');
+      if (box) box.focus();
+      return !view.missing;
     }
     if (kind === 'test' || kind === 'packet' || kind === 'event') {
       const ctl = this.simCtl;
@@ -3995,16 +4017,48 @@ export class App {
         this.toast('That evidence belongs to a simulation that is no longer running: it is not available.');
         return false;
       }
-      const n = Number(rest.split(':')[0]);
-      const ok = kind === 'event' ? ctl.inspectEvent(n) : ctl.inspectTest(n);
-      if (!ok) {
-        const ev = kind === 'event' ? ctl.sim.events().find((e) => e.seq === n) : null;
-        this.toast(ev ? `Recorded at t = ${(ev.t / 1000).toFixed(1)} s at ${ev.device || 'the network'}: ${ev.detail}` : 'That record is no longer kept (the event log keeps the latest events): it is not available.');
+      const [execText, idText] = rest.split(':');
+      const n = Number(idText);
+      if (Number(execText) !== ctl.sim.exec || !Number.isFinite(n)) {
+        this.toast('That evidence belongs to an earlier simulation (a later one numbers its records anew): it is not available.');
+        return false;
+      }
+      let ok: boolean;
+      if (kind === 'packet') {
+        ok = ctl.inspectPacket(n);
+        if (!ok) this.toast('That packet’s record is no longer kept (the latest packets are): it is not available.');
+      } else if (kind === 'event') {
+        const kept = ctl.sim.eventKept(n);
+        ok = kept === 'kept' && ctl.inspectEvent(n);
+        if (!ok) {
+          const ev = kept === 'kept' ? ctl.sim.events().find((e) => e.seq === n) : null;
+          this.toast(ev ? `Recorded at t = ${(ev.t / 1000).toFixed(1)} s at ${ev.device || 'the network'}: ${ev.detail}` : 'That event is no longer kept (the event log keeps the latest events): it is not available.');
+        }
+      } else {
+        ok = ctl.inspectTest(n);
+        if (!ok) this.toast('That message’s packets are no longer kept, or it sent none: it is not available.');
       }
       return ok;
     }
     this.select(ref, true);
     return true;
+  }
+
+  /** the trace result left when Analyze or Trace path was left (its path off the diagram), restored on coming back */
+  private traceKept: NonNullable<App['traceRun']> | null = null;
+
+  /** a policy decision a diagnosis' link opened, shown in place (null: none) */
+  private diagRule: DiagRuleView | null = null;
+
+  /** A device's policy as a link shows it: its rules in order, the one that decided (a rule number, default, implicit) marked. */
+  private ruleView(ref: string, dev: string, which: string): DiagRuleView {
+    const d = (this.session as Session).model.index.devices.get(dev) as Device;
+    const pol = d.policy;
+    if (which === 'implicit' || !pol) return { ref, device: dev, summary: pol ? `default ${pol.default}` : `no written network policy: its relations and its allow list decide${allowList(d).raw ? ' (also permits: ' + allowList(d).raw + ')' : ''}`, rows: [], missing: which !== 'implicit' && !pol ? `${dev} has no network policy now (the model changed after the diagnosis?)` : undefined };
+    const n = Number(which);
+    const rows = pol.rules.map((r, k) => ({ n: k + 1, text: policyRuleText(r), on: which !== 'default' && k + 1 === n }));
+    const missing = which !== 'default' && !(n >= 1 && n <= pol.rules.length) ? `${dev} has no rule ${which} now (the model changed after the diagnosis?)` : undefined;
+    return { ref, device: dev, summary: `default ${pol.default}${pol.stateful === false ? ', stateless' : pol.stateful ? ', stateful' : ''} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}, first match wins`, rows, def: { text: `Default action: ${pol.default} (what no rule matches)`, on: which === 'default' }, missing };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -4048,11 +4102,21 @@ export class App {
     const m = s.model;
     let from = '';
     let to = '';
+    this.traceChoice = null;
     if (kind === 'device' || kind === 'iface') {
       const dev = kind === 'device' ? id : id.slice(0, id.indexOf(':'));
       const d = m.index.devices.get(dev);
       const clients = d && kind === 'device' ? (d.applications || []).filter((a) => (a.profile === 'mqtt_client' ? !!a.broker : !!a.peer) && appProfile(a.profile) && (appProfile(a.profile) as { client?: boolean }).client) : [];
-      from = clients.length === 1 ? `${dev}/${clients[0].id}` : id;
+      if (clients.length === 1) from = `${dev}/${clients[0].id}`;
+      else if (clients.length > 1) {
+        // (several: which one is the user's to say — each, or the device itself to a destination still to give)
+        this.traceChoice = {
+          title: `${dev} runs ${clients.length} client applications: which communication?`,
+          options: clients
+            .map((a) => ({ label: `${dev}/${a.id} → ${a.profile === 'mqtt_client' ? 'broker ' + a.broker : a.peer}`, from: `${dev}/${a.id}`, to: '', why: `${a.name}: its configured ${a.profile === 'mqtt_client' ? 'broker' : 'peer'}` }))
+            .concat([{ label: `${dev} itself, to a destination you give`, from: dev, to: '', why: 'The device as the source: enter the destination' }]),
+        };
+      } else from = id;
     } else if (kind === 'relation') {
       const r = m.index.relations.get(id);
       const ends = r ? r.endpoints : [];
@@ -4063,8 +4127,34 @@ export class App {
     }
     // (the tool first: opening it takes the selection into an empty field, which this question has chosen already)
     if (this.analyzeTool() !== 'trace') this.showAnalyze('trace');
-    if (from) this.traceForm = { ...this.traceForm, from, to: to || (from.indexOf('/') >= 0 ? '' : this.traceForm.to === from ? '' : this.traceForm.to) };
+    // a new question: nothing of the one before it is carried over (its destination, service, VRF, family)
+    if (from || this.traceChoice) this.traceForm = { ...this.traceForm, from, to, service: '', vrf: 'auto', family: '' };
+    if (this.traceChoice) {
+      this.renderTraceWindow();
+      const b = this.doc.querySelector('#trace-choice button') as HTMLElement | null;
+      if (b) b.focus();
+      return;
+    }
     const ready = !!this.traceForm.from && (!!this.traceForm.to || this.traceForm.from.indexOf('/') >= 0);
+    if (!ready || !this.runTrace()) {
+      this.openTrace();
+      return;
+    }
+    const sum = this.doc.getElementById('diag-summary');
+    if (sum) {
+      sum.setAttribute('tabindex', '-1');
+      sum.focus();
+    }
+  }
+
+  /** The choice Diagnose communication… asks for (several client applications), until one is taken; null: none. */
+  private traceChoice: { title: string; options: Array<{ label: string; from: string; to: string; why: string }> } | null = null;
+
+  /** One of the choice's communications: into the form, checked when complete (else the keyboard on the field still open). */
+  chooseTraceQuestion(from: string, to: string): void {
+    this.traceChoice = null;
+    this.traceForm = { ...this.traceForm, from, to, service: '', vrf: 'auto', family: '' };
+    const ready = !!from && (!!to || from.indexOf('/') >= 0);
     if (!ready || !this.runTrace()) {
       this.openTrace();
       return;
@@ -4094,7 +4184,7 @@ export class App {
   private traceBody(): HTMLElement {
     const s = this.session as Session;
     const r = this.traceRun;
-    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock() };
+    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock(), choice: this.traceChoice, rule: r ? this.diagRule : null };
     return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
       input: (field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
@@ -4133,6 +4223,13 @@ export class App {
         if (f) f.focus();
       },
       goto: (ref) => void this.gotoEvidence(ref),
+      choose: (from, to) => this.chooseTraceQuestion(from, to),
+      closeRule: (ref) => {
+        this.diagRule = null;
+        this.renderTraceWindow();
+        const back = Array.prototype.find.call(this.doc.querySelectorAll('#diag [data-diag-ref]'), (x: Element) => x.getAttribute('data-diag-ref') === ref) as HTMLElement | undefined;
+        if (back) back.focus();
+      },
     });
   }
 
@@ -4159,6 +4256,8 @@ export class App {
       return false;
     }
     this.traceError = '';
+    this.diagRule = null;
+    this.traceKept = null;
     this.traceRun = { ...run, model: s.model, snap, request: req };
     this.applyHighlight();
     this.renderTraceWindow();
@@ -4190,7 +4289,7 @@ export class App {
   /** Why there is nothing to compare the check with ('' there is). */
   private traceCompareBlocked(): string {
     const r = this.traceRun;
-    if (!r || !r.identity || !r.handoff || (r.handoff.kind !== 'send' && !(r.handoff.kind === 'app' && r.identity.profile === 'mqtt_client'))) return 'Only a send of the simulation (or an MQTT client’s legs) can be compared';
+    if (!r || !r.identity || !r.handoff) return 'Only a send of the simulation, or a client application’s own run, can be compared';
     return this.simCtl ? '' : 'No simulation runs';
   }
 
@@ -4229,39 +4328,56 @@ export class App {
     return true;
   }
 
-  /** The check beside the simulation's latest send that carries it, with what explains a difference. */
+  /**
+   * The check beside what the simulation recorded of the same communication, with what explains a difference: for a
+   * client application, its own newest run (an MQTT client's: its run's own publications and each subscriber's receipt
+   * of them) — never a send prepared like it, never an earlier run; for any other question, the newest send that
+   * carries it (runMatches). Which run it is is said; nothing else is substituted when there is none.
+   */
   compareTrace(): boolean {
     const r = this.traceRun;
     if (!r || !r.identity || !this.simCtl || this.traceCompareBlocked()) return false;
     const id = r.identity;
-    // an MQTT client: its legs' runtime counters (what it published and the broker acknowledged, what each subscriber received)
-    if (r.handoff && r.handoff.kind === 'app' && id.profile === 'mqtt_client' && id.source.device && r.handoff.app) {
-      const sim = this.simCtl.sim;
-      const p = sim.mqttCounters(id.source.device, r.handoff.app);
-      const dd = r.model.index.devices.get(id.source.device);
-      const app = dd && dd.applications ? dd.applications.find((a) => a.id === (r.handoff as Handoff).app) : undefined;
-      // (each subscriber leg is a check from that subscriber's application: "dev/app")
-      const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ['', x[0], x[1]]);
-      const mqtt = {
-        publisher: p ? { dev: id.source.device, app: r.handoff.app, published: p.published, acked: p.acked, qos: app && app.qos === 1 ? 1 : 0, state: p.state } : undefined,
-        subscribers: subs.map((x) => {
-          const c = sim.mqttCounters(x[1], x[2]);
-          return { dev: x[1], app: x[2], received: c ? c.received : 0, state: c ? c.state : 'not started' };
-        }),
-      };
-      r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, mqtt });
+    const sim = this.simCtl.sim;
+    const h = r.handoff;
+    if (h && h.kind === 'app' && id.source.device && h.app) {
+      const name = `${id.source.device}/${h.app}`;
+      if (id.profile === 'mqtt_client') {
+        // (each subscriber leg is a check from that subscriber's application: "dev/app")
+        const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ({ dev: x[0], app: x[1] }));
+        const mq = sim.mqttEvidence(id.source.device, h.app, subs);
+        if (!mq) {
+          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare.`);
+          return false;
+        }
+        r.compare = null;
+        r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, mqtt: mq });
+      } else {
+        const run = sim.appRunsOf(id.source.device, h.app)[0];
+        if (!run) {
+          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare. A send prepared like it is not its run.`);
+          return false;
+        }
+        r.compare = compareRun(r.model, r.check, appRunRecord(run), this.simCtl.snapshot());
+        r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...sim.appEvidence(run), comparison: r.compare } });
+      }
       this.renderTraceWindow();
+      const sum = this.doc.getElementById('diag-summary');
+      if (sum) {
+        sum.setAttribute('tabindex', '-1');
+        sum.focus();
+      }
       return true;
     }
     // (the newest send that carries it: testRuns lists the newest first)
-    const run = this.simCtl.sim.testRuns().find((x) => runMatches(id, x, r.model));
+    const run = sim.testRuns().find((x) => runMatches(id, x, r.model));
     if (!run) {
       this.toast('Nothing to compare yet: no send carries this check (the same source interface — and the source address, for a check from an exact address —, destination address, family, port and routing context) — prepare it in the simulation and send it first.');
       return false;
     }
     r.compare = compareRun(r.model, r.check, run, this.simCtl.snapshot());
     // the diagnosis with the recorded send: its records as they are now, frozen with the result (never recomputed later)
-    r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...this.simCtl.sim.runEvidence(run), comparison: r.compare } });
+    r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...sim.runEvidence(run), comparison: r.compare } });
     this.renderTraceWindow();
     const sec = this.doc.getElementById('trace-compare-res');
     if (sec) {
@@ -5182,6 +5298,9 @@ export class App {
     }
     if (switching || this.anTool !== tool) this.anSel = '';
     this.anTool = tool;
+    // back to Trace path: the result left there, as it was (marked outdated when the model changed since; never recomputed)
+    if (tool === 'trace' && !this.traceRun && this.traceKept) this.traceRun = this.traceKept;
+    if (tool === 'trace') this.traceKept = null;
     if (this.ws !== 'analyze') this.showWorkspace('analyze');
     else this.renderAnalyzeWs();
     this.updateModeBanner();
@@ -5189,7 +5308,11 @@ export class App {
 
   /** What a tool leaves when another takes its place: the trace's path, the report's background work. */
   private leaveTool(tool: AnalyzeTool): void {
-    if (tool === 'trace' && this.traceRun) this.exitTrace();
+    // (the path leaves the diagram; the result — its diagnosis frozen with it — is kept to come back to)
+    if (tool === 'trace' && this.traceRun) {
+      this.traceKept = this.traceRun;
+      this.exitTrace();
+    }
     if (tool === 'spof') this.stopSpofJob();
   }
 

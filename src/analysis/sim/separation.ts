@@ -21,7 +21,8 @@ export const SEP_IDLE_OTHER = 60000;
 /** What the gateway needs of the engine. */
 export interface SepHost {
   readonly now: number;
-  note(kind: 'drop' | 'table' | 'route', protocol: string, device: string, peer: string, what: string, state: string, detail: string): void;
+  /** `pkt`: a drop's packet (its structured cause names it) */
+  note(kind: 'drop' | 'table' | 'route', protocol: string, device: string, peer: string, what: string, state: string, detail: string, pkt?: Pkt): void;
   param(key: string, dev: string): Resolved;
   /** a draw for the transfer loss (deterministic per model) */
   loss(): number;
@@ -73,9 +74,10 @@ export class SeparationSim {
     const d: SepDecision = opening ? decide(dev, { inIface, outIface, src: pkt.src, dst: pkt.dst, proto, dport: l4 ? l4.dport : undefined }) : { ok: false, text: `${dev.id} denies it: it belongs to no permitted transfer` };
     if (!d.ok) {
       const nk = `${dev.id}|${key}`;
-      if (!this.noted.has(nk)) {
+      // (said once per flow — but every packet of a Send test or an application's message, which its diagnosis reads)
+      if (!this.noted.has(nk) || pkt.msg.test !== undefined) {
         this.noted.add(nk);
-        this.h.note('drop', pkt.msg.protocol, dev.id, '', 'denied', '', `${d.text} (${pkt.msg.label}: ${what(pkt)}, in ${inIface})`);
+        this.h.note('drop', pkt.msg.protocol, dev.id, '', 'denied', '', `${d.text} (${pkt.msg.label}: ${what(pkt)}, in ${inIface})`, pkt);
       }
       return null;
     }
@@ -93,7 +95,7 @@ export class SeparationSim {
     const prof = sep ? sep.profiles.find((p) => p.id === profileId) : undefined;
     if (!prof) return null;
     const d = decideBreak(dev, inIface, pkt.src, prof);
-    if (!d.ok) this.h.note('drop', pkt.msg.protocol, dev.id, '', 'denied', '', `${d.text} (${pkt.msg.label} from ${formatAddr(pkt.src)} at ${inIface}): leg 1 ends here, no leg 2 is started`);
+    if (!d.ok) this.h.note('drop', pkt.msg.protocol, dev.id, '', 'denied', '', `${d.text} (${pkt.msg.label} from ${formatAddr(pkt.src)} at ${inIface}): leg 1 ends here, no leg 2 is started`, pkt);
     return d;
   }
 
@@ -101,7 +103,7 @@ export class SeparationSim {
   delay(dev: Device, pkt: Pkt, why: string): number | null {
     const loss = this.h.param('transfer-loss', dev.id);
     if (Number(loss.value) > 0 && this.h.loss() * 100 < Number(loss.value)) {
-      this.h.note('drop', pkt.msg.protocol, dev.id, '', 'lost', '', `${dev.id} loses ${pkt.msg.label} (${why}): transfer loss ${resolvedText(loss)}`);
+      this.h.note('drop', pkt.msg.protocol, dev.id, '', 'lost', '', `${dev.id} loses ${pkt.msg.label} (${why}): transfer loss ${resolvedText(loss)}`, pkt);
       return null;
     }
     return Number(this.h.param('transfer-delay', dev.id).value) || 0;

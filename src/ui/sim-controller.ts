@@ -1516,12 +1516,28 @@ export class SimController implements SimulationMode {
     return out;
   }
 
-  /** The packet inspector for a message of the event log (its frame as sent). */
+  /** The packet inspector for a message of the event log (its frame as sent); a drop's line: the packet it dropped. */
   inspectEvent(seq: number): boolean {
     const e = this.sim.events().find((x) => x.seq === seq);
-    if (!e || !e.hdr) return false;
+    if (!e) return false;
+    if (!e.hdr) return e.kind === 'drop' && e.pkt !== undefined ? this.inspectPacket(e.pkt, `dropped at ${e.device || 'the network'} at t = ${fmtSec(e.t)}`) : false;
     this.inspectorPause();
     this.inspect(e.hdr, `as ${e.device || 'it'} sent it at t = ${fmtSec(e.t)}`, null, conversationKey(e.protocol, e.hdr, e.hdr.label), e.hdr.label);
+    return true;
+  }
+
+  /**
+   * The packet inspector for one recorded packet, by its id (a diagnosis' link): the frame it was first sent in — for a
+   * packet inside an outer one, that frame, its own IP header named. False when its record is no longer kept: never
+   * another packet instead.
+   */
+  inspectPacket(id: number, why = ''): boolean {
+    const r = this.sim.packet(id);
+    if (!r) return false;
+    this.inspectorPause();
+    const n = r.hdr.l3.length;
+    const layer = n > 1 ? (r.layer === 0 ? `; the outer packet (IP header 1 of ${n})` : `; the packet inside (IP header ${r.layer + 1} of ${n}: ${r.hdr.l3[r.layer].src} → ${r.hdr.l3[r.layer].dst})`) : '';
+    this.inspect(r.hdr, `packet ${id}, as ${r.device || 'it'} sent it at t = ${fmtSec(r.t)}${layer}${why ? '; ' + why : ''}`, null, conversationKey(r.hdr.protocol, r.hdr, r.hdr.label), r.hdr.label);
     return true;
   }
 
@@ -1845,7 +1861,10 @@ export class SimController implements SimulationMode {
   /** Open a message of a send in the packet inspector: its first message of the event log. */
   inspectTest(testId: number): boolean {
     const e = this.sim.events().find((x) => x.test === testId && x.kind === 'message' && !!x.hdr);
-    return e ? this.inspectEvent(e.seq) : false;
+    if (e) return this.inspectEvent(e.seq);
+    // (an application's message started with the simulation carries no test id in the log: its first packet's record)
+    const t = this.sim.transport.tests.find((x) => x.id === testId);
+    return !!t && t.pktIds.length > 0 && this.inspectPacket(t.pktIds[0], `the first packet of message ${t.msg || 1}${t.app ? ' of ' + t.app : ''}`);
   }
 
   /** Is a Send test on its way (sent, not answered or failed yet, not waiting for a DHCP lease)? While it is, it alone sets the pace. */
