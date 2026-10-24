@@ -56,6 +56,7 @@ import { IpAddr } from '../../model/ip';
 import { APP_DEFAULTS, AppInstance, mqttClientId, mqttRole, topicFilterProblem, topicMatches } from '../../model/applications';
 import { MQTT_PORT } from '../listeners';
 import { formatAddr } from '../ipmath';
+import { ordered, reachRank, runtimeKind } from '../endpoint-order';
 import { AppRun, AppSim } from './apps';
 import { durationText } from './params';
 import { ProtocolSim } from './protocols';
@@ -298,7 +299,8 @@ export class MqttSim {
   private brokerAddr(broker: string, v: 4 | 6): IpAddr | string {
     const sd = this.P.sd(broker);
     if (!sd) return `${broker} is not in the simulation`;
-    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'tunnel').sort((x, y) => Number(x.kind === 'loopback') - Number(y.kind === 'loopback') || cmp(x.id, y.id));
+    // (as any device is reached — endpoint-order.ts reach, the static check's broker too: loopbacks, then a bridge's, last)
+    const ls = ordered(Array.from(sd.l3.values()), (l) => reachRank(runtimeKind(l, this.P.m.index.interfaces.get(broker + ':' + l.id))), (l) => l.id);
     for (const l of ls) for (const x of l.addrs) if (x.addr.version === v) return x.addr;
     return `the broker ${broker} has no IPv${v} address`;
   }

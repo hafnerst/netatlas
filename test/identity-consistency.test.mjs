@@ -101,3 +101,46 @@ test('a tunnel sourced in a front-door VRF: static and simulation both route its
   s.runTo(s.now + 6000);
   assert.equal(t.ok, true, t.result);
 });
+
+// ------------------------------------------------------------------ one order for "a device as an address" (endpoint-order.ts)
+
+// h: an ordinary interface, a loopback and a container bridge, with ids that sort in every order before or after it
+const ORDER = (eth, lo, br) => `netatlas: 1
+title: endpoint order
+devices:
+  - id: h
+    type: server
+    interfaces: [{id: ${eth}, ip: 10.0.0.5/24}]
+    logical_interfaces: [{id: ${lo}, type: loopback, ip: 10.255.0.5/32}]
+    services:
+      mqtt_broker: {}
+      container_engine:
+        engine: docker
+        networks:
+          - {name: bridge, driver: bridge, interface: ${br}, subnet: 172.17.0.0/16, gateway: 172.17.0.1, nat: true}
+  - id: c
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.0.0.9/24}]
+    services: {applications: [{id: m, name: M, profile: mqtt_client, broker: h, publish: [t/x], qos: "0"}, {id: q, name: Q, profile: udp_client, peer: h, port: 7}]}
+links:
+  - {id: l, a: "h:${eth}", b: "c:eth0"}
+`;
+
+test('a device as an address: the static check, the applications, Send test and an MQTT client’s broker take the same one — an ordinary interface, then a loopback, then a container bridge', () => {
+  for (const [eth, lo, br] of [['eth0', 'lo0', 'docker0'], ['zz0', 'aa0', 'ab0'], ['m0', 'z0', 'a0'], ['b0', 'a0', 'c0']]) {
+    const m = model(ORDER(eth, lo, br));
+    assert.equal(m.index.interfaces.get('h:' + br).type, 'bridge');
+    const s = new S.Simulation(m);
+    s.runTo(3000);
+    const what = `${eth}/${lo}/${br}`;
+    // the static check, from the client application to its broker and to its peer
+    assert.equal(C.checkCommunication(m, { from: 'c/m' }).to.address, '10.0.0.5', what + ': static, the broker');
+    assert.equal(C.checkCommunication(m, { from: 'c/q' }).to.address, '10.0.0.5', what + ': static, the peer');
+    assert.equal(C.checkCommunication(m, { from: 'c', to: 'h' }).to.address, '10.0.0.5', what + ': static, the device');
+    // the simulation's consumers: an application's peer, Send test's target, an MQTT client's broker
+    const fmt = (a) => (typeof a === 'string' ? a : a.bytes.join('.'));
+    assert.equal(fmt(s.apps.peerNow('c', s.apps.app('c', 'q')).dst), '10.0.0.5', what + ': the application');
+    assert.equal(fmt(s.transport.resolveTarget('c', { to: 'h' }, 'icmp').dst), '10.0.0.5', what + ': Send test');
+    assert.equal(fmt(s.mqtt.brokerAddr('h', 4)), '10.0.0.5', what + ': the MQTT broker');
+  }
+});

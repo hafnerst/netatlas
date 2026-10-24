@@ -53,6 +53,7 @@ import { IpAddr, parseAddress } from '../../model/ip';
 import { PolicyDecision, policyDecision, undecided, policyStateful } from '../policy';
 import { Relation, relationDevices, TRANSFER_PROFILES, ServiceInstance, Device, Model } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
+import { ordered, reachRank, runtimeKind, sourceRank } from '../endpoint-order';
 import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
@@ -594,8 +595,12 @@ export class Transport {
       const a = out.addrs.find((x) => usable(out, x)) || (ll && out.ll ? out.ll : undefined);
       if (a) return { src: a.addr, vrf: ctx, l3: out, how };
     }
-    // an unnumbered egress (or none): an address of the device in the same VRF, loopbacks first
-    const same = ifs.filter((l) => l.vrf === ctx && l.kind !== 'tunnel').sort((a, b) => Number(b.kind === 'loopback') - Number(a.kind === 'loopback') || cmp(a.id, b.id));
+    // an unnumbered egress (or none): an address of the device in the same VRF, loopbacks first (endpoint-order.ts source)
+    const same = ordered(
+      ifs.filter((l) => l.vrf === ctx),
+      (l) => sourceRank(runtimeKind(l, this.P.m.index.interfaces.get(dev + ':' + l.id))),
+      (l) => l.id,
+    );
     for (const l of same) {
       const a = l.addrs.find((x) => usable(l, x));
       if (a) return { src: a.addr, vrf: ctx, l3: out || l, how };
@@ -871,9 +876,8 @@ export class Transport {
       if (!sd) return `${t.to} is neither a device of the model, an address nor a host name`;
       const src = this.sourceFor(dev, parseAddress('0.0.0.0') as IpAddr);
       const want = src ? src.src.version : 4;
-      // (a loopback, and a container bridge's interface on its host, last: the bridge's address is not reached from outside)
-      const back = (l: { id: string; kind: string }): number => (l.kind === 'loopback' ? 1 : (this.P.m.index.interfaces.get(d + ':' + l.id) || { type: '' }).type === 'bridge' ? 2 : 0);
-      const ls = Array.from(sd.l3.values()).filter((l) => (iface ? l.id === iface : l.kind !== 'tunnel')).sort((a, b) => back(a) - back(b) || cmp(a.id, b.id));
+      // (endpoint-order.ts reach: a loopback, and a container bridge's interface on its host, last — the bridge's address is not reached from outside)
+      const ls = iface ? Array.from(sd.l3.values()).filter((l) => l.id === iface) : ordered(Array.from(sd.l3.values()), (l) => reachRank(runtimeKind(l, this.P.m.index.interfaces.get(d + ':' + l.id))), (l) => l.id);
       for (const l of ls) for (const a of l.addrs) if (!dst && a.addr.version === want) dst = a.addr;
       for (const l of ls) for (const a of l.addrs) if (!dst) dst = a.addr;
       if (!dst) return `${t.to} has no address`;
@@ -2081,7 +2085,8 @@ export class Transport {
     const sd = this.P.sd(dev);
     if (!sd) return null;
     const ep = r ? r.endpoints.find((x) => x.device === dev && x.iface) : undefined;
-    const ls = Array.from(sd.l3.values()).filter((l) => (ep ? l.id === ep.iface : l.kind !== 'tunnel')).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
+    // (a relation's endpoint interface, else as the device is reached: endpoint-order.ts reach)
+    const ls = ep ? Array.from(sd.l3.values()).filter((l) => l.id === ep.iface) : ordered(Array.from(sd.l3.values()), (l) => reachRank(runtimeKind(l, this.P.m.index.interfaces.get(dev + ':' + l.id))), (l) => l.id);
     for (const l of ls) for (const a of l.addrs) if (a.addr.version === 4) return a.addr;
     for (const l of ls) for (const a of l.addrs) return a.addr;
     return null;
