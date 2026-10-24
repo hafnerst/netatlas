@@ -111,6 +111,8 @@ export interface TracePanelActions extends ContextBarActions {
   goto(ref: string): void;
   /** take one of the choice's communications (Diagnose communication… with several client applications) */
   choose(from: string, to: string): void;
+  /** close the policy decision shown in place (focus back to the link `ref`) */
+  closeRule(ref: string): void;
 }
 
 /** A diagnosis state in words, its mark, and the verdict colour it is shown in. */
@@ -159,15 +161,6 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   const flags = [view.outdated ? 'Outdated: the model changed after this diagnosis' : '', d.provisional ? 'Provisional: the run is not finished' : '', d.evidenceLimited ? 'Evidence-limited: some records are no longer kept' : ''].filter((x) => !!x);
   sec.appendChild(el(doc, 'p', { id: 'diag-summary' }, [d.summary]));
   if (flags.length) sec.appendChild(el(doc, 'p', { class: 'small diag-flags', id: 'diag-flags' }, [flags.join(' · ')]));
-  // the static and the runtime answer, each on its own
-  const parts = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-parts', 'aria-label': 'Static and runtime answers' });
-  const sst = DIAG_STATE[d.static.state];
-  parts.appendChild(el(doc, 'dt', {}, ['Static analysis']));
-  parts.appendChild(el(doc, 'dd', { id: 'diag-static', 'data-state': d.static.state }, [el(doc, 'span', { class: 'an-chip v-' + sst.tone }, [sst.mark + ' ' + sst.label]), ' ', d.static.text]));
-  parts.appendChild(el(doc, 'dt', {}, ['Simulation']));
-  const rp = d.runtime;
-  parts.appendChild(el(doc, 'dd', { id: 'diag-runtime', ...(rp ? { 'data-completed': String(rp.completed), 'data-outcome': rp.outcome, 'data-cause': rp.cause } : {}) }, rp ? [`${rp.completed ? 'Finished' : 'Not finished'} · observed: ${OUTCOME_TEXT[rp.outcome]} · cause: ${CAUSE_TEXT[rp.cause]} — ${rp.text}`] : ['None compared (Compare with simulation adds the newest recorded run of it)']));
-  sec.appendChild(parts);
   // the question as asked and resolved
   const q = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-question', 'aria-label': 'The question' });
   const row = (k: string, v: string): void => {
@@ -182,6 +175,15 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   row('Analyzed on', d.question.context);
   row('Runtime', d.question.run || 'none compared (Compare with simulation adds the newest recorded run of it)');
   sec.appendChild(q);
+  // the static and the runtime answer, each on its own
+  const parts = el(doc, 'dl', { class: 'trace-ends small', id: 'diag-parts', 'aria-label': 'Static and runtime answers' });
+  const sst = DIAG_STATE[d.static.state];
+  parts.appendChild(el(doc, 'dt', {}, ['Static analysis']));
+  parts.appendChild(el(doc, 'dd', { id: 'diag-static', 'data-state': d.static.state }, [el(doc, 'span', { class: 'an-chip v-' + sst.tone }, [sst.mark + ' ' + sst.label]), ' ', d.static.text]));
+  parts.appendChild(el(doc, 'dt', {}, ['Simulation']));
+  const rp = d.runtime;
+  parts.appendChild(el(doc, 'dd', { id: 'diag-runtime', ...(rp ? { 'data-completed': String(rp.completed), 'data-outcome': rp.outcome, 'data-cause': rp.cause } : {}) }, rp ? [`${rp.completed ? 'Finished' : 'Not finished'} · observed: ${OUTCOME_TEXT[rp.outcome]} · cause: ${CAUSE_TEXT[rp.cause]} — ${rp.text}`] : ['None compared (Compare with simulation adds the newest recorded run of it)']));
+  sec.appendChild(parts);
   if (d.question.unresolved.length) sec.appendChild(el(doc, 'p', { class: 'small muted', id: 'diag-open' }, ['Open: ' + d.question.unresolved.join('; ')]));
   // what prevents or limits it
   if (d.blockers.length) {
@@ -223,6 +225,19 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
     }
     sec.appendChild(nx);
   }
+  // the policy decision a link named: the rules in order, the one that decided marked (aria-current), read-only
+  const rv = view.rule;
+  if (rv) {
+    const box = el(doc, 'section', { class: 'diag-rule', id: 'diag-rule', tabindex: '-1', 'aria-labelledby': 'diag-rule-h', 'data-device': rv.device }, [el(doc, 'h4', { class: 'diag-h4', id: 'diag-rule-h' }, [`${rv.device} · Network policy`]), el(doc, 'p', { class: 'small muted' }, [rv.summary])]);
+    if (rv.missing) box.appendChild(el(doc, 'p', { class: 'small' }, [rv.missing]));
+    const ol = el(doc, 'ol', { class: 'diag-rules small' });
+    for (const r of rv.rows) ol.appendChild(el(doc, 'li', { 'data-rule': String(r.n), ...(r.on ? { class: 'sel-mark', 'aria-current': 'true' } : {}) }, [`Rule ${r.n}: ${r.text}`, r.on ? el(doc, 'strong', {}, [' — decided here']) : '']));
+    if (rv.def) ol.appendChild(el(doc, 'li', { 'data-rule': 'default', ...(rv.def.on ? { class: 'sel-mark', 'aria-current': 'true' } : {}) }, [rv.def.text, rv.def.on ? el(doc, 'strong', {}, [' — decided here']) : '']));
+    if (ol.childNodes.length) box.appendChild(ol);
+    const close = el(doc, 'button', { type: 'button', class: 'mini', 'data-diag-act': 'rule-close', 'data-back': rv.ref }, ['Close']);
+    box.appendChild(el(doc, 'div', { class: 'tf-actions' }, [close]));
+    sec.appendChild(box);
+  }
   if (d.limits.length) {
     const det = el(doc, 'details', { class: 'layer-ev', id: 'diag-limits' }, [el(doc, 'summary', {}, ['What this diagnosis can’t establish'])]);
     const ul = el(doc, 'ul', { class: 'small muted' });
@@ -230,6 +245,12 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
     det.appendChild(ul);
     sec.appendChild(det);
   }
+  sec.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !rv || !(e.target as Element).closest('#diag-rule')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    act.closeRule(rv.ref);
+  });
   sec.addEventListener('click', (e) => {
     const b = (e.target as Element).closest('[data-diag-act], [data-diag-ref]') as HTMLButtonElement | null;
     if (!b || b.disabled) return;
@@ -241,6 +262,7 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
     else if (id === 'mtu-test') act.mtuTest();
     else if (id === 'save-exp') act.saveExpectation();
     else if (id === 'experiment') act.experiment();
+    else if (id === 'rule-close') act.closeRule(b.getAttribute('data-back') || '');
     else if (ref) act.goto(ref);
   });
   return sec;
@@ -299,6 +321,22 @@ export interface TraceViewState {
   locked: string;
   /** the question is not one yet: which communication (Diagnose communication… with several client applications) */
   choice?: { title: string; options: Array<{ label: string; from: string; to: string; why: string }> } | null;
+  /** a policy decision a piece of evidence named, shown in place: the device's rules in order, the deciding one marked */
+  rule?: DiagRuleView | null;
+}
+
+/** A device's policy as a diagnosis' link shows it (read-only, in every workspace): its rules, the decision marked. */
+export interface DiagRuleView {
+  /** the evidence link that opened it (focus goes back to it) */
+  ref: string;
+  device: string;
+  /** "default deny, stateful" or a firewall's implicit policy in words */
+  summary: string;
+  rows: Array<{ n: number; text: string; on: boolean }>;
+  /** the default action's line, and whether it decided */
+  def?: { text: string; on: boolean };
+  /** the decision is no longer in the model (it changed after the diagnosis) */
+  missing?: string;
 }
 
 /** The window's content: the form, and the result when there is one. */

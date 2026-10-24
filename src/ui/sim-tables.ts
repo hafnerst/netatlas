@@ -132,6 +132,9 @@ export class TablePanels {
     const known = this.panels.find((p) => p.kind === kind && p.dev === dev);
     if (known) {
       if (kind === 'packet') known.data = data;
+      // (opened again from elsewhere — another piece of evidence: closing it goes back there)
+      const from = this.doc.activeElement;
+      if (from && !known.box.contains(from)) known.back = from;
       this.render(known);
       (known.box.querySelector('.st-close') as HTMLElement).focus();
       return known.box;
@@ -225,7 +228,10 @@ export class TablePanels {
     if (i < 0) return;
     this.panels.splice(i, 1);
     if (p.box.parentNode) p.box.parentNode.removeChild(p.box);
-    const back = p.back as HTMLElement | null;
+    let back = p.back as HTMLElement | null;
+    // (an evidence link drawn again meanwhile: the same link, found by what it names)
+    const ref = back && back.getAttribute ? back.getAttribute('data-diag-ref') : null;
+    if (back && !back.isConnected && ref) back = Array.prototype.find.call(this.doc.querySelectorAll('[data-diag-ref]'), (x: Element) => x.getAttribute('data-diag-ref') === ref) || null;
     if (back && back.isConnected && typeof back.focus === 'function') back.focus();
     if (this.onClose) this.onClose(p.kind);
   }

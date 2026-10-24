@@ -853,7 +853,7 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
   if (rt) {
     const r = runtimeOf(rt, c);
     d.runtime = r.part;
-    d.question.run = `${rt.subject.label}, ${plural(rt.tests.length, 'message')} sent so far${rt.tests.some((t) => t.retry) ? ' (retries included)' : ''}${rt.subject.stopped ? ', stopped' : ''}`;
+    d.question.run = `${rt.subject.label}, ${plural(rt.tests.length, 'message')} sent so far${rt.tests.some((t) => t.retry) ? ' (retries included)' : ''}${rt.subject.stopped ? `, stopped${rt.subject.stoppedAt !== undefined ? ' at ' + sec(rt.subject.stoppedAt) : ''}` : ''} · records from ${sec(rt.subject.t0)} up to ${sec(rt.now)}`;
     const k = r.part.counts;
     const anything = rt.tests.length > 0 || rt.subject.skipped.length > 0;
     d.state = runtimeState({ completed: r.part.completed, outcome: r.part.outcome, cause: r.part.cause, counts: k, any: anything, stopped: rt.subject.stopped });
@@ -882,7 +882,7 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
   if (mq) {
     const part = mqttOf(mq, d);
     d.runtime = part;
-    d.question.run = part.subject;
+    d.question.run = `${part.subject} · records up to ${sec(mq.now)}`;
     const ls = d.legs.filter((l) => l.source === 'runtime').map((l) => l.state);
     const has = (x: DiagnosisState): boolean => ls.indexOf(x) >= 0;
     d.state = ls.every((x) => x === 'established') ? 'established' : has('blocked') && ls.some((x) => x === 'established' || x === 'partial') ? 'partial' : has('blocked') ? 'blocked' : has('waiting') ? 'waiting' : has('in-progress') ? 'in-progress' : has('partial') ? 'partial' : has('failed') ? 'failed' : 'indeterminate';

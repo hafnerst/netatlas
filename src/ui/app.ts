@@ -39,7 +39,9 @@ import { Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { AddressingOverview, addressingOverview } from '../analysis/addressing';
 import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
-import { TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
+import { DiagRuleView, TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
+import { policyRuleText } from '../model/net-policy';
+import { allowList } from '../analysis/policy';
 import { CommRequest, checkCommunication } from '../analysis/communication';
 import { commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
 import { appRunRecord } from '../analysis/sim/apps';
@@ -292,6 +294,7 @@ export class App {
     this.session = model ? new Session(model) : null;
     if (this.session) this.session.setView(prevView);
     this.traceRun = null;
+    this.traceKept = null;
     this.traceError = '';
     this.endForNewModel();
     this.tab = doc.errors.length || doc.warnings.length ? 'problems' : this.tab === 'yaml' ? 'yaml' : 'legend';
@@ -890,6 +893,7 @@ export class App {
     this.editor.reset();
     this.tab = 'legend';
     this.traceRun = null;
+    this.traceKept = null;
     this.traceError = '';
     this.endForNewModel();
     if (this.ws !== 'edit') this.showWorkspace('edit');
@@ -3995,14 +3999,17 @@ export class App {
         return false;
       }
       this.select('device:' + dev, true);
-      if (which === 'implicit') {
-        this.toast(`${dev} has no written network policy: its relations and its allow list decide (its simulation parameters).`);
-        return true;
+      // in place, in every workspace (read-only: nothing is unlocked); in the Inspector too when it is in front
+      const view = this.ruleView(ref, dev, which);
+      this.diagRule = view;
+      if (which !== 'implicit' && this.workspace() === 'edit') {
+        this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
+        this.renderSide();
       }
-      const ok = this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
-      this.renderSide();
-      if (!ok) this.toast(`${dev} has no rule ${which} in its network policy now (the model changed after the diagnosis?).`);
-      return ok;
+      this.renderTraceWindow();
+      const box = this.doc.getElementById('diag-rule');
+      if (box) box.focus();
+      return !view.missing;
     }
     if (kind === 'test' || kind === 'packet' || kind === 'event') {
       const ctl = this.simCtl;
@@ -4035,6 +4042,23 @@ export class App {
     }
     this.select(ref, true);
     return true;
+  }
+
+  /** the trace result left when Analyze or Trace path was left (its path off the diagram), restored on coming back */
+  private traceKept: NonNullable<App['traceRun']> | null = null;
+
+  /** a policy decision a diagnosis' link opened, shown in place (null: none) */
+  private diagRule: DiagRuleView | null = null;
+
+  /** A device's policy as a link shows it: its rules in order, the one that decided (a rule number, default, implicit) marked. */
+  private ruleView(ref: string, dev: string, which: string): DiagRuleView {
+    const d = (this.session as Session).model.index.devices.get(dev) as Device;
+    const pol = d.policy;
+    if (which === 'implicit' || !pol) return { ref, device: dev, summary: pol ? `default ${pol.default}` : `no written network policy: its relations and its allow list decide${allowList(d).raw ? ' (also permits: ' + allowList(d).raw + ')' : ''}`, rows: [], missing: which !== 'implicit' && !pol ? `${dev} has no network policy now (the model changed after the diagnosis?)` : undefined };
+    const n = Number(which);
+    const rows = pol.rules.map((r, k) => ({ n: k + 1, text: policyRuleText(r), on: which !== 'default' && k + 1 === n }));
+    const missing = which !== 'default' && !(n >= 1 && n <= pol.rules.length) ? `${dev} has no rule ${which} now (the model changed after the diagnosis?)` : undefined;
+    return { ref, device: dev, summary: `default ${pol.default}${pol.stateful === false ? ', stateless' : pol.stateful ? ', stateful' : ''} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}, first match wins`, rows, def: { text: `Default action: ${pol.default} (what no rule matches)`, on: which === 'default' }, missing };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -4160,7 +4184,7 @@ export class App {
   private traceBody(): HTMLElement {
     const s = this.session as Session;
     const r = this.traceRun;
-    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock(), choice: this.traceChoice };
+    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock(), choice: this.traceChoice, rule: r ? this.diagRule : null };
     return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
       input: (field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
@@ -4200,6 +4224,12 @@ export class App {
       },
       goto: (ref) => void this.gotoEvidence(ref),
       choose: (from, to) => this.chooseTraceQuestion(from, to),
+      closeRule: (ref) => {
+        this.diagRule = null;
+        this.renderTraceWindow();
+        const back = Array.prototype.find.call(this.doc.querySelectorAll('#diag [data-diag-ref]'), (x: Element) => x.getAttribute('data-diag-ref') === ref) as HTMLElement | undefined;
+        if (back) back.focus();
+      },
     });
   }
 
@@ -4226,6 +4256,8 @@ export class App {
       return false;
     }
     this.traceError = '';
+    this.diagRule = null;
+    this.traceKept = null;
     this.traceRun = { ...run, model: s.model, snap, request: req };
     this.applyHighlight();
     this.renderTraceWindow();
@@ -5266,6 +5298,9 @@ export class App {
     }
     if (switching || this.anTool !== tool) this.anSel = '';
     this.anTool = tool;
+    // back to Trace path: the result left there, as it was (marked outdated when the model changed since; never recomputed)
+    if (tool === 'trace' && !this.traceRun && this.traceKept) this.traceRun = this.traceKept;
+    if (tool === 'trace') this.traceKept = null;
     if (this.ws !== 'analyze') this.showWorkspace('analyze');
     else this.renderAnalyzeWs();
     this.updateModeBanner();
@@ -5273,7 +5308,11 @@ export class App {
 
   /** What a tool leaves when another takes its place: the trace's path, the report's background work. */
   private leaveTool(tool: AnalyzeTool): void {
-    if (tool === 'trace' && this.traceRun) this.exitTrace();
+    // (the path leaves the diagram; the result — its diagnosis frozen with it — is kept to come back to)
+    if (tool === 'trace' && this.traceRun) {
+      this.traceKept = this.traceRun;
+      this.exitTrace();
+    }
     if (tool === 'spof') this.stopSpofJob();
   }
 
