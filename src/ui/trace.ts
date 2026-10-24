@@ -229,6 +229,7 @@ export function diagnosisSection(doc: Document, d: Diagnosis, view: TraceViewSta
   const rv = view.rule;
   if (rv) {
     const box = el(doc, 'section', { class: 'diag-rule', id: 'diag-rule', tabindex: '-1', 'aria-labelledby': 'diag-rule-h', 'data-device': rv.device }, [el(doc, 'h4', { class: 'diag-h4', id: 'diag-rule-h' }, [`${rv.device} · Network policy`]), el(doc, 'p', { class: 'small muted' }, [rv.summary])]);
+    if (rv.current) box.appendChild(el(doc, 'p', { class: 'small', 'data-current': 'differs' }, [rv.current]));
     if (rv.missing) box.appendChild(el(doc, 'p', { class: 'small' }, [rv.missing]));
     const ol = el(doc, 'ol', { class: 'diag-rules small' });
     for (const r of rv.rows) ol.appendChild(el(doc, 'li', { 'data-rule': String(r.n), ...(r.on ? { class: 'sel-mark', 'aria-current': 'true' } : {}) }, [`Rule ${r.n}: ${r.text}`, r.on ? el(doc, 'strong', {}, [' — decided here']) : '']));
@@ -335,8 +336,10 @@ export interface DiagRuleView {
   rows: Array<{ n: number; text: string; on: boolean }>;
   /** the default action's line, and whether it decided */
   def?: { text: string; on: boolean };
-  /** the decision is no longer in the model (it changed after the diagnosis) */
+  /** the decision can't be shown (not in the model diagnosed, or not the rule recorded) */
   missing?: string;
+  /** the current model's policy differs from the one diagnosed (said: what is shown is as it was) */
+  current?: string;
 }
 
 /** The window's content: the form, and the result when there is one. */

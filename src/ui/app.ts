@@ -43,10 +43,11 @@ import { DiagRuleView, TraceForm, TraceRun, formRequest, newTraceForm, traceExpo
 import { policyRuleText } from '../model/net-policy';
 import { allowList } from '../analysis/policy';
 import { CommRequest, checkCommunication } from '../analysis/communication';
-import { commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
+import { appRunProblem, commIdentity, compareRun, expectationFields, handoffOf, runMatches, staleProblem } from '../analysis/comm-identity';
+import type { Test } from '../analysis/sim/transport';
 import { appRunRecord } from '../analysis/sim/apps';
 import { mtuTestSizes, pathMtu } from '../analysis/mtu';
-import { diagnose } from '../analysis/diagnosis';
+import { diagnose, diagnosisRefs } from '../analysis/diagnosis';
 import { portL2 } from '../model/derive';
 import { ExecScope, communicationScope, dependencyScope, domainScope, entireScope, groupScope, vlanScope } from '../analysis/exec-scope';
 import { scopeChooser } from './scope-ui';
@@ -3994,15 +3995,13 @@ export class App {
       const c = rest.lastIndexOf(':');
       const dev = rest.slice(0, c);
       const which = rest.slice(c + 1);
-      if (!this.session || !this.session.model.index.devices.has(dev)) {
-        this.toast(`${dev} is not in the model any more: its policy is not available.`);
-        return false;
-      }
-      this.select('device:' + dev, true);
-      // in place, in every workspace (read-only: nothing is unlocked); in the Inspector too when it is in front
+      if (!this.session) return false;
+      // in place, in every workspace (read-only: nothing is unlocked): the decision as it was when diagnosed; the current
+      // configuration (the Inspector) only when it is still the same
       const view = this.ruleView(ref, dev, which);
       this.diagRule = view;
-      if (which !== 'implicit' && this.workspace() === 'edit') {
+      if (this.session.model.index.devices.has(dev)) this.select('device:' + dev, true);
+      if (which !== 'implicit' && this.workspace() === 'edit' && !view.current && !view.missing) {
         this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
         this.renderSide();
       }
@@ -4050,15 +4049,31 @@ export class App {
   /** a policy decision a diagnosis' link opened, shown in place (null: none) */
   private diagRule: DiagRuleView | null = null;
 
-  /** A device's policy as a link shows it: its rules in order, the one that decided (a rule number, default, implicit) marked. */
+  /**
+   * A device's policy as a link shows it: its rules in order, the one that decided (a rule number, default, implicit)
+   * marked — from the model the diagnosis was made of (frozen with its result), never the model as it is now: a rule
+   * edited, removed or reordered since is not shown as the decision. A runtime decision's recorded rule text must be the
+   * rule shown, else the decision is said unavailable. A current policy that differs is said, as current configuration.
+   */
   private ruleView(ref: string, dev: string, which: string): DiagRuleView {
-    const d = (this.session as Session).model.index.devices.get(dev) as Device;
+    const cur = (this.session as Session).model;
+    const r = this.traceRun;
+    const frozen = r ? r.model : cur;
+    const d = frozen.index.devices.get(dev);
+    const pt = (x: Device | undefined): string => (x && x.policy ? JSON.stringify([x.policy.default, x.policy.stateful, x.policy.rules.map((y) => policyRuleText(y))]) : '');
+    const now = cur.index.devices.get(dev);
+    const current = frozen === cur ? undefined : !now ? `${dev} is no longer in the model: shown as it was when diagnosed.` : pt(now) !== pt(d) ? 'The model changed after this diagnosis: these are the rules as they were when it was made (numbered as then). The current policy differs — its current configuration is in the Inspector (Edit), not this decision.' : undefined;
+    if (!d) return { ref, device: dev, summary: 'not in the model the diagnosis was made of', rows: [], missing: `${dev}’s policy at the time of the diagnosis is not available`, current };
     const pol = d.policy;
-    if (which === 'implicit' || !pol) return { ref, device: dev, summary: pol ? `default ${pol.default}` : `no written network policy: its relations and its allow list decide${allowList(d).raw ? ' (also permits: ' + allowList(d).raw + ')' : ''}`, rows: [], missing: which !== 'implicit' && !pol ? `${dev} has no network policy now (the model changed after the diagnosis?)` : undefined };
+    if (which === 'implicit' || !pol) return { ref, device: dev, summary: pol ? `default ${pol.default}` : `no written network policy: its relations and its allow list decide${allowList(d).raw ? ' (also permits: ' + allowList(d).raw + ')' : ''}`, rows: [], missing: which !== 'implicit' && !pol ? `${dev} had no network policy when diagnosed: the decision is not available` : undefined, current };
     const n = Number(which);
-    const rows = pol.rules.map((r, k) => ({ n: k + 1, text: policyRuleText(r), on: which !== 'default' && k + 1 === n }));
-    const missing = which !== 'default' && !(n >= 1 && n <= pol.rules.length) ? `${dev} has no rule ${which} now (the model changed after the diagnosis?)` : undefined;
-    return { ref, device: dev, summary: `default ${pol.default}${pol.stateful === false ? ', stateless' : pol.stateful ? ', stateful' : ''} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}, first match wins`, rows, def: { text: `Default action: ${pol.default} (what no rule matches)`, on: which === 'default' }, missing };
+    // (a decision the simulation recorded names its rule's text: the rule shown must be that one)
+    const recorded = r && r.diagnosis ? diagnosisRefs(r.diagnosis).find((x) => x.ref === ref && x.decided !== undefined) : undefined;
+    const rule = which !== 'default' && n >= 1 && n <= pol.rules.length ? pol.rules[n - 1] : undefined;
+    const mismatch = !!recorded && !!rule && policyRuleText(rule) !== recorded.decided;
+    const missing = which !== 'default' && !rule ? `${dev} had no rule ${which} in the model diagnosed: the decision is not available` : mismatch ? `The recorded decision was rule ${which} (${recorded ? recorded.decided : ''}), which is not the rule ${which} of the model diagnosed: the decision is not shown` : undefined;
+    const rows = pol.rules.map((x, k) => ({ n: k + 1, text: policyRuleText(x), on: !missing && which !== 'default' && k + 1 === n }));
+    return { ref, device: dev, summary: `${current ? 'As diagnosed: ' : ''}default ${pol.default}${pol.stateful === false ? ', stateless' : pol.stateful ? ', stateful' : ''} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}, first match wins`, rows, def: { text: `Default action: ${pol.default} (what no rule matches)`, on: which === 'default' }, missing, current };
   }
 
   /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
@@ -4342,6 +4357,13 @@ export class App {
     const h = r.handoff;
     if (h && h.kind === 'app' && id.source.device && h.app) {
       const name = `${id.source.device}/${h.app}`;
+      // (its run answers only the communication it made: a question that overrides its destination, service, family or
+      // VRF is another communication — never compared with it, whatever the handoff warned)
+      const differs = (run: { tests: readonly Test[] }): boolean => {
+        const why = appRunProblem(r.model, id, run);
+        if (why) this.toast(`Not compared: ${name}’s run is not this question’s communication — ${why}. Ask about ${name} as configured, or send this communication itself (Prepare in simulation).`);
+        return !!why;
+      };
       if (id.profile === 'mqtt_client') {
         // (each subscriber leg is a check from that subscriber's application: "dev/app")
         const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ({ dev: x[0], app: x[1] }));
@@ -4350,6 +4372,7 @@ export class App {
           this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare.`);
           return false;
         }
+        if (differs({ tests: [] })) return false;
         r.compare = null;
         r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, mqtt: mq });
       } else {
@@ -4358,6 +4381,7 @@ export class App {
           this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare. A send prepared like it is not its run.`);
           return false;
         }
+        if (differs(run)) return false;
         r.compare = compareRun(r.model, r.check, appRunRecord(run), this.simCtl.snapshot());
         r.diagnosis = diagnose({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...sim.appEvidence(run), comparison: r.compare } });
       }

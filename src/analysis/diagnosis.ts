@@ -70,6 +70,8 @@ export interface EvidenceRef {
    */
   ref: string;
   label: string;
+  /** a policy decision the simulation recorded: the text of the rule that decided, as it was then (what a link must show) */
+  decided?: string;
 }
 
 export interface ChainLink {
@@ -248,7 +250,7 @@ function waitWords(cond: string): string {
 
 /** The ref of a policy decision: its written rule, the default action, or a firewall's implicit policy. */
 function policyRef(p: NonNullable<DropCause['policy']>): EvidenceRef {
-  if (p.rule) return { ref: `policy:${p.device}:${p.rule}`, label: `${p.device} rule ${p.rule}` };
+  if (p.rule) return { ref: `policy:${p.device}:${p.rule}`, label: `${p.device} rule ${p.rule}`, decided: p.ruleText };
   if (p.byDefault && p.ruleText !== 'implicit policy: relations and allow list') return { ref: `policy:${p.device}:default`, label: `${p.device} default action` };
   return { ref: `policy:${p.device}:implicit`, label: `${p.device} ${p.ruleText || 'policy'}` };
 }
@@ -968,6 +970,14 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
   d.next.push({ id: 'save-exp', label: 'Save as expectation…', why: 'Keep the question and its expected answer with the model' });
   if (!blockedStatic && c.verdict !== 'satisfied' && !rt && !mq) d.limits.push('The recorded evidence does not establish why: a simulation can exchange it (Prepare in simulation)');
   return d;
+}
+
+/** Every evidence reference a diagnosis gives (its blockers, chain, legs and next actions), in that order. */
+export function diagnosisRefs(d: Diagnosis): EvidenceRef[] {
+  const out: EvidenceRef[] = [];
+  for (const l of d.blockers.concat(d.chain)) out.push(...l.refs, ...(l.messages || []));
+  for (const l of d.legs) out.push(...l.refs);
+  return out;
 }
 
 const REL_TEXT: { [k in LinkKind]: string } = { cause: 'cause', contributing: 'contributing, not established as decisive', prerequisite: 'prerequisite', related: 'related', coincidence: 'coincidence (not linked)', hypothesis: 'not established' };
