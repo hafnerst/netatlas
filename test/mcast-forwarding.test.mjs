@@ -252,6 +252,9 @@ test('background labels: the kind in a word or two, never addresses', () => {
   assert.equal(A.bgKind('igmp', 'IGMP Query (general)'), 'IGMP Query');
   assert.equal(A.bgKind('igmp', 'IGMPv3 Report to 224.0.0.22'), 'IGMP Report');
   assert.equal(A.bgKind('igmp', 'IGMP Leave 239.1.1.1'), 'IGMP Leave');
+  // a custom protocol by its own name, letters and digits only
+  assert.equal(A.bgKind('custom:tel', 'TEL frame'), 'TEL');
+  assert.equal(A.bgKind('custom:my-proto_2', 'x'), 'MYPROTO2');
   assert.equal(A.bgKind('arp', 'ARP Request (broadcast) who has 10.0.0.1'), 'ARP');
   assert.equal(A.bgKind('dhcp', 'DHCP Discover'), 'DHCP');
   assert.equal(A.bgKind('dns', 'DNS query nas.home.arpa A'), 'DNS');

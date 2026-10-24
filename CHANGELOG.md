@@ -166,7 +166,10 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
 ### Fixed
 
 - A host name checked for IPv6 never matched its AAAA send: Compare with
-  simulation found nothing to compare.
+  simulation found nothing to compare; and one checked for IPv4 matched
+  the IPv6 send of the same name.
+- A custom protocol's short background label kept its prefix
+  (*CUSTOM:TEL*): it is the protocol's own name (*TEL*).
 - A client application's run was compared with a question that asked
   another service or destination.
 - Following a policy link after the policy was edited marked the current
