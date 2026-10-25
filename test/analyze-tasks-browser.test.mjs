@@ -77,7 +77,13 @@ async function waitReady(page) {
 
 // a real click on an element, scrolled into view first (the panels scroll on their own)
 async function press(page, sel) {
-  await page.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error('nothing matches ' + ${JSON.stringify(sel)}); e.scrollIntoView({ block: 'center' }); return true; })()`);
+  // (the selector is passed as a value: no page code is built from it)
+  await page.call((s) => {
+    const e = document.querySelector(s);
+    if (!e) throw new Error('nothing matches ' + s);
+    e.scrollIntoView({ block: 'center' });
+    return true;
+  }, sel);
   await page.settle(40);
   await page.click(sel);
 }
