@@ -6200,15 +6200,15 @@ class App {
             const c = rest.lastIndexOf(':');
             const dev = rest.slice(0, c);
             const which = rest.slice(c + 1);
-            if (!this.session || !this.session.model.index.devices.has(dev)) {
-                this.toast(`${dev} is not in the model any more: its policy is not available.`);
+            if (!this.session)
                 return false;
-            }
-            this.select('device:' + dev, true);
-            // in place, in every workspace (read-only: nothing is unlocked); in the Inspector too when it is in front
+            // in place, in every workspace (read-only: nothing is unlocked): the decision as it was when diagnosed; the current
+            // configuration (the Inspector) only when it is still the same
             const view = this.ruleView(ref, dev, which);
             this.diagRule = view;
-            if (which !== 'implicit' && this.workspace() === 'edit') {
+            if (this.session.model.index.devices.has(dev))
+                this.select('device:' + dev, true);
+            if (which !== 'implicit' && this.workspace() === 'edit' && !view.current && !view.missing) {
                 this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
                 this.renderSide();
             }
@@ -6254,16 +6254,33 @@ class App {
         this.select(ref, true);
         return true;
     }
-    /** A device's policy as a link shows it: its rules in order, the one that decided (a rule number, default, implicit) marked. */
+    /**
+     * A device's policy as a link shows it: its rules in order, the one that decided (a rule number, default, implicit)
+     * marked — from the model the diagnosis was made of (frozen with its result), never the model as it is now: a rule
+     * edited, removed or reordered since is not shown as the decision. A runtime decision's recorded rule text must be the
+     * rule shown, else the decision is said unavailable. A current policy that differs is said, as current configuration.
+     */
     ruleView(ref, dev, which) {
-        const d = this.session.model.index.devices.get(dev);
+        const cur = this.session.model;
+        const r = this.traceRun;
+        const frozen = r ? r.model : cur;
+        const d = frozen.index.devices.get(dev);
+        const pt = (x) => (x && x.policy ? JSON.stringify([x.policy.default, x.policy.stateful, x.policy.rules.map((y) => (0, net_policy_1.policyRuleText)(y))]) : '');
+        const now = cur.index.devices.get(dev);
+        const current = frozen === cur ? undefined : !now ? `${dev} is no longer in the model: shown as it was when diagnosed.` : pt(now) !== pt(d) ? 'The model changed after this diagnosis: these are the rules as they were when it was made (numbered as then). The current policy differs — its current configuration is in the Inspector (Edit), not this decision.' : undefined;
+        if (!d)
+            return { ref, device: dev, summary: 'not in the model the diagnosis was made of', rows: [], missing: `${dev}’s policy at the time of the diagnosis is not available`, current };
         const pol = d.policy;
         if (which === 'implicit' || !pol)
-            return { ref, device: dev, summary: pol ? `default ${pol.default}` : `no written network policy: its relations and its allow list decide${(0, policy_1.allowList)(d).raw ? ' (also permits: ' + (0, policy_1.allowList)(d).raw + ')' : ''}`, rows: [], missing: which !== 'implicit' && !pol ? `${dev} has no network policy now (the model changed after the diagnosis?)` : undefined };
+            return { ref, device: dev, summary: pol ? `default ${pol.default}` : `no written network policy: its relations and its allow list decide${(0, policy_1.allowList)(d).raw ? ' (also permits: ' + (0, policy_1.allowList)(d).raw + ')' : ''}`, rows: [], missing: which !== 'implicit' && !pol ? `${dev} had no network policy when diagnosed: the decision is not available` : undefined, current };
         const n = Number(which);
-        const rows = pol.rules.map((r, k) => ({ n: k + 1, text: (0, net_policy_1.policyRuleText)(r), on: which !== 'default' && k + 1 === n }));
-        const missing = which !== 'default' && !(n >= 1 && n <= pol.rules.length) ? `${dev} has no rule ${which} now (the model changed after the diagnosis?)` : undefined;
-        return { ref, device: dev, summary: `default ${pol.default}${pol.stateful === false ? ', stateless' : pol.stateful ? ', stateful' : ''} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}, first match wins`, rows, def: { text: `Default action: ${pol.default} (what no rule matches)`, on: which === 'default' }, missing };
+        // (a decision the simulation recorded names its rule's text: the rule shown must be that one)
+        const recorded = r && r.diagnosis ? (0, diagnosis_1.diagnosisRefs)(r.diagnosis).find((x) => x.ref === ref && x.decided !== undefined) : undefined;
+        const rule = which !== 'default' && n >= 1 && n <= pol.rules.length ? pol.rules[n - 1] : undefined;
+        const mismatch = !!recorded && !!rule && (0, net_policy_1.policyRuleText)(rule) !== recorded.decided;
+        const missing = which !== 'default' && !rule ? `${dev} had no rule ${which} in the model diagnosed: the decision is not available` : mismatch ? `The recorded decision was rule ${which} (${recorded ? recorded.decided : ''}), which is not the rule ${which} of the model diagnosed: the decision is not shown` : undefined;
+        const rows = pol.rules.map((x, k) => ({ n: k + 1, text: (0, net_policy_1.policyRuleText)(x), on: !missing && which !== 'default' && k + 1 === n }));
+        return { ref, device: dev, summary: `${current ? 'As diagnosed: ' : ''}default ${pol.default}${pol.stateful === false ? ', stateless' : pol.stateful ? ', stateful' : ''} · ${pol.rules.length} rule${pol.rules.length === 1 ? '' : 's'}, first match wins`, rows, def: { text: `Default action: ${pol.default} (what no rule matches)`, on: which === 'default' }, missing, current };
     }
     /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
     traceEndOf(ref) {
@@ -6565,6 +6582,14 @@ class App {
         const h = r.handoff;
         if (h && h.kind === 'app' && id.source.device && h.app) {
             const name = `${id.source.device}/${h.app}`;
+            // (its run answers only the communication it made: a question that overrides its destination, service, family or
+            // VRF is another communication — never compared with it, whatever the handoff warned)
+            const differs = (run) => {
+                const why = (0, comm_identity_1.appRunProblem)(r.model, id, run);
+                if (why)
+                    this.toast(`Not compared: ${name}’s run is not this question’s communication — ${why}. Ask about ${name} as configured, or send this communication itself (Prepare in simulation).`);
+                return !!why;
+            };
             if (id.profile === 'mqtt_client') {
                 // (each subscriber leg is a check from that subscriber's application: "dev/app")
                 const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ({ dev: x[0], app: x[1] }));
@@ -6573,6 +6598,8 @@ class App {
                     this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare.`);
                     return false;
                 }
+                if (differs({ tests: [] }))
+                    return false;
                 r.compare = null;
                 r.diagnosis = (0, diagnosis_1.diagnose)({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, mqtt: mq });
             }
@@ -6582,6 +6609,8 @@ class App {
                     this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare. A send prepared like it is not its run.`);
                     return false;
                 }
+                if (differs(run))
+                    return false;
                 r.compare = (0, comm_identity_1.compareRun)(r.model, r.check, (0, apps_1.appRunRecord)(run), this.simCtl.snapshot());
                 r.diagnosis = (0, diagnosis_1.diagnose)({ check: r.check, context: r.check.info.context, mtu: r.mtu, canPrepare: true, runtime: { ...sim.appEvidence(run), comparison: r.compare } });
             }
@@ -39846,7 +39875,7 @@ class Transport {
             if (t.rtt === undefined)
                 t.rtt = this.e.now - t.started;
             if (!bc)
-                this.finish(t, true, `Echo Reply from ${(0, ipmath_1.formatAddr)(pkt.src)}`, { kind: 'answered', by: this.e.ownerOf(pkt.src) || undefined });
+                this.finish(t, true, `Echo Reply from ${(0, ipmath_1.formatAddr)(pkt.src)}`, this.answeredBy(pkt));
             return;
         }
         // an ICMP error about something this device sent
@@ -39957,7 +39986,7 @@ class Transport {
                 return;
             t.answers.push(`${(0, ipmath_1.formatAddr)(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}`);
             if (!this.e.isBroadcastAddr(t.dst) && !(0, mac_1.isMulticastIp)(t.dst))
-                this.finish(t, true, `UDP answer from ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}`, { kind: 'answered', by: this.e.ownerOf(pkt.src) || undefined });
+                this.finish(t, true, `UDP answer from ${(0, ipmath_1.formatAddr)(pkt.src)}:${l4.sport}`, this.answeredBy(pkt));
             return;
         }
         if (!this.open(dev, 'udp', l4.dport, pkt.dst)) {
@@ -40671,10 +40700,18 @@ class Transport {
         if (c.role === 'server')
             this.serverData(c, m.bytes, pkt);
         else
-            this.answered(c);
+            this.answered(c, pkt);
     }
-    /** The client got the whole answer: the test is answered; the client closes (unless kept open); an upstream passes it back. */
-    answered(c) {
+    /**
+     * An answer's outcome with who sent it, from the answer itself: the device that sent its packet (as the packet records
+     * its sender) and the address it came from — never looked up by address alone, which another routing context may reuse.
+     */
+    answeredBy(pkt) {
+        const by = pkt.msg.sender !== undefined ? pkt.msg.sender : this.e.ownerOf(pkt.src) || undefined;
+        return { kind: 'answered', by, byAddr: (0, ipmath_1.formatAddr)(pkt.src) };
+    }
+    /** The client got the whole answer (`pkt`: the segment that completed it): the test is answered; the client closes (unless kept open); an upstream passes it back. */
+    answered(c, pkt) {
         const t = c.test;
         const got = c.tcp.received;
         if (c.front) {
@@ -40685,7 +40722,7 @@ class Transport {
             this.idle(front);
         }
         if (t)
-            this.finish(t, true, `connected and answered (${got} bytes)`);
+            this.finish(t, true, `connected and answered (${got} bytes)`, this.answeredBy(pkt));
         if (c.keep && t && t.source === 'manual') {
             this.idle(c);
             return;
@@ -42297,6 +42334,19 @@ class Engine {
         return out;
     }
     // ------------------------------------------------------------ the log
+    /** A route that matched but could not be used: its interface (written, else the one its next hop is configured on) and that interface's tunnel relation, or its adjacency. */
+    unusableRoute(dev, e, detail) {
+        const via = e.via;
+        const iface = e.iface || (via ? ((0, routing_1.connectedIn)(this.model, dev).find((c) => c.vrf === e.vrf && (0, ipmath_1.inPrefix)(c.net, via)) || { iface: undefined }).iface : undefined);
+        const tun = iface ? (0, trace_1.tunnelRelation)(this.model, dev, iface) : undefined;
+        const out = { route: `${(0, ipmath_1.prefixText)(e.net)}${via ? ' via ' + (0, ipmath_1.formatAddr)(via) : ''}${e.kind === 'dynamic' && e.protocol ? ' (' + e.protocol + ')' : ''}`, detail };
+        if (iface)
+            out.iface = iface;
+        const rel = tun ? tun.id : e.relation;
+        if (rel)
+            out.relation = rel;
+        return out;
+    }
     /** A drop's cause with the packet's identity (its id, its outer header as the inspector shows it): for the drop's own log line. */
     causeOf(cause, pkt) {
         if (!pkt)
@@ -42306,6 +42356,11 @@ class Engine {
             out.session = pkt.msg.relation;
         if (pkt.msg.sender !== undefined)
             out.from = pkt.msg.sender;
+        const mev = this.msgEvents.get(pkt.msg);
+        if (mev)
+            out.msg = mev.seq;
+        if ((0, mac_1.isMulticastIp)(pkt.dst) || (pkt.dst.version === 4 && pkt.dst.bytes[3] === 255))
+            out.copy = true;
         if (pkt.inner) {
             out.carried = [];
             for (let p = pkt.inner; p; p = p.inner)
@@ -44613,7 +44668,11 @@ class Engine {
         if (d.kind !== 'forward' || !d.hops.length) {
             // a blackhole route drops silently (no ICMP error: that is what it is for)
             const text = `dropped at ${dev}: ${d.kind === 'blackhole' ? 'a blackhole route (silently, no ICMP error)' : 'no route to ' + (0, ipmath_1.formatAddr)(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''} (${pkt.msg.label})`;
-            this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text, this.now, undefined, { cause: this.causeOf({ kind: d.kind === 'blackhole' ? 'blackhole' : 'no-route', vrf: pkt.vrf }, pkt) });
+            const cause = { kind: d.kind === 'blackhole' ? 'blackhole' : 'no-route', vrf: pkt.vrf };
+            // (the routes that matched but could not be used now, as this decision found them: what the route needed, recorded)
+            if (d.kind === 'none' && d.unusable.length)
+                cause.unusable = d.unusable.map((u) => this.unusableRoute(dev, u.entry, u.detail));
+            this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text, this.now, undefined, { cause: this.causeOf(cause, pkt) });
             if (d.kind !== 'blackhole') {
                 if (came)
                     this.icmpError(dev, pkt, 'net', { from: came.l3 });
@@ -46524,26 +46583,42 @@ class Engine {
         this.timerScale = n;
     }
     // ------------------------------------------------------------ estimates (for the logical view's dots)
-    /** About how long a packet from a device to an address takes: its traced path's cables × a hop's time (cached per routing state). */
+    /**
+     * About how long a packet from a device to an address takes (the logical view's lane of a relation; presentation only):
+     * the cables of its traced path and of each tunnel's underlay, each its own latency and a small frame at its own speed
+     * (cached per routing state; the first path traced — an illustration, never a runtime dependency). Not traced: two
+     * hops' default time.
+     */
     estimate(dev, to) {
         const key = dev + '>' + (0, ipmath_1.formatAddr)(to);
         const known = this.estimates.get(key);
         if (known !== undefined)
             return known;
-        let cables = 1;
+        let ms = 0;
         try {
             const tr = (0, trace_1.tracePath)(this.model, { from: dev, to: (0, ipmath_1.formatAddr)(to) }, this.ctx());
-            if (tr.paths.length) {
-                const count = (p) => p.hops.reduce((n, h) => n + h.links.length + (h.underlay ? count(h.underlay) : 0), 0);
-                cables = Math.max(1, count(tr.paths[0]));
-            }
+            const sum = (p) => p.hops.reduce((n, h) => n + h.links.reduce((m, l) => m + this.linkCost(l), 0) + (h.underlay ? sum(h.underlay) : 0), 0);
+            if (tr.paths.length)
+                ms = sum(tr.paths[0]);
         }
         catch (e) {
-            cables = 2;
+            ms = 0;
         }
-        const ms = cables * this.hopTime();
+        if (!(ms > 0))
+            ms = 2 * this.hopTime();
         this.estimates.set(key, ms);
         return ms;
+    }
+    /** Every simulated cable's traversal cost (linkCost; the readable pacing's scale, travel.ts). */
+    cableCosts() {
+        return Array.from(this.net.links.keys()).sort(cmp).map((l) => this.linkCost(l));
+    }
+    /** A cable's traversal cost for a small frame (ms): its latency and the serialization at its speed (a cable not simulated: a hop's default time). */
+    linkCost(link) {
+        if (!this.net.links.has(link))
+            return this.hopTime();
+        const c = Number(this.latency(link).value) + (PAYLOAD * 8 * 1000) / Number(this.speed(link).value);
+        return c > 0 && isFinite(c) ? c : this.hopTime();
     }
 }
 exports.Engine = Engine;
@@ -52685,7 +52760,7 @@ const MANUAL = [
         title: 'Follow the messages: pacing and speed',
         steps: [
             'Every message travels its whole way: in the **Physical** view hop by hop along every cable and through the switches, in the **Logical** view along the whole relation (inside its tunnel). It fades in at its sender, its label stays with it, and it ends with a pulse at the receiver; the devices sending and receiving are marked for that moment. A lost message stops where it was lost and shows ✕ for about 1.5 seconds.',
-            '**Pacing: Readable** (the default) gives each hop about 3 seconds on screen, longer over a slow link and shorter over a fast one compared with the model’s other links, between 2 and 6 seconds; a dot never moves faster than 70 pixels a second at 100 % zoom, so a long cable takes longer. **Proportional to latency** shows each hop for its real time times a scale (*1 ms = 1 s*), with the same speed limit. The **Speed** (0.1× to 4×; 1× is the default) applies on top; the panel shows the pacing in use, e.g. *Readable · 3 s per hop · 1×*.',
+            '**Pacing: Readable** (the default) gives each hop 3 to 5 seconds on screen at 1×, from its modelled traversal time on a scale of the model’s own cables: the quickest cable takes 3 seconds, a slower link, a larger frame or a relation over a longer underlay longer, never more than 5. A line drawn in two halves (to a network, a hub or a bus and on) takes the time of one line. A hop without any modelled time takes 4 seconds. These seconds are presentation only: the *modelled network time* (latency and serialization, shown in the log and the packet inspector) is unchanged and is never seconds of screen time. **Proportional to latency** shows each hop for its real time times a scale (*1 ms = 1 s*), and there a dot never moves faster than 70 pixels a second at 100 % zoom, so a long cable takes longer. The **Speed** (0.1× to 4×; 1× is the default) applies on top: 2× halves the screen time, 0.5× doubles it; a pause holds every dot where it is. The panel shows the pacing in use, e.g. *Readable · 3–5 s/hop · 1×*.',
             '**The diagram first.** In Readable and Proportional pacing a delivery you see waits for its dot: the switch learns, the server answers, the next hop starts only once the dot has reached that device on screen, and then at the delivery’s own simulated time. So a packet that waited for ARP leaves when the ARP reply has visibly arrived, a SYN-ACK after the SYN, a switch’s member port after the report. Meanwhile everything already on its way keeps moving, so independent exchanges are on screen together, and the pacing text says what it waits for (*waiting for packet arrival (establishing TCP)*). Readable playback waits for displayed deliveries; network delays, protocol timers, application intervals and retries still use simulated time, so what happens never changes with the pacing, the speed or what you show.',
             '**One of each, then the steady state.** The scenario’s messages are shown in detail one of each kind (an ARP request, a DHCP Discover, a TCP handshake, a Hello); the same kind again is cable activity (a lit cable with *protocol ×n*) and nothing waits for it, until your next change makes the scenario news again (a Network event, a failure or restore, a power change, a shut or no shut). Only what the diagram draws holds the simulation: a dot filtered out, inside a collapsed group or switched off by IP / Non-IP waits for nothing. Your own Network events, their prerequisites and the message you follow are always shown in detail. A stream is a flow on every cable of its tree, with one datagram after each join or leave shown hop by hop. **Real time** pacing is the overview: it waits for nothing. With **Skip idle time** on (the default), when nothing is on screen the clock jumps to the next message that will be shown (*⏩ 9.8 s skipped*). The time shown is always the real simulated time.',
             'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself when you close the inspector (**×**, `Esc`), or it is gone from the window — not when you click or tab elsewhere, or another window covers it for a while (**Play** resumes at once). If you paused it yourself, it stays paused; the state’s tooltip says who paused it and what ends it. **Follow message** keeps that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) always drawn, plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
@@ -52995,11 +53070,11 @@ const MANUAL = [
         steps: [
             'Press `T` or choose **Analyze → Trace path…**. Analyze opens with **Trace path**; a selected device or interface is already in **From**. **Analyze → Diagnose communication…** (`Shift+D`) takes the whole question from the selection and checks it at once: a device with one client application (to its configured peer or broker), a device or interface as the source, or a relation between its two ends; the keyboard goes to the diagnosis. A device with several client applications asks which communication first (each application, or the device itself to a destination you give); a new question keeps nothing of the one before it (its destination, service, VRF and family are cleared).',
             'Fill in **To**: a device, an interface (`device:interface`), an IP address, an application (`device/application`, such as `plc/registers`) or a service (`device/dns`, `device/ntp` …). **From** may be a client application (`hmi/poll`): then **To** may stay empty, and its configured peer or broker is checked. **Service** (tcp/443, udp/53, icmp) comes from the application or service when there is one; beside **VRF**, **IPv4** or **IPv6** fixes the address family (else the ends’ own). Tick **Return direction too** for the way back, then press **Trace**.',
-            'Under the verdict, the **Diagnosis** answers in order: its state (**Established**, **Blocked** — a cause the records establish —, **Not completed — cause not established**, **Waiting** — a prerequisite still pending, never a failure —, **In progress**, **Recovered**, **Partial**, **Cancelled**, **Not established**), a short explanation, the static and the simulation’s answer apart (**Static analysis**; **Simulation**: finished or not, what was observed, whether its cause is established), the question as it was resolved (from, to, family, service — *none given* when the question has none —, routing context, the configured model or the snapshot, the run compared), **What prevents or limits it** — each distinct cause once, with the messages it stands for —, the **Evidence chain** behind an expansion, the separate legs, and the next actions. Each piece of evidence says what it is — a *cause* recorded where it was decided (the RST or ICMP error that ended it, with the reason its sender recorded, the drop of every attempt, a violated layer), *contributing* (recorded in the exchange, such as a lost attempt, but not what decided it), a *prerequisite* (an address, a neighbour, a route, a tunnel or session, with the recorded state change behind it), a *related* observation, or *not established* — and links to what it names: the object (selected), a policy decision (the device’s rules in order, the one that decided marked, shown in place; in the Inspector too while editing), a layer (its evidence), a packet, message or event (the packet inspector, that packet; `Esc` returns to the link). Following a link moves no clock, sends nothing and changes nothing; a record no longer kept, or of an earlier simulation, is said to be unavailable and nothing else is opened. Where several causes exist, no single one is claimed; where the records don’t say why, the diagnosis says so — a timeout is an observed outcome, not proof of a block, a RST says only what its sender recorded, a later working route never explains an earlier send.',
+            'Under the verdict, the **Diagnosis** answers in order: its state (**Established**, **Blocked** — a cause the records establish —, **Not completed — cause not established**, **Waiting** — a prerequisite still pending, never a failure —, **In progress**, **Recovered**, **Partial**, **Cancelled**, **Not established**), a short explanation, the static and the simulation’s answer apart (**Static analysis**; **Simulation**: finished or not, what was observed, whether its cause is established), the question as it was resolved (from, to, family, service — *none given* when the question has none —, routing context, the configured model or the snapshot, the run compared), **What prevents or limits it** — each distinct cause once, with the messages it stands for —, the **Evidence chain** behind an expansion, the separate legs, and the next actions. Each piece of evidence says what it is — a *cause* recorded where it was decided (the RST or ICMP error that ended it, with the reason its sender recorded, the drop of every attempt, a violated layer), *contributing* (recorded in the exchange, such as a lost attempt, but not what decided it), a *prerequisite* (an address, a neighbour, a route, a tunnel or session, with the recorded state change behind it), a *related* observation, or *not established* — and links to what it names: the object (selected), a policy decision (the device’s rules in order as they were when the diagnosis was made, the one that decided marked, shown in place; in the Inspector too while editing, when the policy is still the same — a policy edited since is said to differ, and the new rule with the old number is never marked as the decision), a layer (its evidence), a packet, message or event (the packet inspector, that packet; `Esc` returns to the link). Following a link moves no clock, sends nothing and changes nothing; a record no longer kept, or of an earlier simulation, is said to be unavailable and nothing else is opened. Where several causes exist, no single one is claimed; where the records don’t say why, the diagnosis says so — a timeout is an observed outcome, not proof of a block, a RST says only what its sender recorded, a later working route never explains an earlier send.',
             'The effective ends follow (**From**, **To**, **VRF**, **Service**; **Another address…** when an end has several): a device as the source sends from its route’s egress interface, a device as the destination is reached at its first interface (loopbacks last) — as a sender in the simulation takes them. Then the layers, each with its **Evidence**: **Addresses**, **Name resolution** (a host name, by the model’s DNS servers), **Network path** (every evaluated equal-cost path: “3 evaluated paths reach …, 1 stops at fw2”), **Policy** (what firewalls and gateways decide), **Destination listener** (something listens on the port, on the address the traffic arrives at) and **Runtime behaviour**, which a static analysis never establishes.',
             'The path is marked in the diagram (thick outline; equal-cost alternatives dashed, the return path dotted) and listed in a table, a row per hop: the **device**, the interfaces **in** and **out**, the **addresses**, the **route or relation** used and the **encapsulation**. **Why?** opens a hop’s evidence: the lookup, the route that won and why, the routes that lost, the layer-2 way, the policy, a translation, the tunnel, where it stops.',
             'The **Return path** section says three things apart: reverse routing, path symmetry, and that a session (a TCP exchange, a stateful firewall’s return decision) is not evaluated.',
-            'While a simulation runs, **Prepare in simulation** fills Network events with the same communication: the same source interface, family, destination and port, nothing chosen again; it sends nothing until you press Send. **What the simulation gets** says how each end is taken: an address written as an address is that exact address, a device or interface follows its effective address when sent (a DHCP lease too), a host name is resolved when sent; what can’t be carried over (a VRF other than the source interface’s; an exact source address on an interface that has several — a send names the interface) is said. A result outdated by an edit, or an end the running simulation no longer has, must be refreshed first. After the send, **Compare with simulation** takes a send that carried the check — for a check from an exact address, one that left from it — sets the static result beside what the simulation did (provisional while messages are still on their way or to be sent) and explains a difference from recorded state (an address acquired at runtime, a route not learned yet when it was sent, an end that was off), or says that nothing recorded explains it. The Diagnosis then includes that send: each message’s outcome as recorded when it happened (a later working route never explains an earlier send), what it waited for, a recovery (answered after a retransmission or after a DNS server that did not answer), the equal-cost branch it took, and the prerequisite behind a missing route or tunnel (its recorded state change, and for a session that heard nothing, what became of its own packets). For a client application, **Compare with simulation** takes the application’s own newest run in this simulation — never a send prepared like it, never an earlier run — with each message and its retries; for an MQTT client, its newest run’s own publications: the publisher’s leg (the broker’s receipt, its PUBACK — still pending is waiting, not a failure) and each subscriber’s leg (its receipt of those publications only: another publisher’s, another topic’s or an earlier run’s never count). The run compared is named. It is kept with the result — also when you leave Analyze and come back — and marked outdated after an edit; Refresh computes it again. A host name checked for IPv6 is resolved by its AAAA record in the send; what the form can’t fill in is said, never replaced by another choice.',
+            'While a simulation runs, **Prepare in simulation** fills Network events with the same communication: the same source interface, family, destination and port, nothing chosen again; it sends nothing until you press Send. **What the simulation gets** says how each end is taken: an address written as an address is that exact address, a device or interface follows its effective address when sent (a DHCP lease too), a host name is resolved when sent; what can’t be carried over (a VRF other than the source interface’s; an exact source address on an interface that has several — a send names the interface) is said. A result outdated by an edit, or an end the running simulation no longer has, must be refreshed first. After the send, **Compare with simulation** takes a send that carried the check — for a check from an exact address, one that left from it — sets the static result beside what the simulation did (provisional while messages are still on their way or to be sent) and explains a difference from recorded state (an address acquired at runtime, a route not learned yet when it was sent, an end that was off), or says that nothing recorded explains it. The Diagnosis then includes that send: each message’s outcome as recorded when it happened (a later working route never explains an earlier send), what it waited for, a recovery (answered after a retransmission or after a DNS server that did not answer), the equal-cost branch it took, and the prerequisite behind a missing route or tunnel (the device’s own routes its decision found unusable at that moment and their recorded state change; where nothing was recorded, every configured alternative is named as related, none picked as the one it needed; and for a session that heard nothing, what became of its messages — a cause only when each of them has its own recorded drop). A RST or an ICMP error that decided it is the cause; a lost attempt before it is listed as contributing. For a client application, **Compare with simulation** takes the application’s own newest run in this simulation — never a send prepared like it, never an earlier run — with each message and its retries, and only when the question is that application’s own communication: a question that asks another destination, service, family or routing context is not compared with it (said why). For an MQTT client, its newest run’s own publications: the publisher’s leg (the broker’s receipt, its PUBACK — still pending is waiting, not a failure; discarded by Stop is cancelled) and each subscriber’s leg (its receipt of the run’s publications on the topics its own filters ask for: another publisher’s, an earlier run’s, or a topic it does not subscribe to never count; a refused subscription is said). The records keep the latest 2000 publications; older ones are counted from the run’s tally as they had settled, and those that had not settled when they aged out are said unavailable — the whole run is then not established. The run compared is named. It is kept with the result — also when you leave Analyze and come back — and marked outdated after an edit; Refresh computes it again. A host name checked for IPv6 is resolved by its AAAA record in the send, and only a send of that family is compared with it (an IPv4 send of the same name never is); what the form can’t fill in is said, never replaced by another choice.',
             '**Save as expectation…** opens Design checks with the communication’s fields filled in (the outcome taken from the verdict); nothing is saved until you press **Add**.',
             '**Path MTU** (under the layers) says the largest packet that crosses unfragmented and the payload that fits (TCP MSS, UDP or ICMP payload), and what limits it: an interface, a port of a cable on the way, or a tunnel (the largest inner packet whose encapsulated packet fits its underlay: each layer’s outer IPv4 or IPv6 header, a UDP tunnel’s UDP header, the tunnel’s own header, ESP’s padding and trailer, the inner Ethernet header of VXLAN and Geneve — the same figures the simulation’s packets have; nested layers inside out). Equal-cost paths and the return path are given apart where they differ. An MTU the model does not write is never taken as known: the result is then an upper bound. **Test the limit in simulation** prefills a send one byte over it with Don’t fragment (nothing is sent): the simulation drops it with Fragmentation Needed or Packet Too Big, and the sender learns the path MTU. A tunnel takes what its MTU (written, else what its underlay leaves room for) allows: a larger IPv4 packet without DF is fragmented before encapsulation, one with DF (or IPv6) is refused with what fits, and what the tunnel’s head learned of its underlay is passed on to the sender. A cable whose two ends write different MTUs drops what is larger than its receiving end takes, silently — the black hole of an MTU mismatch.',
             'Click a name to select it. **Copy as text** and **Save as text** carry the diagnosis (the question, the answer, its evidence with their references, the limits, whether it is outdated, provisional or evidence-limited), the context, the application version, the model’s fingerprint, the verdict, the layers and the hops — a modeled result, not proof of a production network; **Evidence** beside a layer shows what it rests on in the right panel. **Clear** or `Esc` in the diagram removes the path and its result; leaving Analyze removes the path from the diagram and keeps the result for when you come back to Trace path.',
@@ -53562,8 +53637,8 @@ exports.ANALYSIS_SUPPORT = [
     {
         id: 'diagnosis',
         name: 'Diagnosis',
-        does: 'The answer to one communication question in order — its state (established, blocked, not completed with its cause not established, waiting, in progress, recovered, partial, cancelled, not established), the static and the runtime answer apart (finished or not, what was observed, whether its cause is established), what prevents or limits it with each distinct cause once and its messages, the evidence chain, the separate legs, the next actions — from the communication check and, once compared, the structured records of the run asked about (a send, a client application’s own run with its retries, an MQTT client’s run by its own publications): each message’s outcome with the device that answered and the reason it recorded, the drops of its exchange (decisive only when every attempt has one), its waits, retransmissions and DNS queries, the equal-cost branch taken, the recorded state changes behind a missing route or tunnel; every piece of evidence a link to the exact record of its own simulation (a packet, an event, a policy rule).',
-        not: 'causes not recorded (said as not established, never guessed), coincidences in time as causes, a later state as the reason for an earlier outcome, a single root cause where several causes exist, records no longer kept or of an earlier simulation (said as unavailable), protocol-internal and TCP-sequence drops (no structured cause), QoS 2 and persistent MQTT sessions, a diagnosis of production networks.',
+        does: 'The answer to one communication question in order — its state (established, blocked, not completed with its cause not established, waiting, in progress, recovered, partial, cancelled, not established), the static and the runtime answer apart (finished or not, what was observed, whether its cause is established), what prevents or limits it with each distinct cause once and its messages, the evidence chain, the separate legs, the next actions — from the communication check and, once compared, the structured records of the run asked about (a send that carries the question — a host name’s in its family —, a client application’s own run with its retries when the question is its own communication, an MQTT client’s run by its own publications, each subscriber’s leg by the topics its filters ask for, those aged out of the records by the run’s tally): each message’s outcome with the device that answered (from the answer itself) and the reason it recorded, the drops of its exchange (decisive only when every attempt has one; the others contributing), its waits, retransmissions and DNS queries, the equal-cost branch taken, the recorded state changes behind a missing route (the routes the device found unusable then) or tunnel, a session’s silence by each message’s own drop; every piece of evidence a link to the exact record of its own simulation (a packet, an event, a policy rule as it was when diagnosed).',
+        not: 'causes not recorded (said as not established, never guessed; a configured alternative never taken for what a route needed), coincidences in time as causes, a later state as the reason for an earlier outcome, a single root cause where several causes exist, records no longer kept or of an earlier simulation (said as unavailable), protocol-internal and TCP-sequence drops (no structured cause), QoS 2 and persistent MQTT sessions, a diagnosis of production networks.',
     },
     {
         id: 'addressing',
@@ -69170,6 +69245,8 @@ function diagnosisSection(doc, d, view, act) {
     const rv = view.rule;
     if (rv) {
         const box = (0, dom_1.el)(doc, 'section', { class: 'diag-rule', id: 'diag-rule', tabindex: '-1', 'aria-labelledby': 'diag-rule-h', 'data-device': rv.device }, [(0, dom_1.el)(doc, 'h4', { class: 'diag-h4', id: 'diag-rule-h' }, [`${rv.device} · Network policy`]), (0, dom_1.el)(doc, 'p', { class: 'small muted' }, [rv.summary])]);
+        if (rv.current)
+            box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small', 'data-current': 'differs' }, [rv.current]));
         if (rv.missing)
             box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, [rv.missing]));
         const ol = (0, dom_1.el)(doc, 'ol', { class: 'diag-rules small' });
@@ -69794,6 +69871,7 @@ __defs["analysis/diagnosis"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.diagnose = diagnose;
+exports.diagnosisRefs = diagnosisRefs;
 exports.diagnosisText = diagnosisText;
 /**
  * Diagnosis: the answer to one communication question, built from the
@@ -69848,6 +69926,7 @@ exports.diagnosisText = diagnosisText;
  */
 const communication_1 = __req("analysis/communication");
 const result_1 = __req("analysis/result");
+const applications_1 = __req("model/applications");
 const ipmath_1 = __req("analysis/ipmath");
 const sec = (ms) => `t = ${(ms / 1000).toFixed(1)} s`;
 const dur = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
@@ -69876,7 +69955,7 @@ function waitWords(cond) {
 /** The ref of a policy decision: its written rule, the default action, or a firewall's implicit policy. */
 function policyRef(p) {
     if (p.rule)
-        return { ref: `policy:${p.device}:${p.rule}`, label: `${p.device} rule ${p.rule}` };
+        return { ref: `policy:${p.device}:${p.rule}`, label: `${p.device} rule ${p.rule}`, decided: p.ruleText };
     if (p.byDefault && p.ruleText !== 'implicit policy: relations and allow list')
         return { ref: `policy:${p.device}:default`, label: `${p.device} default action` };
     return { ref: `policy:${p.device}:implicit`, label: `${p.device} ${p.ruleText || 'policy'}` };
@@ -69997,6 +70076,15 @@ function explainAttempt(t, rt) {
     const own = t.pktIds;
     const out = (key, rel, head, refs, decisive = []) => {
         links.push({ rel, source: 'runtime', text: head, refs, t: end });
+        // (what else its exchange recorded — an attempt lost before the answer that decided — contributing, never the outcome)
+        const p = o && o.cause && o.cause.policy;
+        for (const x of drops) {
+            if (decisive.indexOf(x) >= 0 || (o && o.event !== undefined && x.seq === o.event))
+                continue;
+            if (p && x.cause && x.cause.policy && x.cause.policy.device === p.device && x.cause.policy.rule === p.rule)
+                continue;
+            links.push({ rel: 'contributing', source: 'runtime', text: `also recorded in its exchange: ${dropDesc(x)}`, refs: dropRefs(x, exec, own), t: x.t });
+        }
         return { ...base, state: 'failed', key, rel, head, refs, decisive };
     };
     // (what the answer that ended it reports, as its sender recorded it: a policy's rejection, a closed port)
@@ -70063,8 +70151,6 @@ function explainAttempt(t, rt) {
         const att = drops.filter((d) => d.attempt);
         const keys = Array.from(new Set(att.map(dropKey))).sort();
         const descs = Array.from(new Set(att.map((d) => dropDesc(d))));
-        for (const d of drops.filter((x) => !x.attempt))
-            links.push({ rel: 'contributing', source: 'runtime', text: `also recorded in its exchange: ${dropDesc(d)}`, refs: dropRefs(d, exec, own), t: d.t });
         const head = attempts === 1 ? `${what}: its packet was dropped — ${descs[0]}` : keys.length === 1 ? `${what}: each of its ${attempts} attempts was dropped — ${descs[0]}` : `${what}: each of its ${attempts} attempts was dropped — ${descs.join('; ')}`;
         const refs = [testRef].concat(...att.slice(-3).map((d) => dropRefs(d, exec, own)));
         return out('drops:' + keys.join('|'), 'cause', head, refs, att);
@@ -70157,13 +70243,27 @@ function prereqChain(d, rt, check) {
         refs.push({ ref: `iface:${d.device}:${c.iface}`, why: `${d.device}:${c.iface}`, source: 'runtime' });
     if (c.kind === 'cable' && c.link)
         refs.push({ ref: 'link:' + c.link, why: `cable ${c.link}`, source: 'runtime' });
-    if (c.kind === 'no-route' || c.kind === 'blackhole') {
-        // (the configured model's route at that device: the relations its hop uses — a learned route's sessions, a tunnel)
-        const hop = check.trace && check.trace.paths[0] ? check.trace.paths[0].hops.find((h) => h.device === d.device) : undefined;
-        const rels = hop ? hop.relations : [];
+    if (c.kind === 'no-route' && c.unusable && c.unusable.some((u) => u.relation || u.iface)) {
+        // the routes the device's own decision found unusable at that moment (recorded): each one's interface or relation is
+        // what that route needed — a prerequisite when it was the only one, one of the alternatives when there were several
+        const one = c.unusable.length === 1;
+        for (const u of c.unusable) {
+            const why = `${one ? 'its' : 'one of its'} route${one ? '' : 's'} to it (${u.route}) could not be used at the drop: ${u.detail}`;
+            if (u.relation)
+                refs.push({ ref: 'relation:' + u.relation, dev: d.device, why, source: one ? 'runtime' : 'static' });
+            else if (u.iface)
+                refs.push({ ref: `iface:${d.device}:${u.iface}`, why, source: one ? 'runtime' : 'static' });
+        }
+    }
+    else if (c.kind === 'no-route' || c.kind === 'blackhole') {
+        // (no route has no runtime identity to follow: the configured model's paths at that device are the only clue — every
+        // alternative's relations, none picked as the one it needed; what they did is related, never its established cause)
+        const alts = (check.trace ? check.trace.paths : []).map((p) => p.hops.find((h) => h.device === d.device)).filter((h) => !!h);
+        const rels = Array.from(new Set(alts.reduce((a, h) => a.concat(h.relations), []))).sort();
+        const several = alts.length > 1 || rels.length > 1;
         if (rels.length)
             for (const r of rels)
-                refs.push({ ref: 'relation:' + r, dev: d.device, why: `the configured model's path at ${d.device} uses ${r}`, source: 'static' });
+                refs.push({ ref: 'relation:' + r, dev: d.device, why: several ? `one of the configured model's alternatives at ${d.device} uses ${r} (${plural(alts.filter((h) => h.relations.indexOf(r) >= 0).length, 'path')} of ${alts.length}): which one the route needed is not recorded` : `the configured model's path at ${d.device} uses ${r}; that the missing route needed it is not recorded`, source: 'static' });
         else
             out.push({ rel: 'hypothesis', source: 'runtime', text: `What withdrew or never installed the route at ${d.device} is not recorded: the configured model's path there names no relation it is learned over`, refs: [{ ref: 'device:' + d.device, label: d.device }], t: d.t });
     }
@@ -70173,11 +70273,13 @@ function prereqChain(d, rt, check) {
         const at = r.dev || d.device;
         const tr = transitionBefore(rt.log, r.ref, d.t, isRel ? at : undefined);
         const whole = rt.retained.dropped === 0;
+        // (a relation known only from the configured model is related: what it did is said, never as what the drop needed)
+        const staticOnly = r.source === 'static';
         if (!tr) {
             // (no state change kept: from the start, it never came up — said so only when the log reaches back to the start)
             if (isRel && whole) {
-                out.push({ rel: 'prerequisite', source: 'runtime', text: `${label} had not come up at ${at} by ${sec(d.t)}: no state change of it is recorded since the simulation started — ${r.why}`, refs: [{ ref: r.ref, label }], t: d.t });
-                out.push(...silence(label, at, -1, d.t, rt));
+                out.push({ rel: staticOnly ? 'related' : 'prerequisite', source: 'runtime', text: `${label} had not come up at ${at} by ${sec(d.t)}: no state change of it is recorded since the simulation started — ${r.why}`, refs: [{ ref: r.ref, label }], t: d.t });
+                out.push(...silence(label, at, -1, d.t, rt, staticOnly));
             }
             else
                 out.push({ rel: 'hypothesis', source: r.source, text: `${cap(label)} (${r.why}): no state change of it is ${whole ? 'recorded' : 'kept'} before ${sec(d.t)}${whole ? '' : ' (the log keeps the latest events only)'} — what made it unavailable is not established`, refs: [{ ref: r.ref, label }], t: d.t });
@@ -70188,19 +70290,22 @@ function prereqChain(d, rt, check) {
             out.push({ rel: 'related', source: 'runtime', text: `${label} was last recorded up (${sec(tr.t)}${x.reason ? ': ' + x.reason : ''}) before ${sec(d.t)}; what made it unavailable then is not recorded`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
             continue;
         }
-        out.push({ rel: 'prerequisite', source: 'runtime', text: `${label} went down at ${sec(tr.t)}${x.device ? ' at ' + x.device : ''} (recorded: ${x.reason || 'down'}) — ${r.why}`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
+        out.push({ rel: staticOnly ? 'related' : 'prerequisite', source: 'runtime', text: `${label} went down at ${sec(tr.t)}${x.device ? ' at ' + x.device : ''} (recorded: ${x.reason || 'down'}) — ${r.why}`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
         // a session that heard nothing: its peer's packets, and its own, in that interval as recorded
         if (isRel && x.lastHeard !== undefined)
-            out.push(...silence(label, x.device || at, x.lastHeard, tr.t, rt));
+            out.push(...silence(label, x.device || at, x.lastHeard, tr.t, rt, staticOnly));
     }
     return out;
 }
 /**
  * Why a session at `dev` heard nothing from `from` to `to` (-1: since the start), as recorded: its peer's messages to it
- * and their drops, else its own messages and theirs. Decisive only when every message of that direction has a recorded
- * drop, all of one cause; else contributing; with no drop recorded, said as not established.
+ * and their drops, else its own messages and theirs. Decisive only when each message of that direction has its own
+ * recorded drop (by the message's identity: a duplicate or a second observation of the same message counts once, a
+ * multicast copy dropped on one way is no loss of the message, another message of the session covers nothing), all of
+ * one cause; else contributing; with no drop recorded, said as not established. `related`: the session itself is only
+ * the configured model's clue (a missing route's alternative) — what it heard is related, never a cause.
  */
-function silence(rel, dev, from, to, rt) {
+function silence(rel, dev, from, to, rt, related = false) {
     const inWin = (e) => e.t > from && e.t <= to;
     const msgs = rt.log.filter((e) => e.kind === 'message' && e.relation === rel && inWin(e));
     const drops = rt.log.filter((e) => e.kind === 'drop' && !!e.cause && e.cause.session === rel && inWin(e));
@@ -70214,11 +70319,18 @@ function silence(rel, dev, from, to, rt) {
     const lost = pick.s.lost;
     if (!lost.length)
         return [{ rel: 'hypothesis', source: 'runtime', text: `${rel} heard nothing at ${dev} from ${since} to ${sec(to)}; no drop of its own packets is recorded in that interval — why is not established`, refs: [{ ref: 'relation:' + rel, label: rel }], t: to }];
-    const keys = Array.from(new Set(lost.map((e) => dropKey(e))));
-    const all = lost.length >= pick.s.sent.length && keys.length === 1;
+    // coverage by identity: each message sent in the interval has a drop of its own (not a copy's)
+    const lostMsgs = new Set(lost.filter((e) => !e.cause.copy && e.cause.msg !== undefined).map((e) => e.cause.msg));
+    const covered = pick.s.sent.filter((e) => lostMsgs.has(e.seq));
+    const coverers = lost.filter((e) => covered.some((m) => e.cause.msg === m.seq));
+    const keys = Array.from(new Set((coverers.length ? coverers : lost).map((e) => dropKey(e))));
+    const all = pick.s.sent.length > 0 && covered.length === pick.s.sent.length && keys.length === 1;
     const first = lost[lost.length - 1];
     const desc = dropDesc({ device: first.device, cause: first.cause, text: first.detail, t: first.t });
-    return [{ rel: all ? 'cause' : 'contributing', source: 'runtime', text: `${all ? `It heard nothing because ${pick.who} were dropped` : `Some of ${pick.who} were dropped`} from ${since} to ${sec(to)} (${plural(lost.length, 'drop')} of ${plural(pick.s.sent.length, 'message')}): ${desc}${keys.length > 1 ? ` and ${keys.length - 1} other cause${keys.length === 2 ? '' : 's'}` : ''}`, refs: dropRefs({ seq: first.seq, t: first.t, device: first.device, cause: first.cause, text: first.detail }, rt.exec, []), t: first.t }];
+    const kind = related ? 'related' : all ? 'cause' : 'contributing';
+    const of = `${covered.length} of ${plural(pick.s.sent.length, 'message')} with a drop of its own recorded${lost.length !== covered.length ? `; ${plural(lost.length, 'drop')} in all` : ''}`;
+    const head = !all ? `Some of ${pick.who} were dropped` : related ? `It heard nothing: ${pick.who} were dropped` : `It heard nothing because ${pick.who} were dropped`;
+    return [{ rel: kind, source: 'runtime', text: `${head} from ${since} to ${sec(to)} (${of}): ${desc}${keys.length > 1 ? ` and ${keys.length - 1} other cause${keys.length === 2 ? '' : 's'}` : ''}`, refs: dropRefs({ seq: first.seq, t: first.t, device: first.device, cause: first.cause, text: first.detail }, rt.exec, []), t: first.t }];
 }
 /** The equal-cost branches a run's packets took, as recorded (route events): "message 2: at r1 branch 2 of 2 (out c)". */
 function branchesOf(rt) {
@@ -70234,6 +70346,21 @@ function branchesOf(rt) {
     }
     return out;
 }
+/**
+ * A run's observed outcome from its parts' terminal outcomes, one rule for a send's messages, an application's and an
+ * MQTT run's legs: nothing terminal is none; one kind is that kind; several are mixed. A part not established (its
+ * evidence unavailable) keeps the whole from succeeding: none, unless a failure or cancellation is observed.
+ */
+function outcomeOf(ok, failed, cancelled, unknown = 0) {
+    const kinds = [ok > 0, failed > 0, cancelled > 0].filter((x) => x).length;
+    if (kinds === 0)
+        return 'none';
+    if (kinds > 1)
+        return 'mixed';
+    if (ok)
+        return unknown ? 'none' : 'succeeded';
+    return failed ? 'failed' : 'cancelled';
+}
 /** The runtime state from what was observed (see the module comment). */
 function runtimeState(p) {
     const k = p.counts;
@@ -70246,6 +70373,8 @@ function runtimeState(p) {
             return p.cause === 'established' ? 'blocked' : 'failed';
         if (p.outcome === 'cancelled')
             return 'cancelled';
+        if (p.outcome === 'none')
+            return 'indeterminate';
         return 'partial';
     }
     if (k.failed)
@@ -70281,9 +70410,7 @@ function runtimeOf(rt, check) {
     const sj = rt.subject;
     k.toSend = sj.stopped ? 0 : sj.count === null ? null : Math.max(0, sj.count - sj.sent);
     const completed = !k.waiting && !k.inFlight && k.toSend === 0;
-    const ok = k.succeeded + k.recovered;
-    const kinds = [ok > 0, k.failed > 0, k.cancelled > 0].filter((x) => x).length;
-    const outcome = kinds === 0 ? 'none' : kinds > 1 ? 'mixed' : ok ? 'succeeded' : k.failed ? 'failed' : 'cancelled';
+    const outcome = outcomeOf(k.succeeded + k.recovered, k.failed, k.cancelled);
     // the failures, grouped by what decided each (or by their kind, when that is not established)
     const groups = new Map();
     for (const m of msgs) {
@@ -70336,101 +70463,165 @@ function runtimeOf(rt, check) {
     };
     return { part, chain, evicted, heads: { groups: gh, waiting: head('waiting'), recovered: head('recovered') } };
 }
-/** An MQTT client's run: the publisher's leg and each subscriber's, from its own publications' records. */
+/** A run's tally (by topic) summed over the topics `keep` takes, with one subscriber's part of it. */
+function tallied(tally, keep, clientId) {
+    const t = { n: 0, acked: 0, lost: 0, cancelled: 0, rx: 0, open: 0, got: 0, subOpen: 0 };
+    for (const topic of Object.keys(tally).sort()) {
+        if (!keep(topic))
+            continue;
+        const x = tally[topic];
+        t.n += x.n;
+        t.acked += x.acked;
+        t.lost += x.lost;
+        t.cancelled += x.cancelled;
+        t.rx += x.rx;
+        t.open += x.open;
+        const s = clientId !== undefined ? x.subs[clientId] : undefined;
+        if (s) {
+            t.got += s.got;
+            t.subOpen += s.open;
+        }
+    }
+    return t;
+}
+/** An MQTT client's run: the publisher's leg and each subscriber's, from its own publications' records (and the tally of those aged out). */
 function mqttOf(mq, d) {
     const exec = mq.exec;
     const r = mq.run;
     const pubs = mq.pubs;
+    const all = tallied(mq.tally, () => true);
+    const total = pubs.length + all.n;
     const pktRef = (p, label) => (p.length ? [{ ref: `packet:${exec}:${p[0]}`, label }] : []);
-    const subject = `MQTT run #${r.id} of ${r.dev}/${r.app} (${r.how === 'event' ? 'started from Network events' : r.how === 'start' ? 'started with the simulation' : 'started by an experiment'} at ${sec(r.t0)}; ${plural(pubs.length + mq.evicted, 'publication')}${r.earlier ? `; ${plural(r.earlier, 'earlier run')} not counted` : ''})`;
+    const subject = `MQTT run #${r.id} of ${r.dev}/${r.app} (${r.how === 'event' ? 'started from Network events' : r.how === 'start' ? 'started with the simulation' : 'started by an experiment'} at ${sec(r.t0)}; ${plural(total, 'publication')}${r.earlier ? `; ${plural(r.earlier, 'earlier run')} not counted` : ''})`;
     const running = !r.stopped;
     const legs = [];
+    // (the records that aged out: counted from the run's tally, settled outcomes as they were; the unsettled ones unavailable)
+    const agedText = all.n ? ` (${all.n} of them aged out of the records: counted from the run’s tally)` : '';
+    const unavailable = (n) => `${n === 1 ? '1 earlier publication’s outcome is' : `${n} earlier publications’ outcomes are`} unavailable — ${n === 1 ? 'it' : 'they'} aged out of the records before ${n === 1 ? 'it' : 'they'} settled; the whole run is not established`;
     // ---- the publisher → the broker
     let pubState;
     let pubText;
     const acked = pubs.filter((p) => p.acked !== undefined);
     const lost = pubs.filter((p) => p.acked === undefined && p.lost !== undefined);
-    const pending = pubs.filter((p) => p.acked === undefined && p.lost === undefined);
+    const cancelled = pubs.filter((p) => p.acked === undefined && p.lost === undefined && p.cancelled !== undefined);
+    const pending = pubs.filter((p) => p.acked === undefined && p.lost === undefined && p.cancelled === undefined);
     const atBroker = pubs.filter((p) => p.brokerRx !== undefined);
     const dups = pubs.reduce((n, p) => n + p.dups, 0);
-    if (!pubs.length) {
-        pubState = mq.evicted ? 'indeterminate' : running ? (r.state === 'Connected' ? 'in-progress' : 'waiting') : 'cancelled';
-        pubText = mq.evicted ? `its ${plural(mq.evicted, 'publication')} are no longer kept: not available` : running ? `nothing published yet (${r.state === 'Connected' ? 'connected' : 'its connection to the broker: ' + r.state.toLowerCase()})` : 'it stopped before publishing anything';
+    if (!total) {
+        pubState = running ? (r.state === 'Connected' ? 'in-progress' : 'waiting') : 'cancelled';
+        pubText = running ? `nothing published yet (${r.state === 'Connected' ? 'connected' : 'its connection to the broker: ' + r.state.toLowerCase()})` : 'it was stopped before publishing anything';
     }
     else if (r.qos === 1) {
-        const parts = [`${plural(pubs.length, 'publication')}`, acked.length ? `${acked.length} acknowledged by the broker (PUBACK)` : '', pending.length ? `${pending.length} waiting for PUBACK${running ? '' : ' (the run is stopped)'}` : '', lost.length ? `${lost.length} lost before PUBACK: the connection closed (${lost[0].lostWhy || 'recorded'})` : '', dups ? `${plural(dups, 'DUP copy', 'DUP copies')} sent` : ''].filter((x) => !!x);
+        const A = acked.length + all.acked;
+        const Lo = lost.length + all.lost;
+        const Ca = cancelled.length + all.cancelled;
+        const parts = [`${plural(total, 'publication')}${agedText}`, A ? `${A} acknowledged by the broker (PUBACK)` : '', pending.length ? `${pending.length} waiting for PUBACK` : '', Lo ? `${Lo} lost before PUBACK: the connection closed (${lost.length ? lost[0].lostWhy || 'recorded' : 'tallied'})` : '', Ca ? `${Ca} cancelled by Stop before PUBACK (discarded with the clean session)` : '', dups ? `${plural(dups, 'DUP copy', 'DUP copies')} sent` : ''].filter((x) => !!x);
         const rxNoAck = pending.filter((p) => p.brokerRx !== undefined).length;
         pubText = parts.join(', ') + (rxNoAck ? `; the broker received ${rxNoAck} of those waiting — their PUBACK has not arrived` : '');
-        pubState = !pending.length ? (lost.length ? (acked.length ? 'partial' : 'blocked') : 'established') : running ? (lost.length ? 'partial' : 'waiting') : lost.length || acked.length ? 'partial' : 'indeterminate';
+        if (pending.length)
+            pubState = Lo ? 'partial' : 'waiting';
+        else if (Lo)
+            pubState = A || Ca ? 'partial' : 'blocked';
+        else if (Ca)
+            pubState = A ? 'partial' : 'cancelled';
+        else if (all.open)
+            pubState = 'indeterminate';
+        else
+            pubState = 'established';
+        if (all.open)
+            pubText = `${pubText}; ${pending.length || Lo || Ca ? '' : 'every retained publication acknowledged; '}${unavailable(all.open)}`;
     }
     else {
+        const rx = atBroker.length + all.rx;
         const noRx = pubs.length - atBroker.length;
-        pubText = `${plural(pubs.length, 'publication')} at QoS 0: ${atBroker.length} received by the broker (recorded at the broker)${noRx ? `, ${noRx} with no receipt at the broker recorded — QoS 0 has no PUBACK, and a missing one is no evidence of loss` : ''}`;
-        pubState = !noRx ? 'established' : running && pubs.some((p) => p.brokerRx === undefined && mq.now - p.t < 5000) ? 'in-progress' : atBroker.length ? 'partial' : 'indeterminate';
+        pubText = `${plural(total, 'publication')} at QoS 0${agedText}: ${rx} received by the broker (recorded at the broker)${noRx ? `, ${noRx} with no receipt at the broker recorded — QoS 0 has no PUBACK, and a missing one is no evidence of loss` : ''}`;
+        pubState = !noRx ? (all.open ? 'indeterminate' : 'established') : running && pubs.some((p) => p.brokerRx === undefined && mq.now - p.t < 5000) ? 'in-progress' : rx ? 'partial' : 'indeterminate';
+        if (all.open)
+            pubText = `${pubText}; ${unavailable(all.open)}`;
     }
     const firstPub = pubs[0];
     legs.push({ label: `Publisher ${r.dev}/${r.app} → broker ${r.broker} (runtime, run #${r.id})`, verdict: pubState === 'established' ? 'satisfied' : pubState === 'blocked' ? 'violated' : pubState === 'partial' ? 'partial' : 'indeterminate', state: pubState, text: pubText, refs: [{ ref: 'device:' + r.dev, label: r.dev }].concat(firstPub ? pktRef(firstPub.pkts, 'its first publication') : []), source: 'runtime' });
-    // ---- the broker → each subscriber (only this run's publications count: an earlier receipt proves nothing of them)
+    // ---- the broker → each subscriber: only this run's publications on the topics its own filters ask for (an earlier
+    // receipt proves nothing of them; another topic is not its to receive)
+    const runTopics = Array.from(new Set(pubs.map((p) => p.topic).concat(Object.keys(mq.tally)))).sort();
     for (const s of mq.subscribers) {
-        const relevant = pubs.filter((p) => p.brokerRx !== undefined);
+        const mine = (topic) => s.filters.some((f) => (0, applications_1.topicMatches)(f, topic));
+        const scope = runTopics.filter(mine);
+        const tl = tallied(mq.tally, mine, s.clientId);
+        const relevant = pubs.filter((p) => p.brokerRx !== undefined && mine(p.topic));
         const dls = relevant.map((p) => ({ p, dl: p.deliveries.find((x) => x.clientId === s.clientId) }));
         const got = dls.filter((x) => x.dl && x.dl.rx !== undefined);
         const enRoute = dls.filter((x) => x.dl && x.dl.rx === undefined);
-        const notPassed = dls.filter((x) => !x.dl && x.p.matched !== undefined);
+        const notPassed = dls.filter((x) => !x.dl && x.p.matched !== undefined).length + Math.max(0, tl.rx - tl.got - tl.subOpen);
         const twice = got.filter((x) => x.dl.rxCount > 1).length;
+        const R = relevant.length + tl.rx;
+        const G = got.length + tl.got;
         const sr = s.runs[0];
         // (its own run decides whether a receipt can still come: connected, the broker's copies may still arrive)
         const subOn = !!sr && sr.state !== 'Stopped' && sr.stoppedAt === undefined;
         const subNow = sr ? `its run #${sr.id} is ${sr.state.toLowerCase()} (started ${sec(sr.t0)}${sr.granted.length ? `; granted ${sr.granted.map(([f, q]) => `${f} → ${q === 0x80 ? 'refused' : 'QoS ' + q}`).join(', ')}` : ''})` : 'it was not started in this simulation';
+        const topics = `on its topics (${scope.join(', ')})`;
         let st;
         let text;
         let rel = null;
-        if (!relevant.length) {
+        if (!total) {
+            st = running ? 'indeterminate' : 'cancelled';
+            text = running ? 'the run published nothing yet' : 'the run was stopped before publishing anything: nothing to deliver to it';
+        }
+        else if (!scope.length) {
             st = 'indeterminate';
-            text = pubs.length ? `none of the run's publications reached the broker (see the publisher's leg): nothing to deliver to it` : `the run published nothing yet`;
+            text = `none of the run's topics (${runTopics.join(', ')}) matches its filters (${s.filters.join(', ') || 'none'}): nothing of run #${r.id} is for it`;
         }
-        else if (got.length === relevant.length) {
+        else if (!R) {
+            st = !running && pubState === 'cancelled' ? 'cancelled' : 'indeterminate';
+            text = `none of the run's publications ${topics} reached the broker (see the publisher's leg): nothing to deliver to it`;
+        }
+        else if (G === R) {
             st = 'established';
-            text = `received ${got.length} of the ${plural(relevant.length, 'publication')} of run #${r.id} that reached the broker${twice ? ` (${twice} more than once: a QoS 1 DUP, as MQTT 3.1.1 allows)` : ''}; ${subNow}`;
+            text = `received ${G} of the ${plural(R, 'publication')} of run #${r.id} ${topics} that reached the broker${twice ? ` (${twice} more than once: a QoS 1 DUP, as MQTT 3.1.1 allows)` : ''}; ${subNow}`;
         }
-        else if (got.length) {
+        else if (G + tl.subOpen === R && !enRoute.length) {
+            st = 'indeterminate';
+            text = `received every retained one of the ${plural(R, 'publication')} of run #${r.id} ${topics} that reached the broker; ${plural(tl.subOpen, 'earlier copy', 'earlier copies')} to it ${tl.subOpen === 1 ? 'is' : 'are'} unavailable — aged out of the records before a receipt; ${subNow}`;
+        }
+        else if (G) {
             st = enRoute.length && subOn ? 'in-progress' : 'partial';
-            text = `received ${got.length} of ${relevant.length}${enRoute.length ? `; ${enRoute.length} delivered by the broker, their receipt not recorded yet` : ''}${notPassed.length ? `; ${notPassed.length} not passed to it by the broker (no session with a matching subscription then)` : ''}; ${subNow}`;
+            text = `received ${G} of ${R} ${topics}${enRoute.length ? `; ${enRoute.length} delivered by the broker, their receipt not recorded yet` : ''}${notPassed ? `; ${notPassed} not passed to it by the broker (no session with a matching subscription then)` : ''}${tl.subOpen ? `; ${tl.subOpen} unavailable (aged out of the records before a receipt)` : ''}; ${subNow}`;
         }
-        else if (notPassed.length === relevant.length) {
+        else if (notPassed === R) {
             st = 'blocked';
             rel = 'prerequisite';
-            text = `the broker passed none of the ${plural(relevant.length, 'publication')} to it: when they arrived it had no session with a matching subscription (recorded at the broker); ${subNow}`;
+            text = `the broker passed none of the ${plural(R, 'publication')} ${topics} to it: when they arrived it had no session with a matching subscription (recorded at the broker); ${subNow}`;
         }
         else if (enRoute.length) {
             st = subOn ? 'waiting' : 'failed';
-            text = `the broker sent ${enRoute.length} to it; ${subOn ? 'its receipt is not recorded yet' : 'no receipt is recorded — why is not established'}; ${subNow}`;
+            text = `the broker sent ${enRoute.length} ${topics} to it; ${subOn ? 'its receipt is not recorded yet' : 'no receipt is recorded — why is not established'}; ${subNow}`;
         }
         else {
             st = 'indeterminate';
-            text = `no receipt recorded; ${subNow}`;
+            text = `no receipt recorded ${topics}; ${subNow}`;
         }
         const ex = got[0] || enRoute[0];
         legs.push({ label: `Broker ${r.broker} → subscriber ${s.dev}/${s.app} (runtime, publications of run #${r.id})`, verdict: st === 'established' ? 'satisfied' : st === 'blocked' ? 'violated' : st === 'partial' ? 'partial' : 'indeterminate', state: st, text, refs: [{ ref: 'device:' + s.dev, label: s.dev }].concat(ex && ex.dl ? pktRef(ex.dl.pkts, 'its copy') : []), source: 'runtime' });
         if (rel)
             d.blockers.push({ rel, source: 'runtime', text: `Subscriber ${s.dev}/${s.app}: ${text}`, refs: [{ ref: 'device:' + s.dev, label: s.dev }] });
     }
-    if (lost.length)
-        d.blockers.push({ rel: 'cause', source: 'runtime', text: `Publisher ${r.dev}/${r.app}: ${plural(lost.length, 'publication')} lost before PUBACK — its connection to the broker closed (${lost[0].lostWhy || 'recorded'}, ${sec(lost[0].lost)})`, refs: [{ ref: 'device:' + r.dev, label: r.dev }].concat(pktRef(lost[0].pkts, 'that publication')), count: lost.length });
+    const lostAll = lost.length + all.lost;
+    if (lostAll)
+        d.blockers.push({ rel: 'cause', source: 'runtime', text: `Publisher ${r.dev}/${r.app}: ${plural(lostAll, 'publication')} lost before PUBACK — its connection to the broker closed${lost.length ? ` (${lost[0].lostWhy || 'recorded'}, ${sec(lost[0].lost)})` : ' (as tallied when their records aged out)'}`, refs: [{ ref: 'device:' + r.dev, label: r.dev }].concat(lost.length ? pktRef(lost[0].pkts, 'that publication') : []), count: lostAll });
     if (r.missed)
         d.chain.push({ rel: 'related', source: 'runtime', text: `${plural(r.missed, 'round')} not published: not connected at ${r.missed === 1 ? 'its' : 'their'} time`, refs: [] });
-    if (mq.evicted) {
+    if (all.n)
+        d.limits.push(`${plural(all.n, 'publication')} of run #${r.id} aged out of the records (they keep the latest): ${all.open ? `${all.n - all.open} counted from the run’s tally, ${all.open} unavailable (not settled when ${all.open === 1 ? 'it' : 'they'} aged out)` : 'counted from the run’s tally, as they had settled'}`);
+    if (all.open || legs.some((l) => /aged out of the records before a receipt/.test(l.text)))
         d.evidenceLimited = true;
-        d.limits.push(`${plural(mq.evicted, 'publication')} of run #${r.id} ${mq.evicted === 1 ? 'is' : 'are'} no longer kept (the records keep the latest publications): ${mq.evicted === 1 ? 'it is' : 'they are'} not counted either way`);
-    }
     d.legs = legs.concat(d.legs.filter((l) => l.source === 'static'));
-    // the run's state: from its legs (a pending acknowledgment is waiting, never a failure)
-    const states = legs.map((l) => l.state);
-    const has = (x) => states.indexOf(x) >= 0;
-    const allOk = states.every((x) => x === 'established');
-    const completed = !running && !has('waiting') && !has('in-progress');
-    const counts = { succeeded: legs.filter((l) => l.state === 'established').length, recovered: 0, failed: legs.filter((l) => l.state === 'blocked' || l.state === 'failed').length, cancelled: legs.filter((l) => l.state === 'cancelled').length, waiting: legs.filter((l) => l.state === 'waiting').length, inFlight: legs.filter((l) => l.state === 'in-progress').length, toSend: running ? null : 0 };
-    const outcome = allOk ? 'succeeded' : counts.failed && counts.succeeded ? 'mixed' : counts.failed ? 'failed' : has('partial') ? 'mixed' : 'none';
+    // the run's state: from its legs, by the same rule as a send's messages (outcomeOf): a pending acknowledgment is waiting,
+    // never a failure; a leg not established (evidence unavailable) keeps the whole from succeeding
+    const n = (...xs) => legs.filter((l) => xs.indexOf(l.state) >= 0).length;
+    const completed = !running && !n('waiting', 'in-progress');
+    const counts = { succeeded: n('established'), recovered: 0, failed: n('blocked', 'failed', 'partial'), cancelled: n('cancelled'), waiting: n('waiting'), inFlight: n('in-progress'), toSend: running ? null : 0 };
+    const outcome = outcomeOf(n('established', 'partial'), counts.failed, counts.cancelled, n('indeterminate'));
     const cause = !counts.failed ? 'n/a' : legs.some((l) => l.state === 'failed') ? (legs.some((l) => l.state === 'blocked') ? 'partly' : 'unknown') : 'established';
     return { kind: 'mqtt', subject, exec, completed, outcome, cause, counts, groups: [], text: `${legs.map((l) => `${l.label.split(' (')[0]}: ${DIAG_WORD[l.state]}`).join('; ')}${running ? ' — the run goes on' : ''}` };
 }
@@ -70569,9 +70760,8 @@ function diagnose(input) {
         const part = mqttOf(mq, d);
         d.runtime = part;
         d.question.run = `${part.subject} · records up to ${sec(mq.now)}`;
-        const ls = d.legs.filter((l) => l.source === 'runtime').map((l) => l.state);
-        const has = (x) => ls.indexOf(x) >= 0;
-        d.state = ls.every((x) => x === 'established') ? 'established' : has('blocked') && ls.some((x) => x === 'established' || x === 'partial') ? 'partial' : has('blocked') ? 'blocked' : has('waiting') ? 'waiting' : has('in-progress') ? 'in-progress' : has('partial') ? 'partial' : has('failed') ? 'failed' : 'indeterminate';
+        // (the same rule as a send's: completion, the observed outcome, whether its cause is established)
+        d.state = runtimeState({ completed: part.completed, outcome: part.outcome, cause: part.cause, counts: part.counts, any: true, stopped: !!mq.run.stopped });
         d.provisional = !part.completed;
         d.summary = `In the simulation (${part.subject.split(' (')[0]}): ${part.text}.`;
     }
@@ -70595,6 +70785,15 @@ function diagnose(input) {
     if (!blockedStatic && c.verdict !== 'satisfied' && !rt && !mq)
         d.limits.push('The recorded evidence does not establish why: a simulation can exchange it (Prepare in simulation)');
     return d;
+}
+/** Every evidence reference a diagnosis gives (its blockers, chain, legs and next actions), in that order. */
+function diagnosisRefs(d) {
+    const out = [];
+    for (const l of d.blockers.concat(d.chain))
+        out.push(...l.refs, ...(l.messages || []));
+    for (const l of d.legs)
+        out.push(...l.refs);
+    return out;
 }
 const REL_TEXT = { cause: 'cause', contributing: 'contributing, not established as decisive', prerequisite: 'prerequisite', related: 'related', coincidence: 'coincidence (not linked)', hypothesis: 'not established' };
 /** The diagnosis as plain text (Copy, Save as text): the question, the answer, the evidence and its limits. */
@@ -70734,6 +70933,7 @@ exports.handoffOf = handoffOf;
 exports.staleProblem = staleProblem;
 exports.planMatches = planMatches;
 exports.runMatches = runMatches;
+exports.appRunProblem = appRunProblem;
 exports.compareRun = compareRun;
 exports.expectationFields = expectationFields;
 /**
@@ -70982,7 +71182,8 @@ function planMatches(id, p, model) {
     if (t.binding === 'application')
         return false;
     if (t.binding === 'name') {
-        if (p.target !== t.name || id.family === 6)
+        // the name, and the record its family asks for: AAAA for IPv6, A otherwise (a plan without a family resolves A)
+        if (p.target !== t.name || (p.family || 4) !== (id.family || 4))
             return false;
     }
     else if (t.binding === 'address') {
@@ -71017,11 +71218,58 @@ function planMatches(id, p, model) {
 function runMatches(id, run, model) {
     if (!planMatches(id, run.plan, model))
         return false;
+    // as sent: each message's effective destination of the family asked for (a host name resolved when it was sent: its
+    // address may change from one message to the next — never its family); an unresolved name's placeholder is no identity
+    if (id.family && run.tests.some((t) => sentTo(t) && t.dst.version !== id.family))
+        return false;
     const s = id.source;
     if (s.binding !== 'address' || !s.address)
         return true;
     const sent = run.tests.filter((t) => t.srcAddr !== undefined);
     return sent.length > 0 && sent.every((t) => t.srcAddr === s.address);
+}
+/** Did a message get an effective destination of its own (a host name resolved, or an address given)? */
+function sentTo(t) {
+    return !(t.target && (0, ip_1.parseAddress)(t.target) === null && t.resolved === undefined);
+}
+const svcWords = (x) => (x ? (x.proto === 'icmp' ? 'ICMP' : `${x.proto.toUpperCase()} ${x.port}`) : 'no service');
+/**
+ * Does a client application's run answer a question — null — or why not, said: the question's destination, service,
+ * family and routing context against the application's own communication (its configured peer or broker, transport and
+ * port, as the static check of the application resolves them) and against what its messages did as sent (each one's
+ * destination family, transport and port). A question from the application without a destination of its own asks its
+ * configured communication. A handoff's warning never makes a different communication this one's. Shared by every
+ * comparison of an application's run (TCP and UDP clients, MQTT clients).
+ */
+function appRunProblem(model, id, run) {
+    const app = id.source.app;
+    if (id.source.binding !== 'application' || !app)
+        return 'the question is not asked from a client application';
+    const own = commIdentity(model, (0, communication_1.checkCommunication)(model, { from: app }));
+    if (!own)
+        return `${app}’s own communication can’t be resolved`;
+    const t = id.destination;
+    const o = own.destination;
+    if (id.request.to) {
+        const theirs = o.device ? `${o.device}${o.address ? ` (${o.address})` : ''}` : o.address || 'its configured peer';
+        const asked = t.name || (t.device ? `${t.device}${t.address ? ` (${t.address})` : ''}` : t.address || id.request.to);
+        if ((t.device && o.device && t.device !== o.device) || (t.address && o.address && t.address !== o.address && !t.note))
+            return `destination: ${app} sends to ${theirs}, the question asks about ${asked}`;
+    }
+    if (id.service && own.service && (id.service.proto !== own.service.proto || (id.service.proto !== 'icmp' && id.service.port !== own.service.port)))
+        return `service: ${app} uses ${svcWords(own.service)}, the question asks about ${svcWords(id.service)}`;
+    if (id.family && own.family && id.family !== own.family)
+        return `family: ${app} uses IPv${own.family}, the question asks about IPv${id.family}`;
+    if (id.vrf !== undefined && own.vrf !== undefined && id.vrf !== own.vrf)
+        return `routing context: ${app} sends in ${own.vrf || 'the default table'}, the question asks about ${id.vrf || 'the default table'}`;
+    // as sent (a name resolved when sent, a lease when sent: only what its messages show)
+    for (const m of run.tests) {
+        if (id.service && id.service.proto !== 'icmp' && (m.kind !== id.service.proto || m.port !== id.service.port))
+            return `service: its message ${m.msg || 1} went as ${svcWords({ proto: m.kind, port: m.port })}, the question asks about ${svcWords(id.service)}`;
+        if (id.family && sentTo(m) && m.dst.version !== id.family)
+            return `family: its message ${m.msg || 1} went over IPv${m.dst.version}, the question asks about IPv${id.family}`;
+    }
+    return null;
 }
 /**
  * Compare a communication's static result with a run of the simulation
@@ -76211,8 +76459,9 @@ class Simulation {
     /**
      * An MQTT client's run, as recorded, for its diagnosis (analysis/diagnosis.ts): its newest run (said by its number
      * and start; an earlier run is never taken for it), that run's own publications with their broker receipt, PUBACK
-     * and each subscriber's receipt (mqtt.ts MqttPublication), how many of them are no longer kept, and the given
-     * subscribers' runs. Null when it never ran in this simulation. Reading it changes nothing.
+     * and each subscriber's receipt (mqtt.ts MqttPublication), the tally by topic of those no longer kept (what they had
+     * settled, and how many had not), and the given subscribers' configured filters and runs. Null when it never ran in
+     * this simulation. Reading it changes nothing.
      */
     mqttEvidence(dev, app, subscribers) {
         const cs = this.mqtt.clients.filter((c) => c.run.dev === dev && c.run.app.id === app);
@@ -76223,13 +76472,13 @@ class Simulation {
         const subs = subscribers.map((x) => {
             const runs = this.mqtt.clients.filter((y) => y.run.dev === x.dev && y.run.app.id === x.app).reverse().slice(0, 3);
             const a = this.apps.app(x.dev, x.app);
-            return { dev: x.dev, app: x.app, clientId: a ? (0, applications_1.mqttClientId)(x.dev, a) : `${x.dev}-${x.app}`, runs: runs.map((y) => ({ id: y.run.id, state: y.state, t0: y.run.t0, stoppedAt: y.run.stoppedAt, granted: Array.from(y.granted.entries()) })) };
+            return { dev: x.dev, app: x.app, clientId: a ? (0, applications_1.mqttClientId)(x.dev, a) : `${x.dev}-${x.app}`, filters: a ? a.subscribe.slice() : [], runs: runs.map((y) => ({ id: y.run.id, state: y.state, t0: y.run.t0, stoppedAt: y.run.stoppedAt, granted: Array.from(y.granted.entries()) })) };
         });
         return {
             exec: this.exec,
             run: { id: c.run.id, dev, app, clientId: c.clientId, broker: c.broker, qos: c.run.app.qos === 1 ? 1 : 0, t0: c.run.t0, stopped: c.run.stopped || c.state === 'Stopped', stoppedAt: c.run.stoppedAt, state: c.state, connects: c.connects, missed: c.missed, published: c.published, lastClose: c.lastClose, how: c.run.how, earlier: cs.length - 1 },
             pubs,
-            evicted: Math.max(0, c.published - pubs.length),
+            tally: this.mqtt.tallyOf(c.run.id),
             subscribers: subs,
             now: this.now,
         };
@@ -83338,6 +83587,14 @@ function utf8Bytes(s) {
 }
 /** A UTF-8 encoded string of an MQTT packet: its two-byte length and its bytes (3.1.1 §1.5.3). */
 const str = (s) => 2 + utf8Bytes(s);
+/**
+ * Has a publication's record settled: its outcome at the publisher known (QoS 1: its PUBACK, its loss or its
+ * cancellation; QoS 0: its receipt at the broker, or its cancellation) and each copy the broker sent received?
+ */
+function settled(p) {
+    const pub = p.qos === 1 ? p.acked !== undefined || p.lost !== undefined || p.cancelled !== undefined : p.brokerRx !== undefined || p.cancelled !== undefined;
+    return pub && p.deliveries.every((d) => d.rx !== undefined);
+}
 /** Packet identifiers are 16 bits, never 0 (3.1.1 §2.3.1). */
 const PID_MAX = 65535;
 /**
@@ -83365,11 +83622,54 @@ class MqttSim {
         this.pubs.push(p);
         this.pubById.set(p.id, p);
         while (this.pubs.length > exports.PUBS_KEPT) {
-            const old = this.pubs.shift();
+            // (the oldest settled one: a record still open stays while it can still settle — up to twice the bound)
+            let i = this.pubs.length > 2 * exports.PUBS_KEPT ? 0 : this.pubs.findIndex((x) => settled(x));
+            if (i < 0)
+                i = 0;
+            const old = this.pubs.splice(i, 1)[0];
             this.pubById.delete(old.id);
             this.pubsDropped++;
+            this.fold(old);
         }
         return p;
+    }
+    /** A record that ages out, into its run's tally: what it had settled counted, what it had not unavailable. */
+    fold(p) {
+        let byTopic = this.tallies.get(p.run);
+        if (!byTopic)
+            this.tallies.set(p.run, (byTopic = new Map()));
+        let t = byTopic.get(p.topic);
+        if (!t)
+            byTopic.set(p.topic, (t = { n: 0, acked: 0, lost: 0, cancelled: 0, rx: 0, open: 0, subs: {} }));
+        t.n++;
+        if (p.brokerRx !== undefined)
+            t.rx++;
+        if (p.acked !== undefined)
+            t.acked++;
+        else if (p.lost !== undefined)
+            t.lost++;
+        else if (p.cancelled !== undefined)
+            t.cancelled++;
+        else if (p.qos === 1 || p.brokerRx === undefined)
+            t.open++;
+        for (const d of p.deliveries) {
+            const s = t.subs[d.clientId] || (t.subs[d.clientId] = { got: 0, open: 0 });
+            if (d.rx !== undefined)
+                s.got++;
+            else
+                s.open++;
+        }
+    }
+    /** A run's tally by topic (copies; empty: none of its records aged out). */
+    tallyOf(run) {
+        const out = {};
+        for (const [k, t] of this.tallies.get(run) || []) {
+            const subs = {};
+            for (const c of Object.keys(t.subs))
+                subs[c] = { ...t.subs[c] };
+            out[k] = { ...t, subs };
+        }
+        return out;
     }
     constructor(P, T, A) {
         this.P = P;
@@ -83381,6 +83681,8 @@ class MqttSim {
         /** the publications' records, oldest first (the latest PUBS_KEPT), and how many left already */
         this.pubs = [];
         this.pubsDropped = 0;
+        /** what the records that aged out had come to: by run (AppRun id), by topic */
+        this.tallies = new Map();
         this.pubSeq = 0;
         this.pubById = new Map();
         for (const d of P.m.devices.slice().sort((x, y) => cmp(x.id, y.id))) {
@@ -83745,8 +84047,17 @@ class MqttSim {
         c.state = 'Stopped';
         c.gen++;
         this.note(c, 'disconnected', 'Stopped', `${this.name(c)} disconnects from ${c.broker}`);
-        // (the FIN after the DISCONNECT: a moment later, so both are in order on the wire)
-        this.e.after(50, () => this.as(c, () => s.close('DISCONNECT sent')));
+        // (the FIN after the DISCONNECT: a moment later, so both are in order on the wire; what is still unacknowledged then
+        // is discarded with the clean session — cancelled by the Stop, not lost)
+        this.e.after(50, () => this.as(c, () => {
+            s.close('DISCONNECT sent');
+            for (const f of c.inflight.values()) {
+                const p = this.publication(f.pub);
+                if (p && p.acked === undefined && p.lost === undefined && p.cancelled === undefined)
+                    p.cancelled = this.e.now;
+            }
+            c.inflight.clear();
+        }));
     }
     /** Stop (Network events): unsubscribe, disconnect, end the run. */
     stop(run) {
@@ -90002,6 +90313,7 @@ const addresses_1 = __req("model/addresses");
 const failure_1 = __req("analysis/failure");
 const engine_1 = __req("analysis/sim/engine");
 const pacing_1 = __req("analysis/sim/pacing");
+const travel_1 = __req("analysis/sim/travel");
 const params_1 = __req("analysis/sim/params");
 const simulation_1 = __req("analysis/sim/simulation");
 const status_place_1 = __req("ui/status-place");
@@ -90082,8 +90394,8 @@ class SimController {
         this.domainKey = '';
         /** the status side shows the protocols' status, or a table of the selected device */
         this.statusView = null;
-        /** a typical hop's simulated time per view (the readable pacing's reference) */
-        this.typicalHop = { physical: 0 };
+        /** the model's range of traversal costs (the readable pacing's scale, travel.ts) */
+        this.travel = null;
         this.onVis = () => this.schedule();
         /** Why it is paused (null: playing, or paused with no reason left). */
         this.pausedBy = null;
@@ -90139,12 +90451,12 @@ class SimController {
         if (this.senders.size !== devs.length)
             this.sim.engine.setSenders(this.senders, devs.filter((d) => this.senders.has(d.id)).map((d) => d.id).sort().join(', ') || 'none');
         this.stateSeen = this.sim.engine.stateVersion;
-        this.typicalHop.physical = this.physicalTypical();
+        this.travel = this.travelOfModel();
         this.pacer = new pacing_1.Pacer({
             engine: this.sim.engine,
             // (shown: in the view on screen, of what is shown, and drawn there — a track of the scene the dot can travel)
             shown: (f) => f.view === this.host.view() && this.flightShown(f) && this.renderable(f),
-            typical: (v) => this.typical(v),
+            travel: () => this.travel,
             headers: (f) => f.hdr,
             length: (f) => this.trackLength(f),
             testRunning: () => this.testRunning(),
@@ -90255,28 +90567,13 @@ class SimController {
     running() {
         return !this.stopped && this.playing && this.host.doc.visibilityState !== 'hidden';
     }
-    /** The typical hop of the physical view: the median of the cables' latency with a small frame's serialization. */
-    physicalTypical() {
-        const e = this.sim.engine;
-        const ls = this.host.model().links.map((l) => {
-            try {
-                return Number(e.latency(l.id).value) + (64 * 8 * 1000) / Number(e.speed(l.id).value);
-            }
-            catch (err) {
-                return NaN;
-            }
-        });
-        const ok = ls.filter((x) => x > 0 && isFinite(x)).sort((a, b) => a - b);
-        return ok.length ? ok[Math.floor(ok.length / 2)] : e.hopTime();
-    }
     /**
-     * The typical hop of a view: the cables' median; a relation or network
-     * line of the logical view spans about two of them. Fixed from the start
-     * (it changes only with a latency parameter), so that a hop's screen time
-     * never depends on which messages came first.
+     * The readable pacing's scale: the cables' traversal costs (latency and a small frame's serialization), both views alike.
+     * Fixed from the start (it changes only with a latency or speed parameter), so that a hop's screen time never depends on
+     * which messages came first.
      */
-    typical(view) {
-        return view === 'physical' ? this.typicalHop.physical : 2 * this.typicalHop.physical;
+    travelOfModel() {
+        return (0, travel_1.travelScale)(this.sim.engine.cableCosts());
     }
     /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
     schedule() {
@@ -90439,7 +90736,7 @@ class SimController {
         this.pacer.skipIdle = on;
         this.refresh(true);
     }
-    /** "Readable · 1 s per hop · 1×". */
+    /** "Readable · 3–5 s/hop · 1×". */
     pacingText() {
         return this.pacer.describe();
     }
@@ -91494,7 +91791,7 @@ class SimController {
         if (this.host.paramsChanged)
             this.host.paramsChanged(this.sim.params.simValues());
         this.logKey = '';
-        this.typicalHop.physical = this.physicalTypical();
+        this.travel = this.travelOfModel();
         this.refresh(true);
     }
     /** The model changed during the simulation (a device's Simulation settings, or their undo): they apply now. */
@@ -92547,8 +92844,7 @@ function logTime(ms) {
 __defs["analysis/sim/pacing"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Pacer = exports.JUMP_BUDGET = exports.FRAME_MAX = exports.IDLE_REST = exports.IDLE_HORIZON = exports.SKIP_REPORT = exports.LAG_CONT = exports.LAG_MAX = exports.TRANSIT_MS = exports.FADE_MS = exports.PULSE_MS = exports.LOST_MS = exports.RT_HOP = exports.ACTIVITY_MS = exports.CONV_DIVERSE = exports.CONV_LIMIT = exports.PROP_MAX = exports.PROP_MIN = exports.MAX_SPEED = exports.HOP_MAX = exports.HOP_MIN = exports.HOP_MS = exports.PACE_SCALES = exports.PACE_SPEEDS = void 0;
-exports.readableHop = readableHop;
+exports.Pacer = exports.JUMP_BUDGET = exports.FRAME_MAX = exports.IDLE_REST = exports.IDLE_HORIZON = exports.SKIP_REPORT = exports.LAG_CONT = exports.LAG_MAX = exports.TRANSIT_MS = exports.FADE_MS = exports.PULSE_MS = exports.LOST_MS = exports.RT_HOP = exports.ACTIVITY_MS = exports.CONV_DIVERSE = exports.CONV_LIMIT = exports.PROP_MAX = exports.PROP_MIN = exports.MAX_SPEED = exports.PACE_SCALES = exports.PACE_SPEEDS = void 0;
 exports.proportionalHop = proportionalHop;
 exports.scaleText = scaleText;
 exports.conversationKey = conversationKey;
@@ -92558,14 +92854,11 @@ exports.history = history;
 exports.illustrativeFlow = illustrativeFlow;
 exports.repeatKey = repeatKey;
 exports.flightKey = flightKey;
+const travel_1 = __req("analysis/sim/travel");
 exports.PACE_SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4];
 /** Proportional: display ms per simulated ms ("1 ms = 0.1 s", "1 ms = 1 s", "1 ms = 10 s"). */
 exports.PACE_SCALES = [100, 1000, 10000];
-/** Readable: the time of a typical hop, and the clamps (display ms at 1×). */
-exports.HOP_MS = 3000;
-exports.HOP_MIN = 2000;
-exports.HOP_MAX = 6000;
-/** The fastest a dot moves on screen (px per second at 100 % zoom, i.e. diagram units per second): a long line takes longer. */
+/** Proportional: the fastest a dot moves on screen (px per second at 100 % zoom, i.e. diagram units per second): a long line takes longer. */
 exports.MAX_SPEED = 70;
 /** Proportional: the shortest and the longest hop shown. */
 exports.PROP_MIN = 200;
@@ -92604,11 +92897,8 @@ exports.FRAME_MAX = 100;
 /** Real ms of simulation work a jump may take per frame. */
 exports.JUMP_BUDGET = 25;
 const EPS = 1e-6;
-/** Readable: the display time of a hop of `lat` ms where a typical hop takes `ref` ms. */
-function readableHop(lat, ref) {
-    const x = lat > 0 && ref > 0 ? lat / ref : 1;
-    return Math.max(exports.HOP_MIN, Math.min(exports.HOP_MAX, exports.HOP_MS * (1 + 0.6 * Math.log10(x))));
-}
+/** The middle of a line drawn in two halves: a network's, a hub's, a bus's. */
+const HALF = new Set(['net', 'hub', 'bus']);
 /** Proportional: `scale` display ms per simulated ms, within the bounds. */
 function proportionalHop(lat, scale) {
     return Math.max(exports.PROP_MIN, Math.min(exports.PROP_MAX, lat * scale));
@@ -92763,11 +93053,11 @@ class Pacer {
         if (this.host.engine.hold)
             this.host.engine.hold = null;
     }
-    /** "Readable · 3 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
+    /** "Readable · 3–5 s/hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
     describe() {
         const sp = `${this.speed}×`;
         const behind = this.behind > 0 ? ' · behind' : '';
-        const base = this.mode === 'readable' ? `Readable · ${exports.HOP_MS / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
+        const base = this.mode === 'readable' ? `Readable · ${travel_1.TRAVEL_MIN / 1000}–${travel_1.TRAVEL_MAX / 1000} s/hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
         const h = this.holding();
         const wait = h ? ` · ${holdText(h.f)}` : '';
         return (this.fgNow ? `${base} · your events in front` : base) + wait;
@@ -92814,13 +93104,30 @@ class Pacer {
         const id = this.host.engine.heldNext();
         return id === null ? null : this.byId.get(id) || null;
     }
-    /** The display time of a hop of `lat` simulated ms in a view. */
-    hopTime(lat, view, length) {
+    /** The display time of a hop of `lat` simulated ms (at 1×; the clock's speed applies on top). */
+    hopTime(lat, length) {
         if (this.mode === 'realtime')
             return exports.RT_HOP;
-        const t = this.mode === 'readable' ? readableHop(lat, this.host.typical(view)) : proportionalHop(lat, this.scale);
+        if (this.mode === 'readable')
+            return (0, travel_1.travelMs)(lat, this.host.travel());
         // never faster than MAX_SPEED on screen
+        const t = proportionalHop(lat, this.scale);
         return length ? Math.max(t, (length / exports.MAX_SPEED) * 1000) : t;
+    }
+    /**
+     * A hop's display time as taken in: a line drawn in two halves (to a network, a hub, a bus and on) is one traversal in
+     * Readable — its first half half the time of twice its cost, its second the rest of its whole's (the first's start to its
+     * end), so that the whole line takes what one line of that cost takes, never two crossings.
+     */
+    hopOf(f, lat, parent) {
+        const length = this.host.length ? this.host.length(f) : null;
+        if (this.mode !== 'readable')
+            return this.hopTime(lat, length);
+        if (HALF.has(f.track.to))
+            return this.hopTime(2 * lat) / 2;
+        if (HALF.has(f.track.from) && parent && HALF.has(parent.f.track.to) && parent.f.track.ref === f.track.ref)
+            return Math.max(0, this.hopTime(f.t1 - parent.f.t0) - parent.hop);
+        return this.hopTime(lat);
     }
     find(id) {
         return this.byId.get(id);
@@ -93030,7 +93337,7 @@ class Pacer {
                     this.act.push({ f, at: this.clock });
                 }
             }
-            const it = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key, test, parent: pAny };
+            const it = { f, lat, d0, transit, hop: this.hopOf(f, lat, pAny), drawn, key, test, parent: pAny };
             if (sample)
                 it.example = true;
             if (this.gates(it))
@@ -93309,6 +93616,77 @@ class Pacer {
     }
 }
 exports.Pacer = Pacer;
+
+};
+__defs["analysis/sim/travel"] = function (module, exports) {
+"use strict";
+/**
+ * Visible travel time: how long a dot takes on screen to cross the line it
+ * is drawn on, in Readable pacing at 1× (the normal playback). The one
+ * mapping from a hop's modelled traversal cost to its presentation time;
+ * nothing else decides it. DOM-free.
+ *
+ * The cost of a hop is its modelled simulated time on its line: a cable's
+ * propagation delay plus its frame's serialization (bytes × 8 ÷ speed) — the
+ * engine's own wire timing, taken once (the flight's t1 − t0, never latency
+ * and serialization added again); a relation's lane its transfer as the
+ * engine estimates it over its underlay (the cables of its traced path,
+ * each with its own latency and speed: Engine.estimate). A line drawn in
+ * two halves (to a network, a hub or a bus and on) is one traversal: the
+ * halves share the time of their whole.
+ *
+ * Simulated costs are tiny (0.1 ms on a LAN cable, 20 ms on a WAN link), so
+ * they are compressed on a log scale over the model's own range rather than
+ * clamped: from the model's cheapest cable (TRAVEL_MIN) to TRAVEL_SPAN
+ * times its dearest (TRAVEL_MAX; a logical line usually spans a few
+ * cables). When the cables differ less than TRAVEL_DECADES, the window is
+ * widened to that, a fifth of it below the cheapest cable and the rest above
+ * — so a homogeneous model's cables sit just inside the bounds (about
+ * 3.3 s), never all on the floor, a smaller frame or a faster link shows a
+ * little shorter, and a relation over two cables, a larger frame or a slower
+ * link longer. A cheaper hop always shows shorter than a dearer one within
+ * the bounds. The scale is fixed when the simulation starts (and when a
+ * latency or speed parameter changes), never by which messages came first.
+ *
+ * Without a cost (none modelled, zero, unknown) or a scale (a model without
+ * cables), a hop takes TRAVEL_NEUTRAL: the middle, said nowhere to be a
+ * latency. The speed control divides these times (2× halves them, 0.5×
+ * doubles them); paused time is not counted. A dot's seconds are never a
+ * delay of the network: the simulated times stay what the engine made them.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TRAVEL_BELOW = exports.TRAVEL_DECADES = exports.TRAVEL_SPAN = exports.TRAVEL_NEUTRAL = exports.TRAVEL_MAX = exports.TRAVEL_MIN = void 0;
+exports.travelScale = travelScale;
+exports.travelMs = travelMs;
+/** Readable at 1×: the shortest and the longest crossing of a line (display ms). */
+exports.TRAVEL_MIN = 3000;
+exports.TRAVEL_MAX = 5000;
+/** No modelled cost or no scale: the middle. */
+exports.TRAVEL_NEUTRAL = 4000;
+/** The scale's top: this many times the dearest cable (a logical line spans several). */
+exports.TRAVEL_SPAN = 4;
+/** The scale's narrowest window (decades of cost), and the share of a widening that goes below the cheapest cable. */
+exports.TRAVEL_DECADES = 2;
+exports.TRAVEL_BELOW = 0.2;
+const ok = (x) => x > 0 && isFinite(x);
+/** The scale from the model's cable costs (simulated ms each); null without any. */
+function travelScale(costs) {
+    const c = costs.filter(ok);
+    if (!c.length)
+        return null;
+    const lo = Math.log10(Math.min(...c));
+    const hi = Math.log10(Math.max(...c) * exports.TRAVEL_SPAN);
+    const short = Math.max(0, exports.TRAVEL_DECADES - (hi - lo));
+    return { lo: Math.pow(10, lo - short * exports.TRAVEL_BELOW), hi: Math.pow(10, hi + short * (1 - exports.TRAVEL_BELOW)) };
+}
+/** The display time (ms at 1×) of a traversal costing `cost` simulated ms; TRAVEL_NEUTRAL without a cost or a scale. */
+function travelMs(cost, scale) {
+    if (cost === null || cost === undefined || !ok(cost) || !scale)
+        return exports.TRAVEL_NEUTRAL;
+    const lo = Math.log10(scale.lo);
+    const x = (Math.log10(cost) - lo) / (Math.log10(scale.hi) - lo);
+    return exports.TRAVEL_MIN + (exports.TRAVEL_MAX - exports.TRAVEL_MIN) * Math.max(0, Math.min(1, x));
+}
 
 };
 __defs["ui/status-place"] = function (module, exports) {
@@ -95311,7 +95689,8 @@ const BG_FONT = 8.5;
  * UDP. Never addresses or interfaces (the inspector and the log have them).
  */
 function bgKind(protocol, label, flags) {
-    const name = BG_NAMES[protocol] || protocol.toUpperCase().slice(0, 10);
+    // (a custom protocol by its own name: "custom:tel" is TEL — a short label is letters and digits only)
+    const name = BG_NAMES[protocol] || protocol.replace(/^custom:/, '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 10) || 'MSG';
     // a TCP segment (of whatever protocol): its flags, from its header
     if (flags !== undefined)
         return `${name} ${flags}`;

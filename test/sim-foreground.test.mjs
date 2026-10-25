@@ -14,16 +14,17 @@
 // throughout: the scenario and the events share the network.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example, withClock } from './helpers.mjs';
+import { load, model, example, withClock, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
+const T = load('analysis/sim/travel.js');
 const PS = example('protocol-simulation.yaml');
 
 /** The pacing over the busy example; `frame(ms)` is the page's animation frame. */
 function paced(set = {}, fg = true) {
   const sim = withClock(new S.Simulation(model(PS)));
-  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr };
+  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', travel: travelOf(sim.engine), headers: (f) => f.hdr };
   if (fg) {
     host.foreground = () => sim.foregroundActive();
   }
@@ -62,7 +63,11 @@ test('a stream of Network events in Readable pacing: one datagram every second o
   assert.equal(a.stream.sent, Math.floor((sim.now - sends[0]) / 1000) + 1, `${a.stream.sent} datagrams in ${sim.now - t0} ms of simulated time`);
   assert.doesNotMatch(p.describe(), /real time/);
   // the dots keep their readable time
-  assert.ok(p.items.filter((it) => it.f.test === a.traffic).every((it) => it.hop >= P.HOP_MIN));
+  // (a logical network line's two halves are one traversal: counted whole, at the second)
+  const mid = (x) => ['net', 'hub', 'bus'].indexOf(x.f.track.to) >= 0;
+  const whole = (it) => (it.parent && mid(it.parent) && it.parent.f.track.ref === it.f.track.ref ? it.parent.hop + it.hop : it.hop);
+  const ours = p.items.filter((it) => it.f.test === a.traffic && !mid(it));
+  assert.ok(ours.length > 0 && ours.every((it) => whole(it) >= T.TRAVEL_MIN - 1e-6 && whole(it) <= T.TRAVEL_MAX + 1e-6));
   // the same stream without a display, run to the same simulated time: the same datagrams at the same times
   const bare = new S.Simulation(model(PS));
   bare.runTo(t0);

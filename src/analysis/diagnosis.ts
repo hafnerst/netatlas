@@ -55,7 +55,8 @@ import { PathMtu } from './mtu';
 import { AnalysisContext, Verdict, contextText, verdictText } from './result';
 import type { OutcomeDrop, Test } from './sim/transport';
 import type { DropCause, SimEvent, WaitRecord } from './sim/types';
-import type { MqttPublication } from './sim/mqtt';
+import type { MqttPublication, MqttTally } from './sim/mqtt';
+import { topicMatches } from '../model/applications';
 import { formatAddr } from './ipmath';
 
 export type LinkKind = 'cause' | 'contributing' | 'prerequisite' | 'related' | 'coincidence' | 'hypothesis';
@@ -69,6 +70,8 @@ export interface EvidenceRef {
    */
   ref: string;
   label: string;
+  /** a policy decision the simulation recorded: the text of the rule that decided, as it was then (what a link must show) */
+  decided?: string;
 }
 
 export interface ChainLink {
@@ -206,9 +209,10 @@ export interface MqttEvidence {
   exec: number;
   run: { id: number; dev: string; app: string; clientId: string; broker: string; qos: 0 | 1; t0: number; stopped: boolean; stoppedAt?: number; state: string; connects: number; missed: number; published: number; lastClose?: string; how: string; earlier: number };
   pubs: MqttPublication[];
-  /** its publications no longer kept (the records keep the latest) */
-  evicted: number;
-  subscribers: Array<{ dev: string; app: string; clientId: string; runs: Array<{ id: number; state: string; t0: number; stoppedAt?: number; granted: Array<[string, number]> }> }>;
+  /** its publications no longer kept (the records keep the latest), by topic: what they had come to (mqtt.ts MqttTally) */
+  tally: { [topic: string]: MqttTally };
+  /** each subscriber asked about: its configured filters (what it asks for; the broker's grant is its run's) and its runs */
+  subscribers: Array<{ dev: string; app: string; clientId: string; filters: string[]; runs: Array<{ id: number; state: string; t0: number; stoppedAt?: number; granted: Array<[string, number]> }> }>;
   now: number;
 }
 
@@ -246,7 +250,7 @@ function waitWords(cond: string): string {
 
 /** The ref of a policy decision: its written rule, the default action, or a firewall's implicit policy. */
 function policyRef(p: NonNullable<DropCause['policy']>): EvidenceRef {
-  if (p.rule) return { ref: `policy:${p.device}:${p.rule}`, label: `${p.device} rule ${p.rule}` };
+  if (p.rule) return { ref: `policy:${p.device}:${p.rule}`, label: `${p.device} rule ${p.rule}`, decided: p.ruleText };
   if (p.byDefault && p.ruleText !== 'implicit policy: relations and allow list') return { ref: `policy:${p.device}:default`, label: `${p.device} default action` };
   return { ref: `policy:${p.device}:implicit`, label: `${p.device} ${p.ruleText || 'policy'}` };
 }
@@ -376,6 +380,13 @@ function explainAttempt(t: Test, rt: RuntimeEvidence): AttemptView {
   const own = t.pktIds;
   const out = (key: string, rel: LinkKind, head: string, refs: EvidenceRef[], decisive: OutcomeDrop[] = []): AttemptView => {
     links.push({ rel, source: 'runtime', text: head, refs, t: end });
+    // (what else its exchange recorded — an attempt lost before the answer that decided — contributing, never the outcome)
+    const p = o && o.cause && o.cause.policy;
+    for (const x of drops) {
+      if (decisive.indexOf(x) >= 0 || (o && o.event !== undefined && x.seq === o.event)) continue;
+      if (p && x.cause && x.cause.policy && x.cause.policy.device === p.device && x.cause.policy.rule === p.rule) continue;
+      links.push({ rel: 'contributing', source: 'runtime', text: `also recorded in its exchange: ${dropDesc(x)}`, refs: dropRefs(x, exec, own), t: x.t });
+    }
     return { ...base, state: 'failed', key, rel, head, refs, decisive };
   };
   // (what the answer that ended it reports, as its sender recorded it: a policy's rejection, a closed port)
@@ -430,7 +441,6 @@ function explainAttempt(t: Test, rt: RuntimeEvidence): AttemptView {
     const att = drops.filter((d) => d.attempt);
     const keys = Array.from(new Set(att.map(dropKey))).sort();
     const descs = Array.from(new Set(att.map((d) => dropDesc(d))));
-    for (const d of drops.filter((x) => !x.attempt)) links.push({ rel: 'contributing', source: 'runtime', text: `also recorded in its exchange: ${dropDesc(d)}`, refs: dropRefs(d, exec, own), t: d.t });
     const head = attempts === 1 ? `${what}: its packet was dropped — ${descs[0]}` : keys.length === 1 ? `${what}: each of its ${attempts} attempts was dropped — ${descs[0]}` : `${what}: each of its ${attempts} attempts was dropped — ${descs.join('; ')}`;
     const refs = [testRef].concat(...att.slice(-3).map((d) => dropRefs(d, exec, own)));
     return out('drops:' + keys.join('|'), 'cause', head, refs, att);
@@ -522,11 +532,22 @@ function prereqChain(d: OutcomeDrop, rt: RuntimeEvidence, check: CommCheck): Cha
   if (c.kind === 'tunnel-down' && c.iface) refs.push({ ref: `iface:${d.device}:${c.iface}`, why: `the tunnel interface ${d.device}:${c.iface}`, source: 'runtime' });
   if (c.kind === 'iface-down' && c.iface) refs.push({ ref: `iface:${d.device}:${c.iface}`, why: `${d.device}:${c.iface}`, source: 'runtime' });
   if (c.kind === 'cable' && c.link) refs.push({ ref: 'link:' + c.link, why: `cable ${c.link}`, source: 'runtime' });
-  if (c.kind === 'no-route' || c.kind === 'blackhole') {
-    // (the configured model's route at that device: the relations its hop uses — a learned route's sessions, a tunnel)
-    const hop = check.trace && check.trace.paths[0] ? check.trace.paths[0].hops.find((h) => h.device === d.device) : undefined;
-    const rels = hop ? hop.relations : [];
-    if (rels.length) for (const r of rels) refs.push({ ref: 'relation:' + r, dev: d.device, why: `the configured model's path at ${d.device} uses ${r}`, source: 'static' });
+  if (c.kind === 'no-route' && c.unusable && c.unusable.some((u) => u.relation || u.iface)) {
+    // the routes the device's own decision found unusable at that moment (recorded): each one's interface or relation is
+    // what that route needed — a prerequisite when it was the only one, one of the alternatives when there were several
+    const one = c.unusable.length === 1;
+    for (const u of c.unusable) {
+      const why = `${one ? 'its' : 'one of its'} route${one ? '' : 's'} to it (${u.route}) could not be used at the drop: ${u.detail}`;
+      if (u.relation) refs.push({ ref: 'relation:' + u.relation, dev: d.device, why, source: one ? 'runtime' : 'static' });
+      else if (u.iface) refs.push({ ref: `iface:${d.device}:${u.iface}`, why, source: one ? 'runtime' : 'static' });
+    }
+  } else if (c.kind === 'no-route' || c.kind === 'blackhole') {
+    // (no route has no runtime identity to follow: the configured model's paths at that device are the only clue — every
+    // alternative's relations, none picked as the one it needed; what they did is related, never its established cause)
+    const alts = (check.trace ? check.trace.paths : []).map((p) => p.hops.find((h) => h.device === d.device)).filter((h): h is NonNullable<typeof h> => !!h);
+    const rels = Array.from(new Set(alts.reduce((a: string[], h) => a.concat(h.relations), []))).sort();
+    const several = alts.length > 1 || rels.length > 1;
+    if (rels.length) for (const r of rels) refs.push({ ref: 'relation:' + r, dev: d.device, why: several ? `one of the configured model's alternatives at ${d.device} uses ${r} (${plural(alts.filter((h) => h.relations.indexOf(r) >= 0).length, 'path')} of ${alts.length}): which one the route needed is not recorded` : `the configured model's path at ${d.device} uses ${r}; that the missing route needed it is not recorded`, source: 'static' });
     else out.push({ rel: 'hypothesis', source: 'runtime', text: `What withdrew or never installed the route at ${d.device} is not recorded: the configured model's path there names no relation it is learned over`, refs: [{ ref: 'device:' + d.device, label: d.device }], t: d.t });
   }
   for (const r of refs) {
@@ -535,11 +556,13 @@ function prereqChain(d: OutcomeDrop, rt: RuntimeEvidence, check: CommCheck): Cha
     const at = r.dev || d.device;
     const tr = transitionBefore(rt.log, r.ref, d.t, isRel ? at : undefined);
     const whole = rt.retained.dropped === 0;
+    // (a relation known only from the configured model is related: what it did is said, never as what the drop needed)
+    const staticOnly = r.source === 'static';
     if (!tr) {
       // (no state change kept: from the start, it never came up — said so only when the log reaches back to the start)
       if (isRel && whole) {
-        out.push({ rel: 'prerequisite', source: 'runtime', text: `${label} had not come up at ${at} by ${sec(d.t)}: no state change of it is recorded since the simulation started — ${r.why}`, refs: [{ ref: r.ref, label }], t: d.t });
-        out.push(...silence(label, at, -1, d.t, rt));
+        out.push({ rel: staticOnly ? 'related' : 'prerequisite', source: 'runtime', text: `${label} had not come up at ${at} by ${sec(d.t)}: no state change of it is recorded since the simulation started — ${r.why}`, refs: [{ ref: r.ref, label }], t: d.t });
+        out.push(...silence(label, at, -1, d.t, rt, staticOnly));
       } else out.push({ rel: 'hypothesis', source: r.source, text: `${cap(label)} (${r.why}): no state change of it is ${whole ? 'recorded' : 'kept'} before ${sec(d.t)}${whole ? '' : ' (the log keeps the latest events only)'} — what made it unavailable is not established`, refs: [{ ref: r.ref, label }], t: d.t });
       continue;
     }
@@ -548,19 +571,22 @@ function prereqChain(d: OutcomeDrop, rt: RuntimeEvidence, check: CommCheck): Cha
       out.push({ rel: 'related', source: 'runtime', text: `${label} was last recorded up (${sec(tr.t)}${x.reason ? ': ' + x.reason : ''}) before ${sec(d.t)}; what made it unavailable then is not recorded`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
       continue;
     }
-    out.push({ rel: 'prerequisite', source: 'runtime', text: `${label} went down at ${sec(tr.t)}${x.device ? ' at ' + x.device : ''} (recorded: ${x.reason || 'down'}) — ${r.why}`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
+    out.push({ rel: staticOnly ? 'related' : 'prerequisite', source: 'runtime', text: `${label} went down at ${sec(tr.t)}${x.device ? ' at ' + x.device : ''} (recorded: ${x.reason || 'down'}) — ${r.why}`, refs: [{ ref: `event:${exec}:${tr.seq}`, label: 'event at ' + sec(tr.t) }, { ref: r.ref, label }], t: tr.t });
     // a session that heard nothing: its peer's packets, and its own, in that interval as recorded
-    if (isRel && x.lastHeard !== undefined) out.push(...silence(label, x.device || at, x.lastHeard, tr.t, rt));
+    if (isRel && x.lastHeard !== undefined) out.push(...silence(label, x.device || at, x.lastHeard, tr.t, rt, staticOnly));
   }
   return out;
 }
 
 /**
  * Why a session at `dev` heard nothing from `from` to `to` (-1: since the start), as recorded: its peer's messages to it
- * and their drops, else its own messages and theirs. Decisive only when every message of that direction has a recorded
- * drop, all of one cause; else contributing; with no drop recorded, said as not established.
+ * and their drops, else its own messages and theirs. Decisive only when each message of that direction has its own
+ * recorded drop (by the message's identity: a duplicate or a second observation of the same message counts once, a
+ * multicast copy dropped on one way is no loss of the message, another message of the session covers nothing), all of
+ * one cause; else contributing; with no drop recorded, said as not established. `related`: the session itself is only
+ * the configured model's clue (a missing route's alternative) — what it heard is related, never a cause.
  */
-function silence(rel: string, dev: string, from: number, to: number, rt: RuntimeEvidence): ChainLink[] {
+function silence(rel: string, dev: string, from: number, to: number, rt: RuntimeEvidence, related = false): ChainLink[] {
   const inWin = (e: SimEvent): boolean => e.t > from && e.t <= to;
   const msgs = rt.log.filter((e) => e.kind === 'message' && e.relation === rel && inWin(e));
   const drops = rt.log.filter((e) => e.kind === 'drop' && !!e.cause && e.cause.session === rel && inWin(e));
@@ -572,11 +598,18 @@ function silence(rel: string, dev: string, from: number, to: number, rt: Runtime
   const pick = peer.sent.length ? { s: peer, who: `the packets its peer sent to ${dev}` } : { s: own, who: `${dev}’s own packets to its peer (its peer sent nothing back)` };
   const lost = pick.s.lost;
   if (!lost.length) return [{ rel: 'hypothesis', source: 'runtime', text: `${rel} heard nothing at ${dev} from ${since} to ${sec(to)}; no drop of its own packets is recorded in that interval — why is not established`, refs: [{ ref: 'relation:' + rel, label: rel }], t: to }];
-  const keys = Array.from(new Set(lost.map((e) => dropKey(e))));
-  const all = lost.length >= pick.s.sent.length && keys.length === 1;
+  // coverage by identity: each message sent in the interval has a drop of its own (not a copy's)
+  const lostMsgs = new Set(lost.filter((e) => !(e.cause as DropCause).copy && (e.cause as DropCause).msg !== undefined).map((e) => (e.cause as DropCause).msg as number));
+  const covered = pick.s.sent.filter((e) => lostMsgs.has(e.seq));
+  const coverers = lost.filter((e) => covered.some((m) => (e.cause as DropCause).msg === m.seq));
+  const keys = Array.from(new Set((coverers.length ? coverers : lost).map((e) => dropKey(e))));
+  const all = pick.s.sent.length > 0 && covered.length === pick.s.sent.length && keys.length === 1;
   const first = lost[lost.length - 1];
   const desc = dropDesc({ device: first.device, cause: first.cause, text: first.detail, t: first.t });
-  return [{ rel: all ? 'cause' : 'contributing', source: 'runtime', text: `${all ? `It heard nothing because ${pick.who} were dropped` : `Some of ${pick.who} were dropped`} from ${since} to ${sec(to)} (${plural(lost.length, 'drop')} of ${plural(pick.s.sent.length, 'message')}): ${desc}${keys.length > 1 ? ` and ${keys.length - 1} other cause${keys.length === 2 ? '' : 's'}` : ''}`, refs: dropRefs({ seq: first.seq, t: first.t, device: first.device, cause: first.cause, text: first.detail }, rt.exec, []), t: first.t }];
+  const kind: LinkKind = related ? 'related' : all ? 'cause' : 'contributing';
+  const of = `${covered.length} of ${plural(pick.s.sent.length, 'message')} with a drop of its own recorded${lost.length !== covered.length ? `; ${plural(lost.length, 'drop')} in all` : ''}`;
+  const head = !all ? `Some of ${pick.who} were dropped` : related ? `It heard nothing: ${pick.who} were dropped` : `It heard nothing because ${pick.who} were dropped`;
+  return [{ rel: kind, source: 'runtime', text: `${head} from ${since} to ${sec(to)} (${of}): ${desc}${keys.length > 1 ? ` and ${keys.length - 1} other cause${keys.length === 2 ? '' : 's'}` : ''}`, refs: dropRefs({ seq: first.seq, t: first.t, device: first.device, cause: first.cause, text: first.detail }, rt.exec, []), t: first.t }];
 }
 
 /** The equal-cost branches a run's packets took, as recorded (route events): "message 2: at r1 branch 2 of 2 (out c)". */
@@ -592,6 +625,19 @@ function branchesOf(rt: RuntimeEvidence): string[] {
   return out;
 }
 
+/**
+ * A run's observed outcome from its parts' terminal outcomes, one rule for a send's messages, an application's and an
+ * MQTT run's legs: nothing terminal is none; one kind is that kind; several are mixed. A part not established (its
+ * evidence unavailable) keeps the whole from succeeding: none, unless a failure or cancellation is observed.
+ */
+function outcomeOf(ok: number, failed: number, cancelled: number, unknown = 0): RuntimePart['outcome'] {
+  const kinds = [ok > 0, failed > 0, cancelled > 0].filter((x) => x).length;
+  if (kinds === 0) return 'none';
+  if (kinds > 1) return 'mixed';
+  if (ok) return unknown ? 'none' : 'succeeded';
+  return failed ? 'failed' : 'cancelled';
+}
+
 /** The runtime state from what was observed (see the module comment). */
 function runtimeState(p: Omit<RuntimePart, 'text' | 'kind' | 'subject' | 'exec' | 'groups'> & { any: boolean; stopped: boolean }): DiagnosisState {
   const k = p.counts;
@@ -600,6 +646,7 @@ function runtimeState(p: Omit<RuntimePart, 'text' | 'kind' | 'subject' | 'exec' 
     if (p.outcome === 'succeeded') return k.recovered ? 'recovered' : 'established';
     if (p.outcome === 'failed') return p.cause === 'established' ? 'blocked' : 'failed';
     if (p.outcome === 'cancelled') return 'cancelled';
+    if (p.outcome === 'none') return 'indeterminate';
     return 'partial';
   }
   if (k.failed) return 'partial';
@@ -629,9 +676,7 @@ function runtimeOf(rt: RuntimeEvidence, check: CommCheck): { part: RuntimePart; 
   const sj = rt.subject;
   k.toSend = sj.stopped ? 0 : sj.count === null ? null : Math.max(0, sj.count - sj.sent);
   const completed = !k.waiting && !k.inFlight && k.toSend === 0;
-  const ok = k.succeeded + k.recovered;
-  const kinds = [ok > 0, k.failed > 0, k.cancelled > 0].filter((x) => x).length;
-  const outcome: RuntimePart['outcome'] = kinds === 0 ? 'none' : kinds > 1 ? 'mixed' : ok ? 'succeeded' : k.failed ? 'failed' : 'cancelled';
+  const outcome = outcomeOf(k.succeeded + k.recovered, k.failed, k.cancelled);
   // the failures, grouped by what decided each (or by their kind, when that is not established)
   const groups = new Map<string, { view: AttemptView; msgs: MessageView[] }>();
   for (const m of msgs) {
@@ -677,91 +722,143 @@ function runtimeOf(rt: RuntimeEvidence, check: CommCheck): { part: RuntimePart; 
   return { part, chain, evicted, heads: { groups: gh, waiting: head('waiting'), recovered: head('recovered') } };
 }
 
-/** An MQTT client's run: the publisher's leg and each subscriber's, from its own publications' records. */
+/** A run's tally (by topic) summed over the topics `keep` takes, with one subscriber's part of it. */
+function tallied(tally: MqttEvidence['tally'], keep: (topic: string) => boolean, clientId?: string): { n: number; acked: number; lost: number; cancelled: number; rx: number; open: number; got: number; subOpen: number } {
+  const t = { n: 0, acked: 0, lost: 0, cancelled: 0, rx: 0, open: 0, got: 0, subOpen: 0 };
+  for (const topic of Object.keys(tally).sort()) {
+    if (!keep(topic)) continue;
+    const x = tally[topic];
+    t.n += x.n;
+    t.acked += x.acked;
+    t.lost += x.lost;
+    t.cancelled += x.cancelled;
+    t.rx += x.rx;
+    t.open += x.open;
+    const s = clientId !== undefined ? x.subs[clientId] : undefined;
+    if (s) {
+      t.got += s.got;
+      t.subOpen += s.open;
+    }
+  }
+  return t;
+}
+
+/** An MQTT client's run: the publisher's leg and each subscriber's, from its own publications' records (and the tally of those aged out). */
 function mqttOf(mq: MqttEvidence, d: Diagnosis): RuntimePart {
   const exec = mq.exec;
   const r = mq.run;
   const pubs = mq.pubs;
+  const all = tallied(mq.tally, () => true);
+  const total = pubs.length + all.n;
   const pktRef = (p: number[], label: string): EvidenceRef[] => (p.length ? [{ ref: `packet:${exec}:${p[0]}`, label }] : []);
-  const subject = `MQTT run #${r.id} of ${r.dev}/${r.app} (${r.how === 'event' ? 'started from Network events' : r.how === 'start' ? 'started with the simulation' : 'started by an experiment'} at ${sec(r.t0)}; ${plural(pubs.length + mq.evicted, 'publication')}${r.earlier ? `; ${plural(r.earlier, 'earlier run')} not counted` : ''})`;
+  const subject = `MQTT run #${r.id} of ${r.dev}/${r.app} (${r.how === 'event' ? 'started from Network events' : r.how === 'start' ? 'started with the simulation' : 'started by an experiment'} at ${sec(r.t0)}; ${plural(total, 'publication')}${r.earlier ? `; ${plural(r.earlier, 'earlier run')} not counted` : ''})`;
   const running = !r.stopped;
   const legs: DiagnosisLeg[] = [];
+  // (the records that aged out: counted from the run's tally, settled outcomes as they were; the unsettled ones unavailable)
+  const agedText = all.n ? ` (${all.n} of them aged out of the records: counted from the run’s tally)` : '';
+  const unavailable = (n: number): string => `${n === 1 ? '1 earlier publication’s outcome is' : `${n} earlier publications’ outcomes are`} unavailable — ${n === 1 ? 'it' : 'they'} aged out of the records before ${n === 1 ? 'it' : 'they'} settled; the whole run is not established`;
   // ---- the publisher → the broker
   let pubState: DiagnosisState;
   let pubText: string;
   const acked = pubs.filter((p) => p.acked !== undefined);
   const lost = pubs.filter((p) => p.acked === undefined && p.lost !== undefined);
-  const pending = pubs.filter((p) => p.acked === undefined && p.lost === undefined);
+  const cancelled = pubs.filter((p) => p.acked === undefined && p.lost === undefined && p.cancelled !== undefined);
+  const pending = pubs.filter((p) => p.acked === undefined && p.lost === undefined && p.cancelled === undefined);
   const atBroker = pubs.filter((p) => p.brokerRx !== undefined);
   const dups = pubs.reduce((n, p) => n + p.dups, 0);
-  if (!pubs.length) {
-    pubState = mq.evicted ? 'indeterminate' : running ? (r.state === 'Connected' ? 'in-progress' : 'waiting') : 'cancelled';
-    pubText = mq.evicted ? `its ${plural(mq.evicted, 'publication')} are no longer kept: not available` : running ? `nothing published yet (${r.state === 'Connected' ? 'connected' : 'its connection to the broker: ' + r.state.toLowerCase()})` : 'it stopped before publishing anything';
+  if (!total) {
+    pubState = running ? (r.state === 'Connected' ? 'in-progress' : 'waiting') : 'cancelled';
+    pubText = running ? `nothing published yet (${r.state === 'Connected' ? 'connected' : 'its connection to the broker: ' + r.state.toLowerCase()})` : 'it was stopped before publishing anything';
   } else if (r.qos === 1) {
-    const parts = [`${plural(pubs.length, 'publication')}`, acked.length ? `${acked.length} acknowledged by the broker (PUBACK)` : '', pending.length ? `${pending.length} waiting for PUBACK${running ? '' : ' (the run is stopped)'}` : '', lost.length ? `${lost.length} lost before PUBACK: the connection closed (${lost[0].lostWhy || 'recorded'})` : '', dups ? `${plural(dups, 'DUP copy', 'DUP copies')} sent` : ''].filter((x) => !!x);
+    const A = acked.length + all.acked;
+    const Lo = lost.length + all.lost;
+    const Ca = cancelled.length + all.cancelled;
+    const parts = [`${plural(total, 'publication')}${agedText}`, A ? `${A} acknowledged by the broker (PUBACK)` : '', pending.length ? `${pending.length} waiting for PUBACK` : '', Lo ? `${Lo} lost before PUBACK: the connection closed (${lost.length ? lost[0].lostWhy || 'recorded' : 'tallied'})` : '', Ca ? `${Ca} cancelled by Stop before PUBACK (discarded with the clean session)` : '', dups ? `${plural(dups, 'DUP copy', 'DUP copies')} sent` : ''].filter((x) => !!x);
     const rxNoAck = pending.filter((p) => p.brokerRx !== undefined).length;
     pubText = parts.join(', ') + (rxNoAck ? `; the broker received ${rxNoAck} of those waiting — their PUBACK has not arrived` : '');
-    pubState = !pending.length ? (lost.length ? (acked.length ? 'partial' : 'blocked') : 'established') : running ? (lost.length ? 'partial' : 'waiting') : lost.length || acked.length ? 'partial' : 'indeterminate';
+    if (pending.length) pubState = Lo ? 'partial' : 'waiting';
+    else if (Lo) pubState = A || Ca ? 'partial' : 'blocked';
+    else if (Ca) pubState = A ? 'partial' : 'cancelled';
+    else if (all.open) pubState = 'indeterminate';
+    else pubState = 'established';
+    if (all.open) pubText = `${pubText}; ${pending.length || Lo || Ca ? '' : 'every retained publication acknowledged; '}${unavailable(all.open)}`;
   } else {
+    const rx = atBroker.length + all.rx;
     const noRx = pubs.length - atBroker.length;
-    pubText = `${plural(pubs.length, 'publication')} at QoS 0: ${atBroker.length} received by the broker (recorded at the broker)${noRx ? `, ${noRx} with no receipt at the broker recorded — QoS 0 has no PUBACK, and a missing one is no evidence of loss` : ''}`;
-    pubState = !noRx ? 'established' : running && pubs.some((p) => p.brokerRx === undefined && mq.now - p.t < 5000) ? 'in-progress' : atBroker.length ? 'partial' : 'indeterminate';
+    pubText = `${plural(total, 'publication')} at QoS 0${agedText}: ${rx} received by the broker (recorded at the broker)${noRx ? `, ${noRx} with no receipt at the broker recorded — QoS 0 has no PUBACK, and a missing one is no evidence of loss` : ''}`;
+    pubState = !noRx ? (all.open ? 'indeterminate' : 'established') : running && pubs.some((p) => p.brokerRx === undefined && mq.now - p.t < 5000) ? 'in-progress' : rx ? 'partial' : 'indeterminate';
+    if (all.open) pubText = `${pubText}; ${unavailable(all.open)}`;
   }
   const firstPub = pubs[0];
   legs.push({ label: `Publisher ${r.dev}/${r.app} → broker ${r.broker} (runtime, run #${r.id})`, verdict: pubState === 'established' ? 'satisfied' : pubState === 'blocked' ? 'violated' : pubState === 'partial' ? 'partial' : 'indeterminate', state: pubState, text: pubText, refs: [{ ref: 'device:' + r.dev, label: r.dev }].concat(firstPub ? pktRef(firstPub.pkts, 'its first publication') : []), source: 'runtime' });
-  // ---- the broker → each subscriber (only this run's publications count: an earlier receipt proves nothing of them)
+  // ---- the broker → each subscriber: only this run's publications on the topics its own filters ask for (an earlier
+  // receipt proves nothing of them; another topic is not its to receive)
+  const runTopics = Array.from(new Set(pubs.map((p) => p.topic).concat(Object.keys(mq.tally)))).sort();
   for (const s of mq.subscribers) {
-    const relevant = pubs.filter((p) => p.brokerRx !== undefined);
+    const mine = (topic: string): boolean => s.filters.some((f) => topicMatches(f, topic));
+    const scope = runTopics.filter(mine);
+    const tl = tallied(mq.tally, mine, s.clientId);
+    const relevant = pubs.filter((p) => p.brokerRx !== undefined && mine(p.topic));
     const dls = relevant.map((p) => ({ p, dl: p.deliveries.find((x) => x.clientId === s.clientId) }));
     const got = dls.filter((x) => x.dl && x.dl.rx !== undefined);
     const enRoute = dls.filter((x) => x.dl && x.dl.rx === undefined);
-    const notPassed = dls.filter((x) => !x.dl && x.p.matched !== undefined);
+    const notPassed = dls.filter((x) => !x.dl && x.p.matched !== undefined).length + Math.max(0, tl.rx - tl.got - tl.subOpen);
     const twice = got.filter((x) => (x.dl as NonNullable<typeof x.dl>).rxCount > 1).length;
+    const R = relevant.length + tl.rx;
+    const G = got.length + tl.got;
     const sr = s.runs[0];
     // (its own run decides whether a receipt can still come: connected, the broker's copies may still arrive)
     const subOn = !!sr && sr.state !== 'Stopped' && sr.stoppedAt === undefined;
     const subNow = sr ? `its run #${sr.id} is ${sr.state.toLowerCase()} (started ${sec(sr.t0)}${sr.granted.length ? `; granted ${sr.granted.map(([f, q]) => `${f} → ${q === 0x80 ? 'refused' : 'QoS ' + q}`).join(', ')}` : ''})` : 'it was not started in this simulation';
+    const topics = `on its topics (${scope.join(', ')})`;
     let st: DiagnosisState;
     let text: string;
     let rel: LinkKind | null = null;
-    if (!relevant.length) {
+    if (!total) {
+      st = running ? 'indeterminate' : 'cancelled';
+      text = running ? 'the run published nothing yet' : 'the run was stopped before publishing anything: nothing to deliver to it';
+    } else if (!scope.length) {
       st = 'indeterminate';
-      text = pubs.length ? `none of the run's publications reached the broker (see the publisher's leg): nothing to deliver to it` : `the run published nothing yet`;
-    } else if (got.length === relevant.length) {
+      text = `none of the run's topics (${runTopics.join(', ')}) matches its filters (${s.filters.join(', ') || 'none'}): nothing of run #${r.id} is for it`;
+    } else if (!R) {
+      st = !running && pubState === 'cancelled' ? 'cancelled' : 'indeterminate';
+      text = `none of the run's publications ${topics} reached the broker (see the publisher's leg): nothing to deliver to it`;
+    } else if (G === R) {
       st = 'established';
-      text = `received ${got.length} of the ${plural(relevant.length, 'publication')} of run #${r.id} that reached the broker${twice ? ` (${twice} more than once: a QoS 1 DUP, as MQTT 3.1.1 allows)` : ''}; ${subNow}`;
-    } else if (got.length) {
+      text = `received ${G} of the ${plural(R, 'publication')} of run #${r.id} ${topics} that reached the broker${twice ? ` (${twice} more than once: a QoS 1 DUP, as MQTT 3.1.1 allows)` : ''}; ${subNow}`;
+    } else if (G + tl.subOpen === R && !enRoute.length) {
+      st = 'indeterminate';
+      text = `received every retained one of the ${plural(R, 'publication')} of run #${r.id} ${topics} that reached the broker; ${plural(tl.subOpen, 'earlier copy', 'earlier copies')} to it ${tl.subOpen === 1 ? 'is' : 'are'} unavailable — aged out of the records before a receipt; ${subNow}`;
+    } else if (G) {
       st = enRoute.length && subOn ? 'in-progress' : 'partial';
-      text = `received ${got.length} of ${relevant.length}${enRoute.length ? `; ${enRoute.length} delivered by the broker, their receipt not recorded yet` : ''}${notPassed.length ? `; ${notPassed.length} not passed to it by the broker (no session with a matching subscription then)` : ''}; ${subNow}`;
-    } else if (notPassed.length === relevant.length) {
+      text = `received ${G} of ${R} ${topics}${enRoute.length ? `; ${enRoute.length} delivered by the broker, their receipt not recorded yet` : ''}${notPassed ? `; ${notPassed} not passed to it by the broker (no session with a matching subscription then)` : ''}${tl.subOpen ? `; ${tl.subOpen} unavailable (aged out of the records before a receipt)` : ''}; ${subNow}`;
+    } else if (notPassed === R) {
       st = 'blocked';
       rel = 'prerequisite';
-      text = `the broker passed none of the ${plural(relevant.length, 'publication')} to it: when they arrived it had no session with a matching subscription (recorded at the broker); ${subNow}`;
+      text = `the broker passed none of the ${plural(R, 'publication')} ${topics} to it: when they arrived it had no session with a matching subscription (recorded at the broker); ${subNow}`;
     } else if (enRoute.length) {
       st = subOn ? 'waiting' : 'failed';
-      text = `the broker sent ${enRoute.length} to it; ${subOn ? 'its receipt is not recorded yet' : 'no receipt is recorded — why is not established'}; ${subNow}`;
+      text = `the broker sent ${enRoute.length} ${topics} to it; ${subOn ? 'its receipt is not recorded yet' : 'no receipt is recorded — why is not established'}; ${subNow}`;
     } else {
       st = 'indeterminate';
-      text = `no receipt recorded; ${subNow}`;
+      text = `no receipt recorded ${topics}; ${subNow}`;
     }
     const ex = got[0] || enRoute[0];
     legs.push({ label: `Broker ${r.broker} → subscriber ${s.dev}/${s.app} (runtime, publications of run #${r.id})`, verdict: st === 'established' ? 'satisfied' : st === 'blocked' ? 'violated' : st === 'partial' ? 'partial' : 'indeterminate', state: st, text, refs: [{ ref: 'device:' + s.dev, label: s.dev }].concat(ex && ex.dl ? pktRef(ex.dl.pkts, 'its copy') : []), source: 'runtime' });
     if (rel) d.blockers.push({ rel, source: 'runtime', text: `Subscriber ${s.dev}/${s.app}: ${text}`, refs: [{ ref: 'device:' + s.dev, label: s.dev }] });
   }
-  if (lost.length) d.blockers.push({ rel: 'cause', source: 'runtime', text: `Publisher ${r.dev}/${r.app}: ${plural(lost.length, 'publication')} lost before PUBACK — its connection to the broker closed (${lost[0].lostWhy || 'recorded'}, ${sec(lost[0].lost as number)})`, refs: [{ ref: 'device:' + r.dev, label: r.dev }].concat(pktRef(lost[0].pkts, 'that publication')), count: lost.length });
+  const lostAll = lost.length + all.lost;
+  if (lostAll) d.blockers.push({ rel: 'cause', source: 'runtime', text: `Publisher ${r.dev}/${r.app}: ${plural(lostAll, 'publication')} lost before PUBACK — its connection to the broker closed${lost.length ? ` (${lost[0].lostWhy || 'recorded'}, ${sec(lost[0].lost as number)})` : ' (as tallied when their records aged out)'}`, refs: [{ ref: 'device:' + r.dev, label: r.dev }].concat(lost.length ? pktRef(lost[0].pkts, 'that publication') : []), count: lostAll });
   if (r.missed) d.chain.push({ rel: 'related', source: 'runtime', text: `${plural(r.missed, 'round')} not published: not connected at ${r.missed === 1 ? 'its' : 'their'} time`, refs: [] });
-  if (mq.evicted) {
-    d.evidenceLimited = true;
-    d.limits.push(`${plural(mq.evicted, 'publication')} of run #${r.id} ${mq.evicted === 1 ? 'is' : 'are'} no longer kept (the records keep the latest publications): ${mq.evicted === 1 ? 'it is' : 'they are'} not counted either way`);
-  }
+  if (all.n) d.limits.push(`${plural(all.n, 'publication')} of run #${r.id} aged out of the records (they keep the latest): ${all.open ? `${all.n - all.open} counted from the run’s tally, ${all.open} unavailable (not settled when ${all.open === 1 ? 'it' : 'they'} aged out)` : 'counted from the run’s tally, as they had settled'}`);
+  if (all.open || legs.some((l) => /aged out of the records before a receipt/.test(l.text))) d.evidenceLimited = true;
   d.legs = legs.concat(d.legs.filter((l) => l.source === 'static'));
-  // the run's state: from its legs (a pending acknowledgment is waiting, never a failure)
-  const states = legs.map((l) => l.state);
-  const has = (x: DiagnosisState): boolean => states.indexOf(x) >= 0;
-  const allOk = states.every((x) => x === 'established');
-  const completed = !running && !has('waiting') && !has('in-progress');
-  const counts = { succeeded: legs.filter((l) => l.state === 'established').length, recovered: 0, failed: legs.filter((l) => l.state === 'blocked' || l.state === 'failed').length, cancelled: legs.filter((l) => l.state === 'cancelled').length, waiting: legs.filter((l) => l.state === 'waiting').length, inFlight: legs.filter((l) => l.state === 'in-progress').length, toSend: running ? null : 0 };
-  const outcome: RuntimePart['outcome'] = allOk ? 'succeeded' : counts.failed && counts.succeeded ? 'mixed' : counts.failed ? 'failed' : has('partial') ? 'mixed' : 'none';
+  // the run's state: from its legs, by the same rule as a send's messages (outcomeOf): a pending acknowledgment is waiting,
+  // never a failure; a leg not established (evidence unavailable) keeps the whole from succeeding
+  const n = (...xs: DiagnosisState[]): number => legs.filter((l) => xs.indexOf(l.state) >= 0).length;
+  const completed = !running && !n('waiting', 'in-progress');
+  const counts = { succeeded: n('established'), recovered: 0, failed: n('blocked', 'failed', 'partial'), cancelled: n('cancelled'), waiting: n('waiting'), inFlight: n('in-progress'), toSend: running ? null : 0 };
+  const outcome = outcomeOf(n('established', 'partial'), counts.failed, counts.cancelled, n('indeterminate'));
   const cause: RuntimePart['cause'] = !counts.failed ? 'n/a' : legs.some((l) => l.state === 'failed') ? (legs.some((l) => l.state === 'blocked') ? 'partly' : 'unknown') : 'established';
   return { kind: 'mqtt', subject, exec, completed, outcome, cause, counts, groups: [], text: `${legs.map((l) => `${l.label.split(' (')[0]}: ${DIAG_WORD[l.state]}`).join('; ')}${running ? ' — the run goes on' : ''}` };
 }
@@ -883,9 +980,8 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
     const part = mqttOf(mq, d);
     d.runtime = part;
     d.question.run = `${part.subject} · records up to ${sec(mq.now)}`;
-    const ls = d.legs.filter((l) => l.source === 'runtime').map((l) => l.state);
-    const has = (x: DiagnosisState): boolean => ls.indexOf(x) >= 0;
-    d.state = ls.every((x) => x === 'established') ? 'established' : has('blocked') && ls.some((x) => x === 'established' || x === 'partial') ? 'partial' : has('blocked') ? 'blocked' : has('waiting') ? 'waiting' : has('in-progress') ? 'in-progress' : has('partial') ? 'partial' : has('failed') ? 'failed' : 'indeterminate';
+    // (the same rule as a send's: completion, the observed outcome, whether its cause is established)
+    d.state = runtimeState({ completed: part.completed, outcome: part.outcome, cause: part.cause, counts: part.counts, any: true, stopped: !!mq.run.stopped });
     d.provisional = !part.completed;
     d.summary = `In the simulation (${part.subject.split(' (')[0]}): ${part.text}.`;
   }
@@ -903,6 +999,14 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
   d.next.push({ id: 'save-exp', label: 'Save as expectation…', why: 'Keep the question and its expected answer with the model' });
   if (!blockedStatic && c.verdict !== 'satisfied' && !rt && !mq) d.limits.push('The recorded evidence does not establish why: a simulation can exchange it (Prepare in simulation)');
   return d;
+}
+
+/** Every evidence reference a diagnosis gives (its blockers, chain, legs and next actions), in that order. */
+export function diagnosisRefs(d: Diagnosis): EvidenceRef[] {
+  const out: EvidenceRef[] = [];
+  for (const l of d.blockers.concat(d.chain)) out.push(...l.refs, ...(l.messages || []));
+  for (const l of d.legs) out.push(...l.refs);
+  return out;
 }
 
 const REL_TEXT: { [k in LinkKind]: string } = { cause: 'cause', contributing: 'contributing, not established as decisive', prerequisite: 'prerequisite', related: 'related', coincidence: 'coincidence (not linked)', hypothesis: 'not established' };

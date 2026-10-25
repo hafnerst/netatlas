@@ -284,7 +284,8 @@ export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boole
   const t = id.destination;
   if (t.binding === 'application') return false;
   if (t.binding === 'name') {
-    if (p.target !== t.name || id.family === 6) return false;
+    // the name, and the record its family asks for: AAAA for IPv6, A otherwise (a plan without a family resolves A)
+    if (p.target !== t.name || (p.family || 4) !== (id.family || 4)) return false;
   } else if (t.binding === 'address') {
     // (that exact address: typed, or a device's interface sent to with it — not its lease)
     if (p.target !== t.address && !(p.target === undefined && p.toAddr === t.address)) return false;
@@ -309,10 +310,51 @@ export function planMatches(id: CommIdentity, p: TestPlan, model?: Model): boole
  */
 export function runMatches(id: CommIdentity, run: SendRun, model?: Model): boolean {
   if (!planMatches(id, run.plan, model)) return false;
+  // as sent: each message's effective destination of the family asked for (a host name resolved when it was sent: its
+  // address may change from one message to the next — never its family); an unresolved name's placeholder is no identity
+  if (id.family && run.tests.some((t) => sentTo(t) && t.dst.version !== id.family)) return false;
   const s = id.source;
   if (s.binding !== 'address' || !s.address) return true;
   const sent = run.tests.filter((t) => t.srcAddr !== undefined);
   return sent.length > 0 && sent.every((t) => t.srcAddr === s.address);
+}
+
+/** Did a message get an effective destination of its own (a host name resolved, or an address given)? */
+function sentTo(t: Test): boolean {
+  return !(t.target && parseAddress(t.target) === null && t.resolved === undefined);
+}
+
+const svcWords = (x: TraceService | undefined): string => (x ? (x.proto === 'icmp' ? 'ICMP' : `${x.proto.toUpperCase()} ${x.port}`) : 'no service');
+
+/**
+ * Does a client application's run answer a question — null — or why not, said: the question's destination, service,
+ * family and routing context against the application's own communication (its configured peer or broker, transport and
+ * port, as the static check of the application resolves them) and against what its messages did as sent (each one's
+ * destination family, transport and port). A question from the application without a destination of its own asks its
+ * configured communication. A handoff's warning never makes a different communication this one's. Shared by every
+ * comparison of an application's run (TCP and UDP clients, MQTT clients).
+ */
+export function appRunProblem(model: Model, id: CommIdentity, run: { tests: readonly Test[] }): string | null {
+  const app = id.source.app;
+  if (id.source.binding !== 'application' || !app) return 'the question is not asked from a client application';
+  const own = commIdentity(model, checkCommunication(model, { from: app }));
+  if (!own) return `${app}’s own communication can’t be resolved`;
+  const t = id.destination;
+  const o = own.destination;
+  if (id.request.to) {
+    const theirs = o.device ? `${o.device}${o.address ? ` (${o.address})` : ''}` : o.address || 'its configured peer';
+    const asked = t.name || (t.device ? `${t.device}${t.address ? ` (${t.address})` : ''}` : t.address || id.request.to);
+    if ((t.device && o.device && t.device !== o.device) || (t.address && o.address && t.address !== o.address && !t.note)) return `destination: ${app} sends to ${theirs}, the question asks about ${asked}`;
+  }
+  if (id.service && own.service && (id.service.proto !== own.service.proto || (id.service.proto !== 'icmp' && id.service.port !== own.service.port))) return `service: ${app} uses ${svcWords(own.service)}, the question asks about ${svcWords(id.service)}`;
+  if (id.family && own.family && id.family !== own.family) return `family: ${app} uses IPv${own.family}, the question asks about IPv${id.family}`;
+  if (id.vrf !== undefined && own.vrf !== undefined && id.vrf !== own.vrf) return `routing context: ${app} sends in ${own.vrf || 'the default table'}, the question asks about ${id.vrf || 'the default table'}`;
+  // as sent (a name resolved when sent, a lease when sent: only what its messages show)
+  for (const m of run.tests) {
+    if (id.service && id.service.proto !== 'icmp' && (m.kind !== id.service.proto || m.port !== id.service.port)) return `service: its message ${m.msg || 1} went as ${svcWords({ proto: m.kind, port: m.port } as TraceService)}, the question asks about ${svcWords(id.service)}`;
+    if (id.family && sentTo(m) && m.dst.version !== id.family) return `family: its message ${m.msg || 1} went over IPv${m.dst.version}, the question asks about IPv${id.family}`;
+  }
+  return null;
 }
 
 /** The static result beside what the simulation did, and why they differ. */

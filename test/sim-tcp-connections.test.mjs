@@ -10,7 +10,7 @@
 // retransmitting for about two minutes beside every newer attempt).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 
@@ -271,7 +271,7 @@ test('a SYN-ACK at the response timeout’s own moment: the earlier event decide
   const at = ack.t - t0;
   const run = (timeout, paced) => {
     const { s, made } = counted(CHAIN());
-    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, typical: () => s.engine.hopTime(), headers: (f) => f.hdr }, 8) : null;
+    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, travel: travelOf(s.engine), headers: (f) => f.hdr }, 8) : null;
     s.runTo(2500);
     const r = s.transport.resolveTarget('pc', { to: 'srv' }, 'tcp');
     const t = s.transport.run({ from: 'pc', target: 'srv', dst: r.dst, kind: 'tcp', port: 80, source: 'manual', timeout: { value: timeout } });

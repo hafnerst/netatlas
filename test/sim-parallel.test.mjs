@@ -12,7 +12,7 @@
 // waited for and what caused it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const E = load('analysis/sim/engine.js');
@@ -268,7 +268,7 @@ test('the dot limit and the pacing never change a simulated time', () => {
   const want = plain.events().filter((e) => e.t <= 14000).map((e) => `${e.t}|${e.kind}|${e.device}|${e.what}`);
   for (const [limit, mode] of [[1, 'readable'], [48, 'readable'], [4, 'proportional']]) {
     const s = sim(PS);
-    const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr };
+    const host = { engine: s.engine, shown: (f) => f.view === 'physical', travel: travelOf(s.engine), headers: (f) => f.hdr };
     const p = new P.Pacer(host, limit);
     p.mode = mode;
     p.speed = 4;
@@ -281,7 +281,7 @@ test('the dot limit and the pacing never change a simulated time', () => {
 
 test('several hops are on screen at once at the start (they are not drawn one after another)', () => {
   const s = sim(PS);
-  const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr };
+  const host = { engine: s.engine, shown: (f) => f.view === 'physical', travel: travelOf(s.engine), headers: (f) => f.hdr };
   const p = new P.Pacer(host, 48);
   let most = 0;
   for (let i = 0; i < 2000 && s.now < 2500; i++) {

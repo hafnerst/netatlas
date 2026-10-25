@@ -83,8 +83,8 @@ import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
 import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/types';
 import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
-import { compareAddr, formatAddr, inPrefix } from '../ipmath';
-import { Connected, DvTables, RibEntry, RoutingCtx, deviceVrfs, lookup } from '../routing';
+import { compareAddr, formatAddr, inPrefix, prefixText } from '../ipmath';
+import { Connected, DvTables, RibEntry, RoutingCtx, connectedIn, deviceVrfs, lookup } from '../routing';
 import { virtualGateways } from '../identity';
 import type { AnalysisSnapshot, SnapAddr } from '../snapshot';
 import { declaredUnderlay, encapStack, layerEnds, tunnelRelation, tracePath } from '../trace';
@@ -888,12 +888,27 @@ export class Engine {
 
   // ------------------------------------------------------------ the log
 
+  /** A route that matched but could not be used: its interface (written, else the one its next hop is configured on) and that interface's tunnel relation, or its adjacency. */
+  private unusableRoute(dev: string, e: RibEntry, detail: string): NonNullable<DropCause['unusable']>[number] {
+    const via = e.via;
+    const iface = e.iface || (via ? (connectedIn(this.model, dev).find((c) => c.vrf === e.vrf && inPrefix(c.net, via)) || { iface: undefined }).iface : undefined);
+    const tun = iface ? tunnelRelation(this.model, dev, iface) : undefined;
+    const out: NonNullable<DropCause['unusable']>[number] = { route: `${prefixText(e.net)}${via ? ' via ' + formatAddr(via) : ''}${e.kind === 'dynamic' && e.protocol ? ' (' + e.protocol + ')' : ''}`, detail };
+    if (iface) out.iface = iface;
+    const rel = tun ? tun.id : e.relation;
+    if (rel) out.relation = rel;
+    return out;
+  }
+
   /** A drop's cause with the packet's identity (its id, its outer header as the inspector shows it): for the drop's own log line. */
   causeOf(cause: DropCause, pkt: Pkt | null | undefined): DropCause {
     if (!pkt) return cause;
     const out: DropCause = { ...cause, pkt: pkt.id, flow: flowText(pkt) };
     if (pkt.msg.relation !== undefined && out.session === undefined) out.session = pkt.msg.relation;
     if (pkt.msg.sender !== undefined) out.from = pkt.msg.sender;
+    const mev = this.msgEvents.get(pkt.msg);
+    if (mev) out.msg = mev.seq;
+    if (isMulticastIp(pkt.dst) || (pkt.dst.version === 4 && pkt.dst.bytes[3] === 255)) out.copy = true;
     if (pkt.inner) {
       out.carried = [];
       for (let p: Pkt | undefined = pkt.inner; p; p = p.inner) out.carried.push(p.id);
@@ -3095,7 +3110,10 @@ export class Engine {
     if (d.kind !== 'forward' || !d.hops.length) {
       // a blackhole route drops silently (no ICMP error: that is what it is for)
       const text = `dropped at ${dev}: ${d.kind === 'blackhole' ? 'a blackhole route (silently, no ICMP error)' : 'no route to ' + formatAddr(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''} (${pkt.msg.label})`;
-      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text, this.now, undefined, { cause: this.causeOf({ kind: d.kind === 'blackhole' ? 'blackhole' : 'no-route', vrf: pkt.vrf }, pkt) });
+      const cause: DropCause = { kind: d.kind === 'blackhole' ? 'blackhole' : 'no-route', vrf: pkt.vrf };
+      // (the routes that matched but could not be used now, as this decision found them: what the route needed, recorded)
+      if (d.kind === 'none' && d.unusable.length) cause.unusable = d.unusable.map((u) => this.unusableRoute(dev, u.entry, u.detail));
+      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text, this.now, undefined, { cause: this.causeOf(cause, pkt) });
       if (d.kind !== 'blackhole') {
         if (came) this.icmpError(dev, pkt, 'net', { from: came.l3 });
         else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, pkt, 'net', `no route to ${formatAddr(pkt.dst)} (network unreachable)`);
@@ -4854,24 +4872,40 @@ export class Engine {
 
   // ------------------------------------------------------------ estimates (for the logical view's dots)
 
-  /** About how long a packet from a device to an address takes: its traced path's cables × a hop's time (cached per routing state). */
+  /**
+   * About how long a packet from a device to an address takes (the logical view's lane of a relation; presentation only):
+   * the cables of its traced path and of each tunnel's underlay, each its own latency and a small frame at its own speed
+   * (cached per routing state; the first path traced — an illustration, never a runtime dependency). Not traced: two
+   * hops' default time.
+   */
   estimate(dev: string, to: IpAddr): number {
     const key = dev + '>' + formatAddr(to);
     const known = this.estimates.get(key);
     if (known !== undefined) return known;
-    let cables = 1;
+    let ms = 0;
     try {
       const tr = tracePath(this.model, { from: dev, to: formatAddr(to) }, this.ctx());
-      if (tr.paths.length) {
-        const count = (p: { hops: Array<{ links: string[]; underlay?: { hops: Array<{ links: string[] }> } }> }): number => p.hops.reduce((n, h) => n + h.links.length + (h.underlay ? count(h.underlay as never) : 0), 0);
-        cables = Math.max(1, count(tr.paths[0] as never));
-      }
+      type P = { hops: Array<{ links: string[]; underlay?: P }> };
+      const sum = (p: P): number => p.hops.reduce((n, h) => n + h.links.reduce((m, l) => m + this.linkCost(l), 0) + (h.underlay ? sum(h.underlay) : 0), 0);
+      if (tr.paths.length) ms = sum(tr.paths[0] as never);
     } catch (e) {
-      cables = 2;
+      ms = 0;
     }
-    const ms = cables * this.hopTime();
+    if (!(ms > 0)) ms = 2 * this.hopTime();
     this.estimates.set(key, ms);
     return ms;
+  }
+
+  /** Every simulated cable's traversal cost (linkCost; the readable pacing's scale, travel.ts). */
+  cableCosts(): number[] {
+    return Array.from(this.net.links.keys()).sort(cmp).map((l) => this.linkCost(l));
+  }
+
+  /** A cable's traversal cost for a small frame (ms): its latency and the serialization at its speed (a cable not simulated: a hop's default time). */
+  linkCost(link: string): number {
+    if (!this.net.links.has(link)) return this.hopTime();
+    const c = Number(this.latency(link).value) + (PAYLOAD * 8 * 1000) / Number(this.speed(link).value);
+    return c > 0 && isFinite(c) ? c : this.hopTime();
   }
 }
 

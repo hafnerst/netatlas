@@ -62,7 +62,7 @@ test('MQTT, two publishers and an overlapping subscription: only this run’s pu
   const L = legs(d);
   assert.equal(L.pub.state, 'established', L.pub.text);
   assert.equal(L.sub.state, 'established', L.sub.text);
-  assert.match(L.sub.text, new RegExp(`^received ${got} of the ${reached} publications of run #${mq.run.id} that reached the broker`));
+  assert.match(L.sub.text, new RegExp(`^received ${got} of the ${reached} publications of run #${mq.run.id} on its topics \\(s/a\\) that reached the broker`));
   assert.match(d.question.run, new RegExp(`^MQTT run #${mq.run.id} of pa/a \\(started from Network events`));
 });
 
@@ -89,7 +89,7 @@ test('MQTT, stop and start again: the new run is its own; the subscriber’s ear
   assert.ok(Array.from(subC[0].received.values()).reduce((x, y) => x + y, 0) > 0, 'it did receive — the earlier run’s publications');
   const L = legs(D.diagnose({ check: C.checkCommunication(m, { from: 'pa/a' }), context: configured, mqtt: mq }));
   assert.equal(L.sub.state, 'blocked', L.sub.text);
-  assert.match(L.sub.text, /the broker passed none of the \d+ publications to it: when they arrived it had no session with a matching subscription .*its run #\d+ is stopped/);
+  assert.match(L.sub.text, /the broker passed none of the \d+ publications on its topics \(s\/a\) to it: when they arrived it had no session with a matching subscription .*its run #\d+ is stopped/);
 });
 
 test('MQTT QoS 1: a PUBACK still on its way is waiting, never a failure; a DUP is a copy of the same publication, its PUBACK completes it', () => {
@@ -139,7 +139,7 @@ test('MQTT: the publisher’s leg established, the subscriber’s not — its co
   assert.equal(L.pub.state, 'established', L.pub.text);
   // its run goes on (it is not stopped): the broker's copies are recorded as sent, their receipt not — waiting, not "received"
   assert.equal(L.sub.state, 'waiting', L.sub.text);
-  assert.match(L.sub.text, /^the broker sent \d+ to it; its receipt is not recorded yet/);
+  assert.match(L.sub.text, /^the broker sent \d+ on its topics \(s\/a\) to it; its receipt is not recorded yet/);
   // (one leg established, one still waiting: the run's answer is waiting — provisional, never complete success)
   assert.deepEqual([d.state, d.provisional], ['waiting', true]);
 });
@@ -159,18 +159,21 @@ test('MQTT QoS 0: the broker’s receipt is what the broker recorded; no PUBACK 
   assert.match(L.pub.text, /at QoS 0: \d+ received by the broker \(recorded at the broker\)/);
 });
 
-test('MQTT evidence expiry: publications no longer kept are said and counted neither way', () => {
+test('MQTT evidence expiry: a publication aged out unsettled is unavailable — said, and counted neither way (diagnosis-scope: the real bound)', () => {
   const m = model(MQ());
   const s = withClock(new S.Simulation(m));
   s.runTo(3000);
   start(s, 'pa', 'a');
   s.play(3000);
   const mq = s.mqttEvidence('pa', 'a', []);
-  // (as when the records' bound dropped the run's oldest publications)
-  const gone = { ...mq, pubs: mq.pubs.slice(1), evicted: 1 };
+  // (as when the records' bound folded the run's oldest publication into its tally before it settled)
+  const gone = { ...mq, pubs: mq.pubs.slice(1), tally: { 's/a': { n: 1, acked: 0, lost: 0, cancelled: 0, rx: 0, open: 1, subs: {} } } };
   const d = D.diagnose({ check: C.checkCommunication(m, { from: 'pa/a' }), context: configured, mqtt: gone });
   assert.equal(d.evidenceLimited, true);
-  assert.ok(d.limits.some((x) => /^1 publication of run #\d+ is no longer kept/.test(x)));
+  assert.ok(d.limits.some((x) => /^1 publication of run #\d+ aged out of the records .*0 counted from the run’s tally, 1 unavailable/.test(x)), d.limits.join(' | '));
+  const L = legs(d);
+  assert.notEqual(L.pub.state, 'established', 'the retained ones acknowledged is not the whole run');
+  assert.match(L.pub.text, /1 earlier publication’s outcome is unavailable/);
   // the record's own bound
   const M = load('analysis/sim/mqtt.js');
   assert.ok(M.PUBS_KEPT >= 1000);

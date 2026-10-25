@@ -1177,7 +1177,7 @@ export class Transport {
       const bc = this.e.isBroadcastAddr(t.dst) || isMulticastIp(t.dst);
       t.answers.push(`${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}`);
       if (t.rtt === undefined) t.rtt = this.e.now - t.started;
-      if (!bc) this.finish(t, true, `Echo Reply from ${formatAddr(pkt.src)}`, { kind: 'answered', by: this.e.ownerOf(pkt.src) || undefined });
+      if (!bc) this.finish(t, true, `Echo Reply from ${formatAddr(pkt.src)}`, this.answeredBy(pkt));
       return;
     }
     // an ICMP error about something this device sent
@@ -1277,7 +1277,7 @@ export class Transport {
       const t = this.tests.find((x) => x.id === d.test && x.from === dev);
       if (!t || t.done) return;
       t.answers.push(`${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}`);
-      if (!this.e.isBroadcastAddr(t.dst) && !isMulticastIp(t.dst)) this.finish(t, true, `UDP answer from ${formatAddr(pkt.src)}:${l4.sport}`, { kind: 'answered', by: this.e.ownerOf(pkt.src) || undefined });
+      if (!this.e.isBroadcastAddr(t.dst) && !isMulticastIp(t.dst)) this.finish(t, true, `UDP answer from ${formatAddr(pkt.src)}:${l4.sport}`, this.answeredBy(pkt));
       return;
     }
     if (!this.open(dev, 'udp', l4.dport as number, pkt.dst)) {
@@ -1973,11 +1973,20 @@ export class Transport {
     }
     // (a test's request on a port an application listens on too: answered as any server's)
     if (c.role === 'server') this.serverData(c, m.bytes, pkt);
-    else this.answered(c);
+    else this.answered(c, pkt);
   }
 
-  /** The client got the whole answer: the test is answered; the client closes (unless kept open); an upstream passes it back. */
-  private answered(c: Conn): void {
+  /**
+   * An answer's outcome with who sent it, from the answer itself: the device that sent its packet (as the packet records
+   * its sender) and the address it came from — never looked up by address alone, which another routing context may reuse.
+   */
+  private answeredBy(pkt: Pkt): TestOutcome {
+    const by = pkt.msg.sender !== undefined ? pkt.msg.sender : this.e.ownerOf(pkt.src) || undefined;
+    return { kind: 'answered', by, byAddr: formatAddr(pkt.src) };
+  }
+
+  /** The client got the whole answer (`pkt`: the segment that completed it): the test is answered; the client closes (unless kept open); an upstream passes it back. */
+  private answered(c: Conn, pkt: Pkt): void {
     const t = c.test;
     const got = c.tcp.received;
     if (c.front) {
@@ -1987,7 +1996,7 @@ export class Transport {
       this.sendData(front, got, `the answer of ${formatAddr(c.remote)}`);
       this.idle(front);
     }
-    if (t) this.finish(t, true, `connected and answered (${got} bytes)`);
+    if (t) this.finish(t, true, `connected and answered (${got} bytes)`, this.answeredBy(pkt));
     if (c.keep && t && t.source === 'manual') {
       this.idle(c);
       return;

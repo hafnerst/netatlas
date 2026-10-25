@@ -676,6 +676,16 @@ and device actions) from the user.
 
 **Simplifications.**
 
+* **Visible travel time is presentation.** In Readable pacing at 1× a dot
+  crosses its line in 3–5 s: the modelled traversal cost (a cable's latency
+  and its frame's serialization; a relation's lane, the cables of the first
+  path traced for its underlay, each its own latency and speed) on a log
+  scale from the model's cheapest cable to four times its dearest, widened
+  to two decades when the cables differ less (a homogeneous model's hops
+  about 3.3 s). The seconds are never network time; a long line on screen
+  is crossed faster than a short one of the same cost; a hop without a
+  modelled cost takes 4 s. The speed control divides these times; a long
+  path adds a hop's time per cable and 0.6 s per switch it crosses.
 * **Scenario time.** Everything runs on scenario time, in every pacing:
   a send's intervals, streams and repeating applications of Network events
   as much as the model's own traffic; the same history gives the same

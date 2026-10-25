@@ -10,10 +10,11 @@
 // already forwarded complete their way.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { example, load, model, withClock } from './helpers.mjs';
+import { example, load, model, withClock, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
+const T = load('analysis/sim/travel.js');
 const I = load('model/ip.js');
 
 const sim = (text) => withClock(new S.Simulation(model(text)));
@@ -123,7 +124,7 @@ test('the same moment: a report processed before a packet of the same instant is
 
 test('on screen: a stream’s copies show from the moment they are forwarded, on every cable at once (no backlog of earlier datagrams); after the leave took effect no new copy towards the TV, the ones forwarded before complete their way', () => {
   const s = sim(HOUSE);
-  const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr, foreground: () => s.foregroundActive() };
+  const host = { engine: s.engine, shown: (f) => f.view === 'physical', travel: travelOf(s.engine), headers: (f) => f.hdr, foreground: () => s.foregroundActive() };
   const p = new P.Pacer(host, 48);
   const seen = new Map();
   // (the display clock when the TV's member port was removed, as soon as a frame sees it)
@@ -166,6 +167,6 @@ test('on screen: a stream’s copies show from the moment they are forwarded, on
   assert.ok(tv.every((it) => it.f.t0 < gone.t), 'no copy towards the TV forwarded after the removal');
   // the last ones (forwarded during the pending leave) were drawn to their end: on screen at most a hop's time after the removal
   const last = tv.reduce((m, it) => Math.max(m, p.arrival(it)), 0);
-  assert.ok(last <= goneClock + P.HOP_MAX + 100, `${last - goneClock} ms after the removal`);
+  assert.ok(last <= goneClock + T.TRAVEL_MAX + 100, `${last - goneClock} ms after the removal`);
   assert.ok(tv.filter((it) => it.f.t0 >= leaveAt).every((it) => it.drawn), 'the copies of the pending leave are drawn, not erased');
 });

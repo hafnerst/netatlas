@@ -42,10 +42,16 @@
  * Each logical publication has a bounded record (MqttPublication, the
  * latest PUBS_KEPT): its run, client, topic, QoS and packet identifier,
  * the packets that carried it (DUPs and TCP retransmissions included), its
- * receipt at the broker, its PUBACK or its loss with a closed connection,
- * and each subscriber the broker passed it to, with that subscriber's
- * receipt — what a diagnosis correlates its legs by, so an earlier run's,
- * another publisher's or another topic's traffic never stands for it.
+ * receipt at the broker, its PUBACK, its loss with a closed connection or
+ * its cancellation by Stop (DISCONNECT ends the clean session with it
+ * unacknowledged: discarded, §3.1.2.4), and each subscriber the broker
+ * passed it to, with that subscriber's receipt — what a diagnosis
+ * correlates its legs by, so an earlier run's, another publisher's or
+ * another topic's traffic never stands for it. A record that ages out is
+ * folded into its run's tally by topic (MqttTally): the outcomes it had
+ * settled stay counted, authoritatively; one that had not settled yet is
+ * counted as unavailable, never as either. The oldest settled record goes
+ * first, so one still open stays (up to twice the bound).
  *
  * Not modelled: QoS 2, persistent sessions, retained messages, wills,
  * user names and passwords, TLS, payload contents. Message sizes follow
@@ -90,6 +96,15 @@ export function utf8Bytes(s: string): number {
 /** A UTF-8 encoded string of an MQTT packet: its two-byte length and its bytes (3.1.1 §1.5.3). */
 const str = (s: string): number => 2 + utf8Bytes(s);
 
+/**
+ * Has a publication's record settled: its outcome at the publisher known (QoS 1: its PUBACK, its loss or its
+ * cancellation; QoS 0: its receipt at the broker, or its cancellation) and each copy the broker sent received?
+ */
+function settled(p: MqttPublication): boolean {
+  const pub = p.qos === 1 ? p.acked !== undefined || p.lost !== undefined || p.cancelled !== undefined : p.brokerRx !== undefined || p.cancelled !== undefined;
+  return pub && p.deliveries.every((d) => d.rx !== undefined);
+}
+
 /** Packet identifiers are 16 bits, never 0 (3.1.1 §2.3.1). */
 const PID_MAX = 65535;
 /**
@@ -107,6 +122,21 @@ function nextPid(holder: { nextPid: number }, inUse: (pid: number) => boolean): 
 
 /** How many publications' records are kept (the oldest go first; a diagnosis says when its run's are gone). */
 export const PUBS_KEPT = 2000;
+
+/** What became of a run's publications on one topic whose records aged out (settled outcomes; `open`: not settled when it aged out). */
+export interface MqttTally {
+  n: number;
+  /** QoS 1: acknowledged, lost with a closed connection, cancelled by Stop */
+  acked: number;
+  lost: number;
+  cancelled: number;
+  /** received by the broker */
+  rx: number;
+  /** not settled when it aged out: its outcome is unavailable */
+  open: number;
+  /** each subscriber the broker passed them to (client identifier): received, and not received when it aged out (unavailable) */
+  subs: { [clientId: string]: { got: number; open: number } };
+}
 
 /** One logical publication of a client (its DUPs are copies of it) and what became of it, as recorded. */
 export interface MqttPublication {
@@ -138,6 +168,8 @@ export interface MqttPublication {
   /** its connection closed before the PUBACK: lost with the clean session (why, as the client recorded it) */
   lost?: number;
   lostWhy?: string;
+  /** Stop disconnected before its PUBACK: discarded with the clean session (cancelled, not lost) */
+  cancelled?: number;
   /** each subscriber the broker sent it to: its receipt (the first copy) and how many copies arrived; its run */
   deliveries: Array<{ clientId: string; dev: string; app?: string; qos: 0 | 1; t: number; copies: number; rx?: number; rxCount: number; run?: number; acked?: number; pkts: number[] }>;
 }
@@ -227,6 +259,8 @@ export class MqttSim {
   /** the publications' records, oldest first (the latest PUBS_KEPT), and how many left already */
   readonly pubs: MqttPublication[] = [];
   pubsDropped = 0;
+  /** what the records that aged out had come to: by run (AppRun id), by topic */
+  readonly tallies = new Map<number, Map<string, MqttTally>>();
   private pubSeq = 0;
   private pubById = new Map<number, MqttPublication>();
 
@@ -240,11 +274,45 @@ export class MqttSim {
     this.pubs.push(p);
     this.pubById.set(p.id, p);
     while (this.pubs.length > PUBS_KEPT) {
-      const old = this.pubs.shift() as MqttPublication;
+      // (the oldest settled one: a record still open stays while it can still settle — up to twice the bound)
+      let i = this.pubs.length > 2 * PUBS_KEPT ? 0 : this.pubs.findIndex((x) => settled(x));
+      if (i < 0) i = 0;
+      const old = this.pubs.splice(i, 1)[0];
       this.pubById.delete(old.id);
       this.pubsDropped++;
+      this.fold(old);
     }
     return p;
+  }
+
+  /** A record that ages out, into its run's tally: what it had settled counted, what it had not unavailable. */
+  private fold(p: MqttPublication): void {
+    let byTopic = this.tallies.get(p.run);
+    if (!byTopic) this.tallies.set(p.run, (byTopic = new Map()));
+    let t = byTopic.get(p.topic);
+    if (!t) byTopic.set(p.topic, (t = { n: 0, acked: 0, lost: 0, cancelled: 0, rx: 0, open: 0, subs: {} }));
+    t.n++;
+    if (p.brokerRx !== undefined) t.rx++;
+    if (p.acked !== undefined) t.acked++;
+    else if (p.lost !== undefined) t.lost++;
+    else if (p.cancelled !== undefined) t.cancelled++;
+    else if (p.qos === 1 || p.brokerRx === undefined) t.open++;
+    for (const d of p.deliveries) {
+      const s = t.subs[d.clientId] || (t.subs[d.clientId] = { got: 0, open: 0 });
+      if (d.rx !== undefined) s.got++;
+      else s.open++;
+    }
+  }
+
+  /** A run's tally by topic (copies; empty: none of its records aged out). */
+  tallyOf(run: number): { [topic: string]: MqttTally } {
+    const out: { [topic: string]: MqttTally } = {};
+    for (const [k, t] of this.tallies.get(run) || []) {
+      const subs: MqttTally['subs'] = {};
+      for (const c of Object.keys(t.subs)) subs[c] = { ...t.subs[c] };
+      out[k] = { ...t, subs };
+    }
+    return out;
   }
 
   constructor(
@@ -594,8 +662,18 @@ export class MqttSim {
     c.state = 'Stopped';
     c.gen++;
     this.note(c, 'disconnected', 'Stopped', `${this.name(c)} disconnects from ${c.broker}`);
-    // (the FIN after the DISCONNECT: a moment later, so both are in order on the wire)
-    this.e.after(50, () => this.as(c, () => s.close('DISCONNECT sent')));
+    // (the FIN after the DISCONNECT: a moment later, so both are in order on the wire; what is still unacknowledged then
+    // is discarded with the clean session — cancelled by the Stop, not lost)
+    this.e.after(50, () =>
+      this.as(c, () => {
+        s.close('DISCONNECT sent');
+        for (const f of c.inflight.values()) {
+          const p = this.publication(f.pub);
+          if (p && p.acked === undefined && p.lost === undefined && p.cancelled === undefined) p.cancelled = this.e.now;
+        }
+        c.inflight.clear();
+      }),
+    );
   }
 
   /** Stop (Network events): unsubscribe, disconnect, end the run. */

@@ -60,6 +60,7 @@ import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
 import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, flightKey, scaleText } from '../analysis/sim/pacing';
+import { TravelScale, travelScale } from '../analysis/sim/travel';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
@@ -216,8 +217,8 @@ export class SimController implements SimulationMode {
   /** the status side shows the protocols' status, or a table of the selected device */
   private statusView: { kind: DevTable; dev: string } | null = null;
   private readonly entries: SimProtocolEntry[];
-  /** a typical hop's simulated time per view (the readable pacing's reference) */
-  private typicalHop = { physical: 0 };
+  /** the model's range of traversal costs (the readable pacing's scale, travel.ts) */
+  private travel: TravelScale | null = null;
   private onVis = (): void => this.schedule();
 
   constructor(
@@ -242,13 +243,13 @@ export class SimController implements SimulationMode {
     for (const d of devs) if (!o.senders || o.senders.indexOf(d.id) >= 0) this.senders.add(d.id);
     if (this.senders.size !== devs.length) this.sim.engine.setSenders(this.senders, devs.filter((d) => this.senders.has(d.id)).map((d) => d.id).sort().join(', ') || 'none');
     this.stateSeen = this.sim.engine.stateVersion;
-    this.typicalHop.physical = this.physicalTypical();
+    this.travel = this.travelOfModel();
     this.pacer = new Pacer(
       {
         engine: this.sim.engine,
         // (shown: in the view on screen, of what is shown, and drawn there — a track of the scene the dot can travel)
         shown: (f) => f.view === this.host.view() && this.flightShown(f) && this.renderable(f),
-        typical: (v) => this.typical(v),
+        travel: () => this.travel,
         headers: (f) => f.hdr,
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
@@ -366,28 +367,13 @@ export class SimController implements SimulationMode {
     return !this.stopped && this.playing && this.host.doc.visibilityState !== 'hidden';
   }
 
-  /** The typical hop of the physical view: the median of the cables' latency with a small frame's serialization. */
-  private physicalTypical(): number {
-    const e = this.sim.engine;
-    const ls = this.host.model().links.map((l) => {
-      try {
-        return Number(e.latency(l.id).value) + (64 * 8 * 1000) / Number(e.speed(l.id).value);
-      } catch (err) {
-        return NaN;
-      }
-    });
-    const ok = ls.filter((x) => x > 0 && isFinite(x)).sort((a, b) => a - b);
-    return ok.length ? ok[Math.floor(ok.length / 2)] : e.hopTime();
-  }
-
   /**
-   * The typical hop of a view: the cables' median; a relation or network
-   * line of the logical view spans about two of them. Fixed from the start
-   * (it changes only with a latency parameter), so that a hop's screen time
-   * never depends on which messages came first.
+   * The readable pacing's scale: the cables' traversal costs (latency and a small frame's serialization), both views alike.
+   * Fixed from the start (it changes only with a latency or speed parameter), so that a hop's screen time never depends on
+   * which messages came first.
    */
-  private typical(view: Flight['view']): number {
-    return view === 'physical' ? this.typicalHop.physical : 2 * this.typicalHop.physical;
+  private travelOfModel(): TravelScale | null {
+    return travelScale(this.sim.engine.cableCosts());
   }
 
   /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
@@ -549,7 +535,7 @@ export class SimController implements SimulationMode {
     this.refresh(true);
   }
 
-  /** "Readable · 1 s per hop · 1×". */
+  /** "Readable · 3–5 s/hop · 1×". */
   pacingText(): string {
     return this.pacer.describe();
   }
@@ -1592,7 +1578,7 @@ export class SimController implements SimulationMode {
     this.sim.setParam(key, v);
     if (this.host.paramsChanged) this.host.paramsChanged(this.sim.params.simValues());
     this.logKey = '';
-    this.typicalHop.physical = this.physicalTypical();
+    this.travel = this.travelOfModel();
     this.refresh(true);
   }
 
