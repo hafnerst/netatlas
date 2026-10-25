@@ -35,11 +35,11 @@ import { hostOf, isGuest, machineOf } from '../model/virtual';
 import { DEVICE_TYPES, deviceTypeInText, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf } from '../model/device-types';
 import { isLayer2Switch, capabilities, ROUTING_PROTOCOL_TYPES } from '../model/capabilities';
 import { Issue } from '../validation/validate';
-import { Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
+import { CHECKS, Finding, SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { AddressingOverview, addressingOverview } from '../analysis/addressing';
 import { FocusContext, contextFocus, focusContexts, focusSeeds, navigationIndex } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, traceRefs } from '../analysis/trace';
-import { DiagRuleView, TraceForm, TraceRun, formRequest, newTraceForm, traceExportText, traceSummary, traceVerdict, traceWindowBody } from './trace';
+import { DiagRuleView, TraceForm, TracePanelActions, TraceRun, TraceViewState, commDefaultItem, commEvidence, commQuestion, commRequest, commResults, formRequest, newTraceForm, sameRequest, traceExportText, traceSummary, traceVerdict } from './trace';
 import { policyRuleText } from '../model/net-policy';
 import { allowList } from '../analysis/policy';
 import { CommRequest, checkCommunication } from '../analysis/communication';
@@ -62,18 +62,21 @@ import { ExpRunResult, ExperimentRunner, RunCompare, compareRuns, experimentScop
 import { ExpSelection, ExpWsActions, ExpWsView, experimentRefs, experimentText, experimentsDock, experimentsLeft, experimentsRight, targetRefs } from './experiments';
 import { ExpAction, ExpObservation, actionDef, durText, durationYaml, observeDef } from '../model/experiments';
 import { resetDurationDrafts } from './duration-input';
-import { ANALYZE_TOOLS, AnalyzeTool, WORKSPACES, Workspace, applyPanels, inWorkspacePanel } from './workspace';
+import { ANALYZE_TASKS, AnalyzeTask, REVIEW_MODES, RESILIENCE_MODES, ResilienceMode, ReviewMode, WORKSPACES, Workspace, applyPanels, inWorkspacePanel } from './workspace';
 import type { AnalysisSnapshot } from '../analysis/snapshot';
 import { AnalysisContext, contextText, coverageText, resultInfo, simTimeText, verdictText } from '../analysis/result';
 import { fingerprintId, modelFingerprint } from '../model/fingerprint';
-import { ContextBarState, contextBar } from './analysis-ui';
-import { DesignView, ExpectForm, ShownFinding, designBody, designCsv, designText, formOf, newExpectForm } from './design-checks';
-import { ExpectationRun, evaluateExpectations } from '../analysis/expectations';
+import { ContextBarState, clockText, contextBar, contextKindText } from './analysis-ui';
+import { EvidenceView, editorPanel, evidenceHint, evidencePanel, radioNav } from './evidence';
+import { Explorer, HistoryEntry, OverviewFacts, boundHistory, overviewEvidence, overviewRequest, overviewResults, runtimeAddressed, taskLabel } from './overview';
+import { DesignActions, DesignView, ExpectForm, FindingFilter, ShownFinding, designCsv, designText, findingEvidence, findingsRequest, findingsResults, formOf, newExpectForm, newFindingFilter, requirementEditorBody, requirementEvidence, requirementsRequest, requirementsResults } from './design-checks';
+import { ExpectationResult, ExpectationRun, evaluateExpectation, evaluateExpectations } from '../analysis/expectations';
 import { classCounts, groupFindings } from '../analysis/findings';
-import { FailureResult, ReachScope, Spof, SpofCandidate, failureRefs, simulate, singlePointsOfFailure, spofCandidates } from '../analysis/failure';
+import { FailureResult, ReachScope, Spof, SpofCandidate, failureCondition, failureRefs, simulate, singlePointsOfFailure, spofCandidates } from '../analysis/failure';
+import { CapacityChange, CapacityResult, capacityAnalysis, compareCapacity } from '../analysis/capacity';
 import { DepChange, DepState, ServiceDependency, compareDependencies, dependencyBaseline, serviceDependencies } from '../analysis/dependencies';
-import { WhatIf, whatIf } from '../analysis/whatif';
-import { DomainForm, SpofRow, SpofSort, SpofView, WhatIfForm, newSpofViewState, newWhatIfForm, progressLine, shownSpofRows, spofBody, spofCsv, spofRows, spofTable, spofText, whatIfText } from './spof';
+import { WhatIf, expChange, whatIf } from '../analysis/whatif';
+import { CapacityView, DomainForm, ReqHit, SpofRow, SpofSort, SpofView, WhatIfActions, WhatIfForm, WhatIfView, capacityEvidence, capacityRequest, capacityResults, conditionEntries, domainsEditorBody, newSpofViewState, newWhatIfForm, progressLine, scenarioEvidence, scenarioRequest, scenarioResults, shownSpofRows, spofCsv, spofEvidence, spofRequest, spofResults, spofRows, spofTable, spofText, whatIfText } from './spof';
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
@@ -88,7 +91,7 @@ import { TabOverflow } from './tab-overflow';
 import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
-import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, networkDetail, newAddrViewState, shownText } from './addressing';
+import { AddrSort, AddrViewState, addressingCsv, addressingRequest, addressingResults, allocText, issueDetail, networkDetail, newAddrViewState } from './addressing';
 
 /** How a severity is named in the Problems tab's filter. */
 const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warnings', info: 'Info' };
@@ -309,7 +312,7 @@ export class App {
       if (!this.session) this.showWorkspace('edit');
       else {
         this.renderWorkspace();
-        if (this.ws === 'analyze' && this.anTool === 'spof') {
+        if (this.ws === 'analyze' && this.anTask === 'resilience' && this.anModes.resilience === 'single') {
           const j = this.spofJobNow();
           if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
         }
@@ -2507,20 +2510,23 @@ export class App {
   }
 
   /**
-   * Analyze → Focus… (Shift+F): the Focus window, with the selection, its
-   * 1–3 hops, Focus and Exit focus. `apply`: focus on the selection at once
-   * (when it can be focused).
+   * Focus… (Shift+F, Analyze → Focus…): a view aid of the diagram in every
+   * workspace — a tool window with the selection, its 1–3 hops, Focus and
+   * Exit focus, and what the selection takes part in (its VLAN, VRF,
+   * dependencies, timing, multicast group). It is no analysis: the model,
+   * an analysis's scope and a simulation's execution scope do not change.
+   * `apply`: focus on the selection at once (when it can be focused).
    */
   openFocusWindow(apply = false): void {
     const s = this.session;
     if (!s) return;
-    const opened = this.analyzeTool() !== 'focus';
-    if (opened) this.showAnalyze('focus');
+    const opened = this.toolWindow() !== 'focus';
+    if (opened) this.openWindow({ id: 'focus', title: 'Focus', body: this.focusBody(), width: 380, height: 380, focus: '[data-focus-hops][aria-checked="true"]' });
     const sel = s.state.selected;
     if (apply && sel && this.canFocus(sel) && !(s.state.focus && s.state.focus.ref === sel)) this.enterFocus(sel, this.focusHops);
     else this.renderFocusWindow();
     // focused at once, Focus is unavailable now: the keyboard goes to the hops in effect, not lost on the page
-    const win = this.doc.getElementById('ws-an-left');
+    const win = this.tw ? this.tw.body() : null;
     if (opened && win && !win.contains(this.doc.activeElement)) {
       const to = win.querySelector('[data-focus-hops][aria-checked="true"]') || win.querySelector('#focus-go:not([disabled])');
       if (to) (to as HTMLElement).focus();
@@ -2528,26 +2534,26 @@ export class App {
   }
 
   private renderFocusWindow(): void {
-    if (this.analyzeTool() === 'focus' && this.session) this.renderAnalyzeWs();
+    if (this.toolWindow() === 'focus' && this.session) this.replaceWindowBody(this.focusBody());
   }
 
   private focusBody(): HTMLElement {
     const s = this.session as Session;
     const sel = s.state.selected;
     const f = s.state.focus;
-    const blocked = !sel ? 'Select an object first: in the diagram or the object list' : !this.canFocus(sel) ? 'The selection has no device to start from' : f && f.ref === sel && f.hops === this.focusHops ? 'Focus mode shows this already' : '';
+    const blocked = !sel ? 'Select an object first: in the diagram or the object list' : !this.canFocus(sel) ? 'The selection has no device to start from' : f && f.ref === sel && f.hops === this.focusHops && !f.context ? 'Focus mode shows this already' : '';
     const contexts = sel ? focusContexts(s.model, sel) : [];
     const active = f && f.context ? JSON.stringify(f.context) : '';
     const body = focusWindowBody(this.doc, { selected: sel ? this.refName(sel) : '', blocked, hops: this.focusHops, note: this.focusNote(), contexts: contexts.map((c) => ({ key: JSON.stringify(c.ctx), label: c.label, on: JSON.stringify(c.ctx) === active })) });
     const pick = (n: number): void => {
       this.focusHops = n;
       const cur = s.state.focus;
-      if (cur && cur.hops !== n) this.changeFocusHops(n - cur.hops);
+      if (cur && !cur.context && cur.hops !== n) this.changeFocusHops(n - cur.hops);
       else this.renderFocusWindow();
       const b = this.doc.querySelector(`[data-focus-hops="${n}"]`) as HTMLElement | null;
       if (b) b.focus();
     };
-    this.onRoot(body, 'click', (e) => {
+    body.addEventListener('click', (e) => {
       const t = e.target as Element;
       const h = t.closest('[data-focus-hops]');
       if (h) pick(Number(h.getAttribute('data-focus-hops')));
@@ -2557,11 +2563,10 @@ export class App {
         this.enterContextFocus(JSON.parse(key) as FocusContext);
         const b = this.doc.querySelector(`[data-focus-ctx='${key}']`) as HTMLElement | null;
         if (b) b.focus();
-      }
-      else if (t.closest('#focus-exit-w')) this.exitFocus();
+      } else if (t.closest('#focus-exit-w')) this.exitFocus();
     });
     // the hops are a radio group: the arrow keys move between them
-    this.onRoot(body, 'keydown', (ev) => {
+    body.addEventListener('keydown', (ev) => {
       const e = ev as KeyboardEvent;
       const h = (e.target as Element).closest('[data-focus-hops]');
       if (!h || ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) < 0) return;
@@ -2797,16 +2802,23 @@ export class App {
     this.wiRun = null;
     this.wiForm = newWhatIfForm();
     this.domForm = null;
+    this.capRun = null;
+    this.capForm = { ...newWhatIfForm(), mode: 'none' };
     // the evaluations and what was selected in them
     this.dcRun = null;
-    this.dcOpen.clear();
     this.dcForm = null;
+    this.anEditor = null;
+    this.anHistory = [];
+    this.anExplore = null;
+    this.anBack = [];
+    this.anView = null;
     this.addrRun = null;
     this.addrState.open.clear();
     // the trace's ends named the old model's objects (its options, as the VRF choice, are kept)
     this.traceForm = { ...this.traceForm, from: '', to: '', service: '' };
-    this.anSel = '';
+    this.anSels.clear();
     this.anSelRefs = [];
+    this.anOrigin = null;
     this.anFocus = false;
     // the experiments: a run in progress is the old model's (its slot is let go: nothing of it is kept)
     if (this.expRunner) {
@@ -3107,10 +3119,10 @@ export class App {
    * under the diagram; in a narrow and short window Diagram, Setup or
    * Actions above the panel (one at a time).
    */
-  private simPanelTab(which: 'diagram' | 'setup' | 'actions', focus = true): void {
+  private simPanelTab(which: 'diagram' | 'setup' | 'actions' | 'results', focus = true): void {
     const d = this.doc;
     d.body.setAttribute('data-panel-tab', which);
-    for (const k of ['diagram', 'setup', 'actions']) {
+    for (const k of ['diagram', 'setup', 'actions', 'results']) {
       const b = d.getElementById('spt-' + k) as HTMLElement;
       b.setAttribute('aria-selected', k === which ? 'true' : 'false');
       b.tabIndex = k === which ? 0 : -1;
@@ -3120,9 +3132,10 @@ export class App {
     if (which === 'diagram' && this.simCtl) this.simCtl.sceneChanged();
   }
 
-  /** The tabs shown now (Diagram only in a narrow and short window). */
-  private simTabs(): Array<'diagram' | 'setup' | 'actions'> {
+  /** The tabs shown now (Diagram only in a narrow and short window; Analyze: Question, Results, Evidence, Diagram, one at a time). */
+  private simTabs(): Array<'diagram' | 'setup' | 'actions' | 'results'> {
     const dg = this.doc.getElementById('spt-diagram') as HTMLElement;
+    if (this.ws === 'analyze') return ['setup', 'results', 'actions', 'diagram'];
     return dg.getClientRects().length ? ['diagram', 'setup', 'actions'] : ['setup', 'actions'];
   }
 
@@ -3146,7 +3159,8 @@ export class App {
     // Experiments and Analyze: their results take a fair share (no simulation tables to measure)
     if (this.ws === 'experiments' || this.ws === 'analyze') {
       const min = Math.min(120, Math.round(h * 0.3));
-      return { dflt: Math.max(min, Math.round(h * 0.38)), min, max: Math.max(min, Math.round(h * 0.65)) };
+      const share = this.ws === 'analyze' ? (this.anLayout === 'diagram' ? 0.28 : this.anLayout === 'results' ? 0.62 : 0.42) : 0.38;
+      return { dflt: Math.max(min, Math.round(h * share)), min, max: Math.max(min, Math.round(h * 0.7)) };
     }
     const head = this.doc.querySelector('#sim-dock .sd-head') as HTMLElement | null;
     const need = this.dockNeed();
@@ -3279,7 +3293,7 @@ export class App {
     const tabs = this.doc.getElementById('sim-paneltabs') as HTMLElement;
     tabs.addEventListener('click', (e) => {
       const b = (e.target as Element).closest('[role="tab"]');
-      if (b) this.simPanelTab(b.id.slice(4) as 'diagram' | 'setup' | 'actions');
+      if (b) this.simPanelTab(b.id.slice(4) as 'diagram' | 'setup' | 'actions' | 'results');
     });
     tabs.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
@@ -3461,26 +3475,14 @@ export class App {
   /** After an edit, a new selection or a mode change: the open window shows the model as it is now. */
   private refreshWindow(): void {
     this.renderWorkspace();
+    // (the tool windows: Focus, a view aid of every workspace, and Saved views)
     switch (this.toolWindow()) {
-      case 'trace':
-        this.renderTraceWindow();
-        break;
-      case 'spof':
-        this.renderSpofWindow();
-        break;
       case 'focus':
         this.renderFocusWindow();
-        break;
-      case 'addressing':
-        this.renderAddressingWindow();
-        break;
-      case 'checks':
-        this.renderDesignChecks();
         break;
       case 'views':
         this.renderViews();
         break;
-
     }
   }
 
@@ -3500,14 +3502,15 @@ export class App {
     }
   }
 
-  // ------------------------------------------------------------ single points of failure
+  // ------------------------------------------------------------ Resilience
 
-  /** the Single points of failure table's sort and filter (kept while the page is open; never saved) */
+  /** the single-component failures' sort and filter (kept while the page is open; never saved) */
   private spofState = newSpofViewState();
   /**
    * the report for one model: the structural single points at once, then the
-   * service impact of every candidate, checked in steps (time-sliced, never
-   * blocking the page; Stop ends it, the coverage says how far it got)
+   * service and requirement impact of every candidate, checked in steps
+   * (time-sliced, never blocking the page; Stop ends it, the coverage says
+   * how far it got; leaving Resilience pauses it, coming back resumes it)
    */
   private spofJob: {
     model: Model;
@@ -3516,36 +3519,43 @@ export class App {
     deps: ServiceDependency[];
     baseline: Map<string, DepState> | null;
     service: Map<string, DepChange[]>;
+    /** the saved requirements with nothing failed, and each candidate's effect on them */
+    reqBase: ExpectationResult[] | null;
+    reqs: Map<string, ReqHit[]>;
     next: number;
     running: boolean;
     cancelled: boolean;
     timer: number | null;
     rows: SpofRow[] | null;
+    at: number;
   } | null = null;
   private wiForm: WhatIfForm = newWhatIfForm();
-  private wiRun: { model: Model; result: WhatIf } | null = null;
+  private wiRun: { model: Model; result: WhatIf; at: number } | null = null;
   private domForm: DomainForm | null = null;
+  /** Capacity's question (a failure condition, or none) and its result */
+  private capForm: WhatIfForm = { ...newWhatIfForm(), mode: 'none' };
+  private capRun: { model: Model; at: number; before: CapacityResult; after: CapacityResult | null; changes: CapacityChange[]; condition: string[] } | null = null;
 
   /** The job for the model on screen (a new one when the model changed). */
   private spofJobNow(): NonNullable<App['spofJob']> {
     const s = this.session as Session;
     const j = this.spofJob;
     // (an edit leaves the report as computed, marked outdated: Refresh, or another model, starts a new one)
-    if (j && (j.model === s.model || !this.outdatedSince(j.model) || this.analyzeTool() === 'spof')) return j;
+    if (j && (j.model === s.model || !this.outdatedSince(j.model) || this.analyzeTask() === 'resilience')) return j;
     if (j && j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
     const cands = spofCandidates(s.model);
     const spofs = singlePointsOfFailure(s.model);
-    this.spofJob = { model: s.model, spofs, cands, deps: serviceDependencies(s.model), baseline: null, service: new Map(), next: 0, running: false, cancelled: false, timer: null, rows: null };
+    this.spofJob = { model: s.model, spofs, cands, deps: serviceDependencies(s.model), baseline: null, service: new Map(), reqBase: null, reqs: new Map(), next: 0, running: false, cancelled: false, timer: null, rows: null, at: Date.now() };
     return this.spofJob;
   }
 
   private spofRowsNow(): SpofRow[] {
     const j = this.spofJobNow();
-    if (!j.rows) j.rows = spofRows(j.model, j.spofs, j.next > 0 ? j.service : null, j.cands);
+    if (!j.rows) j.rows = spofRows(j.model, j.spofs, j.service, j.cands, j.reqs);
     return j.rows;
   }
 
-  /** Check the service impact of the candidates, a slice at a time (about 40 ms each), until done or stopped. */
+  /** Check the service and requirement impact of the candidates, a slice at a time (about 40 ms each), until done, paused or stopped. */
   private stepSpofJob(): void {
     const j = this.spofJob;
     const win = this.doc.defaultView;
@@ -3560,18 +3570,30 @@ export class App {
       return;
     }
     j.running = true;
-    if (!j.baseline) j.baseline = dependencyBaseline(j.model, j.deps);
+    const m = j.model;
+    if (!j.baseline) j.baseline = dependencyBaseline(m, j.deps);
     const t0 = Date.now();
     while (j.next < j.cands.length && Date.now() - t0 < 40) {
       const c = j.cands[j.next++];
       // (no configured dependency: nothing becomes unavailable, checked)
-      if (!j.deps.length) {
-        j.service.set(c.ref, []);
-        continue;
+      if (!j.deps.length) j.service.set(c.ref, []);
+      else {
+        const res = simulate(m, c.fail);
+        const hit = new Set(Array.from(failureRefs(res).keys()));
+        j.service.set(c.ref, compareDependencies(m, j.deps, j.baseline, res.ctx, hit, (d) => res.devices.get(d) === 'down'));
       }
-      const res = simulate(j.model, c.fail);
-      const hit = new Set(Array.from(failureRefs(res).keys()));
-      j.service.set(c.ref, compareDependencies(j.model, j.deps, j.baseline, res.ctx, hit, (d) => res.devices.get(d) === 'down'));
+      // the saved requirements under this failure, against the same baseline (as Failure scenario evaluates them)
+      if (!m.expectations.length) j.reqs.set(c.ref, []);
+      else {
+        if (!j.reqBase) j.reqBase = m.expectations.map((e) => evaluateExpectation(m, { ...e, failure: e.failure.slice() }));
+        const base = j.reqBase;
+        const hits: ReqHit[] = [];
+        m.expectations.forEach((e, k) => {
+          const ch = expChange(base[k], evaluateExpectation(m, { ...e, failure: e.failure.concat(c.fail.filter((x) => e.failure.indexOf(x) < 0)) }));
+          if (ch.change !== 'unchanged' && ch.change !== 'already-violated') hits.push({ id: e.id, name: e.name, change: ch.change });
+        });
+        j.reqs.set(c.ref, hits);
+      }
     }
     j.rows = null;
     if (j.next >= j.cands.length) {
@@ -3580,7 +3602,7 @@ export class App {
     } else if (win)
       j.timer = win.setTimeout(() => {
         // (a callback of a job that was replaced — another model, Refresh — does nothing: no stale or duplicate work)
-        if (this.spofJob === j) this.stepSpofJob();
+        if (this.spofJob === j && j.running) this.stepSpofJob();
       }, 0);
     else {
       // (no window: finish at once)
@@ -3590,7 +3612,7 @@ export class App {
     this.renderSpofTable();
   }
 
-  /** Stop the service check where it is (the coverage says how far it got). */
+  /** Stop the check where it is (the coverage says how far it got). */
   stopSpofJob(): boolean {
     const j = this.spofJob;
     if (!j || !j.running) return false;
@@ -3605,37 +3627,47 @@ export class App {
     return true;
   }
 
-  /** Is the service check done (for tests)? */
+  /** Pause the check (another task in front): it resumes where it was when Single-component failures is shown again. */
+  private pauseSpofJob(): void {
+    const j = this.spofJob;
+    if (!j || !j.running) return;
+    j.running = false;
+    if (j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
+    j.timer = null;
+  }
+
+  /** Is the check done (for tests)? */
   spofServiceDone(): boolean {
     const j = this.spofJob;
     return !!j && !j.running && j.next >= j.cands.length;
   }
 
   /**
-   * Analyze → Single points of failure…: a window with the table of the
-   * model as written (sort, filter, Show in diagram, What if, CSV and text),
-   * the service impact checked progressively, the what-if check and the
-   * failure domains. Nothing changes mode.
+   * Analyze → Resilience: single-component failures: the table of the model
+   * as written (sort, filter, Show, Scenario, CSV and text), the service and
+   * requirement impact checked progressively. Nothing changes mode.
    */
   openSpof(): void {
     if (!this.session) return;
     const j = this.spofJobNow();
-    this.showAnalyze('spof');
+    this.showAnalyze('resilience', 'single');
     if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
+    if (!this.historyOf(j)) this.remember('resilience', 'single', 'Every cable, device and LAG failing alone', { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' }, ['Hypothetical failure condition'], j.model, j, j.at);
     const f = this.doc.getElementById('spof-filter');
     if (f) f.focus();
   }
 
   private renderSpofWindow(): void {
-    if (this.analyzeTool() !== 'spof' || !this.session) return;
-    const j = this.spofJobNow();
+    if (this.analyzeTask() !== 'resilience' || !this.session) return;
     this.renderAnalyzeWs();
+    if (this.anModes.resilience !== 'single') return;
+    const j = this.spofJobNow();
     if (!j.running && j.next < j.cands.length && !j.cancelled) this.stepSpofJob();
   }
 
-  /** Only the progress line and the table again (the service check's steps): the form and the focus stay. */
+  /** Only the progress line, the table and the selected row's evidence again (the check's steps): the question and the focus stay. */
   private renderSpofTable(): void {
-    if (this.analyzeTool() !== 'spof' || !this.session) return;
+    if (this.analyzeTask() !== 'resilience' || this.anModes.resilience !== 'single' || !this.session) return;
     const body = this.doc.getElementById('ws-an-dock');
     const old = body ? (body.querySelector('.spof-tables') as HTMLElement | null) : null;
     const prog = body ? (body.querySelector('#spof-progress') as HTMLElement | null) : null;
@@ -3649,113 +3681,74 @@ export class App {
       const t = findFocusKey(body, key);
       if (t) t.focus({ preventScroll: true });
     }
+    // the selected row's evidence follows its check (the row stays selected by its object)
+    if (this.anSel && this.anSel !== '-') {
+      const right = this.anEvidence(this.spofEvidenceNow(), '');
+      const w = el(this.doc, 'div', { class: 'an-right', 'data-an-root': this.anTask }, [right.right]);
+      this.replacePanel('ws-an-right', w);
+      this.applyHighlight();
+    }
   }
 
   private spofView(): SpofView {
     const j = this.spofJobNow();
     const indet = j.baseline ? Array.from(j.baseline.values()).filter((x) => x.verdict !== 'satisfied' && x.verdict !== 'violated').length : 0;
-    const progress = j.next > 0 || j.running ? { checked: j.next, total: j.cands.length, running: j.running, cancelled: j.cancelled, deps: j.deps.length, indeterminate: indet } : null;
-    const wi = this.wiRun;
+    const progress = { checked: j.next, total: j.cands.length, running: j.running, cancelled: j.cancelled, deps: j.deps.length, indeterminate: indet, reqs: j.model.expectations.length };
+    const bar = this.barState('spof', { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' }, j.model, 'Failure analysis evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a hypothetical failure.');
+    bar.computedAt = j.at;
+    bar.layers = ['Hypothetical failure condition: each component alone'];
+    if (j.cancelled && j.next < j.cands.length) bar.incomplete = `Incomplete: the check was stopped after ${j.next} of ${j.cands.length} candidates (Refresh checks them all).`;
     return {
-      bar: this.barState('spof', { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' }, j.model, 'Failure analysis evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a what-if.'),
+      bar,
       progress,
       cands: j.cands,
-      // (the what-if and the failure domains are of the model as it is now; the table may be outdated)
-      whatif: { model: (this.session as Session).model, form: this.wiForm, result: wi ? wi.result : null, outdated: !!wi && this.outdatedSince(wi.model), domain: this.domForm, locked: this.editLock() },
+      sel: this.anSel.indexOf('spof:') === 0 ? this.anSel.slice(5) : '',
       info: resultInfo(
         { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' },
-        ['A failure propagates as the failure analysis models it (interfaces, aggregates, redundancy groups, relations over their underlay, static routes).', 'Service impact: the configured dependencies (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), each checked as the communication check does.'],
-        ['Combinations of failures (What if).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'],
-        progress ? { checked: progress.checked, eligible: progress.total, unit: 'candidates', cancelled: progress.cancelled } : undefined,
+        ['A failure propagates as the failure analysis models it (interfaces, aggregates, redundancy groups, relations over their underlay, static routes).', 'Service impact: the configured dependencies (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), each checked as the communication check does.', 'Requirements: every saved requirement under the failure as well, against its state with nothing failed.'],
+        ['Combinations of failures (Failure scenario).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'],
+        { checked: progress.checked, eligible: progress.total, unit: 'candidates', cancelled: progress.cancelled },
       ),
     };
   }
 
-  private spofWindowBody(): HTMLElement {
+  /** The evidence of the selected single-component failure. */
+  private spofEvidenceNow(): EvidenceView | null {
+    const sel = this.anSel;
+    if (sel.indexOf('spof:') !== 0) return null;
+    const j = this.spofJobNow();
+    const r = this.spofRowsNow().find((x) => x.ref === sel.slice(5));
+    if (!r) return null;
+    return spofEvidence(this.doc, r, j.service.get(r.ref) || null, j.reqs.get(r.ref) || null, this.anContextText({ kind: 'model', scope: 'This component failing alone' }, j.at, ['Hypothetical failure condition']), j.running);
+  }
+
+  private spofParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
     const s = this.session as Session;
-    const rows = this.spofRowsNow();
     const st = this.spofState;
     const view = this.spofView();
-    const body = spofBody(this.doc, rows, st, view, {
+    const left = spofRequest(this.doc, st, view, {
       refresh: () => {
         this.spofJob = null;
-        this.renderSpofWindow();
+        this.anSel = '';
+        this.openSpof();
       },
       source: (src) => this.setAnalysisSource(src),
-      stop: () => void this.stopSpofJob(),
-      whatIf: (entries) => this.runWhatIf(entries),
-      wiInput: (k, v) => {
-        (this.wiForm as unknown as { [key: string]: string })[k] = v;
-        if (k === 'mode') {
-          this.renderSpofWindow();
-          const b = this.doc.querySelector(`[data-wi-mode="${v}"]`) as HTMLElement | null;
-          if (b) b.focus();
-        }
-      },
-      wiRun: () => {
-        const f = this.wiForm;
-        const entries = f.mode === 'domain' ? (f.domain ? [f.domain] : []) : f.components.split(/[\s,]+/).filter((x) => x);
-        if (!entries.length) {
-          this.toast(f.mode === 'domain' ? 'Choose a failure domain first.' : 'Name the components that fail.');
-          return;
-        }
-        this.runWhatIf(entries);
-      },
-      wiOut: (kind) => {
-        const w = this.wiRun;
-        if (!w || !this.mdoc) return;
-        const text = whatIfText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result);
-        if (kind === 'copy') void this.copyText(text, 'The what-if result was copied as text.');
-        else {
-          const name = pictureBaseName(this.mdoc.fileName) + '-what-if.txt';
-          downloadText(this.doc, text, name, 'text/plain');
-          this.toast(`Exported “${name}”.`);
-        }
-      },
-      domAdd: () => {
-        this.domForm = { index: -1, label: '', kind: 'rack', members: '', error: '' };
-        this.renderSpofWindow();
-        const f = this.doc.getElementById('dom-f-label');
-        if (f) f.focus();
-      },
-      domEdit: (id) => {
-        const d = s.model.failureDomains.find((x) => x.id === id);
-        const entry = (this.mdoc as ModelDoc).analysisEntries('failure_domains').find((x) => x.id === id);
-        if (!d || !entry) return;
-        this.domForm = { index: entry.index, label: d.label, kind: d.kind, members: d.members.join(', '), error: '' };
-        this.renderSpofWindow();
-        const f = this.doc.getElementById('dom-f-label');
-        if (f) f.focus();
-      },
-      domRemove: (id) => void this.removeFailureDomain(id),
-      domInput: (k, v) => {
-        if (this.domForm) (this.domForm as unknown as { [key: string]: string | number })[k] = v;
-      },
-      domSave: () => this.saveDomainForm(),
-      domCancel: () => {
-        this.domForm = null;
-        this.renderSpofWindow();
-        const b = this.doc.getElementById('dom-add');
-        if (b) b.focus();
-      },
-      goto: (ref) => this.select(ref, true),
     });
-    // (laid out in the Analyze panels: the results drawn again there, the request's controls kept)
-    const redraw = (): void => this.renderAnalyzeWs('results');
-    this.onRoot(body, 'input', (e) => {
+    left.addEventListener('input', (e) => {
       const t = e.target as HTMLInputElement;
       if (!t.hasAttribute('data-spof-filter')) return;
       st.filter = t.value;
-      redraw();
+      this.renderAnalyzeWs('results');
     });
-    this.onRoot(body, 'click', (e) => {
+    const bottom = spofResults(this.doc, this.spofRowsNow(), st, view, { stop: () => void this.stopSpofJob() });
+    bottom.addEventListener('click', (e) => {
       const t = e.target as Element;
       const sort = t.closest('[data-spof-sort]');
       if (sort) {
         const k = sort.getAttribute('data-spof-sort') as SpofSort;
-        st.desc = st.sort === k ? !st.desc : k === 'impact' || k === 'cuts' || k === 'relations' || k === 'service';
+        st.desc = st.sort === k ? !st.desc : k === 'reqs' || k === 'cuts' || k === 'relations' || k === 'service';
         st.sort = k;
-        redraw();
+        this.renderAnalyzeWs('results');
         const again = this.doc.querySelector(`[data-spof-sort="${k}"]`) as HTMLElement | null;
         if (again) again.focus();
         return;
@@ -3768,8 +3761,10 @@ export class App {
       const wi = t.closest('[data-spof-whatif]');
       if (wi) {
         const refs = (wi.getAttribute('data-spof-whatif') || '').split(' ').filter((x) => x);
-        this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((r) => r.replace(/^(device|link|relation|iface):/, '')).join(', ') };
-        this.runWhatIf(refs);
+        this.anGo('Resilience: single-component failures', () => {
+          this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((r) => r.replace(/^(device|link|relation|iface):/, '')).join(', ') };
+          this.runWhatIf(refs);
+        });
         return;
       }
       const out = t.closest('[data-spof-out]');
@@ -3780,31 +3775,118 @@ export class App {
       const base = pictureBaseName(this.mdoc.fileName) + '-single-points-of-failure';
       const info = this.spofView().info;
       const ctx = contextText(info.context) + (info.coverage ? ' · ' + coverageText(info.coverage) : '');
-      const text = (): string => spofText(s.model, shown, { info, version: this.appVersion(), outdated: false });
-      if (kind === 'csv-copy') void this.copyText(spofCsv(shown, ctx), 'The single points of failure were copied as CSV.');
-      else if (kind === 'text-copy') void this.copyText(text(), 'The single points of failure were copied as text.');
+      const text = (): string => spofText(s.model, shown, { info, version: this.appVersion(), outdated: this.outdatedSince(this.spofJobNow().model) });
+      if (kind === 'csv-copy') void this.copyText(spofCsv(shown, ctx), 'The single-component failures were copied as CSV.');
+      else if (kind === 'text-copy') void this.copyText(text(), 'The single-component failures were copied as text.');
       else {
         const csv = kind === 'csv-save';
         downloadText(this.doc, csv ? spofCsv(shown, ctx) : text(), base + (csv ? '.csv' : '.txt'), csv ? 'text/csv' : 'text/plain');
         this.toast(`Exported “${base}${csv ? '.csv' : '.txt'}”.`);
       }
     });
-    return body;
+    const e = this.anEvidence(this.spofEvidenceNow(), 'Select a row to see what its failure affects: the requirements, the configured dependencies, the devices and relations.');
+    return { left, bottom, ...e };
   }
 
-  /** What if these fail (failure domains, devices, cables, relations, interfaces, or refs): the result in the window. */
+  /** The actions of Failure scenario and Capacity (their condition forms share them). */
+  private wiActions(form: 'wi' | 'cap'): WhatIfActions & { capRun(): void } {
+    const f = (): WhatIfForm => (form === 'wi' ? this.wiForm : this.capForm);
+    return {
+      refresh: () => (form === 'wi' ? this.wiRun && this.runWhatIf(this.wiRun.result.entries) : this.runCapacity()),
+      source: (src) => this.setAnalysisSource(src),
+      wiInput: (k, v) => {
+        (f() as unknown as { [key: string]: string })[k] = v;
+        if (k === 'mode') {
+          this.renderAnalyzeWs();
+          const b = this.doc.querySelector(`#ws-an-left [data-wi-mode="${v}"]`) as HTMLElement | null;
+          if (b) b.focus();
+        } else this.syncWhatIfContext();
+      },
+      wiRun: () => {
+        const entries = conditionEntries(this.wiForm);
+        if (!entries.length) {
+          this.toast(this.wiForm.mode === 'domain' ? 'Choose a failure domain first.' : 'Name the components that fail.');
+          return;
+        }
+        this.runWhatIf(entries);
+      },
+      wiOut: (kind) => {
+        const w = this.wiRun;
+        const s = this.session as Session;
+        if (!w || !this.mdoc) return;
+        const text = whatIfText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result);
+        if (kind === 'copy') void this.copyText(text, 'The failure scenario was copied as text.');
+        else {
+          const name = pictureBaseName(this.mdoc.fileName) + '-what-if.txt';
+          downloadText(this.doc, text, name, 'text/plain');
+          this.toast(`Exported “${name}”.`);
+        }
+      },
+      domains: () => this.openDomainsEditor(),
+      capRun: () => this.runCapacity(),
+    };
+  }
+
+  /** The scenario's context line again in place (a draft condition shown as typed). */
+  private syncWhatIfContext(): void {
+    const box = this.doc.querySelector('#ws-an-left .an-context');
+    if (!box || this.analyzeTask() !== 'resilience') return;
+    const mode = this.anModes.resilience;
+    if (mode === 'single') return;
+    box.replaceWith(contextBar(this.doc, mode === 'scenario' ? this.scenarioBar() : this.capacityBar(), this.wiActions(mode === 'scenario' ? 'wi' : 'cap')));
+  }
+
+  private scenarioBar(): ContextBarState {
+    const w = this.wiRun;
+    const bar = this.barState('wi', w ? w.result.info.context : null, w ? w.model : null, 'A failure scenario evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a hypothetical failure.');
+    if (w) {
+      bar.computedAt = w.at;
+      bar.layers = [`Hypothetical failure condition: ${w.result.entries.join(', ')}`];
+      const asked = conditionEntries(this.wiForm);
+      if (asked.join(',') !== w.result.entries.join(',')) bar.draft = 'The condition was changed after this result: Analyze scenario answers the new one; the result below is for the condition before.';
+      if (w.result.reach && w.result.reach.coverage.checked < w.result.reach.coverage.eligible) bar.incomplete = `Device pairs: ${coverageText(w.result.reach.coverage)}.`;
+    }
+    return bar;
+  }
+
+  private scenarioParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const s = this.session as Session;
+    const w = this.wiRun;
+    const view: WhatIfView = { model: s.model, form: this.wiForm, result: w ? w.result : null, outdated: !!w && this.outdatedSince(w.model), locked: this.editLock(), bar: this.scenarioBar(), sel: this.anSel };
+    const act = this.wiActions('wi');
+    const left = scenarioRequest(this.doc, view, act);
+    const bottom = scenarioResults(this.doc, view, act);
+    if (this.anEditor === 'domains') return { left, bottom, right: this.domainsEditor(), empty: false };
+    const v = w && this.anSel ? scenarioEvidence(this.doc, w.result, this.anSel, this.anContextText(w.result.info.context, w.at, view.bar.layers || [])) : null;
+    if (v) this.anSelRefs = v.objects.map((o) => o.ref);
+    const e = this.anEvidence(v, w ? 'Select a requirement, a dependency or a demand to see how the condition affects it.' : 'The evidence of an affected requirement, dependency or demand appears here.');
+    // (with nothing selected, the diagram marks what fails)
+    if (!v && w) this.anSelRefs = w.result.refs.slice();
+    return { left, bottom, ...e };
+  }
+
+  /** What if these fail (failure domains, devices, cables, relations, interfaces, or refs): the comparison in Failure scenario. */
   runWhatIf(entries: string[]): WhatIf | null {
     const s = this.session;
     if (!s) return null;
-    // (the what-if is computed on the model as it is now; the report's baseline only when the report is of this model)
-    const j0 = this.spofJobNow();
-    const j = j0.model === s.model ? j0 : { deps: serviceDependencies(s.model), baseline: null as Map<string, DepState> | null, model: s.model };
+    // (the scenario is computed on the model as it is now; the report's baseline only when the report is of this model)
+    const j0 = this.spofJob;
+    const j = j0 && j0.model === s.model ? j0 : { deps: serviceDependencies(s.model), baseline: null as Map<string, DepState> | null, model: s.model };
     if (!j.baseline) j.baseline = dependencyBaseline(j.model, j.deps);
     const reach = this.wiForm.reach === 'entire' ? ({ kind: 'entire' } as ReachScope) : this.wiForm.reach.indexOf('group:') === 0 ? ({ kind: 'group', group: this.wiForm.reach.slice(6) } as ReachScope) : undefined;
-    const result = whatIf(s.model, entries.map((e) => e.replace(/^(device|link|relation):/, '')), { deps: j.deps, baseline: j.baseline, reach });
-    this.wiRun = { model: s.model, result };
-    if (this.analyzeTool() !== 'spof') this.openSpof();
-    else this.renderSpofWindow();
+    const clean = entries.map((e) => e.replace(/^(device|link|relation):/, ''));
+    const result = whatIf(s.model, clean, { deps: j.deps, baseline: j.baseline, reach });
+    this.wiRun = { model: s.model, result, at: Date.now() };
+    // (the form says the condition the result answers: a failure domain, or the components)
+    const domain = clean.length === 1 && s.model.failureDomains.some((d) => d.id === clean[0]);
+    this.wiForm = domain ? { ...this.wiForm, mode: 'domain', domain: clean[0] } : { ...this.wiForm, mode: 'components', components: clean.join(', ') };
+    this.remember('resilience', 'scenario', `Failure of ${clean.join(', ')}`, result.info.context, [`Hypothetical failure condition: ${clean.join(', ')}`], s.model, this.wiRun, this.wiRun.at);
+    const was = this.analyzeTask() === 'resilience' && this.anModes.resilience === 'scenario';
+    this.anModes.resilience = 'scenario';
+    this.anSels.delete('resilience:scenario');
+    if (!was) this.showAnalyze('resilience', 'scenario');
+    else this.renderAnalyzeWs();
+    this.revealResults();
     const r = this.doc.getElementById('wi-summary') || this.doc.getElementById('wi-result');
     if (r) {
       r.setAttribute('tabindex', '-1');
@@ -3814,7 +3896,127 @@ export class App {
     return result;
   }
 
-  /** Save the failure domain form (one undo step); the form says what is missing. */
+  private capacityBar(): ContextBarState {
+    const c = this.capRun;
+    const bar = this.barState('cap', c ? { kind: 'model', scope: 'The stated demands' } : null, c ? c.model : null, 'Capacity evaluates the configured model’s stated traffic and speeds.');
+    if (c) {
+      bar.computedAt = c.at;
+      if (c.condition.length) bar.layers = [`Hypothetical failure condition: ${c.condition.join(', ')}`];
+      if (conditionEntries(this.capForm).join(',') !== c.condition.join(',')) bar.draft = 'The condition was changed after this result: Evaluate capacity answers the new one.';
+    }
+    return bar;
+  }
+
+  private capacityParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const s = this.session as Session;
+    const c = this.capRun;
+    const view: CapacityView = { model: s.model, form: this.capForm, result: c ? { before: c.before, after: c.after, changes: c.changes, condition: c.condition } : null, bar: this.capacityBar(), sel: this.anSel };
+    const left = capacityRequest(this.doc, view, this.wiActions('cap'));
+    const bottom = capacityResults(this.doc, view);
+    const v = c && this.anSel ? capacityEvidence(this.doc, view, this.anSel, this.anContextText({ kind: 'model', scope: 'The stated demands' }, c.at, view.bar.layers || [])) : null;
+    const e = this.anEvidence(v, c ? 'Select a demand to see the resources and directions it crosses.' : 'The evidence of a demand appears here.');
+    return { left, bottom, ...e };
+  }
+
+  /** Evaluate the stated demands against the stated capacity: in the configured model, and under Capacity's failure condition when one is given. */
+  runCapacity(): boolean {
+    const s = this.session;
+    if (!s) return false;
+    const entries = conditionEntries(this.capForm);
+    const before = capacityAnalysis(s.model);
+    let after: CapacityResult | null = null;
+    if (entries.length) {
+      const fc = failureCondition(s.model, entries);
+      if (fc.unknown.length) {
+        this.toast(`Not in the model: ${fc.unknown.join(', ')}.`);
+        return false;
+      }
+      after = capacityAnalysis(s.model, simulate(s.model, fc.refs).ctx);
+    }
+    this.capRun = { model: s.model, at: Date.now(), before, after, changes: after && before.evaluated ? compareCapacity(before, after) : [], condition: entries };
+    this.remember('resilience', 'capacity', entries.length ? `Capacity under the failure of ${entries.join(', ')}` : 'Capacity of the stated demands', { kind: 'model', scope: 'The stated demands' }, entries.length ? [`Hypothetical failure condition: ${entries.join(', ')}`] : [], s.model, this.capRun, this.capRun.at);
+    this.anSels.delete('resilience:capacity');
+    if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'capacity')) this.showAnalyze('resilience', 'capacity');
+    else this.renderAnalyzeWs();
+    this.revealResults();
+    const sum = this.doc.getElementById('cap-summary');
+    if (sum) sum.focus();
+    return true;
+  }
+
+  // ---- the failure domains' editor (an explicit editor in the right panel)
+
+  /** Configure failure domains…: the editor in the right panel (nothing is evaluated by it). */
+  openDomainsEditor(): void {
+    this.anEditor = 'domains';
+    if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'scenario')) this.showAnalyze('resilience', 'scenario');
+    else this.renderAnalyzeWs('results');
+    this.revealEvidence();
+  }
+
+  private domainsEditor(): HTMLElement {
+    const s = this.session as Session;
+    const f = this.domForm;
+    const lock = this.editLock();
+    const body = domainsEditorBody(this.doc, s.model, f, lock, {
+      edit: (id) => {
+        const d = s.model.failureDomains.find((x) => x.id === id);
+        const entry = (this.mdoc as ModelDoc).analysisEntries('failure_domains').find((x) => x.id === id);
+        if (!d || !entry) return;
+        this.domForm = { index: entry.index, label: d.label, kind: d.kind, members: d.members.join(', '), error: '' };
+        this.renderAnalyzeWs('results');
+        const x = this.doc.getElementById('dom-f-label');
+        if (x) x.focus();
+      },
+      remove: (id) => void this.removeFailureDomain(id),
+      add: () => {
+        this.domForm = { index: -1, label: '', kind: 'rack', members: '', error: '' };
+        this.renderAnalyzeWs('results');
+        const x = this.doc.getElementById('dom-f-label');
+        if (x) x.focus();
+      },
+      input: (k, v) => {
+        if (this.domForm) (this.domForm as unknown as { [key: string]: string | number })[k] = v;
+      },
+    });
+    return editorPanel(
+      this.doc,
+      {
+        title: f ? (f.index < 0 ? 'New failure domain' : `Edit failure domain “${f.label}”`) : 'Failure domains',
+        note: f ? 'Saved with the model as one undo step (Ctrl+Z undoes it). Results computed before are marked outdated; nothing is evaluated or started.' : 'The model’s failure domains. Add or edit one; Done leaves the editor.',
+        body,
+        locked: lock ? `${lock}. Editing is paused; nothing is ended to make it possible.` : '',
+        error: f ? f.error : '',
+        saveLabel: f ? (f.index < 0 ? 'Add failure domain' : 'Save changes') : 'Done',
+      },
+      {
+        save: () => {
+          if (this.domForm) this.saveDomainForm();
+          else this.cancelEditor();
+        },
+        cancel: () => this.cancelEditor(),
+      },
+    );
+  }
+
+  /** Cancel the editor shown: a form being filled in goes (the model is unchanged); the editor closes. */
+  private cancelEditor(): void {
+    if (this.anEditor === 'domains' && this.domForm) {
+      this.domForm = null;
+      this.renderAnalyzeWs('results');
+      const b = this.doc.getElementById('dom-add');
+      if (b) b.focus();
+      return;
+    }
+    const was = this.anEditor;
+    this.anEditor = null;
+    if (was === 'requirement') this.dcForm = null;
+    this.renderAnalyzeWs('results');
+    const b = this.doc.getElementById(was === 'domains' ? 'dom-config' : 'dc-add');
+    if (b) b.focus();
+  }
+
+  /** Save the failure domain form (one undo step); the form says what is missing. Nothing is evaluated. */
   private saveDomainForm(): boolean {
     const f = this.domForm;
     const d = this.mdoc;
@@ -3822,7 +4024,7 @@ export class App {
     const members = f.members.split(/[\s,]+/).filter((x) => x);
     if (!f.label.trim() || !members.length) {
       f.error = !f.label.trim() ? 'Give the failure domain a name.' : 'Name its members: devices, cables, relations or groups.';
-      this.renderSpofWindow();
+      this.renderAnalyzeWs('results');
       const bad = this.doc.getElementById(!f.label.trim() ? 'dom-f-label' : 'dom-f-members');
       if (bad) bad.focus();
       return false;
@@ -3842,7 +4044,7 @@ export class App {
     return true;
   }
 
-  /** Delete a failure domain after a confirmation that names the expectations that use it. */
+  /** Delete a failure domain after a confirmation that names the requirements that use it. */
   private async removeFailureDomain(id: string): Promise<void> {
     const d = this.mdoc;
     if (!d) return;
@@ -3851,7 +4053,7 @@ export class App {
     const users = d.failureDomainUsers(id);
     const a = await this.dialog({
       title: `Delete the failure domain “${id}”?`,
-      body: users.length ? [`${users.length === 1 ? 'This expectation names it in its' : `These ${users.length} expectations name it in their`} failure condition; ${users.length === 1 ? 'it keeps' : 'they keep'} the name and can’t be evaluated until you change ${users.length === 1 ? 'it' : 'them'}:`, el(this.doc, 'ul', { class: 'removal-list' }, users.map((u) => el(this.doc, 'li', {}, [u]))) as unknown as string, 'You can undo this with Ctrl+Z.'] : ['Nothing names it. You can undo this with Ctrl+Z.'],
+      body: users.length ? [`${users.length === 1 ? 'This requirement names it in its' : `These ${users.length} requirements name it in their`} failure condition; ${users.length === 1 ? 'it keeps' : 'they keep'} the name and can’t be evaluated until you change ${users.length === 1 ? 'it' : 'them'}:`, el(this.doc, 'ul', { class: 'removal-list' }, users.map((u) => el(this.doc, 'li', {}, [u]))) as unknown as string, 'You can undo this with Ctrl+Z.'] : ['Nothing names it. You can undo this with Ctrl+Z.'],
       buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }],
     });
     if (a !== 'go') return;
@@ -3916,14 +4118,17 @@ export class App {
     };
   }
 
-  /** Choose what the next analysis is computed on (while a simulation runs), and compute the open window's result again on it. */
+  /**
+   * Choose what the next computation reads (while a simulation runs). The
+   * result on screen stays as computed — its context says what it was
+   * computed on, and a notice that the next one reads the other source —
+   * until the question is asked again or refreshed.
+   */
   setAnalysisSource(src: 'model' | 'snapshot'): void {
     this.anSource = src;
-    const w = this.toolWindow();
-    if (w === 'trace' && this.traceRun) this.runTrace();
-    else if (w === 'addressing') this.refreshAddressing();
-    else if (w === 'checks') this.refreshDesignChecks();
-    else this.refreshWindow();
+    this.refreshWindow();
+    const b = this.doc.querySelector(`[data-an-source="${src}"]`) as HTMLElement | null;
+    if (b) b.focus();
   }
 
   /** The application's version, as the page says it ("0.1.3"). */
@@ -3940,7 +4145,7 @@ export class App {
   /** why the form could not be traced ('' = it could) */
   private traceError = '';
   /** the check on screen, the model and snapshot it was computed on (computed again only by Trace or Refresh) */
-  private traceRun: (TraceRun & { model: Model; snap: AnalysisSnapshot | null; request: CommRequest }) | null = null;
+  private traceRun: (TraceRun & { model: Model; snap: AnalysisSnapshot | null; request: CommRequest; at: number }) | null = null;
   /** what the last handoff's prefill could not fill in (tests read it) */
   lastPrefillMissed: string[] = [];
 
@@ -3984,7 +4189,7 @@ export class App {
     const kind = ref.slice(0, i);
     const rest = ref.slice(i + 1);
     if (kind === 'layer') {
-      if (this.workspace() === 'analyze') this.selectAnalysisItem('layer:' + rest);
+      if (this.workspace() === 'analyze') this.selectAnalysisItem('layer:' + rest.replace(/^layer:/, ''));
       else {
         const d = this.doc.querySelector(`li[data-layer="${rest}"] details`) as HTMLDetailsElement | null;
         if (d) d.open = true;
@@ -4005,7 +4210,9 @@ export class App {
         this.editor.revealPolicy(dev, which === 'default' ? 'default' : Number(which));
         this.renderSide();
       }
-      this.renderTraceWindow();
+      // (Analyze: the decision is the evidence on the right — a policy decision, the deciding rule marked)
+      if (this.analyzeTask() === 'communication') this.selectAnalysisItem('rule:' + ref);
+      else this.renderTraceWindow();
       const box = this.doc.getElementById('diag-rule');
       if (box) box.focus();
       return !view.missing;
@@ -4095,8 +4302,8 @@ export class App {
     if (end && !this.traceForm.from) this.traceForm.from = end;
     else if (end && !this.traceForm.to && this.traceForm.from !== end) this.traceForm.to = end;
     const id = !this.traceForm.from ? 'trace-from' : !this.traceForm.to ? 'trace-to' : 'trace-go';
-    if (this.analyzeTool() === 'trace') this.renderTraceWindow();
-    else this.showAnalyze('trace');
+    if (this.analyzeTask() === 'communication') this.renderTraceWindow();
+    else this.showAnalyze('communication');
     const f = this.doc.getElementById(id) as HTMLElement | null;
     if (f) f.focus();
   }
@@ -4140,8 +4347,8 @@ export class App {
         to = ends[1].iface ? `${ends[1].device}:${ends[1].iface}` : ends[1].device;
       }
     }
-    // (the tool first: opening it takes the selection into an empty field, which this question has chosen already)
-    if (this.analyzeTool() !== 'trace') this.showAnalyze('trace');
+    // (the task first: opening it takes the selection into an empty field, which this question has chosen already)
+    if (this.analyzeTask() !== 'communication') this.showAnalyze('communication');
     // a new question: nothing of the one before it is carried over (its destination, service, VRF, family)
     if (from || this.traceChoice) this.traceForm = { ...this.traceForm, from, to, service: '', vrf: 'auto', family: '' };
     if (this.traceChoice) {
@@ -4193,14 +4400,33 @@ export class App {
   }
 
   private renderTraceWindow(): void {
-    if (this.analyzeTool() === 'trace' && this.session) this.renderAnalyzeWs();
+    if (this.analyzeTask() === 'communication' && this.session) this.renderAnalyzeWs();
   }
 
-  private traceBody(): HTMLElement {
-    const s = this.session as Session;
+  /** The task-wide state of Communication: the context (with a draft question, outdated), what can be prepared, the selection. */
+  private traceView(): TraceViewState {
     const r = this.traceRun;
-    const view = { formError: this.traceError, bar: this.barState('trace', r ? r.check.info.context : null, r ? r.model : null), handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock(), choice: this.traceChoice, rule: r ? this.diagRule : null };
-    return traceWindowBody(this.doc, s.model, this.traceForm, this.currentTrace(), view, {
+    const bar = this.barState('trace', r ? r.check.info.context : null, r ? r.model : null);
+    if (r) {
+      bar.computedAt = r.at;
+      if (r.diagnosis && r.diagnosis.question.run) bar.layers = ['Recorded runtime exchange: ' + r.diagnosis.question.run];
+      const asked = formRequest(this.traceForm);
+      const src = this.analysisSnapshot() ? 'snapshot' : 'model';
+      bar.draft = !sameRequest(asked, r.request) ? 'The question was changed after this result: the answer below is to the question before. Check communication answers the new one.' : src !== r.check.info.context.kind ? `The next computation reads the ${src === 'snapshot' ? 'simulation snapshot' : 'configured model'}; the result shown was computed on the ${r.check.info.context.kind === 'snapshot' ? 'snapshot' : 'configured model'}.` : '';
+      if (r.diagnosis && r.diagnosis.evidenceLimited) bar.limited = 'Evidence-limited: some recorded evidence of this result is no longer kept.';
+    }
+    return { formError: this.traceError, bar, handoffBlocked: this.traceHandoffBlocked(), compareBlocked: this.traceCompareBlocked(), locked: this.editLock(), choice: this.traceChoice, rule: r ? this.diagRule : null, sel: this.analyzeSelection() };
+  }
+
+  /** The context line of Communication drawn again in place (a draft question shown as typed; the inputs stay as they are). */
+  private syncTraceContext(): void {
+    const box = this.doc.querySelector('#ws-an-left .trace-panel > .an-context');
+    if (!box || this.analyzeTask() !== 'communication') return;
+    box.replaceWith(contextBar(this.doc, this.traceView().bar, { refresh: () => void this.runTrace(true), source: (src) => this.setAnalysisSource(src) }));
+  }
+
+  private traceActions(): TracePanelActions {
+    return {
       input: (field: 'from' | 'to' | 'vrf' | 'service' | 'family' | 'back', value: string | boolean) => {
         if (field === 'back') this.traceForm.back = !!value;
         else this.traceForm[field] = String(value);
@@ -4211,11 +4437,14 @@ export class App {
           const inp = this.doc.getElementById('trace-' + field);
           if (inp) inp.removeAttribute('aria-invalid');
         }
+        this.syncTraceContext();
       },
       submit: () => void this.runTrace(),
       swap: () => {
         this.traceForm = { ...this.traceForm, from: this.traceForm.to, to: this.traceForm.from };
         this.renderTraceWindow();
+        const b = this.doc.getElementById('trace-swap');
+        if (b) b.focus();
       },
       exit: () => {
         this.exitTrace();
@@ -4239,15 +4468,24 @@ export class App {
       },
       goto: (ref) => void this.gotoEvidence(ref),
       choose: (from, to) => this.chooseTraceQuestion(from, to),
-      closeRule: (ref) => {
-        this.diagRule = null;
-        this.renderTraceWindow();
-        const back = Array.prototype.find.call(this.doc.querySelectorAll('#diag [data-diag-ref]'), (x: Element) => x.getAttribute('data-diag-ref') === ref) as HTMLElement | undefined;
-        if (back) back.focus();
-      },
-    });
+      select: (key) => this.selectAnalysisItem(key),
+    };
   }
 
+  /** Communication's three panels: the question, the answer and its results, the evidence of the selected item. */
+  private commParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const doc = this.doc;
+    const s = this.session as Session;
+    const r = this.traceRun;
+    const view = this.traceView();
+    const act = this.traceActions();
+    const left = commRequest(doc, s.model, this.traceForm, r, view, act);
+    if (!r) return { left, bottom: el(doc, 'p', { class: 'muted', id: 'an-empty' }, ['Ask a question on the left — From, To and, if it matters, the service — and Check communication: the answer, what is established, what blocks it and its paths appear here. Diagnose selected communication (Shift+D) asks about the selection.']), right: evidenceHint(doc, 'The evidence of a layer, a blocker, a path or a hop appears here: select it in the results.'), empty: true };
+    const bottom = commResults(doc, s.model, r, view, act);
+    const ctx = this.anContextText(r.check.info.context, r.at, view.bar.layers || []);
+    const e = this.anEvidence(view.sel ? commEvidence(doc, r, view.sel, view, ctx) : null, 'Select a layer, a blocker, a path or a hop to see its evidence.');
+    return { left, bottom, ...e };
+  }
   /**
    * Trace the form's request: the communication check with its paths, marked
    * in both views, the result in the window, and a banner that says what is
@@ -4259,7 +4497,7 @@ export class App {
   runTrace(again = false): boolean {
     const s = this.session;
     if (!s) return false;
-    if (this.analyzeTool() !== 'trace') this.openTrace();
+    if (this.analyzeTask() !== 'communication') this.openTrace();
     const req = again && this.traceRun ? this.traceRun.request : formRequest(this.traceForm);
     const snap = this.analysisSnapshot();
     const run = this.computeTrace(req, snap);
@@ -4273,10 +4511,15 @@ export class App {
     this.traceError = '';
     this.diagRule = null;
     this.traceKept = null;
-    this.traceRun = { ...run, model: s.model, snap, request: req };
+    this.traceRun = { ...run, model: s.model, snap, request: req, at: Date.now() };
+    // a new result: its default evidence (an established blocker first), and a record of it in the session's history
+    this.anSels.delete('communication');
+    this.anOrigin = null;
+    this.remember('communication', '', commQuestion(req), run.check.info.context, [], s.model, this.traceRun, this.traceRun.at);
     this.applyHighlight();
     this.renderTraceWindow();
     this.updateChrome();
+    this.revealResults();
     return true;
   }
 
@@ -4361,7 +4604,7 @@ export class App {
       // VRF is another communication — never compared with it, whatever the handoff warned)
       const differs = (run: { tests: readonly Test[] }): boolean => {
         const why = appRunProblem(r.model, id, run);
-        if (why) this.toast(`Not compared: ${name}’s run is not this question’s communication — ${why}. Ask about ${name} as configured, or send this communication itself (Prepare in simulation).`);
+        if (why) this.toast(`Not compared: ${name}’s run is not this question’s communication — ${why}. Ask about ${name} as configured, or send this communication itself (Prepare modeled test).`);
         return !!why;
       };
       if (id.profile === 'mqtt_client') {
@@ -4369,7 +4612,7 @@ export class App {
         const subs = r.check.legs.map((g) => g.check.request.from.split('/')).filter((x) => x.length === 2).map((x) => ({ dev: x[0], app: x[1] }));
         const mq = sim.mqttEvidence(id.source.device, h.app, subs);
         if (!mq) {
-          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare.`);
+          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare modeled test), then compare.`);
           return false;
         }
         if (differs({ tests: [] })) return false;
@@ -4378,7 +4621,7 @@ export class App {
       } else {
         const run = sim.appRunsOf(id.source.device, h.app)[0];
         if (!run) {
-          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare in simulation), then compare. A send prepared like it is not its run.`);
+          this.toast(`Nothing to compare yet: ${name} has not run in this simulation — start it (Prepare modeled test), then compare. A send prepared like it is not its run.`);
           return false;
         }
         if (differs(run)) return false;
@@ -4411,13 +4654,17 @@ export class App {
     return true;
   }
 
-  /** Keep the check on screen as a saved expectation: Design checks with its form prefilled (nothing entered again, nothing saved yet). */
+  /** Keep the check on screen as a saved requirement: Design review's editor with its fields prefilled (nothing entered again, nothing saved yet). */
   traceToExpectation(): boolean {
     const r = this.traceRun;
     if (!r || !r.identity || this.editLock()) return false;
     const f = expectationFields(r.identity);
-    this.dcForm = { ...newExpectForm(), expect: f.expect, from: f.from, to: f.to || '', service: f.service || '', vrf: f.vrf !== undefined ? f.vrf : '', family: f.family ? String(f.family) : '' };
-    this.openDesignChecks();
+    this.anGo('Communication', () => {
+      this.dcForm = { ...newExpectForm(), expect: f.expect, from: f.from, to: f.to || '', service: f.service || '', vrf: f.vrf !== undefined ? f.vrf : '', family: f.family ? String(f.family) : '' };
+      this.anEditor = 'requirement';
+      this.showAnalyze('review', 'requirements');
+      this.revealEvidence();
+    });
     const n = this.doc.getElementById('dc-f-name');
     if (n) n.focus();
     return true;
@@ -4603,38 +4850,40 @@ export class App {
     } else if (opener && this.doc.contains(opener) && !opener.closest('[role="menu"]')) opener.focus();
   }
 
-  // ------------------------------------------------------------ Analyze menu
+  // ------------------------------------------------------------ Addressing
 
-  /** what the Addressing overview shows (filter, sort, open member lists): kept while the page is open, never saved */
+  /** what Addressing shows (filter, sort, issue filter, open member lists): kept while the page is open, never saved */
   private addrState: AddrViewState = newAddrViewState();
 
-  /** Is the Addressing overview open? */
+  /** Is Addressing in front? */
   get addressingOpen(): boolean {
-    return this.analyzeTool() === 'addressing';
+    return this.analyzeTask() === 'addressing';
   }
 
   /**
-   * Analyze → Addressing overview… (I): a window with the networks of every
-   * VRF with their members, gateways, use and free space, and the
-   * duplicate, overlapping and stray addresses. Filter, sort and the open
-   * member lists are kept for the next opening. A click on an object selects
-   * it in the diagram beside the window. It never changes the model.
+   * Analyze → Addressing (I): the networks of every VRF with their members,
+   * gateways, use and unallocated space, and the conflicts, reuse, overlaps
+   * and addresses outside the declared networks. Computed the first time it
+   * is opened for a model (an edit marks it outdated; Refresh computes it
+   * again). Filter, sort and the open member lists are kept. It never
+   * changes the model.
    */
   openAddressing(): void {
     if (!this.session) return;
-    this.computeAddressing();
+    if (!this.addrRun) this.computeAddressing();
     this.showAnalyze('addressing');
     const f = this.doc.getElementById('addr-filter');
     if (f) f.focus();
   }
 
-  /** the overview on screen, and the model and snapshot it was computed on (computed again by opening the window or Refresh) */
-  private addrRun: { model: Model; snap: AnalysisSnapshot | null; ov: AddressingOverview; context: AnalysisContext } | null = null;
+  /** the overview on screen, and the model and snapshot it was computed on (computed again by Refresh) */
+  private addrRun: { model: Model; snap: AnalysisSnapshot | null; ov: AddressingOverview; context: AnalysisContext; at: number } | null = null;
 
   private computeAddressing(): void {
     const s = this.session as Session;
     const snap = this.analysisSnapshot();
-    this.addrRun = { model: s.model, snap, ov: addressingOverview(s.model, snap), context: snap ? { kind: 'snapshot', at: snap.at, scope: 'Entire architecture' } : { kind: 'model', scope: 'Entire architecture' } };
+    this.addrRun = { model: s.model, snap, ov: addressingOverview(s.model, snap), context: snap ? { kind: 'snapshot', at: snap.at, scope: 'Entire architecture' } : { kind: 'model', scope: 'Entire architecture' }, at: Date.now() };
+    this.remember('addressing', '', 'The networks of every VRF and their issues', this.addrRun.context, [], s.model, this.addrRun, this.addrRun.at);
   }
 
   /** Refresh: the overview computed again (on a snapshot taken now, when one is chosen). */
@@ -4647,27 +4896,37 @@ export class App {
   }
 
   private renderAddressingWindow(): void {
-    if (this.analyzeTool() === 'addressing' && this.session) this.renderAnalyzeWs();
+    if (this.analyzeTask() === 'addressing' && this.session) this.renderAnalyzeWs();
   }
 
-  private addressingWindowBody(): HTMLElement {
+  private addressingParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const doc = this.doc;
     if (!this.addrRun) this.computeAddressing();
     const run = this.addrRun as NonNullable<App['addrRun']>;
     const ov = run.ov;
     const st = this.addrState;
-    const inner = addressingBody(this.doc, ov, st);
-    const body = el(this.doc, 'div', { class: 'addr-window' }, [contextBar(this.doc, this.barState('addr', run.context, run.model), { refresh: () => this.refreshAddressing(), source: (src) => this.setAnalysisSource(src) }), inner]);
-    // (laid out in the Analyze panels: the results drawn again there, the request's controls kept)
-    const redraw = (): void => this.renderAnalyzeWs('results');
-    void addressingTables;
-    void shownText;
-    this.onRoot(body, 'input', (e) => {
+    const bar = this.barState('addr', run.context, run.model);
+    bar.computedAt = run.at;
+    const src = this.analysisSnapshot() ? 'snapshot' : 'model';
+    if (src !== run.context.kind) bar.draft = `The next computation reads the ${src === 'snapshot' ? 'simulation snapshot' : 'configured model'}: Refresh answers on it; the result shown was computed on the ${run.context.kind === 'snapshot' ? 'snapshot' : 'configured model'}.`;
+    const ctxAct = { refresh: () => this.refreshAddressing(), source: (s2: 'model' | 'snapshot') => this.setAnalysisSource(s2) };
+    const req = addressingRequest(doc, ov, st, {
+      issue: (k) => {
+        st.issue = k;
+        this.renderAnalyzeWs();
+        const b = this.doc.querySelector(`[data-addr-issue="${k}"]`) as HTMLElement | null;
+        if (b) b.focus();
+      },
+    });
+    req.addEventListener('input', (e) => {
       const t = e.target as HTMLInputElement;
       if (!t.hasAttribute('data-addr-filter')) return;
       st.filter = t.value;
-      redraw();
+      this.renderAnalyzeWs('results');
     });
-    this.onRoot(body, 'click', (e) => {
+    const left = el(doc, 'div', { class: 'addr-window' }, [contextBar(doc, bar, ctxAct), req]);
+    const bottom = addressingResults(doc, ov, st, this.anSel);
+    bottom.addEventListener('click', (e) => {
       const t = e.target as Element;
       const go = t.closest('[data-addr-goto]');
       if (go) {
@@ -4679,7 +4938,7 @@ export class App {
         const k = sort.getAttribute('data-addr-sort') as AddrSort;
         st.desc = st.sort === k ? !st.desc : false;
         st.sort = k;
-        redraw();
+        this.renderAnalyzeWs('results');
         const again = this.doc.querySelector(`[data-addr-sort="${k}"]`) as HTMLElement | null;
         if (again) again.focus();
         return;
@@ -4704,7 +4963,7 @@ export class App {
       if (all) {
         if (all.getAttribute('data-addr-all') === 'open') for (const g of ov.vrfs) for (const n of g.networks) st.open.add(g.vrf + '|' + n.id);
         else st.open.clear();
-        redraw();
+        this.renderAnalyzeWs('results');
         (this.doc.querySelector('[data-addr-all]') as HTMLElement).focus();
         return;
       }
@@ -4714,15 +4973,30 @@ export class App {
         else void this.copyText(addressingCsv(ov, this.addrContextText()), 'The network table was copied as CSV.');
       }
     });
-    return body;
+    // the selected network's or issue's details: on the right
+    const sel = this.anSel;
+    const ctx = this.anContextText(run.context, run.at);
+    let v: EvidenceView | null = null;
+    if (sel.indexOf('net:') === 0) {
+      const i = sel.indexOf('|');
+      const vrf = sel.slice(4, i);
+      const g = ov.vrfs.find((x) => x.vrf === vrf);
+      const n = g ? g.networks.find((x) => x.id === sel.slice(i + 1)) : undefined;
+      if (n) v = { kind: 'Network', title: `${n.label} — ${n.text}`, context: `${ctx} · ${vrf === '' ? 'default table' : 'VRF ' + vrf}`, explanation: [el(doc, 'p', { class: 'small' }, [`${n.members.length + n.dhcp.length + n.auto.length} member${n.members.length + n.dhcp.length + n.auto.length === 1 ? '' : 's'}; ${allocText(n)}. Unallocated in the model is not a claim that an address is free in the real network.`])], evidence: [networkDetail(doc, n)], objects: [{ ref: 'network:' + n.id, label: n.label }].concat(n.members.map((m) => ({ ref: 'device:' + m.device, label: m.device }))), next: [] };
+    } else if (sel.indexOf('issue:') === 0) {
+      const d = issueDetail(doc, ov, sel);
+      if (d) v = { kind: d.kind, title: d.title, context: ctx, explanation: d.explanation, evidence: d.evidence, objects: d.refs.map((r) => ({ ref: r, label: r.replace(/^[a-z]+:/, '') })), next: [] };
+    }
+    const e = this.anEvidence(v, 'Select a network (its row) or an issue to see its members, pools and reservations, allocation, unallocated ranges or its evidence.');
+    return { left, bottom, ...e };
   }
 
-  /** Save the Addressing overview's network table as "<model>-addressing.csv", downloaded like an exported picture (the overview's Save CSV). */
+  /** Save the network table as "<model>-addressing.csv", downloaded like an exported picture (Addressing's Save CSV). */
   saveAddressingCsv(): boolean {
     const s = this.session;
     if (!s || !this.mdoc) return false;
     const name = `${pictureBaseName(this.mdoc.fileName)}-addressing.csv`;
-    if (!this.addrRun || this.addrRun.model !== s.model) this.computeAddressing();
+    if (!this.addrRun) this.computeAddressing();
     downloadText(this.doc, addressingCsv((this.addrRun as NonNullable<App['addrRun']>).ov, this.addrContextText()), name, 'text/csv');
     this.toast(`Exported “${name}”.`);
     return true;
@@ -4748,40 +5022,44 @@ export class App {
     }
   }
 
-  // ------------------------------------------------------------ design checks
+  // ------------------------------------------------------------ Design review
 
   /** the evaluation on screen (computed by Evaluate, never on its own), the model and snapshot it was computed on */
-  private dcRun: { model: Model; snap: AnalysisSnapshot | null; run: ExpectationRun } | null = null;
-  private dcOpen = new Set<string>();
+  private dcRun: { model: Model; snap: AnalysisSnapshot | null; run: ExpectationRun; at: number } | null = null;
   private dcForm: ExpectForm | null = null;
 
   /**
-   * Analyze → Design checks…: the saved expectations (evaluated on demand,
-   * statically: nothing is sent) and the consistency findings, grouped, with
-   * their consequences and next steps.
+   * Analyze → Design review: requirements: the saved requirements (evaluated
+   * on demand, statically: nothing is sent), with an explicit editor.
    */
   openDesignChecks(): void {
     if (!this.session) return;
-    this.showAnalyze('checks');
-    const f = this.doc.getElementById('dc-evaluate');
-    if (f) f.focus();
+    this.showAnalyze('review', 'requirements');
+    const f = this.doc.getElementById('dc-evaluate') as HTMLButtonElement | null;
+    if (f && !f.disabled) f.focus();
+    else {
+      const a = this.doc.getElementById('dc-add');
+      if (a) a.focus();
+    }
   }
 
   private renderDesignChecks(): void {
-    if (this.analyzeTool() === 'checks' && this.session) this.renderAnalyzeWs();
+    if (this.analyzeTask() === 'review' && this.session) this.renderAnalyzeWs();
   }
 
-  /** Evaluate the saved expectations now (on a snapshot of a running simulation, when one is chosen). */
+  /** Evaluate the saved requirements now (on a snapshot of a running simulation, when one is chosen). */
   refreshDesignChecks(): ExpectationRun | null {
     const s = this.session;
     if (!s) return null;
     const snap = this.analysisSnapshot();
-    this.dcRun = { model: s.model, snap, run: evaluateExpectations(s.model, snap) };
+    this.dcRun = { model: s.model, snap, run: evaluateExpectations(s.model, snap), at: Date.now() };
+    this.remember('review', 'requirements', `${s.model.expectations.length} saved requirement${s.model.expectations.length === 1 ? '' : 's'}`, this.dcRun.run.info.context, [], s.model, this.dcRun, this.dcRun.at);
     this.renderDesignChecks();
+    this.revealResults();
     return this.dcRun.run;
   }
 
-  /** The findings of the consistency checks as the window shows them (with their index in the issue list, for Go to). */
+  /** The findings of the consistency checks as Design review shows them (with their index in the issue list, for Go to), and the model's input problems. */
   private designFindings(): DesignView['findings'] {
     const d = this.mdoc as ModelDoc;
     const base = d.errors.length + d.warnings.length;
@@ -4793,14 +5071,15 @@ export class App {
       groups: groups.map((g) => ({ g, n: g.findings.map((p) => index(p.finding)) })),
       singles: singles.map((p) => ({ p, n: index(p.finding) })),
       counts: classCounts(fs),
+      input: d.errors.concat(d.warnings).map((is, n) => ({ severity: is.severity, message: is.message, path: is.path, n })),
     };
   }
 
-  private designWindowBody(): HTMLElement {
+  private designView(): DesignView {
     const s = this.session as Session;
     const r = this.dcRun;
     const findings = this.designFindings();
-    // the findings at the place an expectation stops (its stop device and the cables and ports of that hop)
+    // the findings at the place a requirement stops (its stop device and the cables and ports of that hop)
     const related = new Map<string, ShownFinding[]>();
     if (r) {
       const all = findings.singles.concat(...findings.groups.map((g) => g.g.findings.map((p, k) => ({ p, n: g.n[k] }))));
@@ -4814,16 +5093,20 @@ export class App {
         if (hit.length) related.set(res.id, hit.slice(0, 6));
       }
     }
-    const view: DesignView = {
-      bar: this.barState('dc', r ? r.run.info.context : null, r ? r.model : null),
-      run: r ? r.run : null,
-      open: this.dcOpen,
-      form: this.dcForm,
-      locked: this.editLock(),
-      findings,
-      related,
-    };
-    return designBody(this.doc, s.model, view, {
+    const findingsMode = this.anModes.review === 'findings';
+    const bar = findingsMode ? this.barState('dcf', { kind: 'model', scope: 'Entire architecture' }, null, 'The consistency checks read the configured model (they run with every edit).') : this.barState('dc', r ? r.run.info.context : null, r ? r.model : null);
+    if (!findingsMode && r) {
+      bar.computedAt = r.at;
+      const added = s.model.expectations.filter((e) => !r.run.results.some((x) => x.id === e.id)).length;
+      if (added) bar.draft = `${added} requirement${added === 1 ? ' was' : 's were'} added after this evaluation: Evaluate again includes ${added === 1 ? 'it' : 'them'}.`;
+    }
+    const off = Array.from(s.model.checks.entries()).filter((x) => x[1] === 'off').map((x) => x[0]).sort();
+    return { bar, run: r ? r.run : null, locked: this.editLock(), findings, coverage: { total: CHECKS.length, off }, filter: this.findFilter, related, sel: this.anSel };
+  }
+
+  private designActions(): DesignActions {
+    const s = this.session as Session;
+    return {
       refresh: () => void this.refreshDesignChecks(),
       source: (src) => this.setAnalysisSource(src),
       evaluate: () => {
@@ -4831,59 +5114,25 @@ export class App {
         const st = this.doc.getElementById('dc-status');
         if (st) st.setAttribute('tabindex', '-1');
         const b = this.doc.getElementById('dc-evaluate');
-        if (b) b.focus();
+        if (b && !this.anNarrow()) b.focus();
       },
       add: () => {
         this.dcForm = newExpectForm();
-        this.renderDesignChecks();
+        this.anEditor = 'requirement';
+        this.renderAnalyzeWs('results');
+        this.revealEvidence();
         const f = this.doc.getElementById('dc-f-name');
         if (f) f.focus();
       },
-      edit: (id) => {
-        const k = s.model.expectations.findIndex((e) => e.id === id);
-        const entry = (this.mdoc as ModelDoc).analysisEntries('expectations').find((x) => x.id === id);
-        if (k < 0 || !entry) return;
-        this.dcForm = formOf(s.model.expectations[k], entry.index);
-        this.renderDesignChecks();
-        const f = this.doc.getElementById('dc-f-name');
-        if (f) f.focus();
-      },
+      edit: (id) => this.editRequirement(id),
       remove: (id) => void this.removeExpectation(id),
-      toggle: (id) => {
-        // in the Analyze workspace: the expectation selected, its evidence on the right
-        if (this.ws === 'analyze') {
-          this.selectAnalysisItem(this.anSel === 'exp:' + id ? '' : 'exp:' + id);
-          return;
-        }
-        if (this.dcOpen.has(id)) this.dcOpen.delete(id);
-        else this.dcOpen.add(id);
-        this.renderDesignChecks();
-      },
-      trace: (id) => {
-        const e = s.model.expectations.find((x) => x.id === id);
-        if (!e) return;
-        this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', family: e.family ? String(e.family) : '', back: false };
-        this.openTrace();
-        this.runTrace();
-      },
-      formInput: (k, v) => {
-        if (!this.dcForm) return;
-        (this.dcForm as unknown as { [key: string]: string | number })[k] = v;
-        if (k === 'expect' || k === 'enforce' || k === 'method') {
-          this.renderDesignChecks();
-          const back = this.doc.getElementById('dc-f-' + k);
-          if (back) back.focus();
-        }
-      },
-      formSave: () => this.saveExpectationForm(),
-      formCancel: () => {
-        this.dcForm = null;
-        this.renderDesignChecks();
-        const b = this.doc.getElementById('dc-add');
-        if (b) b.focus();
-      },
+      trace: (id) => this.anGo(`Design review: ${id}`, () => this.traceExpectation(id)),
       goto: (n) => this.gotoIssue(n),
       show: (ref) => this.select(ref, true),
+      filter: (k, v) => {
+        this.findFilter = { ...this.findFilter, [k]: v };
+        this.renderAnalyzeWs('results');
+      },
       out: (kind) => {
         const run = this.dcRun;
         if (!run || !this.mdoc) return;
@@ -4891,46 +5140,139 @@ export class App {
         const base = pictureBaseName(this.mdoc.fileName) + '-design-checks';
         const text = (): string => designText({ title: s.model.title, version: this.appVersion(), outdated }, s.model, run.run);
         const csv = (): string => designCsv(s.model, run.run, outdated);
-        if (kind === 'text-copy') void this.copyText(text(), 'The design checks were copied as text.');
-        else if (kind === 'csv-copy') void this.copyText(csv(), 'The design checks were copied as CSV.');
+        if (kind === 'text-copy') void this.copyText(text(), 'The requirements were copied as text.');
+        else if (kind === 'csv-copy') void this.copyText(csv(), 'The requirements were copied as CSV.');
         else {
           const isCsv = kind === 'csv-save';
           downloadText(this.doc, isCsv ? csv() : text(), base + (isCsv ? '.csv' : '.txt'), isCsv ? 'text/csv' : 'text/plain');
           this.toast(`Exported “${base}${isCsv ? '.csv' : '.txt'}”.`);
         }
       },
-    });
+    };
   }
 
-  /** Save the expectation form: a new expectation, or the changed one (one undo step); the form says what is missing. */
+  /** Edit a saved requirement: its editor in the right panel (nothing is saved until Save changes). */
+  editRequirement(id: string): void {
+    const s = this.session;
+    if (!s) return;
+    const k = s.model.expectations.findIndex((e) => e.id === id);
+    const entry = (this.mdoc as ModelDoc).analysisEntries('expectations').find((x) => x.id === id);
+    if (k < 0 || !entry) return;
+    this.dcForm = formOf(s.model.expectations[k], entry.index);
+    this.anEditor = 'requirement';
+    if (!(this.analyzeTask() === 'review' && this.anModes.review === 'requirements')) this.showAnalyze('review', 'requirements');
+    else this.renderAnalyzeWs('results');
+    this.revealEvidence();
+    const f = this.doc.getElementById('dc-f-name');
+    if (f) f.focus();
+  }
+
+  /** A requirement's communication, checked in Communication (Back returns to it). */
+  private traceExpectation(id: string): void {
+    const s = this.session as Session;
+    const e = s.model.expectations.find((x) => x.id === id);
+    if (!e) return;
+    this.traceForm = { from: e.from, to: e.to || '', vrf: e.vrf !== undefined ? e.vrf : 'auto', service: e.service || '', family: e.family ? String(e.family) : '', back: false };
+    this.traceChoice = null;
+    this.showAnalyze('communication');
+    this.runTrace();
+  }
+
+  private requirementsParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const s = this.session as Session;
+    const v = this.designView();
+    const act = this.designActions();
+    const left = requirementsRequest(this.doc, s.model, v, act);
+    const bottom = requirementsResults(this.doc, s.model, v, act);
+    if (this.anEditor === 'requirement' && this.dcForm) {
+      const f = this.dcForm;
+      const lock = this.editLock();
+      const entry = f.index < 0 ? undefined : (this.mdoc as ModelDoc).analysisEntries('expectations').find((x) => x.index === f.index);
+      const orig = entry ? s.model.expectations.find((x) => x.id === entry.id) : undefined;
+      const right = editorPanel(
+        this.doc,
+        {
+          title: f.index < 0 ? 'New requirement' : `Edit requirement “${orig ? orig.name : f.name}”`,
+          note: 'Saved with the model as one undo step (Ctrl+Z undoes it). Results computed before are marked outdated; nothing is evaluated or started.',
+          body: requirementEditorBody(this.doc, s.model, f, {
+            input: (k, val) => {
+              (f as unknown as { [key: string]: string | number })[k] = val;
+              if (k === 'expect' || k === 'enforce' || k === 'method') {
+                this.renderAnalyzeWs('results');
+                const back = this.doc.getElementById(k === 'enforce' ? 'dc-f-enforce-' + (val || 'unreachable') : 'dc-f-' + k);
+                if (back) back.focus();
+              }
+            },
+          }),
+          locked: lock ? `${lock}. Editing is paused; nothing is ended to make it possible.` : '',
+          error: f.error,
+          saveLabel: f.index < 0 ? 'Add requirement' : 'Save changes',
+        },
+        { save: () => void this.saveExpectationForm(), cancel: () => this.cancelEditor() },
+      );
+      return { left, bottom, right, empty: false };
+    }
+    const sel = this.anSel;
+    let ev: EvidenceView | null = null;
+    if (sel.indexOf('exp:') === 0) {
+      const e = s.model.expectations.find((x) => x.id === sel.slice(4));
+      if (e) {
+        const r = this.dcRun ? this.dcRun.run.results.find((x) => x.id === e.id) : undefined;
+        ev = requirementEvidence(this.doc, s.model, e, r, v.related.get(e.id) || [], this.dcRun ? this.anContextText(this.dcRun.run.info.context, this.dcRun.at) : 'Not evaluated', this.editLock());
+        if (this.dcRun && this.outdatedSince(this.dcRun.model)) ev.flags = ['Outdated: the model changed after this evaluation'];
+      }
+    }
+    const e = this.anEvidence(ev, 'Select a requirement to see its evidence: its layers, the failure applied, how it is enforced, the findings where it stops.');
+    return { left, bottom, ...e };
+  }
+
+  private findingsParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const v = this.designView();
+    const act = this.designActions();
+    const left = findingsRequest(this.doc, v, act);
+    const bottom = findingsResults(this.doc, v);
+    const sel = this.anSel;
+    const ev = sel.indexOf('finding:') === 0 ? findingEvidence(this.doc, v, Number(sel.slice(8)), 'Configured model · checked with the model as it is now') : null;
+    const e = this.anEvidence(ev, 'Select a finding to see its possible consequence, its evidence and the next step.');
+    return { left, bottom, ...e };
+  }
+
+  /** Save the requirement editor: a new requirement, or the changed one (one undo step); it says what is missing. Nothing is evaluated. */
   private saveExpectationForm(): boolean {
     const f = this.dcForm;
     const d = this.mdoc;
     const s = this.session;
     if (!f || !d || !s) return false;
-    const need = !f.name.trim() ? 'Give the expectation a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : f.expect === 'blocked' && f.enforce === 'boundary' && !f.boundary.trim() ? 'Give the boundary: the device that must deny it.' : f.expect === 'timing' && !f.method ? 'Choose the timing method it accepts: PTP, NTP, or either.' : '';
+    const need = !f.name.trim() ? 'Give the requirement a name.' : !f.from.trim() ? 'Give its source: a device, an interface, an address or an application.' : (f.expect === 'available' || f.expect === 'blocked') && !f.to.trim() && f.from.indexOf('/') < 0 ? 'Give its destination: a device, an address, an application or a service.' : f.expect === 'blocked' && f.enforce === 'boundary' && !f.boundary.trim() ? 'Give the boundary: the device that must deny it.' : f.expect === 'timing' && !f.method ? 'Choose the timing method it accepts: PTP, NTP, or either.' : '';
     if (need) {
       f.error = need;
-      this.renderDesignChecks();
+      this.renderAnalyzeWs('results');
       const bad = this.doc.getElementById(!f.name.trim() ? 'dc-f-name' : !f.from.trim() ? 'dc-f-from' : /boundary/.test(need) ? 'dc-f-boundary' : /timing method/.test(need) ? 'dc-f-method' : 'dc-f-to');
       if (bad) bad.focus();
       return false;
     }
-    // (an enforcement goes with a blocked expectation only, a boundary with enforce: boundary)
+    // (an enforcement goes with a blocked requirement only, a boundary with enforce: boundary)
     const blocked = f.expect === 'blocked';
     const fields = { name: f.name, expect: f.expect, from: f.from, to: f.to, service: f.service, vrf: f.vrf, family: f.family, enforce: blocked ? f.enforce : '', boundary: blocked && f.enforce === 'boundary' ? f.boundary : '', method: f.expect === 'timing' ? f.method : '', failure: f.failure.split(/[\s,]+/).filter((x) => x), description: f.description };
+    let k: number;
     try {
-      if (f.index < 0) d.addExpectation(fields);
-      else d.updateExpectation(f.index, fields);
+      if (f.index < 0) k = d.addExpectation(fields);
+      else {
+        d.updateExpectation(f.index, fields);
+        k = f.index;
+      }
     } catch (e) {
       this.refusedEdit(e);
       return false;
     }
     this.dcForm = null;
-    this.afterEdit(f.index < 0 ? 'The expectation was added.' : 'The expectation was changed.');
-    // the change is evaluated at once (nothing is sent): the window shows it
-    this.refreshDesignChecks();
-    const b = this.doc.getElementById('dc-add');
+    this.anEditor = null;
+    this.afterEdit(f.index < 0 ? 'The requirement was added: Evaluate checks it.' : 'The requirement was changed: Evaluate checks it again.');
+    // (nothing is evaluated: an evaluation on screen is now outdated; the requirement saved is selected)
+    const entry = (this.mdoc as ModelDoc).analysisEntries('expectations').find((x) => x.index === k);
+    if (entry) this.anSels.set('review:requirements', 'exp:' + entry.id);
+    this.renderDesignChecks();
+    const b = this.doc.getElementById('dc-evaluate') || this.doc.getElementById('dc-add');
     if (b) b.focus();
     return true;
   }
@@ -5076,7 +5418,10 @@ export class App {
     const out: Omit<SavedView, 'id' | 'name' | 'line'> = { view: st.view === 'logical' ? 'logical' : 'physical', hideTypes: Array.from(st.hiddenTypes).sort(), hideProtocols: Array.from(st.hiddenProtocols).sort(), options: {} };
     if (st.devices) out.devices = s.model.devices.filter((d) => (st.devices as Set<string>).has(d.id)).map((d) => d.id);
     if (st.collapsed.size) out.collapse = s.model.groups.filter((g) => st.collapsed.has(g.id)).map((g) => g.id);
-    if (st.focus) {
+    // (a result's objects shown alone are saved as the device selection they are: a saved view names no analysis result)
+    const set = st.focus && st.focus.context && st.focus.context.kind === 'set' ? st.focus.context : null;
+    if (set) out.devices = s.model.devices.filter((d) => set.devices.indexOf(d.id) >= 0 && (!st.devices || st.devices.has(d.id))).map((d) => d.id);
+    if (st.focus && !set) {
       const [kind, id] = splitRef(st.focus.ref);
       const target = kind === 'device' || kind === 'iface' ? id : `${kind}:${id}`;
       const c = st.focus.context;
@@ -5212,7 +5557,7 @@ export class App {
     }
     this.applyDockHeight();
     // (a narrow and short window starts with the diagram, a narrow one with the right panel under it)
-    if (on && was !== ws) this.simPanelTab((d.getElementById('spt-diagram') as HTMLElement).getClientRects().length ? 'diagram' : 'actions', false);
+    if (on && was !== ws) this.simPanelTab(ws === 'analyze' ? 'setup' : (d.getElementById('spt-diagram') as HTMLElement).getClientRects().length ? 'diagram' : 'actions', false);
     // the Inspector comes back with its tab and the selection as they were
     if (!on) {
       this.renderOutline();
@@ -5281,72 +5626,151 @@ export class App {
 
   // ------------------------------------------------------------ the Analyze workspace
 
-  /** the tool in front in Analyze, and its selected result item ('' none: the tool's default) */
-  private anTool: AnalyzeTool = 'trace';
-  private anSel = '';
+  /** the task in front in Analyze, and the mode inside Resilience and Design review */
+  private anTask: AnalyzeTask = 'overview';
+  private anModes: { resilience: ResilienceMode; review: ReviewMode } = { resilience: 'single', review: 'requirements' };
+  /** the selected result item of each task and mode (kept while another is in front; '-': none chosen, not even the default) */
+  private anSels = new Map<string, string>();
+  /** an editor in the right panel (it says it is one; Save or Cancel leaves it) */
+  private anEditor: 'requirement' | 'domains' | null = null;
+  /** where Back returns: the tasks and items an investigation came from (newest last; at most 12) */
+  private anBack: Array<{ task: AnalyzeTask; mode: string; sel: string; label: string; scroll: number }> = [];
+  /** the control an evidence selection was opened from: the focus returns to it when the evidence is let go */
+  private anOrigin: { attr: string; value: string } | null = null;
   /** a focus entered from Analyze (cleared when Analyze is left; a focus from elsewhere is not Analyze's) */
   private anFocus = false;
-  /** the root listeners of the tool's body (delegated): forwarded from the panels it is laid out in */
-  private anRoot: Array<{ type: string; fn: (e: Event) => void }> = [];
+  /** the view before Fit relevant objects or Show only relevant objects (Restore previous view) */
+  private anView: { k: number; tx: number; ty: number; focus: boolean } | null = null;
+  /** the panels' layout (a view setting of this page, never saved) */
+  private anLayout: 'balanced' | 'diagram' | 'results' = 'balanced';
+  /** the component explored in the overview: chosen on purpose (selecting another object does not replace it) */
+  private anExplore: Explorer | null = null;
+  /** this session's recent and pinned results (bounded: overview.ts; never saved) */
+  private anHistory: HistoryEntry[] = [];
+  private anHistId = 0;
+  /** the findings' filters (kept while the page is open) */
+  private findFilter: FindingFilter = newFindingFilter();
 
-  /** The tool in front in Analyze ('' when Analyze is not). */
-  analyzeTool(): AnalyzeTool | '' {
-    return this.ws === 'analyze' ? this.anTool : '';
+  /** The task in front in Analyze ('' when Analyze is not). */
+  analyzeTask(): AnalyzeTask | '' {
+    return this.ws === 'analyze' ? this.anTask : '';
   }
 
-  /** The selected result item of the tool in front (tests). */
+  /** The mode of the task in front ('' for a task without modes). */
+  analyzeMode(): string {
+    return this.anTask === 'resilience' ? this.anModes.resilience : this.anTask === 'review' ? this.anModes.review : '';
+  }
+
+  private anKey(task: AnalyzeTask = this.anTask): string {
+    const m = task === 'resilience' ? this.anModes.resilience : task === 'review' ? this.anModes.review : '';
+    return m ? `${task}:${m}` : task;
+  }
+
+  /** The item selected in the task in front, as chosen ('' none chosen yet; '-' let go). */
+  private get anSel(): string {
+    return this.anSels.get(this.anKey()) || '';
+  }
+
+  private set anSel(v: string) {
+    if (v) this.anSels.set(this.anKey(), v);
+    else this.anSels.delete(this.anKey());
+  }
+
+  /** The item the task in front shows the evidence of: the one chosen, else the task's default (Communication: see commDefaultItem). */
   analyzeSelection(): string {
-    return this.anSel;
+    const v = this.anSel;
+    if (v === '-') return '';
+    if (v) return v;
+    if (this.anTask === 'communication' && this.traceRun) return commDefaultItem(this.traceRun);
+    return '';
   }
 
-  /** A root listener of a tool's body: on the body, and forwarded from the Analyze panels when it is laid out there. */
-  private onRoot(body: HTMLElement, type: string, fn: (e: Event) => void): void {
-    body.addEventListener(type, fn);
-    this.anRoot.push({ type, fn });
+  /** The session's recent and pinned results (tests). */
+  analysisHistory(): ReadonlyArray<HistoryEntry> {
+    return this.anHistory;
+  }
+
+  /** The panels' layout. */
+  analyzeLayout(): string {
+    return this.anLayout;
+  }
+
+  /** Analyze → Overview: where an investigation starts (nothing is computed on opening). */
+  openAnalyzeOverview(): void {
+    this.showAnalyze('overview');
+    const f = this.doc.querySelector('#ws-an-left [data-an-start-task]') as HTMLElement | null;
+    if (f) f.focus();
+  }
+
+  /** Analyze → Resilience in one of its modes (Single-component failures starts its progressive check). */
+  openResilience(mode: ResilienceMode): void {
+    if (mode === 'single') return this.openSpof();
+    if (!this.session) return;
+    this.showAnalyze('resilience', mode);
+    const first = this.doc.querySelector(mode === 'scenario' ? '#wi-domain, #wi-components' : '#cap-go') as HTMLElement | null;
+    if (first) first.focus();
+  }
+
+  /** Analyze → Design review in one of its modes. */
+  openReview(mode: ReviewMode): void {
+    if (mode === 'requirements') return this.openDesignChecks();
+    if (!this.session) return;
+    this.showAnalyze('review', 'findings');
+    const f = this.doc.getElementById('dc-find-cls');
+    if (f) f.focus();
   }
 
   /**
-   * Enter Analyze with a tool (or switch to it there). From a simulation, the
+   * Enter Analyze with a task (or switch to it there). From a simulation, the
    * simulation pauses and stays: its snapshot is what Analyze can read; Exit
    * Analyze returns to it and resumes it. From Experiments, a running
-   * experiment goes on. Entering changes nothing in the model.
+   * experiment goes on. Entering changes nothing in the model and computes
+   * nothing; each task keeps its question, its result and its selection.
    */
-  private showAnalyze(tool: AnalyzeTool): void {
+  private showAnalyze(task: AnalyzeTask, mode?: ResilienceMode | ReviewMode): void {
     if (!this.session) return;
-    const switching = this.ws === 'analyze' && this.anTool !== tool;
-    if (switching) this.leaveTool(this.anTool);
+    const before = this.ws === 'analyze' ? this.anKey() : '';
+    if (this.ws === 'analyze' && this.anTask !== task) this.leaveTask(this.anTask);
     if (this.ws !== 'analyze') {
       this.analyzeFrom = this.ws;
       if ((this.ws === 'simulate' || this.ws === 'experiments') && this.simCtl && this.simCtl.playState() === 'Playing') this.simCtl.setPlaying(false, 'analyze');
-      this.closeToolWindow();
+      // (a tool window over the workspace goes; Focus, a view aid of every workspace, stays)
+      if (this.toolWindow() && this.toolWindow() !== 'focus') this.closeToolWindow();
     }
-    if (switching || this.anTool !== tool) this.anSel = '';
-    this.anTool = tool;
-    // back to Trace path: the result left there, as it was (marked outdated when the model changed since; never recomputed)
-    if (tool === 'trace' && !this.traceRun && this.traceKept) this.traceRun = this.traceKept;
-    if (tool === 'trace') this.traceKept = null;
+    if (mode && task === 'resilience') {
+      if (this.anModes.resilience === 'single' && mode !== 'single') this.pauseSpofJob();
+      this.anModes.resilience = mode as ResilienceMode;
+    }
+    if (mode && task === 'review') this.anModes.review = mode as ReviewMode;
+    this.anTask = task;
+    // back to Communication: the result left there, as it was (marked outdated when the model changed since; never recomputed)
+    if (task === 'communication' && !this.traceRun && this.traceKept) this.traceRun = this.traceKept;
+    if (task === 'communication') this.traceKept = null;
+    const switched = before !== this.anKey();
     if (this.ws !== 'analyze') this.showWorkspace('analyze');
     else this.renderAnalyzeWs();
+    if (switched) this.anOrigin = null;
     this.updateModeBanner();
   }
 
-  /** What a tool leaves when another takes its place: the trace's path, the report's background work. */
-  private leaveTool(tool: AnalyzeTool): void {
-    // (the path leaves the diagram; the result — its diagnosis frozen with it — is kept to come back to)
-    if (tool === 'trace' && this.traceRun) {
+  /** What a task leaves when another takes its place: the path in the diagram (the result is kept), the background check (paused). */
+  private leaveTask(task: AnalyzeTask): void {
+    if (task === 'communication' && this.traceRun) {
       this.traceKept = this.traceRun;
       this.exitTrace();
     }
-    if (tool === 'spof') this.stopSpofJob();
+    if (task === 'resilience') this.pauseSpofJob();
   }
 
-  /** Analyze's overlays and work are cleared (the trace's path, a focus entered here, the report's background work). */
+  /** Analyze's overlays and work are cleared (the path, a focus entered here, the background check); results and selections stay. */
   private leaveAnalyze(): void {
-    this.leaveTool('trace');
-    this.leaveTool('spof');
+    this.leaveTask('communication');
+    this.leaveTask('resilience');
     if (this.anFocus && this.session && this.session.state.focus) this.exitFocus();
     this.anFocus = false;
-    this.anSel = '';
+    this.anView = null;
+    this.anBack = [];
+    this.anOrigin = null;
   }
 
   /** Exit Analyze: its overlays cleared; back to where it was entered from (a paused simulation resumes). */
@@ -5362,24 +5786,34 @@ export class App {
     return true;
   }
 
-  /** Escape in Analyze: a selected result item is let go first (true: it was). */
+  /** Escape in Analyze, layered: an editor is cancelled, then the selected evidence is let go (true: one of them was). */
   private anEscape(): boolean {
-    if (this.anSel) {
-      this.anSel = '';
-      this.renderAnalyzeWs();
+    if (this.anEditor && this.anEditorOpen()) {
+      this.cancelEditor();
+      return true;
+    }
+    // (a default selection — Communication's first item — is no choice to let go: Esc goes on to the path)
+    if (this.anSel && this.anSel !== '-') {
+      this.closeEvidence();
       return true;
     }
     return false;
   }
 
-  /** The Analyze banner's line: the tool, what it was computed on, that nothing is changed. */
-  private anNoteLine(): string {
-    const t = ANALYZE_TOOLS.find((x) => x.id === this.anTool) as { label: string };
-    const snap = this.simulation && this.anSource === 'snapshot' ? 'a snapshot of the simulation (paused while Analyze is in front)' : 'the configured model';
-    return `Analyze: ${t.label} — on ${snap}. The model is unchanged; nothing is sent.`;
+  /** Is the editor of the task in front shown? */
+  private anEditorOpen(): boolean {
+    return (this.anEditor === 'requirement' && this.anTask === 'review' && this.anModes.review === 'requirements') || (this.anEditor === 'domains' && this.anTask === 'resilience' && this.anModes.resilience === 'scenario');
   }
 
-  /** The diagram's marks of Analyze: the selected item's objects (a layer's, a network's, a candidate's, an expectation's). */
+  /** The Analyze banner's line: the task, what the next computation reads, that nothing is changed. */
+  private anNoteLine(): string {
+    const t = ANALYZE_TASKS.find((x) => x.id === this.anTask) as { label: string };
+    const m = this.analyzeMode();
+    const snap = this.simulation && this.anSource === 'snapshot' ? 'a snapshot of the simulation (paused while Analyze is in front)' : 'the configured model';
+    return `Analyze: ${t.label}${m ? ' (' + (RESILIENCE_MODES.concat(REVIEW_MODES as never) as Array<{ id: string; label: string }>).find((x) => x.id === m)!.label.toLowerCase() + ')' : ''} — reads ${snap}. The model is unchanged; nothing is sent.`;
+  }
+
+  /** The diagram's marks of Analyze: the selected item's objects. */
   private anMarks(): Map<string, string> | null {
     if (this.ws !== 'analyze' || !this.anSelRefs.length) return null;
     const out = new Map<string, string>();
@@ -5390,230 +5824,577 @@ export class App {
   /** the selected item's objects (set when the panels are drawn) */
   private anSelRefs: string[] = [];
 
-  /** Select a result item of the tool in front: its evidence on the right, its objects marked. */
-  selectAnalysisItem(key: string): void {
-    this.anSel = key;
-    this.renderAnalyzeWs();
-    this.applyHighlight();
-    const r = this.doc.getElementById('an-detail');
-    if (r) r.focus({ preventScroll: true });
-  }
-
-  /** Draw the Analyze panels again (after an edit, a result, a selection): the tool's body laid out in them. */
-  private renderAnalyzeWs(only?: 'results'): void {
-    if (this.ws !== 'analyze' || !this.session || !this.mdoc) return;
-    const doc = this.doc;
-    this.anRoot = [];
-    const parts = this.analyzeParts();
-    // only the results changed (a filter typed, a column sorted): the request's controls stay as they are (the caret, the
-    // focus); what they say of the results (a status line, a toggle's state) is taken over in place
-    if (only === 'results') {
-      const left = doc.getElementById('ws-an-left');
-      for (const n of parts.left) {
-        if (!(n instanceof Element)) continue;
-        for (const e of [n].concat(Array.from(n.querySelectorAll('[id], [data-addr-all]')))) {
-          const sel = e.id ? '#' + e.id : e.hasAttribute('data-addr-all') ? '[data-addr-all]' : '';
-          const cur = sel && left ? (left.querySelector(sel) as HTMLElement | null) : null;
-          if (!cur || e.children.length || cur === doc.activeElement) continue;
-          if (cur.textContent !== e.textContent) cur.textContent = e.textContent;
-          for (const a of ['data-addr-all']) if (e.hasAttribute(a)) cur.setAttribute(a, e.getAttribute(a) as string);
-        }
-      }
-      const wrap = (kids: Node[], cls: string): HTMLElement => {
-        const w = el(doc, 'div', { class: cls, 'data-an-root': this.anTool });
-        for (const k of kids) w.appendChild(k);
-        return w;
-      };
-      this.replacePanel('ws-an-dock', wrap(parts.bottom, 'an-dock'));
-      this.replacePanel('ws-an-right', wrap(parts.right, 'an-right'));
-      this.applyHighlight();
-      return;
-    }
-    const nav = el(doc, 'div', { class: 'an-tools', role: 'radiogroup', 'aria-label': 'Analysis tool' });
-    for (const t of ANALYZE_TOOLS) {
-      const on = t.id === this.anTool;
-      const b = el(doc, 'button', { type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-an-tool': t.id, title: t.help }, [t.label]);
-      b.addEventListener('click', () => this.runCommand(t.command));
-      nav.appendChild(b);
-    }
-    nav.addEventListener('keydown', (e) => {
-      const k = (e as KeyboardEvent).key;
-      if (['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].indexOf(k) < 0) return;
-      e.preventDefault();
-      const i = ANALYZE_TOOLS.findIndex((x) => x.id === this.anTool);
-      const n = ANALYZE_TOOLS[(i + (k === 'ArrowDown' || k === 'ArrowRight' ? 1 : ANALYZE_TOOLS.length - 1)) % ANALYZE_TOOLS.length];
-      this.runCommand(n.command);
-      const b = this.doc.querySelector(`[data-an-tool="${n.id}"]`) as HTMLElement | null;
-      if (b) b.focus();
-    });
-    const wrap = (kids: Node[], cls: string): HTMLElement => {
-      const w = el(doc, 'div', { class: cls, 'data-an-root': this.anTool });
-      for (const k of kids) w.appendChild(k);
-      return w;
-    };
-    this.replacePanel('ws-an-left', wrap([nav as Node].concat(parts.left), 'an-left'));
-    this.replacePanel('ws-an-dock', wrap(parts.bottom, 'an-dock'));
-    this.replacePanel('ws-an-right', wrap(parts.right, 'an-right'));
-    this.applyHighlight();
-    this.updateModeBanner();
+  /** Is Analyze laid out one surface at a time (a narrow window)? */
+  private anNarrow(): boolean {
+    const t = this.doc.getElementById('spt-setup');
+    return !!t && t.getClientRects().length > 0;
   }
 
   /**
-   * The tool's body, laid out: its request (context, form, filters) on the
-   * left, its results (verdict, tables, coverage, exports) at the bottom,
-   * the selected item's evidence on the right.
+   * Select a result item of the task in front: its evidence on the right,
+   * its objects marked. Nothing is computed again and no clock moves. With
+   * `reveal`, the evidence comes into view (a narrow window: its tab) and
+   * its heading takes the keyboard; the control it was chosen from is where
+   * the focus returns when it is let go.
    */
-  private analyzeParts(): { left: Node[]; bottom: Node[]; right: Node[] } {
-    const doc = this.doc;
-    const kids = (e: Element): Element[] => Array.from(e.children);
-    const hint = (text: string): HTMLElement => el(doc, 'p', { class: 'muted small', id: 'an-detail', tabindex: '-1' }, [text]);
-    this.anSelRefs = [];
-    switch (this.anTool) {
-      case 'trace': {
-        const body = this.traceBody();
-        const result = body.querySelector('.trace-result');
-        const left = kids(body).filter((x) => x !== result);
-        if (!result) return { left, bottom: [el(doc, 'p', { class: 'muted' }, ['Trace a communication: its verdict, the layers it checked and its paths appear here.'])], right: [hint('The evidence of a layer appears here: select it in the results.')] };
-        // the layers' evidence goes to the right, for the layer selected (the first that is not satisfied, else the first)
-        const layers = Array.from(result.querySelectorAll('ul.comm-layers > li[data-layer]')) as HTMLElement[];
-        const first = layers.find((l) => !l.classList.contains('v-satisfied')) || layers[0];
-        const sel = this.anSel && this.anSel.indexOf('layer:') === 0 && layers.some((l) => 'layer:' + l.getAttribute('data-layer') === this.anSel) ? this.anSel : first ? 'layer:' + first.getAttribute('data-layer') : '';
-        let right: Node[] = [hint('Select a layer to see its evidence.')];
-        for (const l of layers) {
-          const key = 'layer:' + l.getAttribute('data-layer');
-          const ev = l.querySelector('details.layer-ev');
-          if (ev) ev.remove();
-          const b = el(doc, 'button', { type: 'button', class: 'mini an-pick', 'data-an-item': key, 'aria-pressed': key === sel ? 'true' : 'false', 'aria-controls': 'an-detail' }, ['Evidence']);
-          b.addEventListener('click', () => this.selectAnalysisItem(key));
-          l.appendChild(doc.createTextNode(' '));
-          l.appendChild(b);
-          if (key === sel) {
-            l.classList.add('an-selected');
-            const d = el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Evidence' }, [el(doc, 'h3', {}, [(l.querySelector('strong') as Element).textContent || 'Layer']), el(doc, 'p', { class: 'small' }, [Array.from(l.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()])]);
-            if (ev) for (const c of Array.from(ev.childNodes).slice(1)) d.appendChild(c);
-            else d.appendChild(el(doc, 'p', { class: 'muted small' }, ['No further evidence for this layer.']));
-            const refs = Array.from(d.querySelectorAll('[data-ref]')).map((x) => x.getAttribute('data-ref') as string);
-            this.anSelRefs = refs;
-            right = [d];
-          }
-        }
-        return { left, bottom: [result], right };
-      }
-      case 'addressing': {
-        const body = this.addressingWindowBody();
-        const inner = body.querySelector('.addr') as HTMLElement;
-        const tables = inner.querySelector('.addr-tables') as HTMLElement;
-        const left = kids(body).filter((x) => x !== inner).concat(kids(inner).filter((x) => x !== tables));
-        // a network (its row) selected: its members, allocation and free ranges on the right
-        const run = this.addrRun as NonNullable<App['addrRun']>;
-        let right: Node[] = [hint('Select a network (its row) to see its members, its allocation and the unallocated ranges.')];
-        for (const row of Array.from(tables.querySelectorAll('tr.addr-row')) as HTMLElement[]) {
-          const vrf = (row.closest('[data-addr-vrf]') as Element).getAttribute('data-addr-vrf') || '';
-          const key = `net:${vrf}|${row.getAttribute('data-addr-net')}`;
-          row.setAttribute('data-an-item', key);
-          row.tabIndex = 0;
-          if (key === this.anSel) {
-            row.classList.add('an-selected');
-            row.setAttribute('aria-current', 'true');
-            const g = run.ov.vrfs.find((x) => x.vrf === vrf);
-            const n = g ? g.networks.find((x) => x.id === row.getAttribute('data-addr-net')) : undefined;
-            if (n) {
-              right = [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': `Network ${n.text}` }, [el(doc, 'h3', {}, [`${n.label} — ${n.text}`]), networkDetail(doc, n)])];
-              this.anSelRefs = ['network:' + n.id].concat(n.members.map((m) => 'device:' + m.device));
-            }
-          }
-        }
-        this.anRoot.push({
-          type: 'click',
-          fn: (e) => {
-            const t = e.target as Element;
-            if (t.closest('button, a, input, [data-addr-goto]')) return;
-            const row = t.closest('tr[data-an-item]');
-            if (row) this.selectAnalysisItem(row.getAttribute('data-an-item') as string);
-          },
-        });
-        this.anRoot.push({
-          type: 'keydown',
-          fn: (e) => {
-            const ke = e as KeyboardEvent;
-            const row = (ke.target as Element).closest('tr[data-an-item]');
-            if (row && (ke.key === 'Enter' || ke.key === ' ') && ke.target === row) {
-              ke.preventDefault();
-              this.selectAnalysisItem(row.getAttribute('data-an-item') as string);
-            }
-          },
-        });
-        return { left, bottom: [tables], right };
-      }
-      case 'spof': {
-        const body = this.spofWindowBody();
-        const tables = body.querySelector('.spof-tables') as HTMLElement;
-        const prog = body.querySelector('#spof-progress') as HTMLElement;
-        const limits = Array.from(body.children).find((x) => x.classList.contains('an-limits')) || null;
-        const wi = body.querySelector('.wi-section') as HTMLElement;
-        const result = wi ? wi.querySelector('#wi-result') : null;
-        if (result) result.remove();
-        const left = kids(body).filter((x) => x !== tables && x !== prog && x !== limits);
-        const right: Node[] = result ? [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'What if' }, [el(doc, 'h3', {}, ['What if: the result']), result])] : [hint('What if a candidate fails: its What if button, or the What if form, shows the comparison here.')];
-        if (this.wiRun) this.anSelRefs = this.wiRun.result.refs.slice();
-        return { left, bottom: ([prog, tables, limits] as Array<Element | null>).filter((x): x is Element => !!x), right };
-      }
-      case 'checks': {
-        const body = this.designWindowBody();
-        const intro = body.firstElementChild as Element;
-        const bar = body.querySelector('.an-ctx') || intro.nextElementSibling;
-        const secs = Array.from(body.querySelectorAll(':scope > section.dc-section')) as HTMLElement[];
-        const exp = secs[0];
-        const form = exp ? exp.querySelector('form.dc-form, .dc-form') : null;
-        const tools = exp ? exp.querySelector(':scope > .tf-actions') : null;
-        const status = exp ? exp.querySelector('#dc-status') : null;
-        const left: Node[] = [intro, bar].filter((x): x is Element => !!x);
-        if (tools) left.push(tools);
-        if (status) left.push(status);
-        let right: Node[] = [hint('Select an expectation (Details) to see its evidence: its layers, the failure applied, the findings where it stops.')];
-        if (form) {
-          form.remove();
-          right = [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Expectation' }, [form])];
-        }
-        // each expectation's details: the selected one's on the right; the others stay out of the table
-        for (const row of Array.from(body.querySelectorAll('tr.dc-detail')) as HTMLElement[]) {
-          const id = row.id.replace(/^dc-d-/, '');
-          const key = 'exp:' + id;
-          if (key === this.anSel && !form) {
-            const cell = row.querySelector('td') as HTMLElement;
-            right = [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Evidence' }, [el(doc, 'h3', {}, [(body.querySelector(`tr[data-exp="${id}"] .dc-name`) as Element || { textContent: id }).textContent || id])].concat(Array.from(cell.childNodes) as HTMLElement[]))];
-            const r = this.dcRun ? this.dcRun.run.results.find((x) => x.id === id) : undefined;
-            this.anSelRefs = r ? r.refs.slice() : [];
-            const tr = body.querySelector(`tr[data-exp="${id}"]`);
-            if (tr) tr.classList.add('an-selected');
-          }
-          row.remove();
-        }
-        for (const t of Array.from(body.querySelectorAll('[data-dc="toggle"]')) as HTMLElement[]) {
-          const on = 'exp:' + t.getAttribute('data-id') === this.anSel;
-          t.setAttribute('aria-expanded', on ? 'true' : 'false');
-          t.setAttribute('aria-controls', 'an-detail');
-          t.textContent = 'Details';
-        }
-        const bottom: Node[] = [];
-        if (exp) for (const c of Array.from(exp.children)) if (c !== tools && c !== status) bottom.push(c);
-        for (const s2 of secs.slice(1)) bottom.push(s2);
-        return { left, bottom, right };
-      }
-      case 'focus': {
-        const body = this.focusBody();
-        const s = this.session as Session;
-        const shown = s.state.focus ? Array.from(s.shownDevices()).sort() : [];
-        const bottom: Node[] = [el(doc, 'p', { class: 'small', role: 'status', id: 'an-focus-shown' }, [s.state.focus ? `${this.focusNote()}: ${shown.length} device${shown.length === 1 ? '' : 's'} shown.` : 'Focus is off: the complete diagram is shown.'])];
-        if (shown.length) bottom.push(el(doc, 'p', { class: 'small muted' }, [shown.slice(0, 60).join(', ') + (shown.length > 60 ? ' …' : '')]));
-        const sel = s.state.selected;
-        const right: Node[] = sel ? [el(doc, 'section', { id: 'an-detail', tabindex: '-1', 'aria-label': 'Selection' }, [el(doc, 'h3', {}, [this.refName(sel)]), el(doc, 'p', { class: 'small muted' }, [focusContexts(s.model, sel).length ? `Contextual focus: ${focusContexts(s.model, sel).map((c) => c.label).join(', ')}.` : 'No contextual focus for it.'])])] : [hint('Select an object in the diagram or the object list to focus on it.')];
-        return { left: [body], bottom, right };
-      }
-    }
-    return { left: [], bottom: [], right: [] };
+  selectAnalysisItem(key: string, reveal = true): void {
+    const a = this.doc.activeElement as HTMLElement | null;
+    const dock = this.doc.getElementById('ws-an-dock');
+    if (key && a && dock && dock.contains(a)) this.anOrigin = focusKey(a);
+    this.anSel = key || '-';
+    this.renderAnalyzeWs('results');
+    if (reveal && key) this.revealEvidence();
   }
 
+  /** The evidence in view: a narrow window shows its tab; its heading (or the decision shown) takes the keyboard. */
+  private revealEvidence(): void {
+    if (this.anNarrow()) this.simPanelTab('actions', false);
+    const right = this.doc.getElementById('ws-an-right');
+    const t = right ? ((right.querySelector('#diag-rule') || right.querySelector('#an-ed-h, #an-detail')) as HTMLElement | null) : null;
+    if (t) {
+      if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1');
+      t.focus({ preventScroll: true });
+      // (the panel from its top: what the evidence describes, then the part that took the focus)
+      const panel = right ? (right.closest('.sim-panel') as HTMLElement | null) : null;
+      if (panel) panel.scrollTop = 0;
+      if (t.id === 'diag-rule' && typeof t.scrollIntoView === 'function') t.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /** The results in view (a narrow window: their tab) after a computation. */
+  private revealResults(): void {
+    if (this.ws === 'analyze' && this.anNarrow()) this.simPanelTab('results', false);
+  }
+
+  /** Let the selected evidence go: the results stay; the focus returns to where it was chosen from. */
+  closeEvidence(): void {
+    const back = this.anOrigin;
+    this.anSel = '-';
+    this.anOrigin = null;
+    this.renderAnalyzeWs('results');
+    const dock = this.doc.getElementById('ws-an-dock');
+    const t = back && dock ? findFocusKey(dock, back) : null;
+    if (t) {
+      if (this.anNarrow()) this.simPanelTab('results', false);
+      t.focus();
+    }
+  }
+
+  /** Open another task from evidence, remembering where Back returns. */
+  private anGo(label: string, go: () => void): void {
+    const dock = this.doc.getElementById('ws-an-dock');
+    this.anBack.push({ task: this.anTask, mode: this.analyzeMode(), sel: this.anSel, label, scroll: dock ? dock.scrollTop : 0 });
+    if (this.anBack.length > 12) this.anBack.shift();
+    go();
+  }
+
+  /** Back: the task, the item and the place in the results an investigation came from (nothing is computed again). */
+  analyzeBack(): boolean {
+    const b = this.anBack.pop();
+    if (!b) return false;
+    this.showAnalyze(b.task, (b.mode || undefined) as ResilienceMode | ReviewMode | undefined);
+    this.anSel = b.sel;
+    this.renderAnalyzeWs();
+    const dock = this.doc.getElementById('ws-an-dock');
+    if (dock) dock.scrollTop = b.scroll;
+    const it = b.sel && dock ? (Array.prototype.find.call(dock.querySelectorAll('[data-an-item]'), (x: Element) => x.getAttribute('data-an-item') === b.sel) as HTMLElement | undefined) : undefined;
+    if (it) it.focus({ preventScroll: true });
+    else {
+      const nav = this.doc.querySelector(`#ws-an-left [data-an-task="${b.task}"]`) as HTMLElement | null;
+      if (nav) nav.focus();
+    }
+    return true;
+  }
+
+  /** Choose the panels' layout: balanced, diagram-focused or results-focused. */
+  setAnalyzeLayout(l: 'balanced' | 'diagram' | 'results'): void {
+    this.anLayout = l;
+    this.dockH = null;
+    this.doc.body.setAttribute('data-an-layout', l);
+    this.applyDockHeight();
+    this.renderAnalyzeWs('results');
+  }
+
+  /** Keep a result in the session's history (the newest first; bounded). */
+  private remember(task: AnalyzeTask, mode: string, question: string, context: AnalysisContext, layers: string[], model: Model, data: unknown, at: number, limited = false): void {
+    const prev = this.anHistory.find((h) => h.data === data);
+    if (prev) return;
+    this.anHistory.unshift({ id: ++this.anHistId, task, mode, question, context, layers, fingerprint: fingerprintId(model), model, at, sel: '', evidenceLimited: limited, pinned: false, data });
+    this.anHistory = boundHistory(this.anHistory);
+  }
+
+  /** The history entry of a result on screen (its selection follows it). */
+  private historyOf(data: unknown): HistoryEntry | undefined {
+    return this.anHistory.find((h) => h.data === data);
+  }
+
+  /** A history action: reopen, pin, unpin, save its record. */
+  historyAction(kind: 'open' | 'pin' | 'unpin' | 'export' | 'forget', id: number): boolean {
+    const h = this.anHistory.find((x) => x.id === id);
+    if (!h || !this.session) return false;
+    if (kind === 'pin' || kind === 'unpin') {
+      h.pinned = kind === 'pin';
+      this.anHistory = boundHistory(this.anHistory);
+      this.renderAnalyzeWs('results');
+      return true;
+    }
+    if (kind === 'forget') {
+      this.anHistory = this.anHistory.filter((x) => x !== h);
+      this.renderAnalyzeWs('results');
+      return true;
+    }
+    if (kind === 'export') {
+      if (!this.mdoc) return false;
+      const name = `${pictureBaseName(this.mdoc.fileName)}-analysis-record-${h.id}.txt`;
+      downloadText(this.doc, this.historyRecord(h), name, 'text/plain');
+      this.toast(`Saved the record as “${name}”.`);
+      return true;
+    }
+    // reopen: the result as it was computed, in its task, with its selection (outdated when the model changed since)
+    const back = this.ws === 'analyze' ? `${taskLabel(this.anTask, this.analyzeMode())}` : '';
+    const open = (): void => {
+      if (h.task === 'communication') {
+        if (this.traceRun && this.traceRun !== h.data) this.exitTrace();
+        this.traceRun = h.data as NonNullable<App['traceRun']>;
+        this.traceKept = null;
+        this.diagRule = null;
+        this.traceForm = { ...newTraceForm(), from: this.traceRun.request.from, to: this.traceRun.request.to || '', vrf: this.traceRun.request.vrf !== undefined ? this.traceRun.request.vrf : 'auto', service: this.traceRun.request.service || '', family: this.traceRun.request.family ? String(this.traceRun.request.family) : '', back: !!this.traceRun.request.back };
+      } else if (h.task === 'resilience' && h.mode === 'single') {
+        // (the report it was: its check stays where it got, outdated when the model changed since)
+        if (this.spofJob && this.spofJob !== h.data) this.pauseSpofJob();
+        this.spofJob = h.data as NonNullable<App['spofJob']>;
+      } else if (h.task === 'resilience' && h.mode === 'scenario') this.wiRun = h.data as NonNullable<App['wiRun']>;
+      else if (h.task === 'resilience' && h.mode === 'capacity') this.capRun = h.data as NonNullable<App['capRun']>;
+      else if (h.task === 'review') this.dcRun = h.data as NonNullable<App['dcRun']>;
+      else if (h.task === 'addressing') this.addrRun = h.data as NonNullable<App['addrRun']>;
+      this.showAnalyze(h.task, (h.mode || undefined) as ResilienceMode | ReviewMode | undefined);
+      if (h.sel) this.anSel = h.sel;
+      this.applyHighlight();
+      this.updateChrome();
+      this.renderAnalyzeWs();
+      this.revealResults();
+    };
+    if (back) this.anGo(back, open);
+    else open();
+    return true;
+  }
+
+  /** A history entry as an offline record: the question, its context and scope, the fingerprint, when, its status, the answer. */
+  private historyRecord(h: HistoryEntry): string {
+    const s = this.session as Session;
+    const outdated = this.outdatedSince(h.model);
+    const head = [`NetAtlas analysis record — ${s.model.title}`, `Task: ${taskLabel(h.task, h.mode)}`, `Question: ${h.question}`, `Context: ${contextText(h.context)}${h.layers.length ? ' · ' + h.layers.join(' · ') : ''}`, `Computed: ${new Date(h.at).toISOString()}`, `Model fingerprint: ${h.fingerprint}`, `Status: ${[outdated ? 'outdated (the model changed since)' : 'current', h.evidenceLimited ? 'evidence-limited' : ''].filter((x) => !!x).join(', ')}`, h.sel ? `Selected: ${h.sel}` : '', this.appVersion() ? `NetAtlas ${this.appVersion()}` : '', ''].filter((x, i, a) => x !== '' || i === a.length - 1);
+    let body = '';
+    if (h.task === 'communication') body = traceExportText({ title: s.model.title, version: this.appVersion(), outdated, fingerprint: h.fingerprint }, h.data as TraceRun);
+    else if (h.task === 'resilience' && h.mode === 'scenario') body = whatIfText({ title: s.model.title, version: this.appVersion(), outdated }, (h.data as NonNullable<App['wiRun']>).result);
+    else if (h.task === 'review') body = designText({ title: s.model.title, version: this.appVersion(), outdated }, h.model, (h.data as NonNullable<App['dcRun']>).run);
+    else if (h.task === 'addressing') body = addressingCsv((h.data as NonNullable<App['addrRun']>).ov, contextText(h.context));
+    else if (h.task === 'resilience' && h.mode === 'single') {
+      const j = h.data as NonNullable<App['spofJob']>;
+      body = spofText(h.model, shownSpofRows(spofRows(j.model, j.spofs, j.service, j.cands, j.reqs), this.spofState), { info: this.spofView().info, version: this.appVersion(), outdated });
+    } else if (h.task === 'resilience' && h.mode === 'capacity') {
+      const c = h.data as NonNullable<App['capRun']>;
+      const res = c.after || c.before;
+      body = [res.text].concat(res.demands.map((d) => `${d.demand.label}: ${d.text}`), res.assumptions).join('\n') + '\n';
+    }
+    return head.join('\n') + '\n' + body + '\nA model-based result: it does not prove the behaviour of a production network.\n';
+  }
+
+  /** Draw the Analyze panels again (after an edit, a result, a selection). `results`: the question's controls stay as they are (the caret, the focus). */
+  private renderAnalyzeWs(only?: 'results'): void {
+    if (this.ws !== 'analyze' || !this.session || !this.mdoc) return;
+    const doc = this.doc;
+    this.anSelRefs = [];
+    const p = this.anParts();
+    const wrap = (kids: Node[], cls: string): HTMLElement => {
+      const w = el(doc, 'div', { class: cls, 'data-an-root': this.anTask });
+      for (const k of kids) w.appendChild(k);
+      return w;
+    };
+    if (only !== 'results') this.replacePanel('ws-an-left', wrap(this.anHead().concat([p.left]), 'an-left'));
+    this.replacePanel('ws-an-dock', wrap([this.anDockHead(), p.bottom], 'an-dock'));
+    this.replacePanel('ws-an-right', wrap([p.right], 'an-right'));
+    doc.body.setAttribute('data-an-evidence', p.empty ? 'empty' : 'on');
+    doc.body.setAttribute('data-an-layout', this.anLayout);
+    // (the history follows the selection of the result it holds)
+    const h = this.anHistoryData();
+    if (h) {
+      const e = this.historyOf(h);
+      if (e) e.sel = this.anSel === '-' ? '' : this.anSel;
+    }
+    this.applyHighlight();
+    if (only !== 'results') this.updateModeBanner();
+  }
+
+  /** The result the task in front shows (its history entry follows it). */
+  private anHistoryData(): unknown {
+    if (this.anTask === 'communication') return this.traceRun;
+    if (this.anTask === 'resilience') return this.anModes.resilience === 'scenario' ? this.wiRun : this.anModes.resilience === 'capacity' ? this.capRun : null;
+    if (this.anTask === 'review') return this.anModes.review === 'requirements' ? this.dcRun : null;
+    if (this.anTask === 'addressing') return this.addrRun;
+    return null;
+  }
+
+  /** The Question panel's head: Back, the task areas, the task's modes. */
+  private anHead(): Node[] {
+    const doc = this.doc;
+    const out: Node[] = [];
+    if (this.anBack.length) {
+      const b = el(doc, 'button', { type: 'button', class: 'mini an-back', id: 'an-back', title: 'Return to the result this investigation came from' }, ['← Back to ' + this.anBack[this.anBack.length - 1].label]);
+      b.addEventListener('click', () => void this.analyzeBack());
+      out.push(b);
+    }
+    out.push(radioNav(doc, 'Analysis task', ANALYZE_TASKS.map((t) => ({ id: t.id, label: t.label, help: t.answers })), this.anTask, 'data-an-task', (id) => this.runCommand((ANALYZE_TASKS.find((t) => t.id === id) as { command: string }).command)));
+    if (this.anTask === 'resilience') out.push(radioNav(doc, 'Resilience', RESILIENCE_MODES, this.anModes.resilience, 'data-an-mode', (id) => this.openResilience(id)));
+    if (this.anTask === 'review') out.push(radioNav(doc, 'Design review', REVIEW_MODES, this.anModes.review, 'data-an-mode', (id) => this.openReview(id)));
+    return out;
+  }
+
+  /** The results panel's head: what it answers, and the layout of the panels. */
+  private anDockHead(): HTMLElement {
+    const doc = this.doc;
+    const t = ANALYZE_TASKS.find((x) => x.id === this.anTask) as { label: string };
+    const m = this.analyzeMode();
+    const seg = el(doc, 'div', { class: 'seg an-layout', role: 'radiogroup', 'aria-label': 'Layout' });
+    const opts: Array<['balanced' | 'diagram' | 'results', string, string]> = [
+      ['balanced', 'Balanced', 'The diagram, the question, the results and the evidence in balance'],
+      ['diagram', 'Diagram-focused', 'More room for the diagram'],
+      ['results', 'Results-focused', 'More room for the results'],
+    ];
+    for (const [k, label, why] of opts) {
+      const on = this.anLayout === k;
+      const b = el(doc, 'button', { type: 'button', role: 'radio', class: 'mini' + (on ? ' active' : ''), 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-an-layout': k, title: why }, [label]);
+      b.addEventListener('click', () => {
+        this.setAnalyzeLayout(k);
+        const again = this.doc.querySelector(`[data-an-layout="${k}"]`) as HTMLElement | null;
+        if (again) again.focus();
+      });
+      seg.appendChild(b);
+    }
+    seg.addEventListener('keydown', (e) => {
+      const k = (e as KeyboardEvent).key;
+      if (k !== 'ArrowLeft' && k !== 'ArrowRight') return;
+      e.preventDefault();
+      const i = opts.findIndex((o) => o[0] === this.anLayout);
+      const n = opts[(i + (k === 'ArrowRight' ? 1 : opts.length - 1)) % opts.length][0];
+      this.setAnalyzeLayout(n);
+      const again = this.doc.querySelector(`[data-an-layout="${n}"]`) as HTMLElement | null;
+      if (again) again.focus();
+    });
+    const label = m ? `${t.label}: ${(RESILIENCE_MODES as ReadonlyArray<{ id: string; label: string }>).concat(REVIEW_MODES).find((x) => x.id === m)!.label}` : t.label;
+    return el(doc, 'div', { class: 'an-dock-head' }, [el(doc, 'h3', { class: 'an-dock-title', id: 'an-dock-h' }, [label]), seg]);
+  }
+
+  /** The evidence panel of an item (or the hint when nothing is selected). */
+  private anEvidence(v: EvidenceView | null, hint: string): { right: Node; empty: boolean } {
+    if (!v) return { right: evidenceHint(this.doc, hint), empty: true };
+    this.anSelRefs = v.objects.map((o) => o.ref);
+    const back = this.anBack.length ? 'Back to ' + this.anBack[this.anBack.length - 1].label : '';
+    return {
+      right: evidencePanel(this.doc, v, { restorable: !!this.anView, back }, { next: (id, ref) => this.anNext(id, ref), goto: (r) => this.select(r, true), view: (k) => this.anViewAction(k), back: () => void this.analyzeBack(), close: () => this.closeEvidence() }),
+      empty: false,
+    };
+  }
+
+  /** A context's words for the evidence panel: the result's source, scope and time. */
+  private anContextText(c: AnalysisContext | null, at: number, layers: string[] = []): string {
+    if (!c) return 'No result';
+    return `${contextKindText(c)}${layers.length ? ' · ' + layers.join(' · ') : ''} · ${c.scope}${at ? ' · computed ' + clockText(at) : ''}`;
+  }
+
+  /** The three panels of the task in front: its question, its answer and results, the evidence of the selected item. */
+  private anParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    switch (this.anTask) {
+      case 'communication':
+        return this.commParts();
+      case 'resilience':
+        return this.anModes.resilience === 'single' ? this.spofParts() : this.anModes.resilience === 'scenario' ? this.scenarioParts() : this.capacityParts();
+      case 'review':
+        return this.anModes.review === 'requirements' ? this.requirementsParts() : this.findingsParts();
+      case 'addressing':
+        return this.addressingParts();
+      default:
+        return this.overviewParts();
+    }
+  }
+
+  /** An action of the evidence panel's Inspect next (see the module comments of trace.ts, spof.ts, design-checks.ts and overview.ts). */
+  private anNext(id: string, ref?: string): void {
+    const s = this.session;
+    if (!s) return;
+    const r = ref || '';
+    switch (id) {
+      case 'select':
+        return this.selectAnalysisItem(r);
+      case 'goto':
+        return void this.gotoEvidence(r);
+      case 'refresh':
+        return void this.runTrace(true);
+      case 'handoff':
+        return void this.traceHandoff();
+      case 'compare':
+        return void this.compareTrace();
+      case 'mtu-test':
+        return void this.traceMtuTest();
+      case 'save-exp':
+        return void this.traceToExpectation();
+      case 'experiment':
+        return void this.traceToExperiment();
+      case 'scenario':
+        return this.anGo(this.anBackLabel(), () => {
+          const refs = r.split(' ').filter((x) => x);
+          this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((x) => x.replace(/^(device|link|relation|iface):/, '')).join(', ') };
+          this.runWhatIf(refs);
+        });
+      case 'whatif-provider':
+        return this.anGo(this.anBackLabel(), () => {
+          this.wiForm = { ...this.wiForm, mode: 'components', components: r };
+          this.runWhatIf([r]);
+        });
+      case 'communication':
+        return this.anGo(this.anBackLabel(), () => {
+          const q = JSON.parse(r) as CommRequest;
+          this.traceForm = { ...newTraceForm(), from: q.from, to: q.to || '', service: q.service || '', vrf: q.vrf !== undefined ? q.vrf : 'auto', family: q.family ? String(q.family) : '' };
+          this.traceChoice = null;
+          this.showAnalyze('communication');
+          this.runTrace();
+        });
+      case 'focus-timing':
+      case 'focus-app':
+        this.select('device:' + r, true);
+        if (s.state.focus) this.exitFocus();
+        if (this.enterContextFocus(id === 'focus-timing' ? { kind: 'timing', device: r } : { kind: 'app', device: r })) this.anFocus = true;
+        return;
+      case 'requirement':
+        return this.anGo(this.anBackLabel(), () => {
+          this.showAnalyze('review', 'requirements');
+          this.selectAnalysisItem('exp:' + r);
+        });
+      case 'trace':
+        return this.anGo(this.anBackLabel(), () => this.traceExpectation(r));
+      case 'finding':
+        return this.anGo(this.anBackLabel(), () => {
+          this.showAnalyze('review', 'findings');
+          this.selectAnalysisItem('finding:' + r);
+        });
+      case 'edit':
+        return this.editRequirement(r);
+      case 'goto-field':
+        return this.gotoIssue(Number(r));
+      case 'hist-open':
+      case 'hist-pin':
+      case 'hist-unpin':
+      case 'hist-export':
+        return void this.historyAction(id.slice(5) as 'open' | 'pin' | 'unpin' | 'export', Number(r));
+    }
+  }
+
+  /** What Back says it returns to: the task and the item in front. */
+  private anBackLabel(): string {
+    const t = taskLabel(this.anTask, this.analyzeMode());
+    const sel = this.analyzeSelection();
+    const h = this.doc.getElementById('an-ev-h');
+    return sel && h ? `${t}: ${h.textContent}` : t;
+  }
+
+  /**
+   * The diagram actions of the evidence: Locate (the first object selected
+   * and in view), Fit (the view zoomed to the objects), Show only (a Focus on
+   * the devices they name: a display filter, the analysis keeps its scope),
+   * Restore (the zoom and the display as they were before Fit or Show only).
+   */
+  private anViewAction(kind: 'locate' | 'fit' | 'only' | 'restore'): void {
+    const s = this.session;
+    if (!s) return;
+    const refs = this.anSelRefs;
+    if (kind === 'locate') {
+      if (refs.length) this.select(refs[0], true);
+      return;
+    }
+    if (kind === 'restore') {
+      const v = this.anView;
+      if (!v) return;
+      this.anView = null;
+      if (!v.focus && s.state.focus) this.exitFocus();
+      this.zoom = { k: v.k, tx: v.tx, ty: v.ty };
+      this.applyZoom();
+      this.renderAnalyzeWs('results');
+      return;
+    }
+    if (!this.anView) this.anView = { k: this.zoom.k, tx: this.zoom.tx, ty: this.zoom.ty, focus: !!s.state.focus };
+    if (kind === 'fit') {
+      if (!this.fitRefs(refs)) this.toast('None of these objects is drawn in this view.');
+    } else {
+      const devs = Array.from(new Set(refs.map((r) => this.deviceOf(r)).filter((d): d is string => !!d)));
+      if (!devs.length) this.toast('These objects name no device to show.');
+      else {
+        const h = this.doc.getElementById('an-ev-h');
+        if (s.state.focus) s.endFocus();
+        if (s.setFocus('device:' + devs[0], 1, { kind: 'set', devices: devs, label: h ? h.textContent || 'The result' : 'The result' })) {
+          this.anFocus = true;
+          this.render();
+          this.updateChrome();
+          this.fit();
+        }
+      }
+    }
+    this.renderAnalyzeWs('results');
+  }
+
+  /** The device an object reference stands for (a device, an interface's device). */
+  private deviceOf(ref: string): string | null {
+    const [kind, id] = splitRef(ref);
+    const m = (this.session as Session).model;
+    if (kind === 'device') return m.index.devices.has(id) ? id : null;
+    if (kind === 'iface') return id.slice(0, id.indexOf(':'));
+    if (kind === 'link') {
+      const l = m.index.links.get(id);
+      return l ? l.a.device : null;
+    }
+    return null;
+  }
+
+  /** Zoom the diagram to the objects drawn for these references (false: none is drawn in this view). */
+  private fitRefs(refs: string[]): boolean {
+    const box = this.svg.getBoundingClientRect();
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const r of refs) {
+      const sel = `[data-ref="${r.replace(/["\\]/g, '\\$&')}"]`;
+      for (const e of Array.from(this.viewport.querySelectorAll(sel))) {
+        const b = (e as Element).getBoundingClientRect();
+        if (!b.width && !b.height) continue;
+        const p = this.toWorld(b.left, b.top);
+        const q = this.toWorld(b.right, b.bottom);
+        x0 = Math.min(x0, p.x);
+        y0 = Math.min(y0, p.y);
+        x1 = Math.max(x1, q.x);
+        y1 = Math.max(y1, q.y);
+      }
+    }
+    if (!isFinite(x0)) return false;
+    const banner = this.doc.getElementById('mode-banner');
+    const top = banner && !banner.hidden ? banner.getBoundingClientRect().height : 0;
+    const W = box.width || 1000;
+    const H = Math.max(40, (box.height || 700) - top);
+    const w = Math.max(80, x1 - x0);
+    const h = Math.max(60, y1 - y0);
+    const k = Math.max(0.05, Math.min(1.5, Math.min(W / w, H / h) * 0.8));
+    this.zoom = { k, tx: W / 2 - (x0 + (x1 - x0) / 2) * k, ty: top + H / 2 - (y0 + (y1 - y0) / 2) * k };
+    this.applyZoom();
+    return true;
+  }
+
+  // ---- the overview
+
+  private overviewParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const doc = this.doc;
+    const s = this.session as Session;
+    const d = this.mdoc as ModelDoc;
+    const sel = s.state.selected;
+    const [kind] = sel ? splitRef(sel) : [''];
+    const kinds: { [k: string]: string } = { device: 'device', iface: 'interface', relation: 'relation', link: 'cable', network: 'network' };
+    const ex = this.anExplore && s.model.index.devices.has(this.anExplore.ref.slice(7)) ? this.anExplore : null;
+    const act = {
+      task: (t: AnalyzeTask) => this.runCommand((ANALYZE_TASKS.find((x) => x.id === t) as { command: string }).command),
+      start: (k: string, ref: string) => this.overviewStart(k, ref),
+      explore: (ref: string | null) => this.exploreComponent(ref),
+      impact: () => this.exploreImpact(),
+      history: (k: 'open' | 'pin' | 'unpin' | 'export' | 'forget', id: number) => void this.historyAction(k, id),
+    };
+    const left = overviewRequest(doc, s.model, sel && kinds[kind] ? { ref: sel, name: this.refName(sel), kind: kinds[kind] } : null, ex ? { ref: ex.ref, name: ex.name } : null, act);
+    const key = fingerprintId(s.model);
+    const facts: OverviewFacts = {
+      requirements: s.model.expectations.length,
+      evaluated: this.dcRun ? { counts: this.dcRun.run.results.reduce((c: { [v: string]: number }, r) => ((c[r.verdict] = (c[r.verdict] || 0) + 1), c), {}), outdated: this.outdatedSince(this.dcRun.model), context: contextText(this.dcRun.run.info.context) } : null,
+      findings: d.findings.length,
+      input: d.errors.length + d.warnings.length,
+      checksOff: Array.from(s.model.checks.values()).filter((v) => v === 'off').length,
+      outdated: this.anHistory.filter((h) => h.model !== s.model && h.fingerprint !== key).map((h) => ({ id: h.id, question: h.question, task: taskLabel(h.task, h.mode) })),
+      runtimeAddressed: runtimeAddressed(s.model),
+      simulation: !!this.simulation,
+    };
+    const bottom = overviewResults(doc, facts, ex, this.anHistory, { model: s.model, key }, this.analyzeSelection(), act);
+    const v = overviewEvidence(doc, ex, this.anHistory, this.analyzeSelection(), { model: s.model, key });
+    const e = this.anEvidence(v, 'Select a dependency or a recent result to see its evidence here.');
+    return { left, bottom, ...e };
+  }
+
+  /** A starting point of the overview for the selection. */
+  private overviewStart(kind: string, ref: string): void {
+    const [k, id] = splitRef(ref);
+    if (kind === 'diagnose') {
+      this.select(ref, false);
+      return this.anGo('Overview', () => this.diagnoseSelection());
+    }
+    if (kind === 'from') {
+      return this.anGo('Overview', () => {
+        this.traceForm = { ...this.traceForm, from: k === 'device' || k === 'iface' ? id : '', to: '', service: '', vrf: 'auto', family: '' };
+        this.traceChoice = null;
+        this.showAnalyze('communication');
+        const f = this.doc.getElementById('trace-to');
+        if (f) f.focus();
+      });
+    }
+    if (kind === 'explore') return this.exploreComponent(ref);
+    if (kind === 'whatif') return this.anGo('Overview', () => void this.runWhatIf([id]));
+    if (kind === 'addressing') {
+      return this.anGo('Overview', () => {
+        this.openAddressing();
+        const run = this.addrRun;
+        const g = run ? run.ov.vrfs.find((x) => x.networks.some((n) => n.id === id)) : undefined;
+        if (g) this.selectAnalysisItem(`net:${g.vrf}|${id}`);
+      });
+    }
+  }
+
+  /** Explore a component's dependencies (null: stop exploring). Nothing is evaluated until Evaluate its failure. */
+  exploreComponent(ref: string | null): void {
+    const s = this.session;
+    if (!s) return;
+    if (!ref) this.anExplore = null;
+    else {
+      const dev = this.deviceOf(ref);
+      const d = dev ? s.model.index.devices.get(dev) : undefined;
+      if (!dev || !d) {
+        this.toast('Only a device (or an interface of one) has dependencies to explore.');
+        return;
+      }
+      const deps = serviceDependencies(s.model);
+      this.anExplore = {
+        ref: 'device:' + dev,
+        name: dev,
+        dependsOn: deps.filter((x) => x.consumer === dev),
+        usedBy: deps.filter((x) => x.consumer !== dev && x.options.some((o) => o.provider === dev)),
+        guests: s.model.devices.filter((g) => g.host === dev).map((g) => g.id),
+        host: d.host || '',
+        impact: null,
+      };
+    }
+    if (this.analyzeTask() !== 'overview') this.showAnalyze('overview');
+    else this.renderAnalyzeWs();
+    const h = this.doc.getElementById(ref ? 'an-ex-h' : 'an-ov-sel-h');
+    if (h) {
+      h.setAttribute('tabindex', '-1');
+      h.focus();
+    }
+  }
+
+  /** The explored component's failure, evaluated now (the failure analysis, against the same baseline). */
+  private exploreImpact(): void {
+    const s = this.session;
+    const ex = this.anExplore;
+    if (!s || !ex) return;
+    ex.impact = { model: s.model, result: whatIf(s.model, [ex.name]) };
+    this.renderAnalyzeWs('results');
+    const sum = this.doc.getElementById('an-ex-impact-sum');
+    if (sum) {
+      sum.setAttribute('tabindex', '-1');
+      sum.focus();
+    }
+  }
   // ------------------------------------------------------------ experiments
 
   /** the entry selected in the Experiments workspace: the only selection state of its panels */
@@ -6149,7 +6930,7 @@ export class App {
     if (!d) return;
     const entry = d.analysisEntries('expectations').find((x) => x.id === id);
     if (!entry) return;
-    const a = await this.dialog({ title: `Delete the expectation “${id}”?`, body: ['The requirement is removed from the model. You can undo this with Ctrl+Z.'], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }] });
+    const a = await this.dialog({ title: `Delete the requirement “${id}”?`, body: ['The requirement is removed from the model. You can undo this with Ctrl+Z.'], buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Delete', value: 'go', kind: 'danger' }] });
     if (a !== 'go') return;
     try {
       d.removeExpectation(entry.index);
@@ -6157,8 +6938,8 @@ export class App {
       this.refusedEdit(e);
       return;
     }
-    this.dcOpen.delete(id);
-    this.afterEdit('The expectation was deleted.');
+    this.anSels.delete('review:requirements');
+    this.afterEdit('The requirement was deleted.');
     this.renderDesignChecks();
     const b = this.doc.getElementById('dc-add');
     if (b) b.focus();
@@ -6539,20 +7320,33 @@ export class App {
 
     this.wireCanvas();
     this.wireConnect();
-    // the Analyze panels pass their events to the tool's own (delegated) listeners, wherever its parts are laid out
+    // the Analyze panels: one delegated listener each, mounted once — an object named in a result (a hop's device,
+    // interface, cable …) selects it in the diagram; a result item (a row, its Evidence button) shows its evidence
     for (const id of ['ws-an-left', 'ws-an-dock', 'ws-an-right']) {
       const box = doc.getElementById(id);
       if (!box) continue;
-      for (const type of ['click', 'input', 'keydown', 'change']) box.addEventListener(type, (e) => {
+      box.addEventListener('click', (e) => {
         if (this.ws !== 'analyze') return;
-        for (const h of this.anRoot.slice()) if (h.type === type) h.fn(e);
+        const t = e.target as Element;
+        const go = t.closest('[data-goto]');
+        if (go && !box.closest('#side')) {
+          this.select(go.getAttribute('data-goto') as string, true);
+          return;
+        }
+        const it = t.closest('[data-an-item]') as HTMLElement | null;
+        if (!it || !box.contains(it)) return;
+        // (a control inside a row acts for itself; the row, or its Evidence button, selects)
+        const ctl = t.closest('button, a, input, select, textarea, summary, label');
+        if (ctl && ctl !== it && !ctl.hasAttribute('data-an-item')) return;
+        this.selectAnalysisItem(it.getAttribute('data-an-item') as string);
       });
-      // an object named in a result (a hop's device, interface, cable …) selects it, as in the right-hand panel (#side's own)
-      if (!box.closest('#side'))
-        box.addEventListener('click', (e) => {
-          const go = (e.target as Element).closest('[data-goto]');
-          if (go && this.ws === 'analyze') this.select(go.getAttribute('data-goto') as string, true);
-        });
+      box.addEventListener('keydown', (e) => {
+        if (this.ws !== 'analyze' || (e.key !== 'Enter' && e.key !== ' ')) return;
+        const t = e.target as HTMLElement;
+        if (!t.hasAttribute('data-an-item') || t.tagName === 'BUTTON') return;
+        e.preventDefault();
+        this.selectAnalysisItem(t.getAttribute('data-an-item') as string);
+      });
     }
     this.tw = new ToolWindows(doc, () => {
       if (this.splitter) this.splitter.sync();

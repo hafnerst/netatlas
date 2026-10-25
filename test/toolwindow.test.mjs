@@ -33,7 +33,7 @@ async function waitReady(page) {
 }
 
 const REGION = `(() => { const a = document.activeElement; for (const id of ['outline', 'canvas-wrap', 'side', 'sim-paneltabs', 'sim-dock', 'toolwin']) { const r = document.getElementById(id); if (r && r.contains(a)) return id; } return a === document.body ? 'body' : a.id; })()`;
-const WS = `({ ws: netatlas.workspace(), tool: netatlas.analyzeTool(), active: document.activeElement.id, trace: !!netatlas.currentTrace() })`;
+const WS = `({ ws: netatlas.workspace(), tool: netatlas.analyzeTask(), active: document.activeElement.id, trace: !!netatlas.currentTrace() })`;
 
 test('Analyze with real keys: T enters Trace path with the keyboard in its form; F6 and Shift+F6 go region by region (left, diagram, right, results) and back to where the focus was; Esc in a field stays, Esc in the diagram leaves', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
@@ -43,7 +43,7 @@ test('Analyze with real keys: T enters Trace path with the keyboard in its form;
     await page.eval(`document.getElementById('canvas').focus(), true`);
     await page.key('t', 'KeyT', 84);
     await page.settle(100);
-    assert.deepEqual(await page.eval(WS), { ws: 'analyze', tool: 'trace', active: 'trace-from', trace: false });
+    assert.deepEqual(await page.eval(WS), { ws: 'analyze', tool: 'communication', active: 'trace-from', trace: false });
     const seq = [];
     for (let i = 0; i < 4; i++) {
       await page.key('F6', 'F6', 117);
@@ -68,22 +68,27 @@ test('Analyze with real keys: T enters Trace path with the keyboard in its form;
   }
 });
 
-test('Shift+F with real keys: Focus in Analyze, focused at once, the keyboard on the hops in effect; Esc in the diagram ends the focus first, a second Esc leaves Analyze', { skip, timeout: 120000 }, async () => {
+test('Shift+F with real keys: Focus, a view aid of every workspace, in its tool window — focused at once, the keyboard on the hops in effect; Esc in the diagram ends the focus; inside Analyze it never takes a task’s place', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.eval(`localStorage.clear(), netatlas.loadExample(0), netatlas.setView('physical'), netatlas.select('device:hq-fw', true), document.getElementById('canvas').focus(), true`);
     await page.settle(150);
-    const st = () => page.eval(`({ tool: netatlas.analyzeTool(), on: !document.getElementById('mb-focus').hidden, hops: document.activeElement.getAttribute('data-focus-hops'), checked: document.activeElement.getAttribute('aria-checked') })`);
+    const st = () => page.eval(`({ ws: netatlas.workspace(), win: netatlas.toolWindow(), on: !document.getElementById('mb-focus').hidden, hops: document.activeElement.getAttribute('data-focus-hops'), checked: document.activeElement.getAttribute('aria-checked') })`);
     await page.key('F', 'KeyF', 70, 8);
     await page.settle(150);
-    assert.deepEqual(await st(), { tool: 'focus', on: true, hops: '1', checked: 'true' });
+    assert.deepEqual(await st(), { ws: 'edit', win: 'focus', on: true, hops: '1', checked: 'true' }, 'the Focus window in the editing workspace');
     await page.eval(`document.getElementById('canvas').focus(), true`);
     await page.key('Escape', 'Escape', 27);
     await page.settle(100);
-    assert.deepEqual(await st(), { tool: 'focus', on: false, hops: null, checked: null }, 'the focus ends; Analyze stays');
-    await page.key('Escape', 'Escape', 27);
-    await page.settle(100);
-    assert.equal((await st()).tool, '', 'then Analyze ends');
+    assert.deepEqual(await st(), { ws: 'edit', win: 'focus', on: false, hops: null, checked: null }, 'the focus ends; its window stays');
+    // in Analyze: the task in front stays; Focus is beside it
+    await page.eval(`netatlas.closeToolWindow(), netatlas.runCommand('analyze.addressing'), netatlas.select('device:hq-fw', true), true`);
+    await page.settle(150);
+    await page.eval(`document.getElementById('canvas').focus(), true`);
+    await page.key('F', 'KeyF', 70, 8);
+    await page.settle(150);
+    const a = await st();
+    assert.deepEqual([a.ws, a.win, a.on, await page.eval(`netatlas.analyzeTask()`)], ['analyze', 'focus', true, 'addressing']);
   } finally {
     await page.close();
   }
@@ -100,6 +105,11 @@ test('the workspaces in narrow windows and at 200 % zoom: the panels as tabs und
         await page.eval(`Promise.resolve(${enter}).then(() => true)`);
         await page.settle(150);
         const where = `${W}px ${z * 100}% ${enter}`;
+        // (a narrow window: Analyze shows one working surface at a time — its results are a tab of their own)
+        if (W / z <= 860 && (await page.eval(`netatlas.workspace()`)) === 'analyze') {
+          await page.eval(`document.getElementById('spt-results').click(), true`);
+          await page.settle(80);
+        }
         const g = await page.eval(`(() => { const d = document.documentElement; const dock = document.getElementById('sim-dock').getBoundingClientRect(); const st = document.getElementById('status').getBoundingClientRect(); return { scroll: d.scrollWidth - d.clientWidth + d.scrollHeight - d.clientHeight, dockShown: dock.height > 0, dockAbove: dock.bottom <= st.top + 1, tabs: getComputedStyle(document.getElementById('sim-paneltabs')).display !== 'none', ws: netatlas.workspace(), exit: !!document.getElementById('ws-exit-banner') && document.getElementById('ws-exit-banner').getBoundingClientRect().width > 0 }; })()`);
         assert.ok(g.scroll === 0 && g.dockShown && g.dockAbove && g.exit, `${where}: ${JSON.stringify(g)}`);
         if (W / z <= 900) assert.ok(g.tabs, `${where}: the panels as tabs`);

@@ -241,7 +241,7 @@ export function handoffOf(model: Model, id: CommIdentity): Handoff | null {
   // the routing context: the simulation sends in the source interface's VRF
   const si = s.iface ? model.index.interfaces.get(s.device + ':' + s.iface) : undefined;
   if (id.request.vrf !== undefined && si && (si.vrf || '') !== id.request.vrf) not.push(`VRF: the simulation sends in the VRF of ${s.device}:${s.iface} (${si.vrf || 'the default table'}); the VRF chosen here (${id.request.vrf || 'the default table'}) can't be set for a send`);
-  not.push('Expected outcome: a send has none of its own; compare the result after it ran (Compare with simulation)');
+  not.push('Expected outcome: a send has none of its own; compare the result after it ran (Compare matching observation)');
   return { kind: 'send', device: s.device, prefill: pre, text: `Send ${svcText} from ${s.device} to ${pre.target || `${pre.to}:${pre.toIface}`} in the simulation (Network events → Send network packets)`, carried, notTransferred: not };
 }
 

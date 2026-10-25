@@ -1,6 +1,6 @@
-// The Analyze windows' content and what this version removed. Pure (no
-// browser): the Single points of failure table (rows, impact, sorting,
-// filtering, CSV, text), the Trace path table's columns, the commands of
+// The Analyze tasks' content and what this version removed. Pure (no
+// browser): the single-component failures table (rows, separate measures,
+// sorting, filtering, CSV, text), the hop table's columns, the commands of
 // the tool windows; and the removal of scenarios (a `scenarios:` key is an
 // unknown key), risk groups, X and the step keys. The windows themselves,
 // in a browser: test/toolwindow.test.mjs and the self-test.
@@ -17,7 +17,7 @@ const C = load('ui/commands.js');
 
 const wan = validate.loadModel(example('enterprise-wan.yaml')).model;
 
-test('Single points of failure: one row per point, with element, type, what it cuts off, the relations that go down and the impact, most impact first', () => {
+test('Single-component failures: one row per point, with element, type, what it cuts off and the relations that go down, each its own measure; the requirements first', () => {
   const rows = W.spofRows(wan, F.singlePointsOfFailure(wan));
   assert.ok(rows.length > 5);
   const fw = rows.find((r) => r.ref === 'device:hq-fw');
@@ -26,9 +26,15 @@ test('Single points of failure: one row per point, with element, type, what it c
   assert.equal(fw.impact, fw.devicesCut + fw.relationsDown);
   const lag = rows.find((r) => r.type === 'LAG');
   assert.match(lag.element, /\(2 cables\)$/);
-  // the default view: most impact first (ties keep the report's order)
+  // the default view: the most requirements no longer satisfied first; nothing checked yet, the report's order (ties keep it)
+  assert.deepEqual(W.newSpofViewState(), { sort: 'reqs', desc: true, filter: '' });
   const shown = W.shownSpofRows(rows, W.newSpofViewState());
-  assert.ok(shown.every((r, i) => i === 0 || shown[i - 1].impact >= r.impact));
+  assert.deepEqual(shown.map((r) => r.ref), rows.map((r) => r.ref));
+  assert.ok(rows.every((r) => r.reqs === null && r.service === null), 'not checked: null (Not evaluated), never 0');
+  assert.equal(W.measureText(null, null, true, ['requirement', 'requirements']), 'Checking');
+  assert.equal(W.measureText(null, null, false, ['requirement', 'requirements']), 'Not evaluated');
+  assert.equal(W.measureText(0, 0, false, ['requirement', 'requirements']), 'None affected');
+  assert.equal(W.measureText(2, 1, false, ['requirement', 'requirements']), '2 requirements; 1 indeterminate');
 });
 
 test('sorting by any column, both ways; filtering by words (all must occur)', () => {
@@ -41,22 +47,22 @@ test('sorting by any column, both ways; filtering by words (all must occur)', ()
   assert.deepEqual(types, types.slice().sort());
   assert.ok(by('relations', true).every((r, i, a) => i === 0 || a[i - 1].relationsDown >= r.relationsDown));
   assert.ok(by('cuts', false).every((r, i, a) => i === 0 || a[i - 1].devicesCut <= r.devicesCut));
-  const f = W.shownSpofRows(rows, { sort: 'impact', desc: true, filter: 'cable  ham' });
+  const f = W.shownSpofRows(rows, { sort: 'cuts', desc: true, filter: 'cable  ham' });
   assert.ok(f.length >= 1 && f.every((r) => r.type === 'Cable' && /ham/i.test(`${r.element} ${r.cuts} ${r.relations}`)));
-  assert.deepEqual(W.shownSpofRows(rows, { sort: 'impact', desc: true, filter: 'nothing-like-this' }), []);
+  assert.deepEqual(W.shownSpofRows(rows, { sort: 'cuts', desc: true, filter: 'nothing-like-this' }), []);
 });
 
 test('the table as CSV (quoted where needed) and as text', () => {
   const rows = W.spofRows(wan, F.singlePointsOfFailure(wan));
   const csv = W.spofCsv(rows);
   const lines = csv.trim().split('\n');
-  assert.equal(lines[0], 'element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,context');
+  assert.equal(lines[0], 'element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,requirements_unsatisfied,requirements,context');
   assert.equal(lines.length, rows.length + 1);
   assert.match(csv, /^hq-fw,Device,"hq-acc1, hq-core1, hq-core2, hq-log/m);
   const text = W.spofText(wan, rows);
-  assert.match(text, /^Single points of failure — Enterprise WAN — HQ and two branches over VPN\n\d+ single points of failure, most structural impact first\./);
-  assert.match(text, /Device hq-fw \(structural impact \d+\)\n  cuts off: hq-acc1, hq-core1, hq-core2, hq-log/);
-  assert.match(text, /  services unavailable: not checked\n/, 'the service impact is not claimed before it is checked');
+  assert.match(text, /^Resilience: single-component failures — Enterprise WAN — HQ and two branches over VPN\n\d+ single-component failures with an effect\./);
+  assert.match(text, /Device hq-fw\n  requirements no longer satisfied: Not evaluated\n  configured dependencies unavailable: Not evaluated\n  devices disconnected: \d+ \(hq-acc1, hq-core1, hq-core2, hq-log/);
+  assert.ok(!/structural impact/.test(text), 'no summed measure');
   // a model without any
   const ring = validate.loadModel(example('metro-ring.yaml')).model;
   const none = W.spofRows(ring, []);
@@ -68,7 +74,10 @@ test('Trace path: the hop table’s columns; the tool windows’ commands (F6, C
   const cmds = new Map(C.buildCommands().map((c) => [c.id, c]));
   assert.equal(C.keyLabel(cmds.get('window.focus').keys), 'F6');
   assert.equal(cmds.get('window.focus').keys.whileTyping, true, 'F6 works while typing in a field');
-  for (const id of ['analyze.addressing', 'focus.window', 'trace.open', 'analyze.spof', 'analyze.checks', 'sim.start']) assert.match(cmds.get(id).label, /…$/, id);
+  // (a command that opens a dialog or a tool window says so; one that opens a task of the Analyze workspace does not)
+  for (const id of ['focus.window', 'sim.start']) assert.match(cmds.get(id).label, /…$/, id);
+  for (const id of ['analyze.overview', 'analyze.addressing', 'trace.open', 'analyze.spof', 'analyze.whatif', 'analyze.capacity', 'analyze.checks', 'analyze.findings']) assert.doesNotMatch(cmds.get(id).label, /…$/, id);
+  assert.deepEqual(['trace.open', 'analyze.diagnose', 'analyze.spof', 'analyze.checks', 'analyze.addressing'].map((id) => cmds.get(id).label), ['Communication', 'Diagnose selected communication', 'Resilience: single-component failures', 'Design review: requirements', 'Addressing']);
   assert.equal(C.keyLabel(cmds.get('analyze.addressing').keys), 'I');
   assert.equal(C.keyLabel(cmds.get('focus.window').keys), 'Shift+F');
   assert.equal(C.keyLabel(cmds.get('trace.open').keys), 'T');
