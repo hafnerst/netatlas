@@ -1,30 +1,11 @@
 /**
- * Resilience (Analyze → Resilience): what stops working when components
- * become unavailable, in three modes that share the question / results /
- * evidence layout of the Analyze workspace.
- *
- *   Single-component failures  every cable, device and LAG (and for guests
- *       their hosts, a virtual switch with one uplink, a passthrough port)
- *       failing alone, with separate measures — the saved requirements no
- *       longer satisfied, the configured dependencies unavailable, the
- *       devices disconnected, the relations down — and a status. No measure
- *       is added to another: none is a business criticality. Each value is
- *       explicit: None affected, Not evaluated, Checking, Indeterminate.
- *       The service and requirement impact is checked progressively and
- *       cancellably; the table can be sorted and filtered, and a selected
- *       row stays selected (by its object) while the check goes on.
- *   Failure scenario  a failure domain or a few components failing
- *       together, compared with the same baseline: the condition, what
- *       becomes unavailable, what survives through an alternative, the
- *       requirements affected, the structure, device pairs, capacity, the
- *       limits. Failure domains are administered in an explicit editor.
- *   Capacity  the stated demands against the stated capacity (the existing
- *       capacity analysis), with or without a failure condition: demand,
- *       capacity, the resource and direction that decide, the bounds of an
- *       equal split and of all on one path, what is missing.
- *
- * spofRows, spofCsv, spofText and whatIfText are pure (no DOM); the parts
- * are built from elements and text nodes only.
+ * Resilience (Analyze → Resilience) in three modes: single-component
+ * failures (separate measures — requirements, configured dependencies,
+ * devices, relations — none summed, each value explicit; checked
+ * progressively and cancellably), a failure scenario (a domain or a few
+ * components against the same baseline; failure domains in an explicit
+ * editor) and capacity (the stated demands against the stated speeds, with
+ * or without a failure). spofRows, spofCsv, spofText and whatIfText are pure.
  */
 import { DEP_CHANGE_TEXT, DEP_LABEL, DepChange } from '../analysis/dependencies';
 import { Spof, SpofCandidate, refLabel } from '../analysis/failure';

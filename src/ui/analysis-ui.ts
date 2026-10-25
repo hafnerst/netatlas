@@ -1,12 +1,7 @@
 /**
- * The parts every Analyze task shares: the context (configured model or
- * frozen simulation snapshot, a hypothetical failure or a recorded exchange
- * on top, the scope, when it was computed, whether the result is outdated —
- * with Refresh —, a draft question, incomplete coverage, missing evidence),
- * the choice between the configured model and a snapshot while a simulation
- * runs, a verdict line (a mark and words, never colour alone), and the
- * assumptions and limits behind an expansion. Built from elements
- * and text nodes only; the meanings are analysis/result.ts's.
+ * The parts every Analyze task shares: the context line (next source, result
+ * shown with its layers and time, draft, outdated, incomplete, evidence
+ * limited), verdict lines and chips, coverage, assumptions and limits.
  */
 import { AnalysisContext, Coverage, ResultInfo, Verdict, VerdictTone, coverageText, simTimeText, verdictMark, verdictText } from '../analysis/result';
 import { el } from './dom';

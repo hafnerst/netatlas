@@ -3775,14 +3775,7 @@ export class App {
       const base = pictureBaseName(this.mdoc.fileName) + '-single-points-of-failure';
       const info = this.spofView().info;
       const ctx = contextText(info.context) + (info.coverage ? ' · ' + coverageText(info.coverage) : '');
-      const text = (): string => spofText(s.model, shown, { info, version: this.appVersion(), outdated: this.outdatedSince(this.spofJobNow().model) });
-      if (kind === 'csv-copy') void this.copyText(spofCsv(shown, ctx), 'The single-component failures were copied as CSV.');
-      else if (kind === 'text-copy') void this.copyText(text(), 'The single-component failures were copied as text.');
-      else {
-        const csv = kind === 'csv-save';
-        downloadText(this.doc, csv ? spofCsv(shown, ctx) : text(), base + (csv ? '.csv' : '.txt'), csv ? 'text/csv' : 'text/plain');
-        this.toast(`Exported “${base}${csv ? '.csv' : '.txt'}”.`);
-      }
+      this.exportOut(kind, base, 'The single-component failures', () => spofText(s.model, shown, { info, version: this.appVersion(), outdated: this.outdatedSince(this.spofJobNow().model) }), () => spofCsv(shown, ctx));
     });
     const e = this.anEvidence(this.spofEvidenceNow(), 'Select a row to see what its failure affects: the requirements, the configured dependencies, the devices and relations.');
     return { left, bottom, ...e };
@@ -3814,13 +3807,7 @@ export class App {
         const w = this.wiRun;
         const s = this.session as Session;
         if (!w || !this.mdoc) return;
-        const text = whatIfText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result);
-        if (kind === 'copy') void this.copyText(text, 'The failure scenario was copied as text.');
-        else {
-          const name = pictureBaseName(this.mdoc.fileName) + '-what-if.txt';
-          downloadText(this.doc, text, name, 'text/plain');
-          this.toast(`Exported “${name}”.`);
-        }
+        this.exportOut('text-' + kind, pictureBaseName(this.mdoc.fileName) + '-what-if', 'The failure scenario', () => whatIfText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result));
       },
       domains: () => this.openDomainsEditor(),
       capRun: () => this.runCapacity(),
@@ -5009,6 +4996,18 @@ export class App {
     return contextText(r.context) + (this.outdatedSince(r.model) ? ' (outdated)' : '') + (this.appVersion() ? ' · NetAtlas ' + this.appVersion() : '');
   }
 
+  /** An export of a result (kind: csv- or text-, then copy or save): on the clipboard, or downloaded as "<base>.csv" / ".txt". */
+  private exportOut(kind: string, base: string, what: string, text: () => string, csv?: () => string): void {
+    const isCsv = kind.indexOf('csv') === 0 && !!csv;
+    const body = isCsv ? (csv as () => string)() : text();
+    if (/copy$/.test(kind)) void this.copyText(body, `${what} ${/s$/.test(what) ? 'were' : 'was'} copied as ${isCsv ? 'CSV' : 'text'}.`);
+    else {
+      const name = base + (isCsv ? '.csv' : '.txt');
+      downloadText(this.doc, body, name, isCsv ? 'text/csv' : 'text/plain');
+      this.toast(`Exported “${name}”.`);
+    }
+  }
+
   /** Put text on the clipboard; where the browser refuses, say so (or save it as a file, when `orSave` is given). */
   private async copyText(text: string, done: string, orSave?: () => void): Promise<void> {
     const nav = this.doc.defaultView ? this.doc.defaultView.navigator : null;
@@ -5137,16 +5136,7 @@ export class App {
         const run = this.dcRun;
         if (!run || !this.mdoc) return;
         const outdated = this.outdatedSince(run.model);
-        const base = pictureBaseName(this.mdoc.fileName) + '-design-checks';
-        const text = (): string => designText({ title: s.model.title, version: this.appVersion(), outdated }, s.model, run.run);
-        const csv = (): string => designCsv(s.model, run.run, outdated);
-        if (kind === 'text-copy') void this.copyText(text(), 'The requirements were copied as text.');
-        else if (kind === 'csv-copy') void this.copyText(csv(), 'The requirements were copied as CSV.');
-        else {
-          const isCsv = kind === 'csv-save';
-          downloadText(this.doc, isCsv ? csv() : text(), base + (isCsv ? '.csv' : '.txt'), isCsv ? 'text/csv' : 'text/plain');
-          this.toast(`Exported “${base}${isCsv ? '.csv' : '.txt'}”.`);
-        }
+        this.exportOut(kind, pictureBaseName(this.mdoc.fileName) + '-design-checks', 'The requirements', () => designText({ title: s.model.title, version: this.appVersion(), outdated }, s.model, run.run), () => designCsv(s.model, run.run, outdated));
       },
     };
   }

@@ -1,30 +1,8 @@
 /**
- * The Analyze overview (Analyze → Overview): where an investigation starts,
- * not another analysis. It reuses what is known and computes nothing on
- * opening.
- *
- *   overviewRequest   the starting questions (one per task, with what it
- *                     answers), starting points from the selection, and the
- *                     component being explored (a subject chosen on purpose:
- *                     selecting another object does not replace it);
- *   overviewResults   what is known about this model — saved requirements
- *                     and whether (and how) they were evaluated, the
- *                     consistency findings, invalid model input, results
- *                     outdated by an edit, the interfaces whose addresses
- *                     are assigned at run time (questions about them need a
- *                     snapshot) — each count with its context and state
- *                     (not evaluated is never passed); the component's
- *                     dependencies (Depends on, Used by, Failure affects);
- *                     the recent and pinned results;
- *   history entries   a bounded, session-local record of the questions
- *                     answered: the question, its context and scope, the
- *                     model's fingerprint, when it was computed (or the
- *                     snapshot's time), the selection, and whether it is
- *                     outdated or evidence-limited. Reopened, a result is
- *                     shown as it was computed; a pinned result does not keep
- *                     a simulation's records alive.
- *
- * Built from elements and text nodes only.
+ * The Analyze overview: the starting questions, what is known about the
+ * model (from results already computed: nothing is computed on opening), a
+ * component's dependencies (Depends on, Used by, Failure affects) and the
+ * session's bounded recent and pinned results. Elements and text nodes only.
  */
 import { AnalysisContext, contextText } from '../analysis/result';
 import { DEP_CHANGE_TEXT, DEP_LABEL, DepChange, ServiceDependency } from '../analysis/dependencies';

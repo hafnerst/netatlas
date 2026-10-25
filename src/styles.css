@@ -901,10 +901,6 @@ dialog#modal.help-manual .modal-inner { height: 100%; max-height: none; padding:
 dialog#modal.help-manual .modal-body { max-height: none; display: flex; flex-direction: column; }
 dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
 /* Analyze → Addressing overview: as large as the window; its tables scroll inside the dialog (sideways inside each table) */
-dialog#modal.addr-dialog { max-width: 1320px; width: calc(100% - 24px); height: calc(100vh - 24px); height: calc(100dvh - 24px); }
-dialog#modal.addr-dialog .modal-inner { height: 100%; max-height: none; padding: 14px 16px 12px; }
-dialog#modal.addr-dialog .modal-body { max-height: none; overscroll-behavior: contain; }
-dialog#modal.addr-dialog .modal-btns { margin-top: 10px; }
 .addr-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 4px; }
 .addr-controls input[type="search"] { flex: 1 1 220px; min-width: 0; max-width: 420px; }
 .addr-vrf { margin: 10px 0 14px; }
@@ -1298,8 +1294,6 @@ table.hop-table tr.hop-under th, table.hop-table tr.hop-under td:nth-child(2) { 
 table.hop-table tr.hop-under { font-style: italic; }
 .trace-section { margin-top: 6px; border-top: 1px solid var(--border); }
 /* the Single points of failure window */
-.spof-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
-.spof-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
 .spof-out { display: flex; flex-wrap: wrap; gap: 4px; }
 table.spof-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 table.spof-table th, table.spof-table td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
@@ -1340,7 +1334,6 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 /* the diagnosis of a communication (Trace path): the answer, then its evidence */
 .diag { border-left: 3px solid var(--border); padding-left: 10px; }
 .diag h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.diag-h4 { margin: 8px 0 2px; font-size: 12.5px; }
 .diag-list { margin: 2px 0 6px; padding-left: 18px; }
 .diag-list > li { margin: 3px 0; overflow-wrap: anywhere; }
 .diag-rel { font-size: 11px; }
@@ -1357,7 +1350,6 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .trace-end.beyond { color: var(--warn); }
 .hop-table .why-btn { display: block; margin-top: 2px; font-size: 11px; padding: 0 4px; white-space: nowrap; }
 .hop-table th.th-n { white-space: nowrap; }
-table.hop-table tr.hop-why td { background: var(--raised); border-bottom-style: dashed; }
 .why-box { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 2px 0; }
 .why-box dt { color: var(--muted); font-weight: 600; }
 .why-box dd { margin: 0; overflow-wrap: anywhere; }
@@ -1371,7 +1363,6 @@ table.hop-table tr.hop-why td { background: var(--raised); border-bottom-style: 
 /* Design checks */
 .dc-section { margin-top: 6px; }
 .dc-table th .dc-name { font-weight: 600; }
-.dc-detail-box { padding: 4px 0 6px; }
 .dc-shared-box { margin: 6px 0; padding: 4px 8px; border-left: 3px solid var(--warn); background: var(--raised); }
 .dc-shared { margin: 2px 0; padding-left: 18px; }
 .dc-form { border: 1px solid var(--border); border-radius: 6px; padding: 8px; }

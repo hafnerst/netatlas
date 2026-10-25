@@ -1,28 +1,10 @@
 /**
- * Design review (Analyze → Design review): two things kept apart.
- *
- *   Findings      what the consistency checks (analysis/checks.ts, the one
- *                 catalog) find in the model, with the model's own input
- *                 problems (invalid model input) listed first: filtered by
- *                 category, severity and object; each finding's consequence,
- *                 evidence and next step in the evidence panel. Findings
- *                 that name the same object and field are shown together as
- *                 possibly one cause — related, not an established shared
- *                 cause. "No findings" says which checks ran and which the
- *                 model switches off.
- *   Requirements  the expectations saved with the model, user-authored and
- *                 evaluated only when asked (statically: nothing is sent),
- *                 with their verdicts and reasons, the shared stop points of
- *                 those that fail, and an explicit editor (its own title,
- *                 Save changes, Cancel). An isolation requirement says in the
- *                 editor's first fields how it must be enforced: no
- *                 communication possible, a modeled policy must deny it, or
- *                 a named boundary must deny it — a missing route or an
- *                 absent listener is never taken for policy enforcement.
- *
- * The text and CSV exports carry the context. Built from elements and text
- * nodes only; the data comes from analysis/expectations.ts and
- * analysis/findings.ts.
+ * Design review (Analyze → Design review): Findings (the consistency checks'
+ * catalog, invalid model input apart, filters, coverage; findings at one
+ * place are related, not an established shared cause) and Requirements (the
+ * saved expectations, evaluated only when asked, with an explicit editor in
+ * which an isolation requirement says how it must be enforced). Text and CSV
+ * exports carry the context.
  */
 import { ExpectationResult, ExpectationRun, sharedStops } from '../analysis/expectations';
 import { CLASS_TEXT, FindingClass, FindingGroup, PresentedFinding } from '../analysis/findings';

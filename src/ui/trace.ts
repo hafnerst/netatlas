@@ -1,37 +1,12 @@
 /**
- * Communication (Analyze → Communication, T): one question-to-answer
- * workflow, drawn as three parts the Analyze workspace lays out.
- *
- *   commRequest   the question (left): From and To, searchable over the
- *                 model's devices, interfaces, exact addresses, applications,
- *                 services and host names, each with how it binds (an exact
- *                 address, an interface's effective address, an
- *                 application's configured peer, a host name resolved when
- *                 sent); the service; under Advanced options the VRF, the
- *                 family (Automatic family: the ends' own) and the return
- *                 direction; one primary action, Check communication.
- *   commResults   the answer and its results (bottom), in this order: the
- *                 answer (the diagnosis' state and summary, once) and what
- *                 was evaluated; the next steps (they prefill or open, never
- *                 send); what is established, layer by layer; the main
- *                 blocker or limitation; the runtime observation when one is
- *                 attached; then the paths and detailed evidence — the main
- *                 path, each equal-cost alternative, a protocol break's
- *                 second leg, the separate legs, the return direction, the
- *                 path MTU, the evidence chain, what the simulation gets.
- *   commEvidence  the evidence of the item selected in the results (right):
- *                 a layer, a blocker, a path, a hop (its decision evidence),
- *                 a policy decision (the device's rules as they were when
- *                 diagnosed, the deciding one marked).
- *
- * Every selectable item of the results carries data-an-item (its key);
- * selecting one only shows its evidence: nothing is computed again, no clock
- * moves. A piece of evidence is a link (data-diag-ref) to the object, rule,
- * layer, packet, message or event it names. The runtime layer is a
- * limitation of static analysis: it is shown as one, never selected as if it
- * were a failed prerequisite. Built from elements and text nodes only; the
- * data comes from analysis/communication.ts, analysis/trace.ts and
- * analysis/diagnosis.ts.
+ * Communication (Analyze → Communication, T) in three parts: commRequest
+ * (the question: searchable ends with how they bind, the service, Advanced
+ * options), commResults (the answer once, the next steps, what is
+ * established, the main blocker, the runtime observation, then the paths
+ * and detailed evidence) and commEvidence (the selected layer, blocker,
+ * path, hop or policy decision). Selectable items carry data-an-item;
+ * selecting computes nothing. The runtime layer is a limitation of static
+ * analysis, never a default selection. Elements and text nodes only.
  */
 import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, HopWhy, Path, Trace, TraceRequest, encapText, endStatus, endText, outcomeLines, pathRefs, traceOutcome, traceText } from '../analysis/trace';

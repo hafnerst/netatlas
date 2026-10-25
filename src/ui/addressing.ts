@@ -1,18 +1,10 @@
 /**
- * Addressing (Analyze → Addressing, I): the networks of each VRF as a
- * compact table (nested by containing prefix) with host use and how the
- * address space is allocated (configured, reserved, acquired in a snapshot,
- * DHCP pools, nested networks, unallocated in the model); then the issues —
- * confirmed and possible conflicts (in the scope the model establishes),
- * reuse the model separates (legitimate, not a conflict), overlapping
- * prefixes and addresses outside the declared networks. The question (left)
- * filters by text and by issue (All networks, Conflicts, Overlaps, Outside
- * declared networks); a row or an issue shows its details in the evidence
- * panel (members, pools and reservations, the allocation, the unallocated
- * ranges, the conflict's evidence); a row's members can still be expanded in
- * place. The table can be copied or saved as CSV. "Unallocated in model" is
- * never a claim that an address is free in the real network. Built from text
- * nodes and elements only; the data comes from analysis/addressing.ts.
+ * Addressing (Analyze → Addressing, I): the networks of each VRF as a compact
+ * table (nested by prefix) with use and allocation, then the issues —
+ * confirmed and possible conflicts, legitimate reuse, overlaps, addresses
+ * outside the declared networks — filtered by text and by issue; a network's
+ * or an issue's details in the evidence panel. "Unallocated in model" is
+ * never "free in the real network".
  */
 import { AddressingOverview, NetEntry, VrfGroup, countText } from '../analysis/addressing';
 import { rangeText } from '../analysis/ipmath';

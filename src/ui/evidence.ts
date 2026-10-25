@@ -1,21 +1,8 @@
 /**
- * The parts every task of the Analyze workspace shares, so that the four
- * tasks read alike:
- *
- *   taskNav       the task areas at the top of the Question panel (a radio
- *                 group; the arrow keys move between them), and a mode
- *                 switch inside a task (Resilience, Design review);
- *   evidencePanel the right panel's one structure for whatever is selected
- *                 in the results — what it is, the result's context, the
- *                 explanation, the evidence and decisions, the objects it
- *                 concerns (with the diagram actions Locate, Fit, Show only
- *                 and Restore), what to inspect next, and Back / Close;
- *   editorPanel   an editor in the right panel says it is one: its own title,
- *                 what saving does, Save changes and Cancel;
- *   evidenceHint  what the right panel says while nothing is selected.
- *
- * Rendering never computes an analysis: each part draws what it is given.
- * Built from elements and text nodes only.
+ * The parts every Analyze task shares: the evidence panel (what the selected
+ * item is, its context, explanation, evidence, objects with the diagram
+ * actions, what to inspect next, Back and Close), an explicit editor panel,
+ * the empty hint and a radio-group navigation. Rendering computes nothing.
  */
 import { el } from './dom';
 
