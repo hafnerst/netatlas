@@ -525,7 +525,7 @@ test('single points of failure: structural candidates and the service impact of 
   assert.equal(r.impact, 0);
   assert.equal(r.service, 2);
   assert.match(r.serviceText, /Name resolution: pc/);
-  assert.match(US.spofCsv(rows, 'ctx'), /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,context\n/);
+  assert.match(US.spofCsv(rows, 'ctx'), /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,requirements_unsatisfied,requirements,context\n/);
 });
 
 // ------------------------------------------------------------ saved expectations
@@ -679,7 +679,7 @@ test('exports: the trace text carries the context, the verdict and its layers, t
   const m = model(corp);
   const check = C.checkCommunication(m, { from: 'pc', to: 'srv', service: 'tcp/22' });
   const text = UT.traceExportText({ title: m.title, version: '9.9.9', outdated: true }, { req: check.trace.request, check, trace: check.trace, back: null });
-  assert.match(text, /^Trace path — Analyze fixture\nContext: Configured model · Selected endpoints \(outdated: the model changed after this result\)\nNetAtlas 9\.9\.9\n/);
+  assert.match(text, /^Communication — Analyze fixture\nContext: Configured model · Selected endpoints \(outdated: the model changed after this result\)\nNetAtlas 9\.9\.9\n/);
   assert.match(text, /Verdict: Blocked by policy/);
   assert.match(text, /Policy: violated — Denied at fw/);
   assert.match(text, /Assumptions:\n  - Evaluates the configuration/);

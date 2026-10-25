@@ -49,7 +49,7 @@ async function waitReady(page) {
   }
 }
 
-const ST = `({ ws: netatlas.workspace(), tool: netatlas.analyzeTool(), active: document.activeElement.id, inDiag: !!document.activeElement.closest('#diag'), state: (document.getElementById('diag') || { getAttribute: () => null }).getAttribute('data-state'), sel: netatlas.session ? netatlas.session.state.selected : null })`;
+const ST = `({ ws: netatlas.workspace(), tool: netatlas.analyzeTask(), active: document.activeElement.id, inDiag: !!document.activeElement.closest('#diag'), state: (document.getElementById('diag') || { getAttribute: () => null }).getAttribute('data-state'), sel: netatlas.session ? netatlas.session.state.selected : null })`;
 
 test('Shift+D with real keys: the selected device’s client application is diagnosed at once, the keyboard on the answer; Tab reaches its evidence; leaving Analyze keeps the selection', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
@@ -61,7 +61,7 @@ test('Shift+D with real keys: the selected device’s client application is diag
     await page.key('D', 'KeyD', 68, 8);
     await page.settle(200);
     const st = await page.eval(ST);
-    assert.deepEqual([st.ws, st.tool, st.active, st.state], ['analyze', 'trace', 'diag-summary', 'blocked'], JSON.stringify(st) + ' ' + (await page.eval(`JSON.stringify([netatlas.currentTrace().check.request, netatlas.currentTrace().check.headline, netatlas.currentTrace().check.info.context])`)));
+    assert.deepEqual([st.ws, st.tool, st.active, st.state], ['analyze', 'communication', 'diag-summary', 'blocked'], JSON.stringify(st) + ' ' + (await page.eval(`JSON.stringify([netatlas.currentTrace().check.request, netatlas.currentTrace().check.headline, netatlas.currentTrace().check.info.context])`)));
     assert.match(await page.eval(`document.getElementById('diag-question').textContent`), /pc:eth0 · 10\.0\.1\.10/);
     // Tab: from the answer into its evidence (a link to the rule or the device) and its next actions
     let reached = false;

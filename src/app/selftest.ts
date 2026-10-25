@@ -1210,7 +1210,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const undoBefore = (q('#btn-undo') as HTMLButtonElement).disabled;
       const entry = q('#btn-addressing') as HTMLButtonElement;
-      check('Analyze → Addressing overview… is in the menu with its key, enabled with a model', !!entry && !entry.disabled && /Addressing overview…/.test(entry.textContent || '') && /\bI\b/.test(entry.textContent || '') && entry.closest('#analyze-menu') !== null);
+      check('Analyze → Addressing is in the menu with its key, enabled with a model; it opens the workspace, not a dialog', !!entry && !entry.disabled && /^Addressing$/.test((entry.querySelector('.mi-label') as HTMLElement).textContent || '') && (entry.querySelector('.mi-hint') as HTMLElement).textContent === 'I' && entry.closest('#analyze-menu') !== null && !entry.hasAttribute('aria-haspopup'));
       click('#analyze-btn');
       entry.click();
       await tick();
@@ -1223,7 +1223,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, hosts, allocation, the next unallocated address and the unallocated ranges; the context line says what it evaluates; the filter has the focus',
         dlgOpen() && rows().length === listings && doc.querySelectorAll(':is(#toolwin, [data-an-root]) .addr-vrf').length === ov.vrfs.length && /Default table/.test(q(':is(#toolwin, [data-an-root]) .addr-vrf h3')!.textContent || '') &&
           ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Hosts', 'Allocated', 'Next unallocated', 'Unallocated in model'].every((h) => (q(':is(#toolwin, [data-an-root]) .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
-          /^Context: Configured model · Entire architecture$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') &&
+          /^Result shown: Configured model · Entire architecture · computed \d\d:\d\d:\d\d$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') &&
           doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /1\.2 %/.test(q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q(':is(#toolwin, [data-an-root]) .addr-row[data-addr-net="corp6"]')!.textContent || ''),
         `${rows().length} rows / ${listings}`,
       );
@@ -1291,6 +1291,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check('Esc inside the panels (here: the filter) never leaves Analyze', dlgOpen());
       (q('#canvas') as unknown as HTMLElement).focus();
+      // (layered: the network still selected from before — its evidence kept across leaving and coming back — is let go first)
+      check('coming back keeps the network selected and its evidence on the right', app.analyzeSelection() === 'net:|corp' && !!q('#ws-an-right #an-detail[data-ev-kind="Network"]'), app.analyzeSelection());
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc in the diagram first lets the selected evidence go; Analyze stays', dlgOpen() && app.analyzeSelection() === '' && !!q('#ws-an-right .an-ev-empty'));
+      (q('#canvas') as unknown as HTMLElement).focus();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check('Esc in the diagram leaves it (the editing panels again); the model is unchanged and no undo step was added', !dlgOpen() && app.workspace() === 'edit' && !!q('#outline-body') && app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled === undoBefore);
@@ -1355,8 +1361,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           doc.querySelectorAll('#palette-list [role="option"]').length >= 20 && /results?\./.test(q('#palette-status')!.textContent || '') && /Ctrl\+S/.test(list.textContent || '') && !!activeOpt() && activeOpt()!.getAttribute('aria-selected') === 'true',
         `${doc.querySelectorAll('#palette-list [role="option"]').length} options; ${q('#palette-status') ? q('#palette-status')!.textContent : ''}`,
       );
-      await type('adrs ovr');
-      check('fuzzy matching: “adrs ovr” finds the Addressing overview, highlighted first', /Addressing overview/.test(activeOpt() ? activeOpt()!.textContent || '' : ''), activeOpt() ? activeOpt()!.textContent || '' : 'none');
+      await type('adrsng');
+      check('fuzzy matching: “adrsng” finds Addressing, highlighted first', /^Addressing/.test(activeOpt() ? activeOpt()!.textContent || '' : ''), activeOpt() ? activeOpt()!.textContent || '' : 'none');
       await type('exit focus');
       const disabled = q('#palette-list [role="option"][aria-disabled="true"]');
       check('an unavailable command is listed, disabled, with the reason', !!disabled && /Exit focus/.test(disabled.textContent || '') && /Unavailable: Focus mode is off/.test(disabled.textContent || ''));
@@ -1450,7 +1456,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check(
         'Esc exits focus (Analyze stays: a focus ends before it does): every device is back, at the positions it had; the focus banner row is gone; the selection stays',
-        (q('#mb-focus') as HTMLElement).hidden && app.analyzeTool() === 'focus' && all() === total && JSON.stringify(Array.from(app.session!.positionsFor('physical'))) === posBefore && app.session!.state.selected === 'device:hq-fw' && !app.session!.state.focus,
+        (q('#mb-focus') as HTMLElement).hidden && app.toolWindow() === 'focus' && all() === total && JSON.stringify(Array.from(app.session!.positionsFor('physical'))) === posBefore && app.session!.state.selected === 'device:hq-fw' && !app.session!.state.focus,
       );
       // through the palette as well
       app.runCommand('focus.enter');
@@ -1466,7 +1472,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check(
         'Analyze → Focus… opens the Focus window: the selected object, the hops as a radio group (the hops in effect checked), Focus and Exit focus; with a selection it focuses at once',
-        app.analyzeTool() === 'focus' && /hq-fw/.test(q(':is(#toolwin, [data-an-root]) .focus-sel')!.textContent || '') && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [role="radio"][data-focus-hops]').length === 3 && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [data-focus-hops][aria-checked="true"]').length === 1 && new RegExp('^' + q(':is(#toolwin, [data-an-root]) [data-focus-hops][aria-checked="true"]')!.getAttribute('data-focus-hops') + ' hops?$').test(q('#focus-hops')!.textContent || '') && !banner.hidden && !(q('#focus-exit-w') as HTMLButtonElement).disabled,
+        app.toolWindow() === 'focus' && /hq-fw/.test(q(':is(#toolwin, [data-an-root]) .focus-sel')!.textContent || '') && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [role="radio"][data-focus-hops]').length === 3 && doc.querySelectorAll(':is(#toolwin, [data-an-root]) [data-focus-hops][aria-checked="true"]').length === 1 && new RegExp('^' + q(':is(#toolwin, [data-an-root]) [data-focus-hops][aria-checked="true"]')!.getAttribute('data-focus-hops') + ' hops?$').test(q('#focus-hops')!.textContent || '') && !banner.hidden && !(q('#focus-exit-w') as HTMLButtonElement).disabled,
       );
       (q(':is(#toolwin, [data-an-root]) [data-focus-hops="1"]') as HTMLElement).focus();
       (q(':is(#toolwin, [data-an-root]) [data-focus-hops="1"]') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
@@ -1474,7 +1480,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('→ in the hops: 2 hops, at once in the diagram and the banner (the focus stays on the radio group)', /2 hops/.test(q('#focus-hops')!.textContent || '') && q(':is(#toolwin, [data-an-root]) [data-focus-hops="2"]')!.getAttribute('aria-checked') === 'true' && doc.activeElement === q(':is(#toolwin, [data-an-root]) [data-focus-hops="2"]'));
       (q('#focus-exit-w') as HTMLElement).click();
       await tick();
-      check('Exit focus in the window: the complete diagram; the Focus tool stays and says focus mode is off', (q('#mb-focus') as HTMLElement).hidden && app.analyzeTool() === 'focus' && /Focus mode is off/.test(q(':is(#toolwin, [data-an-root]) .focus-now')!.textContent || ''));
+      check('Exit focus in the window: the complete diagram; the Focus tool stays and says focus mode is off', (q('#mb-focus') as HTMLElement).hidden && app.toolWindow() === 'focus' && /Focus mode is off/.test(q(':is(#toolwin, [data-an-root]) .focus-now')!.textContent || ''));
       app.closeToolWindow();
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
@@ -1499,7 +1505,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const from = q('#trace-from') as HTMLInputElement;
       check(
         'T opens the Trace path window with its form: the selection fills From, the keyboard is in To',
-        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && app.analyzeTool() === 'trace' && q('[data-an-tool="trace"]')!.getAttribute('aria-checked') === 'true' && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]') && !!q('label[for="trace-back"]'),
+        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && app.analyzeTask() === 'communication' && q('[data-an-task="communication"]')!.getAttribute('aria-checked') === 'true' && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]') && !!q('label[for="trace-back"]'),
       );
       // an end that is not in the model: the form says why, nothing is traced
       const to = q('#trace-to') as HTMLInputElement;
@@ -1582,7 +1588,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#canvas') as unknown as HTMLElement).focus();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('Esc in the diagram ends the trace first: nothing is marked, its banner row is gone; Analyze stays with the form and its values', (q('#mb-trace') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && app.analyzeTool() === 'trace' && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
+      check('Esc in the diagram ends the trace first: nothing is marked, its banner row is gone; Analyze stays with the form and its values', (q('#mb-trace') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && app.analyzeTask() === 'communication' && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
       // the path stays marked only while Analyze is in front
       (q('#trace-go') as HTMLElement).click();
       await tick();
@@ -2225,8 +2231,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Diagnose communication…, Exit path trace, Single points of failure…, Design checks…; Simulate holds Start simulation…, Experiments… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open analyze.diagnose trace.exit analyze.spof analyze.checks' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit',
+        'Analyze holds Overview, Communication (with Diagnose selected communication and Clear path trace), Resilience (single-component failures, failure scenario, capacity), Design review (requirements, findings), Addressing, then Focus… and Exit focus; Simulate holds Start simulation…, Experiments… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.overview trace.open analyze.diagnose trace.exit analyze.spof analyze.whatif analyze.capacity analyze.checks analyze.findings analyze.addressing focus.window focus.exit' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit' && Array.from(doc.querySelectorAll('#analyze-menu [data-command]')).every((e) => (e.getAttribute('data-command') === 'focus.window') === e.hasAttribute('aria-haspopup')),
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -2243,19 +2249,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const left = q('#ws-an-left') as HTMLElement;
       const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('[data-an-root] .spof-table tbody tr')) as HTMLElement[];
       check(
-        'Analyze → Single points of failure… enters the Analyze workspace: its panels named (Analyze, Details, Analysis results), the banner with Exit Analyze, Analyze marked in the menu bar; the filter has the focus; no modal dialog',
-        app.analyzeTool() === 'spof' && app.workspace() === 'analyze' && q('#sim-setup-title')!.textContent === 'Analyze' && q('#sim-actions-title')!.textContent === 'Details' && q('#sim-dock-title')!.textContent === 'Analysis results' && !(q('#mb-ws') as HTMLElement).hidden && /Exit Analyze/.test(q('#ws-exit-banner')!.textContent || '') && q('#analyze-btn')!.getAttribute('aria-current') === 'true' && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open && q('[data-an-tool="spof"]')!.getAttribute('aria-checked') === 'true',
+        'Analyze → Resilience: single-component failures enters the Analyze workspace: its panels named (Question, Evidence, Answer and results), the banner with Exit Analyze, Analyze marked in the menu bar; the filter has the focus; no modal dialog',
+        app.analyzeTask() === 'resilience' && app.workspace() === 'analyze' && q('#sim-setup-title')!.textContent === 'Question' && q('#sim-actions-title')!.textContent === 'Evidence' && q('#sim-dock-title')!.textContent === 'Answer and results' && !(q('#mb-ws') as HTMLElement).hidden && /Exit Analyze/.test(q('#ws-exit-banner')!.textContent || '') && q('#analyze-btn')!.getAttribute('aria-current') === 'true' && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open && q('[data-an-task="resilience"]')!.getAttribute('aria-checked') === 'true',
       );
       // the service impact is checked in steps (the page stays usable): wait for it
       for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
       const heads = Array.from(doc.querySelectorAll('[data-an-root] .spof-table thead th')).map((h) => (h.textContent || '').replace(/[▲▼]/g, '').trim());
       check(
-        'what counts as a single point of failure is explained (on the left); the table at the bottom: element, type, cuts off, relations down, structural impact (most first), service impact, Show in diagram',
-        /cuts devices off, brings down relations/.test(left.textContent || '') && /an object count, not a business criticality or a probability/.test(left.textContent || '') && heads.slice(0, 6).join('|') === 'Element|Type|Cuts off|Relations down|Structural impact|Service impact' && app.spofServiceDone() && rows().length > 5 && q('[data-an-root] [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')) && !!q('#ws-an-dock .spof-table'),
+        'what is evaluated is explained (on the left); the table at the bottom has separate measures, none summed — requirements no longer satisfied (most first), configured dependencies unavailable, devices disconnected, relations unavailable — and a status; Show in diagram on each row',
+        /failing alone/.test(left.textContent || '') && /none is a business criticality or a probability/.test(left.textContent || '') && heads.slice(0, 7).join('|') === 'Element|Type|Requirements no longer satisfied|Configured dependencies unavailable|Devices disconnected|Relations unavailable|Status' && !heads.some((h) => /Structural impact/.test(h)) && app.spofServiceDone() && rows().length > 5 && q('[data-an-root] [data-spof-sort="reqs"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')) && !!q('#ws-an-dock .spof-table'),
         heads.join('|'),
       );
-      const impacts = rows().map((r) => parseInt((r.querySelector('td.num') as HTMLElement).textContent || '0', 10));
-      check('most impact first', impacts.every((v, i) => i === 0 || impacts[i - 1] >= v), impacts.join(','));
+      const measure = (r: HTMLElement): number => parseInt(((r.children[2] as HTMLElement).textContent || '').replace(/^None affected.*/, '0'), 10) || 0;
+      const impacts = rows().map(measure);
+      check('the most requirements no longer satisfied first; every value explicit (a count or None affected, never a bare dash)', impacts.every((v, i) => i === 0 || impacts[i - 1] >= v) && rows().every((r) => Array.from(r.querySelectorAll('td[data-measure]')).every((c) => /^(\d|None affected|Checking|Not evaluated)/.test((c.textContent || '').trim()))), impacts.join(','));
       (q('[data-an-root] [data-spof-sort="element"]') as HTMLElement).click();
       await tick();
       const names = rows().map((r) => (r.firstElementChild as HTMLElement).textContent || '');
@@ -2265,18 +2272,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       filter.value = 'hq-fw';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
-      check('the filter narrows the rows and says how many are shown; the focus stays in it', rows().length >= 1 && rows().length < impacts.length && rows().every((r) => /hq-fw/.test(r.textContent || '')) && / of \d+ single points of failure shown/.test(q('#spof-status')!.textContent || '') && doc.activeElement === filter);
+      check('the filter narrows the rows and says how many are shown; the focus stays in it', rows().length >= 1 && rows().length < impacts.length && rows().every((r) => /hq-fw/.test(r.textContent || '')) && / of \d+ single-component failures shown/.test(q('#spof-status')!.textContent || '') && doc.activeElement === filter);
       (q('[data-an-root] tr[data-spof="device:hq-fw"] [data-spof-show]') as HTMLElement).click();
       await tick();
-      check('Show in diagram selects it in the diagram; Analyze stays', app.session!.state.selected === 'device:hq-fw' && app.analyzeTool() === 'spof');
+      check('Show in diagram selects it in the diagram; Analyze stays', app.session!.state.selected === 'device:hq-fw' && app.analyzeTask() === 'resilience');
+      (q('[data-an-root] tr[data-spof="device:hq-fw"]') as HTMLElement).click();
+      await tick();
+      check('a row selected: what its failure affects in the evidence panel (the four measures apart), the row marked, its objects in the diagram', app.analyzeSelection() === 'spof:device:hq-fw' && q('#ws-an-right #an-detail')!.getAttribute('data-ev-kind') === 'Failure impact' && /Requirements no longer satisfied[\s\S]*Configured dependencies unavailable[\s\S]*Devices disconnected[\s\S]*Relations unavailable/.test(q('#ws-an-right #an-detail')!.textContent || '') && !!q('[data-an-root] tr[data-spof="device:hq-fw"].an-selected') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel'));
       (q('[data-an-root] tr[data-spof="device:hq-fw"] [data-spof-whatif]') as HTMLElement).click();
       await tick();
-      check('What if on a row: the comparison in the Details panel, its failed objects marked in the diagram', !!q('#ws-an-right #an-detail #wi-summary') && /hq-fw/.test(q('#ws-an-right #an-detail')!.textContent || '') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel'));
+      check('Scenario on a row: Failure scenario with the comparison in the results, its failed objects marked in the diagram; Back returns', app.analyzeMode() === 'scenario' && !!q('#ws-an-dock #wi-summary') && /hq-fw/.test(q('#ws-an-dock #wi-summary')!.textContent || '') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel') && /Back to Resilience/.test((q('#an-back') || { textContent: '' }).textContent || ''));
       filter.value = '';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
       const csv = spofCsv(spofRows(app.session!.model, singlePointsOfFailure(app.session!.model)));
-      check('the table as CSV: a header and a line per structural single point', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,context\n/.test(csv) && csv.trim().split('\n').length === singlePointsOfFailure(app.session!.model).length + 1);
+      check('the table as CSV: a header and a line per structural single point', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,structural_impact,services_unavailable,service_impact,requirements_unsatisfied,requirements,context\n/.test(csv) && csv.trim().split('\n').length === singlePointsOfFailure(app.session!.model).length + 1);
       // F6 / Shift+F6: the focus region by region: the right panel, the bottom panel, the left panel, the diagram
       (q('#canvas') as unknown as HTMLElement).focus();
       const regionOf = (): string => (['outline', 'canvas-wrap', 'side', 'sim-dock', 'toolwin'].find((id) => (q('#' + id) as HTMLElement).contains(doc.activeElement)) || 'none');
@@ -6087,23 +6097,24 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const verdict = q('#trace-verdict') as HTMLElement | null;
       const layers = Array.from(doc.querySelectorAll(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer]')).map((l) => `${l.getAttribute('data-layer')}:${(l.className.match(/v-(\w+)/) || [])[1]}`);
       check(
-        'Trace path: an application end takes its peer’s transport and port; the verdict comes first (a mark and words), then the layers: addresses, path, policy, listener, and runtime behaviour as not established',
-        !!verdict && verdict.getAttribute('data-verdict') === 'satisfied' && verdict.getAttribute('role') === 'status' && /Reachable within scope/.test(verdict.textContent || '') && layers.join(' ') === 'address:satisfied path:satisfied policy:satisfied listener:satisfied runtime:unsupported' && /TCP 502 \(the listener plc\/registers\)/.test(q(':is(#toolwin, [data-an-root]) .trace-ends')!.textContent || ''),
+        'Communication: an application end takes its peer’s transport and port; the answer once, what is established (the static verdict, a mark and words, then the layers: addresses, path, policy, listener), and runtime behaviour said as a limitation of static analysis, not as a failed layer',
+        !!verdict && verdict.getAttribute('data-verdict') === 'satisfied' && verdict.getAttribute('role') === 'status' && /Reachable within scope/.test(verdict.textContent || '') && layers.join(' ') === 'address:satisfied path:satisfied policy:satisfied listener:satisfied' && /^Runtime limitation: /.test(q('#an-runtime-limit')!.textContent || '') && /TCP 502 \(the listener plc\/registers\)/.test(q('#an-paths .trace-ends')!.textContent || '') && doc.querySelectorAll('#ws-an-dock #diag-state').length === 1,
         layers.join(' '),
       );
-      // "Why this hop?": the evidence row opens under its hop, said by aria-expanded
-      const why = q(':is(#toolwin, [data-an-root]) [data-trace-path="trace-main"] [data-why]') as HTMLButtonElement | null;
-      const row = why ? doc.getElementById(why.getAttribute('aria-controls') as string) : null;
-      const closedBefore = !!row && row.hidden;
+      check('the default evidence is the main path, never the runtime limitation (static analysis establishes nothing more there)', app.analyzeSelection() === 'path:trace-main' && q('#ws-an-right #an-detail')!.getAttribute('data-ev-kind') === 'Path', app.analyzeSelection());
+      // "Why this hop?": the hop's decision evidence in the evidence panel (the same place as every other evidence)
+      const why = q(':is(#toolwin, [data-an-root]) [data-trace-path="trace-main"] .why-btn[data-an-item]') as HTMLButtonElement | null;
+      const key = why ? why.getAttribute('data-an-item') || '' : '';
       if (why) why.click();
       await tick();
-      check('“Why?” opens the hop’s decision evidence (aria-expanded): the lookup, the selected route and why it won, the layer-2 way', !!why && closedBefore && why.getAttribute('aria-expanded') === 'true' && !!row && !row.hidden && /Lookup/.test(row.textContent || '') && /Layer 2/.test(row.textContent || ''));
+      const ev = q('#ws-an-right #an-detail') as HTMLElement | null;
+      check('“Why?” shows the hop’s decision evidence in the evidence panel (aria-pressed): the lookup, the selected route and why it won, the layer-2 way; the hop’s row marked', !!why && /^hop:trace-main:\d/.test(key) && app.analyzeSelection() === key && (q(`[data-an-item="${key}"].why-btn`) as HTMLElement).getAttribute('aria-pressed') === 'true' && !!ev && ev.getAttribute('data-ev-kind') === 'Hop' && /Lookup/.test(ev.textContent || '') && /Layer 2/.test(ev.textContent || '') && !!q(`tr.hop-row.an-selected[data-an-item="${key}"]`), key);
       // a closed port: reachable, but nothing listens; the layer says it
       app.setTraceForm({ from: 'hmi', to: 'plc', service: 'tcp/9999' });
       app.runTrace();
       await tick();
       check('a reachable address without a listener is not a success: the listener layer is violated, the path satisfied', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Reachable, but nothing listens on TCP 9999 at plc/.test(q('#trace-verdict')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="path"].v-satisfied') && !!q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="listener"].v-violated'));
-      check('the context line says the configured model; no simulation was started by a check', /^Context: Configured model · Selected endpoints$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') && !app.simulationOn() && app.exportText() === yamlBefore);
+      check('the context line says the configured model; no simulation was started by a check', /^Result shown: Configured model · Selected endpoints · computed \d\d:\d\d:\d\d$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') && !app.simulationOn() && app.exportText() === yamlBefore);
       // both themes: the verdicts' marks in the theme's colours, never colour alone (a mark and words)
       for (const theme of ['light', 'dark']) {
         app.theme.set(theme as 'light' | 'dark');
@@ -6136,7 +6147,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // Design checks: add an expectation with the form (one undo step), evaluate it statically
       app.openDesignChecks();
       await tick();
-      check('Analyze → Design checks… opens a tool window: the example’s saved expectations, not evaluated until Evaluate (nothing runs on its own), the consistency findings; Evaluate has the focus', app.analyzeTool() === 'checks' && /^3 saved expectations, not evaluated yet.$/.test(q('#dc-status')!.textContent || '') && doc.activeElement === q('#dc-evaluate') && !!q('#dc-find-h') && !app.simulationOn());
+      check('Analyze → Design review: requirements: the example’s saved requirements, not evaluated until Evaluate (nothing runs on its own); Findings is the other mode; Evaluate has the focus', app.analyzeTask() === 'review' && app.analyzeMode() === 'requirements' && /^3 saved requirements, not evaluated yet.$/.test(q('#dc-status')!.textContent || '') && doc.activeElement === q('#dc-evaluate') && !!q('[data-an-mode="findings"]') && !app.simulationOn());
       (q('#dc-add') as HTMLElement).click();
       await tick();
       const setF = (id: string, v: string): void => {
@@ -6144,14 +6155,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         i.value = v;
         i.dispatchEvent(new Event('input', { bubbles: true }));
       };
-      check('Add expectation: the basic form (name, outcome, source, destination, failure condition) with the rest collapsed under Advanced; the name has the focus', doc.activeElement === q('#dc-f-name') && !!q('#dc-f-expect') && !!q('#dc-f-from') && !!q('#dc-f-to') && !!q('#dc-f-failure') && !(q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open);
+      check('Add requirement: an editor in the right panel that says it is one (its title, Save and Cancel), the basic fields (name, outcome, source, destination, failure condition) with the rest collapsed under Advanced; the name has the focus', doc.activeElement === q('#dc-f-name') && /^New requirement$/.test(q('#an-ed-h')!.textContent || '') && !!q('#ws-an-right #an-editor #an-ed-save') && !!q('#an-ed-cancel') && !!q('#dc-f-expect') && !!q('#dc-f-from') && !!q('#dc-f-to') && !!q('#dc-f-failure') && !(q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open);
       setF('dc-f-name', 'Polling the PLC');
       setF('dc-f-from', 'hmi/poll');
-      (q('#dc-f-save') as HTMLElement).click();
+      (q('#an-ed-save') as HTMLElement).click();
+      await tick();
+      const rowE0 = q(':is(#toolwin, [data-an-root]) tr[data-exp="polling-the-plc"]') as HTMLElement | null;
+      check('saved with the model (one undo step), not evaluated on its own: its row says Not evaluated, the editor is closed', (/expectations:\n {2}- \{?id: polling-the-plc/.test(app.exportText()) || /id: polling-the-plc/.test(app.exportText())) && !!rowE0 && /Not evaluated/.test(rowE0.textContent || '') && !q('#an-editor'), app.exportText().slice(app.exportText().indexOf('expectations:'), app.exportText().indexOf('expectations:') + 160));
+      (q('#dc-evaluate') as HTMLElement).click();
       await tick();
       const rowE = q(':is(#toolwin, [data-an-root]) tr[data-exp="polling-the-plc"]') as HTMLElement | null;
-      check('saved with the model (one undo step) and evaluated: Satisfied, with its reason', /expectations:\n {2}- \{?id: polling-the-plc/.test(app.exportText()) || /id: polling-the-plc/.test(app.exportText()), app.exportText().slice(app.exportText().indexOf('expectations:'), app.exportText().indexOf('expectations:') + 160));
-      check('… its row: the verdict chip (a mark and words), the expectation, the reason', !!rowE && /Satisfied/.test(rowE.textContent || '') && /hmi\/poll → its configured peer/.test(rowE.textContent || '') && /Reachable within scope/.test(rowE.textContent || ''));
+      check('… Evaluate: its row has the verdict chip (a mark and words), the requirement, the reason', !!rowE && /Satisfied/.test(rowE.textContent || '') && /hmi\/poll → its configured peer/.test(rowE.textContent || '') && /Reachable within scope/.test(rowE.textContent || ''));
       app.undo();
       await tick();
       check('undo removes it again', app.exportText() === yamlBefore);
@@ -6162,20 +6176,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       expSel.value = 'blocked';
       expSel.dispatchEvent(new Event('change', { bubbles: true }));
       await tick();
-      check('a blocked expectation: Enforcement is under Advanced (Unreachable by default), no boundary field until one is asked for', /enforcement/.test(q(':is(#toolwin, [data-an-root]) .dc-adv summary')!.textContent || '') && !(q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open && (q('#dc-f-enforce') as HTMLSelectElement).value === '' && !q('#dc-f-boundary') && doc.activeElement === q('#dc-f-expect'));
-      const enfSel = q('#dc-f-enforce') as HTMLSelectElement;
-      enfSel.value = 'boundary';
-      enfSel.dispatchEvent(new Event('change', { bubbles: true }));
+      check('an isolation requirement: how it is enforced is in the primary fields, not under Advanced — no communication possible (the default), a modeled policy must deny it, a specified boundary must deny it; no boundary field until one is asked for', !!q('#dc-f-enforce') && !q('#dc-f-enforce')!.closest('.dc-adv') && (q('#dc-f-enforce-unreachable') as HTMLInputElement).checked && !!q('#dc-f-enforce-policy') && !!q('#dc-f-enforce-boundary') && !q('#dc-f-boundary') && doc.activeElement === q('#dc-f-expect'));
+      const enfB = q('#dc-f-enforce-boundary') as HTMLInputElement;
+      enfB.click();
       await tick();
-      check('… Denied at the selected boundary shows the boundary field, with its help', !!q('#dc-f-boundary') && /selected enforcement boundary must deny/.test(q('#dc-f-enforce-help')!.textContent || '') && (q(':is(#toolwin, [data-an-root]) .dc-adv') as HTMLDetailsElement).open);
+      check('… A specified boundary must deny it shows the boundary field, with its help', !!q('#dc-f-boundary') && /selected enforcement boundary must deny/.test(q('#dc-f-enforce-help')!.textContent || '') && (q('#dc-f-enforce-boundary') as HTMLInputElement).checked);
       setF('dc-f-name', 'IT kept out at the gateway');
       setF('dc-f-from', 'eng-ws');
       setF('dc-f-to', 'plc/registers');
-      (q('#dc-f-save') as HTMLElement).click();
+      (q('#an-ed-save') as HTMLElement).click();
       await tick();
-      check('… without the boundary the form says what is missing, and the boundary field has the focus', /Give the boundary/.test(q('#dc-f-error')!.textContent || '') && doc.activeElement === q('#dc-f-boundary'));
+      check('… without the boundary the editor says what is missing, and the boundary field has the focus', /Give the boundary/.test(q('#an-ed-error')!.textContent || '') && doc.activeElement === q('#dc-f-boundary'));
       setF('dc-f-boundary', 'pgw');
-      (q('#dc-f-save') as HTMLElement).click();
+      (q('#an-ed-save') as HTMLElement).click();
+      await tick();
+      (q('#dc-evaluate') as HTMLElement).click();
       await tick();
       const rowB = q(':is(#toolwin, [data-an-root]) tr[data-exp="it-kept-out-at-the-gateway"]') as HTMLElement | null;
       check('… saved with enforce and boundary, evaluated: violated, with the reason (the path reaches the PLC)', /enforce: boundary/.test(app.exportText()) && /boundary: pgw/.test(app.exportText()) && !!rowB && /\(denied at pgw\)/.test(rowB.textContent || '') && rowB.classList.contains('v-violated') && /Reachable: 1 of 1 evaluated path reaches plc/.test(rowB.textContent || ''), rowB ? rowB.textContent || '' : 'no row');
@@ -6187,12 +6202,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // Single points of failure: a failure domain added in the window, then what if it fails
       app.openSpof();
       for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
-      check('the service impact of every candidate is checked; the coverage line says so', /Service impact: Checked all \d+ candidates, against \d+ configured dependenc/.test(q('#spof-progress')!.textContent || ''), q('#spof-progress')!.textContent || '');
+      check('the service and requirement impact of every candidate is checked; the coverage line says so', /Service and requirement impact: Checked all \d+ candidates, against \d+ configured dependenc/.test(q('#spof-progress')!.textContent || ''), q('#spof-progress')!.textContent || '');
+      // failure domains: an explicit editor (Failure scenario → Configure failure domains…), not part of every question
+      app.openResilience('scenario');
+      await tick();
+      (q('#dom-config') as HTMLElement).click();
+      await tick();
+      check('Configure failure domains… opens an editor in the right panel that says it is one; nothing is evaluated by it', /^Failure domains$/.test(q('#an-ed-h')!.textContent || '') && !!q('#ws-an-right #an-editor #dom-add'));
       (q('#dom-add') as HTMLElement).click();
       await tick();
       setF('dom-f-label', 'Edge shelf');
       setF('dom-f-members', 'edge');
-      (q('#dom-f-save') as HTMLElement).click();
+      (q('#an-ed-save') as HTMLElement).click();
       await tick();
       check('a failure domain is added by its explicit members (one undo step)', app.session!.model.failureDomains.length === 2 && app.session!.model.failureDomains[1].id === 'edge-shelf' && app.session!.model.failureDomains[1].members.join() === 'edge' && /id: edge-shelf/.test(app.exportText()));
       const sel = q('#wi-domain') as HTMLSelectElement;
@@ -6201,10 +6222,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#wi-go') as HTMLElement).click();
       await tick();
       check('… capacity: the applications with an interval are the stated traffic, evaluated (what the failure leaves without a path is said: not carried)', q('#wi-capacity')!.getAttribute('data-evaluated') === 'yes' && /^Capacity: \d+ demands?: \d+ fit.*\d+ not carried$/.test(q('#wi-capacity summary')!.textContent || ''), q('#wi-capacity summary')!.textContent || '');
-      check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#wi-result .an-ctx-line')!.textContent || ''));
+      check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context (a hypothetical failure condition on the configured model)', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#ws-an-left .an-ctx-line')!.textContent || '') && /Hypothetical failure condition: cell-cabinet/.test(q('#ws-an-left .an-ctx-line')!.textContent || ''));
       app.undo();
       await tick();
-      check('undo removes the domain; the what-if result is marked outdated, not computed again', app.exportText() === yamlBefore && !!q('#wi-result .an-outdated'));
+      check('undo removes the domain; the scenario’s result is marked outdated, not computed again', app.exportText() === yamlBefore && !!q('#ws-an-left .an-outdated') && /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || ''));
       app.closeToolWindow();
       await tick();
       // a snapshot: the guest's address from its lease, the policy's decision
@@ -6224,7 +6245,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.openTrace();
       app.runTrace();
       await tick();
-      check('a simulation snapshot (the default while one runs): the lease is the source, the firewall’s policy blocks SSH; the context says the snapshot’s time', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Blocked by policy/.test(q('#trace-verdict')!.textContent || '') && /DHCPv4/.test(q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="address"]')!.textContent || '') && /^Context: Simulation snapshot at t = \d+ s · Selected endpoints$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) [data-an-source="snapshot"][aria-checked="true"]'), `${(q('#trace-verdict') as HTMLElement).textContent} | ${(q(':is(#toolwin, [data-an-root]) .an-ctx-line') || { textContent: 'no context' }).textContent}`);
+      check('a simulation snapshot (the default while one runs): the lease is the source, the firewall’s policy blocks SSH; the context says the snapshot’s time', (q('#trace-verdict') as HTMLElement).getAttribute('data-verdict') === 'violated' && /Blocked by policy/.test(q('#trace-verdict')!.textContent || '') && /DHCPv4/.test(q(':is(#toolwin, [data-an-root]) .comm-layers > li[data-layer="address"]')!.textContent || '') && /^Result shown: Frozen simulation snapshot at t = \d+ s · Selected endpoints · computed \d\d:\d\d:\d\d$/.test(q(':is(#toolwin, [data-an-root]) .an-ctx-line')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) [data-an-source="snapshot"][aria-checked="true"]'), `${(q('#trace-verdict') as HTMLElement).textContent} | ${(q(':is(#toolwin, [data-an-root]) .an-ctx-line') || { textContent: 'no context' }).textContent}`);
       check('the handoff prepares the same exchange in Network events, prefilled, nothing sent', !!q('#trace-handoff') && !(q('#trace-handoff') as HTMLButtonElement).disabled && (() => {
         const before = ctl.sim.actions().length;
         (q('#trace-handoff') as HTMLElement).click();
@@ -6270,7 +6291,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       app.redrawTrace();
       await tick();
-      check('Save as expectation… opens Design checks with the fields of the check, nothing saved yet', !(q('#trace-save-exp') as HTMLButtonElement).disabled && app.traceToExpectation() && app.analyzeTool() === 'checks' && (q('#dc-f-from') as HTMLInputElement).value === 'guest-phone' && (q('#dc-f-to') as HTMLInputElement).value === 'core' && (q('#dc-f-service') as HTMLInputElement).value === 'tcp/22' && (q('#dc-f-expect') as HTMLSelectElement).value === 'blocked' && app.session!.model.expectations.length === 4);
+      check('Save as requirement… opens Design review’s editor with the fields of the check, nothing saved yet; Back returns to Communication', !(q('#trace-save-exp') as HTMLButtonElement).disabled && app.traceToExpectation() && app.analyzeTask() === 'review' && /^New requirement$/.test(q('#an-ed-h')!.textContent || '') && (q('#dc-f-from') as HTMLInputElement).value === 'guest-phone' && (q('#dc-f-to') as HTMLInputElement).value === 'core' && (q('#dc-f-service') as HTMLInputElement).value === 'tcp/22' && (q('#dc-f-expect') as HTMLSelectElement).value === 'blocked' && app.session!.model.expectations.length === 4 && /Back to Communication/.test((q('#an-back') || { textContent: '' }).textContent || ''));
+      (q('#an-ed-cancel') as HTMLElement).click();
+      await tick();
+      check('Cancel leaves the editor: the model unchanged, the requirements again', !q('#an-editor') && app.session!.model.expectations.length === 4 && !!q('#dc-status'));
       app.exitTrace();
       app.closeToolWindow();
       await tick();
@@ -6677,12 +6701,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const b = q('#dc-status')!.textContent || '';
       const rows = Array.from(doc.querySelectorAll('[data-an-root] tr[data-exp]')).map((r) => r.getAttribute('data-exp')).join(',');
-      check('another model loaded with Design checks in front: its own saved expectations, not evaluated yet (never model A’s verdicts); Analyze stays, bound to it; nothing ran on its own', /^3 expectations: 2 satisfied, 1 violated/.test(a) && /^4 saved expectations, not evaluated yet\./.test(b) && rows === 'plc-time,plc-time-gm-a,rt-ntp,rt-ntp-gm-a' && app.analyzeTool() === 'checks' && !app.simulationOn(), `${a} → ${b} [${rows}]`);
+      check('another model loaded with Design review in front: its own saved requirements, not evaluated yet (never model A’s verdicts); Analyze stays, bound to it; nothing ran on its own; the session’s history was model A’s and is cleared', /^3 requirements: 2 satisfied, 1 violated/.test(a) && /^4 saved requirements, not evaluated yet\./.test(b) && rows === 'plc-time,plc-time-gm-a,rt-ntp,rt-ntp-gm-a' && app.analyzeTask() === 'review' && !app.simulationOn() && app.analysisHistory().length === 0, `${a} → ${b} [${rows}]`);
       check('… the old model’s experiment runs, selections and pending work are gone (a new model generation; the report’s job is the new model’s or none)', app.modelGeneration() > genA && app.experimentRuns('cabinet-outage').length === 0 && app.analyzeSelection() === '' && app.experimentRunning() === null);
       void running;
       // the consistency findings are the new model's own
+      app.openReview('findings');
+      await tick();
       const findings = q('#dc-find-h') ? (q('#dc-find-h')!.closest('section') as HTMLElement).textContent || '' : '';
-      check('… and its consistency findings are its own (refreshed with the model)', !/eng-ws|plc\/registers/.test(findings));
+      check('… and its consistency findings are its own (refreshed with the model)', !!q('#dc-find-h') && !/eng-ws|plc\/registers/.test(findings));
+      app.openDesignChecks();
+      await tick();
       // an ordinary edit is not a replacement: the result stays, marked outdated
       app.refreshDesignChecks();
       await tick();
@@ -6690,7 +6718,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       md.remove(['links', md.findEntity('link', 'l-drv')!.index], 'Remove cable');
       (app as unknown as { afterEdit(n?: string): void }).afterEdit();
       await tick();
-      check('an ordinary edit keeps the evaluation, marked outdated (Refresh computes it again), never cleared', /4 expectations/.test(q('#dc-status')!.textContent || '') && !!q('[data-an-root] .an-outdated'));
+      check('an ordinary edit keeps the evaluation, marked outdated (Refresh computes it again), never cleared', /4 requirements/.test(q('#dc-status')!.textContent || '') && !!q('[data-an-root] .an-outdated'));
       app.undo();
       await app.exitWorkspace();
       md.markSaved();
@@ -6722,8 +6750,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // data center: the stated replication over two spines, and what survives spine 1's power feed
       app.loadExampleNamed('datacenter-evpn.yaml');
       await tick();
-      app.openSpof();
-      for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
+      app.openResilience('scenario');
+      await tick();
       const dsel = q('#wi-domain') as HTMLSelectElement;
       dsel.value = 'spine1-power';
       dsel.dispatchEvent(new Event('change', { bubbles: true }));

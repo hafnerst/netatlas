@@ -814,18 +814,43 @@ and device actions) from the user.
   model's result.
 * **Analyze over a simulation reads a snapshot.** Entering Analyze pauses
   a running simulation; its analyses read a frozen snapshot, never the live
-  state, and the simulation resumes when Analyze is left.
+  state, and the simulation resumes when Analyze is left. The source chosen
+  for the next computation never changes a result already on screen: it
+  keeps the context it was computed on until the question is asked again.
+* **Recent and pinned results are this session's.** The overview keeps the
+  last 12 results and up to 8 pinned ones, in memory only: they are not
+  saved with the model, loading another model clears them, and a pinned
+  result does not keep a simulation's records available (a packet or event
+  it names may be gone when it is followed; it is then said unavailable).
+* **Dependency exploration lists what the model configures.** A
+  component's Depends on and Used by come from the configured
+  dependencies (application peers, MQTT brokers, DNS, DHCP, timing
+  sources, syslog, AAA) and virtualization hosts; nothing is inferred from
+  traffic, names or a production network, and no business importance is
+  assumed. Failure affects is the failure analysis of that component,
+  evaluated when asked.
+* **Deferred: a service-connectivity matrix and model-revision comparison.**
+  A bounded matrix (selected applications or groups against selected
+  services, each cell a Communication check that opens it) and a static
+  comparison of equivalent questions across two model revisions (changed
+  requirements, dependencies, paths and limits; never mixed with a
+  hypothetical failure or a runtime observation) would fit the same task
+  areas; neither exists yet.
 
 **Not supported.** Real timing jitter, vendor-specific behaviour beyond the
 parameters, CPU limits, full TCP-stack fidelity.
 
 ## Failure analysis, dependencies and expectations
 
-**Implemented.** Single points of failure with structural and service
-impact; what-if conditions (failure domains, or up to 64 components)
-compared with the same baseline; configured service dependencies; saved
-expectations (availability, isolation, dependencies, timing) evaluated
-statically; contextual focus.
+**Implemented.** Single-component failures (each cable, device and LAG
+alone) with separate measures — the saved requirements no longer
+satisfied, the configured dependencies unavailable, the devices
+disconnected, the relations unavailable; failure scenarios (failure
+domains, or up to 64 components) compared with the same baseline; the
+stated capacity with or without a failure; configured service
+dependencies, and a component's Depends on, Used by and Failure affects;
+saved requirements (availability, isolation, dependencies, timing)
+evaluated statically when asked; contextual focus.
 
 **Simplifications.**
 
@@ -835,8 +860,10 @@ statically; contextual focus.
   side by side; a relation without `over` is affected only through its
   endpoints. A VLAN interface goes down when every port carrying its VLAN
   does. The single points of failure fail each cable, device and LAG alone;
-  combinations are what-if conditions you choose, never enumerated. The
-  structural impact is an object count, not a business criticality.
+  combinations are failure scenarios you choose, never enumerated. The
+  measures are counted apart and never added up: none is a business
+  criticality, and the requirements checked per candidate are the saved
+  ones only.
 * **Capacity is stated traffic against stated speeds.** An application's
   transfer is traced between its own ends — its family, the peer
   listener's bind interface's address (else its device's address of the
@@ -910,8 +937,8 @@ with the simulation).
   affected by an interconnect. Its failure is a failure of the connection
   only: no electrical fault (a shorted bus taking everything down) is
   inferred.
-* **Not in Analyze.** Paths, what-if, failure domains, expectations and
-  experiments cover the IP side only.
+* **Not in Analyze.** Paths, failure scenarios, failure domains,
+  requirements and experiments cover the IP side only.
 
 ## Model and editing
 

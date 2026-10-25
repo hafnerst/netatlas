@@ -991,13 +991,13 @@ export function diagnose(input: DiagnosisInput): Diagnosis {
   const rank = ['policy:', 'iface:', 'relation:', 'link:', 'device:'];
   for (const b of d.blockers) {
     const r = b.refs.filter((x) => rank.some((p) => x.ref.indexOf(p) === 0)).sort((x, y) => rank.findIndex((p) => x.ref.indexOf(p) === 0) - rank.findIndex((p) => y.ref.indexOf(p) === 0))[0];
-    if (r && !d.next.some((x) => x.ref === r.ref)) d.next.push({ id: 'goto', label: `Inspect ${r.label}`, why: b.text, ref: r.ref });
+    if (r && !d.next.some((x) => x.ref === r.ref)) d.next.push({ id: 'goto', label: r.ref.indexOf('policy:') === 0 ? `Inspect deciding rule (${r.label})` : `Inspect ${r.label}`, why: b.text, ref: r.ref });
   }
-  if (input.canPrepare && !rt && !mq) d.next.push({ id: 'handoff', label: 'Prepare in simulation', why: 'A static result does not establish the exchange: the same send, prefilled, not sent' });
-  if (input.canPrepare) d.next.push({ id: 'compare', label: 'Compare with simulation', why: 'The newest recorded run of this communication, compared with this result' });
-  if (input.mtu && input.mtu.mtu !== null && input.canPrepare) d.next.push({ id: 'mtu-test', label: 'Test the limit in simulation', why: `The static path MTU is ${input.mtu.mtu} bytes: a send one byte over it, with Don’t fragment, prefilled` });
-  d.next.push({ id: 'save-exp', label: 'Save as expectation…', why: 'Keep the question and its expected answer with the model' });
-  if (!blockedStatic && c.verdict !== 'satisfied' && !rt && !mq) d.limits.push('The recorded evidence does not establish why: a simulation can exchange it (Prepare in simulation)');
+  if (input.canPrepare && !rt && !mq) d.next.push({ id: 'handoff', label: 'Prepare modeled test', why: 'A static result does not establish the exchange: the same send, prefilled in the simulation, not sent' });
+  if (input.canPrepare) d.next.push({ id: 'compare', label: 'Compare matching observation', why: 'The newest recorded run of exactly this communication (its identity matched), compared with this result' });
+  if (input.mtu && input.mtu.mtu !== null && input.canPrepare) d.next.push({ id: 'mtu-test', label: 'Prepare MTU test', why: `The static path MTU is ${input.mtu.mtu} bytes: a send one byte over it, with Don’t fragment, prefilled` });
+  d.next.push({ id: 'save-exp', label: 'Save as requirement…', why: 'Keep the question and its expected answer with the model' });
+  if (!blockedStatic && c.verdict !== 'satisfied' && !rt && !mq) d.limits.push('The recorded evidence does not establish why: a simulation can exchange it (Prepare modeled test)');
   return d;
 }
 
