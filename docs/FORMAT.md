@@ -45,7 +45,7 @@ networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
 failure_domains: [...] # optional: components that fail together (what-if conditions)
-expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
+expectations: [...]    # optional: saved design requirements (checked by Analyze → Design review)
 experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
 views: [...]           # optional: saved views (display state: diagram, focus, filters, zoom)
 checks: {...}          # optional: switch consistency checks off or change their severity
@@ -2440,7 +2440,7 @@ A redundancy group's virtual address is not a relation attribute: it is the
 `virtual_ip` of each member interface's group (`protocols: {vrrp: {group:
 10, virtual_ip: 10.10.10.1}}`), compared with the interface's subnets.
 
-**Parameters the path tracer reads.** The path tracer (**Analyze → Trace path…**, see *Trace a path* in Help → User Manual)
+**Parameters the path tracer reads.** The path tracer (**Analyze → Communication**, see *Check a communication* in Help → User Manual)
 learns routes over the relations of the routing protocols (`ospf`, `isis`,
 `eigrp`, `rip`, `bgp` and their aliases) and reads a few more keys, each a
 single value or per device:
@@ -2621,7 +2621,7 @@ demands:
 traced from its source to its destination like Trace path; the traffic
 animation shows equal-cost paths sharing it equally.
 
-**Capacity.** What if (Analyze → Single points of failure) compares the
+**Capacity.** Analyze → Resilience (capacity, and a failure scenario) compares the
 stated traffic with the stated capacity before and after the failure: the
 demands, and the applications with an `interval` (their sizes, written or
 the profile's defaults; payload rates). A resource is counted once: a cable
@@ -2645,7 +2645,7 @@ Optional. Components that fail together: a rack, a room or site, shared
 power, a shared conduit, a shared provider. Membership is explicit: a
 group of the diagram is never a failure domain by itself (it may stay
 purely organizational), only one written here is. A failure domain is
-analysis data: Analyze → Single points of failure… → **What if…** fails
+analysis data: Analyze → Resilience → **Failure scenario** fails
 it as one condition and compares the result with the same baseline, and a
 saved expectation can name it as its failure condition. It is a what-if
 condition, never a probability, and a file means the same network with or
@@ -2672,7 +2672,7 @@ already another object's are **errors**. At most 500 failure domains.
 ## `expectations` (saved design requirements)
 
 Optional. Requirements kept with the model and checked statically by
-Analyze → **Design checks…**: a communication that must be available or
+Analyze → **Design review** (requirements): a communication that must be available or
 blocked (also under a failure condition), a configured dependency that must
 be viable, a timing-source path that must exist. An expectation is analysis
 data: evaluating it never sends anything and never starts the simulation,
@@ -2908,7 +2908,7 @@ views:
 `focus`: `target` (a device, `device:interface`, or `network:…`,
 `group:…`, `link:…`) with `hops` (1–3), or a contextual focus with
 `context`: `vlan` (with `vlan`), `dependencies`, `multicast` (with
-`group`), `timing`, `vrf` (with `vrf`) — as Analyze → Focus has them.
+`group`), `timing`, `vrf` (with `vrf`) — as Focus… has them. (A focus Analyze makes of a result's objects — Show only relevant objects — is saved as the device selection it shows.)
 
 Validation: unknown keys, a missing `name` or `view`, an unknown device
 type, context or option, a zoom outside 0.05–6, hops outside 1–3 and a

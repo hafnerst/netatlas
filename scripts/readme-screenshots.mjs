@@ -39,7 +39,7 @@ const SHOTS = [
   // a campus in the logical view, arranged with Compact: VLAN networks, the core's interfaces, routes, groups
   ['readme-logical.png', 'light', [1680, 1180], [], `netatlas.loadExampleNamed('enterprise-campus.yaml'); netatlas.setView('logical'); document.getElementById('btn-arrange-compact').click(); await new Promise((r) => setTimeout(r, 200)); netatlas.fit();`],
   // Analyze → Trace path across a hybrid cloud, with the return path: the request, the hops marked in the diagram, the evidence, the results
-  ['readme-analysis.png', 'dark', [1680, 1000], ['#outline', '#side', '#sim-dock'], `netatlas.loadExampleNamed('hybrid-cloud.yaml'); netatlas.setView('physical'); netatlas.setTraceForm({ from: 'dc-pc', to: 'web-1', back: true }); netatlas.openTrace(); netatlas.runTrace(); netatlas.fit();`],
+  ['readme-analysis.png', 'dark', [1680, 1000], ['#outline', '#side', '#sim-dock'], `netatlas.loadExampleNamed('hybrid-cloud.yaml'); netatlas.setView('physical'); netatlas.setTraceForm({ from: 'dc-pc', to: 'web-1', back: true }); netatlas.openTrace(); netatlas.runTrace(); netatlas.selectAnalysisItem('hop:trace-main:2', false); netatlas.fit();`],
   // a protocol simulation of the home network: the first of five pings from the laptop to the NAS on the riser cable, the Network events
   // form, the protocols' status and the event log
   ['readme-simulation.png', 'dark', [1440, 900], ['#sim-actions', '#sim-dock'], `netatlas.loadExampleNamed('private-house.yaml'); netatlas.setView('physical'); sessionStorage.clear(); localStorage.removeItem('netatlas.dockHeight');

@@ -75,8 +75,88 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
   classified, every intended branch required; test-only), and browser
   checks of the workflow with real keys, in a narrow window and both
   themes.
+- **Analyze, organized by the question asked**: **Overview**,
+  **Communication**, **Resilience** (single-component failures, failure
+  scenario, capacity), **Design review** (findings, requirements) and
+  **Addressing**, each with one interaction model: the question on the
+  left (one primary action, secondary choices under Advanced options), the
+  answer and its results at the bottom, the evidence of the selected item
+  on the right — what it is, the result's context, the explanation, the
+  evidence and decisions, the objects it concerns and what to inspect
+  next. Each task keeps its question, result and selection when another
+  is in front; **← Back** returns to the result and item an investigation
+  came from. Layouts: **Balanced**, **Diagram-focused**,
+  **Results-focused**; in a narrow window one surface at a time
+  (Question, Results, Evidence, Diagram), selecting a result showing its
+  evidence with its heading focused.
+- **Overview**: the starting questions, what is known about the model
+  (requirements and whether they were evaluated, findings, invalid input,
+  results outdated by an edit, interfaces addressed at run time; nothing
+  is computed on opening, no overall score), starting points from the
+  selection, and **Explore its dependencies**: a component's **Depends
+  on**, **Used by** and, on request, **Failure affects**, each leading
+  into Communication, Resilience or a contextual focus.
+- **Recent and pinned results** of the session (12 recent, 8 pinned):
+  reopened as computed with their selection (outdated after an edit),
+  pinned, saved as a text record. Not saved with the model; loading
+  another model clears them.
+- **Resilience → Capacity**: the stated demands against the stated
+  capacity directly, with or without a failure condition (the existing
+  capacity analysis).
+- One context line for every task: the source of the **next
+  computation**, the context of the **result shown** (configured model or
+  frozen snapshot, a hypothetical failure condition or a recorded runtime
+  exchange, the scope, when it was computed), a question changed since it
+  (a draft), outdated, incomplete coverage, evidence no longer kept.
+- The evidence panel's diagram actions: **Locate in diagram**, **Fit
+  relevant objects**, **Show only relevant objects** (a Focus on the
+  result's devices; a saved view keeps it as a device selection),
+  **Restore previous view**.
 
 ### Changed
+
+- **Communication** replaces Trace path and Diagnose communication as one
+  workflow (`T`; **Diagnose selected communication**, `Shift+D`, asks
+  about the selection): searchable ends — devices, interfaces, exact
+  addresses, applications, services, host names — each saying how it
+  binds; **Automatic family** (was *Any family*); VRF, family and the
+  return direction under Advanced options; **Check communication**. The
+  answer comes once (no separate verdict competing with it), then what is
+  established, the main blocker, the runtime observation and the paths.
+  Layers, blockers, paths, hops (**Why?**) and policy decisions are
+  evidence on the right; the first shown is an established blocker, else
+  what needs attention, else the main path — never the runtime
+  limitation, which is said as a limitation of static analysis. Next
+  steps: **Inspect deciding rule**, **Inspect limiting interface**,
+  **Prepare modeled test**, **Compare matching observation**, **Prepare
+  MTU test**, **Save as requirement…**, **Use in experiment…**.
+- **Single-component failures** show separate measures — the saved
+  requirements no longer satisfied (now checked per candidate), the
+  configured dependencies unavailable, the devices disconnected, the
+  relations unavailable — and a status, with explicit values (*None
+  affected*, *Checking*, *Not evaluated*, *indeterminate*); the summed
+  *structural impact* is no longer shown (the CSV keeps its column and adds
+  `requirements_unsatisfied` and `requirements`). A selected row stays
+  selected while the check goes on; leaving Resilience pauses the check.
+  **Failure scenario** is its own mode, its condition the question;
+  failure domains are edited in **Configure failure domains…**.
+- **Design review** separates **Findings** (filters by category,
+  severity and object; invalid model input apart; findings at one place
+  are related, not an established shared cause; *no findings* says which
+  checks ran) and **Requirements** (an explicit editor with **Save
+  changes** and **Cancel**; an isolation requirement says in its primary
+  fields how it must be enforced). Saving a requirement no longer
+  evaluates it: results are marked outdated until **Evaluate**.
+- **Addressing**: a compact table with the issue filter (**All networks**,
+  **Conflicts**, **Overlaps**, **Outside declared networks**); a
+  network's or an issue's details in the evidence panel.
+- **Focus** is a view aid of every workspace, in its own window (`Shift+F`,
+  Analyze → Focus…), no longer a task of Analyze.
+- The Analyze menu, the command palette, the manual and the shortcuts
+  use the task names in one order. Menu entries that open the workspace
+  (and Simulate → Experiments) no longer announce a dialog.
+- Changing the source while a simulation runs no longer recomputes the
+  result on screen: the next computation reads it.
 
 - **Packet dots take 3–5 s per hop at 1×** (Readable pacing), from the
   hop's modelled traversal: a cable's latency and its frame's serialization

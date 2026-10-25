@@ -28,7 +28,7 @@ of real devices.
 |---|---|
 | **Model** | Build devices (15 types, from routers and switches to PLCs and VMs) with their interfaces, addresses, VLANs, routes, services and applications; cables, IP networks, relations such as routing sessions and tunnels, and locations from sites down to racks. |
 | **Visualize** | Switch between the physical and the logical view, find and filter objects, focus on a neighbourhood, and arrange a view automatically (Default, Compact or Structured). |
-| **Analyze** | Check whether a client can use an application or service, review how the address space is allocated, find single points of failure and what a failed rack or room takes with it, keep design requirements with the model, and see consistency findings with what follows from them. |
+| **Analyze** | Ask a question and inspect its evidence: whether an application or service can communicate (Communication), what stops working when a component or a rack fails and whether the stated traffic still fits (Resilience), whether saved requirements hold and what the consistency checks find (Design review), and where addresses conflict or are allocated (Addressing). |
 | **Simulate** | Start a protocol simulation, follow its messages and tables, send packets, join multicast groups, start streams and applications, and fail, shut or power off parts of the network; build repeatable experiments with explicit observations. |
 | **Share** | Save the model as YAML, open it on any other machine, and export either view as a PNG or SVG picture in the light or dark theme. |
 
@@ -86,13 +86,13 @@ apart), how each network's addresses are allocated, which cable, device or
 LAG cuts something off or takes a service away, what a failure domain takes
 with it and whether the stated traffic still fits, whether saved
 requirements hold (an isolation by the policy that enforces it), the path
-MTU, and which settings contradict each other. Every result gives its verdict with its context, coverage and
+MTU, and which settings contradict each other. Each of its tasks — Communication, Resilience, Design review and Addressing — puts the question on the left, the answer and its results at the bottom and the evidence of what you select on the right. Every result gives its verdict with its context, coverage and
 limits; it never changes the model and never sends anything, and a modeled
 result is no proof of production behaviour.
 
-![A path trace in the dark theme, in the Analyze workspace: the request on the left, the evidence on the right, the verdict (reachable within scope), the layers it checked (addresses, network path, policy) and what static analysis does not establish, the start of the hop table, and the path marked in the physical view of a hybrid cloud](docs/img/readme-analysis.png)
+![Analyze → Communication in the dark theme: the question on the left, the answer and what is established at the bottom, the evidence of a hop on the right, and the path marked in the physical view of a hybrid cloud](docs/img/readme-analysis.png)
 
-*Analyze → Trace path… on `hybrid-cloud.yaml`: the verdict first, then what it rests on (addresses, path, policy), what a static check does not establish, and each hop; the path marked in the diagram.*
+*Analyze → Communication on `hybrid-cloud.yaml`: the question on the left, the answer once at the bottom with what is established (addresses, path, policy) and what a static check does not establish, a hop’s decision evidence on the right; the path marked in the diagram.*
 
 **Simulation** runs the architecture over time. The network starts like a
 freshly booted one, and you can watch protocol exchanges, adjacencies and

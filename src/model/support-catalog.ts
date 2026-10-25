@@ -31,14 +31,14 @@ export interface AnalysisSupport {
 export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   {
     id: 'trace',
-    name: 'Trace path',
+    name: 'Path tracing (Communication)',
     does: 'Longest-prefix forwarding over connected networks, static routes (distance, metric, recursive next hops) and the routes of enabled routing protocols’ adjacencies through the routing-policy subset (advertised prefixes, a default route, redistribution with its origin history, ordered import/export filters, BGP local preference and AS path); equal-cost paths (up to 16), VRFs, VRRP / HSRP holders, tunnels with their traced underlay, the layer-2 way through VLANs and Wi-Fi networks; the filtering decision of network policies (routers, Layer 3 switches, firewalls) and Security gateways for a given service; NAT of container bridges.',
     not: 'the NAT service’s translations (the simulation applies them), policy-based routing, MPLS label forwarding, multicast forwarding (the simulation forwards multicast), spanning-tree blocking (the cable way is the shortest one through layer-2 devices).',
   },
   {
     id: 'policy',
     name: 'Network policy',
-    does: 'One engine for Trace path, the communication checks and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named (also for the packets of relations and tunnels through it, and IP protocols without ports by `proto: any` rules and the default action, tracked by address pair and IP protocol number); a firewall without one: its relations and allow list. A rule naming a device: that device’s addresses, checked against the device the traffic reaches (an address several devices have and no owner known: undecided, never permitted).',
+    does: 'One engine for Communication, Design review and the simulation: a router’s, Layer 3 switch’s or firewall’s ordered rules (addresses and objects, protocol, ports, interfaces and zones, an explicit default action), the rule that decided named (also for the packets of relations and tunnels through it, and IP protocols without ports by `proto: any` rules and the default action, tracked by address pair and IP protocol number); a firewall without one: its relations and allow list. A rule naming a device: that device’s addresses, checked against the device the traffic reaches (an address several devices have and no owner known: undecided, never permitted).',
     not: 'a return decision statically (the simulation keeps a stateful policy’s sessions); application identification, TLS inspection, user identities, NAT rules, VLAN ACLs.',
   },
   {
@@ -61,21 +61,21 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   },
   {
     id: 'addressing',
-    name: 'Addressing overview',
-    does: 'Each host address in its allocation state (configured, reserved, acquired in a snapshot, DHCP pool, nested network, unallocated); suggestions outside pools, reservations and used addresses; duplicates in the scope the model establishes (a link-local address on its VLAN-scoped segment, any other in a VRF and a connected part).',
+    name: 'Addressing',
+    does: 'Each host address in its allocation state (configured, reserved, acquired in a snapshot, DHCP pool, nested network, unallocated); suggestions outside pools, reservations and used addresses; confirmed and possible conflicts in the scope the model establishes (a link-local address on its VLAN-scoped segment, any other in a VRF and a connected part), reuse the model separates, overlaps, addresses outside the declared networks.',
     not: 'addresses used outside the model, SLAAC interface identifiers in the configured model (a snapshot has them).',
   },
   {
     id: 'dependencies',
     name: 'Service dependencies',
-    does: 'Only what the model configures: application peers, MQTT brokers, resolvers, DHCP (a server on the client’s broadcast domain with a scope for it, or an IPv4 relay whose way passes the path, the policy and the listener both ways), timing sources, syslog senders and AAA clients; compared under a failure.',
+    does: 'Only what the model configures: application peers, MQTT brokers, resolvers, DHCP (a server on the client’s broadcast domain with a scope for it, or an IPv4 relay whose way passes the path, the policy and the listener both ways), timing sources, syslog senders and AAA clients; compared under a failure; a component’s Depends on, Used by and Failure affects.',
     not: 'dependencies nobody wrote down, business importance, DHCPv6 relays (DHCPv6 is served on the client’s link only), the remaining lease time of addresses already given.',
   },
   {
     id: 'failure',
-    name: 'Failure analysis and what if',
-    does: 'Single points of failure (each cable, device and LAG alone) with their structural and service impact; what-if conditions of failure domains or up to 64 components, compared with the same baseline: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
-    not: 'probabilities, convergence and recovery times, combinations beyond the condition given; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
+    name: 'Resilience: failures, scenarios, capacity',
+    does: 'Single-component failures (each cable, device and LAG alone) with separate measures: requirements no longer satisfied, configured dependencies unavailable, devices disconnected, relations unavailable; failure scenarios of failure domains or up to 64 components, compared with the same baseline: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity, also without a failure (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
+    not: 'business criticality, probabilities, convergence and recovery times, combinations beyond the condition given; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
   },
   {
     id: 'timing',

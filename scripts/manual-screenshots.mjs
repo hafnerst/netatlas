@@ -237,21 +237,21 @@ async function main() {
       await save('port-vlans', { x: side.x, y, w: side.w, h: Math.min(box.y + box.h + 8, side.y + side.h) - y }, { quality: 70 });
     }
 
-    // the Addressing overview of the addressing example, with one network's members open
+    // Addressing of the addressing example, with one network's details in the evidence panel
     {
       const ex = 'addressing.yaml';
       await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView("logical"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`document.getElementById('btn-addressing').click(), netatlas.selectAnalysisItem('net:|corp'), true`);
+      await page.eval(`document.getElementById('btn-addressing').click(), netatlas.selectAnalysisItem('net:|corp', false), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       // Analyze: the network table at the bottom, the selected network's members on the right
-      await save('addressing', around([await page.rect('#sim-dock'), await page.rect('#side')], 0), { scale: 0.62, quality: 50 });
+      await save('addressing', around([await page.rect('#sim-dock'), await page.rect('#side')], 0), { scale: 0.58, quality: 36 });
       await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
-    // focus mode on the firewall (enterprise WAN, physical view), then the command palette with "focus" typed
+    // focus mode on the firewall (enterprise WAN, physical view) in its window, then the command palette with "focus" typed
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("device:hq-fw", true), true');
       await page.eval("document.getElementById('toast').hidden = true");
@@ -259,40 +259,41 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
-      await save('focus', around([c, await page.rect('#outline')], 0), { scale: 0.62, quality: 46 });
+      await save('focus', around([c, await page.rect('#toolwin')], 0), { scale: 0.5, quality: 36 });
       await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`);
       await page.settle(150);
       await page.eval(`(() => { const i = document.getElementById('palette-input'); i.value = 'focus'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
       await page.settle(200);
-      await save('palette', around([await page.rect('#modal')], 6), { quality: 70 });
+      await save('palette', around([await page.rect('#modal')], 6), { quality: 55 });
       await page.key('Escape', 'Escape', 27);
       await page.settle(100);
-      await page.eval(`document.getElementById('focus-exit').click(), netatlas.exitWorkspace().then(() => true)`);
+      await page.eval(`document.getElementById('focus-exit').click(), netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
 
-    // path trace from the Munich LAN to the syslog server (enterprise WAN, physical view): the diagram and the Trace path window with its hop table
+    // Communication from the Munich LAN to the syslog server (enterprise WAN, physical view): the answer at the bottom, a hop's evidence on the right
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), true`);
+      await page.eval(`netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), netatlas.selectAnalysisItem('hop:trace-main:2', false), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('trace', await page.rect('main'), { scale: 0.55, quality: 40 });
+      await save('trace', await page.rect('main'), { scale: 0.5, quality: 32 });
       await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
 
-    // single points of failure: the window for the enterprise WAN, most impact first
+    // Resilience: single-component failures of the enterprise WAN, the firewall's evidence on the right
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.spof'), netatlas.openSpof(), true`);
+      await page.eval(`netatlas.openSpof(), true`);
       await page.mouse('mouseMoved', 700, 890);
-      // the service impact is checked in steps: the picture shows it done
+      // the impact is checked in steps: the picture shows it done
       for (let k = 0; k < 200 && !(await page.eval('netatlas.spofServiceDone()')); k++) await page.settle(100);
+      await page.eval(`netatlas.selectAnalysisItem('spof:device:hq-fw', false), true`);
       await page.settle(250);
-      await save('spof', around([await page.rect('#sim-dock')], 0), { scale: 0.75, quality: 34 });
+      await save('spof', around([await page.rect('#sim-dock'), await page.rect('#side')], 0), { scale: 0.55, quality: 30 });
       await page.eval(`netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
     }
@@ -566,7 +567,7 @@ relations:
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       {
-        await save('separation-trace', around([await page.rect('#sim-dock')], 0), { scale: 0.7, quality: 40 });
+        await save('separation-trace', around([await page.rect('#sim-dock')], 0), { scale: 0.7, quality: 32 });
       }
       await page.eval(`netatlas.exitTrace(), netatlas.exitWorkspace().then(() => true)`);
       await page.settle(100);
