@@ -84,7 +84,7 @@ test('readable pacing: 3–5 s per hop from the travel scale (travel.test: the m
   assert.equal(P.scaleText(100), '1 ms = 0.1 s');
   const { p } = paced();
   assert.equal(p.speed, 1, '1× is the default');
-  assert.equal(p.describe(), 'Readable · 3–5 s per hop · 1×');
+  assert.equal(p.describe(), 'Readable · 3–5 s/hop · 1×');
   assert.equal(p.hopTime(0), T.TRAVEL_NEUTRAL, 'no modelled cost: the neutral time');
   p.mode = 'proportional';
   p.speed = 2;

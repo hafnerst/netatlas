@@ -424,11 +424,11 @@ export class Pacer {
     if (this.host.engine.hold) this.host.engine.hold = null;
   }
 
-  /** "Readable · 3–5 s per hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
+  /** "Readable · 3–5 s/hop · 1×", "Proportional · 1 ms = 1 s · 2×", "Real time · 1×"; "· your events in front" while they are; what a delivery waits for on screen. */
   describe(): string {
     const sp = `${this.speed}×`;
     const behind = this.behind > 0 ? ' · behind' : '';
-    const base = this.mode === 'readable' ? `Readable · ${TRAVEL_MIN / 1000}–${TRAVEL_MAX / 1000} s per hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
+    const base = this.mode === 'readable' ? `Readable · ${TRAVEL_MIN / 1000}–${TRAVEL_MAX / 1000} s/hop · ${sp}` : this.mode === 'proportional' ? `Proportional · ${scaleText(this.scale)} · ${sp}` : `Real time · ${sp}${behind}`;
     const h = this.holding();
     const wait = h ? ` · ${holdText(h.f)}` : '';
     return (this.fgNow ? `${base} · your events in front` : base) + wait;

@@ -535,7 +535,7 @@ export class SimController implements SimulationMode {
     this.refresh(true);
   }
 
-  /** "Readable · 3–5 s per hop · 1×". */
+  /** "Readable · 3–5 s/hop · 1×". */
   pacingText(): string {
     return this.pacer.describe();
   }

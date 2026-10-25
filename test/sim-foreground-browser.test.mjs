@@ -40,7 +40,7 @@ for (const theme of ['light', 'dark']) {
       assert.ok(u.convs <= 9, JSON.stringify(u));
       assert.ok(u.lit > 0 && u.counts.length > 0 && u.counts.every((c) => /^\S.* ×\d+/.test(c)), JSON.stringify(u.counts));
       assert.match(u.drawn, /^\d+ more on their way as cable activity \(kinds of message already shown, and at most 6 exchanges as dots at once\)\.$/);
-      assert.match(u.pace, /^Readable · 3–5 s per hop · 1×( · waiting for packet arrival( \(.+\))?)?$/);
+      assert.match(u.pace, /^Readable · 3–5 s\/hop · 1×( · waiting for packet arrival( \(.+\))?)?$/);
       // a stream from pc1: in front; the scenario behind as cable activity
       await page.eval(`netatlas.simController().startStream('pc1', 'eth0', '239.9.9.9', 5004, 1000, 500), true`);
       const s0 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);
@@ -51,7 +51,7 @@ for (const theme of ['light', 'dark']) {
         await wait(500);
         u = await ui();
       }
-      assert.match(u.pace, /^Readable · 3–5 s per hop · 1× · your events in front( · waiting for packet arrival( \(.+\))?)?$/);
+      assert.match(u.pace, /^Readable · 3–5 s\/hop · 1× · your events in front( · waiting for packet arrival( \(.+\))?)?$/);
       assert.ok(u.fgDots > 0, 'the stream’s dots');
       // a datagram every simulated second (the first at once), whatever the pacing
       const s1 = await page.eval(`[netatlas.simController().sim.actions()[0].progress.done, netatlas.simController().t]`);

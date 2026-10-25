@@ -48,7 +48,7 @@ test('Readable at 1×: every dot 3–5 s, the WAN link longer than the LAN cable
     await page.settle(150);
     await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }); const p = netatlas.simController().pacer; p.convLimit = 1000; p.summarizeRepeats = false; return true; })()`);
     await page.eval(RECORD);
-    assert.match(await page.eval(`netatlas.simController().pacingText()`), /^Readable · 3–5 s per hop · 1×/);
+    assert.match(await page.eval(`netatlas.simController().pacingText()`), /^Readable · 3–5 s\/hop · 1×/);
     await wait(12000);
     const one = JSON.parse(await page.eval(READ));
     const rs = measured(one);

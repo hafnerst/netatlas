@@ -458,7 +458,7 @@ test('the steady state is summarized: a kind of the scenario’s message seen on
   assert.ok(m.p.repeats >= before);
   // and the pacing text says what it waits for, when it waits
   m.until(() => !!m.p.holding(), 120000);
-  assert.match(m.p.describe(), /^Readable · 3–5 s per hop · 1× · (your events in front · )?waiting for packet arrival/);
+  assert.match(m.p.describe(), /^Readable · 3–5 s\/hop · 1× · (your events in front · )?waiting for packet arrival/);
 });
 
 test('the words of a hold: neighbor resolution, establishing TCP, retransmitting SYN, a membership report — from the held hop itself', () => {
