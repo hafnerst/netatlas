@@ -445,7 +445,7 @@ test('Analyze menu: between Find and Simulate, built like the others: the task a
   const order = [...header.matchAll(/<button id="([a-z-]+-btn)" type="button" class="menu-btn"/g)].map((m) => m[1]);
   assert.deepEqual(order.slice(0, 6), ['menu-btn', 'export-btn', 'find-btn', 'analyze-btn', 'simulate-btn', 'help-btn']);
   const whole = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.overview', 'trace.open', 'analyze.diagnose', 'trace.exit', 'analyze.spof', 'analyze.whatif', 'analyze.capacity', 'analyze.checks', 'analyze.findings', 'analyze.addressing', 'focus.window', 'focus.exit']);
+  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.overview', 'trace.open', 'analyze.diagnose', 'trace.exit', 'analyze.spof', 'analyze.outage', 'analyze.capacity', 'analyze.checks', 'analyze.findings', 'analyze.addressing', 'focus.window', 'focus.exit']);
   assert.match(whole, /<button id="btn-addressing" type="button" role="menuitem" data-command="analyze\.addressing" title="Open or create a model first" disabled><span class="mi-label">Addressing<\/span><span class="mi-hint">I<\/span><\/button>/);
   assert.match(whole, /<button id="btn-trace" type="button" role="menuitem" data-command="trace\.open"[^>]*><span class="mi-label">Communication<\/span><span class="mi-hint">T<\/span>/);
   assert.match(whole, /<button id="btn-diagnose" type="button" role="menuitem" data-command="analyze\.diagnose"[^>]*><span class="mi-label">Diagnose selected communication<\/span><span class="mi-hint">Shift\+D<\/span>/);

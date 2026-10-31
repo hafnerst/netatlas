@@ -2231,8 +2231,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Overview, Communication (with Diagnose selected communication and Clear path trace), Resilience (single-component failures, failure scenario, capacity), Design review (requirements, findings), Addressing, then Focus… and Exit focus; Simulate holds Start simulation…, Experiments… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.overview trace.open analyze.diagnose trace.exit analyze.spof analyze.whatif analyze.capacity analyze.checks analyze.findings analyze.addressing focus.window focus.exit' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit' && Array.from(doc.querySelectorAll('#analyze-menu [data-command]')).every((e) => (e.getAttribute('data-command') === 'focus.window') === e.hasAttribute('aria-haspopup')),
+        'Analyze holds Overview, Communication (with Diagnose selected communication and Clear path trace), Resilience (single-component failures, outage impact, capacity), Design review (requirements, findings), Addressing, then Focus… and Exit focus; Simulate holds Start simulation…, Experiments… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.overview trace.open analyze.diagnose trace.exit analyze.spof analyze.outage analyze.capacity analyze.checks analyze.findings analyze.addressing focus.window focus.exit' && menuIds('simulate-menu').join(' ') === 'sim.start sim.experiments sim.exit' && Array.from(doc.querySelectorAll('#analyze-menu [data-command]')).every((e) => (e.getAttribute('data-command') === 'focus.window') === e.hasAttribute('aria-haspopup')),
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -2281,7 +2281,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('a row selected: what its failure affects in the evidence panel (the four measures apart), the row marked, its objects in the diagram', app.analyzeSelection() === 'spof:device:hq-fw' && q('#ws-an-right #an-detail')!.getAttribute('data-ev-kind') === 'Failure impact' && /Requirements no longer satisfied[\s\S]*Configured dependencies unavailable[\s\S]*Devices disconnected[\s\S]*Relations unavailable/.test(q('#ws-an-right #an-detail')!.textContent || '') && !!q('[data-an-root] tr[data-spof="device:hq-fw"].an-selected') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel'));
       (q('[data-an-root] tr[data-spof="device:hq-fw"] [data-spof-whatif]') as HTMLElement).click();
       await tick();
-      check('Scenario on a row: Failure scenario with the comparison in the results, its failed objects marked in the diagram; Back returns', app.analyzeMode() === 'scenario' && !!q('#ws-an-dock #wi-summary') && /hq-fw/.test(q('#ws-an-dock #wi-summary')!.textContent || '') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel') && /Back to Resilience/.test((q('#an-back') || { textContent: '' }).textContent || ''));
+      check('Investigate on a row: Outage impact with the same component prepared — nothing analyzed yet, the keyboard on Analyze impact; Back returns', app.analyzeMode() === 'outage' && !!q('#ws-an-left [data-oi-pick="device:hq-fw"]') && !q('#ws-an-dock #oi-summary') && doc.activeElement === q('#oi-go') && /Back to Resilience/.test((q('#an-back') || { textContent: '' }).textContent || ''));
+      (q('#oi-go') as HTMLElement).click();
+      await tick();
+      check('… Analyze impact: the comparison in the results, the outage’s component marked in the diagram, the model unchanged', /Outage: hq-fw/.test((q('#ws-an-dock #oi-summary') || { textContent: '' }).textContent || '') && !!q('#viewport [data-ref="device:hq-fw"].ws-sel') && app.exportText() === yamlBefore);
       filter.value = '';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
@@ -6203,12 +6206,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.openSpof();
       for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
       check('the service and requirement impact of every candidate is checked; the coverage line says so', /Service and requirement impact: Checked all \d+ candidates, against \d+ configured dependenc/.test(q('#spof-progress')!.textContent || ''), q('#spof-progress')!.textContent || '');
-      // failure domains: an explicit editor (Failure scenario → Configure failure domains…), not part of every question
-      app.openResilience('scenario');
+      // failure domains: an explicit editor (Outage impact → Edit failure domains…), not part of every question
+      app.openResilience('outage');
       await tick();
       (q('#dom-config') as HTMLElement).click();
       await tick();
-      check('Configure failure domains… opens an editor in the right panel that says it is one; nothing is evaluated by it', /^Failure domains$/.test(q('#an-ed-h')!.textContent || '') && !!q('#ws-an-right #an-editor #dom-add'));
+      check('Edit failure domains… opens an editor in the right panel that says it is one; nothing is evaluated by it', /^Failure domains$/.test(q('#an-ed-h')!.textContent || '') && !!q('#ws-an-right #an-editor #dom-add'));
       (q('#dom-add') as HTMLElement).click();
       await tick();
       setF('dom-f-label', 'Edge shelf');
@@ -6216,16 +6219,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#an-ed-save') as HTMLElement).click();
       await tick();
       check('a failure domain is added by its explicit members (one undo step)', app.session!.model.failureDomains.length === 2 && app.session!.model.failureDomains[1].id === 'edge-shelf' && app.session!.model.failureDomains[1].members.join() === 'edge' && /id: edge-shelf/.test(app.exportText()));
-      const sel = q('#wi-domain') as HTMLSelectElement;
-      sel.value = 'cell-cabinet';
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      (q('#wi-go') as HTMLElement).click();
+      const sel = q('#oi-set') as HTMLSelectElement;
+      sel.value = 'domain:cell-cabinet';
+      (q('#oi-set-add') as HTMLElement).click();
       await tick();
-      check('… capacity: the applications with an interval are the stated traffic, evaluated (what the failure leaves without a path is said: not carried)', q('#wi-capacity')!.getAttribute('data-evaluated') === 'yes' && /^Capacity: \d+ demands?: \d+ fit.*\d+ not carried$/.test(q('#wi-capacity summary')!.textContent || ''), q('#wi-capacity summary')!.textContent || '');
-      check('What if the domain fails: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context (a hypothetical failure condition on the configured model)', /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || '') && /dependenc(y|ies) becomes? unavailable/.test(q('#wi-summary')!.textContent || '') && !!q(':is(#toolwin, [data-an-root]) .wi-group[data-change="unavailable"]') && /Failure domain cell-cabinet/.test(q('#ws-an-left .an-ctx-line')!.textContent || '') && /Hypothetical failure condition: cell-cabinet/.test(q('#ws-an-left .an-ctx-line')!.textContent || ''));
+      check('a saved failure set is an optional shortcut: its components are added and shown, each said to come from the set', ['device:tap', 'device:cell-sw', 'device:edge'].every((r) => !!q(`#ws-an-left [data-oi-pick="${r}"]`)) && /3 from the saved failure set Cell cabinet/.test(q('#oi-counts')!.textContent || '') && /does not change the saved failure set/.test(q('#oi-condition')!.textContent || ''), q('#oi-condition')!.textContent || '');
+      (q('#oi-go') as HTMLElement).click();
+      await tick();
+      check('… capacity: the applications with an interval are the stated traffic, evaluated (what the outage leaves without a path is said: not carried)', /^Capacity under the outage: \d+ demands?: \d+ fit.*\d+ not carried$/.test(q('#oi-capacity summary')!.textContent || ''), q('#oi-capacity summary') ? q('#oi-capacity summary')!.textContent || '' : 'no capacity group');
+      check('Outage impact of the set: the comparison with the same baseline says which dependencies become unavailable (the MQTT clients lose their broker), with the context (a hypothetical outage on the configured model)', /Outage: cell-sw, edge, tap/.test(q('#oi-summary')!.textContent || '') && /configured dependenc(y becomes|ies become) unavailable/.test(q('#oi-summary')!.textContent || '') && !!q('[data-an-root] .wi-group[data-change="unavailable"]') && /Outage of cell-sw, edge, tap/.test(q('#ws-an-left .an-ctx-line')!.textContent || '') && /Hypothetical outage: cell-sw, edge, tap/.test(q('#ws-an-left .an-ctx-line')!.textContent || ''), q('#oi-summary')!.textContent || '');
       app.undo();
       await tick();
-      check('undo removes the domain; the scenario’s result is marked outdated, not computed again', app.exportText() === yamlBefore && !!q('#ws-an-left .an-outdated') && /Failure of cell-cabinet/.test(q('#wi-summary')!.textContent || ''));
+      check('undo removes the domain; the outage result is marked outdated, not computed again', app.exportText() === yamlBefore && !!q('#ws-an-left .an-outdated') && /Outage: cell-sw, edge, tap/.test(q('#oi-summary')!.textContent || ''));
       app.closeToolWindow();
       await tick();
       // a snapshot: the guest's address from its lease, the policy's decision
@@ -6750,14 +6755,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // data center: the stated replication over two spines, and what survives spine 1's power feed
       app.loadExampleNamed('datacenter-evpn.yaml');
       await tick();
-      app.openResilience('scenario');
+      app.prepareOutage(['domain:spine1-power']);
+      app.runOutage();
       await tick();
-      const dsel = q('#wi-domain') as HTMLSelectElement;
-      dsel.value = 'spine1-power';
-      dsel.dispatchEvent(new Event('change', { bubbles: true }));
-      (q('#wi-go') as HTMLElement).click();
-      await tick();
-      check('data center: What if spine 1’s power fails — the replication that depended on the distribution over two spines exceeds the surviving 100G cables', /exceeds/.test(q('#wi-capacity')!.textContent || ''), (q('#wi-capacity')!.textContent || '').slice(0, 200));
+      check('data center: the outage of spine 1’s power feed — the replication that depended on the distribution over two spines exceeds the surviving 100G cables', /exceeds/.test((q('#oi-capacity') || { textContent: '' }).textContent || ''), ((q('#oi-capacity') || { textContent: '' }).textContent || '').slice(0, 200));
       app.closeToolWindow();
       // embedded / IoT: the repeatable failure experiment
       app.loadExampleNamed('ot-network.yaml');
