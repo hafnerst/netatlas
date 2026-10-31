@@ -169,24 +169,32 @@ test('Resilience and Design review: a multi-component failure without a hidden f
     await waitReady(page);
     await page.eval(`localStorage.clear(), netatlas.loadExampleNamed('ot-network.yaml'), true`);
     await page.settle(150);
-    // (6) Failure scenario straight from the menu: the condition is the question itself
+    // (6) Outage impact straight from the menu: components picked by search, the condition previewed, then analyzed
     await page.click('#analyze-btn');
     await page.click('#btn-whatif');
-    assert.deepEqual([await page.eval(`netatlas.analyzeTask()`), await page.eval(`netatlas.analyzeMode()`)], ['resilience', 'scenario']);
-    await page.click('#wi-mode-components');
-    await page.eval(`document.getElementById('wi-components').focus(), true`);
-    await page.type('edge, tap');
-    await press(page, '#wi-go');
+    assert.deepEqual([await page.eval(`netatlas.analyzeTask()`), await page.eval(`netatlas.analyzeMode()`)], ['resilience', 'outage']);
+    assert.equal(await page.eval(`document.activeElement.id`), 'oi-search', 'the picker is where the question starts');
+    for (const id of ['edge', 'tap']) {
+      await page.type(id);
+      await page.settle(60);
+      // (Enter adds an exact id only; ↓ then Enter the highlighted match)
+      await page.key('Enter', 'Enter', 13);
+      await page.settle(80);
+    }
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#oi-condition [data-oi-pick]')).map((e) => e.getAttribute('data-oi-pick'))`), ['device:edge', 'device:tap']);
+    assert.match(await page.eval(`document.getElementById('oi-counts').textContent`), /^2 explicitly selected components\.$/);
+    await press(page, '#oi-go');
     await page.settle(150);
-    const sum = await page.eval(`document.getElementById('wi-summary').textContent`);
-    assert.match(sum, /^Failure of edge, tap \(\d+ components?\): \d+ saved requirements? no longer satisfied; \d+ configured dependenc(y becomes|ies become) unavailable/);
-    assert.match(await page.eval(`document.querySelector('#ws-an-left .an-ctx-line').textContent`), /Hypothetical failure condition: edge, tap/);
+    const sum = await page.eval(`document.getElementById('oi-summary').textContent`);
+    assert.match(sum, /^Outage: edge, tapCompared with the same configured architecture without this outage:.*configured dependenc(y becomes|ies become) unavailable/);
+    assert.match(await page.eval(`document.querySelector('#ws-an-left .an-ctx-line').textContent`), /Hypothetical outage: edge, tap/);
     // (7) an affected dependency: its evidence, then its communication in Communication; Back returns to it
     const depKey = await page.eval(`document.querySelector('#ws-an-dock [data-change="unavailable"] [data-an-item^="dep:"]').getAttribute('data-an-item')`);
     await press(page, `#ws-an-dock [data-change="unavailable"] .an-pick[data-an-item="${depKey}"]`);
     const dep = await page.eval(EV);
     assert.equal(dep.kind, 'Dependency');
-    assert.match(dep.ctx, /Hypothetical failure condition/);
+    assert.match(dep.ctx, /Hypothetical outage/);
+    assert.match(await page.eval(`document.querySelector('#ws-an-right [data-ev-next="communication"]').textContent`), /without the outage$/, 'the baseline check is said to be one');
     await press(page, '#ws-an-right [data-ev-next="communication"]');
     await page.settle(150);
     assert.equal(await page.eval(`netatlas.analyzeTask()`), 'communication');
@@ -195,7 +203,7 @@ test('Resilience and Design review: a multi-component failure without a hidden f
     await press(page, '#an-back');
     await page.settle(100);
     const back = await page.eval(EV);
-    assert.deepEqual([back.task, back.mode, back.sel, back.kind], ['resilience', 'scenario', depKey, 'Dependency'], 'Back: the scenario, its dependency still selected');
+    assert.deepEqual([back.task, back.mode, back.sel, back.kind], ['resilience', 'outage', depKey, 'Dependency'], 'Back: the outage, its dependency still selected');
     // (8) a policy-enforced isolation requirement: the editor says it is one; enforcement in the primary fields
     await page.eval(`netatlas.exitWorkspace().then(() => true)`);
     await page.settle(80);
@@ -321,7 +329,7 @@ test('layouts in both themes (desktop, laptop, narrow, 200 %): the answer and it
       for (const [W, H, z] of [[1440, 900, 1], [1280, 720, 1], [600, 800, 1], [1440, 900, 2]]) {
         await page.cmd('Emulation.setDeviceMetricsOverride', { width: Math.round(W / z), height: Math.round(H / z), deviceScaleFactor: z, mobile: false });
         await page.settle(100);
-        for (const run of [`netatlas.runCommand('trace.open'), netatlas.setTraceForm({ from: 'hq-fw', to: 'hq-log', service: 'udp/514' }), netatlas.runTrace()`, `netatlas.runCommand('analyze.addressing')`, `netatlas.runWhatIf(['hq-rack-a'])`, `netatlas.runCommand('analyze.findings')`, `netatlas.runCommand('analyze.overview')`]) {
+        for (const run of [`netatlas.runCommand('trace.open'), netatlas.setTraceForm({ from: 'hq-fw', to: 'hq-log', service: 'udp/514' }), netatlas.runTrace()`, `netatlas.runCommand('analyze.addressing')`, `netatlas.prepareOutage(['domain:hq-rack-a']), netatlas.runOutage()`, `netatlas.runCommand('analyze.findings')`, `netatlas.runCommand('analyze.overview')`]) {
           await page.eval(`(${run}, true)`);
           await page.settle(120);
           const where = `${theme} ${W}×${H} ${z * 100}% ${run.slice(0, 40)}`;

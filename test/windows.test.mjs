@@ -76,7 +76,7 @@ test('Trace path: the hop table’s columns; the tool windows’ commands (F6, C
   assert.equal(cmds.get('window.focus').keys.whileTyping, true, 'F6 works while typing in a field');
   // (a command that opens a dialog or a tool window says so; one that opens a task of the Analyze workspace does not)
   for (const id of ['focus.window', 'sim.start']) assert.match(cmds.get(id).label, /…$/, id);
-  for (const id of ['analyze.overview', 'analyze.addressing', 'trace.open', 'analyze.spof', 'analyze.whatif', 'analyze.capacity', 'analyze.checks', 'analyze.findings']) assert.doesNotMatch(cmds.get(id).label, /…$/, id);
+  for (const id of ['analyze.overview', 'analyze.addressing', 'trace.open', 'analyze.spof', 'analyze.outage', 'analyze.capacity', 'analyze.checks', 'analyze.findings']) assert.doesNotMatch(cmds.get(id).label, /…$/, id);
   assert.deepEqual(['trace.open', 'analyze.diagnose', 'analyze.spof', 'analyze.checks', 'analyze.addressing'].map((id) => cmds.get(id).label), ['Communication', 'Diagnose selected communication', 'Resilience: single-component failures', 'Design review: requirements', 'Addressing']);
   assert.equal(C.keyLabel(cmds.get('analyze.addressing').keys), 'I');
   assert.equal(C.keyLabel(cmds.get('focus.window').keys), 'Shift+F');

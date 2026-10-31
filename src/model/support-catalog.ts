@@ -73,9 +73,9 @@ export const ANALYSIS_SUPPORT: readonly AnalysisSupport[] = [
   },
   {
     id: 'failure',
-    name: 'Resilience: failures, scenarios, capacity',
-    does: 'Single-component failures (each cable, device and LAG alone) with separate measures: requirements no longer satisfied, configured dependencies unavailable, devices disconnected, relations unavailable; failure scenarios of failure domains or up to 64 components, compared with the same baseline: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity, also without a failure (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
-    not: 'business criticality, probabilities, convergence and recovery times, combinations beyond the condition given; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
+    name: 'Resilience: failures, outage impact, capacity',
+    does: 'Single-component failures (each cable, device and LAG alone) with separate measures: requirements no longer satisfied, configured dependencies unavailable, devices disconnected, relations unavailable; outage impact of up to 64 components you choose (devices, cables, interfaces, relations; a group by its devices; a saved failure domain as an optional shortcut), compared with the same configured architecture without the outage, what was assumed told apart from what follows from it: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity, also without a failure (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
+    not: 'business criticality, probabilities, production availability, protocol convergence, recovery times and transient loss (Experiments), combinations beyond the condition given, a hypothetical outage on a simulation snapshot, a network or an application unavailable on its own; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
   },
   {
     id: 'timing',

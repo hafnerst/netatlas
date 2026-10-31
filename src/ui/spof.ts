@@ -1,20 +1,19 @@
 /**
- * Resilience (Analyze → Resilience) in three modes: single-component
- * failures (separate measures — requirements, configured dependencies,
- * devices, relations — none summed, each value explicit; checked
- * progressively and cancellably), a failure scenario (a domain or a few
- * components against the same baseline; failure domains in an explicit
- * editor) and capacity (the stated demands against the stated speeds, with
- * or without a failure). spofRows, spofCsv, spofText and whatIfText are pure.
+ * Resilience (Analyze → Resilience): single-component failures (separate
+ * measures — requirements, configured dependencies, devices, relations —
+ * none summed, each value explicit; checked progressively and cancellably),
+ * capacity (the stated demands against the stated speeds, with or without a
+ * failure) and the failure domains' editor (an explicit model edit). Outage
+ * impact is ui/outage.ts. spofRows, spofCsv and spofText are pure.
  */
 import { DEP_CHANGE_TEXT, DEP_LABEL, DepChange } from '../analysis/dependencies';
 import { Spof, SpofCandidate, refLabel } from '../analysis/failure';
 import { Coverage, ResultInfo, coverageText, exportFooter, exportHeader } from '../analysis/result';
-import { EXP_CHANGE_TEXT, ExpChangeKind, WhatIf } from '../analysis/whatif';
+import { EXP_CHANGE_TEXT, ExpChangeKind } from '../analysis/whatif';
 import { CapacityChange, CapacityResult, DemandResult, ResourceLoad, bpsText } from '../analysis/capacity';
 import { FAILURE_DOMAIN_KINDS, Model } from '../model/types';
 import { el } from './dom';
-import { ContextBarActions, ContextBarState, contextBar, coverageLine, limitsDetails } from './analysis-ui';
+import { ContextBarActions, ContextBarState, contextBar, limitsDetails } from './analysis-ui';
 import { EvidenceAction, EvidenceView } from './evidence';
 
 /** How a failure changes a demand's capacity, in words. */
@@ -295,7 +294,7 @@ export function spofTable(doc: Document, rows: SpofRow[], st: SpofViewState, vie
     const d = el(doc, 'details', { class: 'an-limits' }, [el(doc, 'summary', {}, ['What was checked'])]);
     d.appendChild(el(doc, 'p', { class: 'small' }, [`Candidates: ${candidatesText(view.cands) || 'none'}, each failing alone.`]));
     if (p) d.appendChild(el(doc, 'p', { class: 'small' }, [`Service checks: ${p.deps} configured dependenc${p.deps === 1 ? 'y' : 'ies'}${p.indeterminate ? `, ${p.indeterminate} of them not determinable in the configured model (their consumers take their addresses at runtime: a simulation snapshot can tell)` : ''}; ${p.reqs} saved requirement${p.reqs === 1 ? '' : 's'}.`]));
-    d.appendChild(el(doc, 'p', { class: 'small' }, ['Not checked: relations or interfaces failing alone, combinations of failures (Failure scenario), dependencies the model does not configure, runtime behaviour.']));
+    d.appendChild(el(doc, 'p', { class: 'small' }, ['Not checked: relations or interfaces failing alone, combinations of failures (Outage impact), dependencies the model does not configure, runtime behaviour.']));
     wrap.appendChild(d);
     return wrap;
   }
@@ -329,7 +328,7 @@ export function spofTable(doc: Document, rows: SpofRow[], st: SpofViewState, vie
         el(doc, 'td', { class: 'nowrap small' }, [status]),
         el(doc, 'td', { class: 'nowrap' }, [
           el(doc, 'button', { type: 'button', class: 'mini', 'data-spof-show': r.ref, 'aria-label': `Show ${r.element} in the diagram` }, ['Show']),
-          el(doc, 'button', { type: 'button', class: 'mini', 'data-spof-whatif': r.fail.join(' '), 'aria-label': `Investigate ${r.element} failing as a failure scenario` }, ['Scenario']),
+          el(doc, 'button', { type: 'button', class: 'mini', 'data-spof-whatif': r.fail.join(' '), 'aria-label': `Investigate the outage of ${r.element} in Outage impact` }, ['Investigate']),
         ]),
       ]),
     );
@@ -361,7 +360,7 @@ export function spofEvidence(doc: Document, r: SpofRow, changes: DepChange[] | n
   line('Devices disconnected', r.devicesCut ? `${r.devicesCut}: ${r.cuts}` : 'None affected');
   line('Relations unavailable', r.relations || 'None affected');
   const evidence: Node[] = [];
-  const next: EvidenceAction[] = [{ id: 'scenario', label: 'Investigate as failure scenario', why: 'The same failure in Failure scenario: what survives through an alternative, the requirements before and after, capacity', ref: r.fail.join(' ') }];
+  const next: EvidenceAction[] = [{ id: 'scenario', label: 'Investigate this outage', why: 'Prepares the same component condition in Outage impact (add components to combine them; analyzed when you ask): what survives through an alternative, the requirements before and after, capacity', ref: r.fail.join(' ') }];
   if (changes) {
     const lost = changes.filter((c) => c.change === 'unavailable' || c.change === 'indeterminate' || c.change === 'degraded');
     if (lost.length) {
@@ -383,19 +382,22 @@ export function spofEvidence(doc: Document, r: SpofRow, changes: DepChange[] | n
   return { kind: 'Failure impact', title: `${r.type} ${r.element} fails alone`, context, explanation: ex, evidence, objects: objs, next };
 }
 
-// ------------------------------------------------------------ failure scenario
+// ------------------------------------------------------------ a failure condition (Capacity)
 
+export interface CapacityActions extends ContextBarActions {
+  wiInput(k: keyof WhatIfForm, v: string): void;
+  capRun(): void;
+}
+
+/** Capacity's optional failure condition: none, components, or a saved failure set (offered only when the model has one). */
 export interface WhatIfForm {
-  /** none: no failure (Capacity only) */
   mode: 'none' | 'domain' | 'components';
   domain: string;
   components: string;
-  /** device pairs too: '' none, 'entire', 'group:<id>' */
-  reach: string;
 }
 
 export function newWhatIfForm(): WhatIfForm {
-  return { mode: 'domain', domain: '', components: '', reach: '' };
+  return { mode: 'none', domain: '', components: '' };
 }
 
 export interface DomainForm {
@@ -407,34 +409,16 @@ export interface DomainForm {
   error: string;
 }
 
-export interface WhatIfView {
-  model: Model;
-  form: WhatIfForm;
-  result: WhatIf | null;
-  outdated: boolean;
-  locked: string;
-  bar: ContextBarState;
-  /** the selected item ('' none) */
-  sel: string;
-}
-
-export interface WhatIfActions extends ContextBarActions {
-  wiInput(k: keyof WhatIfForm, v: string): void;
-  wiRun(): void;
-  wiOut(kind: 'copy' | 'save'): void;
-  /** open the failure domains' editor */
-  domains(): void;
-}
-
-/** The condition of a scenario (or a capacity question): a failure domain, or components (Capacity: also none). Its controls carry ids with `prefix`. */
-function conditionForm(doc: Document, m: Model, f: WhatIfForm, act: WhatIfActions, prefix: string, none: boolean): HTMLElement {
+/** Capacity's condition: none, components, or a saved failure set. Its controls carry ids with `prefix`. */
+function conditionForm(doc: Document, m: Model, f: WhatIfForm, act: CapacityActions, prefix: string): HTMLElement {
   const box = el(doc, 'div', { class: 'wi-cond' });
   const seg = el(doc, 'div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Failure condition' });
-  const modes: Array<[WhatIfForm['mode'], string]> = (none ? ([['none', 'No failure']] as Array<[WhatIfForm['mode'], string]>) : []).concat([
-    ['domain', 'Failure domain'],
+  const modes: Array<[WhatIfForm['mode'], string]> = [
+    ['none', 'No failure'],
     ['components', 'Components'],
-  ]);
-  const cur = !none && f.mode === 'none' ? 'domain' : f.mode;
+  ];
+  if (m.failureDomains.length) modes.push(['domain', 'Saved failure set']);
+  const cur = f.mode === 'domain' && !m.failureDomains.length ? 'none' : f.mode;
   for (const [k, label] of modes) {
     const on = cur === k;
     const b = el(doc, 'button', { type: 'button', role: 'radio', class: 'mini' + (on ? ' active' : ''), 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-wi-mode': k, id: `${prefix}-mode-${k}` }, [label]);
@@ -453,11 +437,11 @@ function conditionForm(doc: Document, m: Model, f: WhatIfForm, act: WhatIfAction
   const grid = el(doc, 'div', { class: 'tf-grid' });
   if (cur === 'domain') {
     const s = el(doc, 'select', { id: prefix + '-domain' }) as HTMLSelectElement;
-    s.appendChild(el(doc, 'option', { value: '' }, [m.failureDomains.length ? 'Choose a failure domain…' : 'The model has no failure domain']));
+    s.appendChild(el(doc, 'option', { value: '' }, ['Choose a saved failure set…']));
     for (const d of m.failureDomains) s.appendChild(el(doc, 'option', { value: d.id }, [`${d.label} (${(FAILURE_DOMAIN_KINDS.find((k) => k.id === d.kind) || { label: d.kind }).label}, ${d.members.length} member${d.members.length === 1 ? '' : 's'})`]));
     s.value = f.domain;
     s.addEventListener('change', () => act.wiInput('domain', s.value));
-    grid.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: prefix + '-domain' }, ['Domain']), s]));
+    grid.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: prefix + '-domain' }, ['Set']), s]));
   } else if (cur === 'components') {
     const list = el(doc, 'datalist', { id: prefix + '-parts' });
     for (const d of m.devices) list.appendChild(el(doc, 'option', { value: d.id }, ['Device']));
@@ -478,170 +462,10 @@ export function conditionEntries(f: WhatIfForm): string[] {
   return f.mode === 'domain' ? (f.domain ? [f.domain] : []) : f.mode === 'components' ? f.components.split(/[\s,]+/).filter((x) => x) : [];
 }
 
-/** The question of Failure scenario (left): the context, the condition, what else to check, Analyze; the failure domains' editor behind its own action. */
-export function scenarioRequest(doc: Document, v: WhatIfView, act: WhatIfActions): HTMLElement {
-  const sec = el(doc, 'div', { class: 'wi-section' });
-  sec.appendChild(contextBar(doc, v.bar, act));
-  sec.appendChild(el(doc, 'p', { class: 'muted small' }, ['A failure domain or a few components fail together; the result is compared with the same baseline. A hypothetical condition, not a probability; no convergence time is claimed.']));
-  const m = v.model;
-  const f = v.form;
-  const form = el(doc, 'form', { class: 'trace-form', 'aria-label': 'Failure scenario' }) as HTMLFormElement;
-  form.appendChild(conditionForm(doc, m, f, act, 'wi', false));
-  const g = el(doc, 'details', { class: 'dc-adv' }, [el(doc, 'summary', {}, ['Advanced options: device pairs'])]);
-  if (f.reach) g.setAttribute('open', '');
-  const r = el(doc, 'select', { id: 'wi-reach' }) as HTMLSelectElement;
-  r.appendChild(el(doc, 'option', { value: '' }, ['Services and requirements only']));
-  r.appendChild(el(doc, 'option', { value: 'entire' }, ['Also device pairs: entire architecture (bounded)']));
-  for (const gr of m.groups) r.appendChild(el(doc, 'option', { value: 'group:' + gr.id }, [`Also device pairs: ${gr.label}`]));
-  r.value = f.reach;
-  r.addEventListener('change', () => act.wiInput('reach', r.value));
-  g.appendChild(el(doc, 'div', { class: 'tf-row dc-row' }, [el(doc, 'label', { for: 'wi-reach' }, ['Check']), r]));
-  form.appendChild(g);
-  form.appendChild(el(doc, 'div', { class: 'tf-actions' }, [el(doc, 'button', { type: 'submit', class: 'primary', id: 'wi-go' }, ['Analyze scenario'])]));
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    act.wiRun();
-  });
-  sec.appendChild(form);
-  const n = m.failureDomains.length;
-  const cfg = el(doc, 'button', { type: 'button', class: 'mini', id: 'dom-config', title: 'Add, change or delete the model’s failure domains (an editor in the right panel)' }, ['Configure failure domains…']);
-  cfg.addEventListener('click', () => act.domains());
-  sec.appendChild(el(doc, 'p', { class: 'small muted' }, [`${n ? n + ' failure domain' + (n === 1 ? '' : 's') : 'No failure domain'} in the model. `, cfg]));
-  return sec;
-}
-
-const CHANGE_ORDER: Array<DepChange['change']> = ['unavailable', 'degraded', 'indeterminate', 'alternative', 'consumer-down', 'not-before'];
-
 /** A selectable row of a result list (its evidence on the right). */
 function pickItem(doc: Document, key: string, sel: string, kids: Array<Node | string>, attrs: { [k: string]: string } = {}): HTMLElement {
   const on = key === sel;
   return el(doc, 'li', { ...attrs, class: (attrs.class ? attrs.class + ' ' : '') + 'an-pickrow' + (on ? ' an-selected' : '') }, [...kids, ' ', el(doc, 'button', { type: 'button', class: 'mini an-pick', 'data-an-item': key, 'aria-pressed': on ? 'true' : 'false', 'aria-controls': 'an-detail' }, ['Evidence'])]);
-}
-
-/** The scenario's results (bottom): the condition and its counts, the changes, the surviving alternatives, the requirements, the structure, pairs, capacity, limits. */
-export function scenarioResults(doc: Document, v: WhatIfView, act: WhatIfActions): HTMLElement {
-  const w = v.result;
-  const box = el(doc, 'div', { class: 'wi-result', id: 'wi-result' });
-  if (!w) {
-    box.appendChild(el(doc, 'p', { class: 'muted' }, ['Choose a failure domain or name the components that fail, then Analyze scenario: the comparison with the baseline appears here.']));
-    return box;
-  }
-  const copy = el(doc, 'button', { type: 'button', class: 'mini', id: 'wi-copy' }, ['Copy as text']);
-  copy.addEventListener('click', () => act.wiOut('copy'));
-  const save = el(doc, 'button', { type: 'button', class: 'mini', id: 'wi-save' }, ['Save as text']);
-  save.addEventListener('click', () => act.wiOut('save'));
-  box.appendChild(el(doc, 'div', { class: 'an-res-tools', role: 'group', 'aria-label': 'Export the result' }, [copy, save]));
-  if (w.unknown.length) box.appendChild(el(doc, 'p', { class: 'trace-error', role: 'alert' }, [`Not in the model: ${w.unknown.join(', ')}.`]));
-  if (w.tooLarge || !w.result) {
-    box.appendChild(el(doc, 'p', { class: 'small', id: 'wi-summary', tabindex: '-1' }, [w.info.limits[w.info.limits.length - 1] || 'Nothing was evaluated.']));
-    return box;
-  }
-  const n = (k: string): number => w.deps.filter((d) => d.change === k).length;
-  const lostExp = w.expectations.filter((x) => REQ_LOST.indexOf(x.change) >= 0).length;
-  const sel = v.sel;
-  box.appendChild(
-    el(doc, 'p', { class: 'an-verdict ' + (n('unavailable') || lostExp ? 'v-violated' : n('indeterminate') ? 'v-indeterminate' : 'v-satisfied'), role: 'status', id: 'wi-summary', tabindex: '-1' }, [
-      el(doc, 'strong', {}, [`Failure of ${w.entries.join(', ')}`]),
-      ` (${w.refs.length} component${w.refs.length === 1 ? '' : 's'}): ${lostExp} saved requirement${lostExp === 1 ? '' : 's'} no longer satisfied; ${n('unavailable')} configured dependenc${n('unavailable') === 1 ? 'y becomes' : 'ies become'} unavailable, ${n('alternative')} survive${n('alternative') === 1 ? 's' : ''} through an alternative, ${n('degraded')} degraded, ${n('indeterminate')} cannot be determined.`,
-    ]),
-  );
-  box.appendChild(el(doc, 'p', { class: 'small muted' }, [`Baseline: the configured model with nothing failed. Condition: ${w.refs.map((r) => r.replace(/^[a-z]+:/, '')).join(', ')}${w.domains.length ? ` (failure domain${w.domains.length === 1 ? '' : 's'} ${w.domains.join(', ')})` : ''}.`]));
-  // the requirements first: what the user saved as must-hold
-  if (w.expectations.length) {
-    const sec = el(doc, 'section', { class: 'wi-group', 'aria-labelledby': 'wi-exp-h' }, [el(doc, 'h4', { id: 'wi-exp-h' }, [`Saved requirements (${w.expectations.length})`])]);
-    const ul = el(doc, 'ul', { class: 'small' });
-    for (const x of w.expectations) ul.appendChild(pickItem(doc, 'wexp:' + x.after.id, sel, [el(doc, 'strong', {}, [`${EXP_CHANGE_TEXT[x.change]}: `]), `${x.after.name} (${x.after.expect === 'blocked' ? 'must be blocked' : x.after.expect === 'available' ? 'must be available' : x.after.expect}; before ${x.before.verdict}, after ${x.after.verdict})`], { class: 'v-' + x.after.verdict, 'data-exp-change': x.change }));
-    sec.appendChild(ul);
-    box.appendChild(sec);
-  }
-  // the dependencies, by change (the alternatives are what survives)
-  for (const k of CHANGE_ORDER) {
-    const list = w.deps.filter((d) => d.change === k);
-    if (!list.length) continue;
-    const d = el(doc, 'details', { class: 'wi-group', 'data-change': k }, [el(doc, 'summary', {}, [`${k === 'alternative' ? 'Surviving alternatives — ' : ''}${DEP_CHANGE_TEXT[k]} (${list.length})`])]);
-    if (k === 'unavailable' || k === 'degraded' || k === 'alternative' || list.some((c) => 'dep:' + c.dep.key === sel)) d.setAttribute('open', '');
-    const ul = el(doc, 'ul', { class: 'small' });
-    for (const c of list) ul.appendChild(pickItem(doc, 'dep:' + c.dep.key, sel, [el(doc, 'span', { class: 'muted' }, [DEP_LABEL[c.dep.kind] + ': ']), el(doc, 'button', { type: 'button', class: 'ref', 'data-goto': c.dep.consumerRef }, [c.dep.text]), el(doc, 'div', { class: 'muted' }, [c.text])]));
-    d.appendChild(ul);
-    box.appendChild(d);
-  }
-  // capacity: the stated traffic against the stated capacity, before and after
-  if (w.capacity) {
-    const c = w.capacity;
-    const d = el(doc, 'details', { class: 'wi-group', id: 'wi-capacity', 'data-evaluated': c.after.evaluated ? 'yes' : 'no' }, [el(doc, 'summary', {}, [c.after.evaluated ? `Capacity: ${c.after.text}` : 'Capacity: not evaluated'])]);
-    if (!c.after.evaluated) d.appendChild(el(doc, 'p', { class: 'small muted' }, [c.after.text]));
-    else {
-      const ul = el(doc, 'ul', { class: 'small' });
-      for (const x of c.changes.filter((y) => y.change !== 'unchanged')) ul.appendChild(pickItem(doc, 'cap:' + x.demand.id, sel, [el(doc, 'strong', {}, [CAP_CHANGE_TEXT[x.change] + ': ']), x.demand.label, el(doc, 'div', { class: 'muted' }, [x.after.connectivity === 'retained' ? x.after.text : 'not carried: ' + x.after.text])], { 'data-cap-change': x.change }));
-      if (!ul.childNodes.length) ul.appendChild(el(doc, 'li', { class: 'muted' }, ['No demand changes: the stated traffic fits as it did.']));
-      d.appendChild(ul);
-      d.appendChild(el(doc, 'p', { class: 'small muted' }, ['Each resource, before and after: Resilience → Capacity with this condition.']));
-    }
-    box.appendChild(d);
-  }
-  // the structure
-  const s = w.summary;
-  if (s) {
-    const part = (label: string, list: Array<{ ref: string; state: string }>): string => (list.length ? `${label}: ${list.map((x) => x.ref.replace(/^[a-z]+:/, '') + (x.state === 'degraded' || x.state === 'takeover' ? ' (degraded)' : '')).join(', ')}` : '');
-    const lines = [part('Devices', s.devices), part('Cables', s.links), part('Relations', s.relations), part('Tunnels', s.tunnels), part('Networks', s.networks), part('Routes', s.routes)].filter((x) => x);
-    const d = el(doc, 'details', { class: 'wi-group' }, [el(doc, 'summary', {}, [`Structure: down or degraded (${lines.length ? s.devices.length + s.links.length + s.relations.length + s.tunnels.length + s.networks.length + s.routes.length : 0})`])]);
-    if (w.structural && w.structural.isolated.length) d.appendChild(el(doc, 'p', { class: 'small' }, [`Disconnected: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`]));
-    for (const l of lines) d.appendChild(el(doc, 'p', { class: 'small' }, [l]));
-    box.appendChild(d);
-  }
-  if (w.reach) {
-    const d = el(doc, 'details', { class: 'wi-group', open: '' }, [el(doc, 'summary', {}, [`Device pairs that lose reachability (${w.reach.pairs.length})`])]);
-    d.appendChild(coverageLine(doc, w.reach.coverage));
-    const ul = el(doc, 'ul', { class: 'small' });
-    for (const p of w.reach.pairs.slice(0, 50)) ul.appendChild(el(doc, 'li', {}, [`${p.from} → ${p.to}${p.partial ? ' (some equal-cost paths)' : ''}: ${p.detail}`]));
-    if (w.reach.pairs.length > 50) ul.appendChild(el(doc, 'li', { class: 'muted' }, [`… ${w.reach.pairs.length - 50} more (in the text export)`]));
-    d.appendChild(ul);
-    box.appendChild(d);
-  }
-  box.appendChild(limitsDetails(doc, w.info));
-  return box;
-}
-
-/** The evidence of an item of a scenario: a dependency, a requirement, a demand. */
-export function scenarioEvidence(doc: Document, w: WhatIf, key: string, context: string): EvidenceView | null {
-  const i = key.indexOf(':');
-  const kind = key.slice(0, i);
-  const id = key.slice(i + 1);
-  if (kind === 'dep') {
-    const c = w.deps.find((x) => x.dep.key === id);
-    if (!c) return null;
-    const next: EvidenceAction[] = [];
-    for (const o of c.dep.options) if (o.request) next.push({ id: 'communication', label: `Check ${o.text} in Communication`, why: 'This option’s communication, in Communication (on the configured model as it is: no failure applied)', ref: JSON.stringify(o.request) });
-    if (c.dep.kind === 'timing') next.push({ id: 'focus-timing', label: 'Focus on its timing context', ref: c.dep.consumer });
-    return {
-      kind: 'Dependency',
-      title: c.dep.text,
-      context,
-      explanation: [el(doc, 'p', { class: 'small' }, [el(doc, 'strong', {}, [DEP_CHANGE_TEXT[c.change] + ': ']), c.text]), el(doc, 'p', { class: 'small muted' }, [`When unavailable: ${c.dep.consequence}.`])],
-      evidence: [el(doc, 'dl', { class: 'trace-ends small' }, [el(doc, 'dt', {}, ['Before']), el(doc, 'dd', {}, [c.before.text]), el(doc, 'dt', {}, ['Under the condition']), el(doc, 'dd', {}, [c.after.text]), el(doc, 'dt', {}, ['Options']), el(doc, 'dd', {}, [c.dep.options.map((o) => o.text).join('; ') || '—'])])],
-      objects: [{ ref: c.dep.consumerRef, label: c.dep.consumerRef.replace(/^[a-z]+:/, '') }].concat(c.dep.options.filter((o) => !!o.provider).map((o) => ({ ref: 'device:' + o.provider, label: o.provider as string }))),
-      next,
-    };
-  }
-  if (kind === 'wexp') {
-    const x = w.expectations.find((y) => y.after.id === id);
-    if (!x) return null;
-    return {
-      kind: 'Requirement',
-      title: x.after.name,
-      context,
-      explanation: [el(doc, 'p', { class: 'small' }, [el(doc, 'strong', {}, [EXP_CHANGE_TEXT[x.change] + ': ']), x.after.reason])],
-      evidence: [el(doc, 'dl', { class: 'trace-ends small' }, [el(doc, 'dt', {}, ['Before']), el(doc, 'dd', {}, [`${x.before.verdict} — ${x.before.reason}`]), el(doc, 'dt', {}, ['Under the condition']), el(doc, 'dd', {}, [`${x.after.verdict} — ${x.after.reason}`])])],
-      objects: x.after.refs.filter((r) => /^(device|iface|link|relation):/.test(r)).slice(0, 24).map((r) => ({ ref: r, label: r.replace(/^[a-z]+:/, '') })),
-      next: [{ id: 'requirement', label: 'Open in Design review', ref: x.after.id }],
-    };
-  }
-  if (kind === 'cap' && w.capacity) {
-    const x = w.capacity.changes.find((y) => y.demand.id === id);
-    if (!x) return null;
-    return capChangeEvidence(doc, x, context);
-  }
-  return null;
 }
 
 // ------------------------------------------------------------ capacity
@@ -656,13 +480,13 @@ export interface CapacityView {
 }
 
 /** The question of Capacity (left): the context, an optional failure condition, Evaluate. */
-export function capacityRequest(doc: Document, v: CapacityView, act: WhatIfActions & { capRun(): void }): HTMLElement {
+export function capacityRequest(doc: Document, v: CapacityView, act: CapacityActions): HTMLElement {
   const sec = el(doc, 'div', { class: 'cap-section' });
   sec.appendChild(contextBar(doc, v.bar, act));
   sec.appendChild(el(doc, 'p', { class: 'muted small' }, ['The traffic the model states (demands, applications with an interval) against the stated speeds of the cables, aggregates and radios on its way. Not measured throughput, not hardware performance.']));
   const form = el(doc, 'form', { class: 'trace-form', 'aria-label': 'Capacity' }) as HTMLFormElement;
   form.appendChild(el(doc, 'p', { class: 'small' }, ['Under a failure condition (optional):']));
-  form.appendChild(conditionForm(doc, v.model, v.form, act, 'cap', true));
+  form.appendChild(conditionForm(doc, v.model, v.form, act, 'cap'));
   form.appendChild(el(doc, 'div', { class: 'tf-actions' }, [el(doc, 'button', { type: 'submit', class: 'primary', id: 'cap-go' }, ['Evaluate capacity'])]));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -818,31 +642,3 @@ export function domainsEditorBody(doc: Document, model: Model, f: DomainForm | n
   box.appendChild(grid);
   return box;
 }
-
-/** A what-if as text. */
-export function whatIfText(o: { title: string; version?: string; outdated: boolean }, w: WhatIf): string {
-  const lines = exportHeader({ analysis: 'Resilience: failure scenario', title: o.title, info: w.info, version: o.version, outdated: o.outdated });
-  lines.push(`Failure of ${w.entries.join(', ')}: ${w.refs.join(', ')}`);
-  if (w.unknown.length) lines.push(`Not in the model: ${w.unknown.join(', ')}`);
-  lines.push('');
-  for (const k of CHANGE_ORDER) {
-    const list = w.deps.filter((d) => d.change === k);
-    if (!list.length) continue;
-    lines.push(`${DEP_CHANGE_TEXT[k]} (${list.length}):`);
-    for (const c of list) lines.push(`  ${DEP_LABEL[c.dep.kind]}: ${c.dep.text} — ${c.text}`);
-  }
-  for (const x of w.expectations) lines.push(`Requirement ${x.after.name} (${x.after.expect}): ${EXP_CHANGE_TEXT[x.change]} — before ${x.before.verdict}, after ${x.after.verdict} — ${x.after.reason}`);
-  if (w.capacity) {
-    lines.push(`Capacity: ${w.capacity.after.text}`);
-    for (const x of w.capacity.changes.filter((y) => y.change !== 'unchanged')) lines.push(`  ${CAP_CHANGE_TEXT[x.change]}: ${x.demand.label} — ${x.after.text}`);
-  }
-  if (w.structural && w.structural.isolated.length) lines.push(`Disconnected: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`);
-  if (w.reach) {
-    lines.push(`Device pairs that lose reachability (${w.reach.pairs.length}); ${coverageText(w.reach.coverage)}:`);
-    for (const p of w.reach.pairs) lines.push(`  ${p.from} → ${p.to}${p.partial ? ' (some equal-cost paths)' : ''}: ${p.detail}`);
-  }
-  lines.push('');
-  for (const l of exportFooter(w.info)) lines.push(l);
-  return lines.join('\n') + '\n';
-}
-

@@ -72,11 +72,12 @@ import { Explorer, HistoryEntry, OverviewFacts, boundHistory, overviewEvidence, 
 import { DesignActions, DesignView, ExpectForm, FindingFilter, ShownFinding, designCsv, designText, findingEvidence, findingsRequest, findingsResults, formOf, newExpectForm, newFindingFilter, requirementEditorBody, requirementEvidence, requirementsRequest, requirementsResults } from './design-checks';
 import { ExpectationResult, ExpectationRun, evaluateExpectation, evaluateExpectations } from '../analysis/expectations';
 import { classCounts, groupFindings } from '../analysis/findings';
-import { FailureResult, ReachScope, Spof, SpofCandidate, failureCondition, failureRefs, simulate, singlePointsOfFailure, spofCandidates } from '../analysis/failure';
+import { FailureResult, ReachScope, Spof, SpofCandidate, failableRef, failureCondition, failureRefs, lostPairs, scopePairs, simulate, singlePointsOfFailure, spofCandidates } from '../analysis/failure';
 import { CapacityChange, CapacityResult, capacityAnalysis, compareCapacity } from '../analysis/capacity';
 import { DepChange, DepState, ServiceDependency, compareDependencies, dependencyBaseline, serviceDependencies } from '../analysis/dependencies';
-import { WhatIf, expChange, whatIf } from '../analysis/whatif';
-import { CapacityView, DomainForm, ReqHit, SpofRow, SpofSort, SpofView, WhatIfActions, WhatIfForm, WhatIfView, capacityEvidence, capacityRequest, capacityResults, conditionEntries, domainsEditorBody, newSpofViewState, newWhatIfForm, progressLine, scenarioEvidence, scenarioRequest, scenarioResults, shownSpofRows, spofCsv, spofEvidence, spofRequest, spofResults, spofRows, spofTable, spofText, whatIfText } from './spof';
+import { expChange, relevantDevices, whatIf } from '../analysis/whatif';
+import { CapacityActions, CapacityView, DomainForm, ReqHit, SpofRow, SpofSort, SpofView, WhatIfForm, capacityEvidence, capacityRequest, capacityResults, conditionEntries, domainsEditorBody, newSpofViewState, newWhatIfForm, progressLine, shownSpofRows, spofCsv, spofEvidence, spofRequest, spofResults, spofRows, spofTable, spofText } from './spof';
+import { OutageActions, OutagePick, OutageRun, OutageView, addPicks, expandSet, groupDevices, newOutageForm, outageEvidence, outagePreview, outageRequest, outageResults, outageText, pickLabel } from './outage';
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
@@ -2799,11 +2800,13 @@ export class App {
       j.timer = null;
     }
     this.spofJob = null;
-    this.wiRun = null;
-    this.wiForm = newWhatIfForm();
+    this.stopOutageReach(false);
+    this.oiRun = null;
+    this.oiForm = newOutageForm();
+    this.oiDeps = null;
     this.domForm = null;
     this.capRun = null;
-    this.capForm = { ...newWhatIfForm(), mode: 'none' };
+    this.capForm = newWhatIfForm();
     // the evaluations and what was selected in them
     this.dcRun = null;
     this.dcForm = null;
@@ -3529,11 +3532,14 @@ export class App {
     rows: SpofRow[] | null;
     at: number;
   } | null = null;
-  private wiForm: WhatIfForm = newWhatIfForm();
-  private wiRun: { model: Model; result: WhatIf; at: number } | null = null;
+  /** Outage impact's question (components, exact refs), its result (frozen with its model), the device pairs being traced, the dependencies of the model on screen */
+  private oiForm = newOutageForm();
+  private oiRun: OutageRun | null = null;
+  private oiReach: { run: OutageRun; pairs: Array<[string, string]>; next: number; timer: number | null } | null = null;
+  private oiDeps: { model: Model; deps: ServiceDependency[]; baseline: Map<string, DepState> | null } | null = null;
   private domForm: DomainForm | null = null;
   /** Capacity's question (a failure condition, or none) and its result */
-  private capForm: WhatIfForm = { ...newWhatIfForm(), mode: 'none' };
+  private capForm: WhatIfForm = newWhatIfForm();
   private capRun: { model: Model; at: number; before: CapacityResult; after: CapacityResult | null; changes: CapacityChange[]; condition: string[] } | null = null;
 
   /** The job for the model on screen (a new one when the model changed). */
@@ -3706,7 +3712,7 @@ export class App {
       info: resultInfo(
         { kind: 'model', scope: 'Every cable, device and LAG, each failing alone' },
         ['A failure propagates as the failure analysis models it (interfaces, aggregates, redundancy groups, relations over their underlay, static routes).', 'Service impact: the configured dependencies (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), each checked as the communication check does.', 'Requirements: every saved requirement under the failure as well, against its state with nothing failed.'],
-        ['Combinations of failures (Failure scenario).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'],
+        ['Combinations of failures (Outage impact).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'],
         { checked: progress.checked, eligible: progress.total, unit: 'candidates', cancelled: progress.cancelled },
       ),
     };
@@ -3761,10 +3767,7 @@ export class App {
       const wi = t.closest('[data-spof-whatif]');
       if (wi) {
         const refs = (wi.getAttribute('data-spof-whatif') || '').split(' ').filter((x) => x);
-        this.anGo('Resilience: single-component failures', () => {
-          this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((r) => r.replace(/^(device|link|relation|iface):/, '')).join(', ') };
-          this.runWhatIf(refs);
-        });
+        this.anGo('Resilience: single-component failures', () => void this.prepareOutage(refs));
         return;
       }
       const out = t.closest('[data-spof-out]');
@@ -3781,106 +3784,324 @@ export class App {
     return { left, bottom, ...e };
   }
 
-  /** The actions of Failure scenario and Capacity (their condition forms share them). */
-  private wiActions(form: 'wi' | 'cap'): WhatIfActions & { capRun(): void } {
-    const f = (): WhatIfForm => (form === 'wi' ? this.wiForm : this.capForm);
+  /** The actions of Capacity (its optional failure condition). */
+  private capActions(): CapacityActions {
     return {
-      refresh: () => (form === 'wi' ? this.wiRun && this.runWhatIf(this.wiRun.result.entries) : this.runCapacity()),
+      refresh: () => void this.runCapacity(),
       source: (src) => this.setAnalysisSource(src),
       wiInput: (k, v) => {
-        (f() as unknown as { [key: string]: string })[k] = v;
+        (this.capForm as unknown as { [key: string]: string })[k] = v;
         if (k === 'mode') {
           this.renderAnalyzeWs();
           const b = this.doc.querySelector(`#ws-an-left [data-wi-mode="${v}"]`) as HTMLElement | null;
           if (b) b.focus();
-        } else this.syncWhatIfContext();
+        } else this.syncCapacityContext();
       },
-      wiRun: () => {
-        const entries = conditionEntries(this.wiForm);
-        if (!entries.length) {
-          this.toast(this.wiForm.mode === 'domain' ? 'Choose a failure domain first.' : 'Name the components that fail.');
-          return;
-        }
-        this.runWhatIf(entries);
-      },
-      wiOut: (kind) => {
-        const w = this.wiRun;
-        const s = this.session as Session;
-        if (!w || !this.mdoc) return;
-        this.exportOut('text-' + kind, pictureBaseName(this.mdoc.fileName) + '-what-if', 'The failure scenario', () => whatIfText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result));
-      },
-      domains: () => this.openDomainsEditor(),
-      capRun: () => this.runCapacity(),
+      capRun: () => void this.runCapacity(),
     };
   }
 
-  /** The scenario's context line again in place (a draft condition shown as typed). */
-  private syncWhatIfContext(): void {
+  /** Capacity's context line again in place (a draft condition shown as typed). */
+  private syncCapacityContext(): void {
     const box = this.doc.querySelector('#ws-an-left .an-context');
-    if (!box || this.analyzeTask() !== 'resilience') return;
-    const mode = this.anModes.resilience;
-    if (mode === 'single') return;
-    box.replaceWith(contextBar(this.doc, mode === 'scenario' ? this.scenarioBar() : this.capacityBar(), this.wiActions(mode === 'scenario' ? 'wi' : 'cap')));
+    if (!box || this.analyzeTask() !== 'resilience' || this.anModes.resilience !== 'capacity') return;
+    box.replaceWith(contextBar(this.doc, this.capacityBar(), this.capActions()));
   }
 
-  private scenarioBar(): ContextBarState {
-    const w = this.wiRun;
-    const bar = this.barState('wi', w ? w.result.info.context : null, w ? w.model : null, 'A failure scenario evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a hypothetical failure.');
-    if (w) {
-      bar.computedAt = w.at;
-      bar.layers = [`Hypothetical failure condition: ${w.result.entries.join(', ')}`];
-      const asked = conditionEntries(this.wiForm);
-      if (asked.join(',') !== w.result.entries.join(',')) bar.draft = 'The condition was changed after this result: Analyze scenario answers the new one; the result below is for the condition before.';
-      if (w.result.reach && w.result.reach.coverage.checked < w.result.reach.coverage.eligible) bar.incomplete = `Device pairs: ${coverageText(w.result.reach.coverage)}.`;
+  // ---- Outage impact (ui/outage.ts): components chosen, then compared with the same architecture without them
+
+  /** The diagram selection when it can join the outage condition: a device, cable, interface, relation or group not in it yet. */
+  private outageSelection(): { ref: string; label: string } | null {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    if (!s || !sel) return null;
+    const ok = failableRef(s.model, sel) || (sel.indexOf('group:') === 0 && groupDevices(s.model, sel.slice(6)).length > 0);
+    if (!ok || this.oiForm.picks.some((p) => p.ref === sel)) return null;
+    return { ref: sel, label: pickLabel(s.model, sel).id };
+  }
+
+  /** The configured dependencies of the model on screen (the single-component report's when it is of this model), their baseline when asked. */
+  private outageDeps(baseline: boolean): { deps: ServiceDependency[]; baseline: Map<string, DepState> | null } {
+    const s = this.session as Session;
+    const j0 = this.spofJob;
+    const j = j0 && j0.model === s.model ? j0 : this.oiDeps && this.oiDeps.model === s.model ? this.oiDeps : (this.oiDeps = { model: s.model, deps: serviceDependencies(s.model), baseline: null });
+    if (baseline && !j.baseline) j.baseline = dependencyBaseline(j.model, j.deps);
+    return { deps: j.deps, baseline: j.baseline };
+  }
+
+  /** The device-pair scope the form asks for (none: no device-pair check). */
+  private outageScope(): ReachScope | undefined {
+    const r = this.oiForm.reach;
+    return r === 'entire' ? { kind: 'entire' } : r.indexOf('group:') === 0 ? { kind: 'group', group: r.slice(6) } : undefined;
+  }
+
+  private outageBar(): ContextBarState {
+    const run = this.oiRun;
+    const bar = this.barState('oi', run ? run.result.info.context : null, run ? run.model : null, 'Outage impact evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a hypothetical outage.');
+    if (run) {
+      bar.computedAt = run.at;
+      bar.layers = [`Hypothetical outage: ${run.picks.map((p) => p.ref.slice(p.ref.indexOf(':') + 1)).join(', ')}`];
+      const key = (ps: OutagePick[]): string => ps.map((p) => p.ref).sort().join('\n');
+      if (key(this.oiForm.picks) !== key(run.picks)) bar.draft = 'The condition was changed after this result and is not applied yet: Analyze impact answers the new one; the result below is for the condition before.';
+      const c = run.result.reach ? run.result.reach.coverage : null;
+      if (c && (c.checked < c.eligible || c.cancelled)) bar.incomplete = `Device pairs: ${coverageText(c)}${run.reachRunning ? ' (still checking)' : ''}.`;
     }
     return bar;
   }
 
-  private scenarioParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+  /** Redraw the outage question with the keyboard on `focus` (a selector). */
+  private outageRedraw(focus: string): void {
+    this.renderAnalyzeWs();
+    const x = this.doc.querySelector(focus) as HTMLElement | null;
+    if (x) x.focus();
+  }
+
+  private outageActions(): OutageActions {
+    return {
+      refresh: () => {
+        const r = this.oiRun;
+        if (!r) return;
+        this.oiForm = { ...this.oiForm, picks: r.picks.map((p) => ({ ref: p.ref, via: p.via.slice() })), offer: null };
+        this.runOutage();
+      },
+      source: (src) => this.setAnalysisSource(src),
+      oiAdd: (ref) => {
+        this.addToOutage([ref], '');
+        this.outageRedraw('#oi-search');
+      },
+      oiRemove: (ref) => {
+        const i = this.oiForm.picks.findIndex((p) => p.ref === ref);
+        this.oiForm = { ...this.oiForm, picks: this.oiForm.picks.filter((p) => p.ref !== ref) };
+        this.renderAnalyzeWs();
+        const left = Array.from(this.doc.querySelectorAll('#ws-an-left [data-oi-remove]')) as HTMLElement[];
+        const b = left[Math.min(i, left.length - 1)] || this.doc.getElementById('oi-search');
+        if (b) b.focus();
+      },
+      oiClear: () => {
+        this.oiForm = { ...this.oiForm, picks: [], offer: null };
+        this.outageRedraw('#oi-search');
+      },
+      oiQuery: (q) => {
+        this.oiForm.query = q;
+      },
+      oiReach: (v) => {
+        this.oiForm = { ...this.oiForm, reach: v };
+        this.outageRedraw('#oi-reach');
+      },
+      oiOffer: (k) => {
+        const o = this.oiForm.offer;
+        if (!o) return;
+        this.oiForm = { ...this.oiForm, offer: null, picks: k === 'replace' ? [] : this.oiForm.picks };
+        if (k !== 'dismiss') this.addToOutage(o.refs, o.via);
+        this.outageRedraw(k === 'dismiss' ? '#oi-search' : '#oi-go');
+      },
+      oiSelection: () => {
+        const x = this.outageSelection();
+        if (x) this.addToOutage([x.ref], '');
+        this.outageRedraw('#oi-search');
+      },
+      oiRun: () => void this.runOutage(),
+      oiStop: () => this.stopOutageReach(true),
+      oiOut: (k) => {
+        if (k === 'experiment') return void this.outageToExperiment();
+        const r = this.oiRun;
+        const s = this.session as Session;
+        if (!r || !this.mdoc) return;
+        this.exportOut('text-' + k, pictureBaseName(this.mdoc.fileName) + '-outage-impact', 'The outage impact', () => outageText({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(r.model) }, r));
+      },
+      domains: () => this.openDomainsEditor(),
+    };
+  }
+
+  /** Add components (a saved failure set or a group adds its components) to the condition; nothing is evaluated. */
+  private addToOutage(refs: string[], via: string): void {
     const s = this.session as Session;
-    const w = this.wiRun;
-    const view: WhatIfView = { model: s.model, form: this.wiForm, result: w ? w.result : null, outdated: !!w && this.outdatedSince(w.model), locked: this.editLock(), bar: this.scenarioBar(), sel: this.anSel };
-    const act = this.wiActions('wi');
-    const left = scenarioRequest(this.doc, view, act);
-    const bottom = scenarioResults(this.doc, view, act);
+    let picks = this.oiForm.picks;
+    const notes: string[] = [];
+    for (const r of refs) {
+      const x = expandSet(s.model, r);
+      if (x.invalid.length) notes.push(`Not added from the ${x.label}: ${x.invalid.join(', ')} (not in the model).`);
+      if (!x.refs.length && x.via) notes.push(`The ${x.label} has no component to add.`);
+      picks = addPicks(picks, x.refs, x.via || via).picks;
+    }
+    this.oiForm = { ...this.oiForm, picks, query: '' };
+    if (notes.length) this.toast(notes.join(' '));
+  }
+
+  /**
+   * Prepare components in Outage impact (from the diagram selection, a
+   * single-component failure, a dependency's provider): added when the
+   * condition is empty or has them already; otherwise offered, to add or to
+   * start a new condition with — an existing condition is never replaced
+   * silently. Nothing is evaluated, edited or started.
+   */
+  prepareOutage(refs: string[]): boolean {
+    const s = this.session;
+    if (!s || !refs.length) return false;
+    const have = new Set(this.oiForm.picks.map((p) => p.ref));
+    if (!this.oiForm.picks.length || refs.every((r) => expandSet(s.model, r).refs.every((x) => have.has(x)))) {
+      this.oiForm = { ...this.oiForm, offer: null };
+      this.addToOutage(refs, '');
+    } else this.oiForm = { ...this.oiForm, offer: { refs: refs.slice(), via: '', label: refs.map((r) => pickLabel(s.model, r).id).join(', ') } };
+    if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage')) this.showAnalyze('resilience', 'outage');
+    else this.renderAnalyzeWs();
+    const f = this.doc.querySelector(this.oiForm.offer ? '#oi-offer [data-oi-offer="add"]' : '#oi-go') as HTMLElement | null;
+    if (f) f.focus();
+    return true;
+  }
+
+  /** Is the diagram selection something Outage impact takes (a device, cable, interface, relation, or a group with devices)? */
+  outageSelectable(): boolean {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    return !!s && !!sel && (failableRef(s.model, sel) || (sel.indexOf('group:') === 0 && groupDevices(s.model, sel.slice(6)).length > 0));
+  }
+
+  /** Analyze outage impact…: the diagram selection prepared in Outage impact (not analyzed until asked). */
+  outageFromSelection(): boolean {
+    const s = this.session;
+    const sel = s ? s.state.selected : null;
+    if (!s || !sel) return false;
+    if (!this.outageSelectable()) {
+      this.toast('Outage impact takes devices, cables, interfaces, relations and groups: select one of them.');
+      return false;
+    }
+    if (this.ws === 'analyze') this.anGo(taskLabel(this.anTask, this.analyzeMode()), () => void this.prepareOutage([sel]));
+    else this.prepareOutage([sel]);
+    return true;
+  }
+
+  private outageParts(): { left: Node; bottom: Node; right: Node; empty: boolean } {
+    const s = this.session as Session;
+    const run = this.oiRun;
+    const scope = this.outageScope();
+    const sp = scope ? scopePairs(s.model, scope) : null;
+    const view: OutageView = { model: s.model, form: this.oiForm, run, bar: this.outageBar(), sel: this.anSel, locked: this.editLock(), selection: this.outageSelection(), depsTotal: this.outageDeps(false).deps.length, pairs: sp ? { checked: sp.pairs.length, eligible: sp.eligible } : null };
+    const act = this.outageActions();
+    const left = outageRequest(this.doc, view, act);
+    const bottom = outageResults(this.doc, view, act);
     if (this.anEditor === 'domains') return { left, bottom, right: this.domainsEditor(), empty: false };
-    const v = w && this.anSel ? scenarioEvidence(this.doc, w.result, this.anSel, this.anContextText(w.result.info.context, w.at, view.bar.layers || [])) : null;
+    const v = run && this.anSel ? outageEvidence(this.doc, run, this.anSel, this.anContextText(run.result.info.context, run.at, view.bar.layers || [])) : null;
     if (v) this.anSelRefs = v.objects.map((o) => o.ref);
-    const e = this.anEvidence(v, w ? 'Select a requirement, a dependency or a demand to see how the condition affects it.' : 'The evidence of an affected requirement, dependency or demand appears here.');
-    // (with nothing selected, the diagram marks what fails)
-    if (!v && w) this.anSelRefs = w.result.refs.slice();
+    const e = this.anEvidence(v, run ? 'Select a changed item — a component, requirement, dependency, demand or device pair — to see its state without and under the outage, and why.' : 'The evidence of a changed item appears here, under the outage it was computed for.');
+    // (with nothing selected, the diagram marks what is assumed unavailable)
+    if (!v && run) this.anSelRefs = run.result.refs.slice();
     return { left, bottom, ...e };
   }
 
-  /** What if these fail (failure domains, devices, cables, relations, interfaces, or refs): the comparison in Failure scenario. */
-  runWhatIf(entries: string[]): WhatIf | null {
+  /**
+   * Analyze impact: the condition in the form, compared with the same
+   * configured architecture without it (exact refs; bounded; the result is
+   * frozen with the model it was computed on). Device pairs, when asked,
+   * are traced in slices with Stop. A condition that can't be evaluated —
+   * empty, naming what is no longer in the model, over the limit — is
+   * refused with why; nothing is cut off silently.
+   */
+  runOutage(): OutageRun | null {
     const s = this.session;
     if (!s) return null;
-    // (the scenario is computed on the model as it is now; the report's baseline only when the report is of this model)
-    const j0 = this.spofJob;
-    const j = j0 && j0.model === s.model ? j0 : { deps: serviceDependencies(s.model), baseline: null as Map<string, DepState> | null, model: s.model };
-    if (!j.baseline) j.baseline = dependencyBaseline(j.model, j.deps);
-    const reach = this.wiForm.reach === 'entire' ? ({ kind: 'entire' } as ReachScope) : this.wiForm.reach.indexOf('group:') === 0 ? ({ kind: 'group', group: this.wiForm.reach.slice(6) } as ReachScope) : undefined;
-    const clean = entries.map((e) => e.replace(/^(device|link|relation):/, ''));
-    const result = whatIf(s.model, clean, { deps: j.deps, baseline: j.baseline, reach });
-    this.wiRun = { model: s.model, result, at: Date.now() };
-    // (the form says the condition the result answers: a failure domain, or the components)
-    const domain = clean.length === 1 && s.model.failureDomains.some((d) => d.id === clean[0]);
-    this.wiForm = domain ? { ...this.wiForm, mode: 'domain', domain: clean[0] } : { ...this.wiForm, mode: 'components', components: clean.join(', ') };
-    this.remember('resilience', 'scenario', `Failure of ${clean.join(', ')}`, result.info.context, [`Hypothetical failure condition: ${clean.join(', ')}`], s.model, this.wiRun, this.wiRun.at);
-    const was = this.analyzeTask() === 'resilience' && this.anModes.resilience === 'scenario';
-    this.anModes.resilience = 'scenario';
-    this.anSels.delete('resilience:scenario');
-    if (!was) this.showAnalyze('resilience', 'scenario');
+    const f = this.oiForm;
+    const pv = outagePreview(s.model, f.picks);
+    if (pv.blocked) {
+      this.toast(pv.blocked);
+      const x = this.doc.getElementById(f.picks.length ? 'oi-refuse' : 'oi-search') || this.doc.getElementById('oi-search');
+      if (x) x.focus();
+      return null;
+    }
+    this.stopOutageReach(false);
+    const d = this.outageDeps(true);
+    const result = whatIf(s.model, pv.refs, { deps: d.deps, baseline: d.baseline || undefined, exact: true });
+    const run: OutageRun = { model: s.model, at: Date.now(), result, picks: f.picks.map((p) => ({ ref: p.ref, via: p.via.slice() })), depsTotal: d.deps.length, reachRunning: false };
+    this.oiRun = run;
+    this.oiForm = { ...f, offer: null };
+    const scope = this.outageScope();
+    if (scope && result.result) this.startOutageReach(run, scope, d.deps);
+    const names = run.picks.map((p) => p.ref.slice(p.ref.indexOf(':') + 1)).join(', ');
+    this.remember('resilience', 'outage', `Outage of ${names}`, result.info.context, [`Hypothetical outage: ${names}`], s.model, run, run.at);
+    this.anSels.delete('resilience:outage');
+    if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage')) this.showAnalyze('resilience', 'outage');
     else this.renderAnalyzeWs();
     this.revealResults();
-    const r = this.doc.getElementById('wi-summary') || this.doc.getElementById('wi-result');
+    const r = this.doc.getElementById('oi-summary');
     if (r) {
-      r.setAttribute('tabindex', '-1');
       r.focus();
       if (typeof r.scrollIntoView === 'function') r.scrollIntoView({ block: 'nearest' });
     }
-    return result;
+    return run;
+  }
+
+  /** Trace the device pairs of a scope under the outage, a slice at a time (about 40 ms each), until done or stopped. */
+  private startOutageReach(run: OutageRun, scope: ReachScope, deps: ServiceDependency[]): void {
+    const sp = scopePairs(run.model, scope, relevantDevices(run.model, deps));
+    run.result.reach = { pairs: [], coverage: { checked: 0, eligible: sp.eligible, unit: 'device pairs', truncated: sp.omitted.length > 0, omitted: sp.omitted.length ? `${sp.omitted.length} device${sp.omitted.length === 1 ? '' : 's'} beyond the limit (${sp.omitted.slice(0, 6).join(', ')}${sp.omitted.length > 6 ? ' …' : ''})` : undefined } };
+    run.reachRunning = true;
+    this.oiReach = { run, pairs: sp.pairs, next: 0, timer: null };
+    this.stepOutageReach();
+  }
+
+  private stepOutageReach(): void {
+    const j = this.oiReach;
+    const w = j ? j.run.result : null;
+    if (!j || !w || !w.reach || !w.result) return;
+    j.timer = null;
+    const t0 = Date.now();
+    while (j.next < j.pairs.length && Date.now() - t0 < 40) {
+      const part = j.pairs.slice(j.next, j.next + 8);
+      for (const p of lostPairs(j.run.model, w.result, part)) w.reach.pairs.push(p);
+      j.next += part.length;
+      w.reach.coverage.checked = j.next;
+    }
+    if (j.next >= j.pairs.length) this.stopOutageReach(false);
+    else if (this.doc.defaultView) j.timer = this.doc.defaultView.setTimeout(() => this.stepOutageReach(), 0);
+    if (this.oiRun === j.run && this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage') this.renderAnalyzeWs('results');
+  }
+
+  /** End the device-pair check (Stop: cancelled, the coverage says how far it got). */
+  private stopOutageReach(cancel: boolean): void {
+    const j = this.oiReach;
+    if (!j) return;
+    if (j.timer !== null && this.doc.defaultView) this.doc.defaultView.clearTimeout(j.timer);
+    this.oiReach = null;
+    const w = j.run.result;
+    j.run.reachRunning = false;
+    if (w.reach) {
+      if (j.next < j.pairs.length) w.reach.coverage.cancelled = true;
+      w.info = { ...w.info, coverage: w.reach.coverage };
+    }
+    if (cancel && this.oiRun === j.run) {
+      this.renderAnalyzeWs();
+      const b = this.doc.getElementById('oi-summary');
+      if (b) b.focus();
+    }
+  }
+
+  /** Prepare an experiment from the outage: its components failed 10 s after the start (one undo step; nothing runs). For recovery and transient behaviour over time. */
+  async outageToExperiment(): Promise<boolean> {
+    const r = this.oiRun;
+    const d = this.mdoc;
+    const s = this.session;
+    if (!r || !d || !s) return false;
+    if (this.editLock()) {
+      this.toast(this.editLock());
+      return false;
+    }
+    const refs = r.picks.map((p) => p.ref).filter((x) => failableRef(s.model, x));
+    if (!refs.length || refs.length > 16) {
+      this.toast(refs.length ? `An experiment is prepared for at most 16 components; this outage has ${refs.length}.` : 'Nothing of this outage is in the model any more.');
+      return false;
+    }
+    const actions = refs.map((x, i): Array<[string, string]> => [['id', `out${i + 1}`], ['at', '10s'], ['do', x.indexOf('iface:') === 0 ? 'shut' : 'fail'], ['target', x.slice(x.indexOf(':') + 1)]]);
+    let k: number;
+    try {
+      k = d.addExperiment(`Outage of ${refs.map((x) => x.slice(x.indexOf(':') + 1)).join(', ')}`, '60s', { actions });
+    } catch (e) {
+      this.refusedEdit(e);
+      return false;
+    }
+    this.afterEdit('The experiment was added (Ctrl+Z undoes it): it fails these components 10 s after the start. Add the observations you need, then Run.');
+    const e = (this.session as Session).model.experiments[k];
+    if (e) this.expSel = { exp: e.id, list: null, index: -1 };
+    return this.enterExperiments();
   }
 
   private capacityBar(): ContextBarState {
@@ -3898,7 +4119,7 @@ export class App {
     const s = this.session as Session;
     const c = this.capRun;
     const view: CapacityView = { model: s.model, form: this.capForm, result: c ? { before: c.before, after: c.after, changes: c.changes, condition: c.condition } : null, bar: this.capacityBar(), sel: this.anSel };
-    const left = capacityRequest(this.doc, view, this.wiActions('cap'));
+    const left = capacityRequest(this.doc, view, this.capActions());
     const bottom = capacityResults(this.doc, view);
     const v = c && this.anSel ? capacityEvidence(this.doc, view, this.anSel, this.anContextText({ kind: 'model', scope: 'The stated demands' }, c.at, view.bar.layers || [])) : null;
     const e = this.anEvidence(v, c ? 'Select a demand to see the resources and directions it crosses.' : 'The evidence of a demand appears here.');
@@ -3936,7 +4157,7 @@ export class App {
   /** Configure failure domains…: the editor in the right panel (nothing is evaluated by it). */
   openDomainsEditor(): void {
     this.anEditor = 'domains';
-    if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'scenario')) this.showAnalyze('resilience', 'scenario');
+    if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage')) this.showAnalyze('resilience', 'outage');
     else this.renderAnalyzeWs('results');
     this.revealEvidence();
   }
@@ -5697,7 +5918,7 @@ export class App {
     if (mode === 'single') return this.openSpof();
     if (!this.session) return;
     this.showAnalyze('resilience', mode);
-    const first = this.doc.querySelector(mode === 'scenario' ? '#wi-domain, #wi-components' : '#cap-go') as HTMLElement | null;
+    const first = this.doc.querySelector(mode === 'outage' ? '#oi-search' : '#cap-go') as HTMLElement | null;
     if (first) first.focus();
   }
 
@@ -5792,7 +6013,7 @@ export class App {
 
   /** Is the editor of the task in front shown? */
   private anEditorOpen(): boolean {
-    return (this.anEditor === 'requirement' && this.anTask === 'review' && this.anModes.review === 'requirements') || (this.anEditor === 'domains' && this.anTask === 'resilience' && this.anModes.resilience === 'scenario');
+    return (this.anEditor === 'requirement' && this.anTask === 'review' && this.anModes.review === 'requirements') || (this.anEditor === 'domains' && this.anTask === 'resilience' && this.anModes.resilience === 'outage');
   }
 
   /** The Analyze banner's line: the task, what the next computation reads, that nothing is changed. */
@@ -5953,7 +6174,12 @@ export class App {
         // (the report it was: its check stays where it got, outdated when the model changed since)
         if (this.spofJob && this.spofJob !== h.data) this.pauseSpofJob();
         this.spofJob = h.data as NonNullable<App['spofJob']>;
-      } else if (h.task === 'resilience' && h.mode === 'scenario') this.wiRun = h.data as NonNullable<App['wiRun']>;
+      } else if (h.task === 'resilience' && h.mode === 'outage') {
+        // (the result as computed; the question shows its condition again, so the two agree)
+        this.stopOutageReach(false);
+        this.oiRun = h.data as OutageRun;
+        this.oiForm = { ...this.oiForm, picks: this.oiRun.picks.map((p) => ({ ref: p.ref, via: p.via.slice() })), offer: null };
+      }
       else if (h.task === 'resilience' && h.mode === 'capacity') this.capRun = h.data as NonNullable<App['capRun']>;
       else if (h.task === 'review') this.dcRun = h.data as NonNullable<App['dcRun']>;
       else if (h.task === 'addressing') this.addrRun = h.data as NonNullable<App['addrRun']>;
@@ -5976,7 +6202,7 @@ export class App {
     const head = [`NetAtlas analysis record — ${s.model.title}`, `Task: ${taskLabel(h.task, h.mode)}`, `Question: ${h.question}`, `Context: ${contextText(h.context)}${h.layers.length ? ' · ' + h.layers.join(' · ') : ''}`, `Computed: ${new Date(h.at).toISOString()}`, `Model fingerprint: ${h.fingerprint}`, `Status: ${[outdated ? 'outdated (the model changed since)' : 'current', h.evidenceLimited ? 'evidence-limited' : ''].filter((x) => !!x).join(', ')}`, h.sel ? `Selected: ${h.sel}` : '', this.appVersion() ? `NetAtlas ${this.appVersion()}` : '', ''].filter((x, i, a) => x !== '' || i === a.length - 1);
     let body = '';
     if (h.task === 'communication') body = traceExportText({ title: s.model.title, version: this.appVersion(), outdated, fingerprint: h.fingerprint }, h.data as TraceRun);
-    else if (h.task === 'resilience' && h.mode === 'scenario') body = whatIfText({ title: s.model.title, version: this.appVersion(), outdated }, (h.data as NonNullable<App['wiRun']>).result);
+    else if (h.task === 'resilience' && h.mode === 'outage') body = outageText({ title: s.model.title, version: this.appVersion(), outdated }, h.data as OutageRun);
     else if (h.task === 'review') body = designText({ title: s.model.title, version: this.appVersion(), outdated }, h.model, (h.data as NonNullable<App['dcRun']>).run);
     else if (h.task === 'addressing') body = addressingCsv((h.data as NonNullable<App['addrRun']>).ov, contextText(h.context));
     else if (h.task === 'resilience' && h.mode === 'single') {
@@ -6019,7 +6245,7 @@ export class App {
   /** The result the task in front shows (its history entry follows it). */
   private anHistoryData(): unknown {
     if (this.anTask === 'communication') return this.traceRun;
-    if (this.anTask === 'resilience') return this.anModes.resilience === 'scenario' ? this.wiRun : this.anModes.resilience === 'capacity' ? this.capRun : null;
+    if (this.anTask === 'resilience') return this.anModes.resilience === 'outage' ? this.oiRun : this.anModes.resilience === 'capacity' ? this.capRun : null;
     if (this.anTask === 'review') return this.anModes.review === 'requirements' ? this.dcRun : null;
     if (this.anTask === 'addressing') return this.addrRun;
     return null;
@@ -6098,7 +6324,7 @@ export class App {
       case 'communication':
         return this.commParts();
       case 'resilience':
-        return this.anModes.resilience === 'single' ? this.spofParts() : this.anModes.resilience === 'scenario' ? this.scenarioParts() : this.capacityParts();
+        return this.anModes.resilience === 'single' ? this.spofParts() : this.anModes.resilience === 'outage' ? this.outageParts() : this.capacityParts();
       case 'review':
         return this.anModes.review === 'requirements' ? this.requirementsParts() : this.findingsParts();
       case 'addressing':
@@ -6131,16 +6357,13 @@ export class App {
       case 'experiment':
         return void this.traceToExperiment();
       case 'scenario':
-        return this.anGo(this.anBackLabel(), () => {
-          const refs = r.split(' ').filter((x) => x);
-          this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((x) => x.replace(/^(device|link|relation|iface):/, '')).join(', ') };
-          this.runWhatIf(refs);
-        });
+        return this.anGo(this.anBackLabel(), () => void this.prepareOutage(r.split(' ').filter((x) => x)));
       case 'whatif-provider':
-        return this.anGo(this.anBackLabel(), () => {
-          this.wiForm = { ...this.wiForm, mode: 'components', components: r };
-          this.runWhatIf([r]);
-        });
+        return this.anGo(this.anBackLabel(), () => void this.prepareOutage(['device:' + r]));
+      case 'outage-add':
+        // (the same Outage impact: the provider joins the condition, not analyzed until asked)
+        this.addToOutage([r], '');
+        return this.outageRedraw('#oi-go');
       case 'communication':
         return this.anGo(this.anBackLabel(), () => {
           const q = JSON.parse(r) as CommRequest;
@@ -6329,7 +6552,7 @@ export class App {
       });
     }
     if (kind === 'explore') return this.exploreComponent(ref);
-    if (kind === 'whatif') return this.anGo('Overview', () => void this.runWhatIf([id]));
+    if (kind === 'whatif') return this.anGo('Overview', () => void this.prepareOutage([ref]));
     if (kind === 'addressing') {
       return this.anGo('Overview', () => {
         this.openAddressing();
