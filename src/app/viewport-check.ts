@@ -298,7 +298,8 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       checkPanels('Trace path');
       app.openSpof();
       for (let k = 0; k < 400 && !app.spofServiceDone(); k++) await tick();
-      app.runWhatIf(['hq-core1']);
+      app.prepareOutage(['device:hq-core1']);
+      app.runOutage();
       await tick();
       checkPanels('Single points of failure');
       app.openDesignChecks();

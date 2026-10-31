@@ -113,18 +113,18 @@ export type AnalyzeTask = 'overview' | 'communication' | 'resilience' | 'review'
 export const ANALYZE_TASKS: ReadonlyArray<{ id: AnalyzeTask; label: string; command: string; answers: string }> = [
   { id: 'overview', label: 'Overview', command: 'analyze.overview', answers: 'Where to start: the questions Analyze answers, what is known about this model, recent and pinned results' },
   { id: 'communication', label: 'Communication', command: 'trace.open', answers: 'Can this application or service communicate? What the configured architecture establishes, what blocks it, and what a modeled exchange observed' },
-  { id: 'resilience', label: 'Resilience', command: 'analyze.spof', answers: 'What stops working when a component or a failure domain is unavailable, and whether the stated traffic still fits' },
+  { id: 'resilience', label: 'Resilience', command: 'analyze.spof', answers: 'What stops working, what remains available and what becomes uncertain when components are unavailable, and whether the stated traffic still fits' },
   { id: 'review', label: 'Design review', command: 'analyze.checks', answers: 'Does the architecture satisfy its saved requirements? What do the consistency checks find?' },
   { id: 'addressing', label: 'Addressing', command: 'analyze.addressing', answers: 'Where are addressing conflicts, overlaps and addresses outside the declared networks; how is each network allocated?' },
 ];
 
 /** The modes inside Resilience and Design review. */
-export type ResilienceMode = 'single' | 'scenario' | 'capacity';
+export type ResilienceMode = 'single' | 'outage' | 'capacity';
 export type ReviewMode = 'findings' | 'requirements';
 
 export const RESILIENCE_MODES: ReadonlyArray<{ id: ResilienceMode; label: string; command: string; help: string }> = [
   { id: 'single', label: 'Single-component failures', command: 'analyze.spof', help: 'Each cable, device and LAG failing alone: what it disconnects and what becomes unavailable' },
-  { id: 'scenario', label: 'Failure scenario', command: 'analyze.whatif', help: 'Several components or a failure domain failing together, compared with the same baseline' },
+  { id: 'outage', label: 'Outage impact', command: 'analyze.outage', help: 'The components you choose made unavailable together, compared with the same architecture without the outage' },
   { id: 'capacity', label: 'Capacity', command: 'analyze.capacity', help: 'The stated demands against the stated capacity, with or without a failure condition' },
 ];
 

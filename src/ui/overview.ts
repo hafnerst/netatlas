@@ -113,10 +113,10 @@ export function overviewRequest(doc: Document, model: Model, sel: { ref: string;
       add('diagnose', 'Diagnose its communication', 'Its client application to its peer (or the device as the source), checked in Communication');
       add('from', 'Check communication from it', 'Communication with it as the source; you give the destination');
       add('explore', 'Explore its dependencies', 'What it depends on, what uses it, what its failure affects');
-      add('whatif', 'What if it fails', 'Resilience → Failure scenario with it as the condition, analysed now');
+      add('whatif', 'Analyze outage impact…', 'Prepares it in Resilience → Outage impact; nothing is analyzed until you ask');
     }
     if (sel.kind === 'relation') add('diagnose', 'Diagnose this relation', 'The communication between its two ends, in Communication');
-    if (sel.kind === 'cable') add('whatif', 'What if it fails', 'Resilience → Failure scenario with it as the condition, analysed now');
+    if (sel.kind === 'cable' || sel.kind === 'relation') add('whatif', 'Analyze outage impact…', 'Prepares it in Resilience → Outage impact; nothing is analyzed until you ask');
     if (sel.kind === 'network') add('addressing', 'Its addressing', 'Addressing with this network selected: its members, allocation and unallocated ranges');
     sec.appendChild(acts);
   }
@@ -228,7 +228,7 @@ export function overviewResults(doc: Document, facts: OverviewFacts, ex: Explore
 
 export function taskLabel(t: AnalyzeTask, mode: string): string {
   const base = (ANALYZE_TASKS.find((x) => x.id === t) || { label: t }).label;
-  const m: { [k: string]: string } = { single: 'single-component failures', scenario: 'failure scenario', capacity: 'capacity', findings: 'findings', requirements: 'requirements' };
+  const m: { [k: string]: string } = { single: 'single-component failures', outage: 'outage impact', capacity: 'capacity', findings: 'findings', requirements: 'requirements' };
   return m[mode] ? `${base} (${m[mode]})` : base;
 }
 
@@ -260,7 +260,7 @@ function explorerSection(doc: Document, ex: Explorer, current: Model, sel: strin
     sec.appendChild(el(doc, 'p', { class: 'small', id: 'an-ex-impact-sum' }, [`Hypothetical failure of ${ex.name}${outdated ? ' (outdated: the model changed since)' : ''}: ${w.structural ? w.structural.isolated.reduce((n, g) => n + g.length, 0) : 0} device(s) disconnected, ${w.deps.filter((c) => c.change === 'unavailable').length} configured dependenc${w.deps.filter((c) => c.change === 'unavailable').length === 1 ? 'y' : 'ies'} unavailable, ${w.expectations.filter((x) => x.change === 'availability-lost' || x.change === 'isolation-violated').length} requirement(s) no longer satisfied.`]));
     const items = lost.map((c) => depItem(doc, 'dep-fail:' + c.dep.key, sel, c.dep, c)).concat(reqs.map((x) => el(doc, 'li', { 'data-exp-change': x.change }, [el(doc, 'span', { class: 'muted' }, ['Requirement: ']), `${x.after.name} — ${EXP_CHANGE_TEXT[x.change]}`])));
     if (items.length) sec.appendChild(el(doc, 'ul', { class: 'small an-deps' }, items));
-    const b = el(doc, 'button', { type: 'button', class: 'mini', 'data-an-start': 'whatif-open' }, ['Open in Resilience → Failure scenario']);
+    const b = el(doc, 'button', { type: 'button', class: 'mini', 'data-an-start': 'whatif-open' }, ['Investigate this outage']);
     b.addEventListener('click', () => act.start('whatif', ex.ref));
     sec.appendChild(el(doc, 'p', { class: 'small' }, [b]));
   }
