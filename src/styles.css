@@ -1386,7 +1386,8 @@ ul.combo-list.oi-matches { position: static; max-height: 240px; margin: 2px 0; b
 .oi-matches .combo-opt { flex-wrap: wrap; }
 .oi-matches .oi-unsupported, .oi-matches [aria-disabled="true"] { color: var(--muted); cursor: default; }
 .oi-add-more { flex-wrap: wrap; align-items: center; }
-.oi-add-more select { max-width: 100%; }
+.oi-section select, .oi-section input[type="search"] { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.oi-add-more select { flex: 1 1 12em; width: auto; }
 .oi-condition { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 .oi-condition h4 { margin: 0 0 4px; font-size: 12.5px; }
 .oi-picks { margin: 0 0 4px; padding-left: 18px; max-height: 260px; overflow: auto; overflow-wrap: anywhere; }
