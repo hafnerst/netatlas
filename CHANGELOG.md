@@ -138,8 +138,38 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
   *structural impact* is no longer shown (the CSV keeps its column and adds
   `requirements_unsatisfied` and `requirements`). A selected row stays
   selected while the check goes on; leaving Resilience pauses the check.
-  **Failure scenario** is its own mode, its condition the question;
-  failure domains are edited in **Configure failure domains…**.
+  **Outage impact** is its own mode, its condition the question;
+  failure domains are edited in **Define failure domains…** (an explicit
+  model edit).
+- **Resilience → Outage impact** replaces *Failure scenario*, components
+  first: *What stops working, what remains available, and what becomes
+  uncertain if these components become unavailable?* Find components in a
+  searchable picker (name, ID, type, endpoint; ↑/↓ and Enter; a partial
+  name is never picked for you), see them as removable entries, and
+  **Analyze impact** — no failure domain, scenario name, saving, YAML,
+  simulation or experiment is needed, and nothing in the model changes.
+  **Analyze outage impact…** on the diagram selection (Overview, command
+  palette) and **Investigate** on a single-component failure prepare the
+  same component without analyzing it; with a condition already there
+  they offer **Add to the condition** or **Start a new condition with it**.
+  A group adds its devices by membership; a saved failure domain is an
+  optional shortcut (**Add saved failure set…**) whose components are
+  copied, each marked as coming from it. The condition is previewed (how
+  many chosen, from which set, how the outage propagates, what is
+  compared); more than 64 components, or one no longer in the model, is
+  refused with why, never cut off. The answer compares the same
+  configured architecture without the outage and keeps apart what was
+  assumed unavailable, what follows from it, requirements and
+  dependencies newly lost, kept through an alternative, not determinable
+  or already broken before; it says when no requirement or dependency
+  exists instead of showing zeros, and *No additional modeled effect
+  found within the checks performed* instead of *no effect*. Device pairs
+  in a scope are traced in slices with **Stop** and their coverage. The
+  evidence shows each item without and under the outage; its
+  Communication actions say they check the architecture without it.
+  **Prepare an experiment…** adds an experiment failing these components
+  (one undo step) for what happens over time. The command is
+  `analyze.outage` (was `analyze.whatif`).
 - **Design review** separates **Findings** (filters by category,
   severity and object; invalid model input apart; findings at one place
   are related, not an established shared cause; *no findings* says which

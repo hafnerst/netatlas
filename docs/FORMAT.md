@@ -44,7 +44,7 @@ links: [...]
 networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
-failure_domains: [...] # optional: components that fail together (what-if conditions)
+failure_domains: [...] # optional: components assumed to fail together (saved outage sets)
 expectations: [...]    # optional: saved design requirements (checked by Analyze → Design review)
 experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
 views: [...]           # optional: saved views (display state: diagram, focus, filters, zoom)
@@ -2621,7 +2621,7 @@ demands:
 traced from its source to its destination like Trace path; the traffic
 animation shows equal-cost paths sharing it equally.
 
-**Capacity.** Analyze → Resilience (capacity, and a failure scenario) compares the
+**Capacity.** Analyze → Resilience (capacity, and outage impact) compares the
 stated traffic with the stated capacity before and after the failure: the
 demands, and the applications with an `interval` (their sizes, written or
 the profile's defaults; payload rates). A resource is counted once: a cable
@@ -2645,9 +2645,10 @@ Optional. Components that fail together: a rack, a room or site, shared
 power, a shared conduit, a shared provider. Membership is explicit: a
 group of the diagram is never a failure domain by itself (it may stay
 purely organizational), only one written here is. A failure domain is
-analysis data: Analyze → Resilience → **Failure scenario** fails
-it as one condition and compares the result with the same baseline, and a
-saved expectation can name it as its failure condition. It is a what-if
+analysis data: Analyze → Resilience → **Outage impact** offers it as an
+optional shortcut (**Add saved failure set…** adds its components to the
+outage condition; none is needed to use it), and a saved expectation can
+name it as its failure condition. It is a what-if
 condition, never a probability, and a file means the same network with or
 without it.
 

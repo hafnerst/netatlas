@@ -845,8 +845,9 @@ parameters, CPU limits, full TCP-stack fidelity.
 **Implemented.** Single-component failures (each cable, device and LAG
 alone) with separate measures — the saved requirements no longer
 satisfied, the configured dependencies unavailable, the devices
-disconnected, the relations unavailable; failure scenarios (failure
-domains, or up to 64 components) compared with the same baseline; the
+disconnected, the relations unavailable; outage impact of up to 64
+components you choose (a saved failure domain is an optional shortcut)
+compared with the same architecture without the outage; the
 stated capacity with or without a failure; configured service
 dependencies, and a component's Depends on, Used by and Failure affects;
 saved requirements (availability, isolation, dependencies, timing)
@@ -860,10 +861,23 @@ evaluated statically when asked; contextual focus.
   side by side; a relation without `over` is affected only through its
   endpoints. A VLAN interface goes down when every port carrying its VLAN
   does. The single points of failure fail each cable, device and LAG alone;
-  combinations are failure scenarios you choose, never enumerated. The
+  combinations are outages you choose, never enumerated. The
   measures are counted apart and never added up: none is a business
   criticality, and the requirements checked per candidate are the saved
   ones only.
+* **Outage impact is a static comparison.** The components you choose are
+  assumed unavailable together, on the configured model, and compared with
+  the same architecture without them. It does not establish that protocols
+  converge, how long recovery takes, transient packet loss, how likely the
+  outage is or the availability of the production network; Experiments
+  answer what happens over time. *Unavailable together* is an assumption you
+  make, not shared fate the model knows: objects drawn near each other, or
+  in one group, are never assumed to share power, a duct or a rack — only a
+  failure domain someone wrote says so. A network, route, VLAN or
+  application is not made unavailable on its own (choose its device, cable
+  or interface). A hypothetical outage is never applied to a simulation
+  snapshot (it would blend two states). Device pairs are checked only in a
+  scope you choose, bounded to 1600 pairs, with the coverage said.
 * **Capacity is stated traffic against stated speeds.** An application's
   transfer is traced between its own ends — its family, the peer
   listener's bind interface's address (else its device's address of the
@@ -937,7 +951,7 @@ with the simulation).
   affected by an interconnect. Its failure is a failure of the connection
   only: no electrical fault (a shorted bus taking everything down) is
   inferred.
-* **Not in Analyze.** Paths, failure scenarios, failure domains,
+* **Not in Analyze.** Paths, outage impact, failure domains,
   requirements and experiments cover the IP side only.
 
 ## Model and editing
