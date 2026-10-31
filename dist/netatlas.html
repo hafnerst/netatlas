@@ -1392,6 +1392,20 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .wi-group { margin: 4px 0; }
 .wi-group summary { cursor: pointer; font-weight: 600; font-size: 12.5px; }
 .wi-group ul { margin: 2px 0 4px; padding-left: 18px; }
+.oi-section .tf-row.dc-row { grid-template-columns: 7.5em minmax(0, 1fr); }
+ul.combo-list.oi-matches { position: static; max-height: 240px; margin: 2px 0; box-shadow: none; }
+.oi-matches .combo-opt { flex-wrap: wrap; }
+.oi-matches .oi-unsupported, .oi-matches [aria-disabled="true"] { color: var(--muted); cursor: default; }
+.oi-add-more { flex-wrap: wrap; align-items: center; }
+.oi-add-more select { max-width: 100%; }
+.oi-condition { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.oi-condition h4 { margin: 0 0 4px; font-size: 12.5px; }
+.oi-picks { margin: 0 0 4px; padding-left: 18px; max-height: 260px; overflow: auto; overflow-wrap: anywhere; }
+.oi-picks .mini { margin-left: 4px; padding: 0 6px; }
+.oi-gone { color: var(--error); }
+.oi-offer { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-soft); }
+.oi-summary p { margin: 2px 0; }
+.oi-summary ul { margin: 2px 0 4px; padding-left: 18px; }
 .wi-domains { margin-top: 10px; }
 .wi-dom-list { padding-left: 18px; }
 .wi-dom-list .mini { margin-left: 4px; }
@@ -2192,6 +2206,7 @@ const capacity_1 = __req("analysis/capacity");
 const dependencies_1 = __req("analysis/dependencies");
 const whatif_1 = __req("analysis/whatif");
 const spof_1 = __req("ui/spof");
+const outage_1 = __req("ui/outage");
 const focus_window_1 = __req("ui/focus-window");
 const toolwindow_1 = __req("ui/toolwindow");
 const sim_controller_1 = __req("ui/sim-controller");
@@ -2312,11 +2327,14 @@ class App {
          * how far it got; leaving Resilience pauses it, coming back resumes it)
          */
         this.spofJob = null;
-        this.wiForm = (0, spof_1.newWhatIfForm)();
-        this.wiRun = null;
+        /** Outage impact's question (components, exact refs), its result (frozen with its model), the device pairs being traced, the dependencies of the model on screen */
+        this.oiForm = (0, outage_1.newOutageForm)();
+        this.oiRun = null;
+        this.oiReach = null;
+        this.oiDeps = null;
         this.domForm = null;
         /** Capacity's question (a failure condition, or none) and its result */
-        this.capForm = { ...(0, spof_1.newWhatIfForm)(), mode: 'none' };
+        this.capForm = (0, spof_1.newWhatIfForm)();
         this.capRun = null;
         // ------------------------------------------------------------ analysis context and freshness
         /** What an analysis is computed on while a simulation runs: a snapshot of it (the default), or the configured model. */
@@ -5089,11 +5107,13 @@ class App {
             j.timer = null;
         }
         this.spofJob = null;
-        this.wiRun = null;
-        this.wiForm = (0, spof_1.newWhatIfForm)();
+        this.stopOutageReach(false);
+        this.oiRun = null;
+        this.oiForm = (0, outage_1.newOutageForm)();
+        this.oiDeps = null;
         this.domForm = null;
         this.capRun = null;
-        this.capForm = { ...(0, spof_1.newWhatIfForm)(), mode: 'none' };
+        this.capForm = (0, spof_1.newWhatIfForm)();
         // the evaluations and what was selected in them
         this.dcRun = null;
         this.dcForm = null;
@@ -5995,7 +6015,7 @@ class App {
             progress,
             cands: j.cands,
             sel: this.anSel.indexOf('spof:') === 0 ? this.anSel.slice(5) : '',
-            info: (0, result_1.resultInfo)({ kind: 'model', scope: 'Every cable, device and LAG, each failing alone' }, ['A failure propagates as the failure analysis models it (interfaces, aggregates, redundancy groups, relations over their underlay, static routes).', 'Service impact: the configured dependencies (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), each checked as the communication check does.', 'Requirements: every saved requirement under the failure as well, against its state with nothing failed.'], ['Combinations of failures (Failure scenario).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'], { checked: progress.checked, eligible: progress.total, unit: 'candidates', cancelled: progress.cancelled }),
+            info: (0, result_1.resultInfo)({ kind: 'model', scope: 'Every cable, device and LAG, each failing alone' }, ['A failure propagates as the failure analysis models it (interfaces, aggregates, redundancy groups, relations over their underlay, static routes).', 'Service impact: the configured dependencies (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), each checked as the communication check does.', 'Requirements: every saved requirement under the failure as well, against its state with nothing failed.'], ['Combinations of failures (Outage impact).', 'Dependencies the model does not configure; business importance.', 'Convergence and recovery times; probabilities.'], { checked: progress.checked, eligible: progress.total, unit: 'candidates', cancelled: progress.cancelled }),
         };
     }
     /** The evidence of the selected single-component failure. */
@@ -6050,10 +6070,7 @@ class App {
             const wi = t.closest('[data-spof-whatif]');
             if (wi) {
                 const refs = (wi.getAttribute('data-spof-whatif') || '').split(' ').filter((x) => x);
-                this.anGo('Resilience: single-component failures', () => {
-                    this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((r) => r.replace(/^(device|link|relation|iface):/, '')).join(', ') };
-                    this.runWhatIf(refs);
-                });
+                this.anGo('Resilience: single-component failures', () => void this.prepareOutage(refs));
                 return;
             }
             const out = t.closest('[data-spof-out]');
@@ -6070,14 +6087,13 @@ class App {
         const e = this.anEvidence(this.spofEvidenceNow(), 'Select a row to see what its failure affects: the requirements, the configured dependencies, the devices and relations.');
         return { left, bottom, ...e };
     }
-    /** The actions of Failure scenario and Capacity (their condition forms share them). */
-    wiActions(form) {
-        const f = () => (form === 'wi' ? this.wiForm : this.capForm);
+    /** The actions of Capacity (its optional failure condition). */
+    capActions() {
         return {
-            refresh: () => (form === 'wi' ? this.wiRun && this.runWhatIf(this.wiRun.result.entries) : this.runCapacity()),
+            refresh: () => void this.runCapacity(),
             source: (src) => this.setAnalysisSource(src),
             wiInput: (k, v) => {
-                f()[k] = v;
+                this.capForm[k] = v;
                 if (k === 'mode') {
                     this.renderAnalyzeWs();
                     const b = this.doc.querySelector(`#ws-an-left [data-wi-mode="${v}"]`);
@@ -6085,103 +6101,342 @@ class App {
                         b.focus();
                 }
                 else
-                    this.syncWhatIfContext();
+                    this.syncCapacityContext();
             },
-            wiRun: () => {
-                const entries = (0, spof_1.conditionEntries)(this.wiForm);
-                if (!entries.length) {
-                    this.toast(this.wiForm.mode === 'domain' ? 'Choose a failure domain first.' : 'Name the components that fail.');
-                    return;
-                }
-                this.runWhatIf(entries);
-            },
-            wiOut: (kind) => {
-                const w = this.wiRun;
-                const s = this.session;
-                if (!w || !this.mdoc)
-                    return;
-                this.exportOut('text-' + kind, (0, files_1.pictureBaseName)(this.mdoc.fileName) + '-what-if', 'The failure scenario', () => (0, spof_1.whatIfText)({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(w.model) }, w.result));
-            },
-            domains: () => this.openDomainsEditor(),
-            capRun: () => this.runCapacity(),
+            capRun: () => void this.runCapacity(),
         };
     }
-    /** The scenario's context line again in place (a draft condition shown as typed). */
-    syncWhatIfContext() {
+    /** Capacity's context line again in place (a draft condition shown as typed). */
+    syncCapacityContext() {
         const box = this.doc.querySelector('#ws-an-left .an-context');
-        if (!box || this.analyzeTask() !== 'resilience')
+        if (!box || this.analyzeTask() !== 'resilience' || this.anModes.resilience !== 'capacity')
             return;
-        const mode = this.anModes.resilience;
-        if (mode === 'single')
-            return;
-        box.replaceWith((0, analysis_ui_1.contextBar)(this.doc, mode === 'scenario' ? this.scenarioBar() : this.capacityBar(), this.wiActions(mode === 'scenario' ? 'wi' : 'cap')));
+        box.replaceWith((0, analysis_ui_1.contextBar)(this.doc, this.capacityBar(), this.capActions()));
     }
-    scenarioBar() {
-        const w = this.wiRun;
-        const bar = this.barState('wi', w ? w.result.info.context : null, w ? w.model : null, 'A failure scenario evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a hypothetical failure.');
-        if (w) {
-            bar.computedAt = w.at;
-            bar.layers = [`Hypothetical failure condition: ${w.result.entries.join(', ')}`];
-            const asked = (0, spof_1.conditionEntries)(this.wiForm);
-            if (asked.join(',') !== w.result.entries.join(','))
-                bar.draft = 'The condition was changed after this result: Analyze scenario answers the new one; the result below is for the condition before.';
-            if (w.result.reach && w.result.reach.coverage.checked < w.result.reach.coverage.eligible)
-                bar.incomplete = `Device pairs: ${(0, result_1.coverageText)(w.result.reach.coverage)}.`;
+    // ---- Outage impact (ui/outage.ts): components chosen, then compared with the same architecture without them
+    /** The diagram selection when it can join the outage condition: a device, cable, interface, relation or group not in it yet. */
+    outageSelection() {
+        const s = this.session;
+        const sel = s ? s.state.selected : null;
+        if (!s || !sel)
+            return null;
+        const ok = (0, failure_1.failableRef)(s.model, sel) || (sel.indexOf('group:') === 0 && (0, outage_1.groupDevices)(s.model, sel.slice(6)).length > 0);
+        if (!ok || this.oiForm.picks.some((p) => p.ref === sel))
+            return null;
+        return { ref: sel, label: (0, outage_1.pickLabel)(s.model, sel).id };
+    }
+    /** The configured dependencies of the model on screen (the single-component report's when it is of this model), their baseline when asked. */
+    outageDeps(baseline) {
+        const s = this.session;
+        const j0 = this.spofJob;
+        const j = j0 && j0.model === s.model ? j0 : this.oiDeps && this.oiDeps.model === s.model ? this.oiDeps : (this.oiDeps = { model: s.model, deps: (0, dependencies_1.serviceDependencies)(s.model), baseline: null });
+        if (baseline && !j.baseline)
+            j.baseline = (0, dependencies_1.dependencyBaseline)(j.model, j.deps);
+        return { deps: j.deps, baseline: j.baseline };
+    }
+    /** The device-pair scope the form asks for (none: no device-pair check). */
+    outageScope() {
+        const r = this.oiForm.reach;
+        return r === 'entire' ? { kind: 'entire' } : r.indexOf('group:') === 0 ? { kind: 'group', group: r.slice(6) } : undefined;
+    }
+    outageBar() {
+        const run = this.oiRun;
+        const bar = this.barState('oi', run ? run.result.info.context : null, run ? run.model : null, 'Outage impact evaluates the configured model: applied to a simulation snapshot it would blend the simulation’s state with a hypothetical outage.');
+        if (run) {
+            bar.computedAt = run.at;
+            bar.layers = [`Hypothetical outage: ${run.picks.map((p) => p.ref.slice(p.ref.indexOf(':') + 1)).join(', ')}`];
+            const key = (ps) => ps.map((p) => p.ref).sort().join('\n');
+            if (key(this.oiForm.picks) !== key(run.picks))
+                bar.draft = 'The condition was changed after this result and is not applied yet: Analyze impact answers the new one; the result below is for the condition before.';
+            const c = run.result.reach ? run.result.reach.coverage : null;
+            if (c && (c.checked < c.eligible || c.cancelled))
+                bar.incomplete = `Device pairs: ${(0, result_1.coverageText)(c)}${run.reachRunning ? ' (still checking)' : ''}.`;
         }
         return bar;
     }
-    scenarioParts() {
+    /** Redraw the outage question with the keyboard on `focus` (a selector). */
+    outageRedraw(focus) {
+        this.renderAnalyzeWs();
+        const x = this.doc.querySelector(focus);
+        if (x)
+            x.focus();
+    }
+    outageActions() {
+        return {
+            refresh: () => {
+                const r = this.oiRun;
+                if (!r)
+                    return;
+                this.oiForm = { ...this.oiForm, picks: r.picks.map((p) => ({ ref: p.ref, via: p.via.slice() })), offer: null };
+                this.runOutage();
+            },
+            source: (src) => this.setAnalysisSource(src),
+            oiAdd: (ref) => {
+                this.addToOutage([ref], '');
+                this.outageRedraw('#oi-search');
+            },
+            oiRemove: (ref) => {
+                const i = this.oiForm.picks.findIndex((p) => p.ref === ref);
+                this.oiForm = { ...this.oiForm, picks: this.oiForm.picks.filter((p) => p.ref !== ref) };
+                this.renderAnalyzeWs();
+                const left = Array.from(this.doc.querySelectorAll('#ws-an-left [data-oi-remove]'));
+                const b = left[Math.min(i, left.length - 1)] || this.doc.getElementById('oi-search');
+                if (b)
+                    b.focus();
+            },
+            oiClear: () => {
+                this.oiForm = { ...this.oiForm, picks: [], offer: null };
+                this.outageRedraw('#oi-search');
+            },
+            oiQuery: (q) => {
+                this.oiForm.query = q;
+            },
+            oiReach: (v) => {
+                this.oiForm = { ...this.oiForm, reach: v };
+                this.outageRedraw('#oi-reach');
+            },
+            oiOffer: (k) => {
+                const o = this.oiForm.offer;
+                if (!o)
+                    return;
+                this.oiForm = { ...this.oiForm, offer: null, picks: k === 'replace' ? [] : this.oiForm.picks };
+                if (k !== 'dismiss')
+                    this.addToOutage(o.refs, o.via);
+                this.outageRedraw(k === 'dismiss' ? '#oi-search' : '#oi-go');
+            },
+            oiSelection: () => {
+                const x = this.outageSelection();
+                if (x)
+                    this.addToOutage([x.ref], '');
+                this.outageRedraw('#oi-search');
+            },
+            oiRun: () => void this.runOutage(),
+            oiStop: () => this.stopOutageReach(true),
+            oiOut: (k) => {
+                if (k === 'experiment')
+                    return void this.outageToExperiment();
+                const r = this.oiRun;
+                const s = this.session;
+                if (!r || !this.mdoc)
+                    return;
+                this.exportOut('text-' + k, (0, files_1.pictureBaseName)(this.mdoc.fileName) + '-outage-impact', 'The outage impact', () => (0, outage_1.outageText)({ title: s.model.title, version: this.appVersion(), outdated: this.outdatedSince(r.model) }, r));
+            },
+            domains: () => this.openDomainsEditor(),
+        };
+    }
+    /** Add components (a saved failure set or a group adds its components) to the condition; nothing is evaluated. */
+    addToOutage(refs, via) {
         const s = this.session;
-        const w = this.wiRun;
-        const view = { model: s.model, form: this.wiForm, result: w ? w.result : null, outdated: !!w && this.outdatedSince(w.model), locked: this.editLock(), bar: this.scenarioBar(), sel: this.anSel };
-        const act = this.wiActions('wi');
-        const left = (0, spof_1.scenarioRequest)(this.doc, view, act);
-        const bottom = (0, spof_1.scenarioResults)(this.doc, view, act);
+        let picks = this.oiForm.picks;
+        const notes = [];
+        for (const r of refs) {
+            const x = (0, outage_1.expandSet)(s.model, r);
+            if (x.invalid.length)
+                notes.push(`Not added from the ${x.label}: ${x.invalid.join(', ')} (not in the model).`);
+            if (!x.refs.length && x.via)
+                notes.push(`The ${x.label} has no component to add.`);
+            picks = (0, outage_1.addPicks)(picks, x.refs, x.via || via).picks;
+        }
+        this.oiForm = { ...this.oiForm, picks, query: '' };
+        if (notes.length)
+            this.toast(notes.join(' '));
+    }
+    /**
+     * Prepare components in Outage impact (from the diagram selection, a
+     * single-component failure, a dependency's provider): added when the
+     * condition is empty or has them already; otherwise offered, to add or to
+     * start a new condition with — an existing condition is never replaced
+     * silently. Nothing is evaluated, edited or started.
+     */
+    prepareOutage(refs) {
+        const s = this.session;
+        if (!s || !refs.length)
+            return false;
+        const have = new Set(this.oiForm.picks.map((p) => p.ref));
+        if (!this.oiForm.picks.length || refs.every((r) => (0, outage_1.expandSet)(s.model, r).refs.every((x) => have.has(x)))) {
+            this.oiForm = { ...this.oiForm, offer: null };
+            this.addToOutage(refs, '');
+        }
+        else
+            this.oiForm = { ...this.oiForm, offer: { refs: refs.slice(), via: '', label: refs.map((r) => (0, outage_1.pickLabel)(s.model, r).id).join(', ') } };
+        if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage'))
+            this.showAnalyze('resilience', 'outage');
+        else
+            this.renderAnalyzeWs();
+        const f = this.doc.querySelector(this.oiForm.offer ? '#oi-offer [data-oi-offer="add"]' : '#oi-go');
+        if (f)
+            f.focus();
+        return true;
+    }
+    /** Is the diagram selection something Outage impact takes (a device, cable, interface, relation, or a group with devices)? */
+    outageSelectable() {
+        const s = this.session;
+        const sel = s ? s.state.selected : null;
+        return !!s && !!sel && ((0, failure_1.failableRef)(s.model, sel) || (sel.indexOf('group:') === 0 && (0, outage_1.groupDevices)(s.model, sel.slice(6)).length > 0));
+    }
+    /** Analyze outage impact…: the diagram selection prepared in Outage impact (not analyzed until asked). */
+    outageFromSelection() {
+        const s = this.session;
+        const sel = s ? s.state.selected : null;
+        if (!s || !sel)
+            return false;
+        if (!this.outageSelectable()) {
+            this.toast('Outage impact takes devices, cables, interfaces, relations and groups: select one of them.');
+            return false;
+        }
+        if (this.ws === 'analyze')
+            this.anGo((0, overview_1.taskLabel)(this.anTask, this.analyzeMode()), () => void this.prepareOutage([sel]));
+        else
+            this.prepareOutage([sel]);
+        return true;
+    }
+    outageParts() {
+        const s = this.session;
+        const run = this.oiRun;
+        const scope = this.outageScope();
+        const sp = scope ? (0, failure_1.scopePairs)(s.model, scope) : null;
+        const view = { model: s.model, form: this.oiForm, run, bar: this.outageBar(), sel: this.anSel, locked: this.editLock(), selection: this.outageSelection(), depsTotal: this.outageDeps(false).deps.length, pairs: sp ? { checked: sp.pairs.length, eligible: sp.eligible } : null };
+        const act = this.outageActions();
+        const left = (0, outage_1.outageRequest)(this.doc, view, act);
+        const bottom = (0, outage_1.outageResults)(this.doc, view, act);
         if (this.anEditor === 'domains')
             return { left, bottom, right: this.domainsEditor(), empty: false };
-        const v = w && this.anSel ? (0, spof_1.scenarioEvidence)(this.doc, w.result, this.anSel, this.anContextText(w.result.info.context, w.at, view.bar.layers || [])) : null;
+        const v = run && this.anSel ? (0, outage_1.outageEvidence)(this.doc, run, this.anSel, this.anContextText(run.result.info.context, run.at, view.bar.layers || [])) : null;
         if (v)
             this.anSelRefs = v.objects.map((o) => o.ref);
-        const e = this.anEvidence(v, w ? 'Select a requirement, a dependency or a demand to see how the condition affects it.' : 'The evidence of an affected requirement, dependency or demand appears here.');
-        // (with nothing selected, the diagram marks what fails)
-        if (!v && w)
-            this.anSelRefs = w.result.refs.slice();
+        const e = this.anEvidence(v, run ? 'Select a changed item — a component, requirement, dependency, demand or device pair — to see its state without and under the outage, and why.' : 'The evidence of a changed item appears here, under the outage it was computed for.');
+        // (with nothing selected, the diagram marks what is assumed unavailable)
+        if (!v && run)
+            this.anSelRefs = run.result.refs.slice();
         return { left, bottom, ...e };
     }
-    /** What if these fail (failure domains, devices, cables, relations, interfaces, or refs): the comparison in Failure scenario. */
-    runWhatIf(entries) {
+    /**
+     * Analyze impact: the condition in the form, compared with the same
+     * configured architecture without it (exact refs; bounded; the result is
+     * frozen with the model it was computed on). Device pairs, when asked,
+     * are traced in slices with Stop. A condition that can't be evaluated —
+     * empty, naming what is no longer in the model, over the limit — is
+     * refused with why; nothing is cut off silently.
+     */
+    runOutage() {
         const s = this.session;
         if (!s)
             return null;
-        // (the scenario is computed on the model as it is now; the report's baseline only when the report is of this model)
-        const j0 = this.spofJob;
-        const j = j0 && j0.model === s.model ? j0 : { deps: (0, dependencies_1.serviceDependencies)(s.model), baseline: null, model: s.model };
-        if (!j.baseline)
-            j.baseline = (0, dependencies_1.dependencyBaseline)(j.model, j.deps);
-        const reach = this.wiForm.reach === 'entire' ? { kind: 'entire' } : this.wiForm.reach.indexOf('group:') === 0 ? { kind: 'group', group: this.wiForm.reach.slice(6) } : undefined;
-        const clean = entries.map((e) => e.replace(/^(device|link|relation):/, ''));
-        const result = (0, whatif_1.whatIf)(s.model, clean, { deps: j.deps, baseline: j.baseline, reach });
-        this.wiRun = { model: s.model, result, at: Date.now() };
-        // (the form says the condition the result answers: a failure domain, or the components)
-        const domain = clean.length === 1 && s.model.failureDomains.some((d) => d.id === clean[0]);
-        this.wiForm = domain ? { ...this.wiForm, mode: 'domain', domain: clean[0] } : { ...this.wiForm, mode: 'components', components: clean.join(', ') };
-        this.remember('resilience', 'scenario', `Failure of ${clean.join(', ')}`, result.info.context, [`Hypothetical failure condition: ${clean.join(', ')}`], s.model, this.wiRun, this.wiRun.at);
-        const was = this.analyzeTask() === 'resilience' && this.anModes.resilience === 'scenario';
-        this.anModes.resilience = 'scenario';
-        this.anSels.delete('resilience:scenario');
-        if (!was)
-            this.showAnalyze('resilience', 'scenario');
+        const f = this.oiForm;
+        const pv = (0, outage_1.outagePreview)(s.model, f.picks);
+        if (pv.blocked) {
+            this.toast(pv.blocked);
+            const x = this.doc.getElementById(f.picks.length ? 'oi-refuse' : 'oi-search') || this.doc.getElementById('oi-search');
+            if (x)
+                x.focus();
+            return null;
+        }
+        this.stopOutageReach(false);
+        const d = this.outageDeps(true);
+        const result = (0, whatif_1.whatIf)(s.model, pv.refs, { deps: d.deps, baseline: d.baseline || undefined, exact: true });
+        const run = { model: s.model, at: Date.now(), result, picks: f.picks.map((p) => ({ ref: p.ref, via: p.via.slice() })), depsTotal: d.deps.length, reachRunning: false };
+        this.oiRun = run;
+        this.oiForm = { ...f, offer: null };
+        const scope = this.outageScope();
+        if (scope && result.result)
+            this.startOutageReach(run, scope, d.deps);
+        const names = run.picks.map((p) => p.ref.slice(p.ref.indexOf(':') + 1)).join(', ');
+        this.remember('resilience', 'outage', `Outage of ${names}`, result.info.context, [`Hypothetical outage: ${names}`], s.model, run, run.at);
+        this.anSels.delete('resilience:outage');
+        if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage'))
+            this.showAnalyze('resilience', 'outage');
         else
             this.renderAnalyzeWs();
         this.revealResults();
-        const r = this.doc.getElementById('wi-summary') || this.doc.getElementById('wi-result');
+        const r = this.doc.getElementById('oi-summary');
         if (r) {
-            r.setAttribute('tabindex', '-1');
             r.focus();
             if (typeof r.scrollIntoView === 'function')
                 r.scrollIntoView({ block: 'nearest' });
         }
-        return result;
+        return run;
+    }
+    /** Trace the device pairs of a scope under the outage, a slice at a time (about 40 ms each), until done or stopped. */
+    startOutageReach(run, scope, deps) {
+        const sp = (0, failure_1.scopePairs)(run.model, scope, (0, whatif_1.relevantDevices)(run.model, deps));
+        run.result.reach = { pairs: [], coverage: { checked: 0, eligible: sp.eligible, unit: 'device pairs', truncated: sp.omitted.length > 0, omitted: sp.omitted.length ? `${sp.omitted.length} device${sp.omitted.length === 1 ? '' : 's'} beyond the limit (${sp.omitted.slice(0, 6).join(', ')}${sp.omitted.length > 6 ? ' …' : ''})` : undefined } };
+        run.reachRunning = true;
+        this.oiReach = { run, pairs: sp.pairs, next: 0, timer: null };
+        this.stepOutageReach();
+    }
+    stepOutageReach() {
+        const j = this.oiReach;
+        const w = j ? j.run.result : null;
+        if (!j || !w || !w.reach || !w.result)
+            return;
+        j.timer = null;
+        const t0 = Date.now();
+        while (j.next < j.pairs.length && Date.now() - t0 < 40) {
+            const part = j.pairs.slice(j.next, j.next + 8);
+            for (const p of (0, failure_1.lostPairs)(j.run.model, w.result, part))
+                w.reach.pairs.push(p);
+            j.next += part.length;
+            w.reach.coverage.checked = j.next;
+        }
+        if (j.next >= j.pairs.length)
+            this.stopOutageReach(false);
+        else if (this.doc.defaultView)
+            j.timer = this.doc.defaultView.setTimeout(() => this.stepOutageReach(), 0);
+        if (this.oiRun === j.run && this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage')
+            this.renderAnalyzeWs('results');
+    }
+    /** End the device-pair check (Stop: cancelled, the coverage says how far it got). */
+    stopOutageReach(cancel) {
+        const j = this.oiReach;
+        if (!j)
+            return;
+        if (j.timer !== null && this.doc.defaultView)
+            this.doc.defaultView.clearTimeout(j.timer);
+        this.oiReach = null;
+        const w = j.run.result;
+        j.run.reachRunning = false;
+        if (w.reach) {
+            if (j.next < j.pairs.length)
+                w.reach.coverage.cancelled = true;
+            w.info = { ...w.info, coverage: w.reach.coverage };
+        }
+        if (cancel && this.oiRun === j.run) {
+            this.renderAnalyzeWs();
+            const b = this.doc.getElementById('oi-summary');
+            if (b)
+                b.focus();
+        }
+    }
+    /** Prepare an experiment from the outage: its components failed 10 s after the start (one undo step; nothing runs). For recovery and transient behaviour over time. */
+    async outageToExperiment() {
+        const r = this.oiRun;
+        const d = this.mdoc;
+        const s = this.session;
+        if (!r || !d || !s)
+            return false;
+        if (this.editLock()) {
+            this.toast(this.editLock());
+            return false;
+        }
+        const refs = r.picks.map((p) => p.ref).filter((x) => (0, failure_1.failableRef)(s.model, x));
+        if (!refs.length || refs.length > 16) {
+            this.toast(refs.length ? `An experiment is prepared for at most 16 components; this outage has ${refs.length}.` : 'Nothing of this outage is in the model any more.');
+            return false;
+        }
+        const actions = refs.map((x, i) => [['id', `out${i + 1}`], ['at', '10s'], ['do', x.indexOf('iface:') === 0 ? 'shut' : 'fail'], ['target', x.slice(x.indexOf(':') + 1)]]);
+        let k;
+        try {
+            k = d.addExperiment(`Outage of ${refs.map((x) => x.slice(x.indexOf(':') + 1)).join(', ')}`, '60s', { actions });
+        }
+        catch (e) {
+            this.refusedEdit(e);
+            return false;
+        }
+        this.afterEdit('The experiment was added (Ctrl+Z undoes it): it fails these components 10 s after the start. Add the observations you need, then Run.');
+        const e = this.session.model.experiments[k];
+        if (e)
+            this.expSel = { exp: e.id, list: null, index: -1 };
+        return this.enterExperiments();
     }
     capacityBar() {
         const c = this.capRun;
@@ -6199,7 +6454,7 @@ class App {
         const s = this.session;
         const c = this.capRun;
         const view = { model: s.model, form: this.capForm, result: c ? { before: c.before, after: c.after, changes: c.changes, condition: c.condition } : null, bar: this.capacityBar(), sel: this.anSel };
-        const left = (0, spof_1.capacityRequest)(this.doc, view, this.wiActions('cap'));
+        const left = (0, spof_1.capacityRequest)(this.doc, view, this.capActions());
         const bottom = (0, spof_1.capacityResults)(this.doc, view);
         const v = c && this.anSel ? (0, spof_1.capacityEvidence)(this.doc, view, this.anSel, this.anContextText({ kind: 'model', scope: 'The stated demands' }, c.at, view.bar.layers || [])) : null;
         const e = this.anEvidence(v, c ? 'Select a demand to see the resources and directions it crosses.' : 'The evidence of a demand appears here.');
@@ -6238,8 +6493,8 @@ class App {
     /** Configure failure domains…: the editor in the right panel (nothing is evaluated by it). */
     openDomainsEditor() {
         this.anEditor = 'domains';
-        if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'scenario'))
-            this.showAnalyze('resilience', 'scenario');
+        if (!(this.analyzeTask() === 'resilience' && this.anModes.resilience === 'outage'))
+            this.showAnalyze('resilience', 'outage');
         else
             this.renderAnalyzeWs('results');
         this.revealEvidence();
@@ -8051,7 +8306,7 @@ class App {
         if (!this.session)
             return;
         this.showAnalyze('resilience', mode);
-        const first = this.doc.querySelector(mode === 'scenario' ? '#wi-domain, #wi-components' : '#cap-go');
+        const first = this.doc.querySelector(mode === 'outage' ? '#oi-search' : '#cap-go');
         if (first)
             first.focus();
     }
@@ -8158,7 +8413,7 @@ class App {
     }
     /** Is the editor of the task in front shown? */
     anEditorOpen() {
-        return (this.anEditor === 'requirement' && this.anTask === 'review' && this.anModes.review === 'requirements') || (this.anEditor === 'domains' && this.anTask === 'resilience' && this.anModes.resilience === 'scenario');
+        return (this.anEditor === 'requirement' && this.anTask === 'review' && this.anModes.review === 'requirements') || (this.anEditor === 'domains' && this.anTask === 'resilience' && this.anModes.resilience === 'outage');
     }
     /** The Analyze banner's line: the task, what the next computation reads, that nothing is changed. */
     anNoteLine() {
@@ -8325,8 +8580,12 @@ class App {
                     this.pauseSpofJob();
                 this.spofJob = h.data;
             }
-            else if (h.task === 'resilience' && h.mode === 'scenario')
-                this.wiRun = h.data;
+            else if (h.task === 'resilience' && h.mode === 'outage') {
+                // (the result as computed; the question shows its condition again, so the two agree)
+                this.stopOutageReach(false);
+                this.oiRun = h.data;
+                this.oiForm = { ...this.oiForm, picks: this.oiRun.picks.map((p) => ({ ref: p.ref, via: p.via.slice() })), offer: null };
+            }
             else if (h.task === 'resilience' && h.mode === 'capacity')
                 this.capRun = h.data;
             else if (h.task === 'review')
@@ -8355,8 +8614,8 @@ class App {
         let body = '';
         if (h.task === 'communication')
             body = (0, trace_2.traceExportText)({ title: s.model.title, version: this.appVersion(), outdated, fingerprint: h.fingerprint }, h.data);
-        else if (h.task === 'resilience' && h.mode === 'scenario')
-            body = (0, spof_1.whatIfText)({ title: s.model.title, version: this.appVersion(), outdated }, h.data.result);
+        else if (h.task === 'resilience' && h.mode === 'outage')
+            body = (0, outage_1.outageText)({ title: s.model.title, version: this.appVersion(), outdated }, h.data);
         else if (h.task === 'review')
             body = (0, design_checks_1.designText)({ title: s.model.title, version: this.appVersion(), outdated }, h.model, h.data.run);
         else if (h.task === 'addressing')
@@ -8407,7 +8666,7 @@ class App {
         if (this.anTask === 'communication')
             return this.traceRun;
         if (this.anTask === 'resilience')
-            return this.anModes.resilience === 'scenario' ? this.wiRun : this.anModes.resilience === 'capacity' ? this.capRun : null;
+            return this.anModes.resilience === 'outage' ? this.oiRun : this.anModes.resilience === 'capacity' ? this.capRun : null;
         if (this.anTask === 'review')
             return this.anModes.review === 'requirements' ? this.dcRun : null;
         if (this.anTask === 'addressing')
@@ -8490,7 +8749,7 @@ class App {
             case 'communication':
                 return this.commParts();
             case 'resilience':
-                return this.anModes.resilience === 'single' ? this.spofParts() : this.anModes.resilience === 'scenario' ? this.scenarioParts() : this.capacityParts();
+                return this.anModes.resilience === 'single' ? this.spofParts() : this.anModes.resilience === 'outage' ? this.outageParts() : this.capacityParts();
             case 'review':
                 return this.anModes.review === 'requirements' ? this.requirementsParts() : this.findingsParts();
             case 'addressing':
@@ -8523,16 +8782,13 @@ class App {
             case 'experiment':
                 return void this.traceToExperiment();
             case 'scenario':
-                return this.anGo(this.anBackLabel(), () => {
-                    const refs = r.split(' ').filter((x) => x);
-                    this.wiForm = { ...this.wiForm, mode: 'components', components: refs.map((x) => x.replace(/^(device|link|relation|iface):/, '')).join(', ') };
-                    this.runWhatIf(refs);
-                });
+                return this.anGo(this.anBackLabel(), () => void this.prepareOutage(r.split(' ').filter((x) => x)));
             case 'whatif-provider':
-                return this.anGo(this.anBackLabel(), () => {
-                    this.wiForm = { ...this.wiForm, mode: 'components', components: r };
-                    this.runWhatIf([r]);
-                });
+                return this.anGo(this.anBackLabel(), () => void this.prepareOutage(['device:' + r]));
+            case 'outage-add':
+                // (the same Outage impact: the provider joins the condition, not analyzed until asked)
+                this.addToOutage([r], '');
+                return this.outageRedraw('#oi-go');
             case 'communication':
                 return this.anGo(this.anBackLabel(), () => {
                     const q = JSON.parse(r);
@@ -8732,7 +8988,7 @@ class App {
         if (kind === 'explore')
             return this.exploreComponent(ref);
         if (kind === 'whatif')
-            return this.anGo('Overview', () => void this.runWhatIf([id]));
+            return this.anGo('Overview', () => void this.prepareOutage([ref]));
         if (kind === 'addressing') {
             return this.anGo('Overview', () => {
                 this.openAddressing();
@@ -53534,7 +53790,7 @@ const MANUAL = [
         id: 'windows',
         title: 'Work in the Analyze workspace',
         steps: [
-            'Every entry of **Analyze** opens the **Analyze** workspace, in place of the Objects list and the Inspector. It is organized by the question you ask: **Overview** (where to start), **Communication** (can this communicate, and why not), **Resilience** (what stops working when something fails; single-component failures, a failure scenario, capacity), **Design review** (the consistency findings, and the requirements saved with the model) and **Addressing** (conflicts, overlaps, allocation). The buttons at the top of the left panel switch between them (the arrow keys move); each keeps its question, its result and its selection.',
+            'Every entry of **Analyze** opens the **Analyze** workspace, in place of the Objects list and the Inspector. It is organized by the question you ask: **Overview** (where to start), **Communication** (can this communicate, and why not), **Resilience** (what stops working when something fails; single-component failures, outage impact, capacity), **Design review** (the consistency findings, and the requirements saved with the model) and **Addressing** (conflicts, overlaps, allocation). The buttons at the top of the left panel switch between them (the arrow keys move); each keeps its question, its result and its selection.',
             'Every task uses the panels the same way: on the **left** the **Question** (what, from where to where, on what, with what options; one primary action), at the **bottom** the **Answer and results** (the answer first, what was evaluated, what limits it, then the tables), on the **right** the **Evidence** of what you select in the results: what it is, the result’s context, the explanation, the evidence and decisions, the objects it concerns and what to inspect next. An editor shown there says it is one: its own title, **Save changes** and **Cancel**.',
             'Selecting a result item (a row, a layer, a hop, an issue) shows its evidence; nothing is computed again and no simulated clock moves. **Close evidence** or `Esc` lets it go, and the keyboard returns to where it was chosen from. Following a result into another task (a dependency into Communication, a requirement’s communication) offers **← Back to …**, which returns to that result and item.',
             'Under **Relevant objects**: **Locate in diagram**, **Fit relevant objects**, **Show only relevant objects** (a display filter: the analysis keeps its scope) and **Restore previous view**. The layout of the panels is your choice: **Balanced**, **Diagram-focused** or **Results-focused** (in the results’ head).',
@@ -53572,12 +53828,15 @@ const MANUAL = [
         title: 'What stops working when something fails',
         steps: [
             '**Resilience: single-component failures**: every cable, device and LAG failing alone (and for guests their host, a virtual switch with one uplink, a passthrough port). Each row says, apart: the saved **requirements no longer satisfied**, the **configured dependencies unavailable** (application peers, MQTT brokers, DNS, DHCP, timing sources, syslog, AAA), the **devices disconnected**, the **relations unavailable**, and its **status**. No measure is added to another: none is a business criticality. Values are explicit: a count, **None affected**, **Checking**, **Not evaluated**, **Indeterminate**. The check runs candidate by candidate while you work; **Stop** ends it and the coverage says how far it got.',
-            'Sort by a column header, filter by words; a selected row stays selected while the check goes on, and its evidence lists what it affects. **Show** selects it in the diagram; **Scenario** fails it in Failure scenario.',
-            '**Resilience: failure scenario**: a **failure domain** of the model, or a few **components** (devices, cables, relations, device:interface), failing together; **Analyze scenario** compares it with the same baseline: the requirements no longer satisfied, what **becomes unavailable**, what survives **through an alternative** (another server, another path), what is **degraded** or **cannot be determined**, the structure, capacity and, under Advanced options, the device pairs of a scope that lose reachability. Select an item for its evidence; a dependency leads into Communication.',
-            '**Configure failure domains…** opens their editor: **Add failure domain**, a name, its kind (rack, room, site, shared power, conduit, provider) and its members. A group of the diagram is no failure domain unless one names it; deleting one names the requirements that use it.',
+            'Sort by a column header, filter by words; a selected row stays selected while the check goes on, and its evidence lists what it affects. **Show** selects it in the diagram; **Investigate** prepares the same component in Outage impact (add more to combine them).',
+            '**Resilience: outage impact** answers *what stops working, what remains available and what becomes uncertain if these components become unavailable?* Choose components to make unavailable; the modeled consequences are compared with the architecture without this outage; nothing in the model is changed. Useful to check whether another uplink preserves connectivity, to examine a maintenance outage, the loss of a broker or resolver, or two components unavailable together. Single-component failures scans every component alone; outage impact answers for the ones you choose.',
+            'Find components in **Add component** by name, ID, type or endpoint (`↑`/`↓` choose, `Enter` adds; a partial name is never picked for you), or with **Analyze outage impact…** on the selection (the Overview, the command palette): it is prepared, never analyzed at once, and an existing condition is kept unless you choose **Add to the condition** or **Start a new condition with it**. Devices, cables, interfaces and relations can be chosen; a group adds its devices (its membership, never what is drawn near it). A network or an application is not made unavailable on its own: choose its device, cable or interface.',
+            'Under **Assume unavailable** the condition is shown before anything runs: each component (removable), how many you chose, how many came from a saved set, how the analysis will propagate it (a device takes its interfaces and cables down — results, not further choices), and what is compared. More than 64 components, or one no longer in the model, is refused with why; nothing is cut off silently. **Also check** adds device pairs in a scope (bounded, with **Stop** and the coverage); it never starts on its own.',
+            '**Analyze impact** answers in the results: the outage, then, compared with the same configured architecture without it, the requirements no longer satisfied (or **No saved requirements were available to evaluate**), the configured dependencies that become unavailable or **remain available through an alternative**, what cannot be determined, the further objects that go down as a consequence, capacity and device pairs. Without any change it says **No additional modeled effect found within the checks performed** — never that the outage has no effect. Issues that existed before the outage are listed apart. The groups below tell **Unavailable by assumption** from **Propagated effects**; select an item for its state without and under the outage, and why. Communication checks the architecture without the outage: its actions say so. **Prepare an experiment…** adds an experiment that fails these components (one undo step) for what happens over time.',
+            'A **saved failure set** (a failure domain: a named set of components assumed to become unavailable together — a rack, a room, shared power, a conduit, a provider) is an optional shortcut: **Add saved failure set…** copies its components into the condition, each marked as coming from it; removing one there does not change the saved set. **Define failure domains…** opens their editor: **Add failure domain**, a name, its kind and its members — a model edit with undo. A group of the diagram is no failure domain unless one names it; deleting one names the requirements that use it.',
             '**Resilience: capacity**: the traffic the model states (demands, applications with an interval) against the speeds it states, with no failure or under a failure condition: per demand the resource and direction that decide, the bounds of an equal split over equal-cost paths and of all on one path, what is missing (a speed not written), and what changes under the condition (overloaded although still carried, no longer carried, now depending on the distribution).',
         ],
-        notes: ['A failure is a hypothetical condition, not a probability; no convergence or recovery time is claimed, and capacity is no measured throughput or hardware performance. Losing a DHCP server stops new assignments and renewals; leases already given last until they end. The failure follows the model: what runs `over` it, LAGs with their minimum links, VRRP groups failing over. Nothing in the model changes. The tables can be copied or saved as CSV or text, with the context and coverage.'],
+        notes: ['An outage is a hypothetical condition on the configured model, not a probability or a production availability; no protocol convergence, recovery time or transient loss is claimed, and capacity is no measured throughput or hardware performance. Losing a DHCP server stops new assignments and renewals; leases already given last until they end. The failure follows the model: what runs `over` it, LAGs with their minimum links, VRRP groups failing over. Nothing in the model changes. The tables can be copied or saved as CSV or text, with the context and coverage.'],
         figures: [['spof', 'Resilience for the enterprise WAN: single-component failures with their separate measures, and the evidence of the firewall failing alone.']],
     },
     {
@@ -54404,7 +54663,7 @@ exports.MANUAL_IMAGES = {
         "height": 585
     },
     "spof": {
-        "src": "data:image/webp;base64,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",
+        "src": "data:image/webp;base64,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",
         "width": 792,
         "height": 447
     },
@@ -54547,9 +54806,9 @@ exports.ANALYSIS_SUPPORT = [
     },
     {
         id: 'failure',
-        name: 'Resilience: failures, scenarios, capacity',
-        does: 'Single-component failures (each cable, device and LAG alone) with separate measures: requirements no longer satisfied, configured dependencies unavailable, devices disconnected, relations unavailable; failure scenarios of failure domains or up to 64 components, compared with the same baseline: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity, also without a failure (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
-        not: 'business criticality, probabilities, convergence and recovery times, combinations beyond the condition given; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
+        name: 'Resilience: failures, outage impact, capacity',
+        does: 'Single-component failures (each cable, device and LAG alone) with separate measures: requirements no longer satisfied, configured dependencies unavailable, devices disconnected, relations unavailable; outage impact of up to 64 components you choose (devices, cables, interfaces, relations; a group by its devices; a saved failure domain as an optional shortcut), compared with the same configured architecture without the outage, what was assumed told apart from what follows from it: dependencies, every saved expectation (availability and isolation), reachability of device pairs in a scope, and the stated traffic against the stated capacity, also without a failure (cables, an aggregate’s surviving members, shared radios; overload although still carried said apart).',
+        not: 'business criticality, probabilities, production availability, protocol convergence, recovery times and transient loss (Experiments), combinations beyond the condition given, a hypothetical outage on a simulation snapshot, a network or an application unavailable on its own; throughput, queues, delay and hardware forwarding limits; a spread of traffic over equal-cost paths or bundle members (both an equal split and all on one path are evaluated).',
     },
     {
         id: 'timing',
@@ -89469,13 +89728,13 @@ function inWorkspacePanel(t) {
 exports.ANALYZE_TASKS = [
     { id: 'overview', label: 'Overview', command: 'analyze.overview', answers: 'Where to start: the questions Analyze answers, what is known about this model, recent and pinned results' },
     { id: 'communication', label: 'Communication', command: 'trace.open', answers: 'Can this application or service communicate? What the configured architecture establishes, what blocks it, and what a modeled exchange observed' },
-    { id: 'resilience', label: 'Resilience', command: 'analyze.spof', answers: 'What stops working when a component or a failure domain is unavailable, and whether the stated traffic still fits' },
+    { id: 'resilience', label: 'Resilience', command: 'analyze.spof', answers: 'What stops working, what remains available and what becomes uncertain when components are unavailable, and whether the stated traffic still fits' },
     { id: 'review', label: 'Design review', command: 'analyze.checks', answers: 'Does the architecture satisfy its saved requirements? What do the consistency checks find?' },
     { id: 'addressing', label: 'Addressing', command: 'analyze.addressing', answers: 'Where are addressing conflicts, overlaps and addresses outside the declared networks; how is each network allocated?' },
 ];
 exports.RESILIENCE_MODES = [
     { id: 'single', label: 'Single-component failures', command: 'analyze.spof', help: 'Each cable, device and LAG failing alone: what it disconnects and what becomes unavailable' },
-    { id: 'scenario', label: 'Failure scenario', command: 'analyze.whatif', help: 'Several components or a failure domain failing together, compared with the same baseline' },
+    { id: 'outage', label: 'Outage impact', command: 'analyze.outage', help: 'The components you choose made unavailable together, compared with the same architecture without the outage' },
     { id: 'capacity', label: 'Capacity', command: 'analyze.capacity', help: 'The stated demands against the stated capacity, with or without a failure condition' },
 ];
 exports.REVIEW_MODES = [
@@ -89751,12 +90010,12 @@ function overviewRequest(doc, model, sel, explore, act) {
             add('diagnose', 'Diagnose its communication', 'Its client application to its peer (or the device as the source), checked in Communication');
             add('from', 'Check communication from it', 'Communication with it as the source; you give the destination');
             add('explore', 'Explore its dependencies', 'What it depends on, what uses it, what its failure affects');
-            add('whatif', 'What if it fails', 'Resilience → Failure scenario with it as the condition, analysed now');
+            add('whatif', 'Analyze outage impact…', 'Prepares it in Resilience → Outage impact; nothing is analyzed until you ask');
         }
         if (sel.kind === 'relation')
             add('diagnose', 'Diagnose this relation', 'The communication between its two ends, in Communication');
-        if (sel.kind === 'cable')
-            add('whatif', 'What if it fails', 'Resilience → Failure scenario with it as the condition, analysed now');
+        if (sel.kind === 'cable' || sel.kind === 'relation')
+            add('whatif', 'Analyze outage impact…', 'Prepares it in Resilience → Outage impact; nothing is analyzed until you ask');
         if (sel.kind === 'network')
             add('addressing', 'Its addressing', 'Addressing with this network selected: its members, allocation and unallocated ranges');
         sec.appendChild(acts);
@@ -89859,7 +90118,7 @@ function overviewResults(doc, facts, ex, history, current, sel, act) {
 }
 function taskLabel(t, mode) {
     const base = (workspace_1.ANALYZE_TASKS.find((x) => x.id === t) || { label: t }).label;
-    const m = { single: 'single-component failures', scenario: 'failure scenario', capacity: 'capacity', findings: 'findings', requirements: 'requirements' };
+    const m = { single: 'single-component failures', outage: 'outage impact', capacity: 'capacity', findings: 'findings', requirements: 'requirements' };
     return m[mode] ? `${base} (${m[mode]})` : base;
 }
 /** The explored component's section: Depends on, Used by, Failure affects (evaluated on request). */
@@ -89894,7 +90153,7 @@ function explorerSection(doc, ex, current, sel, act) {
         const items = lost.map((c) => depItem(doc, 'dep-fail:' + c.dep.key, sel, c.dep, c)).concat(reqs.map((x) => (0, dom_1.el)(doc, 'li', { 'data-exp-change': x.change }, [(0, dom_1.el)(doc, 'span', { class: 'muted' }, ['Requirement: ']), `${x.after.name} — ${whatif_1.EXP_CHANGE_TEXT[x.change]}`])));
         if (items.length)
             sec.appendChild((0, dom_1.el)(doc, 'ul', { class: 'small an-deps' }, items));
-        const b = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', 'data-an-start': 'whatif-open' }, ['Open in Resilience → Failure scenario']);
+        const b = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', 'data-an-start': 'whatif-open' }, ['Investigate this outage']);
         b.addEventListener('click', () => act.start('whatif', ex.ref));
         sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, [b]));
     }
@@ -90026,8 +90285,9 @@ function relevantDevices(model, deps) {
  * a scope.
  */
 function whatIf(model, entries, opts = {}) {
-    const fc = (0, failure_1.failureCondition)(model, entries);
-    const scope = fc.domains.length === 1 && entries.length === 1 ? `Failure domain ${fc.domains[0]}` : `Failure of ${entries.join(', ')}`;
+    // (exact: the entries are refs as picked — "device:core-a", "link:l1" — never resolved by id precedence)
+    const fc = opts.exact ? exactCondition(model, entries) : (0, failure_1.failureCondition)(model, entries);
+    const scope = opts.exact ? `Outage of ${entries.map((e) => e.slice(e.indexOf(':') + 1)).join(', ')}` : fc.domains.length === 1 && entries.length === 1 ? `Failure domain ${fc.domains[0]}` : `Failure of ${entries.join(', ')}`;
     const out = { entries: entries.slice(), refs: fc.refs, unknown: fc.unknown, domains: fc.domains, tooLarge: fc.refs.length > exports.WHATIF_MAX, result: null, summary: null, structural: null, deps: [], expectations: [], info: (0, result_1.resultInfo)((0, result_1.configuredContext)(scope)) };
     if (out.tooLarge || !fc.refs.length) {
         out.info.limits.push(out.tooLarge ? `The condition fails ${fc.refs.length} components; at most ${exports.WHATIF_MAX} are evaluated together.` : 'Nothing of the model fails.');
@@ -90061,6 +90321,11 @@ function whatIf(model, entries, opts = {}) {
     }
     out.info = (0, result_1.resultInfo)((0, result_1.configuredContext)(scope), ['The failure propagates as the failure analysis models it: devices take their interfaces and cables down, aggregates and redundancy groups degrade or fail over, relations fail with their underlay, static routes with their next hop.', 'The baseline is the configured model with nothing failed.'], ['Convergence and recovery times, timers and transient loss.', 'Probabilities: a what-if is a condition, not a reliability estimate.', 'Runtime behaviour of the services (sessions, retries, caches, lease renewals in progress).', 'Capacity is the stated traffic against the stated speeds: no queues, delay or hardware limits; a spread over equal-cost paths or bundle members is not assumed.'], out.reach ? out.reach.coverage : undefined);
     return out;
+}
+/** A condition of exact refs: the failable ones, and what names nothing (no failure domain is expanded). */
+function exactCondition(model, refs) {
+    const ok = Array.from(new Set(refs.filter((r) => (0, failure_1.failableRef)(model, r)))).sort();
+    return { refs: ok, unknown: refs.filter((r) => !(0, failure_1.failableRef)(model, r)), domains: [] };
 }
 /** The way an expectation is met: its main path's devices, or its timing chain. */
 function wayOf(r) {
@@ -90997,22 +91262,17 @@ exports.spofResults = spofResults;
 exports.spofEvidence = spofEvidence;
 exports.newWhatIfForm = newWhatIfForm;
 exports.conditionEntries = conditionEntries;
-exports.scenarioRequest = scenarioRequest;
-exports.scenarioResults = scenarioResults;
-exports.scenarioEvidence = scenarioEvidence;
 exports.capacityRequest = capacityRequest;
 exports.capacityResults = capacityResults;
 exports.capacityEvidence = capacityEvidence;
 exports.domainsEditorBody = domainsEditorBody;
-exports.whatIfText = whatIfText;
 /**
- * Resilience (Analyze → Resilience) in three modes: single-component
- * failures (separate measures — requirements, configured dependencies,
- * devices, relations — none summed, each value explicit; checked
- * progressively and cancellably), a failure scenario (a domain or a few
- * components against the same baseline; failure domains in an explicit
- * editor) and capacity (the stated demands against the stated speeds, with
- * or without a failure). spofRows, spofCsv, spofText and whatIfText are pure.
+ * Resilience (Analyze → Resilience): single-component failures (separate
+ * measures — requirements, configured dependencies, devices, relations —
+ * none summed, each value explicit; checked progressively and cancellably),
+ * capacity (the stated demands against the stated speeds, with or without a
+ * failure) and the failure domains' editor (an explicit model edit). Outage
+ * impact is ui/outage.ts. spofRows, spofCsv and spofText are pure.
  */
 const dependencies_1 = __req("analysis/dependencies");
 const failure_1 = __req("analysis/failure");
@@ -91225,7 +91485,7 @@ function spofTable(doc, rows, st, view) {
         d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, [`Candidates: ${candidatesText(view.cands) || 'none'}, each failing alone.`]));
         if (p)
             d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, [`Service checks: ${p.deps} configured dependenc${p.deps === 1 ? 'y' : 'ies'}${p.indeterminate ? `, ${p.indeterminate} of them not determinable in the configured model (their consumers take their addresses at runtime: a simulation snapshot can tell)` : ''}; ${p.reqs} saved requirement${p.reqs === 1 ? '' : 's'}.`]));
-        d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, ['Not checked: relations or interfaces failing alone, combinations of failures (Failure scenario), dependencies the model does not configure, runtime behaviour.']));
+        d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, ['Not checked: relations or interfaces failing alone, combinations of failures (Outage impact), dependencies the model does not configure, runtime behaviour.']));
         wrap.appendChild(d);
         return wrap;
     }
@@ -91258,7 +91518,7 @@ function spofTable(doc, rows, st, view) {
             (0, dom_1.el)(doc, 'td', { class: 'nowrap small' }, [status]),
             (0, dom_1.el)(doc, 'td', { class: 'nowrap' }, [
                 (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', 'data-spof-show': r.ref, 'aria-label': `Show ${r.element} in the diagram` }, ['Show']),
-                (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', 'data-spof-whatif': r.fail.join(' '), 'aria-label': `Investigate ${r.element} failing as a failure scenario` }, ['Scenario']),
+                (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', 'data-spof-whatif': r.fail.join(' '), 'aria-label': `Investigate the outage of ${r.element} in Outage impact` }, ['Investigate']),
             ]),
         ]));
     }
@@ -91287,7 +91547,7 @@ function spofEvidence(doc, r, changes, reqs, context, running) {
     line('Devices disconnected', r.devicesCut ? `${r.devicesCut}: ${r.cuts}` : 'None affected');
     line('Relations unavailable', r.relations || 'None affected');
     const evidence = [];
-    const next = [{ id: 'scenario', label: 'Investigate as failure scenario', why: 'The same failure in Failure scenario: what survives through an alternative, the requirements before and after, capacity', ref: r.fail.join(' ') }];
+    const next = [{ id: 'scenario', label: 'Investigate this outage', why: 'Prepares the same component condition in Outage impact (add components to combine them; analyzed when you ask): what survives through an alternative, the requirements before and after, capacity', ref: r.fail.join(' ') }];
     if (changes) {
         const lost = changes.filter((c) => c.change === 'unavailable' || c.change === 'indeterminate' || c.change === 'degraded');
         if (lost.length) {
@@ -91311,17 +91571,19 @@ function spofEvidence(doc, r, changes, reqs, context, running) {
     return { kind: 'Failure impact', title: `${r.type} ${r.element} fails alone`, context, explanation: ex, evidence, objects: objs, next };
 }
 function newWhatIfForm() {
-    return { mode: 'domain', domain: '', components: '', reach: '' };
+    return { mode: 'none', domain: '', components: '' };
 }
-/** The condition of a scenario (or a capacity question): a failure domain, or components (Capacity: also none). Its controls carry ids with `prefix`. */
-function conditionForm(doc, m, f, act, prefix, none) {
+/** Capacity's condition: none, components, or a saved failure set. Its controls carry ids with `prefix`. */
+function conditionForm(doc, m, f, act, prefix) {
     const box = (0, dom_1.el)(doc, 'div', { class: 'wi-cond' });
     const seg = (0, dom_1.el)(doc, 'div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Failure condition' });
-    const modes = (none ? [['none', 'No failure']] : []).concat([
-        ['domain', 'Failure domain'],
+    const modes = [
+        ['none', 'No failure'],
         ['components', 'Components'],
-    ]);
-    const cur = !none && f.mode === 'none' ? 'domain' : f.mode;
+    ];
+    if (m.failureDomains.length)
+        modes.push(['domain', 'Saved failure set']);
+    const cur = f.mode === 'domain' && !m.failureDomains.length ? 'none' : f.mode;
     for (const [k, label] of modes) {
         const on = cur === k;
         const b = (0, dom_1.el)(doc, 'button', { type: 'button', role: 'radio', class: 'mini' + (on ? ' active' : ''), 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-wi-mode': k, id: `${prefix}-mode-${k}` }, [label]);
@@ -91341,12 +91603,12 @@ function conditionForm(doc, m, f, act, prefix, none) {
     const grid = (0, dom_1.el)(doc, 'div', { class: 'tf-grid' });
     if (cur === 'domain') {
         const s = (0, dom_1.el)(doc, 'select', { id: prefix + '-domain' });
-        s.appendChild((0, dom_1.el)(doc, 'option', { value: '' }, [m.failureDomains.length ? 'Choose a failure domain…' : 'The model has no failure domain']));
+        s.appendChild((0, dom_1.el)(doc, 'option', { value: '' }, ['Choose a saved failure set…']));
         for (const d of m.failureDomains)
             s.appendChild((0, dom_1.el)(doc, 'option', { value: d.id }, [`${d.label} (${(types_1.FAILURE_DOMAIN_KINDS.find((k) => k.id === d.kind) || { label: d.kind }).label}, ${d.members.length} member${d.members.length === 1 ? '' : 's'})`]));
         s.value = f.domain;
         s.addEventListener('change', () => act.wiInput('domain', s.value));
-        grid.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-row dc-row' }, [(0, dom_1.el)(doc, 'label', { for: prefix + '-domain' }, ['Domain']), s]));
+        grid.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-row dc-row' }, [(0, dom_1.el)(doc, 'label', { for: prefix + '-domain' }, ['Set']), s]));
     }
     else if (cur === 'components') {
         const list = (0, dom_1.el)(doc, 'datalist', { id: prefix + '-parts' });
@@ -91369,184 +91631,10 @@ function conditionForm(doc, m, f, act, prefix, none) {
 function conditionEntries(f) {
     return f.mode === 'domain' ? (f.domain ? [f.domain] : []) : f.mode === 'components' ? f.components.split(/[\s,]+/).filter((x) => x) : [];
 }
-/** The question of Failure scenario (left): the context, the condition, what else to check, Analyze; the failure domains' editor behind its own action. */
-function scenarioRequest(doc, v, act) {
-    const sec = (0, dom_1.el)(doc, 'div', { class: 'wi-section' });
-    sec.appendChild((0, analysis_ui_1.contextBar)(doc, v.bar, act));
-    sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'muted small' }, ['A failure domain or a few components fail together; the result is compared with the same baseline. A hypothetical condition, not a probability; no convergence time is claimed.']));
-    const m = v.model;
-    const f = v.form;
-    const form = (0, dom_1.el)(doc, 'form', { class: 'trace-form', 'aria-label': 'Failure scenario' });
-    form.appendChild(conditionForm(doc, m, f, act, 'wi', false));
-    const g = (0, dom_1.el)(doc, 'details', { class: 'dc-adv' }, [(0, dom_1.el)(doc, 'summary', {}, ['Advanced options: device pairs'])]);
-    if (f.reach)
-        g.setAttribute('open', '');
-    const r = (0, dom_1.el)(doc, 'select', { id: 'wi-reach' });
-    r.appendChild((0, dom_1.el)(doc, 'option', { value: '' }, ['Services and requirements only']));
-    r.appendChild((0, dom_1.el)(doc, 'option', { value: 'entire' }, ['Also device pairs: entire architecture (bounded)']));
-    for (const gr of m.groups)
-        r.appendChild((0, dom_1.el)(doc, 'option', { value: 'group:' + gr.id }, [`Also device pairs: ${gr.label}`]));
-    r.value = f.reach;
-    r.addEventListener('change', () => act.wiInput('reach', r.value));
-    g.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-row dc-row' }, [(0, dom_1.el)(doc, 'label', { for: 'wi-reach' }, ['Check']), r]));
-    form.appendChild(g);
-    form.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-actions' }, [(0, dom_1.el)(doc, 'button', { type: 'submit', class: 'primary', id: 'wi-go' }, ['Analyze scenario'])]));
-    form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        act.wiRun();
-    });
-    sec.appendChild(form);
-    const n = m.failureDomains.length;
-    const cfg = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'dom-config', title: 'Add, change or delete the model’s failure domains (an editor in the right panel)' }, ['Configure failure domains…']);
-    cfg.addEventListener('click', () => act.domains());
-    sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, [`${n ? n + ' failure domain' + (n === 1 ? '' : 's') : 'No failure domain'} in the model. `, cfg]));
-    return sec;
-}
-const CHANGE_ORDER = ['unavailable', 'degraded', 'indeterminate', 'alternative', 'consumer-down', 'not-before'];
 /** A selectable row of a result list (its evidence on the right). */
 function pickItem(doc, key, sel, kids, attrs = {}) {
     const on = key === sel;
     return (0, dom_1.el)(doc, 'li', { ...attrs, class: (attrs.class ? attrs.class + ' ' : '') + 'an-pickrow' + (on ? ' an-selected' : '') }, [...kids, ' ', (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini an-pick', 'data-an-item': key, 'aria-pressed': on ? 'true' : 'false', 'aria-controls': 'an-detail' }, ['Evidence'])]);
-}
-/** The scenario's results (bottom): the condition and its counts, the changes, the surviving alternatives, the requirements, the structure, pairs, capacity, limits. */
-function scenarioResults(doc, v, act) {
-    const w = v.result;
-    const box = (0, dom_1.el)(doc, 'div', { class: 'wi-result', id: 'wi-result' });
-    if (!w) {
-        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'muted' }, ['Choose a failure domain or name the components that fail, then Analyze scenario: the comparison with the baseline appears here.']));
-        return box;
-    }
-    const copy = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'wi-copy' }, ['Copy as text']);
-    copy.addEventListener('click', () => act.wiOut('copy'));
-    const save = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'wi-save' }, ['Save as text']);
-    save.addEventListener('click', () => act.wiOut('save'));
-    box.appendChild((0, dom_1.el)(doc, 'div', { class: 'an-res-tools', role: 'group', 'aria-label': 'Export the result' }, [copy, save]));
-    if (w.unknown.length)
-        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'trace-error', role: 'alert' }, [`Not in the model: ${w.unknown.join(', ')}.`]));
-    if (w.tooLarge || !w.result) {
-        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small', id: 'wi-summary', tabindex: '-1' }, [w.info.limits[w.info.limits.length - 1] || 'Nothing was evaluated.']));
-        return box;
-    }
-    const n = (k) => w.deps.filter((d) => d.change === k).length;
-    const lostExp = w.expectations.filter((x) => exports.REQ_LOST.indexOf(x.change) >= 0).length;
-    const sel = v.sel;
-    box.appendChild((0, dom_1.el)(doc, 'p', { class: 'an-verdict ' + (n('unavailable') || lostExp ? 'v-violated' : n('indeterminate') ? 'v-indeterminate' : 'v-satisfied'), role: 'status', id: 'wi-summary', tabindex: '-1' }, [
-        (0, dom_1.el)(doc, 'strong', {}, [`Failure of ${w.entries.join(', ')}`]),
-        ` (${w.refs.length} component${w.refs.length === 1 ? '' : 's'}): ${lostExp} saved requirement${lostExp === 1 ? '' : 's'} no longer satisfied; ${n('unavailable')} configured dependenc${n('unavailable') === 1 ? 'y becomes' : 'ies become'} unavailable, ${n('alternative')} survive${n('alternative') === 1 ? 's' : ''} through an alternative, ${n('degraded')} degraded, ${n('indeterminate')} cannot be determined.`,
-    ]));
-    box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, [`Baseline: the configured model with nothing failed. Condition: ${w.refs.map((r) => r.replace(/^[a-z]+:/, '')).join(', ')}${w.domains.length ? ` (failure domain${w.domains.length === 1 ? '' : 's'} ${w.domains.join(', ')})` : ''}.`]));
-    // the requirements first: what the user saved as must-hold
-    if (w.expectations.length) {
-        const sec = (0, dom_1.el)(doc, 'section', { class: 'wi-group', 'aria-labelledby': 'wi-exp-h' }, [(0, dom_1.el)(doc, 'h4', { id: 'wi-exp-h' }, [`Saved requirements (${w.expectations.length})`])]);
-        const ul = (0, dom_1.el)(doc, 'ul', { class: 'small' });
-        for (const x of w.expectations)
-            ul.appendChild(pickItem(doc, 'wexp:' + x.after.id, sel, [(0, dom_1.el)(doc, 'strong', {}, [`${whatif_1.EXP_CHANGE_TEXT[x.change]}: `]), `${x.after.name} (${x.after.expect === 'blocked' ? 'must be blocked' : x.after.expect === 'available' ? 'must be available' : x.after.expect}; before ${x.before.verdict}, after ${x.after.verdict})`], { class: 'v-' + x.after.verdict, 'data-exp-change': x.change }));
-        sec.appendChild(ul);
-        box.appendChild(sec);
-    }
-    // the dependencies, by change (the alternatives are what survives)
-    for (const k of CHANGE_ORDER) {
-        const list = w.deps.filter((d) => d.change === k);
-        if (!list.length)
-            continue;
-        const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group', 'data-change': k }, [(0, dom_1.el)(doc, 'summary', {}, [`${k === 'alternative' ? 'Surviving alternatives — ' : ''}${dependencies_1.DEP_CHANGE_TEXT[k]} (${list.length})`])]);
-        if (k === 'unavailable' || k === 'degraded' || k === 'alternative' || list.some((c) => 'dep:' + c.dep.key === sel))
-            d.setAttribute('open', '');
-        const ul = (0, dom_1.el)(doc, 'ul', { class: 'small' });
-        for (const c of list)
-            ul.appendChild(pickItem(doc, 'dep:' + c.dep.key, sel, [(0, dom_1.el)(doc, 'span', { class: 'muted' }, [dependencies_1.DEP_LABEL[c.dep.kind] + ': ']), (0, dom_1.el)(doc, 'button', { type: 'button', class: 'ref', 'data-goto': c.dep.consumerRef }, [c.dep.text]), (0, dom_1.el)(doc, 'div', { class: 'muted' }, [c.text])]));
-        d.appendChild(ul);
-        box.appendChild(d);
-    }
-    // capacity: the stated traffic against the stated capacity, before and after
-    if (w.capacity) {
-        const c = w.capacity;
-        const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group', id: 'wi-capacity', 'data-evaluated': c.after.evaluated ? 'yes' : 'no' }, [(0, dom_1.el)(doc, 'summary', {}, [c.after.evaluated ? `Capacity: ${c.after.text}` : 'Capacity: not evaluated'])]);
-        if (!c.after.evaluated)
-            d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, [c.after.text]));
-        else {
-            const ul = (0, dom_1.el)(doc, 'ul', { class: 'small' });
-            for (const x of c.changes.filter((y) => y.change !== 'unchanged'))
-                ul.appendChild(pickItem(doc, 'cap:' + x.demand.id, sel, [(0, dom_1.el)(doc, 'strong', {}, [CAP_CHANGE_TEXT[x.change] + ': ']), x.demand.label, (0, dom_1.el)(doc, 'div', { class: 'muted' }, [x.after.connectivity === 'retained' ? x.after.text : 'not carried: ' + x.after.text])], { 'data-cap-change': x.change }));
-            if (!ul.childNodes.length)
-                ul.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, ['No demand changes: the stated traffic fits as it did.']));
-            d.appendChild(ul);
-            d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, ['Each resource, before and after: Resilience → Capacity with this condition.']));
-        }
-        box.appendChild(d);
-    }
-    // the structure
-    const s = w.summary;
-    if (s) {
-        const part = (label, list) => (list.length ? `${label}: ${list.map((x) => x.ref.replace(/^[a-z]+:/, '') + (x.state === 'degraded' || x.state === 'takeover' ? ' (degraded)' : '')).join(', ')}` : '');
-        const lines = [part('Devices', s.devices), part('Cables', s.links), part('Relations', s.relations), part('Tunnels', s.tunnels), part('Networks', s.networks), part('Routes', s.routes)].filter((x) => x);
-        const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group' }, [(0, dom_1.el)(doc, 'summary', {}, [`Structure: down or degraded (${lines.length ? s.devices.length + s.links.length + s.relations.length + s.tunnels.length + s.networks.length + s.routes.length : 0})`])]);
-        if (w.structural && w.structural.isolated.length)
-            d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, [`Disconnected: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`]));
-        for (const l of lines)
-            d.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, [l]));
-        box.appendChild(d);
-    }
-    if (w.reach) {
-        const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group', open: '' }, [(0, dom_1.el)(doc, 'summary', {}, [`Device pairs that lose reachability (${w.reach.pairs.length})`])]);
-        d.appendChild((0, analysis_ui_1.coverageLine)(doc, w.reach.coverage));
-        const ul = (0, dom_1.el)(doc, 'ul', { class: 'small' });
-        for (const p of w.reach.pairs.slice(0, 50))
-            ul.appendChild((0, dom_1.el)(doc, 'li', {}, [`${p.from} → ${p.to}${p.partial ? ' (some equal-cost paths)' : ''}: ${p.detail}`]));
-        if (w.reach.pairs.length > 50)
-            ul.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, [`… ${w.reach.pairs.length - 50} more (in the text export)`]));
-        d.appendChild(ul);
-        box.appendChild(d);
-    }
-    box.appendChild((0, analysis_ui_1.limitsDetails)(doc, w.info));
-    return box;
-}
-/** The evidence of an item of a scenario: a dependency, a requirement, a demand. */
-function scenarioEvidence(doc, w, key, context) {
-    const i = key.indexOf(':');
-    const kind = key.slice(0, i);
-    const id = key.slice(i + 1);
-    if (kind === 'dep') {
-        const c = w.deps.find((x) => x.dep.key === id);
-        if (!c)
-            return null;
-        const next = [];
-        for (const o of c.dep.options)
-            if (o.request)
-                next.push({ id: 'communication', label: `Check ${o.text} in Communication`, why: 'This option’s communication, in Communication (on the configured model as it is: no failure applied)', ref: JSON.stringify(o.request) });
-        if (c.dep.kind === 'timing')
-            next.push({ id: 'focus-timing', label: 'Focus on its timing context', ref: c.dep.consumer });
-        return {
-            kind: 'Dependency',
-            title: c.dep.text,
-            context,
-            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [(0, dom_1.el)(doc, 'strong', {}, [dependencies_1.DEP_CHANGE_TEXT[c.change] + ': ']), c.text]), (0, dom_1.el)(doc, 'p', { class: 'small muted' }, [`When unavailable: ${c.dep.consequence}.`])],
-            evidence: [(0, dom_1.el)(doc, 'dl', { class: 'trace-ends small' }, [(0, dom_1.el)(doc, 'dt', {}, ['Before']), (0, dom_1.el)(doc, 'dd', {}, [c.before.text]), (0, dom_1.el)(doc, 'dt', {}, ['Under the condition']), (0, dom_1.el)(doc, 'dd', {}, [c.after.text]), (0, dom_1.el)(doc, 'dt', {}, ['Options']), (0, dom_1.el)(doc, 'dd', {}, [c.dep.options.map((o) => o.text).join('; ') || '—'])])],
-            objects: [{ ref: c.dep.consumerRef, label: c.dep.consumerRef.replace(/^[a-z]+:/, '') }].concat(c.dep.options.filter((o) => !!o.provider).map((o) => ({ ref: 'device:' + o.provider, label: o.provider }))),
-            next,
-        };
-    }
-    if (kind === 'wexp') {
-        const x = w.expectations.find((y) => y.after.id === id);
-        if (!x)
-            return null;
-        return {
-            kind: 'Requirement',
-            title: x.after.name,
-            context,
-            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [(0, dom_1.el)(doc, 'strong', {}, [whatif_1.EXP_CHANGE_TEXT[x.change] + ': ']), x.after.reason])],
-            evidence: [(0, dom_1.el)(doc, 'dl', { class: 'trace-ends small' }, [(0, dom_1.el)(doc, 'dt', {}, ['Before']), (0, dom_1.el)(doc, 'dd', {}, [`${x.before.verdict} — ${x.before.reason}`]), (0, dom_1.el)(doc, 'dt', {}, ['Under the condition']), (0, dom_1.el)(doc, 'dd', {}, [`${x.after.verdict} — ${x.after.reason}`])])],
-            objects: x.after.refs.filter((r) => /^(device|iface|link|relation):/.test(r)).slice(0, 24).map((r) => ({ ref: r, label: r.replace(/^[a-z]+:/, '') })),
-            next: [{ id: 'requirement', label: 'Open in Design review', ref: x.after.id }],
-        };
-    }
-    if (kind === 'cap' && w.capacity) {
-        const x = w.capacity.changes.find((y) => y.demand.id === id);
-        if (!x)
-            return null;
-        return capChangeEvidence(doc, x, context);
-    }
-    return null;
 }
 /** The question of Capacity (left): the context, an optional failure condition, Evaluate. */
 function capacityRequest(doc, v, act) {
@@ -91555,7 +91643,7 @@ function capacityRequest(doc, v, act) {
     sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'muted small' }, ['The traffic the model states (demands, applications with an interval) against the stated speeds of the cables, aggregates and radios on its way. Not measured throughput, not hardware performance.']));
     const form = (0, dom_1.el)(doc, 'form', { class: 'trace-form', 'aria-label': 'Capacity' });
     form.appendChild((0, dom_1.el)(doc, 'p', { class: 'small' }, ['Under a failure condition (optional):']));
-    form.appendChild(conditionForm(doc, v.model, v.form, act, 'cap', true));
+    form.appendChild(conditionForm(doc, v.model, v.form, act, 'cap'));
     form.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-actions' }, [(0, dom_1.el)(doc, 'button', { type: 'submit', class: 'primary', id: 'cap-go' }, ['Evaluate capacity'])]));
     form.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -91715,32 +91803,713 @@ function domainsEditorBody(doc, model, f, locked, act) {
     box.appendChild(grid);
     return box;
 }
-/** A what-if as text. */
-function whatIfText(o, w) {
-    const lines = (0, result_1.exportHeader)({ analysis: 'Resilience: failure scenario', title: o.title, info: w.info, version: o.version, outdated: o.outdated });
-    lines.push(`Failure of ${w.entries.join(', ')}: ${w.refs.join(', ')}`);
+
+};
+__defs["ui/outage"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.newOutageForm = newOutageForm;
+exports.outageOptions = outageOptions;
+exports.groupDevices = groupDevices;
+exports.searchOutage = searchOutage;
+exports.pickLabel = pickLabel;
+exports.expandSet = expandSet;
+exports.addPicks = addPicks;
+exports.outagePreview = outagePreview;
+exports.propagated = propagated;
+exports.outageSummary = outageSummary;
+exports.outageRequest = outageRequest;
+exports.outageResults = outageResults;
+exports.outageEvidence = outageEvidence;
+exports.outageText = outageText;
+/**
+ * Resilience → Outage impact: what stops working, what remains available and
+ * what becomes uncertain if these components become unavailable. The
+ * components are chosen in a searchable picker (or prepared from the diagram
+ * selection, a single-component failure, a saved failure set) and kept as
+ * exact refs; the configured architecture is compared with itself without
+ * the outage by the failure analysis (analysis/whatif.ts, exact refs). A
+ * static comparison: no convergence, recovery time, transient loss or
+ * probability. Nothing in the model changes. outageOptions, searchOutage,
+ * addPicks, expandSet, outagePreview, outageSummary and outageText are pure.
+ */
+const dependencies_1 = __req("analysis/dependencies");
+const failure_1 = __req("analysis/failure");
+const result_1 = __req("analysis/result");
+const whatif_1 = __req("analysis/whatif");
+const capacity_1 = __req("analysis/capacity");
+const protocols_1 = __req("model/protocols");
+const types_1 = __req("model/types");
+const dom_1 = __req("ui/dom");
+const analysis_ui_1 = __req("ui/analysis-ui");
+function newOutageForm() {
+    return { picks: [], reach: '', query: '', offer: null };
+}
+const optCache = new WeakMap();
+/** Every option of a model, in the order they are offered: devices, cables, interfaces, relations, groups, saved failure sets, then the unsupported. */
+function outageOptions(model) {
+    const hit = optCache.get(model);
+    if (hit)
+        return hit;
+    const out = [];
+    const add = (ref, id, type, detail, unsupported = '', extra = '') => {
+        out.push({ ref, id, type, detail, unsupported, text: `${id} ${type} ${detail} ${extra}`.toLowerCase() });
+    };
+    const end = (e) => (e.iface !== undefined ? `${e.device}:${e.iface}` : e.device);
+    for (const d of model.devices)
+        add('device:' + d.id, d.id, 'Device', [d.label && d.label !== d.id ? d.label : '', d.type].filter((x) => !!x).join(' · '));
+    for (const l of model.links)
+        add('link:' + l.id, l.id, 'Cable', `${end(l.a)} ↔ ${end(l.b)}`, '', l.label || '');
+    for (const d of model.devices)
+        for (const i of (0, types_1.deviceInterfaces)(d))
+            add(`iface:${d.id}:${i.id}`, `${d.id}:${i.id}`, 'Interface', [i.label || '', i.addresses.join(' ')].filter((x) => !!x).join(' · '), '', i.type);
+    for (const r of model.relations)
+        add('relation:' + r.id, r.id, 'Relation', `${(0, protocols_1.lookupProtocol)(model.protocols, r.protocol, r.category).label} · ${(0, types_1.relationDevices)(r).join(' ↔ ')}`, '', r.label || '');
+    for (const g of model.groups) {
+        const n = groupDevices(model, g.id).length;
+        add('group:' + g.id, g.id, 'Group', `${g.label !== g.id ? g.label + ' · ' : ''}adds its ${n} device${n === 1 ? '' : 's'}`, n ? '' : 'The group has no device: nothing to make unavailable');
+    }
+    for (const d of model.failureDomains)
+        add('domain:' + d.id, d.id, 'Saved failure set', `${d.label} · ${kindLabel(d.kind)} · ${d.members.length} member${d.members.length === 1 ? '' : 's'}`);
+    for (const n of model.networks)
+        add('network:' + n.id, n.id, 'Network', n.label, 'A network is not made unavailable on its own: choose the devices, cables or interfaces that carry it');
+    for (const d of model.devices)
+        for (const a of d.applications || [])
+            add(`app:${d.id}/${a.id}`, `${d.id}/${a.id}`, 'Application', a.name, `An application is not made unavailable on its own: choose ${d.id}, the device that runs it`);
+    optCache.set(model, out);
+    return out;
+}
+const kindLabel = (k) => (types_1.FAILURE_DOMAIN_KINDS.find((x) => x.id === k) || { label: k }).label;
+/** The devices of a group, nested groups included (its explicit membership; never the drawing). */
+function groupDevices(model, gid) {
+    const inGroup = (g0) => {
+        let g = g0 ? model.index.groups.get(g0) : undefined;
+        for (let n = 0; g && n < 32; n++) {
+            if (g.id === gid)
+                return true;
+            g = g.parent ? model.index.groups.get(g.parent) : undefined;
+        }
+        return false;
+    };
+    return model.devices.filter((d) => inGroup(d.group)).map((d) => d.id);
+}
+/** The options a search matches (every word, in id, type, label and endpoints): exact ids first, then id prefixes, then the rest in their order; at most `limit`, with how many matched. */
+function searchOutage(model, query, limit = 30) {
+    const words = query.toLowerCase().split(/\s+/).filter((w) => w);
+    if (!words.length)
+        return { items: [], total: 0 };
+    const q = query.trim().toLowerCase();
+    const all = outageOptions(model).filter((o) => words.every((w) => o.text.indexOf(w) >= 0));
+    const rank = (o) => (o.unsupported ? 3 : o.id.toLowerCase() === q ? 0 : o.id.toLowerCase().indexOf(q) === 0 ? 1 : 2);
+    const ranked = all.map((o, i) => ({ o, i, r: rank(o) })).sort((a, b) => a.r - b.r || a.i - b.i);
+    return { items: ranked.slice(0, limit).map((x) => x.o), total: all.length };
+}
+/** A component of a condition as the lists name it: its id, type and context ("uplink-b", "Cable", "access-1:up2 ↔ core-b:down1"). */
+function pickLabel(model, ref) {
+    const o = outageOptions(model).find((x) => x.ref === ref);
+    if (o)
+        return { id: o.id, type: o.type, detail: o.detail };
+    return { id: ref.slice(ref.indexOf(':') + 1), type: '', detail: 'not in the model' };
+}
+/** A set's components: a saved failure set's or a group's (with the members that name nothing now), or the ref itself. */
+function expandSet(model, ref) {
+    if (ref.indexOf('domain:') === 0) {
+        const d = model.failureDomains.find((x) => x.id === ref.slice(7));
+        if (!d)
+            return { refs: [], via: ref, label: ref.slice(7), invalid: [] };
+        const known = (m) => model.index.devices.has(m) || model.index.links.has(m) || model.index.relations.has(m) || model.index.groups.has(m);
+        return { refs: (0, failure_1.domainRefs)(model, d), via: ref, label: `saved failure set ${d.label}`, invalid: d.members.filter((m) => !known(m)) };
+    }
+    if (ref.indexOf('group:') === 0) {
+        const g = model.index.groups.get(ref.slice(6));
+        return { refs: g ? groupDevices(model, g.id).map((x) => 'device:' + x) : [], via: ref, label: `group ${g ? g.label : ref.slice(6)}`, invalid: [] };
+    }
+    return { refs: [ref], via: '', label: '', invalid: [] };
+}
+/** Add components to a condition (deduplicated by ref; a component already there notes where else it came from). */
+function addPicks(picks, refs, via) {
+    const out = picks.map((p) => ({ ref: p.ref, via: p.via.slice() }));
+    let added = 0;
+    let already = 0;
+    for (const r of refs) {
+        const p = out.find((x) => x.ref === r);
+        if (p) {
+            already++;
+            if (p.via.indexOf(via) < 0)
+                p.via.push(via);
+        }
+        else {
+            out.push({ ref: r, via: [via] });
+            added++;
+        }
+    }
+    return { picks: out, added, already };
+}
+const viaLabel = (model, via) => {
+    if (via.indexOf('domain:') === 0) {
+        const d = model.failureDomains.find((x) => x.id === via.slice(7));
+        return `saved failure set ${d ? d.label : via.slice(7)}`;
+    }
+    if (via.indexOf('group:') === 0) {
+        const g = model.index.groups.get(via.slice(6));
+        return `group ${g ? g.label : via.slice(6)}`;
+    }
+    return via;
+};
+/** The condition as the question shows it before anything is evaluated. */
+function outagePreview(model, picks) {
+    const refs = picks.filter((p) => (0, failure_1.failableRef)(model, p.ref)).map((p) => p.ref);
+    const missing = picks.filter((p) => !(0, failure_1.failableRef)(model, p.ref)).map((p) => p.ref);
+    const vias = [];
+    for (const p of picks)
+        for (const v of p.via)
+            if (v && vias.indexOf(v) < 0)
+                vias.push(v);
+    const sets = vias.map((v) => {
+        const of = picks.filter((p) => p.via.indexOf(v) >= 0);
+        return { via: v, label: viaLabel(model, v), count: of.length, also: of.filter((p) => p.via.indexOf('') >= 0).length };
+    });
+    const tooLarge = refs.length > whatif_1.WHATIF_MAX;
+    const kinds = new Set(refs.map((r) => r.slice(0, r.indexOf(':'))));
+    const prop = [];
+    if (kinds.has('device'))
+        prop.push('a device takes its interfaces and attached cables down, and the guests it hosts (unless an HA cluster restarts them)');
+    if (kinds.has('link'))
+        prop.push('a cable takes its ports down');
+    if (kinds.has('iface'))
+        prop.push('an interface takes its cable down');
+    if (kinds.has('relation'))
+        prop.push('a relation takes what runs over it down');
+    const blocked = !picks.length
+        ? 'Choose at least one component.'
+        : missing.length
+            ? `Remove what is no longer in the model: ${missing.map((r) => r.slice(r.indexOf(':') + 1)).join(', ')}.`
+            : tooLarge
+                ? `${refs.length} components: at most ${whatif_1.WHATIF_MAX} are evaluated together. Remove some; nothing is cut off silently.`
+                : '';
+    return { refs, missing, explicit: picks.filter((p) => p.via.indexOf('') >= 0).length, sets, tooLarge, blocked, propagation: prop.length ? `The analysis then propagates it as modeled: ${prop.join('; ')}; aggregates, redundancy groups and routes degrade, fail over or fail with them. These consequences are results, not additional choices.` : '' };
+}
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+/** A requirement change that means it is no longer satisfied because of the outage. */
+const REQ_NEW = ['isolation-violated', 'availability-lost'];
+/** The objects down or degraded as a consequence (not chosen): refs with their state and why. */
+function propagated(w) {
+    const r = w.result;
+    if (!r)
+        return [];
+    const chosen = new Set(r.failed);
+    const out = [];
+    const add = (m, ref) => m.forEach((st, k) => {
+        const x = ref(k);
+        if (st !== 'up' && !chosen.has(x))
+            out.push({ ref: x, state: st === 'takeover' ? 'takes over' : st, why: r.why.get(x) || '' });
+    });
+    add(r.devices, (k) => 'device:' + k);
+    add(r.links, (k) => 'link:' + k);
+    add(r.relations, (k) => 'relation:' + k);
+    add(r.networks, (k) => 'network:' + k);
+    add(r.routes, (k) => k);
+    return out;
+}
+/** The answer's lines: what changed against the baseline, by computed category (an unavailable category is said, never shown as zero). */
+function outageSummary(model, run) {
+    const w = run.result;
+    const lines = [];
+    const req = w.expectations;
+    const count = (k) => req.filter((x) => k.indexOf(x.change) >= 0).length;
+    if (!req.length)
+        lines.push('No saved requirements were available to evaluate.');
+    else {
+        const parts = [count(REQ_NEW) ? `${plural(count(REQ_NEW), 'requirement is', 'requirements are')} no longer satisfied` : '', count(['alternative']) ? `${plural(count(['alternative']), 'requirement is', 'requirements are')} kept through an alternative` : '', count(['indeterminate', 'unsupported']) ? `${plural(count(['indeterminate', 'unsupported']), 'requirement', 'requirements')} cannot be determined` : '', count(['already-violated']) ? `${plural(count(['already-violated']), 'requirement was', 'requirements were')} already violated before the outage` : ''].filter((x) => !!x);
+        lines.push(parts.length ? parts.join('; ') : `No change to the ${plural(req.length, 'saved requirement', 'saved requirements')}`);
+    }
+    const d = (k) => w.deps.filter((x) => x.change === k).length;
+    if (!w.deps.length)
+        lines.push('The model configures no dependency (application peers, brokers, DNS, DHCP, timing, syslog, AAA) to evaluate.');
+    else {
+        const parts = [d('unavailable') ? `${plural(d('unavailable'), 'configured dependency becomes', 'configured dependencies become')} unavailable` : '', d('alternative') ? `${plural(d('alternative'), 'remains', 'remain')} available through an alternative` : '', d('degraded') ? `${d('degraded')} degraded` : '', d('indeterminate') ? `${d('indeterminate')} cannot be determined` : '', d('consumer-down') ? `${plural(d('consumer-down'), 'has its', 'have their')} consumer unavailable by the outage` : '', d('not-before') ? `${d('not-before')} already unavailable before the outage` : ''].filter((x) => !!x);
+        lines.push(parts.length ? parts.join('; ') : `No change to the ${plural(w.deps.length, 'configured dependency', 'configured dependencies')}`);
+    }
+    const iso = w.structural ? w.structural.isolated.reduce((n, g) => n + g.length, 0) : 0;
+    const prop = propagated(w).length;
+    lines.push(prop || iso ? `${plural(prop, 'further object goes', 'further objects go')} down or degrade as a consequence${iso ? `; ${plural(iso, 'device is', 'devices are')} disconnected` : ''}` : 'No further object goes down or degrades as a consequence');
+    if (w.capacity && w.capacity.before.evaluated) {
+        const ch = w.capacity.changes.filter((x) => x.change !== 'unchanged').length;
+        lines.push(ch ? `${plural(ch, 'stated demand changes', 'stated demands change')} against the stated capacity` : 'The stated traffic fits as it did');
+    }
+    if (w.reach)
+        lines.push(`${plural(w.reach.pairs.length, 'device pair loses', 'device pairs lose')} reachability (${(0, result_1.coverageText)(w.reach.coverage)}${run.reachRunning ? ', still checking' : ''})`);
+    else
+        lines.push('Device-pair connectivity was not checked (optional: choose a check scope)');
+    const changed = count(REQ_NEW) + count(['indeterminate', 'unsupported']) + d('unavailable') + d('degraded') + d('indeterminate') + prop + iso + (w.reach ? w.reach.pairs.length : 0) + (w.capacity ? w.capacity.changes.filter((x) => x.change !== 'unchanged').length : 0);
+    if (!changed)
+        lines.push('No additional modeled effect found within the checks performed.');
+    return lines;
+}
+/** The searchable picker: an inline listbox of the matches; ↑/↓ choose, Enter adds the highlighted one (or an exact id), Escape clears. */
+function picker(doc, v, act) {
+    const m = v.model;
+    const box = (0, dom_1.el)(doc, 'div', { class: 'oi-picker' });
+    const input = (0, dom_1.el)(doc, 'input', { type: 'search', id: 'oi-search', role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': 'oi-matches', 'aria-describedby': 'oi-help', autocomplete: 'off', spellcheck: 'false', placeholder: 'name, ID, type or endpoint' });
+    input.value = v.form.query;
+    const list = (0, dom_1.el)(doc, 'ul', { id: 'oi-matches', role: 'listbox', class: 'combo-list oi-matches', 'aria-label': 'Matching components' });
+    const status = (0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-match-status', role: 'status', 'aria-live': 'polite' });
+    const chosen = new Set(v.form.picks.map((p) => p.ref));
+    let active = -1;
+    let items = [];
+    const options = () => Array.from(list.querySelectorAll('[role="option"]'));
+    const render = () => {
+        while (list.firstChild)
+            list.removeChild(list.firstChild);
+        const r = searchOutage(m, input.value);
+        items = r.items;
+        active = -1;
+        input.removeAttribute('aria-activedescendant');
+        list.hidden = !input.value.trim();
+        input.setAttribute('aria-expanded', list.hidden ? 'false' : 'true');
+        items.forEach((o, k) => {
+            const on = chosen.has(o.ref);
+            const li = (0, dom_1.el)(doc, 'li', { role: 'option', id: 'oi-o' + k, 'data-oi-ref': o.ref, 'aria-selected': 'false', 'aria-disabled': o.unsupported || on ? 'true' : 'false', class: 'combo-opt' + (o.unsupported ? ' oi-unsupported' : '') }, [
+                (0, dom_1.el)(doc, 'span', {}, [(0, dom_1.el)(doc, 'strong', {}, [o.id]), ` — ${o.type}${o.detail ? ' · ' + o.detail : ''}`]),
+                (0, dom_1.el)(doc, 'span', { class: 'combo-count' }, [o.unsupported ? o.unsupported : on ? 'in the condition' : o.ref.indexOf('domain:') === 0 || o.ref.indexOf('group:') === 0 ? 'adds its components' : '']),
+            ]);
+            li.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                choose(k);
+            });
+            list.appendChild(li);
+        });
+        status.textContent = !input.value.trim() ? '' : r.total ? (r.total > items.length ? `${items.length} of ${r.total} matches shown: refine the search.` : `${plural(r.total, 'match', 'matches')}.`) : 'Nothing in the model matches.';
+    };
+    const choose = (k) => {
+        const o = items[k];
+        if (!o)
+            return;
+        if (o.unsupported) {
+            status.textContent = `${o.id}: ${o.unsupported}.`;
+            return;
+        }
+        if (chosen.has(o.ref)) {
+            status.textContent = `${o.id} is already in the condition.`;
+            return;
+        }
+        act.oiAdd(o.ref);
+    };
+    const move = (d) => {
+        const os = options();
+        if (!os.length)
+            return;
+        active = (active + d + os.length) % os.length;
+        os.forEach((o, k) => o.setAttribute('aria-selected', k === active ? 'true' : 'false'));
+        input.setAttribute('aria-activedescendant', os[active].id);
+        if (typeof os[active].scrollIntoView === 'function')
+            os[active].scrollIntoView({ block: 'nearest' });
+    };
+    input.addEventListener('input', () => {
+        act.oiQuery(input.value);
+        render();
+    });
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            move(e.key === 'ArrowDown' ? 1 : -1);
+        }
+        else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (active >= 0)
+                return choose(active);
+            // (an exact id or ref only when it names one thing: never the first of several, never a similar name)
+            const q = input.value.trim();
+            const exact = items.filter((o) => o.id === q || o.ref === q);
+            if (exact.length === 1)
+                choose(items.indexOf(exact[0]));
+            else
+                status.textContent = exact.length > 1 ? `Several objects are called ${q}: choose one with ↑/↓.` : q ? 'Choose a match with ↑/↓, then Enter.' : '';
+        }
+        else if (e.key === 'Escape' && input.value) {
+            e.preventDefault();
+            e.stopPropagation();
+            input.value = '';
+            act.oiQuery('');
+            render();
+        }
+    });
+    box.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-row dc-row' }, [(0, dom_1.el)(doc, 'label', { for: 'oi-search' }, ['Add component']), input]));
+    box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-help' }, ['Devices, cables, interfaces and relations; a group adds its devices. ↑/↓ choose, Enter adds, Escape clears.']));
+    box.appendChild(list);
+    box.appendChild(status);
+    render();
+    return box;
+}
+/** The question of Outage impact (left): what it is for, the picker, the condition as it will be evaluated, the optional check scope, Analyze impact. */
+function outageRequest(doc, v, act) {
+    const m = v.model;
+    const f = v.form;
+    const sec = (0, dom_1.el)(doc, 'div', { class: 'wi-section oi-section' });
+    sec.appendChild((0, analysis_ui_1.contextBar)(doc, v.bar, act));
+    sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'small', id: 'oi-intro' }, ['Choose components to make unavailable. Compare the modeled consequences with the architecture without this outage. Nothing in the model is changed.']));
+    const why = (0, dom_1.el)(doc, 'details', { class: 'an-limits', id: 'oi-why' }, [(0, dom_1.el)(doc, 'summary', {}, ['When is this useful?'])]);
+    why.appendChild((0, dom_1.el)(doc, 'ul', { class: 'small' }, ['Check whether another uplink preserves connectivity.', 'Examine a maintenance outage.', 'Check the effect of losing a broker or resolver.', 'Investigate two components being unavailable together.'].map((x) => (0, dom_1.el)(doc, 'li', {}, [x]))));
+    why.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, ['Single-component failures scans every component failing alone. Outage impact answers for the components you choose. What happens over time — convergence, retries, recovery — is a question for Simulation and Experiments.']));
+    sec.appendChild(why);
+    if (f.offer) {
+        const o = f.offer;
+        const b = (k, label) => {
+            const x = (0, dom_1.el)(doc, 'button', { type: 'button', class: k === 'add' ? 'mini primary' : 'mini', 'data-oi-offer': k }, [label]);
+            x.addEventListener('click', () => act.oiOffer(k));
+            return x;
+        };
+        sec.appendChild((0, dom_1.el)(doc, 'div', { class: 'oi-offer', role: 'group', id: 'oi-offer', 'aria-label': 'Prepared components' }, [(0, dom_1.el)(doc, 'p', { class: 'small' }, [(0, dom_1.el)(doc, 'strong', {}, [o.label]), ` is prepared; the condition below already has ${plural(f.picks.length, 'component', 'components')}.`]), (0, dom_1.el)(doc, 'div', { class: 'tf-actions' }, [b('add', 'Add to the condition'), b('replace', 'Start a new condition with it'), b('dismiss', 'Keep the condition as it is')])]));
+    }
+    sec.appendChild(picker(doc, v, act));
+    const tools = (0, dom_1.el)(doc, 'div', { class: 'tf-actions oi-add-more' });
+    if (v.selection) {
+        const s = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'oi-add-sel', title: 'Add the object selected in the diagram' }, [`Add diagram selection (${v.selection.label})`]);
+        s.addEventListener('click', () => act.oiSelection());
+        tools.appendChild(s);
+    }
+    if (m.failureDomains.length) {
+        const sel = (0, dom_1.el)(doc, 'select', { id: 'oi-set', 'aria-describedby': 'oi-set-help' });
+        sel.appendChild((0, dom_1.el)(doc, 'option', { value: '' }, ['Add saved failure set…']));
+        for (const d of m.failureDomains)
+            sel.appendChild((0, dom_1.el)(doc, 'option', { value: 'domain:' + d.id }, [`${d.label} (${kindLabel(d.kind)}, ${plural(d.members.length, 'member', 'members')})`]));
+        const add = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'oi-set-add' }, ['Add set']);
+        add.addEventListener('click', () => {
+            if (sel.value)
+                act.oiAdd(sel.value);
+        });
+        tools.appendChild((0, dom_1.el)(doc, 'label', { for: 'oi-set', class: 'sr-only' }, ['Saved failure set']));
+        tools.appendChild(sel);
+        tools.appendChild(add);
+    }
+    if (tools.childNodes.length)
+        sec.appendChild(tools);
+    const cfg = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'ref', id: 'dom-config', title: v.locked || 'Add, change or delete the model’s failure domains: a model edit with undo, in the right panel' }, [m.failureDomains.length ? 'Edit failure domains…' : 'Define failure domains…']);
+    cfg.addEventListener('click', () => act.domains());
+    sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-set-help' }, [m.failureDomains.length ? 'A saved failure set (failure domain) is a named set of components assumed to become unavailable together; adding one adds its components. ' : 'Saved failure sets are optional: a failure domain is a named set of components assumed to become unavailable together. ', cfg]));
+    sec.appendChild(conditionPreview(doc, v, act));
+    // the optional check scope, with its size before anything runs
+    const r = (0, dom_1.el)(doc, 'select', { id: 'oi-reach' });
+    r.appendChild((0, dom_1.el)(doc, 'option', { value: '' }, ['No device-pair check']));
+    r.appendChild((0, dom_1.el)(doc, 'option', { value: 'entire' }, ['Device pairs: entire architecture (bounded)']));
+    for (const g of m.groups)
+        r.appendChild((0, dom_1.el)(doc, 'option', { value: 'group:' + g.id }, [`Device pairs: ${g.label}`]));
+    r.value = f.reach;
+    r.addEventListener('change', () => act.oiReach(r.value));
+    sec.appendChild((0, dom_1.el)(doc, 'div', { class: 'tf-row dc-row' }, [(0, dom_1.el)(doc, 'label', { for: 'oi-reach' }, ['Also check']), r]));
+    if (v.pairs)
+        sec.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-pairs' }, [v.pairs.checked < v.pairs.eligible ? `Traces ${v.pairs.checked} of ${v.pairs.eligible} device pairs (the limit), before and under the outage; the coverage is reported. Stop is available while it runs.` : `Traces all ${v.pairs.eligible} device pairs, before and under the outage. Stop is available while it runs.`]));
+    const pv = outagePreview(m, f.picks);
+    const go = (0, dom_1.el)(doc, 'button', { type: 'submit', class: 'primary', id: 'oi-go', 'aria-describedby': 'oi-blocked' }, ['Analyze impact']);
+    if (pv.blocked)
+        go.setAttribute('aria-disabled', 'true');
+    const form = (0, dom_1.el)(doc, 'form', { class: 'trace-form', 'aria-label': 'Outage impact' });
+    const acts = (0, dom_1.el)(doc, 'div', { class: 'tf-actions' }, [go]);
+    if (f.picks.length) {
+        const clr = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'oi-clear' }, ['Clear']);
+        clr.addEventListener('click', () => act.oiClear());
+        acts.appendChild(clr);
+    }
+    form.appendChild(acts);
+    form.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-blocked' }, [pv.blocked]));
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        act.oiRun();
+    });
+    sec.appendChild(form);
+    return sec;
+}
+/** The condition as it will be evaluated: the components, where each came from, the counts, the limits. */
+function conditionPreview(doc, v, act) {
+    const m = v.model;
+    const picks = v.form.picks;
+    const pv = outagePreview(m, picks);
+    const box = (0, dom_1.el)(doc, 'section', { class: 'oi-condition', id: 'oi-condition', 'aria-labelledby': 'oi-cond-h' }, [(0, dom_1.el)(doc, 'h4', { id: 'oi-cond-h' }, ['Assume unavailable'])]);
+    if (!picks.length) {
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-none' }, ['Nothing yet: add one or more components above.']));
+        return box;
+    }
+    const ul = (0, dom_1.el)(doc, 'ul', { class: 'small oi-picks', 'aria-label': 'Components assumed unavailable' });
+    for (const p of picks) {
+        const l = pickLabel(m, p.ref);
+        const gone = pv.missing.indexOf(p.ref) >= 0;
+        const from = p.via.filter((x) => !!x).map((x) => `from ${viaLabel(m, x)}`);
+        const rm = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', 'data-oi-remove': p.ref, 'aria-label': `Remove ${l.id} from the condition`, title: 'Remove' }, ['×']);
+        rm.addEventListener('click', () => act.oiRemove(p.ref));
+        ul.appendChild((0, dom_1.el)(doc, 'li', { 'data-oi-pick': p.ref, class: gone ? 'oi-gone' : '' }, [(0, dom_1.el)(doc, 'strong', {}, [l.id]), (0, dom_1.el)(doc, 'span', { class: 'muted' }, [gone ? ' — not in the model any more (deleted or renamed)' : ` — ${l.type}${l.detail ? ' · ' + l.detail : ''}`]), from.length ? (0, dom_1.el)(doc, 'span', { class: 'muted' }, [` (${from.join(', ')}${p.via.indexOf('') >= 0 ? ', also chosen directly' : ''})`]) : null, ' ', rm]));
+    }
+    box.appendChild(ul);
+    const counts = [pv.explicit ? `${plural(pv.explicit, 'explicitly selected component', 'explicitly selected components')}` : ''].concat(pv.sets.map((s) => `${s.count} from the ${s.label}${s.also ? ` (${s.also} also selected directly)` : ''}`)).filter((x) => !!x);
+    box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small', id: 'oi-counts' }, [counts.join('; ') + '.']));
+    if (pv.sets.length)
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, ['A set’s components are copied into this condition: removing one here does not change the saved failure set or the group.']));
+    if (pv.propagation)
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted', id: 'oi-propagation' }, [pv.propagation]));
+    if (pv.missing.length || pv.tooLarge)
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'trace-error', role: 'alert', id: 'oi-refuse' }, [pv.blocked]));
+    box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small muted' }, [`Compared against the baseline: ${m.expectations.length ? plural(m.expectations.length, 'saved requirement', 'saved requirements') : 'no saved requirement'}, ${v.depsTotal ? plural(v.depsTotal, 'configured dependency', 'configured dependencies') : 'no configured dependency'}, the structure${m.demands && m.demands.length ? ', the stated capacity' : ''}.`]));
+    return box;
+}
+// ------------------------------------------------------------ the answer (bottom)
+const CAP_CHANGE_TEXT = { overload: 'Overloaded although still carried', lost: 'No longer carried', distribution: 'Now depends on the distribution', unknown: 'Insufficient information', relieved: 'Fits again', unchanged: 'Unchanged' };
+/** A selectable row of a result list (its evidence on the right). */
+function pickItem(doc, key, sel, kids, attrs = {}) {
+    const on = key === sel;
+    return (0, dom_1.el)(doc, 'li', { ...attrs, class: (attrs.class ? attrs.class + ' ' : '') + 'an-pickrow' + (on ? ' an-selected' : '') }, [...kids, ' ', (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini an-pick', 'data-an-item': key, 'aria-pressed': on ? 'true' : 'false', 'aria-controls': 'an-detail' }, ['Evidence'])]);
+}
+/** A group of results, open when it holds what matters first or the selection. */
+function group(doc, title, items, open, attrs = {}) {
+    if (!items.length)
+        return null;
+    const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group', ...attrs }, [(0, dom_1.el)(doc, 'summary', {}, [`${title} (${items.length})`]), (0, dom_1.el)(doc, 'ul', { class: 'small' }, items)]);
+    if (open)
+        d.setAttribute('open', '');
+    return d;
+}
+const DEP_GROUPS = [
+    { k: 'unavailable', title: 'Dependencies newly unavailable', open: true },
+    { k: 'degraded', title: 'Dependencies degraded', open: true },
+    { k: 'alternative', title: 'Dependencies retained through alternatives', open: true },
+    { k: 'indeterminate', title: 'Dependencies that cannot be determined', open: false },
+    { k: 'consumer-down', title: 'Dependencies whose consumer is unavailable by the outage', open: false },
+    { k: 'not-before', title: 'Dependencies already unavailable before the outage', open: false },
+];
+const REQ_GROUPS = [
+    { k: ['isolation-violated', 'availability-lost'], title: 'Requirements newly violated', open: true },
+    { k: ['alternative'], title: 'Requirements kept through an alternative', open: true },
+    { k: ['indeterminate', 'unsupported'], title: 'Requirements that cannot be determined', open: false },
+    { k: ['already-violated'], title: 'Requirements already violated before the outage', open: false },
+];
+const stripKind = (r) => r.replace(/^[a-z]+:/, '');
+/** The answer (bottom): the condition and baseline, the summary, the changed items by kind, alternatives and uncertainty, coverage, exports. */
+function outageResults(doc, v, act) {
+    const run = v.run;
+    const box = (0, dom_1.el)(doc, 'div', { class: 'wi-result', id: 'oi-result' });
+    if (!run) {
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'muted', id: 'an-empty' }, ['Select one or more components on the left, review what will become unavailable, then Analyze impact: what changes compared with the architecture without the outage appears here.']));
+        return box;
+    }
+    const w = run.result;
+    const m = run.model;
+    const out = (k, label, title) => {
+        const b = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'oi-' + k, title }, [label]);
+        b.addEventListener('click', () => act.oiOut(k));
+        return b;
+    };
+    box.appendChild((0, dom_1.el)(doc, 'div', { class: 'an-res-tools', role: 'group', 'aria-label': 'Export or continue' }, [out('copy', 'Copy as text', 'Copy the result as plain text'), out('save', 'Save as text', 'Save the result as a text file'), out('experiment', 'Prepare an experiment…', v.locked || 'For recovery, retries and transient behaviour over time: adds an experiment that fails these components (one undo step; nothing runs until you run it)')]));
+    if (w.unknown.length)
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'trace-error', role: 'alert' }, [`Not in the model: ${w.unknown.map(stripKind).join(', ')}.`]));
+    const names = run.picks.map((p) => pickLabel(m, p.ref).id);
+    if (w.tooLarge || !w.result) {
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small', id: 'oi-summary', tabindex: '-1' }, [w.info.limits[w.info.limits.length - 1] || 'Nothing was evaluated.']));
+        return box;
+    }
+    const lines = outageSummary(m, run);
+    const newly = w.expectations.some((x) => REQ_NEW.indexOf(x.change) >= 0) || w.deps.some((d) => d.change === 'unavailable');
+    const unsure = w.expectations.some((x) => x.change === 'indeterminate' || x.change === 'unsupported') || w.deps.some((d) => d.change === 'indeterminate');
+    box.appendChild((0, dom_1.el)(doc, 'div', { class: 'an-verdict oi-summary ' + (newly ? 'v-violated' : unsure ? 'v-indeterminate' : 'v-neutral'), role: 'status', id: 'oi-summary', tabindex: '-1' }, [
+        (0, dom_1.el)(doc, 'p', {}, [(0, dom_1.el)(doc, 'strong', {}, [`Outage: ${names.join(', ')}`])]),
+        (0, dom_1.el)(doc, 'p', { class: 'small' }, ['Compared with the same configured architecture without this outage:']),
+        (0, dom_1.el)(doc, 'ul', { class: 'small' }, lines.map((l) => (0, dom_1.el)(doc, 'li', {}, [l]))),
+    ]));
+    if (unsure)
+        box.appendChild((0, dom_1.el)(doc, 'p', { class: 'small', id: 'oi-unsure' }, ['Some outcomes cannot be determined: the configured model does not establish them (for example addresses assigned at runtime). They are not counted as lost.']));
+    const sel = v.sel;
+    const groups = [];
+    // what was assumed, then what follows from it
+    groups.push(group(doc, 'Unavailable by assumption', run.picks.map((p) => { const l = pickLabel(m, p.ref); return pickItem(doc, 'obj:' + p.ref, sel, [(0, dom_1.el)(doc, 'strong', {}, [l.id]), (0, dom_1.el)(doc, 'span', { class: 'muted' }, [` — ${l.type}`])]); }), true, { id: 'oi-assumed' }));
+    const prop = propagated(w);
+    const pd = group(doc, 'Propagated effects', prop.map((x) => pickItem(doc, 'obj:' + x.ref, sel, [(0, dom_1.el)(doc, 'span', { class: 'muted' }, [x.state + ': ']), (0, failure_1.refLabel)(m, x.ref), x.why ? (0, dom_1.el)(doc, 'div', { class: 'muted' }, [x.why]) : null], { 'data-state': x.state })), false, { id: 'oi-propagated' });
+    if (pd && w.structural && w.structural.isolated.length)
+        pd.insertBefore((0, dom_1.el)(doc, 'p', { class: 'small' }, [`Disconnected: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`]), pd.childNodes[1]);
+    groups.push(pd);
+    for (const g of REQ_GROUPS) {
+        const list = w.expectations.filter((x) => g.k.indexOf(x.change) >= 0);
+        groups.push(group(doc, g.title, list.map((x) => reqItem(doc, x, sel)), g.open || list.some((x) => 'wexp:' + x.after.id === sel), { 'data-exp-group': g.k[0] }));
+    }
+    for (const g of DEP_GROUPS) {
+        const list = w.deps.filter((d) => d.change === g.k);
+        groups.push(group(doc, g.title, list.map((c) => pickItem(doc, 'dep:' + c.dep.key, sel, [(0, dom_1.el)(doc, 'span', { class: 'muted' }, [dependencies_1.DEP_LABEL[c.dep.kind] + ': ']), (0, dom_1.el)(doc, 'button', { type: 'button', class: 'ref', 'data-goto': c.dep.consumerRef }, [c.dep.text]), (0, dom_1.el)(doc, 'div', { class: 'muted' }, [c.text])])), g.open || list.some((c) => 'dep:' + c.dep.key === sel), { 'data-change': g.k }));
+    }
+    if (w.capacity && w.capacity.before.evaluated) {
+        const list = w.capacity.changes.filter((y) => y.change !== 'unchanged');
+        const items = list.map((x) => pickItem(doc, 'cap:' + x.demand.id, sel, [(0, dom_1.el)(doc, 'strong', {}, [CAP_CHANGE_TEXT[x.change] + ': ']), x.demand.label, (0, dom_1.el)(doc, 'div', { class: 'muted' }, [x.after.text])], { 'data-cap-change': x.change }));
+        if (!items.length)
+            items.push((0, dom_1.el)(doc, 'li', { class: 'muted' }, ['No demand changes: the stated traffic fits as it did.']));
+        const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group', id: 'oi-capacity', open: '' }, [(0, dom_1.el)(doc, 'summary', {}, [`Capacity under the outage: ${w.capacity.after.text}`]), (0, dom_1.el)(doc, 'ul', { class: 'small' }, items)]);
+        groups.push(d);
+    }
+    for (const g of groups)
+        if (g)
+            box.appendChild(g);
+    if (w.reach) {
+        const d = (0, dom_1.el)(doc, 'details', { class: 'wi-group', open: '', id: 'oi-reach-res' }, [(0, dom_1.el)(doc, 'summary', {}, [`Device pairs that lose reachability (${w.reach.pairs.length})`])]);
+        const cov = (0, analysis_ui_1.coverageLine)(doc, w.reach.coverage);
+        if (run.reachRunning) {
+            cov.textContent = `Checking device pairs: ${w.reach.coverage.checked} of ${w.reach.coverage.eligible}… `;
+            const stop = (0, dom_1.el)(doc, 'button', { type: 'button', class: 'mini', id: 'oi-stop' }, ['Stop']);
+            stop.addEventListener('click', () => act.oiStop());
+            cov.appendChild(stop);
+        }
+        cov.setAttribute('role', 'status');
+        d.appendChild(cov);
+        const ul = (0, dom_1.el)(doc, 'ul', { class: 'small' });
+        for (const p of w.reach.pairs.slice(0, 50))
+            ul.appendChild(pickItem(doc, `pair:${p.from}>${p.to}`, sel, [`${p.from} → ${p.to}${p.partial ? ' (some equal-cost paths)' : ''}: ${p.detail}`]));
+        if (w.reach.pairs.length > 50)
+            ul.appendChild((0, dom_1.el)(doc, 'li', { class: 'muted' }, [`… ${w.reach.pairs.length - 50} more (in the text export)`]));
+        d.appendChild(ul);
+        box.appendChild(d);
+    }
+    box.appendChild((0, analysis_ui_1.limitsDetails)(doc, w.info));
+    return box;
+}
+function reqItem(doc, x, sel) {
+    const must = x.after.expect === 'blocked' ? 'must be blocked' : x.after.expect === 'available' ? 'must be available' : x.after.expect;
+    return pickItem(doc, 'wexp:' + x.after.id, sel, [(0, dom_1.el)(doc, 'strong', {}, [`${whatif_1.EXP_CHANGE_TEXT[x.change]}: `]), `${x.after.name} (${must}; without the outage ${x.before.verdict}, under it ${x.after.verdict})`], { class: 'v-' + x.after.verdict, 'data-exp-change': x.change });
+}
+// ------------------------------------------------------------ the evidence (right)
+/** The evidence of an item of the outage's result: a component, a dependency, a requirement, a demand, a device pair. Always under the outage. */
+function outageEvidence(doc, run, key, context) {
+    const w = run.result;
+    const m = run.model;
+    const i = key.indexOf(':');
+    const kind = key.slice(0, i);
+    const id = key.slice(i + 1);
+    const dl = (before, after, more = []) => (0, dom_1.el)(doc, 'dl', { class: 'trace-ends small' }, [(0, dom_1.el)(doc, 'dt', {}, ['Without the outage']), (0, dom_1.el)(doc, 'dd', {}, [before]), (0, dom_1.el)(doc, 'dt', {}, ['Under the outage']), (0, dom_1.el)(doc, 'dd', {}, [after]), ...more.flatMap(([k, v]) => [(0, dom_1.el)(doc, 'dt', {}, [k]), (0, dom_1.el)(doc, 'dd', {}, [v])])]);
+    const res = w.result;
+    if (kind === 'obj' && res) {
+        const chosen = res.failed.indexOf(id) >= 0;
+        const st = chosen ? 'down' : (propagated(w).find((x) => x.ref === id) || { state: '' }).state;
+        if (!st)
+            return null;
+        const why = res.why.get(id) || '';
+        return {
+            kind: chosen ? 'Component assumed unavailable' : 'Propagated effect',
+            title: (0, failure_1.refLabel)(m, id),
+            context,
+            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [chosen ? 'Part of the outage condition: unavailable by assumption, not a consequence.' : `A consequence of the outage as the failure analysis propagates it: ${why || st}.`])],
+            evidence: [dl('Available (as configured)', `${st}${why && !chosen ? ' — ' + why : ''}`)],
+            objects: /^(device|link|relation|iface|network):/.test(id) ? [{ ref: id, label: stripKind(id) }] : [],
+            next: [],
+        };
+    }
+    if (kind === 'dep') {
+        const c = w.deps.find((x) => x.dep.key === id);
+        if (!c)
+            return null;
+        const next = [];
+        for (const o of c.dep.options)
+            if (o.request)
+                next.push({ id: 'communication', label: `Check ${o.text} without the outage`, why: 'Communication evaluates the configured architecture without this outage: its answer is the baseline, not the state under the outage (shown here)', ref: JSON.stringify(o.request) });
+        const provider = c.dep.options.find((o) => !!o.provider && !run.picks.some((p) => p.ref === 'device:' + o.provider));
+        if (provider)
+            next.push({ id: 'outage-add', label: `Add ${provider.provider} to the outage`, why: 'Prepares a combined condition with this provider unavailable too (not analyzed until you ask)', ref: 'device:' + provider.provider });
+        return {
+            kind: 'Dependency',
+            title: c.dep.text,
+            context,
+            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [(0, dom_1.el)(doc, 'strong', {}, [dependencies_1.DEP_CHANGE_TEXT[c.change].replace('the failure', 'the outage') + ': ']), c.text]), (0, dom_1.el)(doc, 'p', { class: 'small muted' }, [`When unavailable: ${c.dep.consequence}.`])],
+            evidence: [dl(c.before.text, c.after.text, [['Options', c.dep.options.map((o) => o.text).join('; ') || '—']])],
+            objects: [{ ref: c.dep.consumerRef, label: stripKind(c.dep.consumerRef) }].concat(c.dep.options.filter((o) => !!o.provider).map((o) => ({ ref: 'device:' + o.provider, label: o.provider }))),
+            next,
+        };
+    }
+    if (kind === 'wexp') {
+        const x = w.expectations.find((y) => y.after.id === id);
+        if (!x)
+            return null;
+        return {
+            kind: 'Requirement',
+            title: x.after.name,
+            context,
+            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [(0, dom_1.el)(doc, 'strong', {}, [whatif_1.EXP_CHANGE_TEXT[x.change].replace('the failure', 'the outage') + ': ']), x.after.reason])],
+            evidence: [dl(`${x.before.verdict} — ${x.before.reason}`, `${x.after.verdict} — ${x.after.reason}`)],
+            objects: x.after.refs.filter((r) => /^(device|iface|link|relation):/.test(r)).slice(0, 24).map((r) => ({ ref: r, label: stripKind(r) })),
+            next: [{ id: 'requirement', label: 'Open in Design review (without the outage)', why: 'Design review evaluates the requirement as saved, without this outage', ref: x.after.id }],
+        };
+    }
+    if (kind === 'cap' && w.capacity) {
+        const x = w.capacity.changes.find((y) => y.demand.id === id);
+        if (!x)
+            return null;
+        return {
+            kind: 'Demand',
+            title: x.demand.label,
+            context,
+            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [(0, dom_1.el)(doc, 'strong', {}, [CAP_CHANGE_TEXT[x.change] + ': ']), `${(0, capacity_1.bpsText)(x.demand.bps)} stated, ${x.demand.from} → ${x.demand.to}`])],
+            evidence: [dl(x.before.text, x.after.text)],
+            objects: [x.demand.from, x.demand.to].filter((d) => !!d && d.indexOf('/') < 0).map((d) => ({ ref: 'device:' + d.split(':')[0], label: d })),
+            next: [],
+        };
+    }
+    if (kind === 'pair' && w.reach) {
+        const [a, b] = id.split('>');
+        const p = w.reach.pairs.find((y) => y.from === a && y.to === b);
+        if (!p)
+            return null;
+        return {
+            kind: 'Device pair',
+            title: `${a} → ${b}`,
+            context,
+            explanation: [(0, dom_1.el)(doc, 'p', { class: 'small' }, [p.partial ? 'Some of its equal-cost paths are lost under the outage; others remain.' : 'Reachable without the outage; not under it.'])],
+            evidence: [dl('Reachable', p.detail)],
+            objects: [{ ref: 'device:' + a, label: a }, { ref: 'device:' + b, label: b }],
+            next: [{ id: 'communication', label: 'Check it without the outage', why: 'Communication evaluates the configured architecture without this outage', ref: JSON.stringify({ from: a, to: b }) }],
+        };
+    }
+    return null;
+}
+/** An outage analysis as text. */
+function outageText(o, run) {
+    const w = run.result;
+    const m = run.model;
+    const lines = (0, result_1.exportHeader)({ analysis: 'Resilience: outage impact', title: o.title, info: w.info, version: o.version, outdated: o.outdated });
+    lines.push('Assume unavailable:');
+    for (const p of run.picks) {
+        const l = pickLabel(m, p.ref);
+        const from = p.via.filter((x) => !!x).map((x) => viaLabel(m, x));
+        lines.push(`  ${l.id} — ${l.type}${l.detail ? ' · ' + l.detail : ''}${from.length ? ` (from ${from.join(', ')})` : ''}`);
+    }
     if (w.unknown.length)
         lines.push(`Not in the model: ${w.unknown.join(', ')}`);
-    lines.push('');
-    for (const k of CHANGE_ORDER) {
-        const list = w.deps.filter((d) => d.change === k);
-        if (!list.length)
-            continue;
-        lines.push(`${dependencies_1.DEP_CHANGE_TEXT[k]} (${list.length}):`);
-        for (const c of list)
-            lines.push(`  ${dependencies_1.DEP_LABEL[c.dep.kind]}: ${c.dep.text} — ${c.text}`);
-    }
-    for (const x of w.expectations)
-        lines.push(`Requirement ${x.after.name} (${x.after.expect}): ${whatif_1.EXP_CHANGE_TEXT[x.change]} — before ${x.before.verdict}, after ${x.after.verdict} — ${x.after.reason}`);
-    if (w.capacity) {
-        lines.push(`Capacity: ${w.capacity.after.text}`);
-        for (const x of w.capacity.changes.filter((y) => y.change !== 'unchanged'))
-            lines.push(`  ${CAP_CHANGE_TEXT[x.change]}: ${x.demand.label} — ${x.after.text}`);
+    lines.push('', 'Compared with the same configured architecture without this outage:');
+    if (w.result)
+        for (const l of outageSummary(m, run))
+            lines.push(`  ${l}`);
+    else
+        lines.push(`  ${w.info.limits[w.info.limits.length - 1] || 'Nothing was evaluated.'}`);
+    const prop = propagated(w);
+    if (prop.length) {
+        lines.push('', `Propagated effects (${prop.length}):`);
+        for (const x of prop)
+            lines.push(`  ${x.state}: ${(0, failure_1.refLabel)(m, x.ref)}${x.why ? ' — ' + x.why : ''}`);
     }
     if (w.structural && w.structural.isolated.length)
         lines.push(`Disconnected: ${w.structural.isolated.map((g) => g.join(', ')).join('; ')}`);
+    for (const g of REQ_GROUPS) {
+        const list = w.expectations.filter((x) => g.k.indexOf(x.change) >= 0);
+        if (!list.length)
+            continue;
+        lines.push('', `${g.title} (${list.length}):`);
+        for (const x of list)
+            lines.push(`  ${x.after.name} (${x.after.expect}): without the outage ${x.before.verdict}, under it ${x.after.verdict} — ${x.after.reason}`);
+    }
+    for (const g of DEP_GROUPS) {
+        const list = w.deps.filter((d) => d.change === g.k);
+        if (!list.length)
+            continue;
+        lines.push('', `${g.title} (${list.length}):`);
+        for (const c of list)
+            lines.push(`  ${dependencies_1.DEP_LABEL[c.dep.kind]}: ${c.dep.text} — ${c.text}`);
+    }
+    if (w.capacity && w.capacity.before.evaluated) {
+        lines.push('', `Capacity: ${w.capacity.after.text}`);
+        for (const x of w.capacity.changes.filter((y) => y.change !== 'unchanged'))
+            lines.push(`  ${CAP_CHANGE_TEXT[x.change]}: ${x.demand.label} — ${x.after.text}`);
+    }
     if (w.reach) {
-        lines.push(`Device pairs that lose reachability (${w.reach.pairs.length}); ${(0, result_1.coverageText)(w.reach.coverage)}:`);
+        lines.push('', `Device pairs that lose reachability (${w.reach.pairs.length}); ${(0, result_1.coverageText)(w.reach.coverage)}:`);
         for (const p of w.reach.pairs)
             lines.push(`  ${p.from} → ${p.to}${p.partial ? ' (some equal-cost paths)' : ''}: ${p.detail}`);
     }
@@ -99405,13 +100174,21 @@ function buildCommands() {
             run: (app) => app.openSpof(),
         },
         {
-            id: 'analyze.whatif',
-            label: 'Resilience: failure scenario',
+            id: 'analyze.outage',
+            label: 'Resilience: outage impact',
             group: 'Analyze',
             mode: true,
-            keywords: 'what if failure domain rack room power several components n-2 scenario condition',
-            state: (app) => needDiagram(app, 'Several components or a failure domain failing together, compared with the same baseline: what becomes unavailable, what survives through an alternative, the requirements affected'),
-            run: (app) => app.openResilience('scenario'),
+            keywords: 'outage impact what if unavailable maintenance failure scenario failure domain rack room power several components n-2 combined',
+            state: (app) => needDiagram(app, 'Choose components to make unavailable and compare the modeled consequences with the architecture without this outage: what stops working, what survives through an alternative, what cannot be established. Nothing in the model is changed'),
+            run: (app) => app.openResilience('outage'),
+        },
+        {
+            id: 'analyze.outage-selection',
+            label: 'Analyze outage impact of the selection…',
+            group: 'Analyze',
+            keywords: 'outage impact selection what if it fails unavailable this component',
+            state: (app) => (!app.session ? off(NO_MODEL) : app.outageSelectable() ? on('Prepares the selected device, cable, interface, relation or group in Resilience → Outage impact; nothing is analyzed until you ask') : off('Select a device, cable, interface, relation or group in the diagram')),
+            run: (app) => void app.outageFromSelection(),
         },
         {
             id: 'analyze.capacity',
@@ -100997,7 +101774,7 @@ __req("app/main");
       <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Clear path trace</span><span class="mi-hint">Esc</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" title="Open or create a model first" disabled><span class="mi-label">Resilience: single-component failures</span></button>
-      <button id="btn-whatif" type="button" role="menuitem" data-command="analyze.whatif" title="Open or create a model first" disabled><span class="mi-label">Resilience: failure scenario</span></button>
+      <button id="btn-whatif" type="button" role="menuitem" data-command="analyze.outage" title="Open or create a model first" disabled><span class="mi-label">Resilience: outage impact</span></button>
       <button id="btn-capacity" type="button" role="menuitem" data-command="analyze.capacity" title="Open or create a model first" disabled><span class="mi-label">Resilience: capacity</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-checks" type="button" role="menuitem" data-command="analyze.checks" title="Open or create a model first" disabled><span class="mi-label">Design review: requirements</span></button>
