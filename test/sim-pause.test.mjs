@@ -216,7 +216,9 @@ test('the pace on screen at the defaults: every hop takes 3–5 s of real time (
           const st = c.pacer.state(it);
           let s = seen.get(it);
           if (!s) seen.set(it, (s = {}));
-          if (st.phase === 'moving' && s.start === undefined && st.frac < 0.05) s.start = now;
+          // (first seen up to 5 % into the hop: the part already moved counted back at the clock's rate, which is never above real time,
+          // so the start taken is never earlier than the real one: the lower bound below is not loosened)
+          if (st.phase === 'moving' && s.start === undefined && st.frac < 0.05) s.start = now - st.frac * it.hop;
           if ((st.phase === 'arrived' || st.phase === 'gone') && s.start !== undefined && s.end === undefined) s.end = now;
         }
       }
