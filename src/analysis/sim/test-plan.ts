@@ -76,6 +76,8 @@ export interface TestPlan {
   toAddr?: string;
   /** unicast: an address or a host name written instead of a device */
   target?: string;
+  /** a host name's family: 6 resolves its AAAA record, else its A record */
+  family?: 4 | 6;
   /** multicast: the group */
   group?: string;
   /** local broadcast: 255.255.255.255, or the source interface's subnet broadcast */

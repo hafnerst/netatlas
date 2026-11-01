@@ -901,10 +901,6 @@ dialog#modal.help-manual .modal-inner { height: 100%; max-height: none; padding:
 dialog#modal.help-manual .modal-body { max-height: none; display: flex; flex-direction: column; }
 dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
 /* Analyze → Addressing overview: as large as the window; its tables scroll inside the dialog (sideways inside each table) */
-dialog#modal.addr-dialog { max-width: 1320px; width: calc(100% - 24px); height: calc(100vh - 24px); height: calc(100dvh - 24px); }
-dialog#modal.addr-dialog .modal-inner { height: 100%; max-height: none; padding: 14px 16px 12px; }
-dialog#modal.addr-dialog .modal-body { max-height: none; overscroll-behavior: contain; }
-dialog#modal.addr-dialog .modal-btns { margin-top: 10px; }
 .addr-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 4px; }
 .addr-controls input[type="search"] { flex: 1 1 220px; min-width: 0; max-width: 420px; }
 .addr-vrf { margin: 10px 0 14px; }
@@ -1298,8 +1294,6 @@ table.hop-table tr.hop-under th, table.hop-table tr.hop-under td:nth-child(2) { 
 table.hop-table tr.hop-under { font-style: italic; }
 .trace-section { margin-top: 6px; border-top: 1px solid var(--border); }
 /* the Single points of failure window */
-.spof-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
-.spof-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
 .spof-out { display: flex; flex-wrap: wrap; gap: 4px; }
 table.spof-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 table.spof-table th, table.spof-table td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
@@ -1337,10 +1331,25 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .layer-ev summary { cursor: pointer; color: var(--link); font-size: 11.5px; }
 .layer-ev ul { margin: 2px 0; padding-left: 16px; }
 .comm-legs { margin: 4px 0; padding-left: 18px; }
+/* the diagnosis of a communication (Trace path): the answer, then its evidence */
+.diag { border-left: 3px solid var(--border); padding-left: 10px; }
+.diag h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.diag-list { margin: 2px 0 6px; padding-left: 18px; }
+.diag-list > li { margin: 3px 0; overflow-wrap: anywhere; }
+.diag-rel { font-size: 11px; }
+.diag-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; }
+.diag-flags { color: var(--warn); }
+.diag-next { flex-wrap: wrap; }
+.diag-msgs { margin-left: 10px; }
+.diag-rule { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.diag-rule:focus-visible { outline: 2px solid var(--marked-bar); outline-offset: 2px; }
+.diag-rules { margin: 4px 0 6px; padding-left: 18px; }
+.diag-rules > li { padding: 1px 4px; overflow-wrap: anywhere; }
+.trace-choice ul { list-style: none; padding: 0; margin: 4px 0 8px; display: flex; flex-direction: column; gap: 4px; }
+.trace-choice button { text-align: left; white-space: normal; }
 .trace-end.beyond { color: var(--warn); }
 .hop-table .why-btn { display: block; margin-top: 2px; font-size: 11px; padding: 0 4px; white-space: nowrap; }
 .hop-table th.th-n { white-space: nowrap; }
-table.hop-table tr.hop-why td { background: var(--raised); border-bottom-style: dashed; }
 .why-box { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 2px 0; }
 .why-box dt { color: var(--muted); font-weight: 600; }
 .why-box dd { margin: 0; overflow-wrap: anywhere; }
@@ -1354,7 +1363,6 @@ table.hop-table tr.hop-why td { background: var(--raised); border-bottom-style: 
 /* Design checks */
 .dc-section { margin-top: 6px; }
 .dc-table th .dc-name { font-weight: 600; }
-.dc-detail-box { padding: 4px 0 6px; }
 .dc-shared-box { margin: 6px 0; padding: 4px 8px; border-left: 3px solid var(--warn); background: var(--raised); }
 .dc-shared { margin: 2px 0; padding-left: 18px; }
 .dc-form { border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
@@ -1373,6 +1381,21 @@ table.hop-table tr.hop-why td { background: var(--raised); border-bottom-style: 
 .wi-group { margin: 4px 0; }
 .wi-group summary { cursor: pointer; font-weight: 600; font-size: 12.5px; }
 .wi-group ul { margin: 2px 0 4px; padding-left: 18px; }
+.oi-section .tf-row.dc-row { grid-template-columns: 7.5em minmax(0, 1fr); }
+ul.combo-list.oi-matches { position: static; max-height: 240px; margin: 2px 0; box-shadow: none; }
+.oi-matches .combo-opt { flex-wrap: wrap; }
+.oi-matches .oi-unsupported, .oi-matches [aria-disabled="true"] { color: var(--muted); cursor: default; }
+.oi-add-more { flex-wrap: wrap; align-items: center; }
+.oi-section select, .oi-section input[type="search"] { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.oi-add-more select { flex: 1 1 12em; width: auto; }
+.oi-condition { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.oi-condition h4 { margin: 0 0 4px; font-size: 12.5px; }
+.oi-picks { margin: 0 0 4px; padding-left: 18px; max-height: 260px; overflow: auto; overflow-wrap: anywhere; }
+.oi-picks .mini { margin-left: 4px; padding: 0 6px; }
+.oi-gone { color: var(--error); }
+.oi-offer { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-soft); }
+.oi-summary p { margin: 2px 0; }
+.oi-summary ul { margin: 2px 0 4px; padding-left: 18px; }
 .wi-domains { margin-top: 10px; }
 .wi-dom-list { padding-left: 18px; }
 .wi-dom-list .mini { margin-left: 4px; }
@@ -1914,6 +1937,84 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .an-dock .trace-result, .an-dock .spof-tables, .an-dock .addr-tables { min-width: 0; }
 .an-selected { outline: 2px solid var(--ws, var(--accent)); outline-offset: -2px; }
 #an-detail:focus { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+/* ---- Analyze: one interaction model for every task — the question (left), the answer and results (bottom), the evidence (right) */
+.an-back { align-self: flex-start; }
+.an-left > .an-tools + .an-tools { margin-top: -2px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.an-ctx-next { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.an-ctx-kind { font-weight: 600; color: var(--text); }
+.an-draft { margin: 0; padding: 4px 8px; border-left: 3px solid var(--ws, var(--accent)); background: var(--raised); color: var(--text); }
+.an-dock-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; position: sticky; top: -8px; z-index: 2; margin: -8px -12px 0; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.an-dock-title { font-size: 13px; }
+.an-res-tools { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.an-res-sec { margin: 4px 0; }
+.an-res-sec > h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.an-question { margin: 4px 0; }
+.an-path-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.an-path-head h4 { margin: 6px 0 2px; }
+.an-limitation { margin: 4px 0; }
+.an-pickrow { padding: 2px 4px; border-radius: 4px; }
+.an-pickrow:focus-visible, tr[data-an-item]:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: -2px; }
+tr[data-an-item] { cursor: pointer; }
+tr[data-an-item]:hover > * { background: var(--raised); }
+.tf-col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.an-filters { display: grid; gap: 6px; }
+.an-filters .tf-row { display: grid; grid-template-columns: 4.6em minmax(0, 1fr); align-items: center; gap: 6px; }
+.an-filters .tf-row input, .an-filters .tf-row select { width: 100%; min-width: 0; }
+.an-filters .seg { flex-wrap: wrap; }
+.trace-form .tf-row:has(.tf-col) { align-items: start; }
+.trace-form .tf-row:has(.tf-col) > label { padding-top: 4px; }
+.an-bind { margin: 0; }
+.dc-enforce { margin: 6px 0; padding: 4px 8px 6px; border: 1px solid var(--border); border-radius: 6px; }
+.dc-enforce legend { font-weight: 600; font-size: 12.5px; padding: 0 4px; }
+.dc-enforce .tf-check { margin: 2px 0; }
+/* the evidence panel: what it describes, its context, then its sections */
+.an-ev { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.an-ev-kind { margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; font-weight: 700; }
+.an-ev > h3 { overflow-wrap: anywhere; }
+.an-ev > h3:focus, .an-ev:focus { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+.an-ev-ctx { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.an-ev-sec { border-top: 1px solid var(--border); padding-top: 4px; min-width: 0; }
+.an-ev-sec > h4 { margin: 2px 0 4px; font-size: 12px; color: var(--muted); }
+.an-ev-sec ul { margin: 2px 0; padding-left: 18px; }
+.an-ev-objs { margin: 0 0 4px; overflow-wrap: anywhere; }
+.an-ev-foot { border-top: 1px solid var(--border); padding-top: 6px; }
+.an-editor { border: 2px solid var(--ws, var(--accent)); border-radius: 8px; padding: 8px; background: var(--panel); }
+.an-editor .an-ev-kind { color: var(--ws, var(--accent)); }
+/* the overview */
+.an-starts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.an-start { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 6px 8px; white-space: normal; font: inherit; }
+.an-ov-sel { border-top: 1px solid var(--border); padding-top: 6px; }
+.an-ov-sel h3 { margin: 0 0 4px; font-size: 13px; }
+.an-known, .an-hist, .an-deps { margin: 4px 0; padding-left: 18px; display: grid; gap: 4px; }
+.an-hist li { display: block; }
+.an-hist li > button { margin: 2px 4px 0 0; }
+/* the panels' layout: balanced (the default), diagram-focused, results-focused */
+@media (min-width: 861px) {
+  body[data-workspace="analyze"][data-an-layout="diagram"] main { grid-template-columns: 240px minmax(0, 1fr) 280px; }
+  body[data-workspace="analyze"][data-an-layout="results"] main { grid-template-columns: 300px minmax(0, 1fr) 380px; }
+  /* nothing selected: the evidence column gives the diagram its room */
+  body[data-workspace="analyze"][data-an-evidence="empty"]:not([data-an-layout="results"]) main { grid-template-columns: 280px minmax(0, 1fr) 220px; }
+}
+/* a narrow window: Analyze shows one working surface at a time — Question, Results, Evidence or Diagram — under its tabs */
+#spt-results[hidden] { display: none !important; }
+@media (max-width: 860px) {
+  body[data-workspace="analyze"][data-panels="on"] main { grid-template-rows: auto minmax(0, 1fr); }
+  body[data-workspace="analyze"][data-panels="on"] .sim-paneltabs { grid-row: 1; grid-column: 1; flex-wrap: wrap; border-top: 0; border-bottom: 1px solid var(--border); padding: 4px 10px; }
+  body[data-workspace="analyze"][data-panels="on"] #canvas-wrap, body[data-workspace="analyze"][data-panels="on"] #outline, body[data-workspace="analyze"][data-panels="on"] #side, body[data-workspace="analyze"][data-panels="on"] #sim-dock { grid-row: 2; grid-column: 1; min-height: 0; }
+  body[data-workspace="analyze"][data-panels="on"] #spt-diagram { display: inline-block; }
+  body[data-workspace="analyze"] #spt-setup { order: 1; }
+  body[data-workspace="analyze"] #spt-results { order: 2; }
+  body[data-workspace="analyze"] #spt-actions { order: 3; }
+  body[data-workspace="analyze"] #spt-diagram { order: 4; }
+  body[data-workspace="analyze"][data-panels="on"]:not([data-panel-tab="diagram"]) #canvas-wrap { visibility: hidden; }
+  body[data-workspace="analyze"][data-panels="on"]:not([data-panel-tab="setup"]) #outline, body[data-workspace="analyze"][data-panels="on"]:not([data-panel-tab="actions"]) #side { display: none; }
+  body[data-workspace="analyze"][data-panels="on"]:not([data-panel-tab="results"]) #sim-dock { display: none; }
+  body[data-workspace="analyze"][data-panels="on"][data-panel-tab="setup"] #side, body[data-workspace="analyze"][data-panels="on"][data-panel-tab="actions"] #outline { display: none; }
+  body[data-workspace="analyze"][data-panels="on"] #sim-dock { height: auto; }
+  body[data-workspace="analyze"] #dock-splitter { display: none; }
+  body[data-workspace="analyze"] .an-layout { display: none; }
+  .an-dock-head { position: static; }
+}
 /* the diagram's marks of a workspace: an experiment's targets (dashed), its verdicts (solid, with a word in the panel), the selected step's */
 .has-ws-marks .ws-target .dev-box, .has-ws-marks .ws-target .net-box { stroke: var(--ws) !important; stroke-width: 2.5 !important; stroke-dasharray: 6 3; }
 .has-ws-marks .ws-target .cable-line, .has-ws-marks .ws-target .rel-line { stroke: var(--ws) !important; stroke-width: 4 !important; stroke-dasharray: 6 3; }

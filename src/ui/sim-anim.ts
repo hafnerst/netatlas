@@ -578,7 +578,8 @@ const BG_FONT = 8.5;
  * UDP. Never addresses or interfaces (the inspector and the log have them).
  */
 export function bgKind(protocol: string, label: string, flags?: string): string {
-  const name = BG_NAMES[protocol] || protocol.toUpperCase().slice(0, 10);
+  // (a custom protocol by its own name: "custom:tel" is TEL — a short label is letters and digits only)
+  const name = BG_NAMES[protocol] || protocol.replace(/^custom:/, '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 10) || 'MSG';
   // a TCP segment (of whatever protocol): its flags, from its header
   if (flags !== undefined) return `${name} ${flags}`;
   const m = /\b(Query|Report|Leave|Hello|Join|Prune|Register|Request|Reply|Discover|Offer|Ack|Update|Keepalive|BPDU)\b/.exec(label);

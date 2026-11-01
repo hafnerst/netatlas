@@ -5,12 +5,404 @@ All notable changes to NetAtlas are listed here. The format follows
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
 releases may still change behaviour.
 
-Two version numbers are involved. The **application version** (0.1.4) names
+Two version numbers are involved. The **application version** (0.1.5) names
 a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
+
+## [0.1.5] - 2026-10-31
+
+NetAtlas 0.1.5 is still one self-contained, offline HTML file
+(`dist/netatlas.html`) with no third-party code. It reads and writes YAML
+model format 1 (`netatlas: 1`) unchanged: a file valid for 0.1.4 is valid
+as it is. Its largest changes:
+
+- **Analyze, organized by the question asked**: Overview, Communication,
+  Resilience, Design review and Addressing, each with the question on the
+  left, the answer and results at the bottom and the evidence of the
+  selected item on the right; recent and pinned results of the session,
+  and **← Back** from an investigation to the result it came from.
+- **Communication with a diagnosis**: one workflow for checking and
+  diagnosing a communication (**Diagnose selected communication**,
+  `Shift+D`). It shows the state of the answer, what is established and
+  what is not, the cause only where the evidence establishes one, the
+  static answer and a simulation run apart, and the evidence chain.
+  Comparisons, MQTT conclusions and policy evidence are read from the
+  recorded identity of what was sent, not from text.
+- **Resilience → Outage impact**, components first: choose components in
+  a searchable picker (a saved failure domain is an optional shortcut),
+  and compare the modeled consequences with the same architecture without
+  the outage. What was assumed is kept apart from what follows from it,
+  and checks that could not run are said instead of shown as zero.
+  **Single-component failures** show separate measures. **Capacity** has
+  its own mode.
+- **Network semantics**: one definition of each encapsulation's size for
+  the path MTU, the checks and the simulation; a tunnel's MTU enforced at
+  run time; each layer of a tunnel stack with its own ends, family and VRF;
+  Analyze taking the same ends a sender in the simulation takes.
+- **Readable playback**: a packet takes 3–5 s per hop at 1×, scaled by the
+  model's own cable costs.
+- **Documentation**: the README explains IP, non-IP and mixed
+  architectures, what each device type can do and what each level —
+  model, analysis, simulation — establishes, with examples to start from.
+- **Correctness fixes** across diagnosis, MQTT, tunnels, ARP/NDP queuing,
+  policy evidence and the packet inspector (see *Fixed*).
+
+The simulation remains a teaching and planning model within its declared
+subset, not an emulator or a compliance test (see *Known limitations*).
+
+### Upgrading from 0.1.4
+
+Nothing to change in a model file: the keys and their meaning are those of
+0.1.4. A few keys' run-time effect is stated more precisely (a tunnel's
+`mtu` is enforced, an interface's `mtu` limits what arrives too; see
+*Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since-014)).
+In the application, some places have new names:
+
+- **Trace path** and **Diagnose communication** are now **Analyze →
+  Communication** (`T`; **Diagnose selected communication**, `Shift+D`).
+- **Resilience → Failure scenario** is now **Resilience → Outage impact**;
+  its failure domains are edited under **Define failure domains…** /
+  **Edit failure domains…**.
+
+### Added
+
+- **Diagnosis** in Trace path: under the verdict, the answer to the
+  question in order — its state (established, blocked, not completed with
+  its cause not established, waiting, in progress, recovered, partial,
+  cancelled, not established), a short explanation, the static answer and
+  the simulation's apart (finished or not, what was observed, whether its
+  cause is established), the question as resolved (from, to, family,
+  service — *none given* when it has none —, routing context, configured
+  model or snapshot, the run compared), what prevents or limits it (each
+  distinct cause once, with the messages it stands for), the evidence
+  chain, the separate legs and the next actions, which prefill and never
+  submit. Each piece of evidence says whether it is a recorded cause,
+  contributing, a prerequisite (with the recorded state change behind it),
+  a related observation or not established, and links to the exact record
+  it names: the object, the policy decision (the device's rules in order,
+  the deciding one marked, in place), the layer, the packet, message or
+  event of its own simulation; following it moves no clock, sends nothing
+  and changes nothing. **Compare with simulation** adds the recorded
+  run's evidence — a send, a client application's own newest run with its
+  retries, an MQTT client's newest run by its own publications; the
+  diagnosis is kept with the result (also across leaving Analyze) and
+  marked outdated after an edit.
+- **Analyze → Diagnose communication…** (`Shift+D`): the question from the
+  selection (a device's client application to its peer or broker, a device
+  or interface, a relation between its ends), checked at once; a device
+  with several client applications asks which, and nothing of the
+  previous question is carried over.
+- **Structured runtime evidence**: a drop records its cause on its own log
+  line where the engine or the firewall decided it (the kind, the packet,
+  the packets inside an outer one, its sender and session, its outer
+  header, the interface, MTU, next hop, relation, cable, or the policy's
+  device, rule and default); a RST or ICMP error records why its sender
+  sent it (a closed port, a policy's rejection with its decision, no
+  connection) and which device sent it — a firewall's RST is no longer
+  taken for the destination's; a test records its outcome kind, every drop
+  of its exchange (marked when it was one of its attempts), how far back
+  the log reached, what it waited for (met or not) and how long, its TCP
+  retransmissions and its DNS queries' fates; an equal-cost choice records
+  the branch taken; interfaces, cables and sessions record their state
+  changes; packets keep a record of their first frame (the latest 8 192);
+  an MQTT publication its own record (its packets, the broker's receipt,
+  its PUBACK or loss, each subscriber's receipt; the latest 2 000).
+- The text export of Trace path starts with the diagnosis and names the
+  model by a fingerprint id.
+- Tests: hand-worked encapsulation sizes (also for nested layers of
+  different families, IPv6 outer headers, UDP tunnels, ESP's padding at run
+  time, per-layer VRFs and equal-cost underlays), identity across Analyze
+  and the simulation, the diagnosis regression matrix and its faithfulness
+  to evidence (completion, outcome and cause certainty apart; RST reasons;
+  contributing drops; reworded records; several causes; prerequisite
+  chains), runtime evidence scoped to the question (MQTT publications,
+  application runs, records of their own execution), bounded property
+  tests of generated models and legal action sequences with a reducer
+  (dual stack, four tunnel kinds, equal-cost links, a reused address in
+  another VRF, DHCP, an application with retries and Stop; every refusal
+  classified, every intended branch required; test-only), and browser
+  checks of the workflow with real keys, in a narrow window and both
+  themes.
+- **Analyze, organized by the question asked**: **Overview**,
+  **Communication**, **Resilience** (single-component failures, failure
+  scenario, capacity), **Design review** (findings, requirements) and
+  **Addressing**, each with one interaction model: the question on the
+  left (one primary action, secondary choices under Advanced options), the
+  answer and its results at the bottom, the evidence of the selected item
+  on the right — what it is, the result's context, the explanation, the
+  evidence and decisions, the objects it concerns and what to inspect
+  next. Each task keeps its question, result and selection when another
+  is in front; **← Back** returns to the result and item an investigation
+  came from. Layouts: **Balanced**, **Diagram-focused**,
+  **Results-focused**; in a narrow window one surface at a time
+  (Question, Results, Evidence, Diagram), selecting a result showing its
+  evidence with its heading focused.
+- **Overview**: the starting questions, what is known about the model
+  (requirements and whether they were evaluated, findings, invalid input,
+  results outdated by an edit, interfaces addressed at run time; nothing
+  is computed on opening, no overall score), starting points from the
+  selection, and **Explore its dependencies**: a component's **Depends
+  on**, **Used by** and, on request, **Failure affects**, each leading
+  into Communication, Resilience or a contextual focus.
+- **Recent and pinned results** of the session (12 recent, 8 pinned):
+  reopened as computed with their selection (outdated after an edit),
+  pinned, saved as a text record. Not saved with the model; loading
+  another model clears them.
+- **Resilience → Capacity**: the stated demands against the stated
+  capacity directly, with or without a failure condition (the existing
+  capacity analysis).
+- One context line for every task: the source of the **next
+  computation**, the context of the **result shown** (configured model or
+  frozen snapshot, a hypothetical failure condition or a recorded runtime
+  exchange, the scope, when it was computed), a question changed since it
+  (a draft), outdated, incomplete coverage, evidence no longer kept.
+- The evidence panel's diagram actions: **Locate in diagram**, **Fit
+  relevant objects**, **Show only relevant objects** (a Focus on the
+  result's devices; a saved view keeps it as a device selection),
+  **Restore previous view**.
+
+### Changed
+
+- **README**: what an IP and a non-IP component is in NetAtlas, how one
+  device can have both kinds of port without converting between them, a
+  table of what each of the 15 device types (and each System purpose) can
+  do and where it stops, what modeling, analysis and simulation each
+  establish, and three examples to start from (IP, industrial IP, non-IP
+  and mixed).
+- The release size budget of `dist/netatlas.html` is 6.6 MiB (was
+  6.5 MiB), for the Analyze rework.
+- **Communication** replaces Trace path and Diagnose communication as one
+  workflow (`T`; **Diagnose selected communication**, `Shift+D`, asks
+  about the selection): searchable ends — devices, interfaces, exact
+  addresses, applications, services, host names — each saying how it
+  binds; **Automatic family** (was *Any family*); VRF, family and the
+  return direction under Advanced options; **Check communication**. The
+  answer comes once (no separate verdict competing with it), then what is
+  established, the main blocker, the runtime observation and the paths.
+  Layers, blockers, paths, hops (**Why?**) and policy decisions are
+  evidence on the right; the first shown is an established blocker, else
+  what needs attention, else the main path — never the runtime
+  limitation, which is said as a limitation of static analysis. Next
+  steps: **Inspect deciding rule**, **Inspect limiting interface**,
+  **Prepare modeled test**, **Compare matching observation**, **Prepare
+  MTU test**, **Save as requirement…**, **Use in experiment…**.
+- **Single-component failures** show separate measures — the saved
+  requirements no longer satisfied (now checked per candidate), the
+  configured dependencies unavailable, the devices disconnected, the
+  relations unavailable — and a status, with explicit values (*None
+  affected*, *Checking*, *Not evaluated*, *indeterminate*); the summed
+  *structural impact* is no longer shown (the CSV keeps its column and adds
+  `requirements_unsatisfied` and `requirements`). A selected row stays
+  selected while the check goes on; leaving Resilience pauses the check.
+  **Outage impact** is its own mode, its condition the question;
+  failure domains are edited in **Define failure domains…** (an explicit
+  model edit).
+- **Resilience → Outage impact** replaces *Failure scenario*, components
+  first: *What stops working, what remains available, and what becomes
+  uncertain if these components become unavailable?* Find components in a
+  searchable picker (name, ID, type, endpoint; ↑/↓ and Enter; a partial
+  name is never picked for you), see them as removable entries, and
+  **Analyze impact** — no failure domain, scenario name, saving, YAML,
+  simulation or experiment is needed, and nothing in the model changes.
+  **Analyze outage impact…** on the diagram selection (Overview, command
+  palette) and **Investigate** on a single-component failure prepare the
+  same component without analyzing it; with a condition already there
+  they offer **Add to the condition** or **Start a new condition with it**.
+  A group adds its devices by membership; a saved failure domain is an
+  optional shortcut (**Add saved failure set…**) whose components are
+  copied, each marked as coming from it. The condition is previewed (how
+  many chosen, from which set, how the outage propagates, what is
+  compared); more than 64 components, or one no longer in the model, is
+  refused with why, never cut off. The answer compares the same
+  configured architecture without the outage and keeps apart what was
+  assumed unavailable, what follows from it, requirements and
+  dependencies newly lost, kept through an alternative, not determinable
+  or already broken before; it says when no requirement or dependency
+  exists instead of showing zeros, and *No additional modeled effect
+  found within the checks performed* instead of *no effect*. Device pairs
+  in a scope are traced in slices with **Stop** and their coverage. The
+  evidence shows each item without and under the outage; its
+  Communication actions say they check the architecture without it.
+  **Prepare an experiment…** adds an experiment failing these components
+  (one undo step) for what happens over time. The command is
+  `analyze.outage` (was `analyze.whatif`).
+- **Design review** separates **Findings** (filters by category,
+  severity and object; invalid model input apart; findings at one place
+  are related, not an established shared cause; *no findings* says which
+  checks ran) and **Requirements** (an explicit editor with **Save
+  changes** and **Cancel**; an isolation requirement says in its primary
+  fields how it must be enforced). Saving a requirement no longer
+  evaluates it: results are marked outdated until **Evaluate**.
+- **Addressing**: a compact table with the issue filter (**All networks**,
+  **Conflicts**, **Overlaps**, **Outside declared networks**); a
+  network's or an issue's details in the evidence panel.
+- **Focus** is a view aid of every workspace, in its own window (`Shift+F`,
+  Analyze → Focus…), no longer a task of Analyze.
+- The Analyze menu, the command palette, the manual and the shortcuts
+  use the task names in one order. Menu entries that open the workspace
+  (and Simulate → Experiments) no longer announce a dialog.
+- Changing the source while a simulation runs no longer recomputes the
+  result on screen: the next computation reads it.
+
+- **Packet dots take 3–5 s per hop at 1×** (Readable pacing), from the
+  hop's modelled traversal: a cable's latency and its frame's serialization
+  (the engine's own wire time, counted once), a relation's lane its
+  underlay — now each traced cable's own latency and speed, not a count of
+  cables at the default — on a log scale of the model's cables, so a WAN
+  link shows longer than a LAN cable; a network line, a hub's spokes or a
+  bus drawn in two halves take the time of one line; a hop without a
+  modelled time takes 4 s. Before: 2–6 s around the typical cable, and a
+  long line slower still (70 px a second). That limit now applies to
+  Proportional pacing only, so Readable stays within its bounds. The
+  seconds are presentation: simulated times, order and outcomes are
+  unchanged; pause, the speed, a view switch and Exit behave as before.
+- **MQTT conclusions by topic and by what is recorded.** A subscriber's
+  leg counts the run's publications on the topics its own filters ask
+  for; another topic the broker kept from it is no failure. Publication
+  records that age out (the latest 2000 are kept) are counted from their
+  run's tally as they had settled; those not settled then are said
+  unavailable and keep the whole run from *established*. Stop discards
+  unacknowledged QoS 1 publications with the clean session: cancelled.
+  The run's state follows the same rule as a send's messages.
+- **Comparisons answer the communication asked.** An application's run is
+  compared only with a question about its own communication (another
+  destination, service, family or VRF is refused, said why); a send carries
+  a host-name check only in its family.
+- **Evidence stays historical.** A policy link shows the rules of the
+  model the diagnosis was made of, the recorded rule marked; a policy
+  edited since is said to differ, never shown as the decision. A missing
+  route's prerequisite comes from the device's own recorded decision (the
+  routes it found unusable then); without it every configured alternative
+  is named as related. A session's silence is a cause only when each of
+  its messages has its own recorded drop. A lost attempt before a RST or
+  ICMP error is listed as contributing.
+- **One definition of encapsulation sizes** for the static path MTU, the
+  tunnel-MTU check, the MTU suggestions and the simulation's packet lengths
+  (the packet inspector, a frame's time on the wire): the outer header of
+  the tunnel's family (IPv6: 40), a UDP tunnel's UDP header, each format's
+  header, ESP's padding (AES-CBC, HMAC-SHA1-96: exact instead of the worst
+  case), the inner Ethernet header of VXLAN and Geneve; OpenVPN and mGRE
+  have figures now. Static limits change accordingly (GRE over ESP over
+  1500 bytes: 1414 instead of 1403); the simulation's packets grow to
+  their real size (they counted 4 bytes per layer, ESP 36, no UDP).
+- A tunnel enforces its MTU at run time — written, else what its underlay
+  leaves room for — fragmenting IPv4 without DF before encapsulation and
+  refusing DF (and IPv6) with Fragmentation Needed / Packet Too Big
+  carrying what fits; its head passes on the path MTU it learned of its
+  underlay (PMTUD through the tunnel), and TCP over a tunnel announces the
+  matching MSS. Models whose TCP crossed a tunnel at 1500 bytes now show
+  that PMTUD.
+- A frame larger than the MTU written on the receiving end of its cable
+  (or on a switch port it leaves by) is dropped there, silently, as the
+  static path MTU already counted it: an MTU mismatch is a black hole.
+- A tunnel's outer packets are routed in the VRF of its source interface
+  (a front-door VRF), as Trace path traces them; IPv6 inside IP-in-IP is
+  protocol 41.
+- Analyze takes the ends a sender in the simulation takes: a device as the
+  source sends from its route's egress interface (not its first address by
+  kind, a loopback first), a device as the destination is reached at its
+  first interface, loopbacks and container bridges last; the question
+  stays shown as asked.
+- A host name checked for IPv6 is carried into Send network packets with
+  its family (the send asks for AAAA).
+- Compare with simulation, application retries and the status of Network
+  events read the structured outcomes instead of matching the result's
+  words. A difference with the static result says only what the records
+  show: a route there later is an observed difference (never "learned
+  after the send"), a neighbour that did not answer is no missing route, a
+  RST says what its sender recorded.
+- **Each layer of a tunnel stack from its own identity**: a relation a
+  tunnel is carried over between other addresses (IPsec between WAN
+  addresses under GRE between loopbacks, of another family or in another
+  VRF) gives its layer its own ends — in the tunnel-MTU check, the path MTU,
+  Trace path (the outer packet routed by its outermost layer) and the
+  simulation (each header between its ends, keepalives too). The
+  tunnel-MTU check takes the stack as Trace path and the simulation do (one
+  relation per level).
+- One order for a device as an address (an ordinary interface, a loopback,
+  a container bridge's), shared by the static check, the applications,
+  Send test, health checks and an MQTT client's broker.
+- A tunnel interface without an MTU of its own takes what its underlay
+  leaves room for in the static path MTU too (it counted as unknown, so
+  every tunnel path's MTU was only an upper bound).
+- Preparing a send resets what an earlier send left in the form (the
+  source interface when none is given, the count, the size, Don't
+  fragment, keep open).
+
+### Fixed
+
+- A host name checked for IPv6 never matched its AAAA send: Compare with
+  simulation found nothing to compare; and one checked for IPv4 matched
+  the IPv6 send of the same name.
+- A custom protocol's short background label kept its prefix
+  (*CUSTOM:TEL*): it is the protocol's own name (*TEL*).
+- A client application's run was compared with a question that asked
+  another service or destination.
+- Following a policy link after the policy was edited marked the current
+  rule with that number as the decision.
+- An MQTT subscriber that subscribes to some of a publisher's topics was
+  *partial* although it received every publication of its topics; a run
+  stopped before it published was *not established* rather than
+  cancelled; QoS 1 publications in flight at Stop stayed *waiting for
+  PUBACK*.
+- A missing route's prerequisite was taken from the first configured
+  path, and a session's silence was a cause when its drops merely
+  numbered its messages.
+- A TCP test's answer recorded no sender, and an ICMP or UDP answer's was
+  found by its address alone (another routing context may reuse it): the
+  sender comes from the answer itself, with its address.
+- An outer packet fragmented on its way was decapsulated fragment by
+  fragment, delivering the inner packet more than once: it is reassembled
+  first.
+- Object links in the Analyze bottom panel (a hop's device, interface,
+  cable) did nothing; they select the object.
+- Preparing a send no longer writes another value where the form can't
+  take the analysis' choice (a lease's placeholder as an address, a
+  missing interface): what it could not fill in is said.
+- Packets waiting for the same ARP or NDP answer were released in the
+  exchange of the test whose request got it: another test's drop was
+  noted as that test's, and became its last drop. Each now goes in its
+  own exchange.
+- An MQTT client took its broker's container bridge address when the
+  bridge's interface sorted first; the static check took the broker's
+  ordinary interface.
+- A tunnel keepalive that waited for the IPsec it rides went without that
+  layer once it was up.
+- The simulation's tunnel limit took the first of equal-cost underlay next
+  hops, not the one the outer flow takes.
+- A Security gateway noted a denied flow once: a later test's packet it
+  denied left no record.
+- Closing the packet inspector opened again from another link returned the
+  focus to the first one.
+
+### Known limitations
+
+* The protocol simulation is a teaching and planning model within its
+  declared subset, not an emulator or a test of standards compliance: no
+  convergence, accuracy or throughput figure is guaranteed. What each
+  protocol models is in [docs/SUPPORT.md](docs/SUPPORT.md), the
+  simplifications in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+* Analyze is static: a satisfied communication is feasible in the
+  configured model (or a snapshot), not proof that an application
+  completes; outage impact does not establish convergence, recovery time,
+  transient loss, probability or production availability.
+* Non-IP interconnects show connectivity and illustrative data; they do
+  not simulate USB, serial, bus or fabric protocols, and Analyze and
+  experiments cover the IP side only.
+* Which of several devices with an NTP upstream's address a client reaches
+  is resolved once, when the simulation is built, not again at run time.
+* Stateful policies track IP protocols without ports by address pair and
+  protocol number (no GRE keys or ESP SPIs); IPsec NAT traversal is not
+  modelled; IGMPv3 / MLDv2 routers send group-specific queries, not
+  group-and-source queries.
+* An experiment's `start_app` waits for its device to boot, not for its
+  links: a message sent before the link-up delay finds no route.
+* The automated browser tests run in Chromium-based browsers; Firefox and
+  Safari are covered by the manual checks in
+  [docs/TESTING.md](docs/TESTING.md) only.
 
 ## [0.1.4] - 2026-10-22
 
@@ -3135,6 +3527,7 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
+[0.1.5]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.5
 [0.1.4]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.4
 [0.1.3]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.3
 [0.1.2]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.2

@@ -15,6 +15,8 @@ import { bgpAsn } from '../model/services';
 import { Interface, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, relationDevices } from '../model/types';
 import { addrBig, compareAddr, inPrefix, networkOf as networkOfPrefix, prefixRange, prefixText } from './ipmath';
 import { vrfKey, vrfName } from './routing';
+import { EncapDef, encapDef, layerText, maxInnerStack, outerLengthStack } from './encap';
+import { encapStack, layerEnds, tunnelRelation } from './trace';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
 
@@ -79,16 +81,6 @@ function ifaceNets(i: Interface): Array<{ text: string; addr: IpAddr; len: numbe
 }
 
 /** Bytes an encapsulation adds to each packet (IPv4 outer header), by base protocol: the assumption the tunnel-MTU check states. */
-export const ENCAP_OVERHEAD: { [protocol: string]: { bytes: number; what: string } } = {
-  gre: { bytes: 24, what: 'GRE: 20 IP + 4 GRE' },
-  ipip: { bytes: 20, what: 'IP-in-IP: 20 IP' },
-  ipsec: { bytes: 73, what: 'IPsec ESP tunnel mode, worst case: 20 IP + 8 ESP + 16 IV + 15 padding + 2 trailer + 12 ICV' },
-  wireguard: { bytes: 60, what: 'WireGuard: 20 IP + 8 UDP + 32 WireGuard' },
-  vxlan: { bytes: 50, what: 'VXLAN: 14 Ethernet + 20 IP + 8 UDP + 8 VXLAN' },
-  geneve: { bytes: 50, what: 'Geneve without options: 14 Ethernet + 20 IP + 8 UDP + 8 Geneve' },
-  l2tp: { bytes: 40, what: 'L2TPv3 over UDP: 20 IP + 8 UDP + 12 L2TP' },
-  gtp: { bytes: 36, what: 'GTP-U: 20 IP + 8 UDP + 8 GTP' },
-};
 
 /** Is an attribute key one that holds a virtual (gateway) address: ends in "virtual-ip", "virtual-ipv6" or "vip"? */
 export function vipKey(k: string): boolean {
@@ -104,29 +96,48 @@ export function addrsOf(v: string): IpAddr[] {
 }
 
 /**
+ * The outer header's family of a tunnel interface's packets: its
+ * destination address's, else its source interface's addresses' (IPv4
+ * first), else the far end's; null when the model does not say.
+ */
+export function tunnelOuterFamily(model: Model, t: Interface): 4 | 6 | null {
+  const of = (txt: string | undefined): 4 | 6 | null => {
+    const a = txt ? parseAddress(txt.replace(/\/[0-9]+$/, '')) : null;
+    return a ? a.version : null;
+  };
+  if (t.destination && t.destination.address) return of(t.destination.address);
+  if (t.source && t.source.address) return of(t.source.address);
+  const fam = (dev: string | undefined, iface: string | undefined): 4 | 6 | null => {
+    const i = dev && iface ? model.index.interfaces.get(ifaceKey(dev, iface)) : undefined;
+    const vs = i ? i.addresses.map((x) => of(x)).filter((v): v is 4 | 6 => v !== null) : [];
+    return vs.indexOf(4) >= 0 ? 4 : vs.length ? vs[0] : null;
+  };
+  return fam(t.device, t.source && t.source.iface) || fam(t.destination && t.destination.device, t.destination && t.destination.iface);
+}
+
+/**
  * What a tunnel interface's packets carry on top of them, and the underlay
  * they leave by: the tunnel relations bound to it and the tunnels that carry
- * those (GRE over IPsec …), their overheads added up (ENCAP_OVERHEAD), and
- * the interface the tunnel is sourced from (else the device's port with the
+ * those (GRE over IPsec …), each layer's format (encap.ts: the one
+ * definition the path MTU and the simulation use too) with its outer
+ * family, the largest inner packet a limit leaves room for, and the
+ * interface the tunnel is sourced from (else the device's port with the
  * smallest MTU on the links the stack rides on), when it has an MTU. Null
  * when no tunnel relation is bound to it or an encapsulation has no known
- * overhead (nothing is assumed then).
+ * format (nothing is assumed then).
  */
-export function tunnelBudget(model: Model, t: Interface): { stack: Relation[]; overhead: number; what: string[]; under?: Interface } | null {
-  const stack: Relation[] = [];
-  const add = (r: Relation): void => {
-    if (stack.indexOf(r) >= 0 || r.category !== 'tunnel') return;
-    stack.push(r);
-    for (const o of r.over) {
-      const c = model.index.relations.get(o);
-      if (c) add(c);
-    }
-  };
-  for (const r of model.relations) if (r.endpoints.some((e) => e.device === t.device && e.iface === t.id)) add(r);
+export function tunnelBudget(model: Model, t: Interface): { stack: Relation[]; layers: Array<{ def: EncapDef; outer: 4 | 6 }>; what: string[]; under?: Interface; fits(limit: number): number | null; needs(inner: number): number } | null {
+  // (the stack as Trace path and the simulation take it: the tunnel's relation, then what it is carried over, one each)
+  const top = tunnelRelation(model, t.device, t.id);
+  const stack: Relation[] = top && top.category === 'tunnel' ? encapStack(model, top).map((l) => model.index.relations.get(l.relation as string) as Relation).filter((r) => !!r && r.category === 'tunnel') : [];
   if (!stack.length) return null;
-  const parts = stack.map((r) => ENCAP_OVERHEAD[baseProtocol(model, r)]);
-  if (parts.some((p) => !p)) return null;
-  const overhead = parts.reduce((s, p) => s + p.bytes, 0);
+  const defs = stack.map((r) => encapDef(baseProtocol(model, r)));
+  if (defs.some((p) => !p)) return null;
+  // (each layer's outer family: the tunnel's own for its first layer, IPv4 when the model does not say (said so); a layer
+  // carried over a relation between other addresses, that relation's own — layerEnds)
+  const fam = tunnelOuterFamily(model, t);
+  const owns = stack.map((r, k) => (k ? layerEnds(model, t.device, r.id, fam || undefined) : null));
+  const layers = (defs as EncapDef[]).map((def, k) => ({ def, outer: owns[k] ? (owns[k] as { family: 4 | 6 }).family : fam || (4 as const) }));
   let under: Interface | undefined = t.source && t.source.iface ? model.index.interfaces.get(ifaceKey(t.device, t.source.iface)) : undefined;
   if (!under || under.mtu === undefined) {
     under = undefined;
@@ -141,7 +152,8 @@ export function tunnelBudget(model: Model, t: Interface): { stack: Relation[]; o
       }
     }
   }
-  const out: { stack: Relation[]; overhead: number; what: string[]; under?: Interface } = { stack, overhead, what: parts.map((p) => p.what) };
+  const what = layers.map((l, k) => layerText(l.def, l.outer) + (owns[k] ? ` (${stack[k].id}: its own ends ${(owns[k] as { src: string }).src} → ${(owns[k] as { dst: string }).dst})` : '')).concat(fam ? [] : ['the outer family is not written: IPv4 assumed']);
+  const out: { stack: Relation[]; layers: Array<{ def: EncapDef; outer: 4 | 6 }>; what: string[]; under?: Interface; fits(limit: number): number | null; needs(inner: number): number } = { stack, layers, what, fits: (limit) => maxInnerStack(layers, limit), needs: (inner) => outerLengthStack(layers, inner) };
   if (under) out.under = under;
   return out;
 }
@@ -215,9 +227,10 @@ export const MORE_CHECKS: MoreCheck[] = [
         for (const t of d.logical) {
           if (t.type !== 'tunnel' || t.mtu === undefined) continue;
           const b = tunnelBudget(model, t);
-          if (!b || !b.under || b.under.mtu === undefined || t.mtu + b.overhead <= b.under.mtu) continue;
+          if (!b || !b.under || b.under.mtu === undefined || b.needs(t.mtu) <= b.under.mtu) continue;
+          const fit = b.fits(b.under.mtu);
           emit({
-            message: `tunnel ${d.id}:${t.id}: MTU ${t.mtu} plus ${b.overhead} bytes of encapsulation is ${t.mtu + b.overhead}, more than the MTU ${b.under.mtu} of its underlay ${b.under.id} (assumed overhead: ${b.what.join('; ')}); the largest MTU that fits is ${b.under.mtu - b.overhead}`,
+            message: `tunnel ${d.id}:${t.id}: MTU ${t.mtu} plus ${b.needs(t.mtu) - t.mtu} bytes of encapsulation is ${b.needs(t.mtu)}, more than the MTU ${b.under.mtu} of its underlay ${b.under.id} (encapsulation: ${b.what.join('; ')}); ${fit === null ? 'no inner packet fits' : 'the largest MTU that fits is ' + fit}`,
             refs: [iref(t), iref(b.under)].concat(b.stack.map((r) => 'relation:' + r.id)),
             at: { ref: iref(t), field: 'mtu' },
           });

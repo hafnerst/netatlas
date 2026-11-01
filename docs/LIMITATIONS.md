@@ -49,6 +49,62 @@ other's back:
 * An execution scope keeps an interconnect's `traffic:` only where its
   initiator, its source, the recipient and every transit device on the
   way are inside; the scope says which transfers it leaves out.
+* **Diagnosis** (Trace path) is built only from what was recorded: the
+  communication check's layers and, once compared, the structured records
+  of the run asked about — a send, a client application's own newest run
+  (its retries one message's attempts), or an MQTT client's newest run:
+  each message's outcome (answered, refused, unreachable, too big, timed
+  out, lost, not sent, no address, name not resolved, cancelled), the
+  device that answered and the reason it recorded, every drop recorded in
+  its exchange with its cause, what it waited for, its TCP retransmissions,
+  its DNS queries' fates, the equal-cost branch it took, and the recorded
+  state changes of what it needed. It answers apart whether the run
+  finished, what was observed and whether a cause is established. It never
+  reads a cause from a log line's words, never takes a later state for the
+  state when a packet was sent, and links only what a record links. A
+  timeout is an observed outcome: its cause is established only when every
+  attempt has a recorded drop; else the drops are *contributing* and the
+  cause *not established* — the answer, or its way back, may be what is
+  missing. A RST says what its sender recorded (a closed port, a policy's
+  rule, no connection), never more. A route there later is an observed
+  difference: what changed is not established. Things that merely
+  happened at the same time are not linked.
+* A prerequisite chain goes as far as the records: a missing route or a
+  tunnel down → the relation the configured path uses there → its recorded
+  state change (or that it never came up, when the log reaches back to the
+  start) → for a session that heard nothing, the recorded fate of its own
+  packets in that interval (decisive only when each was dropped, all by one
+  cause). A route withdrawn by a routing protocol is linked to the relation
+  the path uses, not to the protocol's individual updates.
+* What a diagnosis can read is bounded: the event log keeps its latest
+  20 000 events, the packet records the latest 8 192 packets, the MQTT
+  records the latest 2 000 publications, the transport its last 400 tests,
+  the engine the waits of as many. A test's outcome keeps its own drops (at
+  most 8) and how far back the log reached when it ended, so a terminal
+  outcome stays usable after the log moved on; a diagnosis whose records
+  were gone already says it is *evidence-limited* and does not explain it,
+  and a link to an event, packet or message no longer kept — or of an
+  earlier simulation — says it is unavailable. A diagnosis is kept with its
+  result (also across leaving Analyze) and never recomputed; after an edit
+  it is marked outdated.
+* An MQTT diagnosis reads the run's own publications (one record each, its
+  DUP copies counted apart): the broker's receipt (recorded at the broker,
+  also at QoS 0), the PUBACK (still pending: waiting), a loss with a closed
+  connection, and each subscriber's receipt of them; other publishers',
+  other topics' and earlier runs' traffic never count. QoS 2, persistent
+  sessions and retained messages are not modelled.
+* Drops that still record no structured cause: protocol-internal ones
+  (an OSPF Hello ignored, an IKE request outside the window, a DHCP scope
+  exhausted …), TCP's sequence checks (a RST or segment ignored), storm
+  control and illustrative data on non-IP interconnects. A diagnosis says
+  such a failure's cause is not established.
+* Static analysis and simulation still differ where one has state the
+  other has not: a stateful firewall passes a packet as the reply of a
+  session the other direction opened (also for IP protocols without
+  ports, tracked by address pair), which the static policy check, deciding
+  each direction by its rules, does not know; a tunnel whose keepalives a
+  policy denies goes down at run time (no route over it), which the static
+  trace, following the configuration, does not foresee.
 
 **Not supported.** Runtime behaviour that no static analysis establishes
 (that an application accepts a connection, authenticates, answers or
@@ -311,14 +367,12 @@ what the advertisements it received told it (below).
   WireGuard handshakes …) and its data go between its outer ends with the
   protocol's outer header: GRE and mGRE 47, IP-in-IP 4, IPsec ESP 50 (no
   NAT traversal), UDP to the protocol's port for WireGuard, OpenVPN, L2TP,
-  GTP-U, VXLAN and Geneve; other tunnels' outer header is not stated (GRE
-  assumed). A tunnel interface follows its session's state. In the
-  simulation a packet's size counts each encapsulation as 4 bytes over the
-  outer IP header (IPsec ESP: 36), whatever the tunnel carries in its outer
-  header (a UDP tunnel's UDP and VXLAN or Geneve header are not counted), so
-  fragmentation and Packet Too Big come later than on a device; the static
-  path MTU uses the tunnel-MTU check's overheads instead (*Path MTU*,
-  below).
+  GTP-U, VXLAN and Geneve (IPv6 inside IP-in-IP: 41); other tunnels' outer
+  header is not stated (GRE assumed). A tunnel's outer packets are routed in
+  the VRF of its source interface. A tunnel interface follows its session's
+  state. What each encapsulation adds is one definition for the static path
+  MTU, the tunnel-MTU check and the simulation's packet lengths
+  (*Encapsulation sizes*, below).
 * **Routing services describe their configuration.** Each protocol has a
   fixed set of parameters (a protocol of the model may declare its own);
   areas, costs and timers are per relation end; one router ID per protocol.
@@ -409,18 +463,45 @@ to the host's address, DNAT for published ports) in both.
   only; anything else is reported as a limitation.
 
 **Path MTU.** The static path MTU uses the MTUs the model writes (an
-interface's, an aggregate's members', the ports of the cables on the way)
-and the tunnel-MTU check's overheads (an IPv4 outer header; IPsec as the
-worst case of ESP tunnel mode); an MTU not written is not known, so the
-result is an upper bound, and an encapsulation without a figure leaves its
-path's limit unknown. Which equal-cost branch a flow takes is not modeled:
-each branch is given. The simulation fragments IPv4 without DF, drops a
-larger packet with DF (and IPv6) with Fragmentation Needed or Packet Too
-Big, and the sender learns the path MTU (PMTUD, per VRF and destination,
-forgotten after 10 min or when the route leaves by another interface); TCP
-segments by it and by the MSS its peer's SYN announced, and an IPv6 sender
-fragments its own UDP and ICMP to it. TCP options other than the MSS,
-jumbo-frame negotiation and PLPMTUD are not modelled.
+interface's, an aggregate's members', the ports of the cables on the way,
+both ends of each cable) and the encapsulation sizes below; an MTU not
+written is not known, so the result is an upper bound. Which equal-cost
+branch a flow takes is not modeled statically: each branch is given (the
+simulation records the branch each Send test's packets took). The
+simulation fragments IPv4 without DF, drops a larger packet with DF (and
+IPv6) with Fragmentation Needed or Packet Too Big, and the sender learns the
+path MTU (PMTUD, per VRF and destination, forgotten after 10 min or when the
+route leaves by another interface); TCP segments by it and by the MSS its
+peer's SYN announced (out of a tunnel: the tunnel's MTU less the headers),
+and an IPv6 sender fragments its own UDP and ICMP to it. A tunnel takes what
+its MTU allows — written, else what its underlay's egress leaves room for,
+lower once its head learned a smaller path MTU towards the tunnel's
+destination: a larger IPv4 packet without DF is fragmented before
+encapsulation, one with DF (or IPv6) is refused with Fragmentation Needed or
+Packet Too Big carrying what fits (RFC 4459). A frame larger than a port of
+its cable takes (its MTU written: the receiving end, or a switch port it
+leaves by) is dropped there as oversize, without an ICMP error — the black
+hole of an MTU mismatch, which the link-MTU check reports. An outer packet's
+fragments are reassembled before it is decapsulated. TCP options other than
+the MSS, MSS clamping on tunnel heads, jumbo-frame negotiation and PLPMTUD
+are not modelled.
+
+**Encapsulation sizes** (src/analysis/encap.ts, one definition): the outer
+IP header of the tunnel's family (20 or 40 bytes; the family written on the
+tunnel's ends, IPv4 assumed and said when not written), a UDP tunnel's UDP
+header (8), and the tunnel's own format: GRE and mGRE 4 (no key, checksum or
+sequence number), IP-in-IP 0, IPsec ESP tunnel mode with AES-CBC and
+HMAC-SHA1-96 (8 SPI and sequence number, 16 IV, the inner packet and its 2
+trailer bytes padded to 16, 12 ICV: exact for this suite, a few bytes off for
+another, such as AES-GCM), WireGuard 16 + a 16-byte tag (its padding to 16
+bytes, which never exceeds the interface MTU, is not counted: a packet of the
+tunnel's MTU is exact, a smaller one up to 15 bytes short), OpenVPN over UDP
+24 (tun mode, P_DATA_V2, an AEAD cipher), L2TPv3 over UDP 12 (no cookie, the
+inner counted as an IP packet), GTP-U 8, VXLAN and Geneve 8 + the inner
+Ethernet header 14 (untagged; Geneve without options). A tunnel whose
+protocol has none of these is taken as GRE, by the simulation and by the
+static path MTU alike, which then calls its limit an estimate
+(indeterminate).
 
 **Not supported.** Application identification, TLS inspection, user
 identities, time ranges, NAT rules in a policy (the NAT service translates),
@@ -595,6 +676,16 @@ and device actions) from the user.
 
 **Simplifications.**
 
+* **Visible travel time is presentation.** In Readable pacing at 1× a dot
+  crosses its line in 3–5 s: the modelled traversal cost (a cable's latency
+  and its frame's serialization; a relation's lane, the cables of the first
+  path traced for its underlay, each its own latency and speed) on a log
+  scale from the model's cheapest cable to four times its dearest, widened
+  to two decades when the cables differ less (a homogeneous model's hops
+  about 3.3 s). The seconds are never network time; a long line on screen
+  is crossed faster than a short one of the same cost; a hop without a
+  modelled cost takes 4 s. The speed control divides these times; a long
+  path adds a hop's time per cable and 0.6 s per switch it crosses.
 * **Scenario time.** Everything runs on scenario time, in every pacing:
   a send's intervals, streams and repeating applications of Network events
   as much as the model's own traffic; the same history gives the same
@@ -723,18 +814,44 @@ and device actions) from the user.
   model's result.
 * **Analyze over a simulation reads a snapshot.** Entering Analyze pauses
   a running simulation; its analyses read a frozen snapshot, never the live
-  state, and the simulation resumes when Analyze is left.
+  state, and the simulation resumes when Analyze is left. The source chosen
+  for the next computation never changes a result already on screen: it
+  keeps the context it was computed on until the question is asked again.
+* **Recent and pinned results are this session's.** The overview keeps the
+  last 12 results and up to 8 pinned ones, in memory only: they are not
+  saved with the model, loading another model clears them, and a pinned
+  result does not keep a simulation's records available (a packet or event
+  it names may be gone when it is followed; it is then said unavailable).
+* **Dependency exploration lists what the model configures.** A
+  component's Depends on and Used by come from the configured
+  dependencies (application peers, MQTT brokers, DNS, DHCP, timing
+  sources, syslog, AAA) and virtualization hosts; nothing is inferred from
+  traffic, names or a production network, and no business importance is
+  assumed. Failure affects is the failure analysis of that component,
+  evaluated when asked.
+* **Deferred: a service-connectivity matrix and model-revision comparison.**
+  A bounded matrix (selected applications or groups against selected
+  services, each cell a Communication check that opens it) and a static
+  comparison of equivalent questions across two model revisions (changed
+  requirements, dependencies, paths and limits; never mixed with a
+  hypothetical failure or a runtime observation) would fit the same task
+  areas; neither exists yet.
 
 **Not supported.** Real timing jitter, vendor-specific behaviour beyond the
 parameters, CPU limits, full TCP-stack fidelity.
 
 ## Failure analysis, dependencies and expectations
 
-**Implemented.** Single points of failure with structural and service
-impact; what-if conditions (failure domains, or up to 64 components)
-compared with the same baseline; configured service dependencies; saved
-expectations (availability, isolation, dependencies, timing) evaluated
-statically; contextual focus.
+**Implemented.** Single-component failures (each cable, device and LAG
+alone) with separate measures — the saved requirements no longer
+satisfied, the configured dependencies unavailable, the devices
+disconnected, the relations unavailable; outage impact of up to 64
+components you choose (a saved failure domain is an optional shortcut)
+compared with the same architecture without the outage; the
+stated capacity with or without a failure; configured service
+dependencies, and a component's Depends on, Used by and Failure affects;
+saved requirements (availability, isolation, dependencies, timing)
+evaluated statically when asked; contextual focus.
 
 **Simplifications.**
 
@@ -744,8 +861,23 @@ statically; contextual focus.
   side by side; a relation without `over` is affected only through its
   endpoints. A VLAN interface goes down when every port carrying its VLAN
   does. The single points of failure fail each cable, device and LAG alone;
-  combinations are what-if conditions you choose, never enumerated. The
-  structural impact is an object count, not a business criticality.
+  combinations are outages you choose, never enumerated. The
+  measures are counted apart and never added up: none is a business
+  criticality, and the requirements checked per candidate are the saved
+  ones only.
+* **Outage impact is a static comparison.** The components you choose are
+  assumed unavailable together, on the configured model, and compared with
+  the same architecture without them. It does not establish that protocols
+  converge, how long recovery takes, transient packet loss, how likely the
+  outage is or the availability of the production network; Experiments
+  answer what happens over time. *Unavailable together* is an assumption you
+  make, not shared fate the model knows: objects drawn near each other, or
+  in one group, are never assumed to share power, a duct or a rack — only a
+  failure domain someone wrote says so. A network, route, VLAN or
+  application is not made unavailable on its own (choose its device, cable
+  or interface). A hypothetical outage is never applied to a simulation
+  snapshot (it would blend two states). Device pairs are checked only in a
+  scope you choose, bounded to 1600 pairs, with the coverage said.
 * **Capacity is stated traffic against stated speeds.** An application's
   transfer is traced between its own ends — its family, the peer
   listener's bind interface's address (else its device's address of the
@@ -819,8 +951,8 @@ with the simulation).
   affected by an interconnect. Its failure is a failure of the connection
   only: no electrical fault (a shorted bus taking everything down) is
   inferred.
-* **Not in Analyze.** Paths, what-if, failure domains, expectations and
-  experiments cover the IP side only.
+* **Not in Analyze.** Paths, outage impact, failure domains,
+  requirements and experiments cover the IP side only.
 
 ## Model and editing
 
@@ -838,9 +970,10 @@ helpers and the command palette.
   tab.
 * **Consistency checks compare what the model writes down.** They don't read
   device configurations: they find contradictions in the model, not in the
-  network. The tunnel-MTU check assumes a fixed overhead per encapsulation
-  with an IPv4 outer header (IPsec: the worst case of ESP tunnel mode) and
-  skips protocols without a figure. The underlay check asks whether `over:`
+  network. The tunnel-MTU check uses the encapsulation sizes of
+  *Policy, NAT and boundaries* (the outer header of the tunnel's family; ESP
+  with its padding for the MTU it checks) and skips protocols without a
+  format. The underlay check asks whether `over:`
   connects the endpoints as a graph. OSPF and BGP parameters are read from
   relation attributes with fixed names (`area`, `network-type`, `hello`,
   `dead`, `peer-as`); one value for both ends is taken as agreement. A

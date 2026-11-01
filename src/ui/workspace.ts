@@ -22,8 +22,8 @@ export interface WorkspaceText {
   left: string;
   right: string;
   bottom: string;
-  /** the narrow layout's tabs */
-  tabs: { setup: string; actions: string };
+  /** the narrow layout's tabs (`results`: the bottom panel as a tab of its own, Analyze only) */
+  tabs: { setup: string; actions: string; results?: string };
   /** the menu button marked current */
   menu: string;
 }
@@ -31,7 +31,7 @@ export interface WorkspaceText {
 export const WORKSPACES: { [k in Exclude<Workspace, 'edit'>]: WorkspaceText } = {
   simulate: { name: 'Simulation', icon: '◈', left: 'Simulation setup', right: 'Actions', bottom: 'Simulation panel', tabs: { setup: 'Setup', actions: 'Actions' }, menu: 'simulate-btn' },
   experiments: { name: 'Experiments', icon: '⧗', left: 'Experiments', right: 'Step', bottom: 'Experiment run', tabs: { setup: 'Experiment', actions: 'Step' }, menu: 'simulate-btn' },
-  analyze: { name: 'Analyze', icon: '⌕', left: 'Analyze', right: 'Details', bottom: 'Analysis results', tabs: { setup: 'Request', actions: 'Details' }, menu: 'analyze-btn' },
+  analyze: { name: 'Analyze', icon: '⌕', left: 'Question', right: 'Evidence', bottom: 'Answer and results', tabs: { setup: 'Question', actions: 'Evidence', results: 'Results' }, menu: 'analyze-btn' },
 };
 
 /** The bodies of each panel, by workspace. */
@@ -62,6 +62,8 @@ export function applyPanels(doc: Document, ws: Workspace): void {
     if (e) e.hidden = !v;
   };
   for (const id of ['sim-setup', 'sim-actions', 'sim-dock', 'sim-paneltabs']) show(id, on);
+  // (the results as a tab of their own: Analyze only)
+  show('spt-results', ws === 'analyze');
   for (const k of Object.keys(PANEL_BODIES) as Array<keyof typeof PANEL_BODIES>) {
     const b = PANEL_BODIES[k];
     for (const id of [b.left, b.right, b.bottom]) show(id, k === ws);
@@ -77,6 +79,7 @@ export function applyPanels(doc: Document, ws: Workspace): void {
     text('sim-dock-title', t.bottom);
     text('spt-setup', t.tabs.setup);
     text('spt-actions', t.tabs.actions);
+    text('spt-results', t.tabs.results || '');
     const split = doc.getElementById('dock-splitter');
     if (split) split.setAttribute('aria-label', `Height of the ${t.bottom.toLowerCase()}`);
     const tabs = doc.getElementById('sim-paneltabs');
@@ -97,13 +100,35 @@ export function inWorkspacePanel(t: EventTarget | null): boolean {
   return !!e && typeof e.closest === 'function' && !!e.closest('#sim-setup, #sim-actions, #sim-dock, #sim-paneltabs, #mode-banner, .modal');
 }
 
-/** The tools of the Analyze workspace, in the order of the Analyze menu. */
-export type AnalyzeTool = 'trace' | 'addressing' | 'spof' | 'checks' | 'focus';
+/**
+ * The task areas of the Analyze workspace, in the order of the Analyze menu:
+ * an overview that starts a question, then the four kinds of question. Each
+ * shares one interaction model: the question on the left, the answer and its
+ * results at the bottom, the evidence of what is selected on the right.
+ * Focus is not one of them: it is a view aid of the diagram (a tool window),
+ * available from every task.
+ */
+export type AnalyzeTask = 'overview' | 'communication' | 'resilience' | 'review' | 'addressing';
 
-export const ANALYZE_TOOLS: ReadonlyArray<{ id: AnalyzeTool; label: string; command: string; help: string }> = [
-  { id: 'trace', label: 'Trace path', command: 'trace.open', help: 'Whether a source reaches a destination and can use its application or service' },
-  { id: 'addressing', label: 'Addressing', command: 'analyze.addressing', help: 'The networks of each VRF, their members, allocation and conflicts' },
-  { id: 'spof', label: 'Single points of failure', command: 'analyze.spof', help: 'What one failure cuts off or takes away; What if for several' },
-  { id: 'checks', label: 'Design checks', command: 'analyze.checks', help: 'The saved expectations and the consistency findings' },
-  { id: 'focus', label: 'Focus', command: 'focus.window', help: 'Only an object and its neighbourhood, or a context (VLAN, VRF, dependencies)' },
+export const ANALYZE_TASKS: ReadonlyArray<{ id: AnalyzeTask; label: string; command: string; answers: string }> = [
+  { id: 'overview', label: 'Overview', command: 'analyze.overview', answers: 'Where to start: the questions Analyze answers, what is known about this model, recent and pinned results' },
+  { id: 'communication', label: 'Communication', command: 'trace.open', answers: 'Can this application or service communicate? What the configured architecture establishes, what blocks it, and what a modeled exchange observed' },
+  { id: 'resilience', label: 'Resilience', command: 'analyze.spof', answers: 'What stops working, what remains available and what becomes uncertain when components are unavailable, and whether the stated traffic still fits' },
+  { id: 'review', label: 'Design review', command: 'analyze.checks', answers: 'Does the architecture satisfy its saved requirements? What do the consistency checks find?' },
+  { id: 'addressing', label: 'Addressing', command: 'analyze.addressing', answers: 'Where are addressing conflicts, overlaps and addresses outside the declared networks; how is each network allocated?' },
+];
+
+/** The modes inside Resilience and Design review. */
+export type ResilienceMode = 'single' | 'outage' | 'capacity';
+export type ReviewMode = 'findings' | 'requirements';
+
+export const RESILIENCE_MODES: ReadonlyArray<{ id: ResilienceMode; label: string; command: string; help: string }> = [
+  { id: 'single', label: 'Single-component failures', command: 'analyze.spof', help: 'Each cable, device and LAG failing alone: what it disconnects and what becomes unavailable' },
+  { id: 'outage', label: 'Outage impact', command: 'analyze.outage', help: 'The components you choose made unavailable together, compared with the same architecture without the outage' },
+  { id: 'capacity', label: 'Capacity', command: 'analyze.capacity', help: 'The stated demands against the stated capacity, with or without a failure condition' },
+];
+
+export const REVIEW_MODES: ReadonlyArray<{ id: ReviewMode; label: string; command: string; help: string }> = [
+  { id: 'findings', label: 'Findings', command: 'analyze.findings', help: 'What the consistency checks find in the model, by category, severity and object' },
+  { id: 'requirements', label: 'Requirements', command: 'analyze.checks', help: 'The requirements saved with the model, evaluated when you ask' },
 ];

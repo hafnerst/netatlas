@@ -122,9 +122,12 @@ export function hopGraph(model: Model, view: FocusView, up?: FocusUp): Map<strin
  *              (joins), the PIM routers and the snooping switches of the
  *              receivers' VLANs;
  *   timing     a PTP domain's clocks (and the transparent clocks), or an
- *              NTP device's upstreams and the devices that take time from it.
+ *              NTP device's upstreams and the devices that take time from it;
+ *   set        the devices an analysis result names (Analyze: Show only
+ *              relevant objects) — display only: the result's own scope is
+ *              what it evaluated.
  */
-export type FocusContext = { kind: 'vlan'; vlan: number } | { kind: 'app'; device: string } | { kind: 'multicast'; group: string } | { kind: 'timing'; device: string } | { kind: 'vrf'; vrf: string };
+export type FocusContext = { kind: 'vlan'; vlan: number } | { kind: 'app'; device: string } | { kind: 'multicast'; group: string } | { kind: 'timing'; device: string } | { kind: 'vrf'; vrf: string } | { kind: 'set'; devices: string[]; label: string };
 
 export interface ContextFocus {
   /** device → 0 (what the context is about) or 1 (what it involves) */
@@ -250,6 +253,10 @@ export function contextFocus(model: Model, c: FocusContext): ContextFocus {
     for (const d of model.devices) if (d.snooping && d.snooping.some((s) => s.enabled && Array.from(recvVlans).some((v) => v >= s.from && v <= s.to))) put(d.id, 1);
     return { devices, note: `Multicast group ${c.group}: its configured senders and receivers, the PIM routers and the snooping switches of the receivers’ VLANs (configured; the simulation’s multicast tables show the observed distribution)` };
   }
+  if (c.kind === 'set') {
+    for (const d of c.devices) put(d, 0);
+    return { devices, note: `${c.label}: the ${devices.size} device${devices.size === 1 ? '' : 's'} the result names (display only: the analysis covered its own scope)` };
+  }
   if (c.kind === 'vrf') {
     // the devices with an interface in it, and the devices cabled to those interfaces
     for (const d of model.devices) {
@@ -320,7 +327,7 @@ export function navigationIndex(model: Model): { apps: Array<{ device: string; a
 
 /** A contextual focus in words, for the banner: "VLAN 10 members". */
 export function contextLabel(c: FocusContext): string {
-  return c.kind === 'vlan' ? `VLAN ${c.vlan} members` : c.kind === 'app' ? `Dependencies of ${c.device}` : c.kind === 'multicast' ? `Multicast group ${c.group}` : c.kind === 'vrf' ? `VRF ${c.vrf}` : `Timing of ${c.device}`;
+  return c.kind === 'vlan' ? `VLAN ${c.vlan} members` : c.kind === 'app' ? `Dependencies of ${c.device}` : c.kind === 'multicast' ? `Multicast group ${c.group}` : c.kind === 'vrf' ? `VRF ${c.vrf}` : c.kind === 'set' ? c.label : `Timing of ${c.device}`;
 }
 
 /**

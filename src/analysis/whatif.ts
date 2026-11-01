@@ -15,7 +15,7 @@
 import { Model } from '../model/types';
 import { DepChange, ServiceDependency, compareDependencies, dependencyBaseline, serviceDependencies, DepState } from './dependencies';
 import { ExpectationResult, evaluateExpectation } from './expectations';
-import { FailureResult, FailureSummary, LostPair, ReachScope, SpofCandidate, failureCondition, failureRefs, lostPairs, scopePairs, simulate, structuralImpact, summarize, Spof } from './failure';
+import { FailureResult, FailureSummary, LostPair, ReachScope, SpofCandidate, failableRef, failureCondition, failureRefs, lostPairs, scopePairs, simulate, structuralImpact, summarize, Spof } from './failure';
 import { Coverage, ResultInfo, configuredContext, resultInfo } from './result';
 import { CapacityChange, CapacityResult, capacityAnalysis, compareCapacity } from './capacity';
 
@@ -101,9 +101,10 @@ export function relevantDevices(model: Model, deps: ServiceDependency[]): string
  * failure (computed when not given); `reach` adds pairwise reachability in
  * a scope.
  */
-export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDependency[]; baseline?: Map<string, DepState>; reach?: ReachScope; capacityBaseline?: CapacityResult } = {}): WhatIf {
-  const fc = failureCondition(model, entries);
-  const scope = fc.domains.length === 1 && entries.length === 1 ? `Failure domain ${fc.domains[0]}` : `Failure of ${entries.join(', ')}`;
+export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDependency[]; baseline?: Map<string, DepState>; reach?: ReachScope; capacityBaseline?: CapacityResult; exact?: boolean } = {}): WhatIf {
+  // (exact: the entries are refs as picked — "device:core-a", "link:l1" — never resolved by id precedence)
+  const fc = opts.exact ? exactCondition(model, entries) : failureCondition(model, entries);
+  const scope = opts.exact ? `Outage of ${entries.map((e) => e.slice(e.indexOf(':') + 1)).join(', ')}` : fc.domains.length === 1 && entries.length === 1 ? `Failure domain ${fc.domains[0]}` : `Failure of ${entries.join(', ')}`;
   const out: WhatIf = { entries: entries.slice(), refs: fc.refs, unknown: fc.unknown, domains: fc.domains, tooLarge: fc.refs.length > WHATIF_MAX, result: null, summary: null, structural: null, deps: [], expectations: [], info: resultInfo(configuredContext(scope)) };
   if (out.tooLarge || !fc.refs.length) {
     out.info.limits.push(out.tooLarge ? `The condition fails ${fc.refs.length} components; at most ${WHATIF_MAX} are evaluated together.` : 'Nothing of the model fails.');
@@ -142,6 +143,12 @@ export function whatIf(model: Model, entries: string[], opts: { deps?: ServiceDe
     out.reach ? out.reach.coverage : undefined,
   );
   return out;
+}
+
+/** A condition of exact refs: the failable ones, and what names nothing (no failure domain is expanded). */
+function exactCondition(model: Model, refs: string[]): { refs: string[]; unknown: string[]; domains: string[] } {
+  const ok = Array.from(new Set(refs.filter((r) => failableRef(model, r)))).sort();
+  return { refs: ok, unknown: refs.filter((r) => !failableRef(model, r)), domains: [] };
 }
 
 /** The way an expectation is met: its main path's devices, or its timing chain. */

@@ -216,25 +216,48 @@ export class TestForm {
    * analysis/comm-identity.ts): a unicast from the device and its
    * interface, to a device's interface (its effective address when sent, a
    * lease too) or to an exact address or host name, by the protocol and
-   * port. Nothing is sent: the focus goes to Send.
+   * port. Nothing is sent: the focus goes to Send. What the form can't
+   * take as it is comes back, in words (nothing is chosen instead of it
+   * silently: such a field is left for the user).
    */
-  prefill(p: SendPrefill): void {
+  prefill(p: SendPrefill): string[] {
+    const missed: string[] = [];
+    this.nameFamily = null;
     this.type.value = 'unicast';
     this.sync();
     this.from.value = p.from;
     this.sync();
-    if (p.via !== undefined && Array.prototype.some.call(this.via.options, (o: HTMLOptionElement) => o.value === p.via)) this.via.value = p.via;
     const opt = (s: HTMLSelectElement, v: string): boolean => Array.prototype.some.call(s.options, (o: HTMLOptionElement) => o.value === v);
+    if (p.via !== undefined) {
+      if (opt(this.via, p.via)) this.via.value = p.via;
+      else missed.push(`Source interface ${p.from}:${p.via} is not offered (down, or without an address now): choose it under Via`);
+    } else if (opt(this.via, '')) this.via.value = '';
+    // (what an earlier send left in the form is no part of this one: one message, the default size, Don't fragment and keep open off)
+    this.count.value = '1';
+    this.interval.value = '1';
+    this.size.value = '';
+    this.df.checked = false;
+    this.keep.checked = false;
     if (p.to !== undefined && opt(this.to, p.to)) {
       this.to.value = p.to;
       this.sync();
       const want = `${p.toIface}|${p.toAddr}`;
       if (opt(this.toif, want)) this.toif.value = want;
+      else {
+        this.toif.value = '';
+        missed.push(`Destination ${p.to}:${p.toIface}${p.toAddr === 'dhcp' ? ' (its lease)' : p.toAddr ? ' · ' + p.toAddr : ''} is not offered now: choose the interface under To`);
+      }
       this.sync();
+    } else if (p.to !== undefined && !p.target) {
+      // a device the form does not offer: never its address written instead (a lease has none to write)
+      this.to.value = '';
+      this.sync();
+      missed.push(`Destination ${p.to} is not offered now: choose it under To`);
     } else {
       this.to.value = OTHER;
       this.sync();
-      this.addr.value = p.target || p.toAddr || '';
+      this.addr.value = p.target || '';
+      if (p.target && p.family) this.nameFamily = { name: p.target, family: p.family };
       this.sync();
     }
     this.kind.value = p.kind;
@@ -251,7 +274,11 @@ export class TestForm {
     }
     this.sendBtn.scrollIntoView({ block: 'nearest' });
     this.sendBtn.focus();
+    return missed;
   }
+
+  /** a prefilled host name's family (an IPv6 check resolves its AAAA record), while the name is the one written */
+  private nameFamily: { name: string; family: 4 | 6 } | null = null;
 
   private rowShown(name: string): boolean {
     const r = this.rows.get(name);
@@ -398,6 +425,7 @@ export class TestForm {
         }
       }
       if (this.to.value === OTHER && !p.target) p.target = '';
+      if (p.target && this.nameFamily && this.nameFamily.name === p.target && this.nameFamily.family === 6) p.family = 6;
     } else if (t === 'multicast') p.group = this.group.value.trim();
     else if (t === 'broadcast') p.scope = (this.scope.value || undefined) as TestPlan['scope'];
     else if (t === 'directed') p.subnet = this.subnet.value.trim();

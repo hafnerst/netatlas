@@ -56,25 +56,32 @@
     </div>
   </div>
   <div class="menu-wrap">
-    <button id="analyze-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="analyze-menu" title="Analyze: windows that look at the network the model describes">Analyze <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="analyze-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="analyze-menu" title="Analyze: questions about the architecture the model describes, answered with their evidence">Analyze <span class="caret" aria-hidden="true">▾</span></button>
     <div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>
-      <button id="btn-addressing" type="button" role="menuitem" data-command="analyze.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…</span><span class="mi-hint">I</span></button>
+      <button id="btn-an-overview" type="button" role="menuitem" data-command="analyze.overview" title="Open or create a model first" disabled><span class="mi-label">Overview</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" title="Open or create a model first" disabled><span class="mi-label">Communication</span><span class="mi-hint">T</span></button>
+      <button id="btn-diagnose" type="button" role="menuitem" data-command="analyze.diagnose" title="Open or create a model first" disabled><span class="mi-label">Diagnose selected communication</span><span class="mi-hint">Shift+D</span></button>
+      <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Clear path trace</span><span class="mi-hint">Esc</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" title="Open or create a model first" disabled><span class="mi-label">Resilience: single-component failures</span></button>
+      <button id="btn-whatif" type="button" role="menuitem" data-command="analyze.outage" title="Open or create a model first" disabled><span class="mi-label">Resilience: outage impact</span></button>
+      <button id="btn-capacity" type="button" role="menuitem" data-command="analyze.capacity" title="Open or create a model first" disabled><span class="mi-label">Resilience: capacity</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-checks" type="button" role="menuitem" data-command="analyze.checks" title="Open or create a model first" disabled><span class="mi-label">Design review: requirements</span></button>
+      <button id="btn-findings" type="button" role="menuitem" data-command="analyze.findings" title="Open or create a model first" disabled><span class="mi-label">Design review: findings</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-addressing" type="button" role="menuitem" data-command="analyze.addressing" title="Open or create a model first" disabled><span class="mi-label">Addressing</span><span class="mi-hint">I</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-focus" type="button" role="menuitem" data-command="focus.window" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Focus…</span><span class="mi-hint">Shift+F</span></button>
       <button id="btn-focus-exit" type="button" role="menuitem" data-command="focus.exit" title="Focus mode is off" disabled><span class="mi-label">Exit focus</span><span class="mi-hint">Esc</span></button>
-      <div class="menu-sep" role="separator"></div>
-      <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
-      <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
-      <div class="menu-sep" role="separator"></div>
-      <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
-      <button id="btn-checks" type="button" role="menuitem" data-command="analyze.checks" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Design checks…</span></button>
     </div>
   </div>
   <div class="menu-wrap">
     <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: a hypothetical state in a window of its own; it never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
     <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
       <button id="btn-sim-start" type="button" role="menuitem" data-command="sim.start" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Start simulation…</span></button>
-      <button id="btn-experiments" type="button" role="menuitem" data-command="sim.experiments" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Experiments…</span></button>
+      <button id="btn-experiments" type="button" role="menuitem" data-command="sim.experiments" title="Open or create a model first" disabled><span class="mi-label">Experiments…</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>
@@ -300,6 +307,7 @@
     <button id="spt-diagram" type="button" role="tab" aria-selected="false" aria-controls="canvas-wrap" tabindex="-1">Diagram</button>
     <button id="spt-setup" type="button" role="tab" aria-selected="false" aria-controls="outline" tabindex="-1">Setup</button>
     <button id="spt-actions" type="button" role="tab" aria-selected="true" aria-controls="side">Actions</button>
+    <button id="spt-results" type="button" role="tab" aria-selected="false" aria-controls="sim-dock" tabindex="-1" hidden>Results</button>
   </div>
   <section id="sim-dock" class="sim-dock" aria-labelledby="sim-dock-title" hidden>
     <div id="dock-splitter" class="dock-splitter" role="separator" aria-orientation="horizontal" aria-label="Height of the simulation panel" aria-controls="sim-dock" tabindex="0" title="Drag to change the height of the simulation panel; double-click to reset it. With the keyboard: ↑ taller, ↓ lower (Shift: faster), Enter resets"></div>

@@ -15,6 +15,9 @@ export const scene = load('diagram/scene.js');
 export const panels = load('ui/panels.js');
 export const queries = load('model/queries.js');
 export const derive = load('model/derive.js');
+const travel = load('analysis/sim/travel.js');
+/** A pacer host's travel scale for an engine: its cables' costs, as the browser's controller takes them. */
+export const travelOf = (engine) => () => travel.travelScale(engine.cableCosts());
 
 /** Validate YAML and build a diagram session (null when there are errors), as the UI does. */
 export function sessionFromYaml(text) {

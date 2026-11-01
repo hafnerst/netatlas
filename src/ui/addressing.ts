@@ -1,13 +1,10 @@
 /**
- * The Addressing overview window: the networks of each VRF as a table
- * (nested by containing prefix), with members, gateways, host use and how
- * the address space is allocated (configured, reserved, acquired in a
- * snapshot, DHCP pools, nested networks, unallocated); then duplicate
- * addresses (in the scope the model establishes), reuse the model
- * separates, overlapping prefixes and addresses in no network. Rows can be
- * filtered and sorted; a click on an object selects it in the diagram. The
- * table can be copied or saved as CSV. Built from text nodes and elements
- * only; the data comes from analysis/addressing.ts.
+ * Addressing (Analyze → Addressing, I): the networks of each VRF as a compact
+ * table (nested by prefix) with use and allocation, then the issues —
+ * confirmed and possible conflicts, legitimate reuse, overlaps, addresses
+ * outside the declared networks — filtered by text and by issue; a network's
+ * or an issue's details in the evidence panel. "Unallocated in model" is
+ * never "free in the real network".
  */
 import { AddressingOverview, NetEntry, VrfGroup, countText } from '../analysis/addressing';
 import { rangeText } from '../analysis/ipmath';
@@ -17,17 +14,41 @@ import { el } from './dom';
 
 export type AddrSort = 'prefix' | 'vlan' | 'name' | 'used' | 'util';
 
-/** What the window remembers between openings (a view setting, never saved). */
+/** The issue filter: every network, or only what an issue concerns. */
+export type AddrIssue = 'all' | 'conflicts' | 'overlaps' | 'outside';
+
+export const ADDR_ISSUES: ReadonlyArray<{ id: AddrIssue; label: string; help: string }> = [
+  { id: 'all', label: 'All networks', help: 'Every network, then every issue' },
+  { id: 'conflicts', label: 'Conflicts', help: 'Addresses used more than once in one scope (confirmed and possible), and the reuse the model separates' },
+  { id: 'overlaps', label: 'Overlaps', help: 'Networks with the same prefix in a VRF, and interface subnets larger than the network holding their address' },
+  { id: 'outside', label: 'Outside declared networks', help: 'Addresses in no network of the model' },
+];
+
+/** What Addressing remembers between openings (a view setting, never saved). */
 export interface AddrViewState {
   filter: string;
   sort: AddrSort;
   desc: boolean;
-  /** networks whose members are shown, as "<vrf>|<id>" */
+  /** networks whose members are shown in place, as "<vrf>|<id>" */
   open: Set<string>;
+  issue: AddrIssue;
 }
 
 export function newAddrViewState(): AddrViewState {
-  return { filter: '', sort: 'prefix', desc: false, open: new Set() };
+  return { filter: '', sort: 'prefix', desc: false, open: new Set(), issue: 'all' };
+}
+
+/** The networks an issue filter keeps (null: every one). */
+function issueNets(ov: AddressingOverview, st: AddrViewState): Set<string> | null {
+  if (st.issue === 'all') return null;
+  const keepNets = new Set<string>();
+  if (st.issue === 'conflicts') {
+    const addrs = new Set(ov.duplicates.map((d) => d.vrf + '|' + d.text).concat(ov.reused.map((d) => d.vrf + '|' + d.text)));
+    for (const g of ov.vrfs) for (const n of g.networks) if (n.members.some((m) => addrs.has(g.vrf + '|' + m.address.split('/')[0]))) keepNets.add(g.vrf + '|' + n.id);
+  } else if (st.issue === 'overlaps') {
+    for (const o of ov.overlaps) for (const r of o.refs) if (r.indexOf('network:') === 0) keepNets.add(o.vrf + '|' + r.slice(8));
+  }
+  return keepNets;
 }
 
 const SORTS: Array<{ key: AddrSort; label: string }> = [
@@ -216,9 +237,10 @@ function allocCell(doc: Document, n: NetEntry): HTMLElement {
   return td;
 }
 
-function vrfTable(doc: Document, g: VrfGroup, st: AddrViewState): HTMLElement {
+function vrfTable(doc: Document, g: VrfGroup, st: AddrViewState, only: Set<string> | null, sel: string): HTMLElement | null {
   const sec = el(doc, 'section', { class: 'addr-vrf', 'data-addr-vrf': g.vrf, 'aria-labelledby': 'addr-vrf-' + (g.vrf || 'default') });
-  const rows = visibleRows(g, st);
+  const rows = visibleRows(g, st).filter((r) => !only || only.has(g.vrf + '|' + r.n.id));
+  if (only && !rows.length) return null;
   sec.appendChild(el(doc, 'h3', { id: 'addr-vrf-' + (g.vrf || 'default'), class: 'fgroup-title' }, [`${groupTitle(g)} (${rows.filter((r) => !r.context).length} of ${g.networks.length} network${g.networks.length === 1 ? '' : 's'})`]));
   if (!rows.length) {
     sec.appendChild(el(doc, 'p', { class: 'muted small' }, ['No network matches the filter.']));
@@ -264,8 +286,10 @@ function vrfTable(doc: Document, g: VrfGroup, st: AddrViewState): HTMLElement {
     for (const gw of n.gateways) {
       gws.appendChild(el(doc, 'div', {}, [ref(doc, gw.refs[0], gw.text, gw.source), el(doc, 'span', { class: 'muted small' }, [` ${gw.kind === 'vip' ? 'VIP' : 'gateway'}: ${gw.source}`])]));
     }
+    const item = `net:${g.vrf}|${n.id}`;
+    const on = item === sel;
     body.appendChild(
-      el(doc, 'tr', { class: 'addr-row' + (context ? ' addr-context' : ''), 'data-addr-net': n.id }, [
+      el(doc, 'tr', { class: 'addr-row' + (context ? ' addr-context' : '') + (on ? ' an-selected' : ''), 'data-addr-net': n.id, 'data-an-item': item, tabindex: '0', 'aria-label': `${n.text} ${n.label}: its details`, ...(on ? { 'aria-current': 'true' } : {}) }, [
         prefixCell,
         el(doc, 'td', {}, [n.vlan !== undefined ? String(n.vlan) : '']),
         el(doc, 'td', {}, [ref(doc, 'network:' + n.id, n.label), context ? el(doc, 'span', { class: 'muted small' }, [' (holds matches)']) : null]),
@@ -285,49 +309,68 @@ function vrfTable(doc: Document, g: VrfGroup, st: AddrViewState): HTMLElement {
   return sec;
 }
 
-function issuesSection(doc: Document, ov: AddressingOverview): HTMLElement {
-  const sec = el(doc, 'section', { class: 'addr-issues', 'aria-labelledby': 'addr-issues-title' }, [el(doc, 'h3', { id: 'addr-issues-title', class: 'fgroup-title' }, ['Duplicates, reuse, overlaps and addresses in no network'])]);
+function issuesSection(doc: Document, ov: AddressingOverview, st: AddrViewState, sel: string): HTMLElement {
+  const sec = el(doc, 'section', { class: 'addr-issues', 'aria-labelledby': 'addr-issues-title' }, [el(doc, 'h3', { id: 'addr-issues-title', class: 'fgroup-title' }, ['Issues: conflicts, reuse, overlaps and addresses outside the declared networks'])]);
   const vrfTag = (v: string): string => (v === '' ? '' : ` (VRF ${v})`);
+  const show = (kind: string): boolean => st.issue === 'all' || (st.issue === 'conflicts' && (kind === 'duplicates' || kind === 'reused')) || (st.issue === 'overlaps' && kind === 'overlaps') || (st.issue === 'outside' && kind === 'orphans');
   const list = (title: string, kind: string, items: HTMLElement[], none: string): void => {
+    if (!show(kind)) return;
     sec.appendChild(el(doc, 'h4', {}, [`${title} (${items.length})`]));
     if (!items.length) sec.appendChild(el(doc, 'p', { class: 'muted small', 'data-addr-list': kind }, [none]));
     else sec.appendChild(el(doc, 'ul', { class: 'addr-list', 'data-addr-list': kind }, items));
+  };
+  // an issue as a row of its list: its evidence on the right
+  const li = (key: string, attrs: { [k: string]: string }, kids: Array<Node | string | null>): HTMLElement => {
+    const on = key === sel;
+    return el(doc, 'li', { ...attrs, 'data-an-item': key, tabindex: '0', class: 'an-pickrow' + (on ? ' an-selected' : '') }, [...kids, ' ', el(doc, 'button', { type: 'button', class: 'mini an-pick', 'data-an-item': key, 'aria-pressed': on ? 'true' : 'false', 'aria-controls': 'an-detail' }, ['Evidence'])]);
   };
   const owners = (os: Array<{ device: string; iface: string }>): HTMLElement[] => os.map((o, k) => el(doc, 'span', {}, [k ? ', ' : '', ref(doc, `iface:${o.device}:${o.iface}`, `${o.device}:${o.iface}`)]));
   list(
     'Duplicate addresses',
     'duplicates',
-    ov.duplicates.map((d) => el(doc, 'li', { 'data-certainty': d.certainty }, [el(doc, 'strong', {}, [d.certainty === 'conflict' ? 'Conflict: ' : 'Possible conflict: ']), el(doc, 'span', { class: 'mono' }, [d.text]), vrfTag(d.vrf), ' on ', ...owners(d.owners), el(doc, 'span', { class: 'muted small' }, [` — ${d.why}`])])),
+    ov.duplicates.map((d, k) => li('issue:dup:' + k, { 'data-certainty': d.certainty }, [el(doc, 'strong', {}, [d.certainty === 'conflict' ? 'Conflict: ' : 'Possible conflict: ']), el(doc, 'span', { class: 'mono' }, [d.text]), vrfTag(d.vrf), ' on ', ...owners(d.owners), el(doc, 'span', { class: 'muted small' }, [` — ${d.why}`])])),
     'No address is used twice in one scope (a VRF and a connected part of the architecture; a link-local address on its segment).',
   );
   list(
     'Reused where the model separates the uses',
     'reused',
-    ov.reused.map((d) => el(doc, 'li', {}, [el(doc, 'span', { class: 'mono' }, [d.text]), vrfTag(d.vrf), ' on ', ...owners(d.owners), el(doc, 'span', { class: 'muted small' }, [` — ${d.why}: not a conflict in the model`])])),
+    ov.reused.map((d, k) => li('issue:reuse:' + k, {}, [el(doc, 'span', { class: 'mono' }, [d.text]), vrfTag(d.vrf), ' on ', ...owners(d.owners), el(doc, 'span', { class: 'muted small' }, [` — ${d.why}: legitimate reuse, not a conflict in the model`])])),
     'No address is reused across separate parts.',
   );
   list(
     'Overlapping prefixes',
     'overlaps',
-    ov.overlaps.map((o) => el(doc, 'li', {}, [o.message + vrfTag(o.vrf) + ' ', ...o.refs.map((r, k) => el(doc, 'span', {}, [k ? ' · ' : '', ref(doc, r, r.replace(/^[a-z]+:/, ''))]))])),
+    ov.overlaps.map((o, j) => li('issue:overlap:' + j, {}, [o.message + vrfTag(o.vrf) + ' ', ...o.refs.map((r, k) => el(doc, 'span', {}, [k ? ' · ' : '', ref(doc, r, r.replace(/^[a-z]+:/, ''))]))])),
     'No two networks of a VRF have the same prefix, and no interface subnet is larger than a network holding its address.',
   );
   list(
-    'Addresses in no network',
+    'Addresses outside the declared networks',
     'orphans',
-    ov.orphans.map((o) => el(doc, 'li', {}, [el(doc, 'span', { class: 'mono' }, [o.address]), vrfTag(o.vrf), ' on ', ref(doc, `iface:${o.device}:${o.iface}`, `${o.device}:${o.iface}`), o.loopback ? el(doc, 'span', { class: 'muted' }, [' (loopback)']) : null])),
+    ov.orphans.map((o, k) => li('issue:orphan:' + k, {}, [el(doc, 'span', { class: 'mono' }, [o.address]), vrfTag(o.vrf), ' on ', ref(doc, `iface:${o.device}:${o.iface}`, `${o.device}:${o.iface}`), o.loopback ? el(doc, 'span', { class: 'muted' }, [' (loopback)']) : null])),
     'Every address is in a network (link-local addresses are interface-scoped).',
   );
   return sec;
 }
 
-/** The tables (without the controls), for the current state. */
-export function addressingTables(doc: Document, ov: AddressingOverview, st: AddrViewState): HTMLElement {
+/** The tables (without the controls), for the current state: the networks the issue filter keeps, then the issues it keeps. */
+export function addressingTables(doc: Document, ov: AddressingOverview, st: AddrViewState, sel = ''): HTMLElement {
   const box = el(doc, 'div', { class: 'addr-tables' });
   if (!ov.vrfs.length) box.appendChild(el(doc, 'p', { class: 'muted' }, ['The model has no network. Networks are listed here with their members, use and free addresses.']));
-  for (const g of ov.vrfs) box.appendChild(vrfTable(doc, g, st));
-  box.appendChild(issuesSection(doc, ov));
+  const only = issueNets(ov, st);
+  if (st.issue !== 'outside') for (const g of ov.vrfs) {
+    const t = vrfTable(doc, g, st, only, sel);
+    if (t) box.appendChild(t);
+  }
+  box.appendChild(issuesSection(doc, ov, st, sel));
   return box;
+}
+
+/** A short summary of the issues, for the results' first line. */
+export function issueSummary(ov: AddressingOverview): string {
+  const conf = ov.duplicates.filter((d) => d.certainty === 'conflict').length;
+  const poss = ov.duplicates.length - conf;
+  const parts = [`${conf} confirmed conflict${conf === 1 ? '' : 's'}`, `${poss} possible`, `${ov.reused.length} legitimate reuse${ov.reused.length === 1 ? '' : 's'}`, `${ov.overlaps.length} overlap${ov.overlaps.length === 1 ? '' : 's'}`, `${ov.orphans.length} address${ov.orphans.length === 1 ? '' : 'es'} outside the declared networks`];
+  return parts.join(' · ');
 }
 
 /** How many networks the state shows, in words (for the live status line). */
@@ -338,26 +381,30 @@ export function shownText(ov: AddressingOverview, st: AddrViewState): string {
   return `${shown} of ${total} network listing${total === 1 ? '' : 's'} shown, sorted by ${sort.label.toLowerCase()}${st.desc ? ' (descending)' : ''}${st.sort === 'prefix' && !st.desc ? ', nested' : ''}.`;
 }
 
-/**
- * The whole body: filter, Expand all, Copy CSV / Save CSV, a live status
- * line, a note on what "unallocated" means, then the tables. The context
- * line is the caller's (it goes first).
- */
-export function addressingBody(doc: Document, ov: AddressingOverview, st: AddrViewState): HTMLElement {
-  const wrap = el(doc, 'div', { class: 'addr' });
+/** The question of Addressing (left): the context line is the caller's; the text filter and the issue filter. */
+export function addressingRequest(doc: Document, ov: AddressingOverview, st: AddrViewState, act: { issue(k: AddrIssue): void }): HTMLElement {
+  const wrap = el(doc, 'div', { class: 'addr addr-request' });
   const filter = el(doc, 'input', { type: 'search', id: 'addr-filter', 'data-addr-filter': '', placeholder: 'prefix, name, VLAN, device, address…', 'aria-describedby': 'addr-status', autocomplete: 'off', spellcheck: 'false' }) as HTMLInputElement;
   filter.value = st.filter;
-  const anyOpen = st.open.size > 0;
-  wrap.appendChild(
-    el(doc, 'div', { class: 'addr-controls' }, [
-      el(doc, 'label', { for: 'addr-filter' }, ['Filter']),
-      filter,
-      el(doc, 'button', { type: 'button', class: 'mini', 'data-addr-all': anyOpen ? 'close' : 'open' }, [anyOpen ? 'Collapse all members' : 'Expand all members']),
-      el(doc, 'button', { type: 'button', class: 'mini', 'data-addr-csv': 'copy', title: 'Copy the network table as CSV (comma-separated values)' }, ['Copy CSV']),
-      el(doc, 'button', { type: 'button', class: 'mini', 'data-addr-csv': 'save', title: 'Save the network table as a CSV file' }, ['Save CSV']),
-    ]),
-  );
-  wrap.appendChild(el(doc, 'p', { id: 'addr-status', class: 'muted small', role: 'status' }, [shownText(ov, st)]));
+  const filters = el(doc, 'div', { class: 'an-filters' }, [el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'addr-filter' }, ['Filter']), filter])]);
+  wrap.appendChild(filters);
+  const seg = el(doc, 'div', { class: 'seg addr-issue', role: 'radiogroup', 'aria-label': 'Show' });
+  for (const t of ADDR_ISSUES) {
+    const on = st.issue === t.id;
+    const n = t.id === 'conflicts' ? ov.duplicates.length : t.id === 'overlaps' ? ov.overlaps.length : t.id === 'outside' ? ov.orphans.length : -1;
+    const b = el(doc, 'button', { type: 'button', role: 'radio', class: 'mini' + (on ? ' active' : ''), 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-addr-issue': t.id, title: t.help }, [t.label + (n >= 0 ? ` (${n})` : '')]);
+    b.addEventListener('click', () => act.issue(t.id));
+    seg.appendChild(b);
+  }
+  seg.addEventListener('keydown', (e) => {
+    const k = (e as KeyboardEvent).key;
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(k) < 0) return;
+    e.preventDefault();
+    const i = ADDR_ISSUES.findIndex((x) => x.id === st.issue);
+    act.issue(ADDR_ISSUES[(i + (k === 'ArrowRight' || k === 'ArrowDown' ? 1 : ADDR_ISSUES.length - 1)) % ADDR_ISSUES.length].id);
+  });
+  filters.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'span', { class: 'small muted', id: 'addr-issue-l' }, ['Show']), seg]));
+  seg.setAttribute('aria-labelledby', 'addr-issue-l');
   wrap.appendChild(
     el(doc, 'details', { class: 'an-limits addr-legend' }, [
       el(doc, 'summary', {}, ['What the columns mean']),
@@ -365,8 +412,52 @@ export function addressingBody(doc: Document, ov: AddressingOverview, st: AddrVi
       el(doc, 'p', { class: 'small' }, ['Unallocated in model: not configured, not reserved (DHCP reservations, a scope’s gateway, a gateway routes name), not acquired, outside the DHCP pools and nested networks. An address outside NetAtlas may still be in use: it is not guaranteed free.']),
     ]),
   );
-  wrap.appendChild(addressingTables(doc, ov, st));
   return wrap;
+}
+
+/** The results of Addressing (bottom): the summary, the exports and Expand all, the live status line, then the tables. */
+export function addressingResults(doc: Document, ov: AddressingOverview, st: AddrViewState, sel: string): HTMLElement {
+  const wrap = el(doc, 'div', { class: 'addr' });
+  const anyOpen = st.open.size > 0;
+  wrap.appendChild(
+    el(doc, 'div', { class: 'an-res-tools addr-controls' }, [
+      el(doc, 'button', { type: 'button', class: 'mini', 'data-addr-all': anyOpen ? 'close' : 'open', title: 'The members of every network in place (their details are also in the evidence panel)' }, [anyOpen ? 'Collapse all members' : 'Expand all members']),
+      el(doc, 'button', { type: 'button', class: 'mini', 'data-addr-csv': 'copy', title: 'Copy the network table as CSV (comma-separated values)' }, ['Copy CSV']),
+      el(doc, 'button', { type: 'button', class: 'mini', 'data-addr-csv': 'save', title: 'Save the network table as a CSV file' }, ['Save CSV']),
+    ]),
+  );
+  wrap.appendChild(el(doc, 'p', { class: 'small', id: 'addr-summary' }, [el(doc, 'strong', {}, ['Issues: ']), issueSummary(ov)]));
+  wrap.appendChild(el(doc, 'p', { id: 'addr-status', class: 'muted small', role: 'status' }, [shownText(ov, st)]));
+  wrap.appendChild(addressingTables(doc, ov, st, sel));
+  return wrap;
+}
+
+/** The issue an item key names, and its evidence. */
+export function issueDetail(doc: Document, ov: AddressingOverview, key: string): { title: string; kind: string; explanation: Node[]; evidence: Node[]; refs: string[] } | null {
+  const m = /^issue:(dup|reuse|overlap|orphan):(\d+)$/.exec(key);
+  if (!m) return null;
+  const k = Number(m[2]);
+  const scope = (v: string): string => (v === '' ? 'the default table' : 'VRF ' + v);
+  if (m[1] === 'dup' || m[1] === 'reuse') {
+    const d = m[1] === 'dup' ? ov.duplicates[k] : ov.reused[k];
+    if (!d) return null;
+    const certainty = m[1] === 'dup' ? ((d as typeof ov.duplicates[number]).certainty === 'conflict' ? 'Confirmed conflict' : 'Possible conflict') : 'Legitimate reuse';
+    return {
+      kind: 'Addressing issue',
+      title: `${certainty}: ${d.text}`,
+      explanation: [el(doc, 'p', { class: 'small' }, [m[1] === 'dup' ? `${d.text} is configured on ${d.owners.length} interfaces in ${scope(d.vrf)}: ${d.why}.` : `${d.text} is used on ${d.owners.length} interfaces, which the model separates: ${d.why}. Not a conflict in the model.`])],
+      evidence: [el(doc, 'ul', { class: 'small' }, d.owners.map((o) => el(doc, 'li', {}, [ref(doc, `iface:${o.device}:${o.iface}`, `${o.device}:${o.iface}`)])))],
+      refs: d.owners.map((o) => `iface:${o.device}:${o.iface}`),
+    };
+  }
+  if (m[1] === 'overlap') {
+    const o = ov.overlaps[k];
+    if (!o) return null;
+    return { kind: 'Addressing issue', title: o.kind === 'same-prefix' ? 'Overlap: the same prefix twice' : 'Overlap: an interface subnet larger than its network', explanation: [el(doc, 'p', { class: 'small' }, [`${o.message} (${scope(o.vrf)}).`])], evidence: [], refs: o.refs };
+  }
+  const o = ov.orphans[k];
+  if (!o) return null;
+  return { kind: 'Addressing issue', title: `Outside the declared networks: ${o.address}`, explanation: [el(doc, 'p', { class: 'small' }, [`${o.device}:${o.iface} has ${o.address} in ${scope(o.vrf)}, and no network of the model holds it${o.loopback ? ' (a loopback)' : ''}. Declare its network to see its allocation; nothing is assumed about it.`])], evidence: [], refs: [`iface:${o.device}:${o.iface}`, 'device:' + o.device] };
 }
 
 /** One CSV field (RFC 4180: quoted when it holds a comma, quote or line break). */

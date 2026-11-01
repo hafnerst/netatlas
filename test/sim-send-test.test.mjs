@@ -7,10 +7,11 @@
 // timeline is deterministic with tests sent at given times.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
+const T = load('analysis/sim/travel.js');
 
 const PS = example('protocol-simulation.yaml');
 const CS = example('campus-services.yaml');
@@ -95,7 +96,7 @@ test('marked as the test’s: its packets, their ARP, the replies, a RST, an ICM
 
 test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered once its dots have arrived (the simulation waits for them); its hops show one after the other, never behind the traffic on screen', () => {
   const sim = new S.Simulation(model(PS));
-  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, testRunning: () => sim.tests().some((t) => !t.done) };
+  const host = { engine: sim.engine, shown: (f) => f.view === 'physical', travel: travelOf(sim.engine), headers: (f) => f.hdr, testRunning: () => sim.tests().some((t) => !t.done) };
   const p = new P.Pacer(host, 6);
   // the startup burst: more hops than the limit
   for (let i = 0; i < 400 && p.notDrawn === 0; i++) p.frame(16);
@@ -109,7 +110,7 @@ test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered
   p.frame(16);
   const mine = p.items.filter((it) => it.test);
   assert.ok(mine.length > 0 && mine.every((it) => it.drawn), 'drawn at once, beyond the limit');
-  // on screen: its hops one after the other, each at most HOP_MAX (and a switch's crossing): no wait behind the others; the
+  // on screen: its hops one after the other, each at most TRAVEL_MAX (and a switch's crossing): no wait behind the others; the
   // simulation delivers each only when its dot is there, so the test is answered with its last hop on screen
   let frames = 0;
   const seen = new Set();
@@ -122,7 +123,7 @@ test('the pacing: a test’s hops are drawn beyond the dot limit; it is answered
   assert.ok(t.done, t.result);
   // (each message on each cable: the hops shown one after the other)
   const hops = seen.size;
-  assert.ok(frames * 16 <= (hops + 2) * (P.HOP_MAX + P.TRANSIT_MS) + 2000, `${frames * 16} ms for ${hops} cables`);
+  assert.ok(frames * 16 <= (hops + 2) * (T.TRAVEL_MAX + P.TRANSIT_MS) + 2000, `${frames * 16} ms for ${hops} cables`);
 });
 
 test('deterministic: tests sent at the same simulated times give the same timeline, however the time is advanced', () => {

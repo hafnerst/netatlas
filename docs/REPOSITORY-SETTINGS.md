@@ -26,7 +26,7 @@ admin access to read and are marked so).
 | Merge methods | merge, squash and rebase allowed | |
 | Actions: workflow permissions, allowed actions, fork approval | not readable without admin access | [below](#github-actions-settings) |
 | Dependabot alerts | **off** | [below](#security-features) |
-| Private vulnerability reporting | off | [below](#security-features) |
+| Private vulnerability reporting | off; [SECURITY.md](../SECURITY.md) needs it on | [below](#security-features) |
 | Code scanning default setup, secret scanning, push protection | not readable without admin access | [below](#security-features) |
 | Immutable releases | off (the four releases so far are not immutable) | [below](#security-features) |
 | Releases | v0.1.0 to v0.1.3, published by @hafnerst, **no assets attached**; tags are lightweight | |
@@ -276,7 +276,7 @@ Actions → General*):
 | Dependency graph | **off** for this repository: the review's API answers 403 and the first CI run said "Dependency review is not supported on this repository" | turn it on (*Settings → Advanced Security → Dependency graph*). Until then the Dependency review job skips the review with a notice saying so, and passes |
 | Code scanning | the CodeQL job in `.github/workflows/security.yml` (advanced setup); default setup not readable | keep **default setup off**: with default setup on, GitHub rejects the workflow's uploads and the CodeQL job fails. If you prefer default setup, delete the `codeql` job instead |
 | Secret scanning, push protection | free for public repositories; not readable | turn both on (*Settings → Advanced Security*). The workflows use no secrets |
-| Private vulnerability reporting | off | optional: turn on to receive reports privately |
+| Private vulnerability reporting | off (API, read on 2026-11-01) | **turn on** (*Settings → Advanced Security → Private vulnerability reporting*): [SECURITY.md](../SECURITY.md) sends reports there, and without it the *Report a vulnerability* button is missing |
 | Immutable releases | off | optional: turn on (*Settings → General → Releases*) so that a published release's assets and tag cannot change; drafts stay editable, so the workflow works either way |
 
 None of these is a required check, so a feature that is off or unavailable

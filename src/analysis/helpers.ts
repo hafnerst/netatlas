@@ -49,9 +49,9 @@ export function mtuSuggestions(model: Model, i: Interface): Suggestion[] {
   };
   if (i.type === 'tunnel') {
     const b = tunnelBudget(model, i);
-    if (b && b.under && b.under.mtu !== undefined) {
-      const v = b.under.mtu - b.overhead;
-      add(v, `${v} (underlay ${b.under.mtu} − ${b.overhead})`, `The MTU of the underlay ${b.under.id} (${b.under.mtu}) less ${b.overhead} bytes of encapsulation: ${b.what.join(' + ')}`);
+    const v = b && b.under && b.under.mtu !== undefined ? b.fits(b.under.mtu) : null;
+    if (b && b.under && b.under.mtu !== undefined && v !== null) {
+      add(v, `${v} (underlay ${b.under.mtu} − ${b.under.mtu - v})`, `The MTU of the underlay ${b.under.id} (${b.under.mtu}) less ${b.under.mtu - v} bytes of encapsulation: ${b.what.join('; ')}`);
     }
     add(1476, '1476 (GRE)', 'GRE over a 1500-byte underlay: 1500 − 24 (20 IP + 4 GRE)');
     add(1400, '1400 (tunnel)', 'A common tunnel MTU that leaves room for GRE over IPsec');

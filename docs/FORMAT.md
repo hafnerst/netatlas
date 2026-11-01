@@ -44,13 +44,28 @@ links: [...]
 networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
-failure_domains: [...] # optional: components that fail together (what-if conditions)
-expectations: [...]    # optional: saved design requirements (checked by Analyze → Design checks)
+failure_domains: [...] # optional: components assumed to fail together (saved outage sets)
+expectations: [...]    # optional: saved design requirements (checked by Analyze → Design review)
 experiments: [...]     # optional: saved, repeatable simulation experiments (Simulate → Experiments)
 views: [...]           # optional: saved views (display state: diagram, focus, filters, zoom)
 checks: {...}          # optional: switch consistency checks off or change their severity
 layout: {...}          # optional: diagram positions and routing (written by NetAtlas)
 ```
+
+### Changes since 0.1.4
+
+None to the keys: a file valid for 0.1.4 is valid as it is, and still says
+`netatlas: 1`. What some keys mean at run time is stated more precisely
+(see *MTU and fragmentation* under the simulation's behaviour, and the
+encapsulation sizes under the consistency checks): a tunnel's `mtu` is
+enforced, an interface's `mtu` limits what arrives on its cable as well as
+what leaves, and each encapsulation's size is one definition shared by the
+path MTU, the checks and the simulation. A tunnel interface without an `mtu`
+takes what its underlay leaves room for, statically as at run time (the
+path MTU no longer counts it as unknown). A relation a tunnel is carried
+`over` gives its layer its own ends — its endpoint interfaces' addresses,
+family and VRF — where it names interfaces (see *Relations* under
+`over`).
 
 ### Changes since 0.1.3
 
@@ -904,7 +919,7 @@ devices:
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `ipv4: dhcp` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `vlans`, `native`, `routed` | a port's (or an aggregate's) VLANs: see [Port VLANs](#port-vlans-access-trunk-routed). |
-| `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
+| `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535: the largest IP packet it sends, and receives from its cable. Omitted: not modelled (no MTU is assumed, so nothing is compared; the simulation sends with its default MTU). On a tunnel interface: the largest inner packet it takes (omitted: what its underlay leaves room for). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`, the path MTU and the simulation. |
 | `multicast` | the groups the device joins on the interface and the streams it sends from it, for the protocol simulation. See [Multicast](#multicast). |
 | `dhcp_relay` | the **DHCP relay** (helper addresses) of a routed interface with an address: `dhcp_relay: [10.10.10.10]`. It forwards the DHCP broadcasts of its subnet to these servers. See [DHCP](#dhcp). |
 | `simulation` | the interface's **simulation attributes** (ARP timers, spanning tree per port, IGMP, DHCP client retries …): only what it overrides. See [Levels](#levels-where-an-attribute-is-written). |
@@ -2425,7 +2440,7 @@ A redundancy group's virtual address is not a relation attribute: it is the
 `virtual_ip` of each member interface's group (`protocols: {vrrp: {group:
 10, virtual_ip: 10.10.10.1}}`), compared with the interface's subnets.
 
-**Parameters the path tracer reads.** The path tracer (**Analyze → Trace path…**, see *Trace a path* in Help → User Manual)
+**Parameters the path tracer reads.** The path tracer (**Analyze → Communication**, see *Check a communication* in Help → User Manual)
 learns routes over the relations of the routing protocols (`ospf`, `isis`,
 `eigrp`, `rip`, `bgp` and their aliases) and reads a few more keys, each a
 single value or per device:
@@ -2466,6 +2481,17 @@ it is drawn *inside* that tube. GRE over IPsec shows as a GRE tube inside an
 IPsec tube, and OSPF over that GRE as a line inside it. Several relations
 between the same pair of devices get separate parallel lanes, so none of them
 hide each other.
+
+The layers of such a stack each have their own ends: the tunnel relation
+between the tunnel interfaces' `source` and `destination`, a relation it is
+carried `over` between that relation's own endpoint interfaces (their first
+addresses of a family both ends have) — GRE between loopbacks over IPsec
+between the WAN addresses, of the same or the other family, in the VRF of
+the endpoint interface. Trace path routes the outer packet by its outermost
+layer's ends, the path MTU and the tunnel-MTU check size each layer with its
+own family, and the simulation sends each header between its ends. A
+relation whose endpoints name no interface (or a tunnel interface) rides the
+tunnel's own ends.
 
 ### `protocols`: defining new protocols
 
@@ -2595,7 +2621,7 @@ demands:
 traced from its source to its destination like Trace path; the traffic
 animation shows equal-cost paths sharing it equally.
 
-**Capacity.** What if (Analyze → Single points of failure) compares the
+**Capacity.** Analyze → Resilience (capacity, and outage impact) compares the
 stated traffic with the stated capacity before and after the failure: the
 demands, and the applications with an `interval` (their sizes, written or
 the profile's defaults; payload rates). A resource is counted once: a cable
@@ -2619,9 +2645,10 @@ Optional. Components that fail together: a rack, a room or site, shared
 power, a shared conduit, a shared provider. Membership is explicit: a
 group of the diagram is never a failure domain by itself (it may stay
 purely organizational), only one written here is. A failure domain is
-analysis data: Analyze → Single points of failure… → **What if…** fails
-it as one condition and compares the result with the same baseline, and a
-saved expectation can name it as its failure condition. It is a what-if
+analysis data: Analyze → Resilience → **Outage impact** offers it as an
+optional shortcut (**Add saved failure set…** adds its components to the
+outage condition; none is needed to use it), and a saved expectation can
+name it as its failure condition. It is a what-if
 condition, never a probability, and a file means the same network with or
 without it.
 
@@ -2646,7 +2673,7 @@ already another object's are **errors**. At most 500 failure domains.
 ## `expectations` (saved design requirements)
 
 Optional. Requirements kept with the model and checked statically by
-Analyze → **Design checks…**: a communication that must be available or
+Analyze → **Design review** (requirements): a communication that must be available or
 blocked (also under a failure condition), a configured dependency that must
 be viable, a timing-source path that must exist. An expectation is analysis
 data: evaluating it never sends anything and never starts the simulation,
@@ -2882,7 +2909,7 @@ views:
 `focus`: `target` (a device, `device:interface`, or `network:…`,
 `group:…`, `link:…`) with `hops` (1–3), or a contextual focus with
 `context`: `vlan` (with `vlan`), `dependencies`, `multicast` (with
-`group`), `timing`, `vrf` (with `vrf`) — as Analyze → Focus has them.
+`group`), `timing`, `vrf` (with `vrf`) — as Focus… has them. (A focus Analyze makes of a result's objects — Show only relevant objects — is saved as the device selection it shows.)
 
 Validation: unknown keys, a missing `name` or `view`, an unknown device
 type, context or option, a zoom outside 0.05–6, hops outside 1–3 and a
@@ -3450,6 +3477,13 @@ README's limitations):
   of 8 bytes) and reassembled at its destination; with DF, or IPv6, it is
   dropped with the error above, and the sender lowers its **path MTU** to
   that destination (PMTUD, RFC 1191 / RFC 8201): TCP sends smaller segments.
+  A frame larger than the `mtu` written on the receiving end of its cable
+  (or on a switch port it leaves by) is dropped there without an error (an
+  MTU mismatch). A tunnel takes what its `mtu` allows, else what its
+  underlay leaves room for once encapsulated (the sizes under
+  *Encapsulation sizes*), lower once its head learned a smaller path MTU:
+  it fragments a larger IPv4 packet without DF before encapsulation and
+  refuses one with DF (or IPv6) with the error, carrying what fits.
 - **TCP** (RFC 9293): the three-way handshake; an unanswered SYN is sent
   again after the initial retransmission timeout, doubling each time
   (RFC 6298, at most 120 s), until the SYN retries are spent (the
@@ -3887,21 +3921,29 @@ VLANs is routed, not "access in VLAN 1").
 | `multicast-rp-conflict` | warning | routers of one PIM domain whose RP for a joined or streamed any-source group differs (each uses its own static `rp`, else its PIM relations' `rp`, else the domain's candidate RP) | devices: `protocols.pim`; relations: `rp`; interfaces: `multicast` |
 | `multicast-rpf-not-pim` | warning | a PIM router whose unicast route towards a stream's source (or the RP) leaves through an interface to a device it has no PIM relation with there: joins cannot go that way and the traffic fails the RPF check | devices: `protocols.pim`, `routes`; interfaces: `multicast.streams`, `ip`; PIM relations |
 
-**Encapsulation overhead** assumed by `tunnel-mtu`, per packet, with an IPv4
-outer header (an IPv6 outer header adds 20 bytes more, which the check
-doesn't assume). A tunnel stack (GRE over IPsec) adds up the overheads of
-all its layers; a tunnel protocol not in the table is not checked.
+**Encapsulation sizes**, one definition for `tunnel-mtu`, the MTU
+suggestions, the path MTU and the simulation's packets: around an inner
+packet of *n* bytes, the outer IP header of the tunnel's family (20 for
+IPv4, 40 for IPv6: the family of the tunnel's written ends, IPv4 assumed and
+said when none is written), a UDP tunnel's UDP header and the format below.
+A tunnel stack (GRE over IPsec) nests them, innermost first; a tunnel
+protocol not in the table is not checked (the simulation and the path MTU
+take it as GRE, the path MTU calling its limit an estimate).
 
-| Protocol | Bytes | Made of |
+| Protocol | Around *n* (IPv4 outer) | Format assumed |
 |---|---|---|
-| `gre` | 24 | 20 IP + 4 GRE |
-| `ipip` | 20 | 20 IP |
-| `ipsec` | 73 | ESP tunnel mode, worst case: 20 IP + 8 ESP + 16 IV + 15 padding + 2 trailer + 12 ICV (the real figure depends on cipher and padding) |
-| `wireguard` | 60 | 20 IP + 8 UDP + 32 WireGuard |
-| `vxlan` | 50 | 14 Ethernet + 20 IP + 8 UDP + 8 VXLAN |
-| `geneve` | 50 | without options: 14 Ethernet + 20 IP + 8 UDP + 8 Geneve |
-| `l2tp` | 40 | L2TPv3 over UDP: 20 IP + 8 UDP + 12 L2TP |
-| `gtp` | 36 | GTP-U: 20 IP + 8 UDP + 8 GTP |
+| `gre`, `dmvpn` | 20 + 4 + *n* | GRE without key, checksum or sequence number |
+| `ipip` | 20 + *n* | the outer IP header only (protocol 4; 41 for an IPv6 inner packet) |
+| `ipsec` | 20 + 24 + ⌈(*n* + 2) / 16⌉ × 16 + 12 | ESP tunnel mode, AES-CBC (16-byte IV and blocks), HMAC-SHA1-96 (12-byte ICV); no NAT traversal |
+| `wireguard` | 20 + 8 + 16 + *n* + 16 | transport data message; its padding (never beyond the interface MTU) not counted |
+| `openvpn` | 20 + 8 + 24 + *n* | UDP, tun mode, P_DATA_V2 with an AEAD cipher |
+| `l2tp` | 20 + 8 + 12 + *n* | L2TPv3 over UDP, no cookie, L2-specific sublayer; the inner as an IP packet |
+| `gtp` | 20 + 8 + 8 + *n* | GTP-U without extension headers |
+| `vxlan` | 20 + 8 + 8 + 14 + *n* | the inner Ethernet frame, untagged, without FCS |
+| `geneve` | 20 + 8 + 8 + 14 + *n* | without options; the inner Ethernet frame |
+
+For 1500 bytes of underlay that leaves 1476 for GRE, 1438 for ESP, 1414 for
+GRE over ESP, 1440 for WireGuard and 1450 for VXLAN.
 
 #### `checks`: switching checks off
 

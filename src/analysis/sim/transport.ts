@@ -53,6 +53,7 @@ import { IpAddr, parseAddress } from '../../model/ip';
 import { PolicyDecision, policyDecision, undecided, policyStateful } from '../policy';
 import { Relation, relationDevices, TRANSFER_PROFILES, ServiceInstance, Device, Model } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
+import { ordered, reachRank, runtimeKind, sourceRank } from '../endpoint-order';
 import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
@@ -64,7 +65,8 @@ import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
 import { dnsNameKey, dnsNameProblem } from '../../model/dns';
 import { ProtocolSim, relationProfile } from './protocols';
-import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
+import { ConnRow, DropCause, L4, Msg, Pkt, SessionRow, SessionStatus, SimEvent, WaitRecord } from './types';
+import type { DnsAttempt } from './netsvc';
 import { isContainer } from '../../model/virtual';
 import { capabilities } from '../../model/capabilities';
 import { profileAt } from '../separation';
@@ -104,8 +106,75 @@ const UDP_RESPONSE = 200;
 
 export type TestKind = 'icmp' | 'tcp' | 'udp';
 
+/**
+ * How a test ended, structured where it ended (its `result` text is the
+ * presentation): answered; refused (a RST); unreachable (an ICMP error,
+ * `icmp` its type, `by` the device that sent it); too-big (Fragmentation
+ * Needed / Packet Too Big, `mtu`); timeout (no answer within the response
+ * timeout, or the connect's retransmissions spent); lost (data never
+ * acknowledged); not-sent; no-address (no lease); name (the name did not
+ * resolve); cancelled (stopped before it was sent). `by` is the device that
+ * sent the RST or ICMP error (its sender, never the owner of the address it
+ * carries: a firewall rejects with the destination's address), `reason` why
+ * it was sent, as the device that sent it recorded it (a closed port, a
+ * policy's rejection with its decision in `cause`, a segment of no
+ * connection), `event` the log line of that decision. `drops` are the drops
+ * recorded in its exchange before it ended (oldest first, at most
+ * DROPS_KEPT; `drop` the last of them), each marked when it was one of its
+ * own attempts (`attempt`: a packet it sent, or an outer packet carrying
+ * one); `attempts` how many packets it sent; `logFrom` the time of the oldest
+ * event the log still held when it ended (later than `started`: some of its
+ * records were gone already).
+ */
+export type OutcomeKind = 'answered' | 'refused' | 'unreachable' | 'too-big' | 'timeout' | 'lost' | 'not-sent' | 'no-address' | 'name' | 'cancelled';
+
+/** Why a device sent a RST or an ICMP error, as it recorded it. */
+export type RejectReason = 'closed' | 'policy' | 'no-connection' | 'invalid';
+
+export interface OutcomeDrop {
+  seq: number;
+  t: number;
+  device: string;
+  cause?: DropCause;
+  text: string;
+  /** a packet it sent itself (or an outer packet carrying one), not an answer or a packet it needed (ARP …) */
+  attempt?: boolean;
+}
+
+/** How many recorded drops of its exchange a test's outcome keeps. */
+export const DROPS_KEPT = 8;
+
+export interface TestOutcome {
+  kind: OutcomeKind;
+  icmp?: string;
+  by?: string;
+  /** the address the RST or ICMP error came from (a firewall's RST carries the destination's) */
+  byAddr?: string;
+  reason?: RejectReason;
+  /** the decision the answer reports, as recorded where it was made (a policy's rejection) */
+  cause?: DropCause;
+  event?: number;
+  mtu?: number;
+  /** not-sent: the interface that was down ("pc:eth0"); no-address: the interface without its lease */
+  down?: string;
+  /** none of its packets left the sender (not sent, no lease, cancelled, too big for its own interface) */
+  unsent?: boolean;
+  drop?: OutcomeDrop;
+  drops?: OutcomeDrop[];
+  attempts?: number;
+  logFrom?: number;
+}
+
 /** A test: one ping, connection or UDP request, and how it ended. */
 export interface Test {
+  /** how it ended, structured (set with done) */
+  outcome?: TestOutcome;
+  /** what it waited for before its packets went (a lease, a DNS answer, a neighbour, a tunnel …): since, until (none: still) */
+  waits?: WaitRecord[];
+  /** its TCP connection's retransmissions (a SYN or data sent again): an answer after them is a recovery */
+  retx?: number;
+  /** a host name's DNS queries and what came of each (a lost query before the answer is recovered, not failed) */
+  dns?: DnsAttempt[];
   id: number;
   /** a host name's resolution: "web.hq.example = 10.1.2.10 (DNS: 1.2 ms)" */
   resolved?: string;
@@ -234,6 +303,8 @@ export interface AppMessage {
   relation?: string;
   /** what it waited for before it could go (a BGP OPEN: its TCP connection), for the inspector */
   waited?: string[];
+  /** told the id of each packet that carries it (its segment, and each retransmission of it): what its evidence links open */
+  carried?: (pkt: number) => void;
 }
 
 /** What an application's connection tells it. */
@@ -457,7 +528,7 @@ export class Transport {
    *     VRF, loopbacks first.
    * Never an address of another VRF.
    */
-  pickSource(dev: string, dst: IpAddr, via?: string, vrf?: string): { src: IpAddr; vrf: string; l3: L3Iface | null; how?: string } | { why: string; transient?: boolean } {
+  pickSource(dev: string, dst: IpAddr, via?: string, vrf?: string): { src: IpAddr; vrf: string; l3: L3Iface | null; how?: string } | { why: string; transient?: boolean; down?: string } {
     const sd = this.P.sd(dev);
     if (!sd) return { why: `${dev} is not a device of the simulation` };
     const fam = `IPv${dst.version}`;
@@ -466,7 +537,7 @@ export class Transport {
     if (via !== undefined) {
       const l = sd.l3.get(via);
       if (!l) return { why: `${dev} has no interface ${via} with an IP address` };
-      if (!this.e.isL3Up(dev, via)) return { why: `${dev}:${via} is down`, transient: true };
+      if (!this.e.isL3Up(dev, via)) return { why: `${dev}:${via} is down`, transient: true, down: `${dev}:${via}` };
       const a = l.addrs.find((x) => usable(l, x) && (!this.e.isBroadcastAddr(dst) || isMulticastIp(dst) || inNet(x, dst) || formatAddr(dst) === '255.255.255.255')) || l.addrs.find((x) => usable(l, x)) || (ll && l.ll ? l.ll : undefined);
       return a ? { src: a.addr, vrf: l.vrf, l3: l } : { why: `${dev}:${via} has no ${fam} address to send from` };
     }
@@ -484,7 +555,7 @@ export class Transport {
         if (a && l.kind !== 'tunnel' && l.kind !== 'loopback' && fits(l)) return { src: a.addr, vrf: l.vrf, l3: l };
       }
       const down = ifs.find((l) => l.kind !== 'loopback' && (vrf === undefined || l.vrf === vrf) && l.addrs.some((x) => usable(l, x)) && !this.e.isL3Up(dev, l.id));
-      return down ? { why: `${dev}:${down.id} is down: no interface that is up has a ${fam} address to send from`, transient: true } : { why: `${dev} has no ${fam} address to send from${vrf !== undefined ? ' in ' + (vrf ? 'VRF ' + vrf : 'its default table') : ''}` };
+      return down ? { why: `${dev}:${down.id} is down: no interface that is up has a ${fam} address to send from`, transient: true, down: `${dev}:${down.id}` } : { why: `${dev} has no ${fam} address to send from${vrf !== undefined ? ' in ' + (vrf ? 'VRF ' + vrf : 'its default table') : ''}` };
     }
     const vrfs = Array.from(new Set(ifs.map((l) => l.vrf))).sort(cmp);
     const routed = (v: string): { l3: L3Iface | null; local: boolean } | null => {
@@ -524,8 +595,12 @@ export class Transport {
       const a = out.addrs.find((x) => usable(out, x)) || (ll && out.ll ? out.ll : undefined);
       if (a) return { src: a.addr, vrf: ctx, l3: out, how };
     }
-    // an unnumbered egress (or none): an address of the device in the same VRF, loopbacks first
-    const same = ifs.filter((l) => l.vrf === ctx && l.kind !== 'tunnel').sort((a, b) => Number(b.kind === 'loopback') - Number(a.kind === 'loopback') || cmp(a.id, b.id));
+    // an unnumbered egress (or none): an address of the device in the same VRF, loopbacks first (endpoint-order.ts source)
+    const same = ordered(
+      ifs.filter((l) => l.vrf === ctx),
+      (l) => sourceRank(runtimeKind(l, this.P.m.index.interfaces.get(dev + ':' + l.id))),
+      (l) => l.id,
+    );
     for (const l of same) {
       const a = l.addrs.find((x) => usable(l, x));
       if (a) return { src: a.addr, vrf: ctx, l3: out || l, how };
@@ -658,7 +733,7 @@ export class Transport {
     const l4 = pkt.l4 as L4;
     const ls = this.listening(dev);
     if (ls.written && portsMatch(ls.rules, l4.proto, l4.dport as number)) {
-      this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${dev} listens on ${l4.proto.toUpperCase()} ${l4.dport} but ${why}: ${pkt.msg.label} is not answered`);
+      this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${dev} listens on ${l4.proto.toUpperCase()} ${l4.dport} but ${why}: ${pkt.msg.label} is not answered`, this.e.now, undefined, { cause: this.e.causeOf({ kind: 'no-answer' }, pkt) });
       return;
     }
     this.refuse(dev, l3, pkt, why);
@@ -670,17 +745,18 @@ export class Transport {
     const cp = this.e.params.get('closed-port', dev);
     const what = `${l4.proto.toUpperCase()} port ${l4.dport} is closed on ${dev} (${why})`;
     if (cp.value !== 'on') {
-      this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${what}: dropped without an answer (reply to closed ports ${resolvedText(cp)}): ${pkt.msg.label}`);
+      this.e.note('drop', l4.proto, dev, '', pkt.msg.type, '', `${what}: dropped without an answer (reply to closed ports ${resolvedText(cp)}): ${pkt.msg.label}`, this.e.now, undefined, { cause: this.e.causeOf({ kind: 'closed-port' }, pkt) });
       return;
     }
     if (l4.proto === 'tcp') {
       if ((l4.flags || []).indexOf('RST') >= 0) return;
-      this.e.note('drop', 'tcp', dev, '', pkt.msg.type, '', `${what}: it answers with a RST (${pkt.msg.label})`);
-      this.rstFor(dev, pkt, `refused: port ${l4.dport} is closed`);
+      this.e.note('drop', 'tcp', dev, '', pkt.msg.type, '', `${what}: it answers with a RST (${pkt.msg.label})`, this.e.now, undefined, { cause: this.e.causeOf({ kind: 'closed-port' }, pkt) });
+      this.rstFor(dev, pkt, `refused: port ${l4.dport} is closed`, undefined, { reason: 'closed' });
       return;
     }
-    this.e.note('drop', 'udp', dev, '', pkt.msg.type, '', `${what}: ${isMulticastIp(pkt.dst) || this.e.isBroadcastAddr(pkt.dst) ? 'no ICMP error to a broadcast or multicast' : 'it answers with ICMP port unreachable'} (${pkt.msg.label})`);
-    this.e.icmpError(dev, pkt, 'port', { from: l3 });
+    const closed = this.e.causeOf({ kind: 'closed-port' }, pkt);
+    this.e.note('drop', 'udp', dev, '', pkt.msg.type, '', `${what}: ${isMulticastIp(pkt.dst) || this.e.isBroadcastAddr(pkt.dst) ? 'no ICMP error to a broadcast or multicast' : 'it answers with ICMP port unreachable'} (${pkt.msg.label})`, this.e.now, undefined, { cause: closed });
+    this.e.icmpError(dev, pkt, 'port', { from: l3, cause: closed });
   }
 
   // ------------------------------------------------------------ path MTU
@@ -703,6 +779,11 @@ export class Transport {
       return null;
     }
     return v.mtu;
+  }
+
+  /** The path MTU a device learned towards a destination (null: none, or it is no longer valid). */
+  learnedMtu(dev: string, vrf: string, dst: IpAddr): number | null {
+    return this.pathMtu(dev, vrf, dst);
   }
 
   /** The interface a device's route to a destination leaves by now ('' none). */
@@ -795,9 +876,8 @@ export class Transport {
       if (!sd) return `${t.to} is neither a device of the model, an address nor a host name`;
       const src = this.sourceFor(dev, parseAddress('0.0.0.0') as IpAddr);
       const want = src ? src.src.version : 4;
-      // (a loopback, and a container bridge's interface on its host, last: the bridge's address is not reached from outside)
-      const back = (l: { id: string; kind: string }): number => (l.kind === 'loopback' ? 1 : (this.P.m.index.interfaces.get(d + ':' + l.id) || { type: '' }).type === 'bridge' ? 2 : 0);
-      const ls = Array.from(sd.l3.values()).filter((l) => (iface ? l.id === iface : l.kind !== 'tunnel')).sort((a, b) => back(a) - back(b) || cmp(a.id, b.id));
+      // (endpoint-order.ts reach: a loopback, and a container bridge's interface on its host, last — the bridge's address is not reached from outside)
+      const ls = iface ? Array.from(sd.l3.values()).filter((l) => l.id === iface) : ordered(Array.from(sd.l3.values()), (l) => reachRank(runtimeKind(l, this.P.m.index.interfaces.get(d + ':' + l.id))), (l) => l.id);
       for (const l of ls) for (const a of l.addrs) if (!dst && a.addr.version === want) dst = a.addr;
       for (const l of ls) for (const a of l.addrs) if (!dst) dst = a.addr;
       if (!dst) return `${t.to} has no address`;
@@ -881,9 +961,11 @@ export class Transport {
    * are not sent, and say why (the client starts again later; a new test waits for that).
    */
   leaseFailed(dev: string, iface: string, why: string): void {
+    // (the DHCP client's own line, just written: the recorded failure the tests' outcome names)
+    const seq = this.e.lastSeq;
     for (const t of this.tests) {
       if (t.done || t.from !== dev || t.result.indexOf('waiting for a DHCP lease on ' + dev + ':' + iface) !== 0) continue;
-      this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.finish(t, false, `not sent: ${dev}:${iface} has no DHCP lease (${why})`));
+      this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.finish(t, false, `not sent: ${dev}:${iface} has no DHCP lease (${why})`, { unsent: true, kind: 'no-address', down: `${dev}:${iface}`, event: seq }));
     }
   }
 
@@ -899,7 +981,7 @@ export class Transport {
   /** Stop: a test that has sent nothing yet (waiting for a lease or a name) is not sent; true when it was cancelled. */
   cancel(t: Test, result: string): boolean {
     if (t.done || t.pktIds.length || t.conn) return false;
-    this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.finish(t, false, result));
+    this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.finish(t, false, result, { kind: 'cancelled', unsent: true }));
     return true;
   }
 
@@ -910,18 +992,23 @@ export class Transport {
     const what: Msg = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
     if (lease) {
       t.result = `waiting for a DHCP lease on ${dev}:${lease}`;
+      this.waitOf(t, 'lease', `a DHCP lease on ${dev}:${lease}`);
       this.e.waitFor('lease:' + dev + (t.via !== undefined ? ':' + t.via : ''), `a DHCP lease on ${dev}:${lease}`, dev, what, () => this.begin(t, name), 'test|' + t.id);
       return;
     }
+    this.waitDone(t, 'lease');
     if (name && this.netsvc) {
       t.result = `resolving ${name}`;
       const qtype = t.qtype || 'A';
       if (!this.netsvc.cached(dev, name, qtype)) this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name} (${qtype})`);
       const since = this.e.now;
+      this.waitOf(t, 'dns', `DNS ${name} (${qtype})`);
       this.netsvc.resolve(dev, name, qtype, (r) => {
         if (t.done) return;
+        if (r.attempts) t.dns = r.attempts.slice();
+        this.waitDone(t, 'dns');
         if (!r.addr) {
-          this.finish(t, false, r.error || `${name} could not be resolved`);
+          this.finish(t, false, r.error || `${name} could not be resolved`, { kind: 'name' });
           return;
         }
         t.dst = r.addr;
@@ -932,7 +1019,7 @@ export class Transport {
     }
     const pick = this.pickSource(dev, t.dst, t.via);
     if ('why' in pick) {
-      this.finish(t, false, `not sent: ${pick.why}`);
+      this.finish(t, false, `not sent: ${pick.why}`, pick.down ? { unsent: true, kind: 'not-sent', down: pick.down } : { unsent: true, kind: 'not-sent' });
       return;
     }
     const s = pick;
@@ -942,17 +1029,17 @@ export class Transport {
     const kind = t.kind;
     const bcast = this.e.isBroadcastAddr(o.dst) || isMulticastIp(o.dst);
     if (kind === 'tcp' && bcast) {
-      this.finish(t, false, 'not sent: TCP connects to one host, never to a broadcast or multicast address');
+      this.finish(t, false, 'not sent: TCP connects to one host, never to a broadcast or multicast address', { kind: 'not-sent', unsent: true });
       return;
     }
     // the application gives up after its response timeout (a broadcast ping collects the answers until then)
     this.later(Number(t.timeout.value), () => {
       if (t.done) return;
-      if (t.oneWay) this.finish(t, false, `not received within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}${this.lastDrop(t)}`);
-      else if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
-      else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
-      else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
-      else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
+      if (t.oneWay) this.finish(t, false, `not received within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}${this.lastDrop(t)}`, { kind: 'timeout' });
+      else if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`, { kind: 'answered' });
+      else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`, { kind: 'timeout' });
+      else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`, { kind: 'answered' });
+      else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`, { kind: 'timeout' });
       // the application gave up on a connection still being opened: it closes its socket, and a close in SYN-SENT
       // deletes the connection (RFC 9293 §3.10.4) — no more SYN retransmissions of an attempt nobody waits for
       // (its next periodic message or its retry opens a connection of its own); on an open connection whose answer
@@ -983,20 +1070,68 @@ export class Transport {
    */
   private lastDrop(t: Test): string {
     if (t.source !== 'manual' && t.source !== 'experiment' && !t.app) return '';
-    for (let i = this.e.log.length - 1; i >= 0; i--) {
-      const ev = this.e.log[i];
-      if (ev.t < t.started) break;
-      if (ev.test === t.id && ev.kind === 'drop') return `; the last of its packets was dropped at ${ev.device}: ${ev.detail.replace(/^dropped at [^:]+: /, '')}`;
-    }
-    return '';
+    const ev = this.lastDropEvent(t);
+    return ev ? `; the last of its packets was dropped at ${ev.device}: ${ev.detail.replace(/^dropped at [^:]+: /, '')}` : '';
   }
 
-  private finish(t: Test, ok: boolean, result: string): void {
+  /** The last drop event of a test's own packets since it started (its test id, or one of its packet ids), null when none is in the log. */
+  private lastDropEvent(t: Test): SimEvent | null {
+    const d = this.dropEvents(t, 1);
+    return d.length ? d[0] : null;
+  }
+
+  /** Is a drop event one of a test's own attempts: a packet it sent, or an outer packet carrying one? */
+  private isAttempt(t: Test, ev: SimEvent): boolean {
+    const c = ev.cause;
+    if (ev.pkt !== undefined && t.pktIds.indexOf(ev.pkt) >= 0) return true;
+    return !!c && !!c.carried && c.carried.some((p) => t.pktIds.indexOf(p) >= 0);
+  }
+
+  /** The drop events of a test's exchange since it started (its test id, its packets, a packet carrying one), newest first, at most `max`. */
+  private dropEvents(t: Test, max: number): SimEvent[] {
+    const out: SimEvent[] = [];
+    for (let i = this.e.log.length - 1; i >= 0 && out.length < max; i--) {
+      const ev = this.e.log[i];
+      if (ev.t < t.started) break;
+      if (ev.kind === 'drop' && (ev.test === t.id || this.isAttempt(t, ev))) out.push(ev);
+    }
+    return out;
+  }
+
+  /** A test waits for something before its packets go (recorded for its diagnosis; once per condition). */
+  private waitOf(t: Test, cond: string, why: string): void {
+    const w = (t.waits = t.waits || []);
+    if (!w.some((x) => x.cond === cond && x.until === undefined)) w.push({ cond, why, since: this.e.now });
+  }
+
+  private waitDone(t: Test, cond: string): void {
+    for (const x of t.waits || [])
+      if (x.cond === cond && x.until === undefined) {
+        x.until = this.e.now;
+        x.met = true;
+      }
+  }
+
+  private finish(t: Test, ok: boolean, result: string, o: TestOutcome = { kind: ok ? 'answered' : 'timeout' }): void {
     if (t.done) return;
     t.done = true;
     t.ended = this.e.now;
     t.ok = ok;
     t.result = result;
+    t.outcome = { ...o };
+    // (a failure: the recorded drops of its exchange, structured, while the log holds them; how many packets it sent; how
+    // far back the log reached — a diagnosis tells "none recorded" from "no longer kept" by it, never by the words)
+    if (!ok) {
+      const evs = this.dropEvents(t, DROPS_KEPT).reverse();
+      if (evs.length) {
+        t.outcome.drops = evs.map((ev) => ({ seq: ev.seq, t: ev.t, device: ev.device, cause: ev.cause, text: ev.detail, attempt: this.isAttempt(t, ev) || undefined }));
+        t.outcome.drop = t.outcome.drops[t.outcome.drops.length - 1];
+      }
+      t.outcome.attempts = t.pktIds.length;
+      t.outcome.logFrom = this.e.log.length ? this.e.log[0].t : this.e.now;
+    }
+    // (what it waited for and still did when it ended: ended with it)
+    for (const x of t.waits || []) if (x.until === undefined) x.until = this.e.now;
     if (ok && t.rtt === undefined) t.rtt = this.e.now - t.started;
     if (t.source !== 'health' && t.source !== 'probe' && t.source !== 'upstream') this.e.withTest(t.source === 'manual' || t.source === 'experiment' ? t.id : null, () => this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`));
     if (t.onDone) t.onDone(t);
@@ -1024,7 +1159,7 @@ export class Transport {
       // (respond to ping is per interface: the one the request came in on)
       const r = bc ? this.e.params.get('bcast-ping', dev) : this.e.params.get('ping', dev, null, ifaceRef(dev, l3.id));
       if (r.value !== 'on') {
-        this.e.note('drop', 'icmp', dev, '', 'Echo Request', '', `${dev} does not answer ${pkt.msg.label} from ${formatAddr(pkt.src)} (${r.def.label.toLowerCase()} ${resolvedText(r)})`);
+        this.e.note('drop', 'icmp', dev, '', 'Echo Request', '', `${dev} does not answer ${pkt.msg.label} from ${formatAddr(pkt.src)} (${r.def.label.toLowerCase()} ${resolvedText(r)})`, this.e.now, undefined, { cause: this.e.causeOf({ kind: 'no-answer' }, pkt) });
         return;
       }
       const own = bc ? l3.addrs.find((a) => a.addr.version === v) : undefined;
@@ -1042,7 +1177,7 @@ export class Transport {
       const bc = this.e.isBroadcastAddr(t.dst) || isMulticastIp(t.dst);
       t.answers.push(`${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}`);
       if (t.rtt === undefined) t.rtt = this.e.now - t.started;
-      if (!bc) this.finish(t, true, `Echo Reply from ${formatAddr(pkt.src)}`);
+      if (!bc) this.finish(t, true, `Echo Reply from ${formatAddr(pkt.src)}`, this.answeredBy(pkt));
       return;
     }
     // an ICMP error about something this device sent
@@ -1053,6 +1188,10 @@ export class Transport {
   private icmpError(dev: string, pkt: Pkt): void {
     const l4 = pkt.l4 as L4;
     const q = l4.quote as NonNullable<L4['quote']>;
+    // (who sent it — its sender, as recorded — and the decision it reports, when the sender recorded one)
+    const ed = (pkt.msg.data || {}) as { from?: string; cause?: DropCause; event?: number };
+    const errBy = ed.from || pkt.msg.sender || this.e.ownerOf(pkt.src) || undefined;
+    const errOf = { by: errBy, byAddr: formatAddr(pkt.src), cause: ed.cause, event: ed.event, reason: ed.cause && ed.cause.kind === 'policy' ? ('policy' as const) : ed.cause && ed.cause.kind === 'closed-port' ? ('closed' as const) : undefined };
     const from = `${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}`;
     const what = `${pkt.msg.type} from ${from}`;
     const dst = parseAddress(q.dst);
@@ -1067,21 +1206,21 @@ export class Transport {
       const c = this.connByFlow(dev, pkt.vrf, q);
       if (c && !c.tcp.idle) this.resend(c, `${what}: path MTU ${l4.mtu}`);
       const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(q.pkt) >= 0);
-      if (t && t.kind !== 'tcp') this.finish(t, false, `${what}: ${t.df ? 'the packet is too big for the path and DF is set' : 'too big'} (path MTU ${l4.mtu})`);
+      if (t && t.kind !== 'tcp') this.finish(t, false, `${what}: ${t.df ? 'the packet is too big for the path and DF is set' : 'too big'} (path MTU ${l4.mtu})`, { kind: 'too-big', icmp: pkt.msg.type, ...errOf, mtu: l4.mtu });
       return;
     }
     const t = this.tests.find((x) => !x.done && x.from === dev && x.pktIds.indexOf(q.pkt) >= 0);
     if (t) {
       // (a test's connection being opened ends with it: a hard error while connecting, RFC 1122 §4.2.3.9, Linux tcp_v4_err)
       if (t.conn && (t.conn.state === 'SYN_SENT' || t.conn.state === 'SYN_RCVD') && this.alive(t.conn)) this.closeConn(t.conn, `connection failed: ${what}`);
-      this.finish(t, false, what);
+      this.finish(t, false, what, { kind: 'unreachable', icmp: pkt.msg.type, ...errOf });
       return;
     }
     const c = this.connByFlow(dev, pkt.vrf, q);
     if (c && (c.state === 'SYN_SENT' || c.state === 'SYN_RCVD')) {
       // a hard error while connecting ends the attempt (Linux: tcp_v4_err)
       this.closeConn(c, `connection failed: ${what}`);
-      if (c.test) this.finish(c.test, false, what);
+      if (c.test) this.finish(c.test, false, what, { kind: 'unreachable', icmp: pkt.msg.type, ...errOf });
       return;
     }
     // a DNS query of this device's resolver refused (its server runs no DNS): it asks the next server at once
@@ -1095,7 +1234,7 @@ export class Transport {
     if (kind === 'frag' && mtu) this.learnMtu(dev, pkt.vrf, pkt.dst, mtu, `its own interface: ${text}`);
     if (t) {
       if (kind !== 'frag' && t.conn && t.conn.state === 'SYN_SENT' && this.alive(t.conn)) this.closeConn(t.conn, `connection failed: ${text}`);
-      this.finish(t, false, `not sent: ${text}`);
+      this.finish(t, false, `not sent: ${text}`, kind === 'frag' ? { unsent: true, kind: 'too-big', mtu } : { unsent: true, kind: 'not-sent' });
       return;
     }
     const l4 = pkt.l4;
@@ -1108,7 +1247,7 @@ export class Transport {
     }
     if (c.state === 'SYN_SENT') {
       this.closeConn(c, `connection failed: ${text}`);
-      if (c.test) this.finish(c.test, false, text);
+      if (c.test) this.finish(c.test, false, text, { kind: 'not-sent', unsent: true });
     }
   }
 
@@ -1138,7 +1277,7 @@ export class Transport {
       const t = this.tests.find((x) => x.id === d.test && x.from === dev);
       if (!t || t.done) return;
       t.answers.push(`${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}`);
-      if (!this.e.isBroadcastAddr(t.dst) && !isMulticastIp(t.dst)) this.finish(t, true, `UDP answer from ${formatAddr(pkt.src)}:${l4.sport}`);
+      if (!this.e.isBroadcastAddr(t.dst) && !isMulticastIp(t.dst)) this.finish(t, true, `UDP answer from ${formatAddr(pkt.src)}:${l4.sport}`, this.answeredBy(pkt));
       return;
     }
     if (!this.open(dev, 'udp', l4.dport as number, pkt.dst)) {
@@ -1362,7 +1501,8 @@ export class Transport {
   /** The MSS this end announces in its SYN (RFC 9293 §3.7.1): its interface's MTU towards the peer, less the IP and TCP headers. */
   private ownMss(c: Conn): number {
     const l3 = this.sourceFor(c.dev, c.remote, undefined, c.vrf);
-    const own = l3 && l3.l3 ? Number(this.e.mtu(c.dev, l3.l3).value) : 1500;
+    // (out of a tunnel: what the tunnel takes, its encapsulation deducted — the MSS a device announces over GRE, RFC 4459 §3.2)
+    const own = l3 && l3.l3 ? this.e.egressMtu(c.dev, l3.l3) : 1500;
     return Math.max(8, own - (c.remote.version === 4 ? 40 : 60));
   }
 
@@ -1424,6 +1564,7 @@ export class Transport {
         return;
       }
       c.tries++;
+      if (c.test) c.test.retx = (c.test.retx || 0) + 1;
       s.sent++;
       if (s.syn) c.synRetx = true;
       this.emit(c, s, `, retransmission ${c.tries} (timeout ${durationText(this.rto({ ...c, tries: c.tries - 1 }))})`);
@@ -1437,7 +1578,7 @@ export class Transport {
     if (s.syn && c.state === 'SYN_SENT') {
       const max = this.e.params.get('tcp-syn-retries', c.dev);
       this.closeConn(c, `connection timed out: no answer to the SYN and its ${c.tries} retransmissions (TCP SYN retries ${resolvedText(max)})`);
-      if (c.test) this.finish(c.test, false, `TCP connect timed out after ${c.tries} retransmissions`);
+      if (c.test) this.finish(c.test, false, `TCP connect timed out after ${c.tries} retransmissions`, { kind: 'timeout' });
       return;
     }
     if (s.syn) {
@@ -1450,7 +1591,7 @@ export class Transport {
     }
     this.rst(c, 'no acknowledgement: given up');
     this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
-    if (c.test) this.finish(c.test, false, 'connection lost: the data was never acknowledged');
+    if (c.test) this.finish(c.test, false, 'connection lost: the data was never acknowledged', { kind: 'lost' });
   }
 
   /**
@@ -1513,6 +1654,7 @@ export class Transport {
     if (s.at === undefined) s.at = this.e.now;
     const p = this.sendPkt(c.dev, c.local, c.remote, c.vrf, msg, l4, tcpHeaderLen(l4) + s.len, true, this.e.ownerOf(c.remote) || '', c.conv);
     this.lastPkt = p.id;
+    if (app && app.carried) app.carried(p.id);
     return p;
   }
 
@@ -1553,7 +1695,7 @@ export class Transport {
    * `src`: the address it is sent from (a firewall answers for the
    * destination).
    */
-  private rstFor(dev: string, pkt: Pkt, what: string, src?: IpAddr): void {
+  private rstFor(dev: string, pkt: Pkt, what: string, src?: IpAddr, why: { reason: RejectReason; cause?: DropCause } = { reason: 'invalid' }): void {
     const l4 = pkt.l4 as L4;
     const flags = l4.flags || [];
     if (flags.indexOf('RST') >= 0) return;
@@ -1561,7 +1703,8 @@ export class Transport {
     const space = Math.max(0, (pkt.len || 20) - tcpHeaderLen(l4)) + (flags.indexOf('SYN') >= 0 ? 1 : 0) + (flags.indexOf('FIN') >= 0 ? 1 : 0);
     const out: L4 = hasAck ? { proto: 'tcp', num: 6, sport: l4.dport, dport: l4.sport, flags: ['RST'], seq: l4.ack || 0 } : { proto: 'tcp', num: 6, sport: l4.dport, dport: l4.sport, flags: ['RST', 'ACK'], seq: 0, ack: (l4.seq || 0) + space };
     const from = src || pkt.dst;
-    const m = this.msg('tcp', 'TCP RST', segmentLabel({ flags: out.flags as string[] }), `${this.segText({ local: from, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number }, out, 0)}: ${what}`, {});
+    // (why it is sent, and the log line of that decision: what the connection's end reads instead of guessing from the address)
+    const m = this.msg('tcp', 'TCP RST', segmentLabel({ flags: out.flags as string[] }), `${this.segText({ local: from, lport: l4.dport as number, remote: pkt.src, rport: l4.sport as number }, out, 0)}: ${what}`, { rst: { reason: why.reason, cause: why.cause, event: this.e.lastSeq } });
     // (the conversation of the segment it refuses)
     this.sendPkt(dev, from, pkt.src, pkt.vrf, m, out, tcpHeaderLen(out), true, this.e.ownerOf(pkt.src) || '', pkt.msg.conv || this.newConv('tcp'));
   }
@@ -1614,7 +1757,7 @@ export class Transport {
       }
       // a segment of no connection it knows
       this.e.note('drop', 'tcp', dev, '', pkt.msg.type, '', `${dev} has no connection ${formatAddr(pkt.dst)}:${l4.dport} ↔ ${formatAddr(pkt.src)}:${l4.sport}: it answers with a RST (${pkt.msg.label})`);
-      this.rstFor(dev, pkt, 'no such connection');
+      this.rstFor(dev, pkt, 'no such connection', undefined, { reason: 'no-connection' });
       return;
     }
     if (has('RST')) {
@@ -1625,7 +1768,13 @@ export class Transport {
       const was = c.state;
       if (c.sock) this.sockClosed(c.sock, was === 'SYN_SENT' ? `connection refused: RST from ${formatAddr(pkt.src)}` : `connection reset by ${formatAddr(pkt.src)}`);
       this.closeConn(c, was === 'SYN_SENT' ? `connection refused (RST from ${formatAddr(pkt.src)})` : `reset by ${formatAddr(pkt.src)}`);
-      if (c.test) this.finish(c.test, false, was === 'SYN_SENT' ? `connection refused: RST from ${formatAddr(pkt.src)}${this.e.ownerOf(pkt.src) ? ' (' + this.e.ownerOf(pkt.src) + ')' : ''}` : 'connection reset');
+      if (c.test) {
+        const rst = ((pkt.msg.data || {}) as { rst?: { reason: RejectReason; cause?: DropCause; event?: number } }).rst;
+        const by = pkt.msg.sender || this.e.ownerOf(pkt.src) || undefined;
+        const owner = this.e.ownerOf(pkt.src);
+        const from = `${formatAddr(pkt.src)}${by ? ` (${by === owner || !owner ? by : `sent by ${by}, with the address of ${owner}`})` : ''}`;
+        this.finish(c.test, false, was === 'SYN_SENT' ? `connection refused: RST from ${from}` : 'connection reset', { kind: was === 'SYN_SENT' ? 'refused' : 'lost', by, byAddr: formatAddr(pkt.src), reason: rst ? rst.reason : undefined, cause: rst ? rst.cause : undefined, event: rst ? rst.event : undefined });
+      }
       if (c.front) this.upstreamFailed(c, 'the server reset the connection');
       return;
     }
@@ -1824,11 +1973,20 @@ export class Transport {
     }
     // (a test's request on a port an application listens on too: answered as any server's)
     if (c.role === 'server') this.serverData(c, m.bytes, pkt);
-    else this.answered(c);
+    else this.answered(c, pkt);
   }
 
-  /** The client got the whole answer: the test is answered; the client closes (unless kept open); an upstream passes it back. */
-  private answered(c: Conn): void {
+  /**
+   * An answer's outcome with who sent it, from the answer itself: the device that sent its packet (as the packet records
+   * its sender) and the address it came from — never looked up by address alone, which another routing context may reuse.
+   */
+  private answeredBy(pkt: Pkt): TestOutcome {
+    const by = pkt.msg.sender !== undefined ? pkt.msg.sender : this.e.ownerOf(pkt.src) || undefined;
+    return { kind: 'answered', by, byAddr: formatAddr(pkt.src) };
+  }
+
+  /** The client got the whole answer (`pkt`: the segment that completed it): the test is answered; the client closes (unless kept open); an upstream passes it back. */
+  private answered(c: Conn, pkt: Pkt): void {
     const t = c.test;
     const got = c.tcp.received;
     if (c.front) {
@@ -1838,7 +1996,7 @@ export class Transport {
       this.sendData(front, got, `the answer of ${formatAddr(c.remote)}`);
       this.idle(front);
     }
-    if (t) this.finish(t, true, `connected and answered (${got} bytes)`);
+    if (t) this.finish(t, true, `connected and answered (${got} bytes)`, this.answeredBy(pkt));
     if (c.keep && t && t.source === 'manual') {
       this.idle(c);
       return;
@@ -1936,7 +2094,8 @@ export class Transport {
     const sd = this.P.sd(dev);
     if (!sd) return null;
     const ep = r ? r.endpoints.find((x) => x.device === dev && x.iface) : undefined;
-    const ls = Array.from(sd.l3.values()).filter((l) => (ep ? l.id === ep.iface : l.kind !== 'tunnel')).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
+    // (a relation's endpoint interface, else as the device is reached: endpoint-order.ts reach)
+    const ls = ep ? Array.from(sd.l3.values()).filter((l) => l.id === ep.iface) : ordered(Array.from(sd.l3.values()), (l) => reachRank(runtimeKind(l, this.P.m.index.interfaces.get(dev + ':' + l.id))), (l) => l.id);
     for (const l of ls) for (const a of l.addrs) if (a.addr.version === 4) return a.addr;
     for (const l of ls) for (const a of l.addrs) return a.addr;
     return null;
@@ -2393,7 +2552,7 @@ export class Transport {
       const logProto = proto === 'other' ? pkt.msg.protocol : proto;
       // (still undecided — which device an address is can't be told: no rule is applied as if it were known; the packet stops, said)
       if (undecided(d)) {
-        this.e.note('drop', logProto, dev, '', 'dropped', '', `${dev} drops ${pkt.msg.label}: ${d.text}`);
+        this.e.note('drop', logProto, dev, '', 'dropped', '', `${dev} drops ${pkt.msg.label}: ${d.text}`, this.e.now, undefined, { cause: this.e.causeOf({ kind: 'policy', policy: { device: dev, action: 'undecided', byDefault: d.byDefault, text: d.text } }, pkt) });
         return false;
       }
       // (stateful: only what opens a flow is decided by the rules; the rest belongs to a session or is dropped)
@@ -2411,11 +2570,13 @@ export class Transport {
       const why0 = d.permit ? 'it belongs to no session it knows (a stateful policy)' : d.text.replace(/^\S+ denies [^:]*: /, '');
       const fwAct = capabilities(dd).firewallPolicy ? this.e.params.get('fw-action', dev) : null;
       const reject = !!fwAct && fwAct.value === 'reject';
-      this.e.note('drop', logProto, dev, '', reject ? 'rejected' : 'dropped', '', `${dev} ${reject ? 'rejects' : 'drops'} ${what0} (${pkt.msg.label}): ${why0}`);
+      // (the decision as recorded: the written rule that denied it, or the default; permitted but not of a session it knows)
+      const decided = this.e.causeOf({ kind: 'policy', policy: { device: dev, action: reject ? 'reject' : 'deny', rule: d.permit ? undefined : d.rule, ruleText: d.permit ? 'no session (stateful)' : d.ruleText, byDefault: !d.permit && d.byDefault, text: why0 } }, pkt);
+      this.e.note('drop', logProto, dev, '', reject ? 'rejected' : 'dropped', '', `${dev} ${reject ? 'rejects' : 'drops'} ${what0} (${pkt.msg.label}): ${why0}`, this.e.now, undefined, { cause: decided });
       if (reject) {
         if (proto === 'tcp') {
-          this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst);
-        } else this.e.icmpError(dev, pkt, 'admin', { from });
+          this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst, { reason: 'policy', cause: decided });
+        } else this.e.icmpError(dev, pkt, 'admin', { from, cause: decided });
       }
       return false;
     }
@@ -2440,11 +2601,12 @@ export class Transport {
     const action = this.e.params.get('fw-action', dev);
     const what = `${proto === 'icmp' ? (pkt.dst.version === 4 ? 'ICMP' : 'ICMPv6') + ' ' + (l4.icmpName || '') : proto.toUpperCase() + ' ' + formatAddr(pkt.src) + ':' + l4.sport + ' → ' + formatAddr(pkt.dst) + ':' + l4.dport}`;
     const why = stateful && !opening ? 'it belongs to no session it knows' : 'no relation of the model and no allow entry permits it';
-    this.e.note('drop', proto, dev, '', action.value === 'reject' ? 'rejected' : 'dropped', '', `${dev} ${action.value === 'reject' ? 'rejects' : 'drops'} ${what} (${pkt.msg.label}): ${why} (default action ${resolvedText(action)})`);
+    const decided = this.e.causeOf({ kind: 'policy', policy: { device: dev, action: action.value === 'reject' ? 'reject' : 'deny', ruleText: stateful && !opening ? 'no session (stateful)' : 'implicit policy: relations and allow list', byDefault: true, text: why } }, pkt);
+    this.e.note('drop', proto, dev, '', action.value === 'reject' ? 'rejected' : 'dropped', '', `${dev} ${action.value === 'reject' ? 'rejects' : 'drops'} ${what} (${pkt.msg.label}): ${why} (default action ${resolvedText(action)})`, this.e.now, undefined, { cause: decided });
     if (action.value !== 'reject') return false;
     if (proto === 'tcp') {
-      this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst);
-    } else this.e.icmpError(dev, pkt, 'admin', { from });
+      this.rstFor(dev, pkt, `rejected by ${dev}`, pkt.dst, { reason: 'policy', cause: decided });
+    } else this.e.icmpError(dev, pkt, 'admin', { from, cause: decided });
     return false;
   }
 

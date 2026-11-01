@@ -143,8 +143,8 @@ export function sendOutcome(r: SendRun): NonNullable<ActionView['outcome']> {
   let cancelled = 0;
   for (const t of r.tests) {
     if (!t.done) pending++;
-    else if (t.result === CANCELLED) cancelled++;
-    else if (/^not sent/.test(t.result)) failed++;
+    else if (t.outcome && t.outcome.kind === 'cancelled') cancelled++;
+    else if (notSent(t)) failed++;
     else if (bcast) {
       if (t.answers.length) ok++;
       else unknown++;
@@ -162,6 +162,9 @@ export function sendOutcome(r: SendRun): NonNullable<ActionView['outcome']> {
 /** A send's result text for a cancelled message (Stop before it was sent). */
 export const CANCELLED = 'not sent: cancelled (Stop)';
 
+/** A message none of whose packets left its sender (its structured outcome). */
+const notSent = (t: Test): boolean => !!t.outcome && !!t.outcome.unsent;
+
 /** The state of a send: from its messages. */
 export function sendStatus(r: SendRun): ActionStatus {
   const going = r.tests.filter((t) => !t.done);
@@ -172,7 +175,7 @@ export function sendStatus(r: SendRun): ActionStatus {
   if (going.length || more) return 'running';
   const o = sendOutcome(r);
   if (r.stopped) return o.ok + o.failed + o.unknown === 0 ? 'cancelled' : 'stopped';
-  if (o.ok + o.unknown === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result))) return 'failed';
+  if (o.ok + o.unknown === 0 && o.failed > 0 && r.tests.every(notSent)) return 'failed';
   return 'completed';
 }
 
@@ -260,7 +263,7 @@ export function appView(a: ActionRecord, c: ActionContext): ActionView {
   const p = appProfile(r.app.profile);
   const o = appOutcome(r);
   const active = (!r.stopped && (r.count === null || r.sent < r.count)) || r.tests.some((t) => !t.done);
-  const status: ActionStatus = active ? 'running' : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every((t) => /^not sent/.test(t.result)) ? 'failed' : 'completed';
+  const status: ActionStatus = active ? 'running' : r.stopped ? (o.ok + o.failed === 0 ? 'cancelled' : 'stopped') : o.ok === 0 && o.failed > 0 && r.tests.every(notSent) ? 'failed' : 'completed';
   let ended: number | undefined;
   if (!active) {
     ended = r.stoppedAt !== undefined ? r.stoppedAt : r.t0;

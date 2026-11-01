@@ -13,7 +13,7 @@
 //   - `traffic:` of an interconnect runs with the simulation, as the scenario's.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example, errorsOf } from './helpers.mjs';
+import { load, model, example, errorsOf, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
@@ -178,7 +178,7 @@ test('headless and paced runs of the same failures at the same scenario times: t
   const H = O.OPAQUE_HOP_MS;
   const run = (paced) => {
     const s = IC();
-    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, typical: () => s.engine.hopTime(), headers: (f) => f.hdr }, 8) : null;
+    const pacer = paced ? new P.Pacer({ engine: s.engine, shown: () => true, travel: travelOf(s.engine), headers: (f) => f.hdr }, 8) : null;
     s.runTo(2000);
     const t0 = s.now;
     s.engine.at(t0 + H / 2, () => s.actOpaqueFail('interconnect', 'fab1'));
@@ -264,7 +264,7 @@ test('traffic: an interconnect’s own illustrative data runs with the simulatio
   s.runTo(600000);
   assert.ok(s.opaque.runs[0].deliveries.length <= 2 * O.OPAQUE_KEEP);
   // its dots are a flow: drawn every time, never the steady state, never waited for
-  const p = new P.Pacer({ engine: s.engine, shown: () => true, typical: () => s.engine.hopTime(), headers: (f) => f.hdr }, 48);
+  const p = new P.Pacer({ engine: s.engine, shown: () => true, travel: travelOf(s.engine), headers: (f) => f.hdr }, 48);
   for (let i = 0; i < 600; i++) p.frame(16);
   const its = p.items.filter((it) => it.f.protocol === 'opaque');
   assert.ok(its.length > 0 && its.every((it) => it.drawn && !it.gate));

@@ -6,7 +6,7 @@
 // animation).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example } from './helpers.mjs';
+import { load, model, example, travelOf } from './helpers.mjs';
 
 const S = load('analysis/sim/simulation.js');
 const P = load('analysis/sim/pacing.js');
@@ -116,7 +116,7 @@ test('other senders (what is shown): the same states and results', () => {
 test('another pacing (Readable, Proportional, Real time): the same events at the same simulated times', () => {
   const sig = (mode) => {
     const s = new S.Simulation(model(REROUTE));
-    const host = { engine: s.engine, shown: (f) => f.view === 'physical', typical: () => s.engine.hopTime(), headers: (f) => f.hdr };
+    const host = { engine: s.engine, shown: (f) => f.view === 'physical', travel: travelOf(s.engine), headers: (f) => f.hdr };
     const p = new P.Pacer(host, 48);
     p.mode = mode;
     for (let i = 0; i < 400 && s.now < 20000; i++) p.frame(50);

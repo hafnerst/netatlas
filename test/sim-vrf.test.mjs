@@ -190,10 +190,13 @@ test('PAT and ICMP: two inside hosts pinging one server at once are two translat
   assert.equal(ids.size, 2, Array.from(ids).join(' '));
 });
 
-const PAT_MTU = PAT.replace('  - {id: srv, type: server, interfaces: [{id: eth0, ip: 198.51.100.10/24}], simulation: {listening: udp/53}}', `  - {id: r2, type: router, interfaces: [{id: g0, ip: 198.51.100.2/24}, {id: g1, ip: 203.0.113.1/24, mtu: 1000}], routes: [{prefix: 0.0.0.0/0, via: 198.51.100.1}]}
+// (the narrow link is between two routers behind the NAT, its MTU the same at both ends: a cable whose ends differ drops
+// what is larger than its receiving end takes, silently — the server, with its 1500-byte MTU, announces MSS 1460)
+const PAT_MTU = PAT.replace('  - {id: srv, type: server, interfaces: [{id: eth0, ip: 198.51.100.10/24}], simulation: {listening: udp/53}}', `  - {id: r2, type: router, interfaces: [{id: g0, ip: 198.51.100.2/24}, {id: g1, ip: 192.0.2.1/30, mtu: 1000}], routes: [{prefix: 0.0.0.0/0, via: 198.51.100.1}, {prefix: 203.0.113.0/24, via: 192.0.2.2}]}
+  - {id: r3, type: router, interfaces: [{id: g0, ip: 192.0.2.2/30, mtu: 1000}, {id: g1, ip: 203.0.113.1/24}], routes: [{prefix: 0.0.0.0/0, via: 192.0.2.1}]}
   - {id: srv, type: server, interfaces: [{id: eth0, ip: 203.0.113.10/24}], routes: [{prefix: 0.0.0.0/0, via: 203.0.113.1}], simulation: {listening: tcp/80}}`)
   .replace('    interfaces: [{id: g0, ip: 10.0.0.1/24}, {id: g1, ip: 198.51.100.1/24}]', '    interfaces: [{id: g0, ip: 10.0.0.1/24}, {id: g1, ip: 198.51.100.1/24}]\n    routes: [{prefix: 203.0.113.0/24, via: 198.51.100.2}]')
-  .replace('  - {id: d, a: "n:g1", b: "srv:eth0"}', '  - {id: d, a: "n:g1", b: "r2:g0"}\n  - {id: e, a: "r2:g1", b: "srv:eth0"}');
+  .replace('  - {id: d, a: "n:g1", b: "srv:eth0"}', '  - {id: d, a: "n:g1", b: "r2:g0"}\n  - {id: e, a: "r2:g1", b: "r3:g0"}\n  - {id: f, a: "r3:g1", b: "srv:eth0"}');
 
 test('PAT and PMTUD: Fragmentation Needed from behind the NAT reaches the inside sender with its quote translated back; the connection resegments and is answered', () => {
   const s = sim(PAT_MTU);
