@@ -5,16 +5,67 @@ All notable changes to NetAtlas are listed here. The format follows
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
 releases may still change behaviour.
 
-Two version numbers are involved. The **application version** (0.1.4) names
+Two version numbers are involved. The **application version** (0.1.5) names
 a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
-The model format is unchanged: files keep `netatlas: 1` and every key means
-what it meant in 0.1.4; a few keys' run-time effect is stated more
-precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since-014)).
+## [0.1.5] - 2026-10-31
+
+NetAtlas 0.1.5 is still one self-contained, offline HTML file
+(`dist/netatlas.html`) with no third-party code. It reads and writes YAML
+model format 1 (`netatlas: 1`) unchanged: a file valid for 0.1.4 is valid
+as it is. Its largest changes:
+
+- **Analyze, organized by the question asked**: Overview, Communication,
+  Resilience, Design review and Addressing, each with the question on the
+  left, the answer and results at the bottom and the evidence of the
+  selected item on the right; recent and pinned results of the session,
+  and **← Back** from an investigation to the result it came from.
+- **Communication with a diagnosis**: one workflow for checking and
+  diagnosing a communication (**Diagnose selected communication**,
+  `Shift+D`). It shows the state of the answer, what is established and
+  what is not, the cause only where the evidence establishes one, the
+  static answer and a simulation run apart, and the evidence chain.
+  Comparisons, MQTT conclusions and policy evidence are read from the
+  recorded identity of what was sent, not from text.
+- **Resilience → Outage impact**, components first: choose components in
+  a searchable picker (a saved failure domain is an optional shortcut),
+  and compare the modeled consequences with the same architecture without
+  the outage. What was assumed is kept apart from what follows from it,
+  and checks that could not run are said instead of shown as zero.
+  **Single-component failures** show separate measures. **Capacity** has
+  its own mode.
+- **Network semantics**: one definition of each encapsulation's size for
+  the path MTU, the checks and the simulation; a tunnel's MTU enforced at
+  run time; each layer of a tunnel stack with its own ends, family and VRF;
+  Analyze taking the same ends a sender in the simulation takes.
+- **Readable playback**: a packet takes 3–5 s per hop at 1×, scaled by the
+  model's own cable costs.
+- **Documentation**: the README explains IP, non-IP and mixed
+  architectures, what each device type can do and what each level —
+  model, analysis, simulation — establishes, with examples to start from.
+- **Correctness fixes** across diagnosis, MQTT, tunnels, ARP/NDP queuing,
+  policy evidence and the packet inspector (see *Fixed*).
+
+The simulation remains a teaching and planning model within its declared
+subset, not an emulator or a compliance test (see *Known limitations*).
+
+### Upgrading from 0.1.4
+
+Nothing to change in a model file: the keys and their meaning are those of
+0.1.4. A few keys' run-time effect is stated more precisely (a tunnel's
+`mtu` is enforced, an interface's `mtu` limits what arrives too; see
+*Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since-014)).
+In the application, some places have new names:
+
+- **Trace path** and **Diagnose communication** are now **Analyze →
+  Communication** (`T`; **Diagnose selected communication**, `Shift+D`).
+- **Resilience → Failure scenario** is now **Resilience → Outage impact**;
+  its failure domains are edited under **Define failure domains…** /
+  **Edit failure domains…**.
 
 ### Added
 
@@ -115,6 +166,14 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
 
 ### Changed
 
+- **README**: what an IP and a non-IP component is in NetAtlas, how one
+  device can have both kinds of port without converting between them, a
+  table of what each of the 15 device types (and each System purpose) can
+  do and where it stops, what modeling, analysis and simulation each
+  establish, and three examples to start from (IP, industrial IP, non-IP
+  and mixed).
+- The release size budget of `dist/netatlas.html` is 6.6 MiB (was
+  6.5 MiB), for the Analyze rework.
 - **Communication** replaces Trace path and Diagnose communication as one
   workflow (`T`; **Diagnose selected communication**, `Shift+D`, asks
   about the selection): searchable ends — devices, interfaces, exact
@@ -318,6 +377,32 @@ precisely (see *Changed*, and [Changes since 0.1.4](docs/FORMAT.md#changes-since
   denied left no record.
 - Closing the packet inspector opened again from another link returned the
   focus to the first one.
+
+### Known limitations
+
+* The protocol simulation is a teaching and planning model within its
+  declared subset, not an emulator or a test of standards compliance: no
+  convergence, accuracy or throughput figure is guaranteed. What each
+  protocol models is in [docs/SUPPORT.md](docs/SUPPORT.md), the
+  simplifications in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+* Analyze is static: a satisfied communication is feasible in the
+  configured model (or a snapshot), not proof that an application
+  completes; outage impact does not establish convergence, recovery time,
+  transient loss, probability or production availability.
+* Non-IP interconnects show connectivity and illustrative data; they do
+  not simulate USB, serial, bus or fabric protocols, and Analyze and
+  experiments cover the IP side only.
+* Which of several devices with an NTP upstream's address a client reaches
+  is resolved once, when the simulation is built, not again at run time.
+* Stateful policies track IP protocols without ports by address pair and
+  protocol number (no GRE keys or ESP SPIs); IPsec NAT traversal is not
+  modelled; IGMPv3 / MLDv2 routers send group-specific queries, not
+  group-and-source queries.
+* An experiment's `start_app` waits for its device to boot, not for its
+  links: a message sent before the link-up delay finds no route.
+* The automated browser tests run in Chromium-based browsers; Firefox and
+  Safari are covered by the manual checks in
+  [docs/TESTING.md](docs/TESTING.md) only.
 
 ## [0.1.4] - 2026-10-22
 
@@ -3442,6 +3527,7 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
+[0.1.5]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.5
 [0.1.4]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.4
 [0.1.3]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.3
 [0.1.2]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.2

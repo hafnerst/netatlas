@@ -96,7 +96,7 @@ The release has a size budget (`SIZE_BUDGET`, 6.6 MiB, in
 6.5 MiB until the Analyze rework, each raised by the maintainer's
 decision). It is raised only deliberately, with the
 reason in `test/build.test.mjs`; `npm run release:check` prints the current
-size and its share of the budget (95.7 % when 0.1.4 was prepared). The
+size and its share of the budget (95.7 % when 0.1.4 was prepared, 99.5 % for 0.1.5). The
 manual's screenshots have a budget of their own there (under 1080 KiB as
 `data:` URLs). A few tests bound the time of a computation
 generously (auto-arrange of the stress example: 8 s), as a guard against

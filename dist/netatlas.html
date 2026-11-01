@@ -6,7 +6,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; object-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="netatlas 0.1.4">
+<meta name="generator" content="netatlas 0.1.5">
 <title>netatlas</title>
 <style id="app-style">
 /* Design tokens. Every colour of the application and of the diagram comes from
@@ -6686,7 +6686,7 @@ class App {
     appVersion() {
         const m = this.doc.querySelector('meta[name="generator"]');
         const v = m ? (m.getAttribute('content') || '').replace(/^netatlas\s*/, '') : '';
-        return /0.1.4/.test(v) ? '' : v;
+        return /0.1.5/.test(v) ? '' : v;
     }
     /** The check on screen (it stays as computed: an edit marks it outdated, it is not computed again behind the user's back), or null. */
     currentTrace() {
@@ -53808,7 +53808,7 @@ const MANUAL = [
         title: 'Start from the overview: dependencies and recent results',
         steps: [
             'Choose **Analyze → Overview**: the questions Analyze answers, one per task, and what is known about this model — the saved requirements and whether (and how) they were evaluated, the consistency findings, invalid input, results outdated by an edit, the interfaces addressed at run time (questions about them need a snapshot). Each count says its context and state: not evaluated is not satisfied. Opening it computes nothing; there is no overall score.',
-            '**From the selection** offers what applies to the selected object: **Diagnose its communication**, **Check communication from it**, **Explore its dependencies**, **What if it fails**, or a network’s addressing.',
+            '**From the selection** offers what applies to the selected object: **Diagnose its communication**, **Check communication from it**, **Explore its dependencies**, **Analyze outage impact…** (prepared in Resilience → Outage impact, not analyzed until you ask), or a network’s addressing.',
             '**Explore its dependencies** lists, for that component, what it **depends on** and what it is **used by** (the configured dependencies, and virtualization hosts and guests), and — when you press **Evaluate its failure** — what its **failure affects**. Each entry’s evidence leads into Communication, Resilience or a contextual focus. Selecting another object does not replace the component explored. Only what the model configures is listed: no production dependency is inferred, no business importance assumed.',
             '**Recent and pinned results** keeps the last 12 results of this session and up to 8 pinned ones: the question, its context, the model’s fingerprint, when it was computed, and whether it is outdated or evidence-limited. **Reopen** shows a result as it was computed, with its selection (outdated when the model changed since; Refresh there computes it again); **Pin** keeps it; **Save record** saves it as text. Nothing of it is saved with the model, and a pinned result does not keep a simulation’s records available.',
         ],
@@ -101728,9 +101728,9 @@ __req("app/main");
 </head>
 <body data-state="empty" data-view="none" data-dirty="false">
 <header class="topbar">
-  <div class="brand" title="netatlas 0.1.4 — offline network architecture diagrams and editor">
+  <div class="brand" title="netatlas 0.1.5 — offline network architecture diagrams and editor">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
-    <span>netatlas</span><span class="version" title="netatlas version">v0.1.4</span>
+    <span>netatlas</span><span class="version" title="netatlas version">v0.1.5</span>
   </div>
   <div class="menu-wrap">
     <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new, open, save and close models; examples">File <span class="caret" aria-hidden="true">▾</span></button>
