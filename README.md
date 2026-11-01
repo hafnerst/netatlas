@@ -293,6 +293,7 @@ places to start:
   application's own statements); [docs/LIMITATIONS.md](docs/LIMITATIONS.md):
   the simplifications and unsupported cases, area by area.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release.
+- [SECURITY.md](SECURITY.md): how to report a vulnerability privately.
 
 Important boundaries:
 
