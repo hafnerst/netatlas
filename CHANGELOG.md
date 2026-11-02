@@ -5,12 +5,41 @@ All notable changes to NetAtlas are listed here. The format follows
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
 releases may still change behaviour.
 
-Two version numbers are involved. The **application version** (0.1.5) names
+Two version numbers are involved. The **application version** (0.1.6) names
 a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
+
+## [0.1.6] - 2026-11-02
+
+A patch release: the application is the same as 0.1.5, and only the
+version shown next to the logo differs. It reads and writes YAML model
+format 1 (`netatlas: 1`) unchanged. It makes the release's automated
+checks reliable: 0.1.5's push to `main` failed CI's browser regression
+tests on one check that fails at random on a busy runner, though the same
+code had passed on `dev`.
+
+### Upgrading from 0.1.5
+
+Nothing to do: model files, saved settings and the behaviour are
+unchanged.
+
+### Fixed
+
+- The in-browser self-test's check of the simulation panel waits for the
+  panel to settle (its texts are written on a refresh; the status and the
+  event log sit side by side only once the panel has its width) and names
+  each part that is wrong, instead of failing without detail on a loaded
+  machine.
+- The browser test of the readable pace (every hop 3–5 s of real time)
+  measures with the frame time the display clock moves by, so a hop is
+  never measured shorter than it is.
+
+### Known limitations
+
+As in [0.1.5](https://github.com/hafnerst/netatlas/blob/main/CHANGELOG.md#015---2026-10-31).
 
 ## [0.1.5] - 2026-10-31
 
@@ -3527,6 +3556,7 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
+[0.1.6]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.6
 [0.1.5]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.5
 [0.1.4]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.4
 [0.1.3]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.3
