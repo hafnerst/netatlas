@@ -2453,11 +2453,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const sim = ctl.sim;
       check(`${theme}: a fresh start at t = 0: every ARP and MAC table empty, no adjacency up`, fresh);
       check(`${theme}: the setup has Senders after the protocols, collapsed, with its summary; every device a sender: no badges`, q('#sim-setup-senders-toggle')!.getAttribute('aria-expanded') === 'false' && /^▸Senders \(all 22\)$/.test(q('#sim-setup-senders-toggle')!.textContent || '') && !q('#canvas .sim-sender'));
-      check(
-        `${theme}: the simulation panel: Pause (primary), Step, the state, the speed 0.1×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
-        q('#sim-play')!.classList.contains('primary') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.1 0.25 0.5 1 2 4' && (q('#sim-pace') as HTMLSelectElement).value === 'readable' && (q('#sim-skip') as HTMLInputElement).checked &&
-          q('#sim-pace-text')!.textContent === 'Readable · 3–5 s/hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
-      );
+      {
+        // each part by name, so a failure says which; read once the panel has settled: its texts are written on a refresh and the
+        // status and the log sit side by side only once the dock has its width (a container query), later on a loaded machine
+        const panelParts = (): string[] => {
+          const bad: string[] = [];
+          if (!q('#sim-play')?.classList.contains('primary')) bad.push('Pause not primary');
+          if (!q('#sim-step')) bad.push('no Step');
+          const speeds = Array.from((q('#sim-speed') as HTMLSelectElement | null)?.options || []).map((o) => o.value).join(' ');
+          if (speeds !== '0.1 0.25 0.5 1 2 4') bad.push(`speeds “${speeds}”`);
+          if ((q('#sim-pace') as HTMLSelectElement | null)?.value !== 'readable') bad.push(`pacing ${(q('#sim-pace') as HTMLSelectElement | null)?.value}`);
+          if (!(q('#sim-skip') as HTMLInputElement | null)?.checked) bad.push('skipping idle time off');
+          if (q('#sim-pace-text')?.textContent !== 'Readable · 3–5 s/hop · 1×') bad.push(`pacing text “${q('#sim-pace-text')?.textContent}”`);
+          if (!/^t = /.test(q('#sim-time')?.textContent || '')) bad.push(`time “${q('#sim-time')?.textContent}”`);
+          if (!q('#sim-exit')) bad.push('no Exit');
+          if (!vis('#sd-status') || !vis('#sd-log') || vis('.sd-tabs')) bad.push(`status ${vis('#sd-status')}, log ${vis('#sd-log')}, tabs ${vis('.sd-tabs')}, dock ${Math.round((q('#sim-dock') as HTMLElement).getBoundingClientRect().width)} px`);
+          return bad;
+        };
+        ctl.refresh(true);
+        // up to 5 s: CI runs browser suites side by side
+        for (let n = 0; n < 500 && panelParts().length; n++) await tick(10);
+        const bad = panelParts();
+        check(
+          `${theme}: the simulation panel: Pause (primary), Step, the state, the speed 0.1×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
+          bad.length === 0,
+          bad.join('; '),
+        );
+      }
       // watch ARP resolve and OSPF reach Full
       ctl.runTo(20000);
       // (the panel takes its measured height on the next frames, as the rows are drawn)
