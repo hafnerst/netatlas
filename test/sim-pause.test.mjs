@@ -210,14 +210,17 @@ test('the pace on screen at the defaults: every hop takes 3–5 s of real time (
       const t0 = performance.now();
       while (performance.now() - t0 < 16000) {
         await new Promise((ok) => requestAnimationFrame(ok));
-        const now = performance.now();
+        // the timestamp of the frame that last moved the display clock: the state read below is that frame's. (performance.now()
+        // after the await is later than it by whatever ran first in the frame, a different amount at each sample on a loaded runner)
+        const now = c.last;
         for (const it of c.pacer.items) {
           if (it.f.view !== 'physical' || !it.drawn || it.f.dropped !== undefined || !c.drawItems().some((d) => d.f === it.f)) continue;
           const st = c.pacer.state(it);
           let s = seen.get(it);
           if (!s) seen.set(it, (s = {}));
-          // (first seen up to 5 % into the hop: the part already moved counted back at the clock's rate, which is never above real time,
-          // so the start taken is never earlier than the real one: the lower bound below is not loosened)
+          // (first seen up to 5 % into the hop: the part already moved is counted back at the display clock's rate. The clock advances
+          // by each frame's real time, at most FRAME_MAX, so from that frame to the arrival at least the rest of the hop passes in real
+          // time: what is measured is never under the hop's own time)
           if (st.phase === 'moving' && s.start === undefined && st.frac < 0.05) s.start = now - st.frac * it.hop;
           if ((st.phase === 'arrived' || st.phase === 'gone') && s.start !== undefined && s.end === undefined) s.end = now;
         }
@@ -227,8 +230,8 @@ test('the pace on screen at the defaults: every hop takes 3–5 s of real time (
       return done;
     })()`);
     assert.ok(r.length >= 2, `hops measured: ${r.length}`);
-    // (a frame or two of a loaded machine above: the clock counts at most 100 ms a frame)
-    for (const x of r) assert.ok(x.real >= 3000 - 40 && x.real <= 5000 + 250, `a hop on ${x.ref} took ${Math.round(x.real)} ms of real time`);
+    // (never under the hop's time, see above; a frame or two of a loaded machine above: the clock counts at most 100 ms a frame)
+    for (const x of r) assert.ok(x.hop >= 3000 && x.hop <= 5000 && x.real >= x.hop - 1 && x.real <= 5000 + 250, `a hop on ${x.ref} (${Math.round(x.hop)} ms) took ${Math.round(x.real)} ms of real time`);
     // Proportional: the line's length in the diagram over the hop's time, for the hops taken in after the change
     const before = await page.eval(`JSON.stringify(netatlas.simController().pacer.items.map((it) => it.f.id))`);
     await page.eval(`netatlas.simController().setPacing('proportional', 1000), true`);
